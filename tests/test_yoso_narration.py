@@ -160,3 +160,44 @@ def test_announcement_reads_the_state_dir_ledger(tmp_path, monkeypatch):
     assert seen[0]["body"] == yn.INTRO_OVERLAY_BODY
     # min_rounds=3 keeps a one-shot viewer off the board, so the notice is used.
     assert "ランキング対象の同志はまだいません" in seen[1]["body"]
+
+
+def test_voice_queue_dir_defaults_below_the_soren_root(env, monkeypatch):
+    monkeypatch.delenv("COMMENT_QUEUE_DIR", raising=False)
+
+    assert yn.voice_queue_dir(env.g) == env.soren / "tmp" / ".comment_queue"
+
+
+def test_voice_items_in_flight_counts_only_this_corners_markers(env, monkeypatch):
+    queue = env.soren / "tmp" / ".comment_queue"
+    queue.mkdir(parents=True)
+    monkeypatch.setenv("COMMENT_QUEUE_DIR", str(queue))
+
+    # A missing marker is "nothing left to read", including a content-deduplicated
+    # enqueue that never wrote a file.
+    assert yn.voice_items_in_flight(env.g) == 0
+
+    queued = queue / "comment_announce_1_2_3_yosou:intro.txt"
+    queued.write_text("x")
+    assert yn.voice_items_in_flight(env.g) == 1
+
+    # The worker renames the item while playing it; that is still in flight.
+    playing = queue / "comment_announce_1_2_3_yosou:intro.playing"
+    queued.rename(playing)
+    assert yn.voice_items_in_flight(env.g) == 1
+
+    (queue / "comment_announce_4_5_6_yosou:ranking.playing").write_text("y")
+    # Other sources never extend this corner.
+    (queue / "comment_announce_9_9_9_chat.txt").write_text("z")
+    (queue / "comment_announce_9_9_9_weather_corner.playing").write_text("w")
+    assert yn.voice_items_in_flight(env.g) == 2
+
+    playing.unlink()
+    (queue / "comment_announce_4_5_6_yosou:ranking.playing").unlink()
+    assert yn.voice_items_in_flight(env.g) == 0
+
+    # An unreadable/missing queue directory is "nothing to wait for".
+    (queue / "comment_announce_9_9_9_chat.txt").unlink()
+    (queue / "comment_announce_9_9_9_weather_corner.playing").unlink()
+    queue.rmdir()
+    assert yn.voice_items_in_flight(env.g) == 0

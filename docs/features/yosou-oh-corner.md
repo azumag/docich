@@ -116,6 +116,12 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   `yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
   共有キューは `source_id` ごとに最新1件だけを残すため、紹介と ranking は
   `source_id` を分ける（同じだと ranking が紹介を上書きする）。
+- 終了条件: `duration_minutes`（既定2分・1〜14分）は**上限**で、読み上げを入れた run は
+  自分の発話が共有 audio queue から消えた時点で `end_reason = "audio-complete"` として早期終了する
+  （天気予報 corner の音声完了と同じ考え方。2026-10-15 オーナー判断）。
+  queue が混んで発話が上限まで残る run は `end_reason = "duration"` で終わる。
+  判定は `yoso_narration.voice_items_in_flight()`（自分の `yosou:intro` / `yosou:ranking` の
+  `.txt` / `.playing` マーカーだけを数える）で、他 source のコメントや他 corner は数えない。
 - 翻訳対象外: view は常に日本語表示で、翻訳すると集計の意味が変わる。
   `yoso_view.HTML` は `<html lang="ja" translate="no">` と
   `<meta name="google" content="notranslate">` を持ち、日本語UIのブラウザが出す
