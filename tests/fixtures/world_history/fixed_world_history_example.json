@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "corner": "world-history",
+  "fixtureId": "fixed-world-history-retrospective-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed world-history fixture for planning and input-contract acceptance only. It is not a real event or verified history, and its title, URLs and details must not be presented as verified historical data or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Why a Present-Day Border and Industry Pattern Took Its Current Form",
+    "topicId": "fixed-world-history-present-to-past-001",
+    "currentQuestion": "なぜ現在の国境・産業・制度の形がこのようになったのか",
+    "presentQuestion": "なぜ現在の国境・産業・制度の形がこのようになったのか",
+    "question": "Synthetic present-to-past world-history question.",
+    "era": "19th century to present (synthetic timeline)",
+    "timeScope": "19th century to present (synthetic)",
+    "period": "synthetic longue duree",
+    "region": "multiple historical regions (synthetic)",
+    "geography": "multiple historical regions (synthetic)",
+    "regionScope": "multiple historical regions (synthetic)",
+    "mapFocus": "border changes, trade routes, industrial cores, and spheres of influence in a synthetic explanatory map",
+    "thirtySecondSummary": "合成fixture: 現在の国境・産業・制度を出発点に、直接の前史、さらに遡る要因、転換点、複数地域の視点、現在に残る影響を整理する planning 例。",
+    "oneLineSummary": "合成fixture: 現在から過去へ遡る世界史コーナーの入力例。",
+    "directPrehistory": "直接の前史として、条約・通商・戦争・帝国支配・標準化の積み重ねが現在の形を固定した。",
+    "immediatePrehistory": "treaties, trade, war, imperial rule, and standardization accumulated into the present form",
+    "previousHistory": "the immediate background of today's border and industry pattern",
+    "deeperCauses": "さらに遡ると、地理条件、資源分布、技術差、財政能力、法制度、人口移動が組み合わさって制約を作った。",
+    "deeperFactors": "geography, resource distribution, technology gaps, fiscal capacity, law, and migration created constraints",
+    "rootCauses": "long-term structural causes behind the present form",
+    "turningPoints": [
+      "主要条約による境界の固定",
+      "産業技術の集中",
+      "帝国的支配の終焉",
+      "制度標準の採用"
+    ],
+    "turningPointsInHistory": [
+      "border formalization",
+      "industrial concentration",
+      "end of imperial control",
+      "institutional standardization"
+    ],
+    "multipleRegionPerspectives": [
+      "表舞台の強国は制度継続を重視する",
+      "植民地支配を受けた地域は資源・国境の不均衡を重視する",
+      "周辺地域は航路・安全保障・市場アクセスを重視する",
+      "小国は規格・同盟・中立の制約を重視する"
+    ],
+    "multipleRegionsOrForces": [
+      "metropolitan powers",
+      "colonized or peripheral regions",
+      "neighboring states",
+      "small states"
+    ],
+    "regionalPerspectives": [
+      "legal-institutional",
+      "anti-colonial",
+      "strategic-commercial",
+      "small-state procedural"
+    ],
+    "viewpoints": [
+      "official narrative",
+      "subaltern experience",
+      "regional security"
+    ],
+    "lastingImpact": "現在まで、国境、産業集積、港湾・航路、法制度、教育・言語、インフラ、対立記憶が残存している。",
+    "lastingImpacts": "borders, industrial cores, ports, law, education and language, infrastructure, and conflict memory remain",
+    "remainingImpact": "the present meaning of historical change",
+    "timeline": [
+      {
+        "period": "synthetic early period",
+        "event": "資源と航路の焦点が地方的な交換から広域統合へ移動",
+        "regions": [
+          "region A",
+          "region B"
+        ],
+        "impact": "後の工業集中の前提を作った"
+      },
+      {
+        "period": "synthetic middle period",
+        "event": "境界と制度が条約・戦争・帝国の交渉で固定化",
+        "regions": [
+          "region B",
+          "region C"
+        ],
+        "impact": "現在の国境線の原型になった"
+      },
+      {
+        "period": "synthetic late period",
+        "event": "脱植民地化と冷戦構造の afterward で制度と同盟が再編",
+        "regions": [
+          "region A",
+          "region C"
+        ],
+        "impact": "現在の対立・協力枠組みに残った"
+      }
+    ],
+    "chronology": [
+      {
+        "period": "early",
+        "event": "long-distance integration"
+      },
+      {
+        "period": "middle",
+        "event": "border and institutional fixation"
+      },
+      {
+        "period": "late",
+        "event": "decolonization and Cold War aftermath"
+      }
+    ],
+    "timelineEvents": [
+      "long-distance integration",
+      "border and institutional fixation",
+      "decolonization and Cold War aftermath"
+    ],
+    "mapHandling": "scope/center = synthetic multi-region explanatory map; scale = not provided (synthetic fixture); projection = not provided (synthetic fixture); vintage = synthetic planning view; resolution = not provided (synthetic fixture); license = not provided (synthetic fixture); usage conditions = not provided (synthetic fixture); no real map license or usage permission is asserted",
+    "mapFocusNote": "maps show borders, industry, routes, and conflicts as explanatory overlays",
+    "labelsPolicy": {
+      "fact": "primary or corroborated historical statement",
+      "analysis": "interpretive assessment",
+      "forecast": "conditional scenario"
+    },
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "factAnalysisForecastLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "factAnalysisPredictionLabels": [
+      "fact",
+      "analysis",
+      "prediction"
+    ],
+    "limitations": "合成 fiction fixture であり、実人物・実事件・実境界・実統計・実地図権利の検証は未実施。一次史料・公的資料で更新が必要。",
+    "limitationsAndCaveats": "synthetic fixture only; no real verification",
+    "uncertainty": "年代の不確実性、残存資料の偏り、非公開合意、非対称情報、解釈の分岐。",
+    "gaps": [
+      "missing archives",
+      "asymmetric information",
+      "disputed chronology"
+    ],
+    "figureOrDiagram": "現在の問い、前史、要因、転換点、地域視点、影響を overlay 用に分離した概念図。",
+    "overlayPlan": "question, map, timeline, perspectives, impact, labels, source URLs",
+    "youtubeIndependentDraft": "YouTube 切り出しでは現在の問い、直接の前史、さらに遡る要因、転換点、複数地域の視点、現在に残る影響を独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/world-history/synthetic-present-to-past",
+      "https://example.org/world-history/synthetic-present-to-past/archive"
+    ],
+    "sourcePriority": [
+      "historical-primary-or-public-source",
+      "public-institution",
+      "research-or-archive-source",
+      "established-media-multiple",
+      "fact-check-source"
+    ],
+    "citationKeepUrl": true,
+    "sourceUrls": [
+      "https://example.org/world-history/synthetic-present-to-past"
+    ],
+    "eventUrl": "https://example.org/world-history/synthetic-present-to-past",
+    "url": "https://example.org/world-history/synthetic-present-to-past",
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192,
+      "maxQueries": 3,
+      "maxFetchAttempts": 4
+    }
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/world-history/synthetic-present-to-past",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "85ffa5259b0a171bba7d781ffd5447ad87cfe584fbfac0a479bfc53a24851a74",
+        "excerpt": "Synthetic verified world-history material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic world history present to past border industry"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealEvent": true,
+    "mustNotClaimRealHistory": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizeHistoricalPrimarySources": true,
+    "mustPrioritizePrimaryHistoricalSources": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustIncludeCurrentQuestion": true,
+    "mustIncludeDirectPrehistory": true,
+    "mustIncludeDeeperCauses": true,
+    "mustIncludeTurningPoints": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustIncludeRegionalPerspectives": true,
+    "mustIncludeLastingImpact": true,
+    "mustIncludeTimeline": true,
+    "mustIncludeMapHandling": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeUncertaintyAndLabels": true,
+    "mustIncludeFailureAndSafety": true,
+    "mustIncludeResearchCaveats": true,
+    "mustStatePreprintStatusIfUnreviewed": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
