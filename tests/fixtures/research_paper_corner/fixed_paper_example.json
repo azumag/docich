@@ -27,7 +27,7 @@
     "priorProblem": "従来は観測を均等に増やす前提が多く、限られた資源でどの観測を優先するかの設計指針が不足していた。",
     "novelty": "観測優先順位を明示的な目的関数に結び付け、小標本での効果を再現可能な試行手順として提示した点が新しい。",
     "experimentStrength": "Synthetic fixture based on simulation assumptions. Sample size, assumptions, and reproducibility conditions must be reported together; real-world generalization is not verified.",
-    "limitations": "合成fiction fixture이며, 실제領域への一般化、独立検証、査読前の主張には留保が必要である。",
+    "limitations": "合成fiction fixtureであり、実領域への一般化、独立検証、査読前の主張には留保が必要である。",
     "practicalUse": "研究計画や計測設計の優先順位づけ、観測コストの配分判断に使える可能性がある。",
     "docichApplication": "docich系の計測・観測設計レビュー時に、どの測定を先に取るかを説明するcorner台本の例として使える。",
     "figureOrSimpleExplanation": "目標指標を縦軸、観測順を横軸にした単純な比較図を想定する。実データ検証は未実施。",
@@ -52,18 +52,20 @@
   },
   "verifiedWebMaterial": {
     "status": "partial",
-    "queriesUsed": [
-      "cross field observability small sample complex systems"
-    ],
     "items": [
       {
         "url": "https://example.org/papers/synthetic-fixed-cross-field-observability",
         "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "excerpt_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "excerpt_sha256": "9f22d98ae907457579d3fda0c6484457559ab1c661197a766253d555142af392",
         "excerpt": "Synthetic verified material excerpt for planning only.",
-        "queryIndexes": [0]
+        "query_indexes": [
+          0
+        ]
       }
+    ],
+    "queries_used": [
+      "cross field observability small sample complex systems"
     ]
   },
   "nonProductionAcceptance": {

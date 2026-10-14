@@ -77,18 +77,31 @@ def test_review_and_research_caveats_are_explicit():
 
 
 def test_verified_material_hashes_are_well_formed():
+    import hashlib
+
     data = load_fixture()
     material = data["verifiedWebMaterial"]
-    assert material["status"] in {"ok", "partial", "unavailable"}
-    assert isinstance(material["queriesUsed"], list)
+    assert material["status"] in {"ok", "partial"}
+    queries_used = material["queries_used"]
+    assert isinstance(queries_used, list) and queries_used
+    assert 1 <= len(queries_used) <= 3
     assert isinstance(material["items"], list)
+    assert 1 <= len(material["items"]) <= 4
     for item in material["items"]:
-        for key in ("url", "body_sha256", "text_sha256", "excerpt_sha256", "excerpt", "queryIndexes"):
+        for key in ("url", "body_sha256", "text_sha256", "excerpt_sha256", "excerpt", "query_indexes"):
             assert key in item
         assert HASH_RE.fullmatch(item["body_sha256"])
         assert HASH_RE.fullmatch(item["text_sha256"])
         assert HASH_RE.fullmatch(item["excerpt_sha256"])
-        assert isinstance(item["queryIndexes"], list)
+        assert 0 < len(item["excerpt"].encode("utf-8")) <= 8192
+        assert hashlib.sha256(item["excerpt"].encode("utf-8")).hexdigest() == item["excerpt_sha256"]
+        query_indexes = item["query_indexes"]
+        assert isinstance(query_indexes, list) and query_indexes
+        assert query_indexes == sorted(set(query_indexes))
+        assert all(
+            isinstance(index, int) and 0 <= index < len(queries_used)
+            for index in query_indexes
+        )
 
 
 def test_non_production_acceptance_boundary():
