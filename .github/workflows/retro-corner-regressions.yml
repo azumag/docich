@@ -86,6 +86,8 @@ on:
       - 'tests/test_tsuitate_protocol.py'
       - 'tests/test_tsuitate_corner.py'
       - 'tests/test_tsuitate_program.py'
+      - 'tests/test_tsuitate_narration.py'
+      - 'tests/test_tsuitate_review.py'
       - 'requirements-test.txt'
       - 'conftest.py'
   push:
@@ -174,6 +176,8 @@ on:
       - 'tests/test_tsuitate_protocol.py'
       - 'tests/test_tsuitate_corner.py'
       - 'tests/test_tsuitate_program.py'
+      - 'tests/test_tsuitate_narration.py'
+      - 'tests/test_tsuitate_review.py'
       - 'requirements-test.txt'
       - 'conftest.py'
 
@@ -288,6 +292,8 @@ jobs:
             --root-path 'tests/test_tsuitate_protocol.py' \
             --root-path 'tests/test_tsuitate_corner.py' \
             --root-path 'tests/test_tsuitate_program.py' \
+            --root-path 'tests/test_tsuitate_narration.py' \
+            --root-path 'tests/test_tsuitate_review.py' \
             --root-path 'requirements-test.txt' \
             --root-path 'conftest.py' \
             --soren-path 'status_dashboard.py' \
@@ -347,6 +353,7 @@ jobs:
           tests/test_opencode_go_free_chain.py
           tests/test_retro_daily_schedule.py tests/test_corner_improve.py
           tests/test_tsuitate_protocol.py tests/test_tsuitate_corner.py tests/test_tsuitate_program.py
+          tests/test_tsuitate_narration.py tests/test_tsuitate_review.py
           tests/test_corner_improve_dispatch.py tests/test_retro_command_brains.py
           tests/test_retro_wrapper_limits.py tests/test_retro_wrapper_real_panes.py
           tests/test_bastet_brain.py tests/test_bastet_strategy.py tests/test_moon_buggy_brain.py

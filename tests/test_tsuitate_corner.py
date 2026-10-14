@@ -769,3 +769,193 @@ def test_tsuitate_restore_replay_waits_for_an_in_flight_switch(tmp_path):
     manager._canonical = lambda: {"phase": "starting"}
 
     assert manager.recover_failed_restore() == "queued"
+
+
+# --- narration: the corner introduction and the 感想戦 ----------------------
+
+_COUNTS = {"overlay": {"sent": 1, "failed": 0, "skipped": 0},
+           "speech": {"sent": 1, "failed": 0, "skipped": 0}}
+
+
+def test_corner_introduction_is_announced_once_at_activation(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    calls = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda g, *, request_id, audio_enabled: (
+            calls.append((request_id, audio_enabled)) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+    manager._announce_intro_once(state)
+
+    assert calls == [(REQ, True)]
+    saved = json.loads(manager.path.read_text())
+    assert saved["intro_request_id"] == REQ
+    assert saved["overlay_announcements"] == {"sent": 1, "failed": 0, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 1, "delivery_failed": 0, "skipped": 0}
+
+
+def test_corner_introduction_is_silent_when_audio_is_off(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        announce_intro=lambda g, *, request_id, audio_enabled: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert "narration" not in saved
+    assert saved["overlay_announcements"]["sent"] == 1
+
+
+def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(
+        beta_result=_settled_result(outcome="loss", reason="foul_limit", moveNumber=50),
+        beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0,
+    )
+    summary = {"gameId": "fixtureGame01", "color": "sente", "outcome": "loss",
+               "reason": "foul_limit", "moveCount": 50, "ownMoves": 25,
+               "opponentMoves": 25, "fouls": 10, "opponentFouls": 0, "foulAttempts": 10,
+               "ratingBefore": 1005, "ratingAfter": 1003, "opponentName": "kakuren_bot",
+               "own": {"totalMs": 9169, "maxMs": 1561}, "opponent": {"totalMs": 65641, "maxMs": 3418},
+               "promotions": 8, "drops": 13, "lastMove": {"usi": "5g5h", "by": "gote", "ms": 3059}}
+    reads, generated, published = [], [], []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        read_review=lambda game_id, terminal, *, color: (
+            reads.append((game_id, color, terminal.get("durationMs"))) or summary),
+        review_text=lambda g, summary, terminal, *, agents: (
+            generated.append((summary is not None, terminal.get("durationMs")))
+            or ("AIは反則を重ねてしまいましたが、持ち時間の使い方は落ち着いていました。次は反則を減らして勝ちを狙います。", "ai")),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append((request_id, text, body, audio_enabled)) or dict(_COUNTS)),
+    )
+    manager.clock = lambda: 1076.41
+    manager._save(state)
+
+    manager._announce_review_once(state)
+    manager._announce_review_once(state)
+
+    assert reads == [("fixtureGame01", "sente", 76410)]
+    assert generated == [(True, 76410)]
+    assert len(published) == 1 and published[0][0] == REQ
+    assert published[0][1].startswith("AIは反則を重ねて")
+    assert published[0][2].startswith("AIの負け / 反則負け / 50手")
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"] == {"source": "replay", "kind": "ai", "moves": 50}
+    assert saved["review_request_id"] == REQ
+    # The raw move list, the board and the model prompt never reach the state.
+    raw = manager.path.read_text()
+    for forbidden in ("5g5h", "usi", "sfen", "prompt", "kakuren_bot"):
+        assert forbidden not in raw
+
+
+def test_review_falls_back_to_the_settled_result_without_a_replay(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(outcome="win", reason="checkmate"),
+                 beta_game_id="fixtureGame01", beta_color="gote", beta_active_since=1000.0)
+    published = []
+
+    def broken_reader(*_args, **_kwargs):
+        raise RuntimeError("site down")
+
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        read_review=broken_reader,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "公開棋譜を確認できなかったため、結果だけをお伝えします。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append(text) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    assert published and published[0].startswith("感想戦です。")
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["source"] == "result-only"
+    assert saved["review"]["kind"] == "fallback"
+
+
+def test_review_waits_for_a_settled_owned_result(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        read_review=lambda *a, **k: {},
+        announce_review=lambda *a, **k: published.append(1) or dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    assert published == []
+    saved = json.loads(manager.path.read_text())
+    assert "review_request_id" not in saved and "review" not in saved
+
+
+def test_narration_options_are_validated(tmp_path):
+    g = _global(tmp_path)
+    for kwargs, message in [
+        ({"audio_enabled": "yes"}, "audio_enabled"),
+        ({"review_agents": 7}, "review_agents"),
+        ({"announce_intro": "nope"}, "announce_intro"),
+        ({"announce_review": 1}, "announce_review"),
+        ({"read_review": object()}, "read_review"),
+        ({"review_text": []}, "review_text"),
+    ]:
+        with pytest.raises(TsuitateCornerError, match=message):
+            TsuitateCornerManager(g, coordinator=object(), control=lambda *_: _status(), **kwargs)
+
+
+def test_announcement_counters_accumulate_over_the_run(tmp_path):
+    """A delivered run shows two overlay events and two utterances."""
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda g, *, request_id, audio_enabled: dict(_COUNTS),
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "持ち時間の使い方も落ち着いていました。次もお付き合いください。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["overlay_announcements"] == {"sent": 2, "failed": 0, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 2, "delivery_failed": 0, "skipped": 0}
+
+
+def test_announcement_counters_survive_a_failed_sink(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda *a, **k: {"overlay": {"sent": 0, "failed": 1, "skipped": 0},
+                                        "speech": {"sent": 0, "failed": 1, "skipped": 0}},
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 0, "delivery_failed": 1, "skipped": 0}

@@ -51,6 +51,12 @@ docich側HMAC bridgeでも同じshapeを再検証します。PlayerViewは表示
 終局前に公開されません。`status` 以外の応答（start / stop / reconcile）と保存済みrun receiptは
 `snapshot()` の形のままなので、receipt replayの応答形は変わりません。
 
+この契約は変わりません。コーナー終了後の**感想戦**（読み上げ）は、終局時にサイトが公開する
+公開リプレイ（`/games/<gameId>/__data.json`）を docich 側が終局後に1回だけ読んで組み立てます
+（`src/docich/tsuitate_review.py`、固定host・redirect禁止・上限つき・fail-closed）。着手列と盤面は
+その場で読み捨て、corner state に残すのは読み上げ文と有界カウンタだけです。配信 view へ盤面・
+持ち駒・棋譜を出すことはなく、Worker の保存記録にも棋譜を追加しません。
+
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
 queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。停止にはこのstop操作を使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。

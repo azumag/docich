@@ -53,6 +53,34 @@ switch は deadline 超過で rollback してコーナーは一度も active に
 `<meta name="google" content="notranslate">`）。翻訳ツールバーは右上の枠に重なるため、
 view 側の標準は [`broadcast-html-view-standard.md`](broadcast-html-view-standard.md) に従います。
 
+## 読み上げ: コーナー紹介と感想戦
+
+コーナーは view が表示を取った時点で**紹介**を1回、終局結果が確定した時点で**感想戦**を1回、
+共通の overlay と音声queueへ出します（`tsuitate_narration`）。音声は catalog 行の
+`audio_enabled`（本番は有効）、感想戦の生成は `[tsuitate_corner] review_agents` の明示opt-inです。
+どちらも at-most-once（副作用の前に request id を保存）で、sink の失敗は件数カウンタに残し、
+コーナーや GameSwitch を失敗させません。
+
+紹介は固定文です。衝立将棋が「相手の駒が見えない状態で指す将棋」で、見えない駒の合法性を判定
+できるのはサーバーだけ＝合法だと思った手が反則になるのが正常な流れであること、反則10回で
+反則負け、持ち時間300秒＋1手3秒、終局後に公開棋譜から感想戦をすること、を読み上げます。
+
+感想戦の入力は、終局時に**公開される**事実だけです。サイトは対局中の相手情報を通知せず、
+`game:end` で公開棋譜・終局図・レート変動・相手の身元を初めて公開します。docich はその公開
+リプレイ（`/games/<gameId>/__data.json`）を**終局後に1回だけ**読み（`tsuitate_review`）、
+固定host・https・redirect禁止・本文/表/手数の上限つき・fail-closed で、次だけを取り出します。
+
+- 勝敗・終局理由・手数・両者の考慮時間・反則数・レート変動・公開された相手名・成り/打ちの回数。
+
+`verify()` が gameId・終局時刻・終局理由（分かる場合は勝敗も）を確定済み結果と照合し、一致
+しなければ感想戦には使いません。**着手列・盤面は保存しません**: リプレイはその場で読み捨て、
+corner state に残るのは生成した読み上げ文と `review`（`source` / `kind` / 手数）の有界カウンタ
+だけです。配信 view には従来どおり盤面・持ち駒・棋譜を出しません。
+
+`review_agents` が非空なら、検証済みの事実だけを入力に共通LLMで2〜3文を生成し、失敗・timeout・
+安全でない出力（長さ・記号・URL・英語比率）は定型文へ fallback します。モデルには盤面を渡さず、
+駒種・捕獲・隠し情報を推測しないよう指示します。
+
 ## コーナーの有界終了
 
 `TsuitateCornerManager` は beta が active になってから `max_match_seconds`（既定1800秒）を超えると、
