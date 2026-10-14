@@ -72,13 +72,13 @@ def test_digest_follows_the_source_bytes(tmp_path):
 # --- versioned fresh load ---------------------------------------------------
 
 def test_fresh_load_is_versioned_isolated_and_does_not_touch_the_process(tmp_path):
-    first = hotload._fresh('ignored', _fixture_sources(tmp_path, 'one'))
+    first = hotload._fresh(_fixture_sources(tmp_path, 'one'))
     assert first.generation == hotload.digest_sources(
         {'hanjuku_bot': tmp_path / 'hanjuku_bot.py',
          'hanjuku_run': tmp_path / 'hanjuku_run.py'})
     assert first.modules['hanjuku_run'].RESULT == 'one'
 
-    second = hotload._fresh('ignored', _fixture_sources(tmp_path, 'two'))
+    second = hotload._fresh(_fixture_sources(tmp_path, 'two'))
     assert second.generation != first.generation
     assert second.modules['hanjuku_run'].RESULT == 'two'
     assert second.modules['hanjuku_bot'].VALUE == 'two'
@@ -95,10 +95,43 @@ def test_failed_fresh_load_restores_sys_modules(tmp_path):
     (tmp_path / 'hanjuku_run.py').write_text("raise RuntimeError('boom')\n", encoding='utf-8')
 
     with pytest.raises(RuntimeError, match='boom'):
-        hotload._fresh('ignored', sources)
+        hotload._fresh(sources)
 
     assert sys.modules['docich.hanjuku_run'] is hanjuku_run
     assert sys.modules['docich.hanjuku_bot'] is hanjuku_bot
+
+
+def test_fresh_load_compiles_exactly_the_bytes_it_digests(tmp_path, monkeypatch):
+    """#2180: a canonical deploy that lands mid-load must not split the handle.
+
+    The handle's ``generation`` has to attest the code the process actually
+    executes.  The old code read every source once for the digest and then read
+    each path *again* to compile, so a replacement landing in that window left
+    a handle whose generation named bytes it never ran.  Fail the load if any
+    module is read twice (the injection below rewrites the file on the second
+    read, which is what such a deploy does).
+    """
+    sources = _fixture_sources(tmp_path, 'one')
+    expected = hotload.digest_sources(sources)
+    real_read_bytes = Path.read_bytes
+    reads = {}
+
+    def read_bytes_with_redeploy(path):
+        if path.parent == tmp_path:
+            reads[path.name] = reads.get(path.name, 0) + 1
+            if reads[path.name] == 2:
+                deployed = b"RESULT = 'redeployed'\n"
+                path.write_bytes(deployed)
+                return deployed
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, 'read_bytes', read_bytes_with_redeploy)
+    handle = hotload._fresh(sources)
+
+    assert reads == {'hanjuku_bot.py': 1, 'hanjuku_run.py': 1}
+    assert handle.generation == expected
+    assert handle.modules['hanjuku_run'].RESULT == 'one'
+    assert handle.modules['hanjuku_bot'].VALUE == 'one'
 
 
 def test_the_process_own_modules_are_used_while_they_are_the_deployed_generation():
@@ -193,16 +226,22 @@ def test_publication_from_an_observation_uses_the_observed_runtime(tmp_path):
 
 def test_consistency_states(tmp_path):
     runtime = _runtime(tmp_path)
-    assert hotload.consistency(runtime, IDENTITY)['state'] == 'unestablished'
+    status = hotload.consistency(runtime, IDENTITY)
+    assert status['state'] == 'unestablished' and status['published'] == []
 
+    # One side published: the boundary is in use for this runtime, so the other
+    # side's absent record is missing evidence (#2180), never a legacy runtime.
     hotload.publish(runtime, IDENTITY, 'corner', refresh=True)
-    assert hotload.consistency(runtime, IDENTITY)['state'] == 'unestablished'
+    status = hotload.consistency(runtime, IDENTITY)
+    assert status['state'] == 'partial' and status['published'] == ['corner']
+    assert status['agent'] is None and status['corner'] == hotload.adopted_generation()
 
     _write_record(runtime, IDENTITY, 'agent', OTHER_GENERATION)
     status = hotload.consistency(runtime, IDENTITY)
     assert status['state'] == 'mixed'
     assert status['agent'] == OTHER_GENERATION
     assert status['corner'] == hotload.adopted_generation()
+    assert status['published'] == ['agent', 'corner']
 
     _write_record(runtime, IDENTITY, 'agent', hotload.adopted_generation())
     status = hotload.consistency(runtime, IDENTITY)
@@ -211,10 +250,14 @@ def test_consistency_states(tmp_path):
 
 def test_mixed_generation_fails_the_stall_teardown_closed(tmp_path):
     runtime = _runtime(tmp_path)
-    # The boundary was never established: the pre-existing semantics stand.
+    # No observer ever published: the pre-existing semantics stand.
     assert hotload.generation_gate(runtime, IDENTITY, 'screen_stalled')[0]
 
+    # Only the corner published: fail closed on the missing agent evidence.
     hotload.publish(runtime, IDENTITY, 'corner', refresh=True)
+    allowed, status = hotload.generation_gate(runtime, IDENTITY, 'screen_stalled')
+    assert not allowed and status['state'] == 'partial'
+
     _write_record(runtime, IDENTITY, 'agent', OTHER_GENERATION)
 
     allowed, status = hotload.generation_gate(runtime, IDENTITY, 'screen_stalled')
@@ -336,4 +379,10 @@ def test_corner_generation_timeout_is_bounded(manager, monkeypatch):
     kinds = [event.get('event') for event in events]
     assert 'hotload_generation_hold' in kinds
     assert kinds[-1] == 'hotload_generation_timeout'
+    # The expiry that releases the hold is durable and auditable (#2180).
+    timeout = [event for event in events if event.get('event') == 'hotload_generation_timeout']
+    assert timeout[-1]['grace_exceeded'] is True
+    assert state['end_reason'] == 'screen_stalled'
+    assert state['hotload']['state'] == 'mixed'
+    assert state['hotload']['grace_exceeded'] is True
     assert finish.call_count == 1

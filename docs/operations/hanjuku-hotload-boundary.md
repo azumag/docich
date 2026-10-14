@@ -26,6 +26,10 @@ assessment 待ちのまま強制終了する。
 
 - `LOGIC_MODULES = ('hanjuku_bot', 'hanjuku_run')` の source bytes から SHA-256 の
   **Hanjuku logic generation** を決定的に求める（`deployed_generation()`）。
+- digest と compile は **同じ 1 回の snapshot** から取る（`read_sources()` →
+  `digest_snapshot()`。`_fresh()` は snapshot だけを compile する）。canonical deploy が
+  2 回の read の間に file を置換しても、handle の generation は必ずその handle が実行する
+  bytes を指す（#2180 の故障注入回帰 `test_fresh_load_compiles_exactly_the_bytes_it_digests`）。
 - その process が実際に読んだ generation は、各 logic module が import 時に記録する
   `LOGIC_GENERATION` が表す。trampoline は両者を比較し、
   - 一致していれば process 自身の module をそのまま使う（通常時は従来と同一挙動・
@@ -49,21 +53,33 @@ assessment 待ちのまま強制終了する。
   同一世代の再公開は 30 秒に一回へ抑える。
 - corner は `retro_corner.json`（corner state）の `hotload` にも `consistency()` の結果を残す。
 
-### 3. mixed 世代 fail-closed
+### 3. mixed / partial 世代 fail-closed
 
-`generation_gate(runtime_dir, identity, reason)` は次の 3 状態を返す。
+`generation_gate(runtime_dir, identity, reason)` は次の 4 状態を返す。
 
 - `consistent` — 両 observer が同じ generation を公開。通常どおり。
 - `mixed` — 両方が公開し、世代が異なる。**新 policy 依存の stall teardown を取らない**。
-- `unestablished` — どちらかが未公開。境界が使われていない runtime（旧 deploy、
-  単独 observer）なので従来どおり。
+- `partial` — 片方だけが公開。境界は**その runtime で使われている**（片方は既にその code を
+  実行している）ため、欠けている側は「証拠の欠落」であり legacy runtime ではない。
+  `mixed` と同じく **新 policy 依存の stall teardown を取らない**（#2180）。
+- `unestablished` — どちらも未公開。境界が使われていない runtime（旧 deploy、単独 observer）
+  なので従来どおり。
 
-`mixed` のとき `_wait_hanjuku` は `screen_stalled` の teardown を保留し、入力は
+`mixed` / `partial` のとき `_wait_hanjuku` は `screen_stalled` の teardown を保留し、入力は
 terminal evidence が既に保持したまま観測を続ける（`hotload_generation_hold` event）。
 `HOTLOAD_MIXED_GRACE_SECONDS = 60` を超えても一致しない場合は、従来の semantics で
 teardown し `hotload_generation_timeout` を記録する（観測を止めた process が corner を
-永久に塞がないための上限）。`game_over` と既存の `input_stalled` は policy 非依存なので
-gate しない。
+永久に塞がないための上限）。この上限付き hold は owner 判断（2026-10-14、可用性を優先し
+不可逆 teardown の保留は 60 秒に有界化する）で維持し、#2180 で次を durable にした。
+
+- timeout 時の `hotload_status` に `grace_exceeded=true` を付け、corner state の `hotload` と
+  `hotload_generation_timeout` event の両方へ残す（不一致のまま teardown した事実を後から
+  監査できる）。
+- read-only diagnostics の `retro_corner.hotload` に `state` / `published` / `agent` /
+  `corner` / `deployed` / `grace_exceeded` を出す（`hanjuku_events.jsonl` と corner state を
+  読まないと分からなかった状態を canonical 経路で確認できる。digest は 64 hex のみ通す）。
+
+`game_over` と既存の `input_stalled` は policy 非依存なので gate しない。
 
 teardown 前の durable evidence 再検証（`runtime_identity` / `terminal`、restoring の
 replay 検証、`hanjuku_predictions`）も trampoline 経由にした。これで「旧 generation の
@@ -74,7 +90,8 @@ replay 検証、`hanjuku_predictions`）も trampoline 経由にした。これ�
 - 各 runtime の `hanjuku_generation_agent.json` / `..._corner.json` の `logic_generation`。
   deploy 直後に両者が揃えば境界は成立している。
 - `hanjuku_events.jsonl` の `hotload_generation_hold` / `hotload_generation_timeout`。
-- corner state の `hotload`。
+- corner state の `hotload`、および read-only diagnostics の `retro_corner.hotload`
+  （`state` / `published` / `grace_exceeded`）。
 
 ## この変更で未実施のこと
 

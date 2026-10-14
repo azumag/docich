@@ -447,6 +447,29 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
+    module=load_collector()
+    digest='a'*64
+    state={'hotload':{'schema':1,'state':'mixed','agent':digest,'corner':'b'*64,
+                      'deployed':'c'*64,'published':['agent','corner'],'grace_exceeded':True}}
+    hotload=module._project_corner_state(state)['hotload']
+    assert hotload=={'state':'mixed','published':['agent','corner'],'agent':digest,
+                     'corner':'b'*64,'deployed':'c'*64,'grace_exceeded':True}
+    # One published side is an explicit 'partial', never silently 'unestablished'.
+    state={'hotload':{'state':'partial','agent':None,'corner':digest,'published':['corner']}}
+    hotload=module._project_corner_state(state)['hotload']
+    assert hotload['state']=='partial' and hotload['published']==['corner']
+    assert hotload['agent'] is None and hotload['grace_exceeded'] is None
+    # Unknown values drop to null instead of leaking whatever the state holds.
+    state={'hotload':{'state':'SECRET','agent':'SECRET','published':'SECRET',
+                      'grace_exceeded':'SECRET'}}
+    hotload=module._project_corner_state(state)['hotload']
+    assert hotload=={'state':None,'published':[],'agent':None,'corner':None,
+                     'deployed':None,'grace_exceeded':None}
+    assert 'SECRET' not in json.dumps(hotload)
+    assert module._project_corner_state({})['hotload'] is None
+
+
 def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
     module = load_collector()
     versions = ("hanjuku-script-v1", "hanjuku-chart-v2",

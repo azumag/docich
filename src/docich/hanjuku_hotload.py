@@ -83,15 +83,31 @@ def logic_sources() -> dict:
     return {name: logic_path(name) for name in LOGIC_MODULES}
 
 
-def digest_sources(sources: Mapping) -> str:
-    """Stable digest over ``{name: path}``; order-independent, path-independent."""
+def read_sources(sources: Mapping) -> dict:
+    """Snapshot every logic module's bytes exactly once.
+
+    The snapshot is the only thing the digest and the compile are allowed to
+    read: a canonical deploy may replace a source file between any two reads,
+    and a generation that hashed one byte set while executing another would
+    attest code the process never ran.
+    """
+    return {name: Path(sources[name]).read_bytes() for name in LOGIC_MODULES}
+
+
+def digest_snapshot(snapshot: Mapping) -> str:
+    """Stable digest over ``{name: bytes}``; order-independent, path-independent."""
     digest = hashlib.sha256()
-    for name in sorted(sources):
+    for name in sorted(snapshot):
         digest.update(str(name).encode('utf-8'))
         digest.update(b'\0')
-        digest.update(Path(sources[name]).read_bytes())
+        digest.update(bytes(snapshot[name]))
         digest.update(b'\0')
     return digest.hexdigest()
+
+
+def digest_sources(sources: Mapping) -> str:
+    """Digest of ``{name: path}`` from one snapshot of the current bytes."""
+    return digest_snapshot(read_sources(sources))
 
 
 def deployed_generation() -> str:
@@ -144,7 +160,7 @@ def _blank_module(full: str, path: Path):
     return module
 
 
-def _fresh(generation: str, sources: Mapping | None = None) -> LogicHandle:
+def _fresh(sources: Mapping | None = None) -> LogicHandle:
     """Load a versioned, private copy of the whole logic set.
 
     Each module is installed into ``sys.modules`` under its real dotted name
@@ -154,16 +170,24 @@ def _fresh(generation: str, sources: Mapping | None = None) -> LogicHandle:
     The sources are compiled here instead of through the standard loader: a
     redeployed file with the same size in the same second must not be served
     from a stale ``__pycache__`` entry.
+
+    All bytes come from one snapshot: the handle's ``generation`` is the digest
+    of exactly the code compiled into it.  The caller's expected generation is
+    deliberately *not* an argument -- a deploy that lands between the trampoline
+    measuring ``deployed_generation()`` and this load would otherwise hand out a
+    handle that claims the old generation while running the new bytes (or the
+    reverse).
     """
     sources = logic_sources() if sources is None else dict(sources)
-    generation = digest_sources(sources)
+    snapshot = read_sources(sources)
+    generation = digest_snapshot(snapshot)
     modules: dict = {}
     saved: dict = {}
     try:
         for name in LOGIC_MODULES:
             full = f'docich.{name}'
             path = Path(sources[name])
-            code = compile(path.read_bytes(), str(path), 'exec')
+            code = compile(snapshot[name], str(path), 'exec')
             module = _blank_module(full, path)
             if full not in saved:
                 saved[full] = sys.modules.get(full, _MISSING)
@@ -188,14 +212,19 @@ def _fresh(generation: str, sources: Mapping | None = None) -> LogicHandle:
 
 
 def handle() -> LogicHandle:
-    """The logic this process will execute for the next observation."""
+    """The logic this process will execute for the next observation.
+
+    ``deployed`` is only a hint that the cached handle may be stale.  The fresh
+    load re-reads and re-digests one snapshot itself, so a deploy racing this
+    call can never make the handle's generation disagree with its code.
+    """
     global _HANDLE
     deployed = deployed_generation()
     current = _HANDLE
     if current is not None and current.generation == deployed:
         return current
     canonical = _canonical(deployed)
-    _HANDLE = canonical if canonical is not None else _fresh(deployed)
+    _HANDLE = canonical if canonical is not None else _fresh()
     return _HANDLE
 
 
@@ -346,31 +375,38 @@ def consistency(runtime_dir, identity) -> dict:
 
     ``consistent`` - both published the same generation (the boundary holds).
     ``mixed``      - both published, but different generations (fail closed).
-    ``unestablished`` - at least one side never published: the hot-load
-    boundary is not in use for this runtime, so the pre-existing semantics
-    stand unchanged.
+    ``partial``    - exactly one side published.  The boundary *is* in use for
+    this runtime (one observer already runs that code), so the missing side is
+    missing evidence, not a legacy runtime: fail closed like ``mixed``.
+    ``unestablished`` - neither side ever published: the hot-load boundary is
+    not in use for this runtime, so the pre-existing semantics stand unchanged.
     """
     values = {role: (adoption(runtime_dir, identity, role) or {}).get('logic_generation')
               for role in ROLES}
-    if values['agent'] is None or values['corner'] is None:
+    published = [role for role in ROLES if values[role] is not None]
+    if not published:
         state = 'unestablished'
+    elif len(published) == 1:
+        state = 'partial'
     elif values['agent'] == values['corner']:
         state = 'consistent'
     else:
         state = 'mixed'
     return {'schema': RECORD_SCHEMA, 'state': state, 'agent': values['agent'],
-            'corner': values['corner'], 'deployed': deployed_generation()}
+            'corner': values['corner'], 'published': sorted(published),
+            'deployed': deployed_generation()}
 
 
 def generation_gate(runtime_dir, identity, reason):
     """Return ``(teardown_allowed, status)`` for a Hanjuku terminal reason.
 
-    A mixed generation must not take the new-policy-dependent stall teardown:
-    the observers do not agree on the code that decided it, and tearing the run
-    down is irreversible while holding it is not.  An unestablished boundary
-    leaves the pre-existing behaviour untouched.
+    A mixed or partial generation must not take the new-policy-dependent stall
+    teardown: the observers do not agree on the code that decided it (or one
+    side's evidence never landed), and tearing the run down is irreversible
+    while holding it is not.  Only a runtime where *neither* observer ever
+    published keeps the pre-existing behaviour untouched.
     """
     status = consistency(runtime_dir, identity)
-    if reason in NEW_POLICY_TERMINAL_REASONS and status['state'] == 'mixed':
+    if reason in NEW_POLICY_TERMINAL_REASONS and status['state'] in ('mixed', 'partial'):
         return False, status
     return True, status

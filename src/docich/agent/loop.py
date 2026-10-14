@@ -53,8 +53,10 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     # #1469: durably publish the Hanjuku logic generation this agent executed,
     # so the corner can prove both observers share one generation before it
     # takes a new-policy-dependent teardown.  Observation-side only: a
-    # publication failure must not stop gameplay (the corner then sees the
-    # boundary as unestablished and keeps its pre-existing semantics).
+    # publication failure must not stop gameplay.  It is not free either: the
+    # corner reads that missing record as absent *evidence* ('partial', #2180),
+    # not as a legacy runtime, and holds the new-policy stall teardown until the
+    # publication lands.
     from .. import hanjuku_hotload
     try:
         hanjuku_hotload.publish_observation(obs, 'agent')
