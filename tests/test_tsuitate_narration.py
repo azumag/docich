@@ -133,26 +133,37 @@ def test_fallback_text_is_bounded_and_names_the_reason():
 
 def test_review_text_prefers_the_model_and_falls_back(env):
     good = "AIは反則を重ねてしまいましたが、持ち時間の使い方は落ち着いていました。次は反則を減らして勝ちを狙います。"
-    text, kind = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
-                                generate_fn=lambda *_: good)
-    assert (text, kind) == (good, "ai")
+    text, kind, failure = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
+                                         generate_fn=lambda *_: good)
+    assert (text, kind, failure) == (good, "ai", "none")
 
     # Unsafe or missing model output falls back to the fixed text.
     for bad in ("thinking...", "", "短い。"):
-        text, kind = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
-                                    generate_fn=lambda *_args, _bad=bad: _bad)
+        text, kind, failure = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
+                                             generate_fn=lambda *_args, _bad=bad: _bad)
         assert kind == "fallback" and text == tn.fallback_text(SUMMARY, TERMINAL)
+        assert failure == "unsafe"
 
     def boom(*_args):
         raise RuntimeError("model down")
 
-    text, kind = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
-                                generate_fn=boom)
-    assert kind == "fallback"
+    text, kind, failure = tn.review_text(env.g, SUMMARY, TERMINAL, agents="fixture:chain",
+                                         generate_fn=boom)
+    assert (kind, failure) == ("fallback", "exception")
 
     # No configured chain means no billed call at all.
-    text, kind = tn.review_text(env.g, SUMMARY, TERMINAL, agents="")
-    assert kind == "fallback"
+    text, kind, failure = tn.review_text(env.g, SUMMARY, TERMINAL, agents="")
+    assert (kind, failure) == ("fallback", "none")
+
+
+def test_model_failure_maps_the_dispatcher_kinds():
+    assert tn._model_failure("gate_giveup") == "gate"
+    assert tn._model_failure("timeout") == "timeout"
+    assert tn._model_failure("rate_limit") == "rate_limit"
+    assert tn._model_failure("provider_failed") == "provider"
+    assert tn._model_failure(None) == "provider"
+    assert tn.MODEL_FAILURES == ("none", "unsafe", "gate", "timeout", "rate_limit",
+                                 "provider", "exception")
 
 
 def test_review_agents_reads_only_the_tsuitate_section(env):

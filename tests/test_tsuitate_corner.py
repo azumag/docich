@@ -880,7 +880,7 @@ def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
     assert published[0][2].startswith("AIの負け / 反則負け / 50手")
     saved = json.loads(manager.path.read_text())
     assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok",
-                               "boundary": "quiet", "moves": 50}
+                               "boundary": "quiet", "model_failure": "none", "moves": 50}
     assert saved["review_request_id"] == REQ
     # The raw move list, the board and the model prompt never reach the state.
     raw = manager.path.read_text()
@@ -1025,7 +1025,8 @@ def test_review_reads_the_public_replay_end_to_end(tmp_path, monkeypatch):
 
     saved = json.loads(manager.path.read_text())
     assert saved["review"] == {"source": "replay", "kind": "fallback",
-                               "failure": "ok", "boundary": "skipped", "moves": 50}
+                               "failure": "ok", "boundary": "skipped",
+                               "model_failure": "none", "moves": 50}
     assert published and published[0][1].startswith("AIの負け / 反則負け / 50手")
 
 
@@ -1133,3 +1134,31 @@ def test_boundary_outcome_vocabulary_matches_the_narration_module():
     from docich import tsuitate_narration as narration
 
     assert TsuitateCornerManager.BOUNDARY_OUTCOMES == narration.BOUNDARY_OUTCOMES
+
+
+def test_review_records_why_the_model_prose_was_not_used(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=False,
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "定型の感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "次もお付き合いください。", "fallback", "gate"),
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["model_failure"] == "gate"
+    assert saved["review"]["kind"] == "fallback"
+
+
+def test_model_failure_vocabulary_matches_the_narration_module():
+    from docich import tsuitate_narration as narration
+
+    assert TsuitateCornerManager.MODEL_FAILURES == narration.MODEL_FAILURES

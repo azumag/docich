@@ -79,7 +79,9 @@ corner state に残るのは生成した読み上げ文と `review`（`source` /
 
 `review_agents` が非空なら、検証済みの事実だけを入力に共通LLMで2〜3文を生成し、失敗・timeout・
 安全でない出力（長さ・記号・URL・英語比率）は定型文へ fallback します。モデルには盤面を渡さず、
-駒種・捕獲・隠し情報を推測しないよう指示します。
+駒種・捕獲・隠し情報を推測しないよう指示します。**なぜ定型文へ落ちたか**は `review.model_failure`
+（`none` / `unsafe` / `gate` / `timeout` / `rate_limit` / `provider` / `exception`）として state と
+診断に残し、無言の fallback を追えるようにします。
 
 ### 感想戦前のオーディオ境界待ち
 

@@ -3701,10 +3701,12 @@ def test_tsuitate_review_projection_is_bounded():
     output=module._project_corner_state({
         'status':'completed','game':'tsuitate-view',
         'review':{'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet',
-                  'moves':50,'text':'DO-NOT-PUBLISH','opponent':'someone','moves_list':['5g5h']},
+                  'model_failure':'gate','moves':50,'text':'DO-NOT-PUBLISH',
+                  'opponent':'someone','moves_list':['5g5h']},
         'overlay_announcements':{'sent':1,'failed':0,'skipped':0},
         'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
-    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet','moves':50}
+    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed',
+                             'boundary':'quiet','model_failure':'gate','moves':50}
     assert 'DO-NOT-PUBLISH' not in json.dumps(output)
     assert 'someone' not in json.dumps(output)
     assert '5g5h' not in json.dumps(output)
@@ -3712,5 +3714,6 @@ def test_tsuitate_review_projection_is_bounded():
     assert module._project_corner_state({'status':'idle'})['review'] is None
     assert module._project_corner_state(
         {'status':'completed','review':{'source':'SECRET','kind':'x','failure':'boom',
-                                       'boundary':'later','moves':'many'}}
-    )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,'moves':None}
+                                       'boundary':'later','model_failure':'boom','moves':'many'}}
+    )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,
+                  'model_failure':None,'moves':None}

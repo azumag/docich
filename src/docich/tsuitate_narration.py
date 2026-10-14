@@ -195,15 +195,27 @@ def fallback_text(summary, terminal) -> str:
     return "".join(parts)[:MAX_SPEECH]
 
 
-def generate(g, agents: str, summary, terminal, *, generate_fn=None) -> str | None:
-    """One bounded LLM call for the 感想戦; ``None`` on any failure.
+#: Fixed vocabulary for why the model prose was not used.  Only the shared
+#: dispatcher's own failure kinds are mapped; free text never reaches the state.
+MODEL_FAILURES = ("none", "unsafe", "gate", "timeout", "rate_limit", "provider", "exception")
+
+
+def _model_failure(failure_kind) -> str:
+    kind = failure_kind if isinstance(failure_kind, str) else ""
+    return {"gate_giveup": "gate", "timeout": "timeout",
+            "rate_limit": "rate_limit"}.get(kind, "provider")
+
+
+def generate(g, agents: str, summary, terminal, *, generate_fn=None) -> tuple[str | None, str]:
+    """One bounded LLM call for the 感想戦; ``(None, reason)`` on any failure.
 
     A non-empty ``review_agents`` chain is the billed-run consent, exactly like
     the other corner closings: this function sets ``DOCICH_ALLOW_REAL_AI=1`` for
     the dispatch it makes.
     """
     if generate_fn is not None:
-        return sanitize(generate_fn(g, agents, summary, terminal))
+        text = sanitize(generate_fn(g, agents, summary, terminal))
+        return (text, "none") if text else (None, "unsafe")
     from .ai_generate import run_prompt
 
     env = {**os.environ, "DOCICH_ALLOW_REAL_AI": "1"}
@@ -212,20 +224,27 @@ def generate(g, agents: str, summary, terminal, *, generate_fn=None) -> str | No
         timeout=GENERATE_TIMEOUT_S, timeout_sec=float(GENERATE_TIMEOUT_S + 10), env=env,
     )
     if result.returncode != 0:
-        return None
-    return sanitize(result.output)
+        return None, _model_failure(getattr(result, "failure_kind", None))
+    text = sanitize(result.output)
+    return (text, "none") if text else (None, "unsafe")
 
 
-def review_text(g, summary, terminal, *, agents="", generate_fn=None) -> tuple[str, str]:
-    """Return ``(text, kind)`` with ``kind`` in ``{"ai", "fallback"}``."""
+def review_text(g, summary, terminal, *, agents="",
+                generate_fn=None) -> tuple[str, str, str]:
+    """Return ``(text, kind, model_failure)``.
+
+    ``kind`` is ``"ai"`` or ``"fallback"``; ``model_failure`` is one of
+    :data:`MODEL_FAILURES` and says why the model prose was not used.
+    """
     if agents:
         try:
-            text = generate(g, agents, summary, terminal, generate_fn=generate_fn)
+            text, failure = generate(g, agents, summary, terminal, generate_fn=generate_fn)
         except Exception:
-            text = None
+            text, failure = None, "exception"
         if text:
-            return text, "ai"
-    return fallback_text(summary, terminal), "fallback"
+            return text, "ai", "none"
+        return fallback_text(summary, terminal), "fallback", failure
+    return fallback_text(summary, terminal), "fallback", "none"
 
 
 def _event(kind, title, body, request_id, now):
