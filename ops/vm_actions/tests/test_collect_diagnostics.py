@@ -3615,3 +3615,25 @@ def test_presentation_memory_preserves_age_bounds():
         memory, record = _presentation_memory_fixture(source)
         memory.nodes[record]["fd_mtime"] = mtime
         assert _presentation_memory_collect(memory)["age_sec"] == expected
+
+
+def test_tsuitate_review_projection_is_bounded():
+    # The 衝立将棋 感想戦 projects where its facts came from, whether the model
+    # spoke, and the move count. The narration text, the opponent's name, the
+    # move list and the board must never be published.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'completed','game':'tsuitate-view',
+        'review':{'source':'replay','kind':'ai','moves':50,'text':'DO-NOT-PUBLISH',
+                  'opponent':'someone','moves_list':['5g5h']},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert output['review']=={'source':'replay','kind':'ai','moves':50}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+    assert 'someone' not in json.dumps(output)
+    assert '5g5h' not in json.dumps(output)
+
+    assert module._project_corner_state({'status':'idle'})['review'] is None
+    assert module._project_corner_state(
+        {'status':'completed','review':{'source':'SECRET','kind':'x','moves':'many'}}
+    )['review']=={'source':None,'kind':None,'moves':None}

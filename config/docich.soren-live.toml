@@ -73,7 +73,7 @@ corners = [
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
   # beta.tsuitate.info の1局owner。次局開始可能なWorkerだけを自動抽選候補にする。
-  { id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view" },
+  { id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view", audio_enabled = true },
   # 音声の再生完了receiptに合わせて全国→11地点→全国を進行。4分は安全上限で、完了時は即復帰。
   { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 4, fetch_on_start = true, audio_enabled = true },
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
@@ -154,6 +154,13 @@ enabled = true
 start_hour = 18
 duration_minutes = 30
 timezone = "Asia/Tokyo"
+
+# ついたて将棋コーナーの読み上げ。audio_enabled は catalog 行、ここは終局後の
+# 感想戦を共通LLMで書くためのagent chain。空なら定型文だけを読む（課金実行なし）。
+# 非空のchainが課金LLM実行の合意（呼び出し側が DOCICH_ALLOW_REAL_AI=1 を付与する）。
+# 入力は公開リプレイから検証済みの事実だけで、盤面・駒種・捕獲は渡さない。
+[tsuitate_corner]
+review_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,amd:DeepSeek-V4-Flash"
 
 [webui]
 soren_root = "/home/ubuntu/soren"

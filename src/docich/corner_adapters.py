@@ -505,7 +505,9 @@ class TsuitateCornerAdapter:
         if corner.game != VIEW_NAME or corner.live_eligible is not False:
             raise CornerExecutionError("Tsuitate identity/safety contract mismatch")
         self.g, self.corner = g, corner
-        self.manager = TsuitateCornerManager(g)
+        # Speech is the catalog's explicit opt-in; the 感想戦 model chain is a
+        # separate opt-in read from `[tsuitate_corner] review_agents`.
+        self.manager = TsuitateCornerManager(g, audio_enabled=corner.audio_enabled)
         self.state_path = self.manager.state_path
 
     @staticmethod

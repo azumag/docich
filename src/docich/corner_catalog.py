@@ -127,11 +127,16 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     "weather requires id=weather, game=weather-view, boolean audio_enabled/fetch_on_start, and duration_minutes 1-14 when enabled"
                 )
         elif item.adapter == "tsuitate":
+            # One remote beta match. The corner is bounded by the Worker's own
+            # match bound, so there is no display duration; speech (the corner
+            # introduction and the 感想戦) is the only optional setting.
             if item.id != "tsuitate" or item.game != "tsuitate-view":
                 raise CornerCatalogError(
                     "tsuitate requires id=tsuitate and game=tsuitate-view"
                 )
-            if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
+            if type(item.audio_enabled) is not bool:
+                raise CornerCatalogError("tsuitate accepts only a boolean audio_enabled")
+            if item.duration_minutes is not None or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")
         elif item.adapter == "yoso":
             # Default-disabled, manual-only leaderboard view. The duration is an

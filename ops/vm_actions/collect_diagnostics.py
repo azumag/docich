@@ -3763,8 +3763,27 @@ def _project_corner_state(data):
                                      ("enqueued", "delivery_failed", "skipped")),
         "overlay_announcements": _project_counts(data.get("overlay_announcements"),
                                                  ("sent", "failed", "skipped")),
+        "review": _project_review(data.get("review")),
         "game_audio": _project_game_audio(data.get("game_audio")),
         "hotload": _project_hotload(data.get("hotload")),
+    }
+
+
+def _project_review(value):
+    """Bounded 衝立将棋 感想戦 counters: where the facts came from and the kind.
+
+    The narration text, the opponent's name, the move list and the board are
+    never projected; only the fixed vocabulary and the move count.
+    """
+    if not isinstance(value, dict):
+        return None
+    source = value.get("source")
+    kind = value.get("kind")
+    moves = value.get("moves")
+    return {
+        "source": source if source in {"replay", "result-only"} else None,
+        "kind": kind if kind in {"ai", "fallback"} else None,
+        "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 
 
