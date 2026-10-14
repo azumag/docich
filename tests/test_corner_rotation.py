@@ -69,7 +69,8 @@ def test_flat_live_catalog_and_financial_boundary():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate"}
+                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
+                                     "yosou-oh"}
     assert all(c.live_eligible is False for c in catalog)
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
@@ -84,7 +85,7 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    assert len(catalog) == 11
+    assert len(catalog) == 12
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -94,9 +95,12 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     tsuitate = next(c for c in catalog if c.id == "tsuitate")
     assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
+    yosou = next(c for c in catalog if c.id == "yosou-oh")
+    assert yosou.enabled is False and yosou.manual_only is True
+    assert (yosou.adapter, yosou.game) == ("yoso", "yosou-view")
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-        "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate",
+        "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate", "yosou-oh",
     }
 
 
@@ -220,13 +224,13 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     eligible, excluded = manager._eligible()
     assert len(eligible) == 11
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
-    assert excluded == {}
+    assert excluded == {"yosou-oh": "disabled-or-paused"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
     assert len(eligible) == 10 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable"}
+    assert excluded == {"tsuitate": "adapter-unavailable", "yosou-oh": "disabled-or-paused"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

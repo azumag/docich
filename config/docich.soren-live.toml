@@ -76,6 +76,10 @@ corners = [
   { id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view" },
   # 音声の再生完了receiptに合わせて全国→11地点→全国を進行。4分は安全上限で、完了時は即復帰。
   { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 4, fetch_on_start = true, audio_enabled = true },
+  # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
+  # 既定無効・手動予約のみ。視聴者の表示名を配信へ出す opt-in/privacy 確認が
+  # 済むまで自動抽選へ入れない（docs/features/yosou-oh-corner.md）。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true },
 ]
 
 [nethack_corner]

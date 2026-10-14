@@ -133,6 +133,18 @@ def load_catalog(g) -> tuple[Corner, ...]:
                 )
             if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")
+        elif item.adapter == "yoso":
+            # Default-disabled, manual-only leaderboard view. The duration is an
+            # optional upper bound (1-14 minutes, same ceiling as weather); the
+            # entry runs only when the owner reserves it.
+            if item.id != "yosou-oh" or item.game != "yosou-view":
+                raise CornerCatalogError("yoso requires id=yosou-oh and game=yosou-view")
+            if item.audio_enabled or item.fetch_on_start:
+                raise CornerCatalogError("yoso does not accept weather-only settings")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("yosou duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (
