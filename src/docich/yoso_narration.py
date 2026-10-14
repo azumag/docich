@@ -1,19 +1,26 @@
 """Bounded 予想王 announcement for the shared overlay and audio queues.
 
 The corner manager owns *when* this runs; this module only formats the already
-recorded ranking and hands it to the reviewed shared sinks:
+recorded ranking and the fixed corner introduction, and hands them to the
+reviewed shared sinks:
 
 - overlay: ``overlay_queue.append_event`` with the existing ``prediction``
-  category, deduplicated by the corner request id through ``source_id``.
-- speech: ``soren_output.enqueue_audio_text`` (opt-in), one bounded utterance in
-  the shared audio worker's voice. No local backlog, retry or direct playback.
+  category. The intro and the ranking are two events with distinct ``source_id``
+  suffixes (``yosou:intro:<request>`` / ``yosou:ranking:<request>``) because the
+  shared queue keeps only the newest event per ``source_id``.
+- speech: ``soren_output.enqueue_audio_text`` (opt-in), two bounded utterances in
+  the shared audio worker's voice: the corner introduction, then the ranking.
+  No local backlog, retry or direct playback.
 
-Both sinks are best-effort: a failure is reported as a fixed status and never
+Both sinks are best-effort: a failure is reported as a fixed count and never
 fails the corner or the game switch. The shared audio enqueue bounds itself
 (30 s subprocess timeout), so a stuck queue delays the announcement, not the
-display window. Only the sanitized board projection (``yoso_view.board``) is
-read here; raw ledger rows, Twitch payloads, tokens and viewer logins never
-reach the announcement text.
+display window. Note that the sink drops an enqueue whose text was already
+queued within its own de-duplication window (~120 s), and reports success for
+that drop; a repeated introduction is therefore best-effort, not guaranteed.
+Only the sanitized board projection (``yoso_view.board``) is read here; raw
+ledger rows, Twitch payloads, tokens and viewer logins never reach the
+announcement text.
 """
 from __future__ import annotations
 
@@ -24,12 +31,27 @@ from .trading.soren_output import enqueue_audio_text, resolve_soren_root
 from .yoso_view import board as read_board
 
 TITLE = "予想王"
+INTRO_TITLE = "予想王 コーナー紹介"
+INTRO_CONTEXT = "yosou:intro"
 CONTEXT = "yosou:ranking"
 MAX_SPEECH = 300
 SPEECH_ROWS = 3
 OVERLAY_ROWS = 5
 EMPTY_TEXT = "予想王の発表です。確定した予想がまだランキングの条件に届いていません。"
 FOOTER_TEXT = "上位予想者だけを集計しています。"
+# Views of the corner shown per run. The sink keeps only the newest event per
+# `source_id`, so each one needs its own suffix.
+OVERLAY_KINDS = ("intro", "ranking")
+SPEECH_ITEMS = (("intro", INTRO_CONTEXT), ("ranking", CONTEXT))
+INTRO_TEXT = (
+    "ここからは予想王のコーナーです。チャンネルポイントで予想した結果の的中率ランキング、"
+    "上位3名を発表します。しばらくお付き合いください。"
+)
+INTRO_OVERLAY_BODY = (
+    "チャンネルポイント予想の的中率ランキングのコーナーです。\n"
+    "確定した予想から、的中した上位の予想者を発表します"
+    "（全参加者の的中率ではなく、上位予想者だけを集計しています）。"
+)
 
 
 def _rows(board, limit):
@@ -75,33 +97,58 @@ def overlay_body(board, *, limit=OVERLAY_ROWS) -> str:
     return "\n".join(lines)[:OVERLAY_BODY_LIMIT]
 
 
-def announce(g, board, *, request_id, audio_enabled=False, overlay=None,
-             speech=None, now=time.time, speaker="") -> dict:
-    """Publish one overlay event and (opt-in) one speech item. Never raises."""
-    overlay = append_event if overlay is None else overlay
-    speech = enqueue_audio_text if speech is None else speech
-    result = {"overlay": "skipped", "speech": "skipped"}
+def _event(kind, title, body, request_id, now):
     event = {
         "ts": int(now()),
         "category": "prediction",
         "level": "info",
-        "title": TITLE[:OVERLAY_TITLE_LIMIT],
-        "body": overlay_body(board),
+        "title": title[:OVERLAY_TITLE_LIMIT],
+        "body": body,
     }
     if isinstance(request_id, str) and request_id:
-        event["source_id"] = f"yosou:{request_id}"
-    try:
-        overlay(resolve_soren_root(g), event)
-        result["overlay"] = "sent"
-    except Exception:
-        # Never surface sink errors: they can contain private queue payloads.
-        result["overlay"] = "failed"
-    if audio_enabled:
+        event["source_id"] = f"yosou:{kind}:{request_id}"
+    return event
+
+
+def _counts(total, *, skipped=0):
+    return {"sent": 0, "failed": 0, "skipped": min(total, max(0, skipped))}
+
+
+def announce(g, board, *, request_id, audio_enabled=False, overlay=None,
+             speech=None, now=time.time, speaker="") -> dict:
+    """Publish the corner introduction and the ranking. Never raises.
+
+    Returns bounded per-sink counters (``overlay`` / ``speech``), each over
+    ``sent`` / ``failed`` / ``skipped``, so the caller can record how many of the
+    two overlay events and two speech items actually reached the shared queues.
+    """
+    overlay = append_event if overlay is None else overlay
+    speech = enqueue_audio_text if speech is None else speech
+    events = [
+        (kind, INTRO_TITLE if kind == "intro" else TITLE,
+         INTRO_OVERLAY_BODY if kind == "intro" else overlay_body(board))
+        for kind in OVERLAY_KINDS
+    ]
+    text = {kind: INTRO_TEXT if kind == "intro" else narration_text(board)
+            for kind, _context in SPEECH_ITEMS}
+    result = {"overlay": _counts(len(events)),
+              "speech": _counts(len(SPEECH_ITEMS),
+                                skipped=0 if audio_enabled else len(SPEECH_ITEMS)),
+              "overlay_events": len(events), "speech_items": len(SPEECH_ITEMS)}
+    for kind, title, body in events:
         try:
-            speech(g, narration_text(board), context=CONTEXT, speaker=speaker)
-            result["speech"] = "sent"
+            overlay(resolve_soren_root(g), _event(kind, title, body, request_id, now))
+            result["overlay"]["sent"] += 1
         except Exception:
-            result["speech"] = "failed"
+            # Never surface sink errors: they can contain private queue payloads.
+            result["overlay"]["failed"] += 1
+    if audio_enabled:
+        for kind, context in SPEECH_ITEMS:
+            try:
+                speech(g, text[kind], context=context, speaker=speaker)
+                result["speech"]["sent"] += 1
+            except Exception:
+                result["speech"]["failed"] += 1
     return result
 
 

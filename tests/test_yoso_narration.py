@@ -69,35 +69,55 @@ def test_overlay_body_counts_and_ranks_within_the_queue_limit():
     assert "ランキング対象の同志はまだいません" in yn.overlay_body(board(0))
 
 
-def test_announce_publishes_one_overlay_event_and_opts_into_speech(env):
+def test_intro_is_bounded_and_keeps_its_own_queue_identity():
+    assert len(yn.INTRO_TEXT) <= yn.MAX_SPEECH
+    assert len(yn.INTRO_OVERLAY_BODY) <= OVERLAY_BODY_LIMIT
+    assert yn.INTRO_CONTEXT == "yosou:intro" and yn.CONTEXT == "yosou:ranking"
+    assert yn.OVERLAY_KINDS == ("intro", "ranking")
+    assert [kind for kind, _context in yn.SPEECH_ITEMS] == ["intro", "ranking"]
+
+
+def test_announce_publishes_the_intro_and_the_ranking(env):
     events, speeches = [], []
+    request_id = "11111111-1111-4111-8111-111111111111"
 
     result = yn.announce(
-        env.g, board(3), request_id="11111111-1111-4111-8111-111111111111",
+        env.g, board(3), request_id=request_id,
         overlay=lambda root, event: events.append((root, event)),
         speech=lambda g, text, **kwargs: speeches.append((text, kwargs)),
         now=lambda: 1000.0)
 
-    assert result == {"overlay": "sent", "speech": "skipped"}
+    assert result == {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+                      "speech": {"sent": 0, "failed": 0, "skipped": 2},
+                      "overlay_events": 2, "speech_items": 2}
     assert speeches == []
-    (root, event), = events
-    assert root == env.soren
-    assert event == {
+    assert [root for root, _event in events] == [env.soren, env.soren]
+    intro, ranking = (event for _root, event in events)
+    # The shared queue keeps only the newest event per source_id, so the intro
+    # and the ranking must not share one.
+    assert intro == {
+        "ts": 1000, "category": "prediction", "level": "info", "title": yn.INTRO_TITLE,
+        "body": yn.INTRO_OVERLAY_BODY, "source_id": f"yosou:intro:{request_id}",
+    }
+    assert ranking == {
         "ts": 1000, "category": "prediction", "level": "info", "title": "予想王",
-        "body": yn.overlay_body(board(3)),
-        "source_id": "yosou:11111111-1111-4111-8111-111111111111",
+        "body": yn.overlay_body(board(3)), "source_id": f"yosou:ranking:{request_id}",
     }
 
     spoken = yn.announce(
-        env.g, board(3), request_id="11111111-1111-4111-8111-111111111111", audio_enabled=True,
-        overlay=lambda root, event: None,
+        env.g, board(3), request_id=request_id, audio_enabled=True,
+        overlay=lambda root, event: events.append((root, event)),
         speech=lambda g, text, **kwargs: speeches.append((text, kwargs)),
         now=lambda: 1000.0)
 
-    assert spoken == {"overlay": "sent", "speech": "sent"}
-    (text, kwargs), = speeches
-    assert text == yn.narration_text(board(3))
-    assert kwargs == {"context": "yosou:ranking", "speaker": ""}
+    assert spoken == {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+                      "speech": {"sent": 2, "failed": 0, "skipped": 0},
+                      "overlay_events": 2, "speech_items": 2}
+    assert [text for text, _kwargs in speeches] == [yn.INTRO_TEXT, yn.narration_text(board(3))]
+    assert [kwargs for _text, kwargs in speeches] == [
+        {"context": "yosou:intro", "speaker": ""},
+        {"context": "yosou:ranking", "speaker": ""},
+    ]
 
 
 def test_announce_never_raises_on_a_sink_failure(env):
@@ -107,7 +127,9 @@ def test_announce_never_raises_on_a_sink_failure(env):
     failed = yn.announce(env.g, board(3), request_id="r1", audio_enabled=True,
                          overlay=boom, speech=boom, now=lambda: 5.0)
 
-    assert failed == {"overlay": "failed", "speech": "failed"}
+    assert failed == {"overlay": {"sent": 0, "failed": 2, "skipped": 0},
+                      "speech": {"sent": 0, "failed": 2, "skipped": 0},
+                      "overlay_events": 2, "speech_items": 2}
 
 
 def test_announcement_reads_the_state_dir_ledger(tmp_path, monkeypatch):
@@ -133,6 +155,8 @@ def test_announcement_reads_the_state_dir_ledger(tmp_path, monkeypatch):
 
     yn.announcement(g, request_id="r2", now=lambda: 7.0)
 
-    assert len(seen) == 1 and seen[0]["category"] == "prediction"
+    assert [event["source_id"] for event in seen] == ["yosou:intro:r2", "yosou:ranking:r2"]
+    assert {event["category"] for event in seen} == {"prediction"}
+    assert seen[0]["body"] == yn.INTRO_OVERLAY_BODY
     # min_rounds=3 keeps a one-shot viewer off the board, so the notice is used.
-    assert "ランキング対象の同志はまだいません" in seen[0]["body"]
+    assert "ランキング対象の同志はまだいません" in seen[1]["body"]
