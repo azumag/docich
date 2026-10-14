@@ -870,6 +870,119 @@ def test_rollback_failed_start_stays_latched_with_a_lingering_previous_runtime(t
     assert json.loads(adapter.state_path.read_text())["status"] == "failed"
 
 
+def _weather_rolled_back_setup(tmp_path, code=None):
+    """Craft the #2187 shape for the weather view corner.
+
+    The start switch exceeded its request-wide deadline, so game-switch ran the
+    switch's own rollback and finished the receipt as ``rolled_back`` with
+    ``error_code="timeout"``. The weather view never became active and only the
+    previous game (``robots``) owns the canonical.
+    """
+    from docich.game_switch import ERROR_TIMEOUT
+    from docich.weather_corner import WEATHER_VIEW_NAME
+
+    if code is None:
+        code = ERROR_TIMEOUT
+    g, _now, _factory, store, switch = _setup(tmp_path)
+    manager = WeatherCornerManager(g, duration_minutes=1, coordinator=switch)
+    canonical, _ = store.canonical.load()
+    previous_identity = {
+        key: canonical["active"][key]
+        for key in ("game", "runtime_id", "generation", "lease_id")
+    }
+    request_id = str(uuid.uuid4())
+    manager._save({
+        "schema_version": 1,
+        "game": WEATHER_VIEW_NAME,
+        "status": "failed",
+        "rotation_request_id": request_id,
+        "start_request_id": request_id,
+        "switch_request_id": request_id,
+        "previous_game": previous_identity["game"],
+        "previous_runtime_identity": previous_identity,
+        "requested_at": 1000.0,
+        "completed_at": 1001.0,
+        "last_error_code": code,
+    })
+    accepted = store.accept_request(request_id, "switch", WEATHER_VIEW_NAME)
+    result = {
+        "request_id": request_id,
+        "operation": "switch",
+        "status": "rolled_back",
+        "from_game": previous_identity["game"],
+        "to_game": WEATHER_VIEW_NAME,
+        "generation": accepted.generation,
+        "restored_generation": previous_identity["generation"],
+        "error_code": code,
+        "detail": "request-wide deadline exceeded; rollback restored the previous game",
+        "cleanup_pending": False,
+    }
+    canonical, _ = store.canonical.load()
+    canonical.update(phase="ready", operation=None, request_id=None, deadline_at=None,
+                     candidate=None, previous=None, retiring=[],
+                     next_generation=accepted.generation + 1,
+                     last_result=result)
+    store.canonical.save(canonical)
+    store.finish_request(request_id, "rolled_back", result)
+    return manager, request_id, switch, store
+
+
+def test_rolled_back_start_timeout_terminalizes_the_previous_game(tmp_path):
+    """#2187: a deadline timeout that rolled back must clear the slot."""
+    manager, request_id, _switch, store = _weather_rolled_back_setup(tmp_path)
+
+    assert manager.reconcile_failed_start(request_id) is True
+
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert state["completed_at"] == 1001.0
+    assert state["rotation_request_id"] == request_id
+    assert store.receipts.load(request_id)["status"] == "rolled_back"
+
+
+def test_rolled_back_start_stays_latched_for_an_unreviewed_error_code(tmp_path):
+    """Widening must stay bounded: only reviewed switch-start codes qualify."""
+    manager, request_id, _switch, _store = _weather_rolled_back_setup(
+        tmp_path, code="prepare_failed"
+    )
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.state_path.read_text())["status"] == "failed"
+
+
+def test_rolled_back_start_timeout_stays_latched_when_another_game_owns_the_canonical(tmp_path):
+    from docich.game_switch import runtime_names
+
+    manager, request_id, _switch, store = _weather_rolled_back_setup(tmp_path)
+
+    # Whatever the plane ends up owning, it must be the previous game.
+    names = runtime_names(2)
+    canonical, _ = store.canonical.load()
+    canonical["active"] = {
+        "game": "nethack", "runtime_id": "g2-abcdef", "generation": 2,
+        "lease_id": str(uuid.uuid4()), "adapter": "cli",
+        "game_window": names.game_window, "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:20:00Z",
+    }
+    canonical["next_generation"] = 3
+    store.canonical.save(canonical)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.state_path.read_text())["status"] == "failed"
+
+
+def test_rolled_back_start_timeout_stays_latched_while_cleanup_is_pending(tmp_path):
+    manager, request_id, _switch, store = _weather_rolled_back_setup(tmp_path)
+    receipt = store.receipts.load(request_id)
+    receipt["result"]["cleanup_pending"] = True
+    store.receipts.save(receipt)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.state_path.read_text())["status"] == "failed"
+
+
 def test_weather_never_restores_over_an_operator_moved_runtime(tmp_path, monkeypatch):
     import docich.weather_corner as weather_corner
 

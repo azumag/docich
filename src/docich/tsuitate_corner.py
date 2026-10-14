@@ -14,6 +14,7 @@ from .game_switch import (
     ERROR_ROLLBACK_FAILED,
     ERROR_SOURCE_FENCE_LOST,
     ERROR_START_FAILED,
+    ERROR_TIMEOUT,
     GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
@@ -30,6 +31,12 @@ ROLLBACK_ERROR_CODES = frozenset({
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
     ERROR_START_FAILED,
+    # The request-wide deadline expiring during the start switch reports
+    # ``timeout`` (``game_switch._failure_code``) and still runs the switch's
+    # own rollback. The rolled-back receipt plus the stable previous owner is
+    # the same proof the codes above are accepted for, so excluding this one
+    # left such a start unterminalizable and latched the rotation (#2187).
+    ERROR_TIMEOUT,
 })
 BETA_ACTIVE = frozenset({"queued", "playing", "draining"})
 BETA_TERMINAL = frozenset({"stopped", "finished", "queue_timeout"})
