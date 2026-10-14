@@ -101,7 +101,7 @@ WorldState から抽出するのは以下のみで、それ以外は保存しな
 ```
 
 - 前回 diff は `observedAt` / `tick` / `metrics` / `livingAgentIds` / `seenEventIds` を使う。`births` / `deaths` はこの保存レコードの `livingAgentIds` と今回 snapshot の `agents[]` から観測側で導出する（前回 id 集合を持てない場合は `births`/`deaths` を計算できない旨を明記して MVP 対象外とする）。LLM 文言は保存しない。
-- 保存契約では `livingAgentIds`（前回観測時の living agent id 集合）を保持する。上限 `OBSERVER_MAX_TRACKED_AGENT_IDS`（MVP では 10000）を超えたら最古から削除（FIFO）。これにより `births = |currentAlive \\ previousLivingAgentIds|`、`deaths = |previousLivingAgentIds \\ currentAlive|` を same run で再計算できる。
+- 保存契約では `livingAgentIds`（前回観測時の完全な living agent id 集合）を保持する。上限 `OBSERVER_MAX_TRACKED_AGENT_IDS`（MVP では 10000）以内の完全な集合がある場合に限り、`births = |currentAlive \\ previousLivingAgentIds|`、`deaths = |previousLivingAgentIds \\ currentAlive|` を same run で再計算できる。上限超過で完全な前回集合を保持できない場合は、前項の fallback に従い `births` / `deaths` は計算不能として MVP 対象外とする。ID を FIFO で削除した不完全な集合から正確な差分を報告しない。
 - 保存失敗時は observation を `draft` にとどめ、公開しない。
 - 同一 tick の再観測でも `observedAt` を更新しない（idempotent）。差分が 0 なら「変化なし」として topic 0 件で終端。
 
@@ -133,8 +133,10 @@ read-only 性（HTTP mutation が発生しない）は、このテストファ�
 POST が存在しないことをコードレビューで確認する（静的検査テストは任意）。
 
 fixture には個人を特定しうる raw BOT データを含めない。集計値と合成 id のみ。
-`births` / `deaths` は window 増分として扱うため、fixture の living/births/deaths が feeding 相当に見えても
-reconciliation を要求しない（migration により living 変化と births/deaths が分離し得る）。
+`births` / `deaths` は各 window の増分であり、前回 `metrics.births` / `metrics.deaths` との累積和は要求しない。
+同じ前回観測の `populationLiving` / 単一 region の人口は、完全な `livingAgentIds` の件数と一致する。
+完全な前回集合がある場合は `今回 living = 前回 living + 今回 births - 今回 deaths` を満たす。
+migration による流入・流出も集合差分に含むため、この件数整合の例外にはならない。
 
 ## 後続カード（今回実施しない）
 

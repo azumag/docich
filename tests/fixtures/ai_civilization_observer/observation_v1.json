@@ -35,15 +35,15 @@
     "windowBirths": 2,
     "windowDeaths": 2,
     "livingAgentIds": ["agent-1", "agent-3", "agent-4"],
-    "note": "births/deaths は window 増分であり、previous metrics との累積和とは一致しない（migration により分離し得る）。"
+    "note": "births/deaths は window 増分であり、previous metrics.births/deaths を累積しない。人口は各観測の完全 living-ID 集合に整合し、今回 living = 前回 living + windowBirths - windowDeaths を満たす（migration を含む）。"
   },
   "previous": {
     "tick": 30,
     "metrics": {
-      "populationLiving": 100,
+      "populationLiving": 3,
       "births": 5,
       "deaths": 1,
-      "regionPopulation": {"garden-1": 100}
+      "regionPopulation": {"garden-1": 3}
     },
     "livingAgentIds": ["agent-0", "agent-1", "agent-2"]
   },
