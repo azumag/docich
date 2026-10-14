@@ -284,9 +284,14 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
             if row.get('id') is None:
                 row.update(id=remote['id'], outcome_ids=[o['id'] for o in remote['outcomes']])
             if remote['status'] == 'RESOLVED':
-                # Record before committing the terminal status, so a failed
-                # ledger write is retried by the next observation of this id.
-                _record_settled(root, remote, now, client)
+                # Retry ledger I/O, but do not retry malformed statistics for
+                # a prediction whose owned terminal status is already verified.
+                try:
+                    _record_settled(root, remote, now, client)
+                except APIError as exc:
+                    if exc.code == 'invalid_response':
+                        row['status'] = 'RESOLVED'
+                    raise
             row['status'] = remote['status']
             # Persist adopted ownership before any PATCH; API retries are idempotent.
             atomic_write_json(root / FILE, state)
@@ -316,7 +321,12 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 if len(response) != 1 or not _matches(response[0], row) or response[0]['status'] != desired:
                     raise APIError('invalid_response')
                 if desired == 'RESOLVED':
-                    _record_settled(root, response[0], now, client)
+                    try:
+                        _record_settled(root, response[0], now, client)
+                    except APIError as exc:
+                        if exc.code == 'invalid_response':
+                            row['status'] = desired
+                        raise
                 row['status'] = desired
                 state['mode'] = desired.lower()
                 return
