@@ -222,6 +222,57 @@ def test_summary_for_bot_keeps_only_counts_and_timings():
         review.summary_for_bot(parsed, color="spectator")
 
 
+def test_read_summary_detail_uses_the_argument_game_id(monkeypatch):
+    """The settled projection does not carry the game id; the argument is it.
+
+    Regression: the identity check used to read ``terminal["gameId"]`` from the
+    control result (which has no such key), so every real 感想戦 silently fell
+    back to the result-only text.
+    """
+    settled = {"outcome": "win", "reason": "foul_limit", "endedAt": ENDED,
+               "moveNumber": 4, "resultConfidence": "verified"}  # no gameId
+    monkeypatch.setattr(review, "read_replay", lambda game_id, **kwargs: review.parse_review(
+        _fixture(), GAME_ID))
+    summary, failure = review.read_summary_detail(GAME_ID, settled, color="gote")
+
+    assert failure == "ok"
+    assert summary["moveCount"] == 4
+    assert summary["color"] == "gote"
+    assert "gameId" not in settled
+
+
+def test_read_summary_detail_recovers_the_colour_from_the_replay(monkeypatch):
+    monkeypatch.setattr(review, "read_replay", lambda game_id, **kwargs: review.parse_review(
+        _fixture(), GAME_ID))
+    # gote_win + the bot's win means the bot was gote; no player view needed.
+    summary, failure = review.read_summary_detail(GAME_ID, _terminal(outcome="win"))
+    assert (failure, summary["color"]) == ("ok", "gote")
+
+    summary, failure = review.read_summary_detail(GAME_ID, _terminal(outcome="loss"))
+    assert (failure, summary["color"]) == ("ok", "sente")
+
+    # A draw or an unknown outcome cannot say which side the bot had.
+    assert review.read_summary_detail(GAME_ID, _terminal(outcome="draw"))[1] == "invalid-color"
+    assert review.read_summary_detail(GAME_ID, _terminal(outcome="unknown"))[1] == "invalid-color"
+
+
+def test_read_summary_detail_reports_a_fixed_failure_code(monkeypatch):
+    def broken(game_id, **kwargs):
+        raise review.ReviewError("site down")
+
+    monkeypatch.setattr(review, "read_replay", broken)
+    assert review.read_summary_detail(GAME_ID, _terminal(), color="gote") == (None, "read-failed")
+
+    monkeypatch.setattr(review, "read_replay", lambda game_id, **kwargs: review.parse_review(
+        _fixture(), GAME_ID))
+    assert review.read_summary_detail(GAME_ID, _terminal(reason="checkmate"),
+                                      color="gote")[1] == "verify-failed"
+    assert review.read_summary_detail("bad/id", _terminal(), color="gote")[1] == "invalid-game-id"
+    assert review.read_summary_detail("", _terminal(), color="gote")[1] == "invalid-game-id"
+    for code in ("ok", "read-failed", "verify-failed", "invalid-color", "invalid-game-id"):
+        assert code in review.REVIEW_FAILURES
+
+
 def test_read_summary_returns_none_instead_of_failing_the_corner():
     good = _Opener(json.dumps(_fixture()).encode())
     summary = review.read_summary(GAME_ID, _terminal(), color="gote", opener=good)

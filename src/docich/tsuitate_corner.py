@@ -21,6 +21,7 @@ from .game_switch import (
     atomic_write_json,
 )
 from .tsuitate_beta_control import ControlError, call_beta_control
+from .tsuitate_review import REVIEW_FAILURES
 from .tsuitate_view import VIEW_NAME
 
 STATE_FILENAME = "tsuitate_corner.json"
@@ -428,21 +429,31 @@ class TsuitateCornerManager:
         self._record_announcements(state, result, overlay_total=1, speech_total=1)
 
     def _review_summary(self, state, terminal):
-        """Read the verified public replay of this match, or ``None``."""
+        """Read the verified public replay of this match.
+
+        Returns ``(summary, failure)``.  The game id is the identity of the
+        replay and is never read from the settled-result projection; the bot's
+        colour is only a cross-check and may be recovered from the replay itself.
+        """
         game_id = state.get("beta_game_id")
         color = state.get("beta_color")
-        if not isinstance(game_id, str) or color not in {"sente", "gote"}:
-            return None
+        if not isinstance(game_id, str) or not game_id:
+            return None, "invalid-game-id"
         try:
             reader = self.read_review
             if reader is None:
-                from .tsuitate_review import read_summary
+                from .tsuitate_review import read_summary_detail
 
-                reader = read_summary
-            summary = reader(game_id, terminal, color=color)
+                summary, failure = read_summary_detail(
+                    game_id, terminal, color=color if color in {"sente", "gote"} else None)
+            else:
+                summary = reader(game_id, terminal, color=color)
+                failure = "ok" if isinstance(summary, dict) else "unavailable"
         except Exception:
-            summary = None
-        return summary if isinstance(summary, dict) else None
+            summary, failure = None, "read-failed"
+        if not isinstance(summary, dict):
+            return None, failure if failure in REVIEW_FAILURES else "unavailable"
+        return summary, "ok"
 
     def _announce_review_once(self, state):
         """Publish the 感想戦 once per corner request, after the result settled.
@@ -463,7 +474,7 @@ class TsuitateCornerManager:
         since = state.get("beta_active_since")
         if isinstance(since, (int, float)) and not isinstance(since, bool):
             terminal["durationMs"] = max(0, int((self.clock() - since) * 1000))
-        summary = self._review_summary(state, terminal)
+        summary, review_failure = self._review_summary(state, terminal)
         try:
             if self.review_text is None:
                 from .tsuitate_narration import review_agents, review_text
@@ -499,6 +510,7 @@ class TsuitateCornerManager:
         state["review"] = {
             "source": "replay" if summary is not None else "result-only",
             "kind": kind,
+            "failure": review_failure,
             "moves": terminal.get("moveNumber") if type(terminal.get("moveNumber")) is int else None,
         }
         self._save(state)
