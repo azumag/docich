@@ -31,7 +31,7 @@ LIVE = {'ACTIVE', 'LOCKED'}
 DONE = {'RESOLVED', 'CANCELED'}
 ERRORS = {'transport', 'auth', 'rate_limited', 'rejected', 'invalid_response',
           'configuration', 'invalid_state', 'unexpected', 'create_unknown', 'remote_missing',
-          'remote_mismatch', 'clock_regressed'}
+          'remote_mismatch', 'clock_regressed', 'leaderboard'}
 MODES = {'incompatible_soren', 'idle', 'disabled', 'explore', 'unconfigured', 'paused', 'blocked', 'pending',
          'active', 'settling', 'resolved', 'canceled', 'known_result', 'complete_record', 'error'}
 
@@ -191,6 +191,43 @@ def _matches(remote, row):
                  or [o.get('id') for o in remote.get('outcomes', [])] == row['outcome_ids']))
 
 
+def _has_predictors(remote):
+    outcomes = remote.get('outcomes') if isinstance(remote, dict) else None
+    if not isinstance(outcomes, list):
+        return False
+    return any(isinstance(outcome, dict) and isinstance(outcome.get('top_predictors'), list)
+               and outcome['top_predictors'] for outcome in outcomes)
+
+
+def _record_settled(root, remote, now, client):
+    """Record one RESOLVED prediction in the 予想王 leaderboard (fail-closed).
+
+    Twitch's PATCH response may omit ``top_predictors``, so a single GET by id is
+    used only when the settled row carries none. A row that violates the record
+    contract is refused (never recorded wrong) and a ledger read/write failure
+    raises ``APIError('leaderboard')`` so the tick retries the same id later.
+    """
+    from . import prediction_leaderboard as leaderboard
+
+    candidate = remote
+    if not _has_predictors(remote):
+        prediction_id = remote.get('id') if isinstance(remote, dict) else None
+        if isinstance(prediction_id, str):
+            rows = client.list(prediction_id)
+            match = next((r for r in rows
+                          if isinstance(r, dict) and r.get('id') == prediction_id), None)
+            if match is not None and match.get('status') == 'RESOLVED':
+                candidate = match
+    try:
+        leaderboard.extract(candidate)
+    except leaderboard.LeaderboardError:
+        raise APIError('invalid_response') from None
+    try:
+        return leaderboard.record_resolved(root, candidate, corner='hanjuku', now=int(now))
+    except (leaderboard.LeaderboardError, OSError):
+        raise APIError('leaderboard') from None
+
+
 def summary(state):
     row = state.get('round') or {}
     return {'mode': state.get('mode'), 'error': state.get('error'),
@@ -246,6 +283,10 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
         if remote:
             if row.get('id') is None:
                 row.update(id=remote['id'], outcome_ids=[o['id'] for o in remote['outcomes']])
+            if remote['status'] == 'RESOLVED':
+                # Record before committing the terminal status, so a failed
+                # ledger write is retried by the next observation of this id.
+                _record_settled(root, remote, now, client)
             row['status'] = remote['status']
             # Persist adopted ownership before any PATCH; API retries are idempotent.
             atomic_write_json(root / FILE, state)
@@ -274,6 +315,8 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     desired = 'RESOLVED'
                 if len(response) != 1 or not _matches(response[0], row) or response[0]['status'] != desired:
                     raise APIError('invalid_response')
+                if desired == 'RESOLVED':
+                    _record_settled(root, response[0], now, client)
                 row['status'] = desired
                 state['mode'] = desired.lower()
                 return

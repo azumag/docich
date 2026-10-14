@@ -17,6 +17,7 @@ winning outcome".
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ import tempfile
 
 SCHEMA = 1
 FILE = "prediction_leaderboard.json"
+LOCK_FILE = "prediction-leaderboard.json.lock"
 MAX_BYTES = 512 * 1024
 MAX_ROUNDS = 2000
 MAX_PREDICTORS = 100
@@ -141,6 +143,28 @@ def record(ledger: dict, remote, *, corner: str, now: int | None = None) -> bool
     ledger["rounds"][prediction_id] = round_
     _prune(ledger)
     return True
+
+
+def record_resolved(state_dir, remote, *, corner: str, now: int | None = None) -> bool:
+    """Merge one settled prediction row into the ledger under the shared lock.
+
+    This is the single writer path for every prediction owner (Hanjuku's corner
+    tick and Soren's resolved-round handoff). The lock serializes the
+    read-modify-write, :func:`save` replaces the file atomically, and a row that
+    is already recorded (or not ``RESOLVED``) is a no-op. A malformed ledger or
+    row raises instead of being overwritten, so the caller can retry the same
+    prediction id later.
+    """
+    state_dir = Path(state_dir)
+    lock_path = state_dir / "locks" / LOCK_FILE
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        ledger = load(state_dir / FILE)
+        recorded = record(ledger, remote, corner=corner, now=now)
+        if recorded:
+            save(state_dir / FILE, ledger)
+        return recorded
 
 
 def _prune(ledger: dict) -> None:

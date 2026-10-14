@@ -4543,7 +4543,7 @@ def _collect_hanjuku_predictions(state_dir):
              "active", "settling", "resolved", "canceled", "known_result", "complete_record", "error"}
     errors = {"transport", "auth", "rate_limited", "rejected", "invalid_response", "configuration",
               "invalid_state", "unexpected", "create_unknown", "remote_missing", "remote_mismatch",
-              "clock_regressed"}
+              "clock_regressed", "leaderboard"}
     def chapter(value):
         return value if type(value) is int and 0 <= value <= 12 else None
     def choice(value, allowed):
