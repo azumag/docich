@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "corner": "mega-infrastructure",
+  "fixtureId": "fixed-mega-infrastructure-corner-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed mega infrastructure fixture for planning and input-contract acceptance only. It is not a real infrastructure system or verified measurement, and its title, figures, URLs and details must not be presented as verified infrastructure data or used for external distribution.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic interbasin water transfer chain capacity bottleneck"
+    ],
+    "items": [
+      {
+        "url": "https://example.org/verified/web/material/mega-infrastructure",
+        "query_indexes": [
+          0
+        ],
+        "excerpt": "Verified short excerpt (synthetic): an interbasin water transfer chain is bounded by source catchment yield, treatment plant throughput, trunk main head loss, and distribution pressure zones, so the system capacity is the minimum of the chain, not the largest single asset. Use this as contract material only, not as a real measurement.",
+        "excerpt_sha256": "8196b64408a3c4986856f39d8b071bd3247d56aa8475f0ee3eac5ecef4267936",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealInfrastructure": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizeOperatorAndPublicSources": true,
+    "mustIncludeWhatItSupports": true,
+    "mustIncludeDemandAndCapacity": true,
+    "mustIncludeGeographyAndSite": true,
+    "mustIncludeScaleAndCapacity": true,
+    "mustIncludeStructureAndMethod": true,
+    "mustIncludeOperation": true,
+    "mustIncludeBottleneckAndRedundancy": true,
+    "mustIncludeFailureAndDisaster": true,
+    "mustIncludeMaintenanceAndRenewal": true,
+    "mustIncludeSocialEconomicImpact": true,
+    "mustIncludeMapAndSchematicHandling": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepCitations": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Synthetic Fixture: Interbasin Water Transfer and Purification Chain as One System",
+    "topicId": "fixed-mega-infrastructure-water-chain-001",
+    "infrastructureTheme": "合成fixture: ダム・導水路・浄水場・配水管網を一つの水系チェーンとして見る",
+    "whatItSupports": "合成fixture: 流域外導水により、約500万人規模の都市圏と沿岸工業地帯へ上水・工業用水・消火用水を供給する。",
+    "demand": "合成fixture: 年間需要 4.2億 m3、一日最大 145万 m3、渇水年のピーク是需要の 1.15 倍。",
+    "geographyAndSite": "合成fixture: 流域間を結ぶ導水ルートが山地の分水嶺を横切り、落差とトンネル勾配が位置を決める。河口デルタ側は低地で圧力管理が必要。",
+    "scaleAndCapacity": "合成fixture: ダム有効貯水容量 3.1億 m3、導水路延長 118 km、浄水場処理能力 150万 m3/日、配水本管径 3000 mm。",
+    "structureAndMethod": "合成fixture: ロックフィルダム、山岳トンネル(シールド併用)、開渠と圧送管の接続、急速ろ過方式の浄水場、地域別加圧ポンプ場。",
+    "operation": "合成fixture: 貯水位と取水量を需要予測で平準化し、浄水場は負荷追従、配水は夜間ため込みでピークを吸収する。",
+    "bottleneck": "合成fixture: 浄水場のろ過能力と配水本管の圧力ゾーン接続点がチェーン最小となり、ダムの貯水容量は常に余っている。",
+    "redundancy": "合成fixture: 浄水場を2系列に分割し導水を双方向化するが、分水嶺トンネルは単線で単一障害点である。",
+    "failureAndDisaster": "合成fixture: 導水トンネルの長期断水は備蓄 72 時間分で代替し、浄水場系列故障時は下水道用水を一時的に工業用水へ回す。",
+    "maintenanceAndRenewal": "合成fixture: 老朽導水管の更新は 40 年周期で、更新中もサービスを維持するためバイパスと夜間工事を組み合わせる。",
+    "socialEconomicImpact": "合成fixture: 水供給の信頼度が沿岸工業立地と人口を規定し、断水は製造停止と医療・衛生へ波及する。",
+    "thirtySecondSummary": "合成fixture: 巨大インフラは最大の構造物ではなく、需要・地形・工法・運用・冗長性・保守を整合させたチェーンとして成立する planning 例。",
+    "oneLineSummary": "合成fixture: 社会を支える巨大インフラの入力契約を示す、水系チェーンを題材にした planning 例。",
+    "requirementsAndConstraints": [
+      "供給信頼度と渇水耐性",
+      "水質規格と処理能力",
+      "地形・分水嶺と導水ルート",
+      "老朽資産の更新と供給維持",
+      "コスト・工期・環境影響"
+    ],
+    "mapAndDiagramHandling": "Map handling note: center = synthetic interbasin transfer corridor; scale = regional catchment-to-city overview; projection = Web Mercator for screen overlay only; vintage = synthetic example date 2026-10-01; layers = catchment, transfer tunnel, treatment plant, trunk mains, pressure zones; resolution = not provided (synthetic fixture); license = not provided (synthetic fixture); usage conditions = not provided (synthetic fixture); rights note = no real map license or usage permission is asserted; attribution = operator and public-institution sources; caveat = simplified schematic, not an engineering drawing.",
+    "labelsPolicy": "Every generated segment must be labeled fact, analysis, or forecast.",
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成 fixture であり、実インフラの容量・水質・損傷記録・一般化は未実施である。数値は架空であり、一次資料で再確認する必要がある。",
+    "uncertainty": "需要予測、渇水頻度、老朽化進行度は未検証であり、本番使用前に operator 資料と規格で裏付けが必要である。",
+    "figureOrDiagram": "流域・導水ルート・浄水場・配水圧力ゾーンを1枚の概略図に重ね、ボトルネックと単一障害点を別レイヤで示す。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、何を支えるかから入り、需要・立地・規模・工法・運用・ボトルネック・故障時・保全・社会影響を独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/infrastructure/synthetic-water-transfer-chain",
+      "https://example.org/infrastructure/synthetic-treatment-plant-design"
+    ],
+    "sourcePriority": [
+      "operator-technical-material",
+      "standards-and-regulations",
+      "public-institution-and-statistics",
+      "operator-safety-and-incident-report",
+      "university-research",
+      "academic-paper",
+      "engineering-textbook",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、容量・規格・損傷記録の主張は operator/規格/一次技術資料で再確認する。",
+    "url": "https://example.org/infrastructure/synthetic-water-transfer-chain"
+  }
+}
