@@ -79,8 +79,9 @@ corners = [
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
   # 2026-10-14 オーナー承認で手動予約を有効化（enabled = true）。manual_only を
   # 維持するため自動抽選には入らない（docs/features/yosou-oh-corner.md）。
-  # 読み上げも行う場合だけ audio_enabled = true を足す（既定は eventOverlay のみ）。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true },
+  # 2026-10-15 オーナー判断で読み上げを有効化（audio_enabled = true）。
+  # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true, audio_enabled = true },
 ]
 
 [nethack_corner]

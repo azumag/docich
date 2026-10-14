@@ -145,7 +145,7 @@ def test_production_catalog_enables_yosou_oh_manual_reservation_only():
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
     assert row.enabled is True and row.manual_only is True
     assert row.live_eligible is False and row.paused is False
-    assert row.duration_minutes is None and row.audio_enabled is False
+    assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 
@@ -358,7 +358,9 @@ def test_yoso_corner_announces_once_per_request_and_records_counters(tmp_path):
 
     adapter = _yoso_adapter(g, _corner(), switch, now, sleep)
     adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
-        (request_id, audio_enabled)) or {"overlay": "sent", "speech": "skipped"}
+        (request_id, audio_enabled)
+    ) or {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+         "speech": {"sent": 0, "failed": 0, "skipped": 2}}
     request_id = str(uuid.uuid4())
     state = adapter.manager._new_state(request_id)
     adapter.manager._save(state)
@@ -367,7 +369,8 @@ def test_yoso_corner_announces_once_per_request_and_records_counters(tmp_path):
 
     assert calls == [(request_id, False)]
     assert state["announce_request_id"] == request_id
-    assert state["overlay_announcements"] == {"sent": 1, "failed": 0, "skipped": 0}
+    # The introduction and the ranking are two overlay events.
+    assert state["overlay_announcements"] == {"sent": 2, "failed": 0, "skipped": 0}
     assert "narration" not in state  # speech stays off without the opt-in
 
     # A resumed owner never publishes the same ranking twice.
@@ -384,7 +387,9 @@ def test_yoso_corner_speaks_only_when_the_audio_opt_in_is_set(tmp_path):
 
     adapter = _yoso_adapter(g, _corner(audio_enabled=True), switch, now, sleep)
     adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
-        audio_enabled) or {"overlay": "sent", "speech": "sent"}
+        audio_enabled
+    ) or {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+         "speech": {"sent": 2, "failed": 0, "skipped": 0}}
     request_id = str(uuid.uuid4())
     state = adapter.manager._new_state(request_id)
     adapter.manager._save(state)
@@ -392,7 +397,8 @@ def test_yoso_corner_speaks_only_when_the_audio_opt_in_is_set(tmp_path):
     assert adapter.manager._dispatch_start(state) is None
 
     assert calls == [True]
-    assert state["narration"] == {"enqueued": 1, "delivery_failed": 0, "skipped": 0}
+    # The introduction and the ranking are two speech items.
+    assert state["narration"] == {"enqueued": 2, "delivery_failed": 0, "skipped": 0}
 
 
 def test_a_failing_announcer_never_fails_the_corner(tmp_path):
@@ -418,7 +424,7 @@ def test_a_failing_announcer_never_fails_the_corner(tmp_path):
 
     state = json.loads((Path(g.state_dir) / "yoso_corner.json").read_text())
     assert state["status"] == "completed"
-    assert state["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
+    assert state["overlay_announcements"] == {"sent": 0, "failed": 2, "skipped": 0}
     assert "SECRET-ANNOUNCER-BODY" not in json.dumps(state)
     canonical, _ = store.canonical.load()
     assert canonical["active"]["game"] == "robots"

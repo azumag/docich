@@ -72,6 +72,24 @@ def _identity(runtime, *, expected_game=None):
     return identity
 
 
+def _sink_counts(value, total):
+    """Bounded `sent`/`failed`/`skipped` counters for one announcement sink.
+
+    The announcer reports how many of its items reached the sink, so the corner
+    records counts rather than a single status. A missing or malformed payload
+    is treated as "every item failed", which is what an injected announcer that
+    raised looks like.
+    """
+    fallback = {"sent": 0, "failed": total, "skipped": 0}
+    if not isinstance(value, dict):
+        return fallback
+    out = {}
+    for key in ("sent", "failed", "skipped"):
+        raw = value.get(key)
+        out[key] = raw if type(raw) is int and 0 <= raw <= total else 0
+    return out if sum(out.values()) <= total else fallback
+
+
 def _stable(canonical):
     phase = canonical.get("phase")
     return (phase in {"idle", "ready"}
@@ -315,12 +333,15 @@ class YosoCornerManager:
         return "queued" if canonical.get("phase") == "draining" else None
 
     def _announce_once(self, state):
-        """Publish the ranking once per corner request (best-effort, at-most-once).
+        """Publish the introduction and the ranking once per corner request.
 
-        The attempt is recorded before the side effect so a crash or a resumed
-        owner can never speak the same ranking twice. A sink failure is stored as
-        a fixed status for diagnostics and never fails the corner.
+        Best-effort and at-most-once: the attempt is recorded before the side
+        effect so a crash or a resumed owner can never speak the same corner
+        twice. Sink outcomes are stored as bounded counters for diagnostics and
+        never fail the corner.
         """
+        from .yoso_narration import OVERLAY_KINDS, SPEECH_ITEMS
+
         request_id = state.get("rotation_request_id")
         if not isinstance(request_id, str) or state.get("announce_request_id") == request_id:
             return
@@ -336,22 +357,17 @@ class YosoCornerManager:
                 result = self.announce(self.g, request_id=request_id,
                                        audio_enabled=self.audio_enabled)
         except Exception:
-            result = {"overlay": "failed", "speech": "failed"}
-        overlay = result.get("overlay") if isinstance(result, dict) else None
-        speech = result.get("speech") if isinstance(result, dict) else None
-        # Counters only: diagnostics already projects `narration`, and the
-        # overlay status gets the same bounded shape.
-        state["overlay_announcements"] = {
-            "sent": 1 if overlay == "sent" else 0,
-            "failed": 1 if overlay == "failed" else 0,
-            "skipped": 1 if overlay == "skipped" else 0,
-        }
+            result = None
+        result = result if isinstance(result, dict) else {}
+        # Counters only: diagnostics projects `narration` and
+        # `overlay_announcements` as bounded ints.
+        state["overlay_announcements"] = _sink_counts(
+            result.get("overlay"), len(OVERLAY_KINDS))
         if self.audio_enabled:
-            state["narration"] = {
-                "enqueued": 1 if speech == "sent" else 0,
-                "delivery_failed": 1 if speech == "failed" else 0,
-                "skipped": 1 if speech == "skipped" else 0,
-            }
+            speech = _sink_counts(result.get("speech"), len(SPEECH_ITEMS))
+            state["narration"] = {"enqueued": speech["sent"],
+                                  "delivery_failed": speech["failed"],
+                                  "skipped": speech["skipped"]}
         self._save(state)
 
     @staticmethod
