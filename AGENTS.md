@@ -27,6 +27,12 @@
 - ゲーム切替時に配信エンコーダを再起動しない。入力座標とAI観測は元ゲームの座標系を使う。
 - 検証ではゲームUIの四辺・スコア・操作案内の欠けがないことと、周囲の枠・配信PIDの維持を確認する。ウィンドウ外寸が合うだけでは完了にしない。
 
+### 配信HTML view 標準（2026-10-15）
+
+- docich が配信のために開く Chromium は共通の `broadcast_browser_command(...)` を使い、翻訳UIを出さない標準引数（`--disable-translate` と `TranslateUI` を含む feature gate）を必ず渡す。日本語ページは `--lang=ja-JP` も渡し、配信HTMLの先頭で `<html lang="ja" translate="no">` と `<meta name="google" content="notranslate">` を宣言する。片方だけの view を増やさない。
+- view の世代session（tmux）は server の環境から作られるため、view 自身が使う import path と capability は `_game_session_env()` で明示的に渡す。渡す capability はレビュー済みの key だけに限定し、WebUI の operator/viewer token を view の session へ出さない。
+- 新しい HTML view は `tests/test_broadcast_view_standard.py` の対象へ追加する。詳細は `docs/broadcast-html-view-standard.md`。
+
 
 この指示は Astra / Codex / Claude Code など、開発に関わるすべてのエージェントへ適用する。
 

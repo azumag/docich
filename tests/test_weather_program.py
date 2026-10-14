@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.adapters import make_coordinator_adapter  # noqa: E402
 from docich.adapters import cli_game  # noqa: E402
+from docich.adapters import program  # noqa: E402
 from docich.adapters import weather_program  # noqa: E402
 from docich.adapters.base import AdapterError  # noqa: E402
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
@@ -66,7 +67,7 @@ def _response(data, status=200):
 def test_weather_view_factory_is_generation_owned_and_uses_full_broadcast_frame(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
-    monkeypatch.setattr(weather_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
 
     adapter = make_coordinator_adapter(g, spec)
 

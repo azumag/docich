@@ -74,6 +74,12 @@ Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで
 `DOCICH_WEBUI_TOKEN` / `DOCICH_WEBUI_READONLY_TOKEN` その他の値は子コーナー環境へ
 exportせず、control secretとの再利用を検出した場合はfail-closedにします。
 
+同じ2項目は、`tsuitate-view` 自身の世代session（tmux）にも `_game_session_env()` で渡します。
+tmux は session の環境を server から作るため、渡さないと view の `POST /beta-control status` が
+`control_not_configured` になり、`/api/tsuitate` は `ok:false`（「制御接続を確認できません」）を
+返し続けて readiness が成立せず、switch は deadline 超過で rollback します。渡すのはこの2項目だけで、
+WebUI の operator/viewer token は view の session へも出しません。
+
 ローカル検証は `npm test` と `npm run test:beta-workerd`、repo rootから `python3 -m pytest -q tests/test_tsuitate_beta_control.py` です。一時SQLite・localhostのWebUI/Engine.IO/Socket.IO・明示fixture値だけでoperator→HMAC→DO、viewer/CSRF拒否、並行再送、手動2回目開始、旧run停止無効、rollback、sync-only復元、終局保存・再起動を確認します。Miniflare v5はinline bundleと `resourcePersistencePath` を使い、再起動前後のDO IDと未確認着手を照合します。
 
 この変更は親の独立レビューとmerge・配備判断を待ちます。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得ます。既存secretを使い、新しい秘密は不要です。この変更の検証では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。
