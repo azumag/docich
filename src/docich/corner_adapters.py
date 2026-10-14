@@ -409,6 +409,17 @@ class PaperCornerAdapter(GameCornerAdapter):
     def reconcile_terminal_failures(self):
         return _reconcile_terminal_paper_failures(self.g)
 
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        """PAPER has no retro-style per-request failed-start reconcile.
+
+        Its failed-start proof is the canonical previous-game restoration, and
+        the reviewed writer for it is `reconcile_terminal_failures` above (the
+        same observation the scheduler runs every tick). Returning False keeps
+        that writer as the only one and avoids the inherited retro-style lookup,
+        which would raise for a manager that does not implement it.
+        """
+        return False
+
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
 

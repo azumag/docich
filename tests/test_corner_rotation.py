@@ -2599,3 +2599,24 @@ def test_failed_preservation_does_not_queue_fresh_game(setup):
 def test_resume_rejects_unrelated_or_scheduled_requests(setup,game,trigger):
     *_,make=setup
     with pytest.raises(RotationError):make().queue_manual(game,resume_latest=True,trigger_at=trigger)
+
+
+def test_paper_adapter_has_no_retro_style_failed_start_reconcile(tmp_path):
+    from docich.corner_adapters import GameCornerAdapter
+    from docich.corner_adapters import PaperCornerAdapter
+
+    adapter = PaperCornerAdapter.__new__(PaperCornerAdapter)
+    adapter.g = SimpleNamespace(state_dir=tmp_path)
+    adapter.corner = Corner("paper", "paper", "paper-view")
+    # FastPaperCornerManager has no `reconcile_failed_rotation_start`.
+    adapter.manager = SimpleNamespace(path=tmp_path / "paper_corner.json")
+
+    # PAPER terminalizes through `reconcile_terminal_failures` on the next tick;
+    # it must answer the recovery request instead of raising (the inherited
+    # retro-style lookup has no entry to call).
+    assert adapter.reconcile_failed_start("11111111-1111-4111-8111-111111111111") is False
+    assert adapter.reconcile_failed_start(
+        "11111111-1111-4111-8111-111111111111",
+        state_file="paper_corner_manual.json") is False
+    with pytest.raises(AttributeError):
+        GameCornerAdapter.reconcile_failed_start(adapter, "11111111-1111-4111-8111-111111111111")

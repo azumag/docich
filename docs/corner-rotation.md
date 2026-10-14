@@ -181,12 +181,16 @@ last_seen、pending、request UUID、結果をatomic writeする。
      を全て満たす場合だけ確定する。証拠不成立は従来どおり`failed`のまま。
      この受理はretro系（game / NetHack / Meriken。`RetroCornerManager`を継承）と
      view系（tsuitate / weather / yoso）の両方に適用される。
-     `recover-failed` のowner routingは、NetHack/Merikenは専用CLI、
-     tsuitate / weather / yoso / PAPER は**corner固有CLIを挟まず**
-     `corner-rotation recover` に直接進む（それらの失敗証拠は自managerが持ち、
-     adapterの `reconcile_failed_start` が確定する。retro CLIは当該fileを見られず、
+     `recover-failed` のowner routingは、**自動予約の**NetHack/Merikenは専用CLI、
+     tsuitate / weather / yoso / PAPER と**手動予約の**NetHack/Merikenは
+     corner固有CLIを挟まず `corner-rotation recover` に直接進む（それらの失敗証拠は
+     自managerが持ち、adapterの `reconcile_failed_start` が確定する。専用CLIは
+     自動予約のstate fileしか所有せず、retro CLIは当該fileを見られないため、
      その拒否/queueが本来の解除stepを塞いでいた。#2187）。retro gameと
      未知のownerは従来どおりretro CLIの復旧を先に通す。
+     PAPERの `reconcile_failed_start` は常にFalseを返す（PAPERにretro型の
+     per-request reconcileは無く、`reconcile_terminal_failures` が正規の書き手）。
+     予約は次のtickのterminal観測で解放され、次コーナーへ進む。
      コーナー**完了後**のrestore失敗（state=`failed`、`completed_at`あり、
      restore receiptが `switch`/target=記録済みprevious/terminal
      （`rolled_back`/`failed`/`succeeded`）で、`switch_request_id`が
