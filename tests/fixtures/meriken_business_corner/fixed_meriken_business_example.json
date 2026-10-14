@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "corner": "meriken-business",
+  "fixtureId": "fixed-meriken-business-membership-retailer-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed meriken-business fixture for planning and input-contract acceptance only. It is not a real company or verified business data, and its title, URLs and details must not be presented as verified business facts or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Membership-Based Warehouse Retailer",
+    "topicId": "fixed-meriken-business-membership-retailer-001",
+    "businessQuestion": "なぜ月額の会費で売らずに、会員費と低マージン販売を組み合わせると成立するのか",
+    "questionOfDay": "なぜ月額の会費で売らずに、会員費と低マージン販売を組み合わせると成立するのか",
+    "currentQuestion": "なぜ月額の会費で売らずに、会員費と低マージン販売を組み合わせると成立するのか",
+    "merikenView": "会費という安定現金収入と回転率で、大量販売と低コストを両立する設計",
+    "merikenPerspective": "会費という安定現金収入と回転率で、大量販売と低コストを両立する設計",
+    "customer": "会員（法人・個人）とその家族",
+    "customerSegment": "会員（法人・個人）とその家族",
+    "offering": "会員限定の低価格商品・大量販売・少数SKU",
+    "valueProposition": "会員限定の低価格商品・大量販売・少数SKU",
+    "revenueModel": "年会費 + 商品販売マージン + サービス収入",
+    "pricing": "年会費 + 商品販売マージン + サービス収入",
+    "costStructure": "仕入・物流・倉庫・人件費・不動産",
+    "costs": "仕入・物流・倉庫・人件費・不動産",
+    "competitiveAdvantage": "会費による顧客ロックイン・スケールメリット・高回転",
+    "moat": "会費による顧客ロックイン・スケールメリット・高回転",
+    "unitEconomics": "会員あたり粗利 = 会費収入 - 獲得/維持コスト + 商品マージン",
+    "scalingDynamics": "店舗増でSKU集約と物流効率が上がり、会員の利便性が自己強化",
+    "growthDynamics": "店舗増でSKU集約と物流効率が上がり、会員の利便性が自己強化",
+    "vulnerabilities": "会員数の鈍化、競合の価格追随、労務・規制コスト、景気後退",
+    "weaknesses": "会員数の鈍化、競合の価格追随、労務・規制コスト、景気後退",
+    "counterArguments": "質より量、地域独占、労働条件、過剰消費・外部性",
+    "constraints": "質より量、地域独占、労働条件、過剰消費・外部性",
+    "stakeholderImpact": "消費者は低価格、従業員は労働負荷、地域は交通・環境負荷",
+    "distributionalImpact": "消費者は低価格、従業員は労働負荷、地域は交通・環境負荷",
+    "externalities": "交通集中、包装 waste、地域小売店の圧迫",
+    "newsApplication": "小売業の集約やサブスクリプション化を、この枠組みで読む",
+    "currentNewsApplication": "小売業の集約やサブスクリプション化を、この枠組みで読む",
+    "thirtySecondSummary": "合成fixture: 会費型小売を顧客・商品・課金・コスト・競争優位・unit economics・成長・弱点から分解する planning 例。",
+    "oneLineSummary": "合成fixture: ビジネスモデル分解型コーナーの入力例。",
+    "labelsPolicy": {
+      "fact": "primary or corroborated",
+      "analysis": "interpretation",
+      "forecast": "conditional scenario"
+    },
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成 fixture であり、実企業・実数値・実財務の検証は未実施。IR/公式資料で更新が必要。",
+    "uncertainty": "未公開数値、会員 attribute、競合反応、規制動向の非対称情報。",
+    "figureOrDiagram": "顧客・商品・課金・コスト・moat・unit economics を overlay 用に分離した概念図。",
+    "overlayPlan": "business question, meriken view, customer, offering, revenue, costs, moat, unit economics, vulnerabilities, labels, source urls",
+    "youtubeIndependentDraft": "YouTube 切り出しでは30秒要約、ビジネスモデル、顧客、課金、コスト、競争優位、unit economics、成長、弱点を独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/meriken-business/synthetic-membership-retailer",
+      "https://example.org/meriken-business/synthetic-membership-retailer/ir"
+    ],
+    "sourcePriority": [
+      "ir-or-official-disclosure",
+      "primary-statement-or-official-document",
+      "public-institution",
+      "established-media-multiple",
+      "academic-or-analyst",
+      "fact-check-source"
+    ],
+    "citationKeepUrl": true,
+    "url": "https://example.org/meriken-business/synthetic-membership-retailer"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/meriken-business/synthetic-membership-retailer",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "2e8577f79a55ba060739692a8a6a4f27968d014f5f84195f52158d8606c111e1",
+        "excerpt": "Synthetic verified meriken business material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic meriken business membership retailer model"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealCompany": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizeIrAndOfficialDisclosures": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustPrioritizePrimaryAndInstitutions": true,
+    "mustIncludeBusinessModelFields": true,
+    "mustIncludeMerikenViewAndConstraints": true,
+    "mustIncludeFailureAndCaveats": true,
+    "mustIncludeUncertaintyAndLabels": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustIncludeStakeholderAndExternality": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
