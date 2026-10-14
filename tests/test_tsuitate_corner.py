@@ -537,6 +537,138 @@ def test_rollback_failed_start_stays_latched_while_the_plane_needs_recovery(tmp_
     assert json.loads(manager.path.read_text())["status"] == "failed"
 
 
+def _runtime(identity, names):
+    return {
+        **identity,
+        "adapter": "cli",
+        "game_window": names.game_window,
+        "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:19:02Z",
+    }
+
+
+def _rolled_back_setup(tmp_path, code=None):
+    """Craft the production #2187 shape.
+
+    The start switch exceeded its request-wide deadline, so game-switch ran the
+    switch's own rollback and finished the receipt as ``rolled_back`` with
+    ``error_code="timeout"`` (``game_switch._failure_code`` maps the deadline
+    exception to ``ERROR_TIMEOUT``). The corner never became active and only
+    the previous game owns the canonical.
+    """
+    from docich.game_switch import ERROR_TIMEOUT, runtime_names
+
+    if code is None:
+        code = ERROR_TIMEOUT
+    g = _global(tmp_path)
+    manager = TsuitateCornerManager(g, coordinator=object())
+    previous_identity = {
+        "game": "sorengame",
+        "runtime_id": "g1-abcdef",
+        "generation": 1,
+        "lease_id": str(uuid.uuid4()),
+    }
+    manager._save({
+        "schema_version": 1,
+        "game": VIEW_NAME,
+        "status": "failed",
+        "rotation_request_id": REQ,
+        "start_request_id": REQ,
+        "switch_request_id": REQ,
+        "previous_game": "sorengame",
+        "previous_runtime_identity": previous_identity,
+        "requested_at": 1000.0,
+        "starting_at": 1000.0,
+        "completed_at": 1001.0,
+        "last_error_code": code,
+    })
+    names = runtime_names(1)
+    canonical = manager.store.initialize()
+    canonical.update(phase="ready", next_generation=2,
+                     active=_runtime(previous_identity, names))
+    manager.store.canonical.save(canonical)
+    accepted = manager.store.accept_request(REQ, "switch", VIEW_NAME)
+    result = {
+        "request_id": REQ,
+        "operation": "switch",
+        "status": "rolled_back",
+        "from_game": "sorengame",
+        "to_game": VIEW_NAME,
+        "generation": accepted.generation,
+        "restored_generation": 1,
+        "error_code": code,
+        "detail": "request-wide deadline exceeded; rollback restored the previous game",
+        "cleanup_pending": False,
+    }
+    canonical, _ = manager.store.canonical.load()
+    canonical.update(phase="ready", operation=None, request_id=None, deadline_at=None,
+                     candidate=None, previous=None, retiring=[],
+                     next_generation=accepted.generation + 1,
+                     active=_runtime(previous_identity, names),
+                     last_result=result)
+    manager.store.canonical.save(canonical)
+    manager.store.finish_request(REQ, "rolled_back", result)
+    return manager, REQ, previous_identity
+
+
+def test_rolled_back_start_timeout_terminalizes_the_previous_game(tmp_path):
+    """#2187: a deadline timeout that rolled back must clear the slot.
+
+    Accepting only the four switch-step codes left this exact shape latched
+    even though the receipt proved the previous game was restored.
+    """
+    manager, request_id, _previous = _rolled_back_setup(tmp_path)
+
+    assert manager.reconcile_failed_start(request_id) is True
+
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert state["completed_at"] == 1001.0
+    assert state["rotation_request_id"] == request_id
+    # The terminal rolled-back receipt is the evidence and is never rewritten.
+    assert manager.store.receipts.load(request_id)["status"] == "rolled_back"
+
+
+def test_rolled_back_start_stays_latched_for_an_unreviewed_error_code(tmp_path):
+    """Widening must stay bounded: only reviewed switch-start codes qualify."""
+    manager, request_id, _previous = _rolled_back_setup(tmp_path, code="prepare_failed")
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_rolled_back_start_timeout_stays_latched_when_another_game_owns_the_canonical(tmp_path):
+    from docich.game_switch import runtime_names
+
+    manager, request_id, _previous = _rolled_back_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    names = runtime_names(2)
+    canonical["active"] = {
+        "game": "nethack", "runtime_id": "g2-abcdef", "generation": 2,
+        "lease_id": str(uuid.uuid4()), "adapter": "cli",
+        "game_window": names.game_window, "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:20:00Z",
+    }
+    canonical["next_generation"] = 3
+    manager.store.canonical.save(canonical)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_rolled_back_start_timeout_stays_latched_while_cleanup_is_pending(tmp_path):
+    manager, request_id, _previous = _rolled_back_setup(tmp_path)
+    receipt = manager.store.receipts.load(request_id)
+    receipt["result"]["cleanup_pending"] = True
+    manager.store.receipts.save(receipt)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
 def test_rotation_adapter_rejects_control_secret_reusing_webui_token(tmp_path, monkeypatch):
     home = tmp_path / "home"
     env_file = home / ".config" / "docich" / "webui.env"
