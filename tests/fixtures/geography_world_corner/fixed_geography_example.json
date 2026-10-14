@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "corner": "geography-world",
+  "fixtureId": "fixed-geography-world-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Synthetic planning fixture for the geography/world-from-maps corner; not a real geographic measurement, source record, or place description.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic geography world from maps corner"
+    ],
+    "items": [
+      {
+        "url": "https://example.com/verified/web/material/geography",
+        "query_indexes": [
+          0
+        ],
+        "excerpt": "Verified short excerpt (synthetic): Singapore sits at a maritime choke point, where terrain, route geometry, and deep-water access shape modern transport, industry, and geopolitics. Use this as contract material only, not as a real measurement.",
+        "excerpt_sha256": "74ac5e6b12ba0c3638bd0823dcf8f61d84ed10d6908f6667b9729433d171b70a",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealSpecimen": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizeOfficialGeographicSources": true,
+    "mustIncludeMapHandling": true,
+    "mustIncludeTerrainClimate": true,
+    "mustIncludePopulation": true,
+    "mustIncludeResources": true,
+    "mustIncludeTransport": true,
+    "mustIncludeIndustry": true,
+    "mustIncludeHistoryPolitics": true,
+    "mustIncludeCurrentMeaning": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustKeepCitations": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Why Singapore matters: a map-centered geography reading",
+    "topicId": "geography-world-001",
+    "region": "Singapore and the Strait of Malacca corridor",
+    "mapFocus": "A map centered on Singapore and the southern Strait of Malacca, showing depth, vessel routes, land reclamation, and regional air/sea corridors.",
+    "thirtySecondSummary": "A 30-second summary of how a small territory at a maritime choke point became a major trade, finance, and logistics hub.",
+    "oneLineSummary": "Geography made the hub possible; institutions and infrastructure turned possibility into sustained importance.",
+    "terrainClimate": "Low-lying island and coastal terrain, tropical climate, limited land area, deep natural harbor potential, and high heat/humidity affecting infrastructure design.",
+    "population": "High urban density, a globally oriented population, migration history, and a workforce concentrated in services, logistics, finance, and technology.",
+    "resources": "Very limited domestic natural resources; water, energy, food, and raw materials are largely imported, while location and infrastructure are the strategic resource.",
+    "transportRoutes": [
+      "Strait of Malacca sea lane",
+      "East-west shipping corridor",
+      "Port-to-airport logistics chain",
+      "Regional rail and road links to Malaysia"
+    ],
+    "industry": [
+      "port logistics",
+      "refining and petrochemicals",
+      "finance",
+      "aviation hub services",
+      "advanced manufacturing"
+    ],
+    "historyPoliticsImpact": "Historical trade, colonial port development, independence, and regional security concerns combined to make location a durable political and economic asset.",
+    "currentMeaning": "The theme connects a concrete place on the map to modern trade, energy security, urban planning, and geopolitics.",
+    "mapHandling": "Map handling note: center = Singapore Strait; scale = regional maritime overview; projection = Web Mercator for screen overlay only; vintage = synthetic example date 2026-10-01; layers = bathymetry, vessel density, port, airport, political boundaries; attribution = official/public geographic sources; caveat = simplified overlay, not a navigational chart.",
+    "labelsPolicy": "Every generated segment must be labeled fact, analysis, or forecast.",
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "Synthetic fixture for planning only. No real statistic, no production map, and no verified source measurement is included.",
+    "uncertainty": "Demographic, trade, resource, and climate details require primary sources and should be updated before any production use.",
+    "figureOrDiagram": "Overlay layers for terrain, population density, resource flows, transport routes, and strategic political boundaries on one shared base map.",
+    "youtubeIndependentDraft": "Independent YouTube-shaped outline: open with the map, identify the choke point, walk through terrain/climate/population/resources/transport, then explain industry, politics, and current meaning.",
+    "primarySources": [
+      "https://example.com/official/geographic-survey",
+      "https://example.com/public/statistics"
+    ],
+    "sourcePriority": "official-geographic-or-public-source",
+    "citationKeepUrl": true,
+    "url": "https://example.com/maps/singapore"
+  }
+}
