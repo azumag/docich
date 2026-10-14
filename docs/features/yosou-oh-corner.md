@@ -176,6 +176,15 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
      1回 GET して権威ある row を使う。台帳の read/write 失敗は `leaderboard`、row の契約違反は
      `invalid_response` として error mode に入り、前者は同じ id を再試行する。診断の固定語彙にも
      `leaderboard` を追加。回帰: `tests/test_prediction_leaderboard.py` / `tests/test_hanjuku_predictions.py`。
+     **終端理由の契約（2026-10-14 修正）**: 永続化する `result.reason` の受理集合は
+     `hanjuku_run.TERMINAL_REASONS`（`game_over` / `screen_stalled` / `input_stalled`）と
+     同一でなければならない。`_result()` は `hanjuku_run.terminal()` が返した
+     `terminal_reason` をそのまま durable record へ書くため、`hanjuku_predictions` 側に
+     より狭い集合（旧: `{game_over, screen_stalled}`）を置くと **自分が書いた記録を
+     次の読み取りで拒否**し、round を永続化する前に `_advance()` が例外を上げて
+     `error=invalid_state` の 300 秒 retry を永久に回す（`input_stalled` 終端の round が
+     settlement も cancel もできなくなる）。回帰:
+     `tests/test_hanjuku_predictions.py::test_input_stalled_terminal_survives_the_durable_reread`。
    - **PR-2b（実装済み・Soren）**: Soren の `twitch_predictions.sh` が resolve 成功時に
      応答 row を `tools/prediction_resolved.py` で `<soren_root>/tmp/state/prediction_resolved.jsonl`
      へ bounded（最大50行）に追記する（soviet_now PR、docich gitlink 更新）。
