@@ -3862,6 +3862,7 @@ def _project_review(value):
     source = value.get("source")
     kind = value.get("kind")
     failure = value.get("failure")
+    boundary = value.get("boundary")
     moves = value.get("moves")
     return {
         "source": source if source in {"replay", "result-only"} else None,
@@ -3870,6 +3871,9 @@ def _project_review(value):
         "failure": failure if failure in {"ok", "read-failed", "verify-failed",
                                           "invalid-color", "invalid-game-id",
                                           "unavailable"} else None,
+        # Whether the 感想戦 waited for the shared audio queue's boundary.
+        "boundary": boundary if boundary in {"quiet", "timeout", "unavailable",
+                                             "skipped"} else None,
         "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 

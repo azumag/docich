@@ -124,6 +124,10 @@ last_seen、pending、request UUID、結果をatomic writeする。
   NetHackは自前のround boundaryが正本）。この除外は#2236でも変更していない。
 - 無線の背景ラジオは専用の`RADIO_DEFERRED_QUEUE_DIR`（`tmp/.radio_deferred_queue`）で流れるため
   この境界では待たない。コーナー告知は共有キューへ`comment_announce_*`として入るので待つ。
+- **出口側の待ち**: 衝立将棋の感想戦（`tsuitate_narration.wait_for_audio_boundary`）も
+  同じ「audio queue が完全に静か」を待ってから読み上げる。入りと違い**有界（既定180秒）で
+  fail-open**: 期限切れでも感想戦は読み、queue が読めない場合も即座に進む（コーナーの復帰を
+  遅らせない）。結果は `review.boundary`（`quiet` / `timeout` / `unavailable` / `skipped`）に残す。
 - 残る注意: `audio_worker`自体が停止していると`.txt`/`.playing`が残り続け、全コーナーが
   期限切れを繰り返す（開始しないだけで、枠・latch・他workerは壊さない）。診断の
   `corners.boundary.audio`（`queued`/`playing`/`oldest_age_sec`/`reason`）とworker健全性で

@@ -98,12 +98,16 @@ def _sink_counts(value, total):
 
 
 class TsuitateCornerManager:
+    #: Fixed 感想戦 boundary outcomes; `tsuitate_narration.BOUNDARY_OUTCOMES`
+    #: is the source of truth and a regression test pins the parity.
+    BOUNDARY_OUTCOMES = ("quiet", "timeout", "unavailable", "skipped")
+
     def __init__(self, g, *, coordinator=None, control=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0,
                  max_match_seconds=DEFAULT_MAX_MATCH_SECONDS,
                  audio_enabled=False, review_agents="",
                  announce_intro=None, announce_review=None,
-                 read_review=None, review_text=None):
+                 read_review=None, review_text=None, wait_boundary=None):
         self.g = g
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         if (type(max_match_seconds) not in (int, float)
@@ -114,7 +118,8 @@ class TsuitateCornerManager:
         if not isinstance(review_agents, str):
             raise TsuitateCornerError("tsuitate review_agents must be a string")
         for name, hook in (("announce_intro", announce_intro), ("announce_review", announce_review),
-                           ("read_review", read_review), ("review_text", review_text)):
+                           ("read_review", read_review), ("review_text", review_text),
+                           ("wait_boundary", wait_boundary)):
             if hook is not None and not callable(hook):
                 raise TsuitateCornerError(f"tsuitate {name} must be callable")
         self.max_match_seconds = float(max_match_seconds)
@@ -127,6 +132,9 @@ class TsuitateCornerManager:
         self.announce_review = announce_review
         self.read_review = read_review
         self.review_text = review_text
+        # The 感想戦 waits for the shared audio queue's boundary (bounded,
+        # fail-open) so it does not start inside a comment or announcement.
+        self.wait_boundary = wait_boundary
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
         self.store = GameSwitchStore(g.state_dir)
@@ -455,6 +463,25 @@ class TsuitateCornerManager:
             return None, failure if failure in REVIEW_FAILURES else "unavailable"
         return summary, "ok"
 
+    def _wait_for_review_boundary(self):
+        """Bounded wait for the shared audio queue's boundary before the 感想戦.
+
+        Returns a fixed outcome for the state/diagnostics. Speech off means
+        nothing is enqueued, so there is nothing to align with.
+        """
+        if not self.audio_enabled:
+            return "skipped"
+        try:
+            if self.wait_boundary is None:
+                from .tsuitate_narration import wait_for_audio_boundary
+
+                outcome = wait_for_audio_boundary(self.g)
+            else:
+                outcome = self.wait_boundary(self.g)
+        except Exception:
+            return "unavailable"
+        return outcome if outcome in self.BOUNDARY_OUTCOMES else "unavailable"
+
     def _announce_review_once(self, state):
         """Publish the 感想戦 once per corner request, after the result settled.
 
@@ -494,6 +521,11 @@ class TsuitateCornerManager:
             kind = "fallback"
         from .tsuitate_narration import announce_review, overlay_body
 
+        # Wait for the shared audio queue's boundary before the 感想戦 starts, so
+        # it does not cut into a comment or announcement that is playing. The
+        # wait is bounded and fails open: a busy queue never holds the shared
+        # program slot and never loses the 感想戦. Only the spoken half needs it.
+        boundary = self._wait_for_review_boundary()
         body = overlay_body(text, terminal)
         try:
             if self.announce_review is None:
@@ -511,6 +543,7 @@ class TsuitateCornerManager:
             "source": "replay" if summary is not None else "result-only",
             "kind": kind,
             "failure": review_failure,
+            "boundary": boundary,
             "moves": terminal.get("moveNumber") if type(terminal.get("moveNumber")) is int else None,
         }
         self._save(state)
