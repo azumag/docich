@@ -99,8 +99,13 @@ def numeric_weights(weights: dict) -> set[str]:
 
 
 def _minimum_candidate_weight(game: str, key: str) -> float:
-    """Bastet の hard_drop だけは 0 で soft drop を選べる。"""
-    return 0.0 if game == "bastet" and key == "hard_drop" else MIN_CANDIDATE_WEIGHT
+    """Bastet の重みは 0 が「その項を使わない/別モード」を意味するので 0 を許す。
+
+    hard_drop 0 = soft drop、next_piece_weight 0 = 次ピース読みを無効化、
+    盤面評価の各重み 0 = その特徴量を無効化。他のゲームは従来どおり
+    MIN_CANDIDATE_WEIGHT 以上に限り、重みが縮退する提案を弾く。
+    """
+    return 0.0 if game == "bastet" else MIN_CANDIDATE_WEIGHT
 
 
 def _lane_path(state_dir) -> Path:
@@ -613,12 +618,17 @@ def _run_pacman_ab_trial(g, *, path: Path, trial: dict, current: dict, date_str:
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
     basis = stats.get("basis", "live scorelog")
+    # Bastet may switch a term off entirely (0), so its floor differs from the
+    # other bots; the tail guidance below explains what each key does.
+    floor = _minimum_candidate_weight(game, "")
     game_guidance = ""
     if game == "bastet":
         game_guidance = (
-            "\nBastet の tunable key は hard_drop のみです。hard_drop は有限なJSON数値で"
-            f" 0.0 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。"
-            "0.5 以上で Enter によるハードドロップ、0.5 未満で Down によるソフトドロップです。\n"
+            "\nBastet の戦略重みはすべて数値です。hard_drop は 0.5 以上で Enter による"
+            "ハードドロップ、0.5 未満で Down によるソフトドロップです。"
+            "next_piece_weight は次ピースまでの2手読みの重み (0 で無効) です。"
+            "landing_height / row_transitions / column_transitions / holes / well_sums は盤面評価の項で、"
+            "rows_cleared は消去ライン1行あたりの加点です。0 でその項を無効にできます。\n"
         )
     return f"""あなたはレトロゲームコーナーの戦略改善担当です。
 対象ゲーム: {game}
@@ -631,7 +641,7 @@ def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> st
 
 今回の成績を踏まえ、平均スコアを上げる方向に数値重みだけを調整した候補を
 1つ提案してください。キー構成は変えず、既存キーの数値のみ変更すること。
-各値は有限なJSON数値で、原則 {MIN_CANDIDATE_WEIGHT:g} 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。{game_guidance}
+各値は有限なJSON数値で、{floor:g} 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。{game_guidance}
 出力はJSONオブジェクト1つのみ。説明文は書かず、```jsonフェンスで囲むこと。
 """
 
