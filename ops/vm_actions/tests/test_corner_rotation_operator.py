@@ -329,6 +329,66 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("rm -", text)
         self.assertNotIn("corner-rotation tick", text)
 
+    def _recover_owner_classifier(self):
+        text = RECOVER_SCRIPT.read_text(encoding="utf-8")
+        marker = "python3 -c '"
+        start = text.index(marker) + len(marker)
+        end = text.index("' <<<\"$rotation_status\"", start)
+        return text[start:end]
+
+    def test_recover_script_routes_each_owner_to_its_own_recovery_step(self):
+        snippet = self._recover_owner_classifier()
+
+        def classify(state):
+            proc = subprocess.run(["python3", "-c", snippet], input=json.dumps(state),
+                                  text=True, capture_output=True)
+            return proc.returncode, proc.stdout.strip()
+
+        base = {"status": "recovery_required"}
+        # The dedicated owners keep their own reviewed restore step.
+        self.assertEqual(
+            classify({**base, "pending": {"corner": "nethack", "request_id": "r"}}),
+            (0, "nethack"))
+        self.assertEqual(
+            classify({**base, "pending": {"corner": "meriken", "request_id": "r"}}),
+            (0, "meriken"))
+        # View / PAPER owners own their failed-start evidence and terminalize
+        # it inside `corner-rotation recover`; a retro CLI step cannot see it
+        # and its refusal used to block the step that clears the latch (#2187).
+        for state_file in ("tsuitate_corner.json", "weather_corner.json",
+                           "yoso_corner.json", "paper_corner.json"):
+            with self.subTest(state_file=state_file):
+                self.assertEqual(
+                    classify({**base, "pending": {"corner": "tsuitate", "request_id": "r",
+                                                  "state_file": state_file}}),
+                    (0, "view"))
+        self.assertEqual(
+            classify({**base, "manual_pending": {"corner": "yosou-oh", "request_id": "r",
+                                                 "state_file": "yoso_corner.json"}}),
+            (0, "view"))
+        # Retro game owners keep the retro CLI step, and unknown owners keep the
+        # previous fail-closed behaviour.
+        self.assertEqual(
+            classify({**base, "pending": {"corner": "pacman4console", "request_id": "r",
+                                          "state_file": "retro_corner.json"}}),
+            (0, "other"))
+        self.assertEqual(
+            classify({**base, "pending": {"corner": "unknown", "request_id": "r"}}),
+            (0, "other"))
+        # Ambiguity and a non-latched ledger still never become permission.
+        self.assertEqual(
+            classify({**base, "pending": {"corner": "nethack", "request_id": "r"},
+                      "manual_pending": {"corner": "tsuitate"}})[0], 1)
+        self.assertEqual(classify({"status": "running"})[0], 1)
+
+        text = RECOVER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('elif [[ "$recovery_owner" == "view" ]]; then', text)
+        # The view branch must not run any corner CLI of its own.
+        view_branch = text.split('elif [[ "$recovery_owner" == "view" ]]; then', 1)[1]
+        view_branch = view_branch.split("else", 1)[0]
+        self.assertNotIn("corner_cli", view_branch)
+        self.assertNotIn("recover-failed", view_branch)
+
     def test_recover_runtime_script_is_fixed_and_runs_the_reviewed_cli(self):
         text = RECOVER_RUNTIME_SCRIPT.read_text(encoding="utf-8")
         for required in (

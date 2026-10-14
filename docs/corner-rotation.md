@@ -172,6 +172,21 @@ last_seen、pending、request UUID、結果をatomic writeする。
      `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
      静止している場合のみ確定する。**再実行はしない**（同じ切替の
      drainingへ再入して同じ失敗を繰り返すため）。
+     start方向の受理codeは `start_failed` / `agent_start_failed` /
+     `quiesce_failed` / `readiness_timeout` と、**要求全体のdeadline超過
+     `timeout`**（`game_switch._failure_code`）を含む（#2187）。`timeout` も
+     自身のrollbackでprevious gameへ戻るため、他のcodeと同じ証拠ゲート
+     （receiptが`rolled_back`・双方向game一致・`restored_generation`とcanonical
+     activeの一致・cleanup完了・candidate/previous/retiring不在・request/generation一致）
+     を全て満たす場合だけ確定する。証拠不成立は従来どおり`failed`のまま。
+     この受理はretro系（game / NetHack / Meriken。`RetroCornerManager`を継承）と
+     view系（tsuitate / weather / yoso）の両方に適用される。
+     `recover-failed` のowner routingは、NetHack/Merikenは専用CLI、
+     tsuitate / weather / yoso / PAPER は**corner固有CLIを挟まず**
+     `corner-rotation recover` に直接進む（それらの失敗証拠は自managerが持ち、
+     adapterの `reconcile_failed_start` が確定する。retro CLIは当該fileを見られず、
+     その拒否/queueが本来の解除stepを塞いでいた。#2187）。retro gameと
+     未知のownerは従来どおりretro CLIの復旧を先に通す。
      コーナー**完了後**のrestore失敗（state=`failed`、`completed_at`あり、
      restore receiptが `switch`/target=記録済みprevious/terminal
      （`rolled_back`/`failed`/`succeeded`）で、`switch_request_id`が

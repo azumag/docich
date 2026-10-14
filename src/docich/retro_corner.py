@@ -808,7 +808,10 @@ class RetroCornerManager:
         same property that this method exists for, that the corner never became
         active. The same holds for a target that never became ready
         (``readiness_timeout``): the switch rolled back to the previous game,
-        so the corner never became active either.
+        so the corner never became active either. The request-wide deadline
+        expiring during the start switch reports ``timeout``
+        (``game_switch._failure_code``) and still runs that same rollback, so it
+        is accepted for the identical proof (#2187).
         """
         from .game_switch import (
             ERROR_AGENT_START_FAILED,
@@ -836,6 +839,7 @@ class RetroCornerManager:
                             or state.get("last_error_code") not in {
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
                                 ERROR_QUIESCE_FAILED, ERROR_READINESS_TIMEOUT,
+                                ERROR_TIMEOUT,
                             }):
                         return False
                 if ((status not in {"starting", "interrupted"} and not failed_start)
