@@ -3863,6 +3863,7 @@ def _project_review(value):
     kind = value.get("kind")
     failure = value.get("failure")
     boundary = value.get("boundary")
+    model_failure = value.get("model_failure")
     moves = value.get("moves")
     return {
         "source": source if source in {"replay", "result-only"} else None,
@@ -3874,6 +3875,10 @@ def _project_review(value):
         # Whether the 感想戦 waited for the shared audio queue's boundary.
         "boundary": boundary if boundary in {"quiet", "timeout", "unavailable",
                                              "skipped"} else None,
+        # Why the model prose was not used, when it was not.
+        "model_failure": model_failure if model_failure in {
+            "none", "unsafe", "gate", "timeout", "rate_limit", "provider",
+            "exception"} else None,
         "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 

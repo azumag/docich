@@ -101,6 +101,9 @@ class TsuitateCornerManager:
     #: Fixed 感想戦 boundary outcomes; `tsuitate_narration.BOUNDARY_OUTCOMES`
     #: is the source of truth and a regression test pins the parity.
     BOUNDARY_OUTCOMES = ("quiet", "timeout", "unavailable", "skipped")
+    #: Fixed 感想戦 model outcomes; `tsuitate_narration.MODEL_FAILURES` is the
+    #: source of truth and a regression test pins the parity.
+    MODEL_FAILURES = ("none", "unsafe", "gate", "timeout", "rate_limit", "provider", "exception")
 
     def __init__(self, g, *, coordinator=None, control=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0,
@@ -507,18 +510,23 @@ class TsuitateCornerManager:
                 from .tsuitate_narration import review_agents, review_text
 
                 agents = self.review_agents or review_agents(self.g)
-                text, kind = review_text(self.g, summary, terminal, agents=agents)
+                text, kind, model_failure = review_text(self.g, summary, terminal, agents=agents)
             else:
-                text, kind = self.review_text(self.g, summary, terminal,
-                                              agents=self.review_agents)
+                outcome = self.review_text(self.g, summary, terminal,
+                                           agents=self.review_agents)
+                # Injected hooks keep the older two-tuple contract.
+                text, kind = outcome[0], outcome[1]
+                model_failure = outcome[2] if len(outcome) > 2 else "none"
         except Exception:
             from .tsuitate_narration import fallback_text
 
-            text, kind = fallback_text(summary, terminal), "fallback"
+            text, kind, model_failure = fallback_text(summary, terminal), "fallback", "exception"
         if not isinstance(text, str) or not text:
             return
         if kind not in {"ai", "fallback"}:
             kind = "fallback"
+        if model_failure not in self.MODEL_FAILURES:
+            model_failure = "provider" if model_failure else "none"
         from .tsuitate_narration import announce_review, overlay_body
 
         # Wait for the shared audio queue's boundary before the 感想戦 starts, so
@@ -544,6 +552,7 @@ class TsuitateCornerManager:
             "kind": kind,
             "failure": review_failure,
             "boundary": boundary,
+            "model_failure": model_failure,
             "moves": terminal.get("moveNumber") if type(terminal.get("moveNumber")) is int else None,
         }
         self._save(state)
