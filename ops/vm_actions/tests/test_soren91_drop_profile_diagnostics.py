@@ -33,6 +33,13 @@ class DropProfileDiagnosticsTest(unittest.TestCase):
                              untrusted='secret-token-not-for-output'))
         return dict(schemaVersion=1, updatedAtMs=1789670040000, sinceDropSentMs=400,
                     game=3, turn=31, elapsedMs=99999,
+                    outcome='observe', observations=12, holds=0,
+                    stageMs={s: 250 for s in self.c.DROP_LOOP_STAGES},
+                    reasonCounts={s: (1 if s == 'non-move' else 0)
+                                  for s in self.c.DROP_REASONS},
+                    lastFailure=None,
+                    dropSentIntervalMs=dict(samples=count, last=1000, p50=900,
+                                            p95=2000, max=2500),
                     dropProfile=dict(schemaVersion=1, basis='sent-to-sent',
                                      acceptedDropsMeasured=False,
                                      session='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -115,6 +122,68 @@ class DropProfileDiagnosticsTest(unittest.TestCase):
         before = self.path.read_bytes(), self.path.stat().st_mtime_ns
         self.c._collect_soren91_drop_profile(self.root)
         self.assertEqual(before, (self.path.read_bytes(), self.path.stat().st_mtime_ns))
+
+    def test_current_attempt_projection_is_fixed_vocabulary(self):
+        result = self.collect(self.fixture())
+        current = result['current']
+        self.assertEqual(current['outcome'], 'observe')
+        self.assertEqual(current['observations'], 12)
+        self.assertEqual(current['holds'], 0)
+        self.assertEqual(current['stageMs'], {s: 250 for s in self.c.DROP_LOOP_STAGES})
+        self.assertEqual(current['reasonCounts'],
+                         {s: (1 if s == 'non-move' else 0) for s in self.c.DROP_REASONS})
+        self.assertIsNone(current['lastFailure'])
+        self.assertEqual(current['dropSentIntervals'],
+                         dict(samples=30, last=1000, p50=900, p95=2000, max=2500))
+        self.assertEqual(_sanitize_diagnostics({'soren91_drop_profile': result}),
+                         {'soren91_drop_profile': result})
+        # A plot that sends no drop has no completed records: `all` stays empty
+        # while `current` still names what the open attempt is doing.
+        empty = self.collect(dict(self.fixture(0), outcome='error', observations=0,
+                                  holds=0, reasonCounts={s: 0 for s in self.c.DROP_REASONS},
+                                  lastFailure=dict(stage='capture',
+                                                   errorClass='capture-timeout')))
+        self.assertEqual(empty['all']['samples'], 0)
+        self.assertEqual(empty['current']['outcome'], 'error')
+        self.assertEqual(empty['current']['lastFailure'],
+                         dict(stage='capture', errorClass='capture-timeout'))
+
+    def test_current_attempt_degrades_untrusted_values_without_raw_text(self):
+        data = self.fixture()
+        data['outcome'] = 'secret-outcome-text'
+        data['observations'] = 'many'
+        data['stageMs'] = {'capture': float('inf'), 'analyze': 'secret-stage'}
+        data['reasonCounts'] = {'non-move': True}
+        data['lastFailure'] = {'stage': 'secret-stage', 'errorClass': 'secret-token-value'}
+        data['dropSentIntervalMs'] = {'samples': 1.5, 'last': 'secret-interval'}
+        result = self.collect(data)
+        current = result['current']
+        self.assertEqual(current['outcome'], 'unknown')
+        self.assertIsNone(current['observations'])
+        self.assertEqual(current['stageMs']['capture'], None)
+        self.assertEqual(current['stageMs']['analyze'], None)
+        self.assertEqual(current['reasonCounts']['non-move'], None)
+        self.assertEqual(current['reasonCounts']['stable'], None)
+        self.assertEqual(current['lastFailure'],
+                         dict(stage='unknown', errorClass='unknown'))
+        self.assertIsNone(current['dropSentIntervals']['samples'])
+        self.assertIsNone(current['dropSentIntervals']['last'])
+        raw = json.dumps(result)
+        self.assertNotIn('secret', raw)
+
+    def test_current_attempt_survives_missing_and_invalid_profile(self):
+        missing = self.collect({'outcome': 'observe', 'stageMs': {'capture': 10}})
+        self.assertEqual(missing['profileStatus'], 'missing')
+        self.assertEqual(missing['current']['outcome'], 'observe')
+        self.assertEqual(missing['current']['stageMs']['capture'], 10)
+        self.assertEqual(missing['current']['lastFailure'], None)
+
+        invalid = self.fixture()
+        invalid['dropProfile']['session'] = 'secret-text'
+        result = self.collect(invalid)
+        self.assertEqual(result['profileStatus'], 'invalid')
+        self.assertEqual(result['current']['observations'], 12)
+        self.assertNotIn('secret-text', json.dumps(result))
 
 
 if __name__ == '__main__':
