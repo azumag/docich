@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich.adapters import make_coordinator_adapter  # noqa: E402
 from docich.adapters.base import AdapterError  # noqa: E402
 from docich.adapters import cli_game, doushi_program  # noqa: E402
+from docich.adapters import program as program_adapter  # noqa: E402
 from docich.doushi_ranking import DoushiRankingError, derive_endpoint  # noqa: E402
 from docich.doushi_view import (  # noqa: E402
     DEFAULT_PORT,
@@ -225,7 +226,9 @@ def test_view_handler_rejects_unsafe_runtime_ids_and_page_seconds():
 def test_doushi_program_view_is_registered_and_respects_the_game_viewport(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
-    monkeypatch.setattr(doushi_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    # 翻訳抑止と日本語UIの固定は共通の broadcast_browser_command が組み立てるため、
+    # ブラウザ探索は共有モジュール側を差し替える（他の view テストと同じ形）。
+    monkeypatch.setattr(program_adapter, "_browser_bin", lambda: "/usr/bin/chromium")
 
     adapter = make_coordinator_adapter(g, spec)
 
