@@ -153,6 +153,20 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("yosou duration_minutes must be an integer 1-14")
+        elif item.adapter == "doushi":
+            # Default-disabled, manual-only 同志カード大賞 view (design §5).
+            # Same shape as yoso: an optional 1-14 minute ceiling, a boolean
+            # speech opt-in, and no weather-only settings.
+            if item.id != "doushi-card" or item.game != "doushi-view":
+                raise CornerCatalogError("doushi requires id=doushi-card and game=doushi-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "doushi accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("doushi duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

@@ -411,6 +411,54 @@ def test_yosou_announcement_counters_are_projected_and_bounded():
     assert module._project_corner_state({'status':'idle'})['overlay_announcements'] is None
 
 
+def test_doushi_end_reason_and_counters_survive_diagnostics():
+    # 同志カード is manual-only and default-disabled, so diagnostics is the only
+    # place an operator can read why a bounded run ended or which sink took the
+    # announcement. Unknown values still collapse to None.
+    module=load_collector()
+    for reason in ('duration','manual','operator-moved-during-doushi',
+                   'operator-moved-after-start','operator-moved-before-restore',
+                   'operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'doushi-view','end_reason':reason})
+        assert output['end_reason']==reason
+        assert output['game']=='doushi-view'
+    assert module._project_corner_state(
+        {'status':'completed','game':'doushi-view','end_reason':'SECRET-END-REASON'})['end_reason'] is None
+
+    counters=module._project_corner_state({
+        'status':'completed','game':'doushi-view',
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0,'secret':'DO-NOT-PUBLISH'},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert counters['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    assert counters['narration']=={'enqueued':1,'delivery_failed':0,'skipped':0}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(counters)
+
+
+def test_doushi_corner_state_is_collected_without_the_ranking_or_lease(tmp_path):
+    # The transient ranking payload and the runtime identity stay out of
+    # diagnostics: only statuses, timestamps and counters may leave state_dir.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    (state_dir/'runtimes'/'g4-a1b2c3d4').mkdir(parents=True)
+    (state_dir/'doushi_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'doushi-view',
+        'end_reason':'operator-moved-during-doushi','completed_at':1.0,
+        'doushi_runtime_identity':{'game':'doushi-view','runtime_id':'g4-a1b2c3d4',
+                                   'generation':4,'lease_id':'SECRET-LEASE'},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0}}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['doushi_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['game']=='doushi-view'
+    assert entry['end_reason']=='operator-moved-during-doushi'
+    assert entry['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

@@ -83,6 +83,12 @@ corners = [
   # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
   # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
   { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true },
+  # 同志カード大賞: TwiCaの opt-in 済みランキングから集計済みの4部門を表示する。
+  # 公開は配信者単位の opt-in（既定OFF・設定UI無し）で、未 opt-in は 404 になり
+  # 当該コーナーは開始しない。既定無効・手動予約のみで、表示名を配信へ出す周知と
+  # オーナー承認が済むまで自動抽選へ入れない（docs/features/doushi-card-corner.md）。
+  # 読み上げ・overlay も承認までは出さない（doushi_narration.ANNOUNCEMENT_ENABLED）。
+  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = false, manual_only = true },
 ]
 
 [nethack_corner]
