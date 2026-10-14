@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "corner": "english",
+  "fixtureId": "english-fixed-example",
+  "isSyntheticFixture": true,
+  "scopeNote": "Synthetic planning fixture for the English-from-real-materials corner; not a real lesson or measured specimen.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic english real materials corner"
+    ],
+    "items": [
+      {
+        "url": "https://example.com/verified/web/material/english",
+        "query_indexes": [
+          0
+        ],
+        "excerpt": "Verified short excerpt (synthetic): We shipped the fix in under an hour, but the trade-off is that we skipped the soak test. Use this as contract material only, not as a real lesson.",
+        "excerpt_sha256": "925a4f49b9d2ee6fb2b2ad42a90169018598be38113a170af062a4af145e8e3b",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealSpecimen": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustKeepShortQuotes": true,
+    "mustKeepCitations": true,
+    "mustIncludeKeyPhrases": true,
+    "mustIncludeMeaning": true,
+    "mustIncludeGrammar": true,
+    "mustIncludeNuance": true,
+    "mustIncludeSourceMaterialBrief": true,
+    "mustIncludeEnglishSections": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Shipping Fast vs. Shipping Right: a short expression from a real changelog",
+    "topicId": "english-real-material-001",
+    "sourceType": "github-release-note",
+    "sourceTitle": "Example project release notes",
+    "url": "https://example.com/release-notes",
+    "publishedDate": "2026-10-01",
+    "domainCategory": "technical-english",
+    "todayExample": "Today's real example: \"We shipped the fix in under an hour, but the trade-off is that we skipped the soak test.\"",
+    "thirtySecondSummary": "A 30-second summary of one English expression from a real technical document.",
+    "oneLineSummary": "Prioritize speed, but name the cost explicitly.",
+    "sourceMaterialBrief": "The source is a short changelog entry explaining why a quick fix was chosen and what test was deferred.",
+    "keyPhrases": [
+      {
+        "phrase": "shipped the fix",
+        "meaningJa": "修正をリリースした",
+        "highlight": true
+      },
+      {
+        "phrase": "trade-off",
+        "meaningJa": "トレードオフ / 見返り",
+        "highlight": true
+      },
+      {
+        "phrase": "soak test",
+        "meaningJa": "長時間安定性テスト",
+        "highlight": true
+      }
+    ],
+    "keyExpressions": [
+      "shipped the fix",
+      "trade-off",
+      "soak test"
+    ],
+    "meaning": "The sentence states a decision (ship quickly) together with its explicit cost (deferred soak test).",
+    "grammarUsage": "\"shipped the fix in under an hour\" uses past tense + in + under + time; \"but the trade-off is that ...\" frames the cost as a named consequence.",
+    "nuance": "\"shipped\" emphasizes release completion; \"in under an hour\" adds speed pride; \"trade-off\" keeps the decision honest.",
+    "similarExpressions": [
+      "we rolled it out quickly",
+      "we hotfixed it",
+      "we skipped testing"
+    ],
+    "differenceFromSimilar": "\"shipped the fix\" includes release; \"hotfixed\" implies urgency/patch; \"skipped testing\" foregrounds risk rather than decision.",
+    "alternativeExample": "Alternative: \"We merged the patch before dinner, but the downside is that monitoring coverage is thin.\"",
+    "limitations": "Synthetic fixture; wording is illustrative and is not presented as a verified real specimen.",
+    "uncertainty": "Nuance depends on whether the author is proud, apologetic, or neutral; extra context is required.",
+    "citationKeepUrl": true,
+    "citationRange": "Short necessary quote plus source URL only; no long verbatim transfer.",
+    "quotePolicy": "short-quote-only",
+    "maxQuoteChars": 120,
+    "shortQuote": "We shipped the fix in under an hour, but the trade-off is that we skipped the soak test.",
+    "primarySources": [
+      "https://example.com/release-notes"
+    ],
+    "sourcePriority": [
+      "primary-technical-document",
+      "official-project-documentation",
+      "trusted-newsroom",
+      "established-news-or-blog",
+      "academic-or-paper"
+    ],
+    "figureOrDiagram": "Overlay plan: subject line, key phrase, meaning, grammar, nuance, similar expressions, alternative example, source badge.",
+    "youtubeIndependentDraft": "Independent YouTube-shaped script outline: hook with today's real English, phrase breakdown, grammar note, nuance, close with source pointer.",
+    "citationKeepRange": "short excerpt only"
+  }
+}
