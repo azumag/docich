@@ -689,7 +689,11 @@ class YosoCornerAdapter:
 
 
 class DoushiCornerAdapter:
-    """Bounded, manual-only 同志カード大賞 display through the shared slot."""
+    """Bounded 同志カード大賞 display through the shared slot.
+
+    2026-10-15 オーナー承認で auto-rotation の対象（manual_only なし）。表示は
+    15 秒 × 4 ページ、上限は ``doushi_corner.DEFAULT_DURATION_MINUTES``（2分）。
+    """
 
     def __init__(self, g, corner):
         from .doushi_corner import DEFAULT_DURATION_MINUTES, DoushiCornerManager

@@ -136,14 +136,17 @@ def _doushi_adapter(g, corner, switch, now, sleep):
     return adapter
 
 
-def test_production_catalog_keeps_doushi_card_default_disabled_and_manual_only():
+def test_production_catalog_enables_doushi_card_in_auto_rotation():
+    # 2026-10-15 オーナー承認: 既定無効・manual_only をやめ、24時間ローテーションの
+    # 抽選対象へ入れる（manual_only なし = 自動抽選に参加する）。
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert len(catalog) == 13
     row = next(c for c in catalog if c.id == "doushi-card")
     assert (row.adapter, row.game) == ("doushi", VIEW_NAME)
-    assert row.enabled is False and row.manual_only is True
+    assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
+    # duration_minutes 未指定 = doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
     assert row.duration_minutes is None and row.audio_enabled is False
     assert row.fetch_on_start is False and row.target_matches is None
 

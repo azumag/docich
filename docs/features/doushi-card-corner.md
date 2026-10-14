@@ -2,7 +2,8 @@
 
 - Status: **Implementation in review（PR-2〜PR-5 のオフライン実装まで完了、未マージ）**。
   TwiCa 側 PR は azumag/twica#1810、docich 側 PR は本ブランチ `feat/doushi-card-corner-934`。
-  production の corner catalog は `doushi-card` を **既定無効・manual_only** で追加しただけで、有効化・VM 反映は未実施。
+  production の corner catalog は `doushi-card` を **2026-10-15 オーナー承認で有効化**（`enabled = true`、
+  manual_only なし = 24時間ローテーションの抽選対象）。VM 反映はマージ後の正規 deploy 経路で行う。
 - 関連 Issue: [azumag/docich#934](https://github.com/azumag/docich/issues/934)（同志カードコーナーを追加。issue 本文は下書きであり実装しない指示つき）
 - 関連リポジトリ: [azumag/twica](https://github.com/azumag/twica)（同志カードの正本。本ドキュメントの集計はすべて TwiCa 側の定義に従う）
 - 関連実装（docich 側）: `src/docich/corner_catalog.py` / `corner_rotation.py` / `corner_adapters.py`（24時間ローテーション）、
@@ -162,16 +163,18 @@ TwiCa の既存並びを正本とし、docich 側で独自に並べ替えない�
   **実装済み**: `corner_adapters.ADAPTERS["doushi"]` に追加した（`DoushiCornerAdapter`）。
 - ビューは TwiCa の新設 API を **read-only** で読み、4ページのランキング表を 960×540 へ描画する。
   既存ゲーム本体・配信 encoder・Soren・TwiCa 本体は変更しない。
-- catalog 例（**既定無効・手動予約可**で提案）:
+- catalog（**2026-10-15 オーナー承認で有効化**。manual_only を付けず 24 時間ローテーションの
+  抽選対象へ入れる）:
 
   ```toml
-  # 同志カード大賞: 同志カードのランキング。既定は無効。配信者単位の opt-in が前提
+  # 同志カード大賞: 同志カードのランキング。配信者単位の opt-in が前提
   # （privacy 方針は 2026-10-15 決着。§7-6）。
-  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = false, manual_only = true }
+  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true }
   ```
 
 - 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（§4）で自動終了する。
-- 有効化・catalog への追加は **オーナー承認後**（本PR では行わない）。
+  `duration_minutes` 未指定のため `doushi_corner.DEFAULT_DURATION_MINUTES`（2分）を使う。
+- 有効化はオーナー承認済み（catalog は本 PR に含む）。VM 反映はマージ後の正規 deploy 経路で行う。
 
 ## 6. TwiCa 側に必要な公開契約（実装済みの確定値）
 
@@ -236,7 +239,8 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 > docich が表示するチャンネルのみ初期有効）。
 > それ以外（②最低ライン、④数の見せ方、⑦対象チャンネル）は未確定のまま（⑥の周知・非表示申請は
 > 2026-10-15 に決着。§7-6）。
-> `enabled=true` 化と VM 反映はオーナー承認を待つ。
+> `enabled=true` 化は 2026-10-15 オーナー承認済みで catalog へ反映した（manual_only なし =
+> 自動抽選の対象）。VM 反映はマージ後の正規 deploy 経路で行う。
 
 1. **集計期間**: 全期間（既定）か、直近 7日 / 30日 か。全期間は 2026-07-04 境界の影響を受ける。
 2. **最低ライン**: 1回だけ引いた人を TOP10 に載せるか（`min_redemptions` を入れるか。既定は導入しない）。
@@ -266,7 +270,8 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 3. **PR-3（docich 本ブランチ）**: API クライアントのオフライン中核（HTTP は注入・ネットワーク無し）＋テスト。
    **実装済み** `src/docich/doushi_ranking.py`。
    JSON 検証は fail-closed。URL は既存 `SOREN_DIRECT_TWICA_OVERLAY_URL` の origin から導出し、ログ・argv・state に出さない。
-4. **PR-4（同 PR）**: `doushi` adapter ＋ view ＋ catalog 登録（**既定無効・manual_only**）。
+4. **PR-4（同 PR）**: `doushi` adapter ＋ view ＋ catalog 登録（**2026-10-15 オーナー承認で
+   `enabled = true`（manual_only なし = 自動抽選の対象）**）。
    **実装済み** `adapters/doushi_program.py` / `doushi_view.py` / `doushi_corner.py`、
    `corner_adapters` / `corner_catalog` / `webui` / `collect_diagnostics` / `config/docich.soren-live.toml` の配線。
 5. **PR-5（同 PR、オフライン部分まで）**: 読み上げ・実況文面の**文面生成まで**。
@@ -299,9 +304,10 @@ python3 -m pytest tests/ ops/vm_actions/tests/ -q   # 既存退行なし
   `tests/test_doushi_view.py::test_doushi_preflight_skips_when_twica_has_not_opted_the_channel_in`
   で固定する。
 
-- production への反映・VM 配備・`enabled=true` 化は**行っていない**。
-  `config/docich.soren-live.toml` への `doushi-card` 追加は既定無効（`enabled=false, manual_only=true`）のみで、
-  ローテーションの eligible 数は 11/10 のまま（設計 §5 の「catalog 追加は承認後」への対応も兼ねる）。
+- production への反映・VM 配備は**行っていない**（VM 反映はマージ後の正規 deploy 経路）。
+  `config/docich.soren-live.toml` の `doushi-card` は 2026-10-15 オーナー承認で
+  `enabled = true`（manual_only なし）とし、ローテーションの eligible 数は 12/11
+  （tsuitate 停止時は 11）になる。
 
 - `docs/**` は `.github/workflows/ci.yml` の `paths:` に含まれないため CI は **0 チェック**になる。
   これは「成功」の証拠ではない（ドキュメントのみのため実行コードの検証対象が無い、というだけ）。

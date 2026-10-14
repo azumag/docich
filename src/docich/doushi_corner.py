@@ -7,10 +7,10 @@ identity and a fixed end time. It never fetches during the display window
 (the program adapter fetched and validated the ranking before the switch
 committed), never talks to Twitch and never writes rankings into state.
 
-The catalog entry is default-disabled and manual-only
-(docs/features/doushi-card-corner.md): the owner starts it from the WebUI/
-manual queue, and it always ends on the reviewed duration bound or an
-explicit stop.
+The catalog entry is enabled for the 24h rotation since 2026-10-15 (owner
+approval) and can also be reserved from the WebUI manual queue
+(docs/features/doushi-card-corner.md). It always ends on the reviewed duration
+bound or an explicit stop.
 """
 from __future__ import annotations
 

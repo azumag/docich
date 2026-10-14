@@ -101,9 +101,12 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     assert yosou.audio_enabled is True
     assert (yosou.adapter, yosou.game) == ("yoso", "yosou-view")
     doushi = next(c for c in catalog if c.id == "doushi-card")
-    assert doushi.enabled is False and doushi.manual_only is True
+    # 2026-10-15 オーナー承認で有効化し、自動抽選の対象へ入れた（manual_only なし）。
+    assert doushi.enabled is True and doushi.manual_only is False
     assert (doushi.adapter, doushi.game) == ("doushi", "doushi-view")
     assert doushi.live_eligible is False and doushi.audio_enabled is False
+    # duration_minutes 未指定は doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
+    assert doushi.duration_minutes is None
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
         "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate", "yosou-oh",
@@ -229,18 +232,16 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "finished", "readyForNextRun": True,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 12
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
-    # 予想王は 2026-10-15 のオーナー判断で手動専用を解除し、自動抽選に入る。
-    assert "yosou-oh" in eligible
-    assert excluded == {"doushi-card": "disabled-or-paused"}
+    assert len(eligible) == 13
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
+            "yosou-oh", "doushi-card"} <= set(eligible)
+    assert excluded == {}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 11 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable",
-                        "doushi-card": "disabled-or-paused"}
+    assert len(eligible) == 12 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
