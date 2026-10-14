@@ -24,6 +24,9 @@ from .tsuitate_beta_control import ControlError, call_beta_control
 from .tsuitate_view import VIEW_NAME
 
 STATE_FILENAME = "tsuitate_corner.json"
+# Same bounded ceiling the retro restore recovery uses (#2199): the common
+# scheduler owns the attempt budget and backoff, this caps one replay.
+RESTORE_RECOVERY_TIMEOUT_S = 420.0
 RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
 ROLLBACK_ERROR_CODES = frozenset({
@@ -536,7 +539,8 @@ class TsuitateCornerManager:
             return False
         return self._restored_owner_matches(state, canonical, result)
 
-    def _restore(self, state, *, end_reason):
+    def _restore(self, state, *, end_reason, timeout_s=None,
+                 allow_boundary_timeout_extension=True):
         identity = state.get("view_runtime_identity")
         if (
             not isinstance(identity, dict)
@@ -586,9 +590,13 @@ class TsuitateCornerManager:
         previous = state.get("previous_game")
         payload = {"expected_source": identity}
         if previous is None:
-            result = self.coordinator.stop(request_id=request_id, payload=payload)
+            result = self.coordinator.stop(request_id=request_id, payload=payload,
+                                           timeout_s=timeout_s)
         else:
-            result = self.coordinator.switch(previous, request_id=request_id, payload=payload)
+            result = self.coordinator.switch(
+                previous, request_id=request_id, payload=payload, timeout_s=timeout_s,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            )
         status = getattr(result, "status", None)
         if status in PENDING_SWITCH_STATUSES:
             state.update(status="restoring", switch_status=status)
@@ -628,6 +636,39 @@ class TsuitateCornerManager:
         self._save(state)
         self._clear_stop_request()
         return "completed"
+
+    def recover_failed_restore(self):
+        """Timer-safe restore replay for a finished view whose end switch failed.
+
+        A terminal-failed restore request cannot be resumed (its receipt is
+        terminal), so the first attempt records one fresh bounded replay request
+        durably and later attempts reuse that exact id; only the recorded
+        previous game is targeted. No match is started, no beta control call
+        runs and no boundary extension is allowed. The common scheduler owns the
+        attempt budget and backoff (#2199).
+        """
+        state = self._read_state()
+        if state.get("status") != "restoring":
+            return "noop"
+        request_id = state.get("restore_request_id")
+        if not isinstance(request_id, str) or request_id != state.get("switch_request_id"):
+            return "noop"
+        record = state.get("restore_recovery")
+        if not isinstance(record, dict) or not isinstance(record.get("request_id"), str):
+            record = {"request_id": str(uuid.uuid4()), "original_request_id": request_id,
+                      "created_at": self.clock()}
+            state["restore_recovery"] = record
+            self._save(state)
+        if state.get("restore_request_id") != record["request_id"]:
+            state["restore_request_id"] = record["request_id"]
+            state["switch_request_id"] = record["request_id"]
+            self._save(state)
+        canonical = self._canonical()
+        if canonical is None or canonical.get("phase") in {"stopping", "starting", "rolling_back"}:
+            return "queued"
+        return self._restore(state, end_reason=state.get("end_reason", "game-completed"),
+                             timeout_s=RESTORE_RECOVERY_TIMEOUT_S,
+                             allow_boundary_timeout_extension=False)
 
     def run_rotation(self, request_id):
         request_id = self._request_id(request_id)

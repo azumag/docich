@@ -1256,3 +1256,71 @@ def test_fetch_on_start_requires_weather_and_boolean(tmp_path, adapter, game):
     config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="%s",game="%s",fetch_on_start="true"}]\n' % (adapter, game))
     with pytest.raises(CornerCatalogError):
         load_catalog(load_global(tmp_path, config))
+
+
+def test_weather_timer_safe_restore_replay_restores_the_previous_game(tmp_path, monkeypatch):
+    # #2199: the common scheduler may replay a recorded, failed end switch for a
+    # finished view. The replay must use the recorded request and previous game,
+    # stay bounded and never extend a boundary.
+    import docich.weather_corner as weather_corner
+    from docich.corner_catalog import Corner
+
+    g, now, _factory, store, switch = _setup(tmp_path, boundary_generation=None)
+    monkeypatch.setattr(
+        weather_corner, "read_view",
+        lambda _path, clock=None: {"expires_at": now[0] + 900},
+    )
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _weather_adapter(g, Corner("weather", "weather", "weather-view",
+                                        duration_minutes=1), switch, now, sleep)
+    calls = []
+    original_switch = switch.switch
+
+    def recording_switch(target, **kwargs):
+        calls.append((target, kwargs))
+        return original_switch(target, **kwargs)
+
+    switch.switch = recording_switch
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    restore_request_id = str(uuid.uuid4())
+    state.update(status="restoring", restore_request_id=restore_request_id,
+                 switch_request_id=restore_request_id, end_reason="duration")
+    adapter.manager._save(state)
+    calls.clear()
+
+    assert adapter.manager.recover_failed_restore() == "completed"
+
+    target, kwargs = calls[0]
+    assert target == "robots"
+    # The original request is terminal-failed, so one fresh bounded replay
+    # request is recorded for the scheduler's auto-restore budget.
+    assert kwargs["request_id"] != restore_request_id
+    assert kwargs["timeout_s"] == weather_corner.RESTORE_RECOVERY_TIMEOUT_S == 420.0
+    assert kwargs["allow_boundary_timeout_extension"] is False
+    assert len(calls) == 1
+    canonical, _ = store.canonical.load()
+    assert canonical["active"]["game"] == "robots"
+    saved = json.loads((Path(g.state_dir) / "weather_corner.json").read_text())
+    assert saved["status"] == "completed"
+    assert saved["restore_recovery"]["request_id"] == kwargs["request_id"]
+    assert saved["restore_recovery"]["original_request_id"] == restore_request_id
+
+
+def test_weather_restore_replay_is_a_noop_without_a_recorded_restore(tmp_path):
+    from docich.corner_catalog import Corner
+
+    g, now, _factory, _store, switch = _setup(tmp_path)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _weather_adapter(g, Corner("weather", "weather", "weather-view",
+                                        duration_minutes=1), switch, now, sleep)
+
+    assert adapter.manager.recover_failed_restore() == "noop"

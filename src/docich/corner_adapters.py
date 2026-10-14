@@ -585,6 +585,11 @@ class TsuitateCornerAdapter:
     def resources_released(self):
         return self.manager.resources_released()
 
+    def recover_failed_restore(self):
+        """Timer-safe restore replay owned by the common scheduler (#2199)."""
+        runner = getattr(self.manager, "recover_failed_restore", None)
+        return runner() if callable(runner) else None
+
 
 class WeatherCornerAdapter:
     """Opt-in weather lifecycle through GameSwitch and the common program slot."""
@@ -627,6 +632,11 @@ class WeatherCornerAdapter:
     def resources_released(self):
         return self.manager.resources_released()
 
+    def recover_failed_restore(self):
+        """Timer-safe restore replay owned by the common scheduler (#2199)."""
+        runner = getattr(self.manager, "recover_failed_restore", None)
+        return runner() if callable(runner) else None
+
 
 class YosoCornerAdapter:
     """Bounded, manual-only 予想王 leaderboard display through the shared slot."""
@@ -663,6 +673,11 @@ class YosoCornerAdapter:
 
     def resources_released(self):
         return self.manager.resources_released()
+
+    def recover_failed_restore(self):
+        """Timer-safe restore replay owned by the common scheduler (#2199)."""
+        runner = getattr(self.manager, "recover_failed_restore", None)
+        return runner() if callable(runner) else None
 
 
 ADAPTERS = {

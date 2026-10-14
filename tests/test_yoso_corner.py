@@ -480,3 +480,129 @@ def test_yoso_accepted_start_replay_skips_announcements_when_ending(
     assert restores == [end_reason]
     assert state["status"] == "completed" and state["end_reason"] == end_reason
     assert "announce_request_id" not in state
+
+
+def test_yoso_timer_safe_restore_replay_restores_the_previous_game(tmp_path):
+    # #2199: the common scheduler may replay a recorded, failed end switch for a
+    # finished view. The replay must use the recorded request and previous game,
+    # stay bounded, and never extend a boundary.
+    g, now, _factory, store, switch = _setup(tmp_path)
+    calls = []
+    original_switch = switch.switch
+
+    def recording_switch(target, **kwargs):
+        calls.append((target, kwargs))
+        return original_switch(target, **kwargs)
+
+    switch.switch = recording_switch
+    adapter = _yoso_adapter(g, _corner(), switch, now, lambda seconds: now.__setitem__(0, now[0] + seconds))
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    restore_request_id = str(uuid.uuid4())
+    state.update(status="restoring", restore_request_id=restore_request_id,
+                 switch_request_id=restore_request_id, end_reason="duration")
+    adapter.manager._save(state)
+    calls.clear()  # only the restore replay matters below
+
+    assert adapter.manager.recover_failed_restore() == "completed"
+
+    target, kwargs = calls[0]
+    assert target == "robots"
+    # The original request is terminal-failed and cannot be resumed, so the
+    # first attempt records exactly one fresh bounded replay request.
+    assert kwargs["request_id"] != restore_request_id
+    assert kwargs["timeout_s"] == 420.0
+    assert kwargs["allow_boundary_timeout_extension"] is False
+    assert len(calls) == 1
+    canonical, _ = store.canonical.load()
+    assert canonical["active"]["game"] == "robots"
+    saved = json.loads(adapter.state_path.read_text())
+    assert saved["status"] == "completed" and saved["end_reason"] == "duration"
+    assert saved["restore_recovery"]["request_id"] == kwargs["request_id"]
+    assert saved["restore_recovery"]["original_request_id"] == restore_request_id
+    # A settled replay is never replayed twice.
+    assert adapter.manager.recover_failed_restore() == "noop"
+
+
+def test_yoso_restore_replay_is_a_noop_without_a_recorded_restore(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    adapter = _yoso_adapter(g, _corner(), switch, now, lambda seconds: None)
+
+    assert adapter.manager.recover_failed_restore() == "noop"
+
+    state = adapter.manager._new_state(str(uuid.uuid4()))
+    state.update(status="interrupted")
+    adapter.manager._save(state)
+
+    assert adapter.manager.recover_failed_restore() == "noop"
+
+
+def test_yoso_restore_replay_waits_for_an_in_flight_switch(tmp_path):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    adapter = _yoso_adapter(g, _corner(), switch, now, lambda seconds: None)
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    restore_request_id = str(uuid.uuid4())
+    state.update(status="restoring", restore_request_id=restore_request_id,
+                 switch_request_id=restore_request_id)
+    adapter.manager._save(state)
+    canonical, _ = store.canonical.load()
+    canonical.update(phase="stopping", operation="switch", request_id=str(uuid.uuid4()))
+    store.canonical.save(canonical)
+    dispatched = []
+    adapter.manager.coordinator = SimpleNamespace(
+        switch=lambda *args, **kwargs: dispatched.append(args),
+        stop=lambda **kwargs: dispatched.append(kwargs))
+
+    assert adapter.manager.recover_failed_restore() == "queued"
+    assert dispatched == []
+
+
+def test_view_adapters_expose_the_timer_safe_restore_replay(tmp_path):
+    from docich.corner_adapters import TsuitateCornerAdapter, WeatherCornerAdapter
+
+    g, _now, _factory, _store, _switch = _setup(tmp_path)
+    yoso = YosoCornerAdapter(g, _corner())
+    yoso.manager.recover_failed_restore = lambda: "sentinel"
+    assert yoso.recover_failed_restore() == "sentinel"
+
+    weather = WeatherCornerAdapter(g, Corner("weather", "weather", "weather-view",
+                                            duration_minutes=1))
+    weather.manager.recover_failed_restore = lambda: "sentinel"
+    assert weather.recover_failed_restore() == "sentinel"
+
+    tsuitate = TsuitateCornerAdapter(g, Corner("tsuitate", "tsuitate", "tsuitate-view"))
+    tsuitate.manager.recover_failed_restore = lambda: "sentinel"
+    assert tsuitate.recover_failed_restore() == "sentinel"
+
+
+def test_yoso_restore_replay_reuses_one_fresh_request_when_it_fails(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    adapter = _yoso_adapter(g, _corner(), switch, now, lambda seconds: None)
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    original = str(uuid.uuid4())
+    state.update(status="restoring", restore_request_id=original, switch_request_id=original)
+    adapter.manager._save(state)
+    calls = []
+    adapter.manager.coordinator = SimpleNamespace(
+        switch=lambda target, **kwargs: calls.append((target, kwargs)) or SimpleNamespace(
+            status="failed", error_code="timeout"),
+        stop=lambda **kwargs: calls.append(kwargs))
+
+    with pytest.raises(YosoCornerError):
+        adapter.manager.recover_failed_restore()
+    first = json.loads(adapter.state_path.read_text())["restore_recovery"]["request_id"]
+    assert first != original and calls[0][1]["request_id"] == first
+
+    with pytest.raises(YosoCornerError):
+        adapter.manager.recover_failed_restore()
+    second = json.loads(adapter.state_path.read_text())["restore_recovery"]["request_id"]
+    assert second == first
+    assert [call[1]["request_id"] for call in calls if isinstance(call, tuple)] == [first, first]

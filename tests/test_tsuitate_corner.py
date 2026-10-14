@@ -690,3 +690,31 @@ def test_rotation_adapter_rejects_control_secret_reusing_webui_token(tmp_path, m
     )
     with pytest.raises(CornerExecutionError, match="must not reuse"):
         adapter.eligible()
+
+
+def test_tsuitate_restore_replay_is_a_noop_without_a_recorded_restore(tmp_path):
+    g = _global(tmp_path)
+    manager = TsuitateCornerManager(g, coordinator=object(), control=lambda *_: _status())
+
+    assert manager.recover_failed_restore() == "noop"
+
+    state, _ = _active_state()
+    state["status"] = "completed"
+    manager._save(state)
+
+    assert manager.recover_failed_restore() == "noop"
+
+
+def test_tsuitate_restore_replay_waits_for_an_in_flight_switch(tmp_path):
+    # #2199: a recorded failed restore is replayed by the common scheduler, but
+    # never on top of another switch that still owns the slot.
+    g = _global(tmp_path)
+    manager = TsuitateCornerManager(g, coordinator=object(), control=lambda *_: _status())
+    state, _identity = _active_state()
+    restore_request_id = str(uuid.uuid4())
+    state.update(status="restoring", restore_request_id=restore_request_id,
+                 switch_request_id=restore_request_id)
+    manager._save(state)
+    manager._canonical = lambda: {"phase": "starting"}
+
+    assert manager.recover_failed_restore() == "queued"

@@ -146,6 +146,13 @@ last_seen、pending、request UUID、結果をatomic writeする。
   `active`/`restoring` 等は生きたコーナーの可能性があるため reclaim しない**（従来どおりlatch）。
 - timerはまずadapterの`recover_failed_restore()`（review済みrestore復旧の狭い入口。prelaunch失敗の
   確定・general retry・game選択/起動を含まない）でbase game（recorded `previous_game`）への復帰を試す。
+  **この入口を持つのはretro系（game / Meriken）とview系（tsuitate / weather / yoso）**で、
+  view系は `status=restoring` に記録済みのrestoreだけを、記録済み`previous_game`へ再実行する
+  （新しいcornerの選択・forecast再取得・beta制御はしない）。元のrestore requestはterminal失敗で
+  再開できないため、**最初の試行が1本だけfresh request idを`restore_recovery`へdurableに記録し、
+  以降の試行は同じidを再利用**する（1 restoreにつきreplayは1本。失敗したreplayを作り直さない）。
+  NetHackはrotation lockを取るためtimerからは呼ばず、固定operatorの
+  `nethack-corner recover-failed-rotation`が担う。
   予算は**requestごとに3回**、間隔は**5分・15分・45分**（`auto_restore` recordへdurableに保存）。
   各試行は既存の420s上限・boundary延長なし・durable recordの再利用に従う（新しいrequestを乱造しない）。
 - 復帰に成功すればcorner stateがterminalになり、1.または2.で予約が確定して次のcornerへ進む。
