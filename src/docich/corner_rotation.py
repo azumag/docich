@@ -1063,7 +1063,11 @@ class CornerRotationManager:
     def tick(self):
         # The common timer owns only retry/reconciliation, never new predictions.
         from .hanjuku_predictions import tick as prediction_tick
+        from .soren_predictions import tick as soren_prediction_tick
         prediction_tick(self.g)
+        # 予想王 (#933): Soren の resolve 済み row を台帳へ記録する。best-effort で、
+        # 失敗しても rotation の tick は止めない。
+        soren_prediction_tick(self.g)
         if not rotation_enabled(self.g):
             return {"status": "disabled"}
         with self.locked() as acquired:
