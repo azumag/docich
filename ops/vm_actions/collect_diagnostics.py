@@ -49,6 +49,12 @@ Observed sources (all read-only):
     trailing identical-signature run, so a corner that keeps repeating one
     operation stays diagnosable. Reasons, chart steps, names, hashes, runtime
     identifiers and log bodies are never read out.
+  - the owned channel-point prediction round (state_dir/hanjuku_predictions.json
+    plus at most three bounded records under runtimes/<runtime_id>/): a fixed
+    enum naming which external record is decisive when the round stops
+    validating, the persisted retry delay, presence/readability booleans and the
+    terminal-reason enum. Runtime/lease identifiers, frame hashes and record
+    bodies are never emitted.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
@@ -4541,6 +4547,123 @@ def _collect_external_video(state_dir, now):
     return entry
 
 
+_HANJUKU_PREDICTION_RECORD_LIMIT = 16384
+_HANJUKU_PREDICTION_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
+_HANJUKU_PREDICTION_TERMINAL_REASONS = ("game_over", "screen_stalled", "input_stalled")
+_HANJUKU_PREDICTION_BLOCKERS = (
+    "runtime-identity-invalid", "runtime-missing", "run-record-missing",
+    "run-record-unreadable", "run-record-identity-mismatch",
+    "terminal-evidence-malformed", "result-record-unreadable",
+    "result-record-mismatch", "progress-record-unreadable",
+)
+
+
+def _bounded_prediction_record(path):
+    """(value, present, readable) for one bounded regular JSON record."""
+    try:
+        if path.is_symlink():
+            return None, True, False
+        if not path.is_file():
+            return None, False, False
+        if path.stat().st_size > _HANJUKU_PREDICTION_RECORD_LIMIT:
+            return None, True, False
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None, True, False
+    if not isinstance(value, dict):
+        return None, True, False
+    return value, True, True
+
+
+def _is_digest(value):
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _collect_hanjuku_prediction_ownership(state_dir, data, row):
+    """Bounded, read-only classification of one owned prediction round.
+
+    ``hanjuku_predictions`` keeps the round owned when an external record stops
+    validating, so a permanent mismatch spins in ``error=invalid_state`` with the
+    fixed 300 s retry. This reports *which* record is decisive and whether the
+    persisted next poll is the retry backoff or the ordinary poll interval, using
+    fixed enums, booleans and bounded integers only. No record body, viewer name
+    or OAuth material is read out.
+    """
+    now = time.time()
+    next_poll = _finite_number(data.get("next_poll_at") if isinstance(data, dict) else None)
+    delay = None
+    if next_poll is not None:
+        delay = max(0, min(86400, int(next_poll - now)))
+    out = {"retry_delay_seconds": delay, "blocker": None}
+    if not isinstance(row, dict) or not row:
+        return out
+
+    runtime_id = row.get("runtime_id")
+    if (not isinstance(runtime_id, str) or not runtime_id or len(runtime_id) > 128
+            or "/" in runtime_id or "\\" in runtime_id or ".." in runtime_id):
+        out["blocker"] = "runtime-identity-invalid"
+        return out
+    runtime = Path(state_dir) / "runtimes" / runtime_id
+    try:
+        present = runtime.is_dir() and not runtime.is_symlink()
+    except OSError:
+        present = None
+    out["runtime_present"] = present
+    if present is False:
+        out["blocker"] = "runtime-missing"
+        return out
+
+    run_state, run_present, run_readable = _bounded_prediction_record(
+        runtime / "hanjuku_run.json")
+    out["run_record_present"] = run_present
+    out["run_record_readable"] = run_readable
+    if not run_present:
+        out["blocker"] = "run-record-missing"
+        return out
+    if not run_readable:
+        out["blocker"] = "run-record-unreadable"
+        return out
+
+    identity = {key: row.get(key) for key in _HANJUKU_PREDICTION_IDENTITY_KEYS}
+    if any(run_state.get(key) != value for key, value in identity.items()):
+        out["blocker"] = "run-record-identity-mismatch"
+        return out
+
+    reason = run_state.get("terminal_reason")
+    reason = reason if reason in _HANJUKU_PREDICTION_TERMINAL_REASONS else None
+    out["terminal_reason"] = reason
+    if reason is None:
+        # No terminal is recorded yet: the round waits rather than failing.
+        return out
+    if not _is_digest(run_state.get("frame_sha256")):
+        out["blocker"] = "terminal-evidence-malformed"
+        return out
+
+    result_state, result_present, result_readable = _bounded_prediction_record(
+        runtime / "hanjuku_prediction_result.json")
+    out["result_record_present"] = result_present
+    if result_present and not result_readable:
+        out["blocker"] = "result-record-unreadable"
+        return out
+    if result_readable:
+        mismatched = (
+            any(result_state.get(key) != value for key, value in identity.items())
+            or result_state.get("reason") != reason
+            or result_state.get("frame_sha256") != run_state.get("frame_sha256")
+        )
+        if mismatched:
+            out["blocker"] = "result-record-mismatch"
+            return out
+
+    _progress, progress_present, progress_readable = _bounded_prediction_record(
+        runtime / "hanjuku_progress.json")
+    out["progress_record_present"] = progress_present
+    if progress_present and not progress_readable:
+        out["blocker"] = "progress-record-unreadable"
+    return out
+
+
 def _collect_hanjuku_predictions(state_dir):
     """Read-only bounded projection; never expose OAuth config or API payloads."""
     present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
@@ -4557,17 +4680,26 @@ def _collect_hanjuku_predictions(state_dir):
         return value if type(value) is int and 0 <= value <= 12 else None
     def choice(value, allowed):
         return value if isinstance(value, str) and value in allowed else None
-    return {"present": present, "readable": readable,
-            "mode": choice(data.get("mode"), modes),
-            "error": choice(data.get("error"), errors),
-            "best_cleared": chapter(data.get("best_cleared")),
-            "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
-            "window_seconds": (row.get("window") if type(row.get("window")) is int
-                               and 1 <= row["window"] <= 1800 else None),
-            "status": choice(row.get("status"), {
-                "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
-            "cleared": chapter(result.get("cleared")),
-            "next_poll_at": _finite_number(data.get("next_poll_at"))}
+    entry = {"present": present, "readable": readable,
+             "mode": choice(data.get("mode"), modes),
+             "error": choice(data.get("error"), errors),
+             "best_cleared": chapter(data.get("best_cleared")),
+             "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
+             "window_seconds": (row.get("window") if type(row.get("window")) is int
+                                and 1 <= row["window"] <= 1800 else None),
+             "status": choice(row.get("status"), {
+                 "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
+             "cleared": chapter(result.get("cleared")),
+             "next_poll_at": _finite_number(data.get("next_poll_at"))}
+    if present and readable and row:
+        try:
+            ownership = _collect_hanjuku_prediction_ownership(state_dir, data, row)
+        except (OSError, ValueError, RecursionError):
+            ownership = {"blocker": None, "retry_delay_seconds": None}
+        if ownership.get("blocker") not in _HANJUKU_PREDICTION_BLOCKERS:
+            ownership["blocker"] = None
+        entry["ownership"] = ownership
+    return entry
 
 
 RETRO_PROGRAM_QUEUE_FILES = {
