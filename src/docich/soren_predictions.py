@@ -18,7 +18,7 @@ from pathlib import Path
 import time
 
 from .game_switch import atomic_write_json
-from .prediction_leaderboard import LeaderboardError, record_resolved
+from .prediction_leaderboard import LeaderboardError, extract, record_resolved
 from .trading.soren_output import resolve_soren_root
 
 HANDOFF = Path("tmp/state/prediction_resolved.jsonl")
@@ -74,6 +74,10 @@ def read_handoff(path) -> list:
         if (not isinstance(row, dict) or row.get("status") != "RESOLVED"
                 or not isinstance(row.get("id"), str) or not 1 <= len(row["id"]) <= MAX_TEXT):
             raise SorenPredictionError("handoff-invalid")
+        try:
+            extract(row)
+        except LeaderboardError:
+            raise SorenPredictionError("handoff-invalid") from None
         rows.append(row)
     return rows
 
