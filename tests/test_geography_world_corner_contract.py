@@ -105,6 +105,16 @@ def test_source_priority_and_sections_are_explicit():
     assert acceptance["mustIncludeFactAnalysisForecastLabels"] is True
 
 
+def test_synthetic_map_metadata_states_unavailable_values():
+    """Check the fixed synthetic input, not actual map rights or resolution."""
+    data = load_fixture()
+    assert data["isSyntheticFixture"] is True
+    note = data["topic"]["mapHandling"]
+    for field in ("resolution", "license", "usage conditions"):
+        assert f"{field} = not provided (synthetic fixture)" in note
+    assert "no real map license or usage permission is asserted" in note
+
+
 def test_verified_material_hashes_are_well_formed():
     import hashlib
 

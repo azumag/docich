@@ -67,7 +67,7 @@
     ],
     "historyPoliticsImpact": "Historical trade, colonial port development, independence, and regional security concerns combined to make location a durable political and economic asset.",
     "currentMeaning": "The theme connects a concrete place on the map to modern trade, energy security, urban planning, and geopolitics.",
-    "mapHandling": "Map handling note: center = Singapore Strait; scale = regional maritime overview; projection = Web Mercator for screen overlay only; vintage = synthetic example date 2026-10-01; layers = bathymetry, vessel density, port, airport, political boundaries; attribution = official/public geographic sources; caveat = simplified overlay, not a navigational chart.",
+    "mapHandling": "Map handling note: center = Singapore Strait; scale = regional maritime overview; projection = Web Mercator for screen overlay only; vintage = synthetic example date 2026-10-01; layers = bathymetry, vessel density, port, airport, political boundaries; resolution = not provided (synthetic fixture); license = not provided (synthetic fixture); usage conditions = not provided (synthetic fixture); rights note = no real map license or usage permission is asserted; attribution = official/public geographic sources; caveat = simplified overlay, not a navigational chart.",
     "labelsPolicy": "Every generated segment must be labeled fact, analysis, or forecast.",
     "segmentLabels": [
       "fact",
