@@ -312,23 +312,29 @@ def test_parse_candidate_rejects_boolean_nonfinite_and_overflowing_integer(value
     assert excinfo.value.code == 'llm-values'
 
 
-def test_parse_candidate_allows_zero_only_for_bastet_hard_drop():
+def test_parse_candidate_allows_zero_for_bastet_weights():
     defaults = bot_default_weights('bastet')
-    assert defaults == {'hard_drop': 1.0}
-    assert corner_improve.numeric_weights(defaults) == {'hard_drop'}
+    # Bastet's board evaluation and 2-ply search are all numeric weights, so the
+    # improvement loop may tune every one of them.
+    assert defaults['hard_drop'] == 1.0
+    assert {'hard_drop', 'holes', 'rows_cleared', 'next_piece_weight'} <= set(defaults)
+    assert corner_improve.numeric_weights(defaults) == set(defaults)
 
+    # 0 is meaningful for Bastet (soft drop / disable a term), so it is allowed
+    # for every Bastet weight but still rejected elsewhere.
     assert parse_candidate('{"hard_drop": 0}', {'hard_drop'}, game='bastet') == {
         'hard_drop': 0,
     }
+    assert parse_candidate('{"holes": 0}', {'holes'}, game='bastet') == {'holes': 0}
     with pytest.raises(CornerImproveError) as default_excinfo:
         parse_candidate('{"hard_drop": 0}', {'hard_drop'})
     assert default_excinfo.value.code == 'llm-values'
     with pytest.raises(CornerImproveError) as other_game_excinfo:
         parse_candidate('{"k": 0}', {'k'}, game='nsnake')
     assert other_game_excinfo.value.code == 'llm-values'
-    with pytest.raises(CornerImproveError) as other_key_excinfo:
-        parse_candidate('{"k": 0}', {'k'}, game='bastet')
-    assert other_key_excinfo.value.code == 'llm-values'
+    with pytest.raises(CornerImproveError) as unknown_key_excinfo:
+        parse_candidate('{"k": 0}', {'holes'}, game='bastet')
+    assert unknown_key_excinfo.value.code == 'llm-keys'
 
 
 def test_already_running_is_skipped(tmp_path):

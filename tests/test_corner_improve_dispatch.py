@@ -339,9 +339,13 @@ class TestLiveBrainHotSwap(unittest.TestCase):
 
             self.assertEqual(result["status"], "promoted", result)
             self.assertEqual([weights["hard_drop"] for weights in evaluated], [1.0, 0])
-            self.assertIn("hard_drop は有限なJSON数値で 0.0 以上", prompts[0])
-            self.assertIn("1e+06 以下", prompts[0])
+            self.assertIn("hard_drop は 0.5 以上で Enter によるハードドロップ", prompts[0])
+            self.assertIn("0 以上 1e+06 以下", prompts[0])
             self.assertIn("ソフトドロップ", prompts[0])
+            # Bastet exposes its whole board evaluation to the loop, not only
+            # the hard-drop switch.
+            self.assertIn("next_piece_weight", prompts[0])
+            self.assertIn("rows_cleared", prompts[0])
             live = self.brain / "bastet" / "weights.json"
             self.assertEqual(json.loads(live.read_text(encoding="utf-8"))["hard_drop"], 0)
 

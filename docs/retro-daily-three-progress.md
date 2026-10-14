@@ -98,6 +98,11 @@ nsnake 3.0.1-2.1。リポジトリの実 wrapper＋実ブレインを docich の
 - **bastet ブレインは盲目**: 盤面は色付き空白で `capture-pane -p` に出ず、中央へ ENTER ハードドロップ
   するだけで Score は毎回 0 (前進はするが最適配置しない)。`tmux capture-pane -e` の色情報を読む
   ブレインが必要。0 点も記録するため「3試合で早期終了」は成立する (約7分)。
+  - **2026-10-14 訂正**: 上の「盲目」は 2026-09-19 時点の記述。docich の CLI adapter が色付き
+    capture を `meta.bastet_color_text` で渡すようになり、`brains/bastet/brain.py` は盤面を復元して
+    配置を選ぶ。さらに Bastet 0.43 の "Next block" 窓を読んで 2 手読みするよう更新した
+    (`brains/bastet/brain.py`、検証は `tests/test_bastet_strategy.py`)。スコアが毎回 0 という
+    前提は使わないこと。
 - **moon-buggy ブレインは最小方策** (周期ジャンプ + 稀な射撃、クレーター追跡なし)。平均約17点。
 - **nsnake は死なない**: ブレインは生き延びるが Speed 1 では得点が遅く (300秒で 8個)、Game Over が来ない
   ため 3試合検知は現実的でなく、コーナーは時間上限で終了する。
