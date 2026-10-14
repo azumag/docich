@@ -1,0 +1,23 @@
+[Unit]
+Description=docich Moomoo OpenD quote gateway (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/docich/moomoo-opend
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+ExecStartPre=/usr/bin/bash __DOCICH_ROOT__/ops/vm_actions/check_moomoo_opend_runtime.sh __DOCICH_ROOT__
+ExecStart=%h/.local/share/docich/moomoo-opend/OpenD -cfg_file=%h/.config/docich/moomoo-opend/OpenD.xml -login_by_remember=1 -lang=en -api_ip=127.0.0.1 -api_port=11111 -console=0
+ExecStartPost=__DOCICH_ROOT__/.venv-trading/bin/python3 __DOCICH_ROOT__/ops/vm_actions/wait_moomoo_opend_ready.py --timeout 30
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=45
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

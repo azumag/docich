@@ -1,0 +1,61 @@
+# Makefile for GNU Robots
+# Copyright (C) 1998 Jim Hall, jhall1@isd.net
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+# Macros:
+
+# Where is GNU Guilde installed?
+#GUILE=$(HOME)
+#GUILE=/usr/local
+
+CC=@CC@
+CFLAGS=$(CPPFLAGS) $(DEFS) @CFLAGS@
+CPPFLAGS=-I../include
+DEFS=@DEFS@
+LDFLAGS=@LDFLAGS@
+LIBS=@LIBS@
+LDLIBS=$(LIBS)
+
+LINT=lint
+RM=/bin/rm -f
+
+# Build targets:
+
+all:
+	(cd lib; $(MAKE) "CC=$(CC)" "CFLAGS=$(CFLAGS)" $@)
+	(cd src; $(MAKE) "CC=$(CC)" "CFLAGS=$(CFLAGS)" \
+	  "LDFLAGS=$(LDFLAGS)" "LDLIBS=$(LDLIBS)" $@)
+
+test: all
+	(cd src; $(MAKE) $@)
+
+lint:
+	(cd lib; $(MAKE) "LINT=$(LINT)" "CFLAGS=$(CFLAGS)" $@)
+	(cd src; $(MAKE) "LINT=$(LINT)" "CFLAGS=$(CFLAGS)" $@)
+
+# Clean up:
+
+clean:
+	$(RM) *~ core
+
+realclean: clean
+	$(RM) *.o
+
+distclean: realclean
+	(cd lib; $(MAKE) "RM=$(RM)" $@)
+	(cd src; $(MAKE) "RM=$(RM)" $@)
+	$(RM) Makefile
+	$(RM) config.cache config.log config.status

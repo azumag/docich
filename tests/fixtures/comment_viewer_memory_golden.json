@@ -1,0 +1,484 @@
+{
+ "provenance": {
+  "source": "azumag/soviet_now broadcast/comment.sh viewer-memory wrappers as loaded by eloop_lib.sh (see scripts/golden/comment_viewer_memory_golden.py)",
+  "soviet_now_commit": "54fa4a7a3c45e2bfbb795fb1e0b43270755775fb",
+  "generated_by": "helper replaced by an argv-recording stub; Linux",
+  "purpose": "docich.comment.state viewer-memory wrappers must reproduce these (#829 PR-3c-2)"
+ },
+ "target": "tmp/.comment_queue/comment_5.txt",
+ "sidecar": "tmp/.comment_queue/comment_5.viewer_memory.json",
+ "cases": [
+  {
+   "op": "context",
+   "env": {},
+   "stub_out": "CTX",
+   "stub_rc": 0,
+   "with_sidecar": false,
+   "calls": [
+    [
+     "context",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--source",
+     "twitch",
+     "--mode",
+     "soren91",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--items",
+     "4",
+     "--max-chars",
+     "2200",
+     "--comment-max-chars",
+     "240",
+     "--reply-max-chars",
+     "320",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "CTX\n",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "context",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_ENABLED": "0"
+   },
+   "stub_out": "X",
+   "stub_rc": 0,
+   "with_sidecar": false,
+   "calls": [],
+   "stdout": "（投稿者別メモは無効）\n",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "context",
+   "env": {},
+   "stub_out": null,
+   "stub_rc": 1,
+   "with_sidecar": false,
+   "calls": [
+    [
+     "context",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--source",
+     "twitch",
+     "--mode",
+     "soren91",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--items",
+     "4",
+     "--max-chars",
+     "2200",
+     "--comment-max-chars",
+     "240",
+     "--reply-max-chars",
+     "320",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "（該当する投稿者別メモなし）\n",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "context",
+   "env": {},
+   "stub_out": "PARTIAL",
+   "stub_rc": 3,
+   "with_sidecar": false,
+   "calls": [
+    [
+     "context",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--source",
+     "twitch",
+     "--mode",
+     "soren91",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--items",
+     "4",
+     "--max-chars",
+     "2200",
+     "--comment-max-chars",
+     "240",
+     "--reply-max-chars",
+     "320",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "PARTIAL\n（該当する投稿者別メモなし）\n",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "context",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_PROMPT_ITEMS": "7",
+    "COMMENT_VIEWER_MEMORY_PROMPT_MAX_CHARS": "900",
+    "COMMENT_VIEWER_MEMORY_COMMENT_MAX_CHARS": "50",
+    "COMMENT_VIEWER_MEMORY_REPLY_MAX_CHARS": "60",
+    "COMMENT_VIEWER_MEMORY_TTL_DAYS": "30",
+    "COMMENT_VIEWER_MEMORY_EXCLUDED_USERS": "a b",
+    "COMMENT_VIEWER_MEMORY_FILE": "/x/mem.json",
+    "COMMENT_VIEWER_MEMORY_MAX_USERS": "9",
+    "COMMENT_VIEWER_MEMORY_MAX_EXCHANGES": "3"
+   },
+   "stub_out": "C2",
+   "stub_rc": 0,
+   "with_sidecar": false,
+   "calls": [
+    [
+     "context",
+     "--state",
+     "/x/mem.json",
+     "--batch",
+     "tmp/b.txt",
+     "--source",
+     "twitch",
+     "--mode",
+     "soren91",
+     "--exclude",
+     "a b",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--items",
+     "7",
+     "--max-chars",
+     "900",
+     "--comment-max-chars",
+     "50",
+     "--reply-max-chars",
+     "60",
+     "--ttl-days",
+     "30"
+    ]
+   ],
+   "stdout": "C2\n",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "stage",
+   "env": {},
+   "stub_out": "2",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "stage",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--reply",
+     "tmp/r.txt",
+     "--source",
+     "youtube",
+     "--mode",
+     "main",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--batch-hash",
+     "h1"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  },
+  {
+   "op": "stage",
+   "env": {},
+   "stub_out": "0",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "stage",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--reply",
+     "tmp/r.txt",
+     "--source",
+     "youtube",
+     "--mode",
+     "main",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--batch-hash",
+     "h1"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "stage",
+   "env": {},
+   "stub_out": "abc",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "stage",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--reply",
+     "tmp/r.txt",
+     "--source",
+     "youtube",
+     "--mode",
+     "main",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--batch-hash",
+     "h1"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "stage",
+   "env": {},
+   "stub_out": null,
+   "stub_rc": 1,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "stage",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--reply",
+     "tmp/r.txt",
+     "--source",
+     "youtube",
+     "--mode",
+     "main",
+     "--exclude",
+     "dociai dociaich",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--batch-hash",
+     "h1"
+    ]
+   ],
+   "stdout": "",
+   "rc": 1,
+   "sidecar_after": false
+  },
+  {
+   "op": "stage",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_ENABLED": "0"
+   },
+   "stub_out": "2",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  },
+  {
+   "op": "stage",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_PROMPT_ITEMS": "7",
+    "COMMENT_VIEWER_MEMORY_PROMPT_MAX_CHARS": "900",
+    "COMMENT_VIEWER_MEMORY_COMMENT_MAX_CHARS": "50",
+    "COMMENT_VIEWER_MEMORY_REPLY_MAX_CHARS": "60",
+    "COMMENT_VIEWER_MEMORY_TTL_DAYS": "30",
+    "COMMENT_VIEWER_MEMORY_EXCLUDED_USERS": "a b",
+    "COMMENT_VIEWER_MEMORY_FILE": "/x/mem.json",
+    "COMMENT_VIEWER_MEMORY_MAX_USERS": "9",
+    "COMMENT_VIEWER_MEMORY_MAX_EXCHANGES": "3"
+   },
+   "stub_out": "1",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "stage",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--batch",
+     "tmp/b.txt",
+     "--reply",
+     "tmp/r.txt",
+     "--source",
+     "youtube",
+     "--mode",
+     "main",
+     "--exclude",
+     "a b",
+     "--metadata",
+     "tmp/b.txt.viewer_meta.jsonl",
+     "--batch-hash",
+     "h1"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  },
+  {
+   "op": "commit",
+   "env": {},
+   "stub_out": "3",
+   "stub_rc": 0,
+   "with_sidecar": false,
+   "calls": [],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": false
+  },
+  {
+   "op": "commit",
+   "env": {},
+   "stub_out": "3",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "commit",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--max-users",
+     "500",
+     "--max-exchanges",
+     "24",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  },
+  {
+   "op": "commit",
+   "env": {},
+   "stub_out": null,
+   "stub_rc": 2,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "commit",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--max-users",
+     "500",
+     "--max-exchanges",
+     "24",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "",
+   "rc": 1,
+   "sidecar_after": true
+  },
+  {
+   "op": "commit",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_PROMPT_ITEMS": "7",
+    "COMMENT_VIEWER_MEMORY_PROMPT_MAX_CHARS": "900",
+    "COMMENT_VIEWER_MEMORY_COMMENT_MAX_CHARS": "50",
+    "COMMENT_VIEWER_MEMORY_REPLY_MAX_CHARS": "60",
+    "COMMENT_VIEWER_MEMORY_TTL_DAYS": "30",
+    "COMMENT_VIEWER_MEMORY_EXCLUDED_USERS": "a b",
+    "COMMENT_VIEWER_MEMORY_FILE": "/x/mem.json",
+    "COMMENT_VIEWER_MEMORY_MAX_USERS": "9",
+    "COMMENT_VIEWER_MEMORY_MAX_EXCHANGES": "3"
+   },
+   "stub_out": "0",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "commit",
+     "--state",
+     "/x/mem.json",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--max-users",
+     "9",
+     "--max-exchanges",
+     "3",
+     "--ttl-days",
+     "30"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  },
+  {
+   "op": "commit",
+   "env": {
+    "COMMENT_VIEWER_MEMORY_ENABLED": ""
+   },
+   "stub_out": "1",
+   "stub_rc": 0,
+   "with_sidecar": true,
+   "calls": [
+    [
+     "commit",
+     "--state",
+     "tmp/state/comment_viewer_memory.json",
+     "--sidecar",
+     "tmp/.comment_queue/comment_5.viewer_memory.json",
+     "--max-users",
+     "500",
+     "--max-exchanges",
+     "24",
+     "--ttl-days",
+     "365"
+    ]
+   ],
+   "stdout": "",
+   "rc": 0,
+   "sidecar_after": true
+  }
+ ]
+}

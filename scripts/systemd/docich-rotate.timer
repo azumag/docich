@@ -1,0 +1,10 @@
+[Unit]
+Description=docich rotate を定期実行するタイマー
+
+[Timer]
+OnCalendar=hourly
+Persistent=false
+Unit=docich-rotate.service
+
+[Install]
+WantedBy=timers.target

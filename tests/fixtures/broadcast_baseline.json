@@ -1,0 +1,41 @@
+{
+  "baseline": {
+    "docich_main": "686a888fd7251d5a739fe9ea4d69c0f69694f1fa",
+    "soviet_now_gitlink": "fa39e06d14f01e157f5b24098066d7ba391707bc",
+    "note": "Comment classification ownership boundary for #829/#882: docich owns the classifier; soviet_now only delegates to the fixed docich entry point."
+  },
+  "docich_wrappers": {
+    "chat_source": "src/docich/chat.py",
+    "comment_function": "generate_comment_response",
+    "radio_function": "_radio_generate_and_play",
+    "ai_function": "ai_generate_list",
+    "native_ai_source": "src/docich/llm/dispatch.py",
+    "native_ai_entry": "class Dispatcher",
+    "comment_sources": ["twitch", "youtube"],
+    "rc_contract": {"0": "success", "1": "generation failure", "2": "argument error"},
+    "real_run_gates": {
+      "comment": "DOCICH_ALLOW_REAL_COMMENT",
+      "radio": "DOCICH_ALLOW_REAL_RADIO",
+      "ai": "DOCICH_ALLOW_REAL_AI"
+    }
+  },
+  "soviet_now_stages": {
+    "comment": "games/soviet_now/broadcast/comment.sh",
+    "comment_entry": "generate_comment_response",
+    "radio_engine": "games/soviet_now/broadcast/radio_engine.sh",
+    "radio_entry": "_radio_generate_and_play",
+    "ai_generate": "games/soviet_now/lib/ai_generate.sh",
+    "ai_entry": "ai_generate_list",
+    "classifier_owner_entry": "bin/docich-comment-classify",
+    "classifier_delegate_env": "DOCICH_COMMENT_CLASSIFIER",
+    "classifier_delegate_default": "/home/ubuntu/docich/bin/docich-comment-classify",
+    "classifier_removed": [
+      "games/soviet_now/lib/comment_classifier_jev.py",
+      "games/soviet_now/broadcast/comment_classifier_jev.sh",
+      "games/soviet_now/lib/comment_classifier_jev_report.py",
+      "games/soviet_now/prompts/comment_classifier.md"
+    ],
+    "news_spam": "games/soviet_now/broadcast/radio_news.sh",
+    "prepass_budget": "games/soviet_now/lib/ai_prepass_budget.sh"
+  }
+}

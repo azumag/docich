@@ -1,0 +1,24 @@
+{
+  "runtime": "g741-defa2f9a",
+  "terminal": "input_stalled",
+  "version": "v190-bound-sortie-execution",
+  "checkpoint_sha256": "8a9e4a76ff75c0c3b576b7321049e4126c5e0bf18b16d79df6d7c8878b1cd920",
+  "images": [
+    {
+      "capture_binding": "ended_runtime_observation_RGB_matched_plan",
+      "rgb_sha256": "d9fd1d7f30b5b2559916af4486e4e12340c2d7925b9a7c555d282080fb452f5d",
+      "file": "g741-orphan-menu-8819.png",
+      "decision_id": "g741-defa2f9a:741:8819",
+      "planned_actions": [],
+      "matching_input_receipts": 0
+    },
+    {
+      "capture_binding": "ended_runtime_observation_RGB_matched_plan",
+      "rgb_sha256": "f47bf867cd3efadfd3677c7b665702c372f90aa5101c3c642b2fb8e43aa7ed7d",
+      "file": "g741-orphan-menu-8820.png",
+      "decision_id": "g741-defa2f9a:741:8820",
+      "planned_actions": [],
+      "matching_input_receipts": 0
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=docich public-data PAPER worker bootstrap
+After=network.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=__DOCICH_ROOT__/.venv-trading/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml up
+[Install]
+WantedBy=default.target

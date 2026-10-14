@@ -1,0 +1,2 @@
+# Optional text-chat client only; no voice extras and no production auto-install.
+discord.py==2.7.1

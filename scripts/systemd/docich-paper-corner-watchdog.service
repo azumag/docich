@@ -1,0 +1,8 @@
+[Unit]
+Description=docich PAPER corner deadline watchdog
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=/usr/bin/env bash __DOCICH_ROOT__/bin/docich-paper-corner-watchdog --config __DOCICH_ROOT__/config/docich.soren-live.toml

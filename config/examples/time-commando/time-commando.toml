@@ -1,0 +1,26 @@
+# Issue #17: 非本番の設定例。config/games の自動発見対象には置かない。
+# README: docs/games/time-commando.md
+# 2つの絶対パスはプレースホルダー。ゲームデータやcoreを取得する処理はない。
+[game]
+name = "time-commando"
+title = "Time Commando (non-production example)"
+adapter = "retroarch"
+
+[retroarch]
+rom = "/REPLACE_WITH_USER_OWNED_DATA/time-commando.dosz"
+core = "/REPLACE_WITH_INSTALLED_CORE/dosbox_pure_libretro.so"
+# 初回の映像・入力検証は無音。音声試験は隔離sinkを確認後、私的設定で有効化する。
+audio_enabled = false
+audio_sink = "docich_timecommando_test"
+
+[agent]
+enabled = false
+
+[lifecycle]
+# 手動試験でも既存の保存・一時停止・明示確認契約を保持する。
+# 実ゲームのsave-state復元/終了境界を検証済みという意味ではない。
+require_round_boundary = true
+
+[retro_corner]
+enabled = false
+unattended = false

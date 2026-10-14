@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "corner": "international-politics",
+  "fixtureId": "fixed-international-politics-deepdive-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed international-politics fixture for planning and input-contract acceptance only. It is not a real event or verified statement, and its title, URLs and details must not be presented as verified political data or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Maritime Boundary Talks and Competing Territorial Claims",
+    "topicId": "fixed-international-politics-maritime-talks-001",
+    "eventDate": "2026-10-14",
+    "geography": "hypothetical maritime zone and coastal states",
+    "actors": [
+      "State A",
+      "State B",
+      "mediating institution"
+    ],
+    "thirtySecondSummary": "合成fixture: 海域境界を巡る協議と主張の違いを、歴史・制度・国際法・経済条件から説明する planning 例。",
+    "oneLineSummary": "合成fixture: 海域境界協議を背景から深掘りする国際情勢コーナーの入力例。",
+    "whatHappened": "複数の沿岸国が境界線の解釈を巡って協議を再開したが、法的立場は対立したまま。",
+    "partyClaims": [
+      "State A: 基線の解釈により管轄権がある",
+      "State B: 歴史的利用と均衡を理由に共同管理を主張"
+    ],
+    "parties": [
+      "State A",
+      "State B"
+    ],
+    "claims": [
+      "State A claims jurisdiction",
+      "State B claims shared management"
+    ],
+    "institutionalLegalPosition": "条約・国際法・仲裁判決の解釈が争点。単独の確定判決は未確認。",
+    "legalPosition": "treaty and international law interpretations remain disputed",
+    "internationalLaw": "historical title, baseline, exclusive economic zone interpretation",
+    "historicalBackground": "植民地期の境界線と戦後の統治変遷が背景。最近の資源開発で再燃。",
+    "geoEconomicSecurityConditions": "資源・航路・漁業・エネルギー輸送が絡む。",
+    "geographicConditions": "archipelagic sea lanes and narrow straits",
+    "economicConditions": "fisheries, energy transit, offshore resources",
+    "securityConditions": "naval patrols, deterrence, alliance posture",
+    "keyDisputes": [
+      "基線の解釈",
+      "排他的経済水域",
+      "歴史的権利の範囲"
+    ],
+    "keyIssues": [
+      "baseline interpretation",
+      "EEZ boundary",
+      "historical rights"
+    ],
+    "opposingViewpoints": [
+      "State A prioritizes formal legal text",
+      "State B prioritizes historical practice"
+    ],
+    "multiplePerspectives": [
+      "legal-formal",
+      "historical-practice",
+      "economic"
+    ],
+    "japanImpact": "航路安全・エネルギー輸入・地域安定への波及。直接的主体ではない。",
+    "japan": "sea lane safety and energy import implications",
+    "indicatorsAndEvents": [
+      "協議再開",
+      "軍艦活動の頻度",
+      "EEZ 面積",
+      "資源開発許認可",
+      "国内世論"
+    ],
+    "indicators": [
+      "talks resumption",
+      "patrol frequency",
+      "licensed projects"
+    ],
+    "temporalEvents": [
+      "negotiation",
+      "court filing",
+      "ministerial statement"
+    ],
+    "labelsPolicy": {
+      "fact": "primary or corroborated",
+      "analysis": "interpretation",
+      "forecast": "conditional scenario"
+    },
+    "factAnalysisForecastLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "factAnalysisPredictionLabels": [
+      "fact",
+      "analysis",
+      "prediction"
+    ],
+    "limitations": "合成 fiction fixture であり、実国家・実協議・実裁定の検証は未実施。一次資料で更新が必要。",
+    "limitationsAndCaveats": "synthetic fixture only; no real verification",
+    "uncertainty": "未確認の発表、非公開合意、軍事活動の非対称情報。",
+    "gaps": [
+      "undisclosed agreements",
+      "asymmetric information"
+    ],
+    "figureOrDiagram": "当事国・海域・制度枠・争点を overlay 用に分離した概念図。",
+    "overlayPlan": "event summary, parties, legal position, disputes, indicators",
+    "youtubeIndependentDraft": "YouTube 切り出しでは30秒要約、出来事、主張、制度、歴史、争点、日本への影響、注目指標を独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/international-politics/synthetic-maritime-talks",
+      "https://example.org/international-politics/synthetic-maritime-talks/statement"
+    ],
+    "sourcePriority": [
+      "primary-statement-or-official-document",
+      "public-institution",
+      "established-media-multiple",
+      "academic-or-thinktank",
+      "fact-check-source"
+    ],
+    "citationKeepUrl": true,
+    "sourceUrls": [
+      "https://example.org/international-politics/synthetic-maritime-talks"
+    ],
+    "eventUrl": "https://example.org/international-politics/synthetic-maritime-talks",
+    "url": "https://example.org/international-politics/synthetic-maritime-talks",
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192,
+      "maxQueries": 3,
+      "maxFetchAttempts": 4
+    }
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/international-politics/synthetic-maritime-talks",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "684e8f6ebc4f89bbc0ab970867cf85c0258d73030f44a1208b36d56194267860",
+        "excerpt": "Synthetic verified international-politics material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic international politics maritime boundary talks"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealEvent": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustPrioritizePrimaryAndInstitutions": true,
+    "mustIncludeFailureAndSafety": true,
+    "mustIncludeUncertaintyAndLabels": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustIncludeResearchCaveats": true,
+    "mustStatePreprintStatusIfUnreviewed": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}

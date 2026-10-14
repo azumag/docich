@@ -1,0 +1,402 @@
+"""Generation-bound Hanjuku observations and actual-input records.
+
+The corner's time limit is consecutive screen stasis (a static image or a
+proven repeated screen/input cycle), never a fixed session duration. Missing
+captures and observation gaps are not stasis.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+import time
+import uuid
+
+from .adapters.base import AdapterError
+from .game_switch import atomic_write_json
+from .hanjuku_bot import BOT_VERSION, classify
+from .hanjuku_hotload import logic_generation as _logic_generation
+from .hanjuku_pixels import Frame
+from .retroarch_boundary import read_record
+from .naming import runtime_id_generation
+from . import hanjuku_repetition
+
+# The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
+LOGIC_GENERATION = _logic_generation()
+
+RUN_FILE='hanjuku_run.json'
+TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+STALL_SECONDS=300
+# #1369: the merchant confirm screen held ~16 min with no input sent while the
+# screen kept animating, so screen_stalled never fired and the corner had no
+# exit. End the run when observations keep arriving but no input is sent.
+# Both bounds clear every bounded wait the policy resolves itself
+# (NO_INPUT_HOLD_MAX=100 observations ~=150 s at the normal 1.5 s cadence)
+# with margin, while staying well inside the observed 16-min outage.
+INPUT_STALL_SECONDS=600
+INPUT_STALL_OBSERVATIONS=120
+MAX_SAMPLE_GAP=15
+MAX_LOG_BYTES=4*1024*1024
+# Consecutive observations the battle panel must hold (or stay away) before a
+# start or an end is counted. Matches the policy's own two-reading debounce.
+BATTLE_PHASE_DEBOUNCE=2
+
+
+def enabled(game):
+    raw=game.raw.get('hanjuku',{})
+    return game.name=='hanjuku-hero' and isinstance(raw,dict) and raw.get('script_bot') is True
+
+
+def runtime_identity(spec):
+    return {key:getattr(spec,key) for key in ('game','runtime_id','generation','lease_id')}
+
+
+def append_log(runtime_dir: Path, name: str, payload: dict):
+    """Append one JSON line; rotate once at MAX_LOG_BYTES (current + previous)."""
+    path=runtime_dir/f'{name}.jsonl'
+    if path.is_symlink():
+        raise AdapterError('Hanjuku log may not be a symlink')
+    if path.exists() and path.stat().st_size>=MAX_LOG_BYTES:
+        previous=runtime_dir/f'{name}.previous.jsonl'
+        if previous.is_symlink():
+            raise AdapterError('Hanjuku rotated log may not be a symlink')
+        os.replace(path,previous)
+    with path.open('a',encoding='utf-8') as stream:
+        stream.write(json.dumps(payload,ensure_ascii=False,separators=(',',':'),sort_keys=True)+'\n')
+        stream.flush()
+        if payload.get('terminal_reason'):
+            os.fsync(stream.fileno())
+
+
+def event(runtime_dir: Path, payload: dict):
+    append_log(runtime_dir,'hanjuku_events',payload)
+
+
+def load(runtime_dir: Path, identity: dict):
+    state=read_record(runtime_dir/RUN_FILE)
+    if state and any(state.get(k)!=v for k,v in identity.items()):
+        raise AdapterError('Hanjuku run identity mismatch')
+    if state:
+        if ('checkpoint_started' in state and type(state['checkpoint_started']) is not bool):
+            raise AdapterError('invalid Hanjuku checkpoint context')
+        bound = state.get('checkpoint_start_request')
+        if bound is not None:
+            try:
+                if not isinstance(bound, str) or str(uuid.UUID(bound)) != bound:
+                    raise ValueError('invalid request')
+            except ValueError as exc:
+                raise AdapterError('invalid Hanjuku checkpoint context') from exc
+        for key in ('observations', 'actions_sent', 'battles_started', 'battles_finished',
+                    'phase_transitions', 'snapshots', 'title_count'):
+            value = state.get(key, 0)
+            if type(value) is not int or value < 0:
+                raise AdapterError('invalid Hanjuku counter')
+        for key in ('observed_monotonic', 'observed_at', 'unchanged_since',
+                    'unchanged_seconds', 'last_snapshot_at', 'title_since',
+                    'last_input_monotonic'):
+            value = state.get(key, 0)
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise AdapterError('invalid Hanjuku timestamp')
+        for key in ('last_input_observations',):
+            value = state.get(key, 0)
+            if type(value) is not int or value < 0:
+                raise AdapterError('invalid Hanjuku counter')
+    return state
+
+
+def _checkpoint_start_request(runtime_dir: Path, identity: dict, wall: float):
+    """A same-runtime restored foreground; never a name-entry observation."""
+    try:
+        receipt = read_record(runtime_dir / 'hanjuku_resume.json')
+    except AdapterError:
+        return None
+    try:
+        if (type(identity.get('generation')) is not int or identity['generation'] < 1
+                or runtime_id_generation(identity.get('runtime_id')) != identity['generation']
+                or not isinstance(identity.get('lease_id'), str) or not identity['lease_id']):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if (type(receipt.get('schema')) is not int or receipt['schema'] != 1
+            or receipt.get('status') != 'verified'
+            or receipt.get('gameplay_context') != 'verified_checkpoint_foreground'
+            or identity.get('game') != 'hanjuku-hero'
+            or any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v
+                   for k, v in identity.items())):
+        return None
+    request = receipt.get('request_id')
+    try:
+        if not isinstance(request, str) or str(uuid.UUID(request)) != request:
+            return None
+    except ValueError:
+        return None
+    at = receipt.get('verified_at')
+    chapter = receipt.get('chapter')
+    if (type(at) not in (int, float) or not math.isfinite(at) or not 0 < at <= wall
+            or (chapter is not None and (type(chapter) is not int or not 1 <= chapter <= 12))):
+        return None
+    for key in ('sha256', 'core_state_sha256', 'frame_sha256'):
+        digest = receipt.get(key)
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in '0123456789abcdef' for c in digest)):
+            return None
+    return request
+
+
+def terminal(runtime_dir: Path, identity: dict):
+    state=load(runtime_dir,identity)
+    reason=state.get('terminal_reason')
+    if reason not in TERMINAL_REASONS:
+        return None
+    digest=state.get('frame_sha256')
+    valid=(isinstance(digest,str) and len(digest)==64
+           and all(c in '0123456789abcdef' for c in digest))
+    if reason=='screen_stalled':
+        valid=valid and state.get('unchanged_seconds',0)>=STALL_SECONDS
+        if state.get('terminal_evidence') == hanjuku_repetition.EVIDENCE:
+            proof = hanjuku_repetition.confirmed(
+                state.get('repetition'), now=state.get('observed_monotonic'),
+                seconds=STALL_SECONDS)
+            valid = (valid and proof is not None and state.get('playing') is True
+                     and state.get('repetition_evidence') == proof
+                     and state.get('unchanged_since') == proof['since']
+                     and state.get('unchanged_seconds') == proof['seconds'])
+    elif reason=='input_stalled':
+        last_at=state.get('last_input_monotonic',0)
+        last_obs=state.get('last_input_observations',0)
+        valid=(valid and type(last_at) in (int,float) and math.isfinite(last_at)
+               and type(last_obs) is int and last_obs>=0
+               and state.get('observed_monotonic',0)-last_at>=INPUT_STALL_SECONDS
+               and state.get('observations',0)-last_obs>=INPUT_STALL_OBSERVATIONS)
+    else:
+        restored = (state.get('checkpoint_started') is True
+                    and state.get('checkpoint_start_request') is not None
+                    and state['checkpoint_start_request'] == _checkpoint_start_request(
+                        runtime_dir, identity, state.get('observed_at', 0)))
+        valid=(valid and (state.get('name_entered') is True or restored) and state.get('gameplay_seen') is True
+               and state.get('phase')=='title' and state.get('title_count',0)>=3
+               and state.get('observed_monotonic',0)-state.get('title_since',0)>=2)
+    if not valid:
+        raise AdapterError('invalid Hanjuku terminal evidence')
+    return state
+
+
+def require_checkpoint_context(runtime_dir: Path, identity: dict):
+    """Reprove a bound restored context immediately before actual input."""
+    state = load(runtime_dir, identity)
+    bound = state.get('checkpoint_start_request')
+    if bound is not None and _checkpoint_start_request(runtime_dir, identity, time.time()) != bound:
+        raise AdapterError('verified Hanjuku checkpoint context changed')
+    return state
+
+
+def _next_commentary_seq(runtime_dir: Path) -> int:
+    """One past the highest seq in the (bounded) commentary tail."""
+    path = runtime_dir / 'hanjuku_commentary.jsonl'
+    seq = 0
+    if path.exists() and not path.is_symlink():
+        with path.open('rb') as stream:
+            stream.seek(max(0, stream.stat().st_size - 8192))
+            for line in stream.read().decode('utf-8', 'ignore').splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and type(item.get('seq')) is int:
+                    seq = max(seq, item['seq'])
+    return seq + 1
+
+
+def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
+            now=None, wall=None, playing=True):
+    now=time.monotonic() if now is None else now
+    wall=time.time() if wall is None else wall
+    if not math.isfinite(now) or not math.isfinite(wall):
+        raise AdapterError('invalid Hanjuku observation time')
+    old=load(runtime_dir,identity)
+    if old.get('terminal_reason') in TERMINAL_REASONS:
+        return old
+    digest=frame.digest()
+    phase=classify(frame)
+    previous=old.get('observed_monotonic')
+    consecutive=(type(previous) in (int,float) and 0 <= now-previous <= MAX_SAMPLE_GAP)
+    # A blinking cursor alternates two images forever (g358: the forced
+    # discharge list never stalled while B was ignored for 50 min). Treat the
+    # two most recent distinct images as one unchanged screen.
+    recent=[d for d in (old.get('recent_frame_sha256') or [old.get('frame_sha256')]) if isinstance(d,str)][:2]
+    unchanged=consecutive and digest in recent and playing and old.get('playing') is True
+    recent=[digest]+[d for d in recent if d!=digest][:1]
+    since=old.get('unchanged_since',now) if unchanged else now
+    if type(since) not in (int,float) or not math.isfinite(since):
+        raise AdapterError('invalid Hanjuku stasis evidence')
+    duration=max(0.,now-since)
+    # A title return after name entry or a verified restored foreground and
+    # subsequently observed gameplay ends the attempt. Do not
+    # confuse the initial title/attract demo or an intermediate black scene
+    # with game over. Hold input on the first candidate, confirm across time.
+    named=old.get('name_entered',False) or phase=='name'
+    checkpoint = _checkpoint_start_request(runtime_dir, identity, wall)
+    if (old.get('checkpoint_start_request') is not None
+            and checkpoint != old['checkpoint_start_request']):
+        # Losing/changing an established receipt must not turn a title return
+        # back into a fresh title that the agent could blindly confirm.
+        raise AdapterError('verified Hanjuku checkpoint context changed')
+    checkpoint_bound = old.get('checkpoint_start_request') or checkpoint
+    restored = checkpoint is not None and checkpoint_bound == checkpoint
+    started = named or restored
+    prior_played = (old.get('gameplay_seen') is True
+                    and (named or (checkpoint_bound is not None
+                                   and old.get('checkpoint_start_request') == checkpoint_bound)))
+    played=prior_played or (started and phase in {'battle','field'})
+    candidate=phase=='title' and started and played and playing
+    title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
+    title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
+    reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    if not reason and duration>=STALL_SECONDS:
+        reason='screen_stalled'
+    # #1369: observations kept arriving while no input was sent (an animated
+    # confirm screen screen_stalled can never catch). Only active consecutive
+    # play advances the stall clock: pauses, sample gaps and clock rewinds
+    # re-anchor it, so a resumed or legacy run never ends on stale markers.
+    observations_now=int(old.get('observations',0))+1
+    if consecutive and playing and old.get('playing') is True:
+        last_at: float = float(now)
+        raw_at = old.get('last_input_monotonic')
+        if (type(raw_at) in (int, float) and math.isfinite(raw_at)
+                and 0 < raw_at <= now):
+            last_at = float(raw_at)
+        raw_obs = old.get('last_input_observations')
+        last_obs: int = observations_now
+        if type(raw_obs) is int and raw_obs >= 0:
+            last_obs = raw_obs
+        input_idle=(now-last_at>=INPUT_STALL_SECONDS
+                    and observations_now-last_obs>=INPUT_STALL_OBSERVATIONS)
+    else:
+        last_at,last_obs,input_idle=now,observations_now,False
+    if not reason and input_idle:
+        reason='input_stalled'
+    if reason == 'game_over':
+        # Owner rule (2026-09-28): narrate a grounded recap of the run when it
+        # ends. Written BEFORE the terminal state is persisted so the adapter's
+        # narration claim in the same capture tick can deliver it. A recap
+        # failure must never block the terminal latch.
+        try:
+            from .hanjuku_commentary import COMMENTARY_VERSION, summarize_recap
+            key, text = summarize_recap(runtime_dir, {**old, 'terminal_reason': reason})
+            if text:
+                append_log(runtime_dir, 'hanjuku_commentary', {
+                    'schema': 1, 'seq': _next_commentary_seq(runtime_dir), 'at': wall,
+                    'key': key, 'text': text, 'commentary_version': COMMENTARY_VERSION,
+                    'status': 'candidate', 'held_reason': None, 'decision': 'game_over_recap',
+                    'chart_step': None, 'strategy_variant': None,
+                    'reason': 'ゲームオーバーの振り返り実況', 'terminal_recap': True, **identity})
+        except Exception:
+            pass
+    # The battle panel blinks during the melee, so a single frame in `battle`
+    # is not a battle. 2026-10-02 measurement on g534: 45 frame-level entries
+    # against 24 real battles, and the counters were reported as 34 started /
+    # 33 finished. Require the same two-consecutive-observation debounce the
+    # policy uses (battle_end's `away >= 2`) so the corner counters and the
+    # judged battle records describe the same battles. Counting an end on any
+    # non-battle phase also covers the most common measured ending, which the
+    # old exit-phase whitelist missed entirely (`next_screen: map`).
+    battle_active=old.get('battle_active',False)
+    def _streak(key):
+        value=old.get(key,0)
+        return value+1 if type(value) is int and 0 <= value < 1000000 else 1
+    battle_streak=_streak('battle_streak') if phase=='battle' else 0
+    away_streak=(_streak('battle_away_streak')
+                 if (battle_active and phase!='battle') else 0)
+    battle_started=battle_streak==BATTLE_PHASE_DEBOUNCE and not battle_active
+    battle_ended=battle_active and away_streak>=BATTLE_PHASE_DEBOUNCE
+    if battle_started: battle_active=True
+    if battle_ended: battle_active=False
+    # Owner request (2026-10-14): an input-driven menu/confirmation cycle is
+    # stasis too, even though its individual images keep changing. Reuse the
+    # existing screen_stalled -> durable checkpoint -> safe cleanup route.
+    # Keep the literal frame-stasis clock separate; the compatibility stasis
+    # fields describe the proven cycle interval ONLY when a loop terminates.
+    repetition = hanjuku_repetition.observe(
+        old.get('repetition'), digest, phase, old.get('repetition_input'), now=now,
+        continuous=(consecutive and playing and old.get('playing') is True
+                    and not battle_started and not battle_ended),
+        max_gap=MAX_SAMPLE_GAP)
+    loop_proof = (hanjuku_repetition.confirmed(repetition, now=now, seconds=STALL_SECONDS)
+                  if playing and not reason and not candidate else None)
+    frame_since, frame_duration = since, duration
+    if loop_proof:
+        reason = 'screen_stalled'
+        since, duration = loop_proof['since'], loop_proof['seconds']
+    state={**identity,'schema':1,'bot_version':BOT_VERSION,
+           'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
+           'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
+           'playing':playing,'terminal_reason':reason,
+           'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
+           'repetition':repetition,'repetition_input':{},
+           'repetition_evidence':loop_proof,
+           'name_entered':named,'gameplay_seen':played,
+           'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
+           'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
+           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
+                             else 'no_input_sent_while_observing' if reason=='input_stalled'
+                             else hanjuku_repetition.EVIDENCE if loop_proof else None,
+           'battle_active':battle_active,'battle_streak':battle_streak,
+           'battle_away_streak':away_streak,
+           'battles_started':int(old.get('battles_started',0))+int(battle_started),
+           'battles_finished':int(old.get('battles_finished',0))+int(battle_ended),
+           'observations':observations_now,
+           'last_input_monotonic':last_at,
+           'last_input_observations':last_obs,
+           'actions_sent':int(old.get('actions_sent',0)),
+           'phase_transitions':int(old.get('phase_transitions',0))+int(old.get('phase')!=phase)}
+    snapshot=None
+    last_snapshot=old.get('last_snapshot_at',0)
+    if old.get('phase')!=phase or wall-last_snapshot>=60 or reason:
+        directory=runtime_dir/'hanjuku_frames'
+        if directory.is_symlink():
+            raise AdapterError('Hanjuku frame directory may not be a symlink')
+        directory.mkdir(exist_ok=True)
+        number=int(old.get('snapshots',0))
+        snapshot=f'frame-{number%120:03d}.png'
+        target=directory/snapshot
+        if target.is_symlink():
+            raise AdapterError('Hanjuku snapshot may not be a symlink')
+        target.write_bytes(frame.png_bytes())
+        state.update(snapshots=number+1,last_snapshot_at=wall)
+    else:
+        state.update(snapshots=int(old.get('snapshots',0)),last_snapshot_at=last_snapshot)
+    # Durable evidence must precede a terminal latch or game teardown.
+    event(runtime_dir, {
+        'event': 'observation', 'at': wall, 'phase': phase,
+        'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
+        'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
+        'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
+        'frame_unchanged_seconds': round(frame_duration, 3),
+        'repetition_evidence': loop_proof,
+        'snapshot': snapshot, 'previous_phase': old.get('phase'),
+        'battle_started': battle_started, 'battle_ended': battle_ended,
+        'battle_outcome': 'unclassified' if battle_ended else None,
+    })
+    atomic_write_json(runtime_dir/RUN_FILE,state)
+    return state
+
+
+def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
+    state=load(runtime_dir,identity)
+    if now is None:
+        now=time.monotonic()
+    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
+    if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
+        trace={}
+    event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
+                      'buttons':list(action.buttons),'hold_ms':action.hold_ms,
+                      'frame_sha256':state.get('frame_sha256'),'bot_version':BOT_VERSION,
+                      'decision_id':trace.get('decision_id'),
+                      'decision_frame_sha256':trace.get('frame_sha256')})
+    if state:
+        atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1,
+                                                'repetition_input':hanjuku_repetition.add_input(
+                                                    state.get('repetition_input'), action.type, action.buttons),
+                                                'last_input_monotonic':now,
+                                                'last_input_observations':int(state.get('observations',0))})

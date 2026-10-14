@@ -1,0 +1,27 @@
+KNOWN BUGS:
+_____________________________________________________________________
+
+* Some systems have trouble linking with GNU Guile.  In their specific
+  cases, adding "-lguile" to LDLIBS macro will work.  I wonder how to
+  make this more robust in the autoconf?
+
+_____________________________________________________________________
+
+THINGS TO DO:
+_____________________________________________________________________
+
+* Improve the graphics, to make everything look better.  I think I
+  need a graphic designer to help me do this.  GTK+ would be nice.
+
+* Move all the robot_* variables into a single struct.  Keep "robot"
+  as a pointer to the current robot, so that robot_x becomes
+  robot->x.  This will help in later versions when we have network
+  support.
+
+* In version 2.0, more creatures will get added.  The things called
+  "baddie" and "food" and "prize" will be generic descriptors.  For
+  example, "food" will be a generic name for "cookie" or "donut", so
+  that (robot-feel 'cookie) will fail if the thing is a donut, but
+  (robot-feel 'food) will still work.
+
+* Add number of units walked, and number of shots to the statistics.

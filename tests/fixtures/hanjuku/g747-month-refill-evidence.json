@@ -1,0 +1,934 @@
+{
+  "identity": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g747-0fd8cf05",
+    "generation": 747,
+    "lease_id": "28284317-f2d0-488c-af16-2d8666389504"
+  },
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791884403.5190587,
+        "bot_version": "hanjuku-chart-v199-no-hero-substitute",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9154",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "3117bf4ca619e7e57f89710096aae020669604c56acdc789cdad58477f51f0a1",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "soldiers_seen"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-034.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791884403.5190587,
+          "decision_id": "g747-0fd8cf05:747:9154",
+          "frame_sha256": "3117bf4ca619e7e57f89710096aae020669604c56acdc789cdad58477f51f0a1",
+          "decision": "soldiers_seen",
+          "reason": "兵士の総数を画面の文言から読み取った",
+          "observed_metric": {
+            "soldiers": 0
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-034.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791884403.701593,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "3117bf4ca619e7e57f89710096aae020669604c56acdc789cdad58477f51f0a1",
+          "decision_id": "g747-0fd8cf05:747:9154",
+          "event": "input_sent",
+          "frame_sha256": "3117bf4ca619e7e57f89710096aae020669604c56acdc789cdad58477f51f0a1",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "3117bf4ca619e7e57f89710096aae020669604c56acdc789cdad58477f51f0a1",
+      "fixture": "g747-month-refill-9154.png"
+    },
+    {
+      "decision": {
+        "at": 1791884447.0032225,
+        "bot_version": "hanjuku-chart-v199-no-hero-substitute",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9185",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            56,
+            47
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "month_menu",
+          "step": 9185
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "zero_army_refill_plan",
+          "soldier_plan_recalc"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-065.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791884447.0032225,
+          "decision_id": "g747-0fd8cf05:747:9185",
+          "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "decision": "zero_army_refill_plan",
+          "reason": "実人数0のため調整チャートの補充0を見直し、卵・修理・全賃金を残した資金で兵士を先に補充する",
+          "observed_metric": {
+            "gold": 70,
+            "held": 46,
+            "refill": 24,
+            "soldiers": 0,
+            "target": 50
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791884447.0032225,
+          "decision_id": "g747-0fd8cf05:747:9185",
+          "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "decision": "soldier_plan_recalc",
+          "reason": "商人での実購入後の所持金から兵士補充数を再計算",
+          "observed_metric": {
+            "gold_after_merchant": 70,
+            "soldiers": 0
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-065.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791884447.2055342,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "decision_id": "g747-0fd8cf05:747:9185",
+          "event": "input_sent",
+          "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+      "fixture": "g747-month-refill-9185.png"
+    },
+    {
+      "decision": {
+        "at": 1791884606.8679862,
+        "bot_version": "hanjuku-chart-v200-live-summon-shield",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9331",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            56,
+            47
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "month_menu",
+          "step": 9331
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-091.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-091.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791884607.0552287,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "decision_id": "g747-0fd8cf05:747:9331",
+          "event": "input_sent",
+          "frame_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "58152ae9d9a90689ff23fc8e2edd73af8a896911297385625ff87d9173b9bd34",
+      "fixture": "g747-month-refill-9331.png"
+    },
+    {
+      "decision": {
+        "at": 1791884607.4930677,
+        "bot_version": "hanjuku-chart-v200-live-summon-shield",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9332",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "d01905cec93c8b380320fcca90495759547293c82a39fd921c43a52ae7e7feff",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            56,
+            63
+          ],
+          "directions": [
+            "up",
+            "down"
+          ],
+          "kind": "month_menu",
+          "step": 9332
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "zero_army_refill_plan"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-092.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791884607.4930677,
+          "decision_id": "g747-0fd8cf05:747:9332",
+          "frame_sha256": "d01905cec93c8b380320fcca90495759547293c82a39fd921c43a52ae7e7feff",
+          "decision": "zero_army_refill_plan",
+          "reason": "実人数0のため調整チャートの補充0を見直し、卵・修理・全賃金を残した資金で兵士を先に補充する",
+          "observed_metric": {
+            "gold": 70,
+            "held": 46,
+            "refill": 24,
+            "soldiers": 0,
+            "target": 50
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-092.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791884607.673841,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "d01905cec93c8b380320fcca90495759547293c82a39fd921c43a52ae7e7feff",
+          "decision_id": "g747-0fd8cf05:747:9332",
+          "event": "input_sent",
+          "frame_sha256": "d01905cec93c8b380320fcca90495759547293c82a39fd921c43a52ae7e7feff",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "d01905cec93c8b380320fcca90495759547293c82a39fd921c43a52ae7e7feff",
+      "fixture": "g747-month-refill-9332.png"
+    },
+    {
+      "decision": {
+        "at": 1791884611.8453877,
+        "bot_version": "hanjuku-chart-v200-live-summon-shield",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9336",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "a0dd05993e8d0433a114a85003928e88718b7f3de4ba308ddef8962e35fdc169",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            184,
+            183
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "month_menu",
+          "step": 9336
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "zero_army_refill_plan"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-096.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791884611.8453877,
+          "decision_id": "g747-0fd8cf05:747:9336",
+          "frame_sha256": "a0dd05993e8d0433a114a85003928e88718b7f3de4ba308ddef8962e35fdc169",
+          "decision": "zero_army_refill_plan",
+          "reason": "実人数0のため調整チャートの補充0を見直し、卵・修理・全賃金を残した資金で兵士を先に補充する",
+          "observed_metric": {
+            "gold": 70,
+            "held": 46,
+            "refill": 24,
+            "soldiers": 0,
+            "target": 50
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-096.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791884612.0188076,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "a0dd05993e8d0433a114a85003928e88718b7f3de4ba308ddef8962e35fdc169",
+          "decision_id": "g747-0fd8cf05:747:9336",
+          "event": "input_sent",
+          "frame_sha256": "a0dd05993e8d0433a114a85003928e88718b7f3de4ba308ddef8962e35fdc169",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "a0dd05993e8d0433a114a85003928e88718b7f3de4ba308ddef8962e35fdc169",
+      "fixture": "g747-month-refill-9336.png"
+    },
+    {
+      "decision": {
+        "at": 1791884612.48726,
+        "bot_version": "hanjuku-chart-v200-live-summon-shield",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:9337",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "d5d160578ccac0407324e6ecf26e5776353ae7128e89005ed73bf2087306cbd6",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "month_confirm"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791884612.48726,
+          "decision_id": "g747-0fd8cf05:747:9337",
+          "frame_sha256": "d5d160578ccac0407324e6ecf26e5776353ae7128e89005ed73bf2087306cbd6",
+          "decision": "month_confirm",
+          "reason": "月初メニュー終了の確認",
+          "observed_metric": null,
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": "いかんッ!"
+        }
+      ],
+      "source_snapshot": "frame-023.png",
+      "capture_binding": "runtime_observation_RGB_matched_plan",
+      "input_receipts": [
+        {
+          "at": 1791884612.7897377,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "d5d160578ccac0407324e6ecf26e5776353ae7128e89005ed73bf2087306cbd6",
+          "decision_id": "g747-0fd8cf05:747:9337",
+          "event": "input_sent",
+          "frame_sha256": "62a9b02c8e76b4d16b34774eafda81458e5bebab10d2c8cd16b4139ba63d707e",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "d5d160578ccac0407324e6ecf26e5776353ae7128e89005ed73bf2087306cbd6",
+      "fixture": "g747-month-refill-9337.png"
+    }
+  ],
+  "snapshot": {
+    "chapter": 1,
+    "month": "2-4",
+    "tick": 10189,
+    "_run_identity": {
+      "game": "hanjuku-hero",
+      "generation": 747,
+      "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+      "runtime_id": "g747-0fd8cf05"
+    },
+    "shop": {
+      "chikujou": "skipped",
+      "chikujou_tried": [
+        "アルマムーン"
+      ],
+      "closed": true,
+      "egg": "skipped",
+      "egg_cost": 100,
+      "egg_priority": true,
+      "general_repair_reserve": 0,
+      "general_repair_targets": [],
+      "gold_start": 70,
+      "items": [],
+      "key": "2-4",
+      "merchant_done": false,
+      "recruit": "deferred_economy",
+      "recruit_priority": false,
+      "recruit_reserve": 0,
+      "reserve": 40,
+      "soldier_total_target": 50,
+      "soldiers": 0,
+      "soldiers_done": true,
+      "soldiers_from_gold": true,
+      "soldiers_recalculated": true,
+      "soldiers_target": 50,
+      "variant": "chart_adjusted",
+      "zero_army_refill_recorded": true
+    },
+    "recruit_roster": {
+      "chapter": 1,
+      "complete": true,
+      "identity": {
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "runtime_id": "g747-0fd8cf05"
+      },
+      "month": "2-4",
+      "names": [
+        "どうし",
+        "クランベリー"
+      ],
+      "tick": 9159,
+      "wages": {
+        "どうし": 0,
+        "クランベリー": 6
+      }
+    },
+    "soldiers_seen": 0,
+    "soldiers_seen_key": "2-4",
+    "soldiers_seen_scope": [
+      {
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "runtime_id": "g747-0fd8cf05"
+      },
+      1,
+      "2-4"
+    ],
+    "egg_uses": {
+      "どうし": 4,
+      "アルテミス": 1,
+      "リーキ": 3
+    },
+    "egg_zero_owners": [],
+    "egg_recheck": [
+      "リーキ",
+      "アルテミス",
+      "セルリアク"
+    ],
+    "house_eggs": {
+      "どうし": {
+        "broken": false,
+        "egg": "エラベルエッグ",
+        "general": "どうし",
+        "hp": 90,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 90,
+        "month": "2-4",
+        "observed_chapter": 1,
+        "observed_tick": 9167,
+        "uses": 4,
+        "wage": 0
+      },
+      "アルテミス": {
+        "broken": false,
+        "egg": "ワンダーエッグ",
+        "general": "アルテミス",
+        "hp": 49,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 49,
+        "month": "2-3",
+        "observed_chapter": 1,
+        "observed_tick": 7822,
+        "uses": 1,
+        "wage": 4
+      },
+      "ガルバンゾー": {
+        "broken": false,
+        "egg": "イビルエッグ",
+        "general": "ガルバンゾー",
+        "hp": 30,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 30,
+        "month": "2-1",
+        "observed_chapter": 1,
+        "observed_tick": 6403,
+        "uses": 2,
+        "wage": 2
+      },
+      "クランベリー": {
+        "broken": false,
+        "egg": null,
+        "general": "クランベリー",
+        "hp": 51,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 51,
+        "month": "2-4",
+        "observed_chapter": 1,
+        "observed_tick": 9171,
+        "uses": null,
+        "wage": 6
+      },
+      "ココット": {
+        "broken": false,
+        "egg": "カラフルエッグ",
+        "general": "ココット",
+        "hp": 24,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 24,
+        "month": "1-9",
+        "observed_chapter": 1,
+        "observed_tick": 4615,
+        "uses": 1,
+        "wage": 1
+      },
+      "シナモン": {
+        "broken": false,
+        "egg": null,
+        "general": "シナモン",
+        "hp": 39,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 39,
+        "month": "2-2",
+        "observed_chapter": 1,
+        "observed_tick": 7562,
+        "uses": null,
+        "wage": 4
+      },
+      "シャルドネ": {
+        "broken": false,
+        "egg": null,
+        "general": "シャルドネ",
+        "hp": 20,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 56,
+        "month": "2-2",
+        "observed_chapter": 1,
+        "observed_tick": 7206,
+        "uses": null,
+        "wage": 7
+      },
+      "セルリアク": {
+        "broken": false,
+        "egg": null,
+        "general": "セルリアク",
+        "hp": 32,
+        "location": "castle",
+        "location_observed": true,
+        "max_hp": 32,
+        "month": "2-3",
+        "observed_chapter": 1,
+        "observed_tick": 8568,
+        "uses": null,
+        "wage": 3
+      },
+      "ゼウス": {
+        "broken": false,
+        "egg": "ワンダーエッグ",
+        "general": "ゼウス",
+        "hp": 85,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 85,
+        "month": "1-9",
+        "observed_chapter": 1,
+        "observed_tick": 4179,
+        "uses": 3,
+        "wage": 4
+      },
+      "ピスタチオ": {
+        "broken": false,
+        "egg": null,
+        "general": "ピスタチオ",
+        "hp": 49,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 49,
+        "month": "1-10",
+        "observed_chapter": 1,
+        "observed_tick": 5073,
+        "uses": null,
+        "wage": 9
+      },
+      "リーキ": {
+        "broken": false,
+        "egg": "カラフルエッグ",
+        "general": "リーキ",
+        "hp": 30,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 30,
+        "month": "2-3",
+        "observed_chapter": 1,
+        "observed_tick": 8572,
+        "uses": 3,
+        "wage": 5
+      },
+      "ヴィーナス": {
+        "broken": false,
+        "egg": "スーパーエッグ",
+        "general": "ヴィーナス",
+        "hp": 82,
+        "location": "field",
+        "location_observed": false,
+        "max_hp": 82,
+        "month": "1-6",
+        "observed_chapter": 1,
+        "observed_tick": 1732,
+        "uses": 4,
+        "wage": 3
+      }
+    },
+    "captured": [],
+    "lost": [
+      "ゴーメン",
+      "スペンソニア",
+      "ジョンリギ",
+      "カストーラ",
+      "ナキューメラ",
+      "キカンドン"
+    ],
+    "garrison": {
+      "アルマムーン": [
+        "どうし"
+      ]
+    },
+    "chart_plan": {
+      "orders": [
+        {
+          "after": null,
+          "cards": [
+            "イッテツーン"
+          ],
+          "general": "どうし",
+          "local_step": "J1",
+          "note": "左上を奪回 白兵主体",
+          "source": "アルマムーン",
+          "step": "A:d1f61d77:J1",
+          "target": "ジョンリギ"
+        },
+        {
+          "after": null,
+          "cards": [
+            "イッテツーン"
+          ],
+          "general": "セルリアク",
+          "local_step": "J2",
+          "note": "左を奪回 白兵主体",
+          "source": "キカンドン",
+          "step": "A:d1f61d77:J2",
+          "target": "ゴーメン"
+        }
+      ],
+      "purchases": {
+        "cards": [
+          [
+            "イッテツーン",
+            2
+          ]
+        ],
+        "generals": 0,
+        "month": [
+          2,
+          4
+        ],
+        "note": "在庫32を温存し少額補充",
+        "soldiers": 0
+      },
+      "recruitment": null,
+      "request_id": "d1f61d779fb5ee4f",
+      "source": "llm:opencode-go:muse-spark-1.3-contribut"
+    },
+    "chart_adjust": {
+      "interim_hold_digest": "69bb27b51d0c0174ba59ae414a0cb99adf2959e566241b6996ef9a4e7b398396",
+      "interim_wanted": false,
+      "request_digest": "69bb27b51d0c0174ba59ae414a0cb99adf2959e566241b6996ef9a4e7b398396",
+      "request_id": "0e3d63c9564198f3"
+    },
+    "general_location_unknown": [
+      "ヴィーナス",
+      "ゼウス",
+      "シナモン",
+      "リーキ"
+    ],
+    "army_count_check": {
+      "observations": 2,
+      "result": "measured",
+      "scope": [
+        {
+          "game": "hanjuku-hero",
+          "generation": 747,
+          "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+          "runtime_id": "g747-0fd8cf05"
+        },
+        1,
+        "2-4"
+      ],
+      "stage": "measured"
+    },
+    "month_exit": false,
+    "month_nav": {
+      "cancel_sent": false,
+      "context": [
+        "month_menu",
+        "いかんッ!",
+        1,
+        "2-4",
+        true
+      ],
+      "direction": "down",
+      "distance": 16,
+      "held": 0,
+      "presses": 0,
+      "schema": 2
+    },
+    "recruit_month_scan_attempts": {
+      "count": 1,
+      "scope": [
+        1,
+        "2-4"
+      ]
+    },
+    "recruit_field_scan_attempts": {
+      "count": 0,
+      "scope": [
+        1,
+        "2-4"
+      ]
+    },
+    "recruit_roster_recheck": true,
+    "roster_survey": {
+      "dirty": {},
+      "identity": {
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "runtime_id": "g747-0fd8cf05"
+      },
+      "read_revisions": {
+        "どうし": 0,
+        "クランベリー": 0
+      },
+      "receipt": {
+        "chapter": 1,
+        "complete": true,
+        "identity": {
+          "game": "hanjuku-hero",
+          "generation": 747,
+          "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+          "runtime_id": "g747-0fd8cf05"
+        },
+        "month": "2-4",
+        "names": [
+          "どうし",
+          "クランベリー"
+        ],
+        "tick": 9159,
+        "wages": {
+          "どうし": 0,
+          "クランベリー": 6
+        }
+      },
+      "schema": 1,
+      "scope": [
+        1,
+        "2-4"
+      ],
+      "statuses": {
+        "どうし": {
+          "broken": false,
+          "egg": "エラベルエッグ",
+          "general": "どうし",
+          "hp": 90,
+          "location": "castle",
+          "location_observed": true,
+          "max_hp": 90,
+          "month": "2-4",
+          "observed_chapter": 1,
+          "observed_tick": 9167,
+          "uses": 4,
+          "wage": 0
+        },
+        "クランベリー": {
+          "broken": false,
+          "egg": null,
+          "general": "クランベリー",
+          "hp": 51,
+          "location": "castle",
+          "location_observed": true,
+          "max_hp": 51,
+          "month": "2-4",
+          "observed_chapter": 1,
+          "observed_tick": 9171,
+          "uses": null,
+          "wage": 6
+        }
+      }
+    },
+    "soldiers_seen_basis": "screen_total"
+  },
+  "snapshot_at": 1791885232.017105,
+  "scope": "Same active current snapshot combined bounded collectors; fields not necessarily from one atomic tick. Native soldiers0 and same-scope complete payroll6; 70G/40G reserve, refill24 replanned then exit declined; no paid troops or terminal proved.",
+  "boundary": "Original army0/menu/exit refusal and validated roster fields. Snapshot combines fixed probes, not one atomic tick. New50 plan/payment are counterfactual until naturally observed."
+}

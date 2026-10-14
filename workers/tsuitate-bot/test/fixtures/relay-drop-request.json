@@ -1,0 +1,27 @@
+{
+  "requestId": "relay-drop-demo:2:b:1",
+  "gameId": "relay-drop-demo",
+  "color": "b",
+  "number": 1,
+  "ply": 2,
+  "positions": {
+    "0": {
+      "sfen": "9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b P 1"
+    },
+    "1": {
+      "sfen": "9/9/9/9/4P4/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 2",
+      "lastMove": "+0055FU",
+      "lastInfo": 0,
+      "wasPromotion": false
+    },
+    "2": {
+      "sfen": "9/9/9/9/4P4/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 3",
+      "lastMove": "-0000ZZ",
+      "lastInfo": 0
+    }
+  },
+  "game": {
+    "type": "ついたてリレー",
+    "requiredPlayers": { "b": 2, "w": 2 }
+  }
+}

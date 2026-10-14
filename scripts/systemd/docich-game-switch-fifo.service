@@ -1,0 +1,11 @@
+[Unit]
+Description=docich ゲーム切替 FIFO の期限切れdraining復旧・再駆動
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+# 期限前のdrainingはread-only。期限切れ後だけadapterのcancel ACKを確認し、
+# canonical stateがreadyになった場合にFIFO先頭を1件だけ再開する。
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml maintain-fifo
+TimeoutStartSec=infinity

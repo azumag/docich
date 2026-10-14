@@ -1,0 +1,22 @@
+[Unit]
+Description=Dispatch one policy-bound VM repair event
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ExecStart=/usr/bin/python3 /usr/local/libexec/azumag-vm-ops/self_repair/worker.py /etc/docich-self-repair.json
+UMask=0077
+TimeoutStartSec=10min
+KillMode=control-group
+# Runs as the existing unprivileged runtime owner; configuration stays root-owned.
+# Generator and candidate tests are independently confined by Bubblewrap.

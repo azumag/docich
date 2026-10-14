@@ -1,0 +1,1276 @@
+{
+  "schema": 1,
+  "source_head": "f4c39ec609f8e4eeadde08af0aab9c6bf8e84a89",
+  "rubric": "reply-evidence-v2",
+  "status": "complete",
+  "route": "direct",
+  "model": "jev-1.13.0",
+  "max_post_count": 15,
+  "post_attempts_upper_bound": 15,
+  "budget_usd": "0.05",
+  "conservative_max_model_price_usd": "0.04128768",
+  "retry_count": 0,
+  "fallback_count": 0,
+  "requests_planned": 15,
+  "request_byte_limit": 32768,
+  "response_byte_limit": 131072,
+  "price_verified_utc": "2026-10-04",
+  "price_source": "https://docs.typesafe.ai/models",
+  "corpus": [
+    {
+      "expected": "web_and_code",
+      "id": "mixed_spec_impl",
+      "required_sources": [
+        "web",
+        "code"
+      ],
+      "text": "公式仕様とdocichの実装は一致してる？"
+    },
+    {
+      "expected": "code",
+      "id": "code_named_spec_constant",
+      "required_sources": [
+        "code"
+      ],
+      "text": "このrepoで公式仕様という名前の定数はどこから参照される？"
+    },
+    {
+      "expected": "code",
+      "id": "code_retry_count",
+      "required_sources": [
+        "code"
+      ],
+      "text": "この実装のリトライ回数をコードから教えて。"
+    },
+    {
+      "expected": "code",
+      "id": "code_draw_function",
+      "required_sources": [
+        "code"
+      ],
+      "text": "配列から抽選対象を選ぶ処理を、このrepositoryの実装から説明して。"
+    },
+    {
+      "expected": "web",
+      "id": "web_http_spec",
+      "required_sources": [
+        "web"
+      ],
+      "text": "HTTPの公式仕様で429レスポンスは何を意味する？"
+    },
+    {
+      "expected": "web",
+      "id": "web_webhook_rule",
+      "required_sources": [
+        "web"
+      ],
+      "text": "公式ドキュメントに書かれたWebhookの再送条件を調べて。"
+    },
+    {
+      "expected": "web",
+      "id": "web_public_price",
+      "required_sources": [
+        "web"
+      ],
+      "text": "このサービスの現在の公開料金表を確認して。"
+    },
+    {
+      "expected": "web_and_code",
+      "id": "mixed_retry_conformance",
+      "required_sources": [
+        "web",
+        "code"
+      ],
+      "text": "公開APIのリトライ規約と、このclientの再試行処理が合うか調べて。"
+    },
+    {
+      "expected": "web_and_code",
+      "id": "mixed_timeout_comparison",
+      "required_sources": [
+        "web",
+        "code"
+      ],
+      "text": "provider docsで推奨するtimeoutと、docichが設定する秒数を比較して。"
+    },
+    {
+      "expected": "web_and_code",
+      "id": "mixed_draw_difference",
+      "required_sources": [
+        "web",
+        "code"
+      ],
+      "text": "公開されている抽選確率と、ローカルdraw関数の計算結果に差異はある？"
+    },
+    {
+      "expected": "unknown",
+      "id": "unknown_correctness",
+      "required_sources": null,
+      "text": "それは合ってる？"
+    },
+    {
+      "expected": "unknown",
+      "id": "unknown_comparison",
+      "required_sources": null,
+      "text": "こっちとあっちの違いは？"
+    },
+    {
+      "expected": "unknown",
+      "id": "unknown_previous",
+      "required_sources": null,
+      "text": "前の件を確認して。"
+    }
+  ],
+  "attempts": [
+    {
+      "input_tokens": 761,
+      "json_bytes": 2346,
+      "latency_ms": 336.713,
+      "ordinal": 1,
+      "output_tokens": 67,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web_and_code",
+            "confidence": 0.92,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.01,
+              "runtime": 0.0,
+              "unknown": 0.06,
+              "web": 0.0,
+              "web_and_code": 0.93
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 761,
+          "output_tokens": 67
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 771,
+      "json_bytes": 2377,
+      "latency_ms": 303.585,
+      "ordinal": 2,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "code",
+            "confidence": 0.97,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.98,
+              "runtime": 0.0,
+              "unknown": 0.01,
+              "web": 0.0,
+              "web_and_code": 0.01
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 771,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 765,
+      "json_bytes": 2358,
+      "latency_ms": 340.321,
+      "ordinal": 3,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "code",
+            "confidence": 0.92,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.9400000000000001,
+              "runtime": 0.0,
+              "unknown": 0.06,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 765,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 774,
+      "json_bytes": 2386,
+      "latency_ms": 300.411,
+      "ordinal": 4,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "code",
+            "confidence": 0.93,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.95,
+              "runtime": 0.0,
+              "unknown": 0.05,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 774,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 768,
+      "json_bytes": 2359,
+      "latency_ms": 375.832,
+      "ordinal": 5,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web",
+            "confidence": 0.99,
+            "probabilities": {
+              "api_only": 0.01,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.99,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 768,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 770,
+      "json_bytes": 2371,
+      "latency_ms": 311.503,
+      "ordinal": 6,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web",
+            "confidence": 0.64,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.1,
+              "runtime": 0.0,
+              "unknown": 0.16,
+              "web": 0.7,
+              "web_and_code": 0.04
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 770,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 765,
+      "json_bytes": 2358,
+      "latency_ms": 475.293,
+      "ordinal": 7,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web",
+            "confidence": 0.82,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.01,
+              "runtime": 0.06,
+              "unknown": 0.09,
+              "web": 0.84,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 765,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 774,
+      "json_bytes": 2385,
+      "latency_ms": 286.143,
+      "ordinal": 8,
+      "output_tokens": 67,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web_and_code",
+            "confidence": 0.95,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.04,
+              "web": 0.0,
+              "web_and_code": 0.96
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 774,
+          "output_tokens": 67
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 771,
+      "json_bytes": 2381,
+      "latency_ms": 256.805,
+      "ordinal": 9,
+      "output_tokens": 67,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web_and_code",
+            "confidence": 0.99,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.01,
+              "web": 0.0,
+              "web_and_code": 0.99
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 771,
+          "output_tokens": 67
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 776,
+      "json_bytes": 2392,
+      "latency_ms": 250.571,
+      "ordinal": 10,
+      "output_tokens": 67,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "web_and_code",
+            "confidence": 0.96,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.03,
+              "web": 0.0,
+              "web_and_code": 0.97
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 776,
+          "output_tokens": 67
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 752,
+      "json_bytes": 2319,
+      "latency_ms": 371.189,
+      "ordinal": 11,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "unknown",
+            "confidence": 1.0,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 1.0,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 752,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 756,
+      "json_bytes": 2331,
+      "latency_ms": 353.878,
+      "ordinal": 12,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "unknown",
+            "confidence": 0.98,
+            "probabilities": {
+              "api_only": 0.01,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.99,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 756,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 753,
+      "json_bytes": 2322,
+      "latency_ms": 574.073,
+      "ordinal": 13,
+      "output_tokens": 65,
+      "raw_classification": {
+        "answers": {
+          "reply_evidence": {
+            "choice": "unknown",
+            "confidence": 0.94,
+            "probabilities": {
+              "api_only": 0.03,
+              "code": 0.0,
+              "runtime": 0.02,
+              "unknown": 0.95,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 753,
+          "output_tokens": 65
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 7980,
+      "json_bytes": 31343,
+      "latency_ms": 396.525,
+      "ordinal": 14,
+      "output_tokens": 1519,
+      "raw_classification": {
+        "answers": {
+          "c1": {
+            "choice": "general_question",
+            "confidence": 0.94,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.01,
+              "game_status": 0.0,
+              "general_question": 0.95,
+              "other": 0.04,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c2": {
+            "choice": "general_question",
+            "confidence": 0.93,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.01,
+              "game_status": 0.0,
+              "general_question": 0.94,
+              "other": 0.05,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c3": {
+            "choice": "general_question",
+            "confidence": 0.94,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.01,
+              "game_status": 0.0,
+              "general_question": 0.95,
+              "other": 0.04,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c4": {
+            "choice": "general_question",
+            "confidence": 0.82,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.01,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.07,
+              "game_status": 0.0,
+              "general_question": 0.84,
+              "other": 0.08,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c5": {
+            "choice": "general_question",
+            "confidence": 1.0,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.0,
+              "game_status": 0.0,
+              "general_question": 1.0,
+              "other": 0.0,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c6": {
+            "choice": "general_question",
+            "confidence": 0.98,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.0,
+              "game_status": 0.0,
+              "general_question": 0.98,
+              "other": 0.02,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c7": {
+            "choice": "general_question",
+            "confidence": 0.97,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.0,
+              "game_status": 0.0,
+              "general_question": 0.98,
+              "other": 0.02,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c8": {
+            "choice": "general_question",
+            "confidence": 0.96,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.0,
+              "game_status": 0.0,
+              "general_question": 0.97,
+              "other": 0.03,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "e1": {
+            "choice": "web_and_code",
+            "confidence": 0.98,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.01,
+              "web": 0.0,
+              "web_and_code": 0.99
+            },
+            "type": "choice"
+          },
+          "e2": {
+            "choice": "code",
+            "confidence": 0.97,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.98,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.0,
+              "web_and_code": 0.02
+            },
+            "type": "choice"
+          },
+          "e3": {
+            "choice": "code",
+            "confidence": 0.99,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.99,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.0,
+              "web_and_code": 0.01
+            },
+            "type": "choice"
+          },
+          "e4": {
+            "choice": "code",
+            "confidence": 1.0,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 1.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          },
+          "e5": {
+            "choice": "web",
+            "confidence": 0.98,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.99,
+              "web_and_code": 0.01
+            },
+            "type": "choice"
+          },
+          "e6": {
+            "choice": "web",
+            "confidence": 0.89,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.92,
+              "web_and_code": 0.08
+            },
+            "type": "choice"
+          },
+          "e7": {
+            "choice": "web",
+            "confidence": 1.0,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 1.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          },
+          "e8": {
+            "choice": "web_and_code",
+            "confidence": 1.0,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.0,
+              "web": 0.0,
+              "web_and_code": 1.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 7980,
+          "output_tokens": 1519
+        }
+      },
+      "status": "ok"
+    },
+    {
+      "input_tokens": 5052,
+      "json_bytes": 19519,
+      "latency_ms": 523.178,
+      "ordinal": 15,
+      "output_tokens": 952,
+      "raw_classification": {
+        "answers": {
+          "c1": {
+            "choice": "general_question",
+            "confidence": 0.41,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.01,
+              "chitchat": 0.0,
+              "comment_advice": 0.02,
+              "game_question": 0.28,
+              "game_status": 0.0,
+              "general_question": 0.46,
+              "other": 0.12,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.11,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c2": {
+            "choice": "game_question",
+            "confidence": 0.81,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.02,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.83,
+              "game_status": 0.0,
+              "general_question": 0.08,
+              "other": 0.05,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.02,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c3": {
+            "choice": "general_question",
+            "confidence": 0.7,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.02,
+              "game_status": 0.0,
+              "general_question": 0.72,
+              "other": 0.26,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c4": {
+            "choice": "general_question",
+            "confidence": 0.59,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.0,
+              "game_question": 0.04,
+              "game_status": 0.0,
+              "general_question": 0.62,
+              "other": 0.34,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "c5": {
+            "choice": "general_question",
+            "confidence": 0.66,
+            "probabilities": {
+              "bits": 0.0,
+              "card_gacha": 0.0,
+              "chitchat": 0.0,
+              "comment_advice": 0.01,
+              "game_question": 0.0,
+              "game_status": 0.0,
+              "general_question": 0.6900000000000001,
+              "other": 0.3,
+              "raid": 0.0,
+              "sing_request": 0.0,
+              "strategy_advice": 0.0,
+              "stream_bug_report": 0.0,
+              "stream_goal": 0.0,
+              "subscription": 0.0
+            },
+            "type": "choice"
+          },
+          "e1": {
+            "choice": "web_and_code",
+            "confidence": 0.99,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.01,
+              "web": 0.0,
+              "web_and_code": 0.99
+            },
+            "type": "choice"
+          },
+          "e2": {
+            "choice": "web_and_code",
+            "confidence": 0.97,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.02,
+              "web": 0.0,
+              "web_and_code": 0.98
+            },
+            "type": "choice"
+          },
+          "e3": {
+            "choice": "unknown",
+            "confidence": 0.96,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.01,
+              "runtime": 0.0,
+              "unknown": 0.96,
+              "web": 0.0,
+              "web_and_code": 0.03
+            },
+            "type": "choice"
+          },
+          "e4": {
+            "choice": "unknown",
+            "confidence": 0.96,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 0.97,
+              "web": 0.0,
+              "web_and_code": 0.03
+            },
+            "type": "choice"
+          },
+          "e5": {
+            "choice": "unknown",
+            "confidence": 0.99,
+            "probabilities": {
+              "api_only": 0.0,
+              "code": 0.0,
+              "runtime": 0.0,
+              "unknown": 1.0,
+              "web": 0.0,
+              "web_and_code": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 5052,
+          "output_tokens": 952
+        }
+      },
+      "status": "ok"
+    }
+  ],
+  "discord": {
+    "accuracy_answered": 1.0,
+    "cases_measured": 13,
+    "corpus_count": 13,
+    "coverage": 0.9231,
+    "exact_match_all": 0.9231,
+    "low_confidence_count": 1,
+    "low_confidence_rate": 0.0769,
+    "mean_latency_ms": 363.141,
+    "p95_latency_ms": 625.637,
+    "requests_attempted": 13,
+    "requests_succeeded": 13,
+    "results": [
+      {
+        "confidence": 0.92,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_spec_impl",
+        "latency_ms": 343.871,
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "code",
+        "id": "code_named_spec_constant",
+        "latency_ms": 311.552,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.92,
+        "correct": true,
+        "expected": "code",
+        "id": "code_retry_count",
+        "latency_ms": 355.156,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.93,
+        "correct": true,
+        "expected": "code",
+        "id": "code_draw_function",
+        "latency_ms": 315.143,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "web",
+        "id": "web_http_spec",
+        "latency_ms": 384.079,
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.64,
+        "correct": false,
+        "expected": "web",
+        "id": "web_webhook_rule",
+        "latency_ms": 319.435,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.82,
+        "correct": true,
+        "expected": "web",
+        "id": "web_public_price",
+        "latency_ms": 483.889,
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.95,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_retry_conformance",
+        "latency_ms": 304.901,
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_timeout_comparison",
+        "latency_ms": 270.467,
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.96,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_draw_difference",
+        "latency_ms": 258.098,
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "confidence": 1.0,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_correctness",
+        "latency_ms": 379.726,
+        "scope": "unknown",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.98,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_comparison",
+        "latency_ms": 368.877,
+        "scope": "unknown",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_previous",
+        "latency_ms": 625.637,
+        "scope": "unknown",
+        "status": "jev"
+      }
+    ],
+    "rubric": "reply-evidence-v2",
+    "status": "complete",
+    "terminal_failure": null
+  },
+  "discord_exit": 0,
+  "stream": {
+    "accuracy_on_available": 1.0,
+    "cases_attempted": 13,
+    "cases_measured": 13,
+    "combined_request": true,
+    "corpus_count": 13,
+    "coverage": 1.0,
+    "exact_match_all": 1.0,
+    "low_confidence_count": 0,
+    "low_confidence_rate": 0.0,
+    "mean_batch_latency_ms": 519.012,
+    "p95_batch_latency_ms": 570.148,
+    "requests_attempted": 2,
+    "requests_succeeded": 2,
+    "results": [
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 0.98,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_spec_impl",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "code",
+        "id": "code_named_spec_constant",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "code",
+        "id": "code_retry_count",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 1.0,
+        "correct": true,
+        "expected": "code",
+        "id": "code_draw_function",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 0.98,
+        "correct": true,
+        "expected": "web",
+        "id": "web_http_spec",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 0.89,
+        "correct": true,
+        "expected": "web",
+        "id": "web_webhook_rule",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 1.0,
+        "correct": true,
+        "expected": "web",
+        "id": "web_public_price",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 467.876,
+        "confidence": 1.0,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_retry_conformance",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 570.148,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_timeout_comparison",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 570.148,
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_draw_difference",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 570.148,
+        "confidence": 0.96,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_correctness",
+        "scope": "unknown",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 570.148,
+        "confidence": 0.96,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_comparison",
+        "scope": "unknown",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 570.148,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "unknown",
+        "id": "unknown_previous",
+        "scope": "unknown",
+        "status": "jev"
+      }
+    ],
+    "rubric": "reply-evidence-v2",
+    "status": "complete",
+    "terminal_failure": null
+  },
+  "stream_exit": 0,
+  "known_input_tokens": 22988,
+  "unknown_usage_attempts": 0,
+  "known_model_price_usd": "0.000965496",
+  "attempted_model_price_upper_bound_usd": "0.000965496",
+  "remaining_budget_lower_bound_usd": "0.049034504",
+  "price_basis": "official input $0.042/M; output free; model token estimate, not invoice",
+  "measured_date_utc": "2026-10-04",
+  "unused_approval_post_count": 0,
+  "reruns": 0,
+  "scope": "One synthetic 13-case measurement; not the original 19-case rerun, research or final-answer acceptance.",
+  "raw_classification_format": "Validated transport classification: model, choice, confidence, probabilities, usage. No HTTP headers, credentials or unvalidated context echo."
+}

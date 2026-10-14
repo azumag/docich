@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "corner": "research-paper",
+  "fixtureId": "fixed-cross-field-observability-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed paper fixture for planning and input-contract acceptance only. It is not a real paper, and its title, DOI and URL must not be presented as a real publication or used for external distribution.",
+  "paper": {
+    "title": "Synthetic Fixture: Cross-Field Observability for Small-Sample Complex Systems",
+    "authors": [
+      "Fixture Author A",
+      "Fixture Author B"
+    ],
+    "affiliations": [
+      "Fixture Lab"
+    ],
+    "field": "cross-field (simulation fixtures)",
+    "publishedAt": "2026-09-15",
+    "reviewStatus": "preprint",
+    "doi": "10.5555/synthetic.fixed.cross-field.001",
+    "url": "https://example.org/papers/synthetic-fixed-cross-field-observability",
+    "primarySources": [
+      "https://example.org/papers/synthetic-fixed-cross-field-observability",
+      "https://example.org/papers/synthetic-fixed-cross-field-observability/supplement"
+    ],
+    "thirtySecondSummary": "合成fixture: 小標本の複雑系で観測可能性を評価する手続きを定義し、観測取得の順序が推定誤差に与える影響を示す。",
+    "researchQuestion": "研究者は小標本条件下の複雑系で、どの観測を先に取得すると推定誤差が小さくなるかを調べた。",
+    "priorProblem": "従来は観測を均等に増やす前提が多く、限られた資源でどの観測を優先するかの設計指針が不足していた。",
+    "novelty": "観測優先順位を明示的な目的関数に結び付け、小標本での効果を再現可能な試行手順として提示した点が新しい。",
+    "experimentStrength": "Synthetic fixture based on simulation assumptions. Sample size, assumptions, and reproducibility conditions must be reported together; real-world generalization is not verified.",
+    "limitations": "合成fiction fixtureであり、実領域への一般化、独立検証、査読前の主張には留保が必要である。",
+    "practicalUse": "研究計画や計測設計の優先順位づけ、観測コストの配分判断に使える可能性がある。",
+    "docichApplication": "docich系の計測・観測設計レビュー時に、どの測定を先に取るかを説明するcorner台本の例として使える。",
+    "figureOrSimpleExplanation": "目標指標を縦軸、観測順を横軸にした単純な比較図を想定する。実データ検証は未実施。",
+    "applicationTargets": [
+      "research design",
+      "measurement prioritization",
+      "docich review workflow"
+    ],
+    "citationKeepUrl": true,
+    "sourcePriority": [
+      "paper-body",
+      "arxiv-preprint",
+      "publisher-page",
+      "author-page",
+      "supplement-code"
+    ],
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192
+    }
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/papers/synthetic-fixed-cross-field-observability",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "9f22d98ae907457579d3fda0c6484457559ab1c661197a766253d555142af392",
+        "excerpt": "Synthetic verified material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "cross field observability small sample complex systems"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustStatePreprintStatusIfUnreviewed": true,
+    "mustIncludeResearchCaveats": true,
+    "overlayAndProgressSplitAfterInputContract": true
+  }
+}

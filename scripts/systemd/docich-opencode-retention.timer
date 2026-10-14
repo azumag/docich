@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly OpenCode history retention
+
+[Timer]
+OnActiveSec=1h
+OnUnitInactiveSec=1h
+AccuracySec=1min
+Unit=docich-opencode-retention.service
+
+[Install]
+WantedBy=timers.target

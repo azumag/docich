@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispatch VM repair events (does not review PRs)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=vm-self-repair.service
+
+[Install]
+WantedBy=timers.target

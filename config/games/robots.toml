@@ -1,0 +1,32 @@
+[game]
+name = "robots"
+title = "Robots"
+adapter = "cli"
+
+[lifecycle]
+# Switching away waits for the current Robots one-game boundary.  The
+# coordinator fails closed if the runtime adapter does not implement it.
+require_round_boundary = true
+# Timeout contract: resolver matches outlast the 600s request default, so
+# the game extends ONLY the boundary wait to 2h (every other switch step
+# keeps the request deadline; canonical deadline_at is extended with it).
+boundary_timeout_s = 7200
+
+[cli]
+command = "robots"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = true         # 2026-09-05: resolver脳へ切替（決定論プレイ・トークンゼロ・戦略JSONホットリロード）
+brain = "resolver"
+interval_ms = 800
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# BSD Robots に完全一致の IGDB 項目は無く、最も近い Robots (11585) で代替 (照合済み)。
+[twitch]
+category_id = "11585"
+category_name = "Robots"
+title_prefix = "[Robots]"

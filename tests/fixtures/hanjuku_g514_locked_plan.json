@@ -1,0 +1,246 @@
+{
+  "runtime_id": "g514-8937051b",
+  "generation": 514,
+  "bot_version": "hanjuku-chart-v113-recruit-roster",
+  "policy": {
+    "chapter": 1,
+    "tick": 9646,
+    "month": "3-2",
+    "gold": 74,
+    "captured": [
+      "ゴーメン",
+      "スペンソニア",
+      "ジョンリギ",
+      "カストーラ",
+      "キカンドン"
+    ],
+    "garrison": {
+      "カストーラ": [
+        "ココット"
+      ],
+      "キカンドン": [
+        "ビーツ"
+      ],
+      "ゴーメン": [],
+      "ジョンリギ": [
+        "チコリ"
+      ]
+    },
+    "general_location_unknown": [
+      "ガルバンゾー"
+    ],
+    "orders": {
+      "1-A1": "launched",
+      "1-A2": "launched",
+      "1-A3": "launched",
+      "1-C1": "launched",
+      "1-C2": "launched",
+      "1-V1": "launched",
+      "1-V2": "launched",
+      "A:43348298:J1": "pending",
+      "A:d8715e4f:R1": "pending",
+      "A:d8715e4f:R2": "launched",
+      "A:d8715e4f:R3": "launched",
+      "I:2e352b:1": "launched",
+      "I:433482:1": "launched",
+      "I:52fb1f:1": "launched_unconfirmed",
+      "I:c4163e:1": "launched",
+      "I:c4163e:2": "launched",
+      "I:e1823e:1": "failed"
+    },
+    "chart_plan": {
+      "orders": [
+        {
+          "after": [
+            "captured",
+            "ナキューメラ"
+          ],
+          "cards": [
+            "イッテツーン"
+          ],
+          "general": "ココット",
+          "local_step": "K1",
+          "note": "失ったナキューメラをカストーラから奪回",
+          "source": "カストーラ",
+          "step": "A:8a1a091c:K1",
+          "target": "ナキューメラ"
+        },
+        {
+          "after": [
+            "all_captured"
+          ],
+          "cards": [
+            "クースカン",
+            "ノリウツール"
+          ],
+          "general": "どうし",
+          "local_step": "K2",
+          "note": "どうしでボス城けっかいを攻略",
+          "source": "スペンソニア",
+          "step": "A:8a1a091c:K2",
+          "target": "けっかい"
+        }
+      ],
+      "purchases": {
+        "cards": [
+          [
+            "イッテツーン",
+            2
+          ]
+        ],
+        "generals": 0,
+        "month": [
+          1,
+          12
+        ],
+        "note": "予備のイッテツーンを補充",
+        "soldiers": 0
+      },
+      "request_id": "8a1a091ce57a4e53",
+      "source": "llm:opencode-go:deepseek-v4.1-flash"
+    },
+    "chart_adjust": {
+      "interim_wanted": false,
+      "request_digest": "fd22818260f2d84925ede0ad07594317701192cefcd50cb51d39cf3ebb11cb43",
+      "request_id": "8a1a091ce57a4e53"
+    },
+    "active": null,
+    "house": {
+      "age": 0,
+      "chapter": 1,
+      "pending": [
+        "チコリ"
+      ],
+      "phase": "status",
+      "seen": [
+        "どうし",
+        "ゼウス",
+        "ココット",
+        "ビーツ",
+        "チコリ",
+        "シナモン",
+        "ヘーゼル",
+        "リースリング"
+      ],
+      "selected": "トレビス",
+      "total": 36
+    },
+    "lost": [
+      "ナキューメラ"
+    ],
+    "sorties": {
+      "1-A1": {
+        "general": "どうし",
+        "target": "キカンドン",
+        "status": "arrived",
+        "tick": 379
+      },
+      "1-A2": {
+        "general": "どうし",
+        "target": "ゴーメン",
+        "status": "arrived",
+        "tick": 470
+      },
+      "1-A3": {
+        "general": "どうし",
+        "target": "スペンソニア",
+        "status": "arrived",
+        "tick": 1509
+      },
+      "1-C1": {
+        "general": "ココット",
+        "target": "ジョンリギ",
+        "status": "arrived",
+        "tick": 429
+      },
+      "1-C2": {
+        "general": "ココット",
+        "target": "スペンソニア",
+        "status": "en_route",
+        "tick": 639
+      },
+      "1-V1": {
+        "general": "ヴィーナス",
+        "target": "ナキューメラ",
+        "status": "arrived",
+        "tick": 406
+      },
+      "1-V2": {
+        "general": "ヴィーナス",
+        "target": "カストーラ",
+        "status": "arrived",
+        "tick": 614
+      },
+      "A:d8715e4f:R2": {
+        "general": "ビーツ",
+        "target": "キカンドン",
+        "status": "en_route",
+        "tick": 5000
+      },
+      "A:d8715e4f:R3": {
+        "general": "ココット",
+        "target": "カストーラ",
+        "status": "arrived",
+        "tick": 3023
+      },
+      "I:2e352b:1": {
+        "general": "ガルバンゾー",
+        "target": "キカンドン",
+        "status": "arrived",
+        "tick": 4648
+      },
+      "I:433482:1": {
+        "general": "ココット",
+        "target": "ジョンリギ",
+        "status": "arrived",
+        "tick": 2146
+      },
+      "I:52fb1f:1": {
+        "general": "チコリ",
+        "target": null,
+        "planned_target": "ジョンリギ",
+        "source": "スペンソニア",
+        "status": "launched_unconfirmed",
+        "tick": 3048
+      },
+      "I:c4163e:1": {
+        "general": "シナモン",
+        "target": "ジョンリギ",
+        "status": "en_route",
+        "tick": 4855
+      },
+      "I:c4163e:2": {
+        "general": "リースリング",
+        "target": "ナキューメラ",
+        "planned_target": "ナキューメラ",
+        "source": "スペンソニア",
+        "status": "arrived",
+        "tick": 4885
+      }
+    }
+  },
+  "plan_pending": false,
+  "candidates": {
+    "retake_1": {
+      "general": "ヴィーナス",
+      "target": "ナキューメラ",
+      "cards": [
+        "イッテツーン",
+        "イッテツーン"
+      ],
+      "source": "アルマムーン",
+      "after": null,
+      "purpose": "retake",
+      "note": "暫定: ヴィーナスで奪われたナキューメラを奪還"
+    },
+    "move_2": {
+      "general": "しょうぐん",
+      "target": "ゴーメン",
+      "cards": [],
+      "source": "スペンソニア",
+      "after": null,
+      "purpose": "move",
+      "note": "暫定: しょうぐんをスペンソニアから空のゴーメンへ移動"
+    }
+  }
+}

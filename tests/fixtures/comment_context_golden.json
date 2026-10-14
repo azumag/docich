@@ -1,0 +1,57 @@
+{
+  "provenance": {
+    "generator": "scripts/golden/comment_context_golden.py",
+    "soviet_now_commit": "45d1da48736ccabd8339af111de3fe142328c35a",
+    "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O"
+  },
+  "inputs": {
+    "files": {
+      "batch.txt": "alice: なるほど！\nbob: そうなんだ\ncarol: なるほど！\n",
+      "history/20260920_120000_main.txt": "迷路の出口について説明しました。\n✗ read failed ignored\n",
+      "history/20260921_120000_main.txt": "NetHack の迷路を案内しました。\nerror: do not include\n",
+      "history/20260921_120001_soren91.txt": "対戦版は順位で振り返ります。\n",
+      "comments/comment_current.txt": "今の返答では迷路の出口を説明しました。\n",
+      "comments/comment_current.mode": "main\n",
+      "tmp/.say_queue/current_source": "reply|playing|@ROOT@/comments/comment_current.txt\n",
+      "advice.txt": "古い助言\n（なし）\n  \n新しい助言\n",
+      "advice_comments.txt": "alice: [soren91] 盤面 typeA の配置を改善して\nbob: コメント返しは短めにして\ncarol: show-status のログを監視して\ndave: permission denied while reading\nerin: [main] typeB を右に置いて\n",
+      "radio_topics.txt": "[12:00] Game#4 [strategy]: RAW_TOPIC_PAYLOAD\n[12:05] Game#5 [news]: 記事本文は保存しない\nmalformed row\n[12:10] Game#6 [new_corner]: payload omitted\n",
+      "game_state.json": "{\"state\": \"MOVE\", \"score\": 42, \"record\": 120, \"makeSorenCount\": 3, \"pieceCount\": 8, \"pieces\": [{\"type\": 5}, {\"type\": \"5\"}, {\"type\": 2}, {\"type\": \"x\"}], \"next\": {\"type\": 4}, \"nextNext\": {\"type\": 6}}\n",
+      "score_history.txt": "game\tscore\n1\t10\n2\t20\n3\t30\n4\t40\n5\t50\n6\t60\n7\t70\n8\t80\n9\t90\n10\t100\n11\t110\n12\t120\n13\t130\n14\t140\n15\t150\n",
+      "russia.tsv": "2026-09-01T00:00:00Z\t9/1\t2\t200\t80\n2026-09-10T00:00:00Z\t9/10\t12\t400\t90\n",
+      "soviet.tsv": "2026-09-11T00:00:00Z\t9/11\t13\t500\t100\n",
+      "archive.tsv": "2026-08-20T00:00:00Z\t8/20\t1\t100\t40\n2026-09-10T00:00:00Z\t9/10\t12\t400\t88\n",
+      ".env": "SOREN91_ENABLED=0\nSOREN91_DAILY_ENABLED=1\nAPI_KEY=synthetic-secret-marker-never-retain\n",
+      "canonical.json": "{\"active\": {\"game\": \"sorengame\"}}\n",
+      "lifecycle/request.json": "{\"request_id\": \"fixture-1\"}\n",
+      "lifecycle/ack.json": "{\"status\": \"boundary\"}\n",
+      "game_count.txt": "88\n",
+      "prediction.paused": "",
+      "work.json": "{\"active\": true, \"title\": \"fixture task\", \"body\": \"synthetic progress\"}\n",
+      "improve.json": "{\"status\": \"running\", \"phase\": \"fixture phase\"}\n",
+      "ab.json": "{\"games_recorded\": 3}\n",
+      "ops_brief.md": "# heading\n- fixture first\n* fixture second\nnot a secret\n"
+    },
+    "mtimes": {
+      "history/20260920_120000_main.txt": 1790000000,
+      "history/20260921_120000_main.txt": 1790003600,
+      "history/20260921_120001_soren91.txt": 1790007200,
+      "comments/comment_current.txt": 1790010800
+    }
+  },
+  "outputs": {
+    "batch": "[1] alice: one\n  直前: （なし）\n  直後: bob: two\n  直前が同一ユーザー: なし\n\n[2] bob: two\n  直前: alice: one\n  直後: alice: three\n  直前が同一ユーザー: なし\n\n[3] alice: three\n  直前: bob: two\n  直後: （なし）\n  直前が同一ユーザー: なし\n\n",
+    "recent_main": "[再生中 17:13] 今の返答では迷路の出口を説明しました。\n[15:13] NetHack の迷路を案内しました。\n[14:13] 迷路の出口について説明しました。",
+    "recent_soren91": "[16:13] 対戦版は順位で振り返ります。",
+    "followup_main": "- alice: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない\n- bob: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない\n- carol: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない",
+    "followup_soren91": "- alice: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない\n- bob: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない\n- carol: 単独の相づち・反応。直前の文脈につなげて自然に短く返す。感情や背景を創作せず、不要な説明や会話を続けるだけの質問は足さない",
+    "advice_tail": "古い助言\n新しい助言",
+    "structured_advice": "strategy\tsoren91\talice: [soren91] 盤面 typeA の配置を改善して\ncomment\t-\tbob: コメント返しは短めにして\ncodex\t-\tcarol: show-status のログを監視して",
+    "past_topics": "直近ラジオの重複回避メモ:\n- 12:00 [strategy] 戦略変更の解説をしました\n- 12:05 [news] ニュース考察をしました\n- 12:10 [new_corner] 別の題材を扱いました\n- 同じ固有名詞の読み直しではなく、切り口を変えること\n- 政治、戦争、歴史、人名そのものを避ける必要はありません",
+    "game_main": "ライブ局面は生成から読み上げまでにズレやすい。返答の中心は終了ゲーム履歴・建国履歴の全体統計に置くこと。\nライブ状態補助: state=MOVE(プレイ中), snapshot_score=42, record=120, makeSorenCount=3, pieceCount=8\nライブ盤面補助: next=type4, nextNext=type6, 最大type=5, 上位type=type5x2, type2x1\n全体スコア統計: 終了スコア履歴件数=15, 全体平均=80, 全体中央値=80, 全体最高=150, 全体p90=130, 直近終了スコア=150, 直近12平均=95, 直近12最高=150, 直近50平均=80, 直近50中央値=80, 直近200平均=80, 直近1000平均=80\n予想サイクル目安: score_history基準で12ゲーム中4ゲーム目相当（完了済み 3/12）\n全体建国統計: ロシア建国: total=2, 直近=9/10, Game#12, そこから約3ゲーム経過, score=400, turns=90, score_history件数基準の通算率目安=13.33%, 履歴Game#基準の直近100ゲーム内=2回, 履歴Game#基準の直近500ゲーム内=2回, 履歴Game#基準の直近1000ゲーム内=2回\n全体建国統計: ソ連建国: total=1, 直近=9/11, Game#13, そこから約2ゲーム経過, score=500, turns=100, score_history件数基準の通算率目安=6.67%, 履歴Game#基準の直近100ゲーム内=1回, 履歴Game#基準の直近500ゲーム内=1回, 履歴Game#基準の直近1000ゲーム内=1回\n返答ルール: スコア進捗・建国回数・状態を聞かれたら、まず全体統計と直近ウィンドウ統計を使う。ライブ局面の snapshot_score や盤面補助は、今この瞬間の断定ではなく補足としてだけ扱う。数字が無い時だけ不明と言い、推測で回数やスコアを作らない。",
+    "ops_main": "- いまのメイン画面: sorengame — ソ連ゲーム(Unity WebGL)。AIが戦略を改善しながらプレイし、ロシア建国・ソ連建国を目指す\n- 返答の話題はメイン画面のゲームに合わせる。コメントがソ連ゲームの話(ソ連建国・スコア・戦略改善)なら、画面が違ってもソレンゲームの話として答える\n- 切替手続き: ソ連ゲームの試合境界を確認済み、資源停止は明示stop待ち\n- 画面右上の作業中バナー(視聴者にも見えている): fixture task / synthetic progress\n- 中華AIの戦略改善: 実行中(fixture phase)\n- メリケンAI(ソ連ゲーム91)はいま停止中で登場しない\n- 戦略のA/B比較を実施中: 2つの戦略を1試合ずつ交互に走らせて比較している(記録済み3試合)\n- チャネルポイント予想(サナエトークン): いまは停止中。動いている前提で案内しない\n- 直近の裏側の改修(聞かれたときだけ噛み砕いて話す): fixture first / fixture second",
+    "ops_soren91": "- いまメイン画面はメリケンAIのソ連ゲーム91(対戦版)\n- 画面右上の作業中バナー(視聴者にも見えている): fixture task / synthetic progress\n- 中華AIの戦略改善: 実行中(fixture phase)\n- 戦略のA/B比較を実施中: 2つの戦略を1試合ずつ交互に走らせて比較している(記録済み3試合)\n- チャネルポイント予想(サナエトークン): いまは停止中。動いている前提で案内しない\n- 直近の裏側の改修(聞かれたときだけ噛み砕いて話す): fixture first / fixture second",
+    "celebration": "ロシア建国: 累計2回\n- 9/10 / Game#12 / score=400 / turns=90\n- 9/1 / Game#2 / score=200 / turns=80\n\nソ連建国: 累計3回\n- 9/11 / Game#13 / score=500 / turns=100\n- 9/10 / Game#12 / score=400 / turns=88",
+    "ops_stopped": "- いまのメイン画面: ゲーム切替後の準備中(旧ソレンゲームは停止済み)\n- 返答の話題はメイン画面のゲームに合わせる。コメントがソ連ゲームの話(ソ連建国・スコア・戦略改善)なら、画面が違ってもソレンゲームの話として答える\n- 切替完了: ソレンゲームは停止済み(最終試合score=42 / 通算88試合)。ソ連ゲームの話は過去形で答える\n- 画面右上の作業中バナー(視聴者にも見えている): fixture task / synthetic progress\n- ソ連ゲームの戦略改善: 手動休止中(オペレーターの指示で停止。再開までは動かない)\n- メリケンAI(ソ連ゲーム91)はいま停止中で登場しない\n- 戦略のA/B比較を実施中: 2つの戦略を1試合ずつ交互に走らせて比較している(記録済み3試合)\n- チャネルポイント予想(サナエトークン): いまは停止中。動いている前提で案内しない\n- 直近の裏側の改修(聞かれたときだけ噛み砕いて話す): fixture first / fixture second"
+  }
+}

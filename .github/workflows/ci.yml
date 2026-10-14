@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - 'conftest.py'
+      - 'requirements*.txt'
+      - '.github/workflows/ci.yml'
+  # A push to main does not re-run this suite. The PR run already covered the
+  # same tree, and the per-area workflows in this directory still run for the
+  # areas a push actually touched. Use this entry point when a full-suite run
+  # on main is genuinely needed, e.g. after a manual merge commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python-syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Compile Python
+        run: python3 -m compileall -q src tests
+
+  full-suite:
+    # Hermetic full-suite contract (issue #79): every tests/test_*.py runs
+    # green through the canonical pytest runner on the supported Python,
+    # with no submodules, no network, and no ambient PYTHONPATH.
+    # tests/ relies on the root conftest.py for sys.path (src) and
+    # tempfile isolation; tests needing live external state (real tmux
+    # server, submodules, browsers, /proc identity) must inject fakes or
+    # declare an explicit opt-in/skip gate, never fail the suite.
+    # The suite is spread over 4 pytest-xdist workers to match the runner's
+    # 4 vCPUs. Collection must stay deterministic: a test whose node ids
+    # depend on uuid4()/time at import time makes the workers disagree and
+    # pytest-xdist aborts the entire run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: 'requirements*.txt'
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Install system dependencies
+        # Hosted images usually already provide both binaries. Avoid a network
+        # package-index refresh in that case, but keep fresh images supported.
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version >/dev/null
+          ffprobe -version >/dev/null
+      - name: Full hermetic test suite (canonical pytest runner)
+        run: python3 -m pytest -q tests/ --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py
+      - name: Single-threaded scene-process contracts (serial)
+        # tests/test_hanjuku_scene_process.py proves the scene owner only runs
+        # in a process with exactly one thread (/proc/self/task). Every
+        # pytest-xdist worker carries an execnet receiver thread, so this file
+        # cannot run in a worker and stays on the serial runner.
+        run: python3 -m pytest -q tests/test_hanjuku_scene_process.py

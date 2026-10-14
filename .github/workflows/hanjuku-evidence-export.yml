@@ -1,0 +1,135 @@
+name: Hanjuku completed evidence export
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_id:
+        description: Explicit completed runtime ID (not latest or active)
+        required: true
+        type: string
+      recipient:
+        description: Recipient public RSA certificate PEM (never a private key)
+        required: true
+        type: string
+      confirm:
+        description: Type production
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-storage-monitor-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main'
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the dispatched immutable main commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize and prepare a bounded public request
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_RUNTIME_ID: ${{ inputs.runtime_id }}
+          INPUT_RECIPIENT: ${{ inputs.recipient }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -m 700 -d "$RUNNER_TEMP/hanjuku-export"
+          python3 control/ops/vm_actions/authorize_hanjuku_evidence_export.py \
+            > "$RUNNER_TEMP/hanjuku-export/request.json"
+          [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$GITHUB_SHA" ]]
+
+      - name: Configure pinned SSH transport
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/hanjuku-export/ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/hanjuku-export/ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/hanjuku-export/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/hanjuku-export/ssh/"*
+          printf 'HANJUKU_SSH_PORT=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Receive only encrypted completed-run evidence
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+          work="$RUNNER_TEMP/hanjuku-export"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          # A fixed operation, not exec/diagnostics, and no fallback on rejection.
+          # Limit the temporary file even if an installed gateway misbehaves.
+          if ! (ulimit -f 36864; timeout --kill-after=5s 135s ssh "${ssh_args[@]}" \
+              "$VM_SSH_USER@$VM_SSH_HOST" "hanjuku_evidence docich production $SHA" \
+              < "$work/request.json" > "$work/evidence.cms" 2> "$work/transport.stderr"); then
+            rm -f "$work/evidence.cms"
+            echo '::error::Hanjuku evidence transfer rejected or unavailable'
+            exit 1
+          fi
+          python3 control/ops/vm_actions/validate_hanjuku_ciphertext.py "$work/evidence.cms"
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hanjuku-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hanjuku-export/evidence.cms
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Clear runner staging
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/hanjuku-export"

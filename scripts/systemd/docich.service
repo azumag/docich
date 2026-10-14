@@ -1,0 +1,13 @@
+[Unit]
+Description=docich streaming foundation
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich up
+ExecStop=__DOCICH_ROOT__/bin/docich down
+
+[Install]
+WantedBy=default.target

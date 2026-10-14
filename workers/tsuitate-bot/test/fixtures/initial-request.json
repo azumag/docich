@@ -1,0 +1,19 @@
+{
+  "requestId": "game-demo:0:b:0",
+  "gameId": "game-demo",
+  "color": "b",
+  "number": 0,
+  "ply": 0,
+  "positions": {
+    "0": {
+      "sfen": "9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+      "fouls": { "b": 9, "w": 9 },
+      "times": { "b": 300, "w": 300 },
+      "byoyomiActive": { "b": false, "w": false }
+    }
+  },
+  "game": {
+    "type": "ついたて",
+    "requiredPlayers": { "b": 1, "w": 1 }
+  }
+}

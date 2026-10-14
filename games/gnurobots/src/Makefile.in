@@ -1,0 +1,59 @@
+# Makefile for GNU Robots `src' directory
+# Copyright (C) 1998 Jim Hall, jhall1@isd.net
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+# Macros:
+
+SOURCES=api.c sign.c loadmap.c drawmap.c
+OBJECTS=$(SOURCES:.c=.o)
+
+CFLAGS_X=@X_CFLAGS@
+LDFLAGS_X=
+LDLIBS_X=@X_LIBS@ @X_PRE_LIBS@ @X_EXTRA_LIBS@
+CURSES_CFLAGS=@CURSES_CFLAGS@
+CURSES_LIBS=@CURSES_LIBS@
+
+# Build targets:
+
+all: robots_logfile robots xrobots
+
+robots_logfile: main.o ../lib/text.o $(OBJECTS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.o ../lib/text.o $(OBJECTS) $(LDLIBS)
+
+robots: main.o ../lib/curses.o $(OBJECTS)
+	 $(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.o ../lib/curses.o $(OBJECTS) $(LDLIBS) $(CURSES_LIBS)
+
+xrobots: main.o ../lib/x11.o $(OBJECTS)
+	$(CC) $(CFLAGS) $(CFLAGS_X) $(LDFLAGS) $(LDFLAGS_X) -o $@ main.o ../lib/x11.o $(OBJECTS) $(LDLIBS) $(LDLIBS_X)
+
+
+lint: $(SOURCES)
+	$(LINT) $(CFLAGS) $(SOURCES)
+
+test: all
+	./robots
+
+# Clean up:
+
+clean:
+	$(RM) *~ core
+
+realclean: clean
+	$(RM) $(OBJECTS) main.o
+
+distclean: realclean
+	$(RM) robots_logfile robots xrobots
+	$(RM) Makefile

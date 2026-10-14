@@ -1,0 +1,91 @@
+diff --git a/src/docich/flyhome/mpc.py b/src/docich/flyhome/mpc.py
+index 7efd21c..89827c4 100644
+--- a/src/docich/flyhome/mpc.py
++++ b/src/docich/flyhome/mpc.py
+@@ -540,6 +540,8 @@ class MpcController:
+             if dt > 0.06:
+                 vx, vy = (x - x0) / dt, (y - y0) / dt
+                 # 角速度は遅延補正済み観測器を保ち、位置差分だけ実測を使う。
++            if all(abs(px - x) + abs(py - y) < .1 for _, px, py, _ in list(self._hist)[-3:]):
++                vx = vy = 0.0  # _estimateで認識した静止を古い差分で再び動いている扱いにしない。
+         rx, ry, rvx, rvy = self._ref[min(4, len(self._ref) - 1)]
+         align_descent = False
+         # 長い縦通路へ下りる前に、その中心へ横から入って減速する。
+@@ -640,6 +642,10 @@ class MpcController:
+                 return 2 if future_om * p.torque_sign > 0 else 1
+             return 3
+         if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
++            # 実機Lv35: 上昇停止が回転制動まで止め、横倒しで台へ戻っていた。
++            # 画面上端の余裕内だけ制動を許す。棘の天井/14px以下では噴射しない。
++            if ceiling == 24.0 and minimum_y > 14 and abs(future_om) > .35 and abs(stop_angle) > .4:
++                return 2 if future_om * p.torque_sign > 0 else 1
+             return 0
+         if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
+             return 0
+@@ -716,7 +722,12 @@ class MpcController:
+             self._make_ref(x, y)
+         low_tunnel = self._low_terrain_tunnel(x, y)
+         near_home = st.home is not None and math.hypot(x - st.home[0], y - st.home[1]) < 100
+-        if self._ref and not low_tunnel and (self._narrow_level or near_home):
++        # 実機Lv35: 棘が20個でも離陸位置の27px先に棘がある。
++        # 面全体の個数だけでは入口で通常MPCが横倒しを選んでしまう。
++        near_hazard = any(math.hypot(max(hx0 - x, x - hx1, 0.0),
++                                    max(hy0 - y, y - hy1, 0.0)) < 60
++                          for hx0, hy0, hx1, hy1 in self.hazards)
++        if self._ref and not low_tunnel and (self._narrow_level or near_home or near_hazard):
+             a = self._precision_action(x, y, vx, vy, ang, om)
+             self._plan = None
+             self._last_action = a
+diff --git a/tests/test_flyhome_windows_control.py b/tests/test_flyhome_windows_control.py
+index b0e01bb..8a2034d 100644
+--- a/tests/test_flyhome_windows_control.py
++++ b/tests/test_flyhome_windows_control.py
+@@ -472,3 +472,48 @@ def test_actual_level33_open_descent_does_not_require_two_spike_columns():
+         ctl._precision_action(49.924, 33.337, -.588, -2.023, 0, .391)
+         assert ctl._descent_commit is None
+         assert ctl._precision_debug[7]
++
++
++def test_actual_level35_takeoff_near_spikes_uses_precision_before_near_home():
++    from docich.flyhome.tracker import State, PLAYING
++    ctl = _actual_mpc()
++    ctl.cfg.takeoff_s = 0
++    ctl._attempt = 1
++    ctl._ref = [(118, 26, 8, 0)] * ctl.cfg.horizon
++    ctl._make_ref = lambda x, y: None
++    ctl.hazards = [(131, 39 + 16*k, 141, 49 + 16*k) for k in range(8)]
++    ctl.hazards += [(163, 39 + 16*k, 173, 49 + 16*k) for k in range(8)]
++    assert not ctl._narrow_level
++    called = []
++    ctl._estimate = lambda st: (st.x, st.y, 0, -21.383, st.angle, 1.094)
++    ctl._precision_action = lambda *args: called.append(args) or 2
++    # 判定だけを検証し、先読みの運動モデルは実行しない。
++    ctl._policy_seq = lambda *args: (_ for _ in ()).throw(AssertionError('open MPC was used'))
++    st = State(10, PLAYING, 1, 103.924, 24.337, angle=0, home=(152, 154.6))
++    assert ctl.decide(st, st.home) == (False, True)
++    assert len(called) == 1
++
++
++def test_actual_level35_upper_reserve_allows_braking_before_sideways_landing():
++    ctl = _actual_mpc()
++    ctl._hist.append((10, 136.12, 23.293, -.196))
++    ctl._ref = [(138, 22, 8, -7.435)] * ctl.cfg.horizon
++    assert ctl._precision_action(136.12, 23.293, 8.9, -7.767, -.196, -1.001) == 1
++    # 上端の安全余裕が尽きる場合や、上に棘がある場合は噴射しない。
++    ctl._hist.clear()
++    ctl._hist.append((10, 136.12, 14.5, -.196))
++    assert ctl._precision_action(136.12, 14.5, 8.9, -7.767, -.196, -1.001) == 0
++    ctl._hist.clear()
++    ctl._hist.append((10, 136.12, 23.293, -.196))
++    ctl.hazards = [(131, 10, 141, 20)]
++    assert ctl._precision_action(136.12, 23.293, 8.9, -7.767, -.196, -1.001) == 0
++
++
++def test_vertical_descent_preserves_three_identical_position_observations():
++    ctl = _actual_mpc()
++    ctl._hist.extend([(9.88, 151, 60, 0), (9.92, 150, 60, 0),
++                      (9.96, 150, 60, 0), (10, 150, 60, 0)])
++    ctl._ref = [(150, 65, 0, 12)] * ctl.cfg.horizon
++    assert ctl._precision_action(150, 60, 0, 0, 0, 0) == 0
++    assert ctl._precision_debug[0] == 0
++    assert ctl._precision_debug[4] == 0

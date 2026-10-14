@@ -1,0 +1,11 @@
+[Unit]
+Description=Check fixed JST %i market program window
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+Unit=docich-market-corner@%i.service
+
+[Install]
+WantedBy=timers.target

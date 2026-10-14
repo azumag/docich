@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "component": "twica_common",
+  "ownership": "common_broadcast",
+  "required": false,
+  "unit": "docich-twica-common.service",
+  "supervision": "user_systemd",
+  "pipeline_supervision": "existing_direct_stream_runner",
+  "health_operation": "python3 ops/vm_actions/twica_common.py status",
+  "policy": "run/twica-common/control.json",
+  "telemetry": ["run/twica-common/pipeline.json", "run/twica-common/renderer.json", "run/twica-common/legacy-*.json"],
+  "health_fields": ["owner", "policy_valid", "pipeline_ready", "renderer_alive", "renderer_state", "legacy_clients", "legacy_healthy", "legacy_subscribers", "frame_state"],
+  "queue_owner": "one_persistent_twica_browser_page",
+  "fault_policy": "transparent_without_legacy_fallback",
+  "output_boundary": "fixed_status_projection_only_no_browser_checkpoint_or_frames",
+  "general_collector": "not_extended_use_component_health_operation"
+}

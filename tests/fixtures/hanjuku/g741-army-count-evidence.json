@@ -1,0 +1,106 @@
+{
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791849222.4195752,
+        "bot_version": "hanjuku-chart-v190-bound-sortie-execution",
+        "chart_step": null,
+        "decision_id": "g741-defa2f9a:741:7458",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "31404bc8bbb36286aca515cbbda3ca6545846af7b1886600b226be2888f8739c",
+        "game": "hanjuku-hero",
+        "generation": 741,
+        "lease_id": "f7d03327-28e1-417f-a011-e7a7fdf5cdb0",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "soldiers_seen"
+        ],
+        "runtime_id": "g741-defa2f9a",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-018.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "rgb_sha256": "31404bc8bbb36286aca515cbbda3ca6545846af7b1886600b226be2888f8739c",
+      "input_receipts": [
+        {
+          "at": 1791849222.5820951,
+          "bot_version": "hanjuku-chart-v189-priest-sprite-dialogue",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "31404bc8bbb36286aca515cbbda3ca6545846af7b1886600b226be2888f8739c",
+          "decision_id": "g741-defa2f9a:741:7458",
+          "event": "input_sent",
+          "frame_sha256": "31404bc8bbb36286aca515cbbda3ca6545846af7b1886600b226be2888f8739c",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "fixture": "g741-army-count-7458.png"
+    },
+    {
+      "decision": {
+        "at": 1791849225.5714264,
+        "bot_version": "hanjuku-chart-v190-bound-sortie-execution",
+        "chart_step": "1-month",
+        "decision_id": "g741-defa2f9a:741:7460",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "1fef8d71d68444c58cb12fb92ef9fbdde3059519b3f3a6f5833aa74c03854c90",
+        "game": "hanjuku-hero",
+        "generation": 741,
+        "lease_id": "f7d03327-28e1-417f-a011-e7a7fdf5cdb0",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "soldier_refill"
+        ],
+        "runtime_id": "g741-defa2f9a",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-020.png",
+        "strategy_variant": "soldier_refill_only"
+      },
+      "rgb_sha256": "1fef8d71d68444c58cb12fb92ef9fbdde3059519b3f3a6f5833aa74c03854c90",
+      "input_receipts": [
+        {
+          "at": 1791849225.7356684,
+          "bot_version": "hanjuku-chart-v189-priest-sprite-dialogue",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "1fef8d71d68444c58cb12fb92ef9fbdde3059519b3f3a6f5833aa74c03854c90",
+          "decision_id": "g741-defa2f9a:741:7460",
+          "event": "input_sent",
+          "frame_sha256": "1fef8d71d68444c58cb12fb92ef9fbdde3059519b3f3a6f5833aa74c03854c90",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "fixture": "g741-army-count-7460.png"
+    }
+  ]
+}

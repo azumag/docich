@@ -1,0 +1,7 @@
+[Unit]
+Description=docich rotate ([rotation] games を巡回する)
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich rotate
