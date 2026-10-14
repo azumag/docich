@@ -654,13 +654,88 @@ def test_broken_ledger_keeps_the_settled_round_retryable(env):
     assert len(leaderboard.load(path)['rounds']) == 1
 
 
-def test_malformed_settled_row_is_refused_without_recording(env):
+@pytest.mark.parametrize('settled_by', ['patch', 'remote'])
+def test_malformed_settled_row_is_refused_without_recording(env, settled_by):
     assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
     duplicate = {'user_id': 'u1', 'user_login': 'alice', 'user_name': 'Alice',
                  'channel_points_used': 10, 'channel_points_won': 5}
     env.remote.rows[0]['outcomes'][0]['top_predictors'] = [duplicate, dict(duplicate)]
 
-    result = _settle(env)
+    if settled_by == 'patch':
+        result = _settle(env, now=131)
+    else:
+        env.remote.rows[0].update(status='RESOLVED', winning_outcome_id='outcome-1')
+        result = env.tick(131)
 
     assert result['mode'] == 'error' and result['error'] == 'invalid_response'
+    assert env.state()['round']['status'] == 'RESOLVED'
     assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+    # Neither a cooldown tick nor a common retry tick re-reads the rejected row.
+    calls = list(env.remote.calls)
+    env.tick(132, None)
+    env.tick(131 + p.RETRY_SECONDS + 1, None)
+    assert env.remote.calls == calls
+    assert env.state()['round']['id'] == prediction_id
+    assert env.state()['round']['status'] == 'RESOLVED'
+
+    # The verified terminal round must not block the next canonical generation.
+    env.setup(ID2)
+    assert env.tick(131 + p.RETRY_SECONDS + 32, ID2)['mode'] == 'active'
+    assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+    assert env.state()['round']['id'] != prediction_id
+    env.tick(131 + p.RETRY_SECONDS + 62, ID2)
+    assert len([call for call in env.remote.calls if call == ('GET', prediction_id)]) == 1
+    assert len([call for call in env.remote.calls if call[0] == 'POST']) == 2
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+@pytest.mark.parametrize('settled_by', ['patch', 'remote'])
+@pytest.mark.parametrize('error_code', ['leaderboard', 'transport'])
+def test_retryable_recording_error_keeps_owned_round_nonterminal(env, monkeypatch, settled_by, error_code):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    record = p._record_settled
+
+    def fail(*args):
+        raise api.APIError(error_code)
+
+    monkeypatch.setattr(p, '_record_settled', fail)
+    if settled_by == 'patch':
+        result = _settle(env, now=131)
+    else:
+        env.remote.rows[0].update(status='RESOLVED', winning_outcome_id='outcome-1')
+        result = env.tick(131)
+    assert result['error'] == error_code
+    assert env.state()['round']['status'] not in p.DONE
+    assert env.state()['round']['id'] == prediction_id
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+    monkeypatch.setattr(p, '_record_settled', record)
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'resolved'
+    assert set(leaderboard.load(env.g.state_dir / leaderboard.FILE)['rounds']) == {prediction_id}
+    assert len([call for call in env.remote.calls if call[0] == 'POST']) == 1
+    assert len([call for call in env.remote.calls
+                if call[0] == 'PATCH' and call[2] == 'RESOLVED']) == (settled_by == 'patch')
+
+
+def test_unverified_settlement_response_keeps_owned_round_retryable(env, monkeypatch):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    end = env.remote.end
+
+    def invalid_response(*args, **kwargs):
+        rows = end(*args, **kwargs)
+        if args[1] == 'RESOLVED':
+            rows[0]['status'] = 'LOCKED'
+        return rows
+
+    monkeypatch.setattr(env.remote, 'end', invalid_response)
+    result = _settle(env, now=131)
+    assert result['error'] == 'invalid_response'
+    assert env.state()['round']['status'] not in p.DONE
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'resolved'
+    assert len(leaderboard.load(env.g.state_dir / leaderboard.FILE)['rounds']) == 1
