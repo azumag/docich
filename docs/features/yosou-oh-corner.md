@@ -1,10 +1,10 @@
 # 予想王コーナー — チャネルポイント予想の的中率ランキング（設計案）
 
-- Status: **PR-1（オフライン中核）／PR-3（`yoso` adapter・view・catalog登録）実装済み**。
+- Status: **PR-1（オフライン中核）／PR-2a（半熟英雄の記録フック）／PR-3（`yoso` adapter・view・catalog登録）実装済み**。
   production catalog には **既定無効（`enabled = false`）・`manual_only = true`** で登録済みで、
   自動抽選には入らない。有効化（手動予約の受付）はオーナー承認後に
   `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行う（§4参照）。
-  PR-2（予想精算時の記録フック）・PR-4（読み上げ/overlay・本番反映）は未着手。
+  PR-2b（Soren の記録フック）・PR-4（読み上げ/overlay・本番反映）は未着手。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
 - 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
@@ -70,6 +70,13 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   - `used` = `channel_points_used`、`won` = `channel_points_won`。
   - `hit` = 「その視聴者が `winning_outcome` を選んだか」（`outcome_id == winning_outcome_id`）。
 - 記録タイミング: 精算確定後に `RESOLVED` を観測した tick。書き込みは予想所有者が行う。
+- 書き込み経路: `prediction_leaderboard.record_resolved(state_dir, row, corner=...)` が唯一の入口。
+  `<state_dir>/locks/prediction-leaderboard.json.lock` の排他 lock の下で read-modify-write し、
+  `save()` が temp file + `os.replace` で atomic に置換する。同じ `prediction id` の再送は no-op。
+  壊れた台帳・壊れた row は例外で拒否し、既存の台帳を上書きしない（fail-closed）。
+- 記録に失敗したとき: 半熟英雄の tick は固定コード `leaderboard`（台帳の read/write 失敗）または
+  `invalid_response`（row が契約違反）で error mode に入り、台帳書き込みの失敗は同じ prediction id を
+  次の観測で再試行する。`invalid_response` の row は再試行せず記録しない。
 - 保持: 最大 `MAX_ROUNDS = 2000` 件。超過時は `(ended_at, id)` の古い順に間引く。
 - 入力上限: 台帳 512 KiB、1 outcome あたり predictor 100 件、文字列 128 文字。
 - 検証: `hit` を誤記録しないよう、壊れた resolved row は **fail-closed**（例外）で記録しない。
@@ -132,8 +139,8 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 ## 6. MVP
 
 - [x] 台帳の検証・記録（冪等）・ランキング集計の**オフライン中核**（`prediction_leaderboard.py`、PR-1）
-- [ ] 予想精算時の記録フック（半熟英雄 `hanjuku_predictions.py`）
-- [ ] 予想精算時の記録フック（Soren `twitch_predictions.sh`）
+- [x] 予想精算時の記録フック（半熟英雄 `hanjuku_predictions.py`、PR-2a）
+- [ ] 予想精算時の記録フック（Soren `twitch_predictions.sh`、PR-2b）
 - [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
 - [x] corner catalog 登録（既定無効・`manual_only`。手動予約の受付は `enabled = true` で有効化、PR-3）
 - [ ] 読み上げ原稿
@@ -144,6 +151,15 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 1. **PR-1**: オフライン中核 `prediction_leaderboard.py` ＋ `tests/test_prediction_leaderboard.py` ＋ 本設計 doc。
 2. **PR-2**: 半熟英雄 / Soren の予想精算で `RESOLVED` を観測したときに台帳へ記録する配線
    （共有 lock・atomic write・fail-closed）。予想本体の作成・精算ロジックは変えない。
+   - **PR-2a（実装済み・半熟英雄）**: `prediction_leaderboard.record_resolved()`（共有 lock・atomic・
+     冪等）を追加し、`hanjuku_predictions._advance()` の①リモートで `RESOLVED` を観測した経路と
+     ②`RESOLVED` PATCH 成功直後に記録する。PATCH 応答に `top_predictors` が無いときだけ同じ id を
+     1回 GET して権威ある row を使う。台帳の read/write 失敗は `leaderboard`、row の契約違反は
+     `invalid_response` として error mode に入り、前者は同じ id を再試行する。診断の固定語彙にも
+     `leaderboard` を追加。回帰: `tests/test_prediction_leaderboard.py` / `tests/test_hanjuku_predictions.py`。
+   - **PR-2b（未着手・Soren）**: `twitch_predictions.sh` の resolve 成功時に応答 row を
+     Soren 側の bounded な引き渡しファイルへ追記し、docich の観測 tick が台帳へ記録する。
+     Soren 側の変更は `azumag/soviet_now` の作業ブランチ → main 統合 → docich gitlink 更新の順で行う。
 3. **PR-3（実装済み）**: `yoso` adapter ＋ view ＋ catalog 登録（既定無効）。
    - `src/docich/yoso_view.py`: 台帳を read-only で読み、`予想王` ランキングを 960×540 へ描画する
      loopback限定 view（`/broadcast` と `/api/yosou`。台帳不正時は 503 で休止表示）。

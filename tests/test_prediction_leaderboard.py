@@ -201,3 +201,53 @@ def test_prune_keeps_the_newest_rounds():
     for pid in ("p00000", "p00028", "p00056", "p00084", "p00112"):
         assert pid not in ledger["rounds"]
     assert "p00001" in ledger["rounds"]
+
+
+def test_record_resolved_serializes_writers_and_is_idempotent(tmp_path):
+    import threading
+
+    remotes = [with_top(f"p{i:03d}", {"o1": [predictor(f"u{i}", f"login{i}")]}) for i in range(40)]
+    chunks = [remotes[i::8] for i in range(8)]
+    errors = []
+
+    def write(rows):
+        try:
+            for remote in rows:
+                assert lb.record_resolved(tmp_path, remote, corner="hanjuku", now=7) is True
+        except Exception as exc:  # surfaced in the main thread
+            errors.append(exc)
+
+    workers = [threading.Thread(target=write, args=(chunk,)) for chunk in chunks]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10.0)
+
+    assert errors == []
+    ledger = lb.load(tmp_path / lb.FILE)
+    assert len(ledger["rounds"]) == 40
+    assert all(round_["corner"] == "hanjuku" and round_["recorded_at"] == 7
+               for round_ in ledger["rounds"].values())
+    assert (tmp_path / "locks" / lb.LOCK_FILE).is_file()
+    # A retry of the same prediction (another owner tick) is a no-op.
+    assert lb.record_resolved(tmp_path, remotes[0], corner="hanjuku") is False
+    assert len(lb.load(tmp_path / lb.FILE)["rounds"]) == 40
+
+
+def test_record_resolved_never_overwrites_a_broken_ledger(tmp_path):
+    path = tmp_path / lb.FILE
+    path.write_text(json.dumps({"schema": 2, "rounds": {}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    with pytest.raises(lb.LeaderboardError):
+        lb.record_resolved(tmp_path, with_top("p1", {"o1": [predictor("u1", "alice")]}),
+                           corner="hanjuku")
+
+    assert path.read_bytes() == before
+
+
+def test_record_resolved_ignores_unsettled_rows(tmp_path):
+    active = row("p1", status="ACTIVE", winner=None,
+                 outcomes=[{"id": "o1", "title": "A"}, {"id": "o2", "title": "B"}])
+    assert lb.record_resolved(tmp_path, active, corner="hanjuku") is False
+    assert not (tmp_path / lb.FILE).exists()

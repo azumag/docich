@@ -13,6 +13,7 @@ import pytest
 
 from docich import hanjuku_predictions as p, hanjuku_progress as progress
 from docich import hanjuku_prediction_api as api
+from docich import prediction_leaderboard as leaderboard
 from docich.config import load_global
 from docich.game_switch import atomic_write_json
 from docich.retroarch_boundary import read_record
@@ -496,6 +497,10 @@ def test_diagnostics_is_allowlisted_and_contains_no_titles_or_tokens(env):
     assert result['target'] == 2 and result['middle'] == 1 and result['best_cleared'] == 1
     assert result['window_seconds'] == 300
     assert 'not-for-logs' not in json.dumps(result)
+    # The leaderboard write failure is a fixed, diagnosable code (#933).
+    state.update(error='leaderboard', mode='error')
+    atomic_write_json(env.g.state_dir/p.FILE, state)
+    assert module._collect_hanjuku_predictions(env.g.state_dir)['error'] == 'leaderboard'
 
 
 def test_integration_uses_side_channel_outside_input_gate():
@@ -567,3 +572,95 @@ def test_production_client_requires_ownership_aware_soren_before_enabling(tmp_pa
     wrapper.write_text('# SOREN_REMOTE_PREDICTION_OWNERSHIP_V1: verified by the companion rollout\n')
     client, reason = api.configured_client(None)
     assert isinstance(client, api.Helix) and reason is None
+
+
+def _seed_top_predictors(env):
+    """Give every outcome one public top predictor as Twitch would."""
+    for index, outcome in enumerate(env.remote.rows[0]['outcomes']):
+        outcome['top_predictors'] = [{
+            'user_id': f'u{index}', 'user_login': f'login{index}', 'user_name': f'同志{index}',
+            'channel_points_used': 100 + index,
+            'channel_points_won': 200 if index == 1 else 0,
+        }]
+
+
+def _settle(env, now=101):
+    progress.record(env.runtime, ID, {'chapter': 2, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'game_over')
+    return env.tick(now)
+
+
+def test_settled_round_is_recorded_in_the_yosou_leaderboard(env):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+
+    assert _settle(env)['mode'] == 'resolved'
+
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    round_ = ledger['rounds'][prediction_id]
+    assert round_['corner'] == 'hanjuku'
+    assert round_['title'] == env.state()['round']['title']
+    assert round_['winning_outcome_id'] == env.remote.rows[0]['winning_outcome_id']
+    assert {entry['user_id']: entry['hit'] for entry in round_['predictors']} == {
+        f'u{index}': outcome['id'] == round_['winning_outcome_id']
+        for index, outcome in enumerate(env.remote.rows[0]['outcomes'])
+    }
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+
+    # The runtime-retention tick after teardown never counts the round twice.
+    env.tick(131)
+    assert len(leaderboard.load(env.g.state_dir / leaderboard.FILE)['rounds']) == 1
+
+
+def test_patch_response_without_predictors_uses_one_authoritative_read(env):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    original = env.remote.end
+
+    def end_without_predictors(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        for outcome in rows[0]['outcomes']:
+            outcome.pop('top_predictors', None)
+        return rows
+
+    env.remote.end = end_without_predictors
+
+    assert _settle(env)['mode'] == 'resolved'
+
+    calls = env.remote.calls
+    patch_at = max(index for index, call in enumerate(calls)
+                   if call[0] == 'PATCH' and call[2] == 'RESOLVED')
+    assert any(call == ('GET', prediction_id) for call in calls[patch_at + 1:])
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+
+
+def test_broken_ledger_keeps_the_settled_round_retryable(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    path = env.g.state_dir / leaderboard.FILE
+    path.write_text('{broken', encoding='utf-8')
+
+    first = _settle(env)
+    assert first['mode'] == 'error' and first['error'] == 'leaderboard'
+    assert env.state()['round']['status'] != 'RESOLVED'
+    assert path.read_text(encoding='utf-8') == '{broken'
+
+    path.write_text(json.dumps(leaderboard.new_ledger()), encoding='utf-8')
+    retried = env.tick(101 + p.RETRY_SECONDS + 1)
+    assert retried['mode'] == 'resolved'
+    assert len(leaderboard.load(path)['rounds']) == 1
+
+
+def test_malformed_settled_row_is_refused_without_recording(env):
+    assert env.tick()['mode'] == 'active'
+    duplicate = {'user_id': 'u1', 'user_login': 'alice', 'user_name': 'Alice',
+                 'channel_points_used': 10, 'channel_points_won': 5}
+    env.remote.rows[0]['outcomes'][0]['top_predictors'] = [duplicate, dict(duplicate)]
+
+    result = _settle(env)
+
+    assert result['mode'] == 'error' and result['error'] == 'invalid_response'
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
