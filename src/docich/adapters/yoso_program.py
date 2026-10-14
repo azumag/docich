@@ -66,24 +66,41 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
         return broadcast_view_session_env()
 
     def _viewer_command(self) -> list[str]:
+        display = self.g.display
+        # 予想王 is a broadcast-native information screen like the weather
+        # corner, not a game that needs the shared top/right/bottom status
+        # rails.  When the full X11 display dimensions are known, own the
+        # complete broadcast frame so the ranking is not squeezed next to those
+        # rails for the two minutes the corner is on air (オーナー判断
+        # 2026-10-15, Issue #2237; the weather precedent is PR #1874).
+        full_width = int(getattr(display, "width", 0) or 0)
+        full_height = int(getattr(display, "height", 0) or 0)
+        if full_width > 0 and full_height > 0:
+            present_x, present_y = 0, 0
+            present_width, present_height = full_width, full_height
+        else:
+            present_x, present_y = display.viewport_x, display.viewport_y
+            present_width, present_height = display.viewport_width, display.viewport_height
+
+        browser_width = present_width if present_width > 0 else 960
+        browser_height = present_height if present_height > 0 else 540
         command = broadcast_browser_command(
             f"http://127.0.0.1:{self.dashboard_port}/broadcast",
-            window_size=(960, 540),
+            window_size=(browser_width, browser_height),
             window_position=(0, 0),
             profile_dir=self.spec.runtime_dir / "yosou-browser-profile",
             label="yosou HTML view",
         )
-        display = self.g.display
-        if display.viewport_width > 0 and display.viewport_height > 0:
+        if present_width > 0 and present_height > 0:
             return [
                 sys.executable,
                 str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 "--display", display.name,
                 "--title", f"docich-present-{self.spec.runtime_id}",
-                "--x", str(display.viewport_x),
-                "--y", str(display.viewport_y),
-                "--width", str(display.viewport_width),
-                "--height", str(display.viewport_height),
+                "--x", str(present_x),
+                "--y", str(present_y),
+                "--width", str(present_width),
+                "--height", str(present_height),
                 "--", *command,
             ]
         return command

@@ -139,7 +139,10 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 全国表示・画面のみの自動順送りでクローズアップする。
 外部文字列をHTMLとして挿入せず、全て `textContent` で描画する。
 長すぎる原文を勝手に切って意味を変えず、表示枠に収まらない場合は休止する。
-描画は960×540を縦横比維持でcontainし、外側の配信枠は操作しない。
+描画は960×540のステージを縦横比維持でcontainし、外側の配信枠の位置・サイズは操作しない。
+配信では`display.width/height`（本番1280×720）の全画面`(0, 0)`に提示し、コーナー中だけ
+ステータス枠・通知枠を覆う（PR [#1874](https://github.com/azumag/docich/pull/1874) で全画面化。
+予想王 #2237 も同じ扱い）。
 縦長端末は地図と予報パネルを縦に並べる。broadcast表示ではweather ownerの
 再生完了receipt由来のordinal cueに同期し、固定秒数の擬似cue時計では地点を進めない。
 
@@ -158,7 +161,7 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 2. GameSwitchの`game` / `runtime_id` / `generation` / `lease_id`を使って開始と復帰をfenceする。
    開始時は旧ゲームの宣言済みラウンド境界を待ち、終了時はweather runtimeの同一identityを
    `expected_source`に指定する。operatorが別runtimeへ切替済みなら、それを停止・上書きせず
-   weather ownerを中断扱いにする。960×540・既存presentation viewportとowned child cleanupを使う。
+   weather ownerを中断扱いにする。既存presentation（全画面提示）とowned child cleanupを使う。
 3. catalogのweather行に`audio_enabled=true`を明示した場合だけ、既存の共有comment queueへ送る。
    原稿は`weather.narration(view)`の13 literal lineをその順で使い、出典・対象日・地点別発表時刻・
    全11地点report digestをitem requestへ保持する。LLMや独自予測を使わない。

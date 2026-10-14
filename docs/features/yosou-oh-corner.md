@@ -26,7 +26,9 @@
 - 「予想王」= 対象期間で最も的中率が高い視聴者。
 - 半熟英雄（`どこまで到達できるか`）と Soren（`12ゲーム中に建国できる？`）の結果を
   共通の台帳形式で蓄積し、1枚のランキングへ集約する。
-- 表示は 960×540 の読み取り専用ビュー（既存 weather / paper と同じ合成 view 方式）＋読み上げ。
+- 表示は 960×540 を基準にした読み取り専用ビュー（既存 weather / paper と同じ合成 view 方式）＋読み上げ。
+  配信では weather と同じく**ディスプレイ全画面**（本番 1280×720）に提示し、960×540 のステージを
+  縦横比維持で拡大する（§3「全画面表示」、#2237）。
 
 本ドキュメントは #933 の「統計の記録仕様とランキング表示の仕様を定義し、コーナー追加案として起案」に答える。
 
@@ -132,12 +134,22 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   `yoso_view.HTML` は `<html lang="ja" translate="no">` と
   `<meta name="google" content="notranslate">` を持ち、日本語UIのブラウザが出す
   翻訳コントロール（日本語 / English）を出さない（2026-10-15 オーナー判断）。
+- 全画面表示（#2237、2026-10-15 オーナー判断）: 天気予報と同じ**配信ネイティブの情報画面**として扱い、
+  `display.width/height` が既知なら `(0, 0, width, height)`（本番 1280×720）の全画面で提示する
+  （`yoso_program.YosoProgramViewAdapter._viewer_command`。weather の前例 = PR #1874）。
+  `--window-size` も同寸法にし、960×540 のステージは view 自身の `fit()` が縦横比維持で拡大する。
+  ステータス枠・通知枠の位置・サイズは変更せず、コーナー終了時は既存 GameSwitch の復帰経路
+  （`audio-complete` 早期終了でも同じ）で元画面へ戻る。**枠を隠す/戻す専用の経路は追加しない**
+  （復帰の二重化を作らない）。`display.width/height` が無い環境では従来の `viewport` へ
+  fallback する。
 
 ## 4. コーナー追加案（番組ローテーションへの接続）
 
 - 新 adapter **`yoso`**（game id `yosou-view`）。`WeatherCornerAdapter` / `TsuitateCornerAdapter` と
   同列の**合成 view**（GameSwitch の program slot に乗る読み取り専用ビュー）。
-- ビューは台帳を **read-only** で読み、`予想王` ランキング表を 960×540 へ描画する。
+- ビューは台帳を **read-only** で読み、`予想王` ランキング表を 960×540 のステージへ描画する。
+  配信では `display.width/height` の全画面 `(0, 0)` に提示し、コーナー中だけステータス枠・通知枠を
+  覆う（枠自体の位置・サイズは動かさない。#2237）。
   既存ゲーム本体・配信 encoder・Soren の予想 worker は変更しない。
 - catalog 例（**手動予約のみ**で提案）:
 
