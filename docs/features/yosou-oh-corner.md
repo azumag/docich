@@ -107,6 +107,10 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   opt-in があるときだけ共有 audio worker へ enqueue する。
 - overlay: corner 開始直後に `prediction` category の event を1件だけ積む
   （`yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
+- 翻訳対象外: view は常に日本語表示で、翻訳すると集計の意味が変わる。
+  `yoso_view.HTML` は `<html lang="ja" translate="no">` と
+  `<meta name="google" content="notranslate">` を持ち、日本語UIのブラウザが出す
+  翻訳コントロール（日本語 / English）を出さない（2026-10-15 オーナー判断）。
 
 ## 4. コーナー追加案（番組ローテーションへの接続）
 
