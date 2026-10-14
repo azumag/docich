@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "corner": "information_engineering",
+  "fixtureId": "fixed-information-engineering-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed information engineering fixture for planning and input-contract acceptance only. It is not a real system, verified measurement, or production data, and its title, URLs and details must not be presented as verified implementation evidence or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Cache Coherence and False Sharing in a Multi-Core CPU",
+    "topicId": "fixed-information-engineering-cache-coherence-001",
+    "mechanismTheme": "CPUキャッシュとキャッシュコヒーレンス",
+    "problemContext": "hypothetical multi-core workload with shared counters and producer/consumer queues on a shared-memory machine",
+    "thirtySecondSummary": "合成fixture: マルチコアCPUでは、キャッシュ・コヒーレンス・メモリConsistencyにより共有状態の更新が可視化されるタイミングが変わり、素朴な共有変数は性能と正しさのトレードオフを露呈する。",
+    "oneLineSummary": "合成fixture: CPUキャッシュの仕組みを題材に、素朴な方法・情報工学上の仕組み・実装例・失敗・トレードオフを説明する情報工学コーナーの入力例。",
+    "requirementsAndConstraints": [
+      "低レイテンシ・高スループット",
+      "逐次一貫性ではなく必要な整合性レベルの選択",
+      "NUMA/共有メモリのトポロジ",
+      "競合時の進行性と公平性"
+    ],
+    "naiveApproach": "単一の共有変数にロックをかけず全スレッドが読み書きする。測定可能な収束を前提とし、更新順序や可視性を考慮しない。",
+    "mechanismAndPrinciples": "MESI/MOESI系のキャッシュライン状態遷移、ストアバッファ、メモリバリア、フェンス、Acquire/Release、メモリConsistencyモデル、false sharingとキャッシュラインパディング。",
+    "implementationExample": "C11/C++11 std::atomic の relaxed/acquire/release順序付け、Linux kernelの READ_ONCE/WRITE_ONCEとsmp_mb、Go sync/atomic、パディング済みカウンタ配列、perf statでのcache-miss観測。",
+    "failureModes": "lost update、stale read、再順序化による不変条件違反、false sharingによるスループット劣化、デッドロック、ABA、メモリリークに相当する更新欠落。",
+    "tradeoffs": "強整合性は待ちとバリアが増えスループットを下げ、弱整合性は性能を上げるが推論と検証コストを上げる。キャッシュライン充填はfalse sharingを防ぐがメモリ使用量と局所性を犠牲にする。",
+    "limitations": "合成 fixture であり、実在ハードウェアの計測・検証・一般化は未実施である。キャッシュサイズ・レイテンシ・命令列は架空であり、一次資料で再確認する必要がある。",
+    "figureOrDiagram": "CPU/キャッシュ階層図、キャッシュライン状態遷移図、false sharingの前後比較図、メモリバリアの配置図、perfカウンタの時系列を overlay 用に分離する。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、30秒要約、素朴な共有変数の失敗、キャッシュ階層とコヒーレンス、メモリConsistency、実装例、失敗モード、トレードオフを独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/information-engineering/synthetic-cache-coherence",
+      "https://example.org/information-engineering/synthetic-cache-coherence/specification"
+    ],
+    "sourcePriority": [
+      "standards-and-specifications",
+      "manufacturer-technical-material",
+      "official-documentation",
+      "university-research",
+      "academic-paper",
+      "engineering-textbook",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、主張の根拠は RFC・CPU/OS仕様・一次技術資料で再確認する。実機の性能 claims は必ず一次資料側で確認する。"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/information-engineering/synthetic-cache-coherence",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "91772c4ba9d4deb46f6eb83820de81a3e18fddde99c36f5de1e28d734b8d8266",
+        "excerpt": "Synthetic verified technical material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic cache coherence multi-core cpu"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealSystem": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustIncludeFailureAndTradeoffs": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
