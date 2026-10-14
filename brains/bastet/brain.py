@@ -7,6 +7,14 @@ color as the background. The adapter passes that styled capture in
 the newly spawned piece at Bastet's fixed spawn anchor, and evaluates reachable
 placements using the exact block matrices and fixed-anchor rotations from
 Bastet 0.43. Weights are reloaded on every fresh invocation for live hot-swap.
+
+Placement quality uses the Dellacherie feature set (landing height, rows
+cleared, row/column transitions, holes, well sums). Bastet is adversarial, so
+seeing the *next* block matters: when the "Next block" preview can be read
+confidently, each candidate placement is also scored by the best placement the
+next piece could then achieve (2-ply), which makes room for an incoming I
+instead of burying it. Colour is unique per tetromino, so the preview needs
+only its region, never its pixel geometry.
 """
 from __future__ import annotations
 
@@ -22,7 +30,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WEIGHTS_PATH = Path(os.environ.get(
     "DOCICH_BRAIN_WEIGHTS", str(REPO_ROOT / "run/brain/bastet/weights.json"),
 ))
-DEFAULT_WEIGHTS = {"hard_drop": 1.0}
+# Dellacherie feature set. `landing_height`..`well_sums` are the published
+# hand-tuned values; `rows_cleared` and `next_piece_weight` were re-tuned for
+# Bastet's adversarial chooser with the local self-play harness (it tops out
+# roughly 2.5x later than the published values and 2x later than the previous
+# crude heuristic). Every entry is numeric, so the corner improvement loop may
+# propose tuned values for any of them.
+DEFAULT_WEIGHTS = {
+    "hard_drop": 1.0,
+    "landing_height": -4.500158825082766,
+    "rows_cleared": 8.0,
+    "row_transitions": -3.2178882868487753,
+    "column_transitions": -9.348695305445199,
+    "holes": -7.899265427351652,
+    "well_sums": -3.3855972247263626,
+    # How much the next piece's best follow-up placement counts. 0 disables the
+    # 2-ply search (the preview is ignored whenever it cannot be read).
+    "next_piece_weight": 1.0,
+    # Deterministic tie-break towards short key sequences.
+    "path_length": -0.001,
+}
 BOARD_WIDTH = 10
 BOARD_HEIGHT = 20
 SPAWN_X = 3
@@ -31,7 +58,13 @@ SPAWN_X = 3
 MIN_ACTIVE_ANCHOR_Y = -2
 MAX_ACTIVE_ANCHOR_Y = 6
 MIN_VISIBLE_ACTIVE_CELLS = 2
-MAX_PLAN_KEYS = 10
+# The widest plan is 9 lateral steps plus 3 rotations. Placements needing more
+# than this are not discarded outright: the best one inside the budget wins.
+MAX_PLAN_KEYS = 16
+# Column window (relative to the well's left border) scanned for the "Next
+# block" preview. The well occupies x0..x0+21 and the preview box follows it.
+NEXT_PIECE_MIN_DX = 22
+NEXT_PIECE_MAX_DX = 46
 
 # Coordinates are relative to Bastet's BlockPosition anchor.
 SHAPES = {
@@ -224,12 +257,7 @@ def _well_origin(rows: list[list[tuple[str, object]]]) -> tuple[int, int] | None
     return None
 
 
-def parse_board(raw: str) -> list[list[str | None]] | None:
-    """Read occupied piece colors from a styled Bastet screen."""
-    rows = _styled_rows(raw)
-    origin = _well_origin(rows)
-    if origin is None:
-        return None
+def _read_well(rows: list[list[tuple[str, object]]], origin) -> list[list[str | None]]:
     y0, x0 = origin
     board: list[list[str | None]] = []
     # Settled pieces have the same colors and shape as moving pieces. Only
@@ -251,6 +279,44 @@ def parse_board(raw: str) -> list[list[str | None]] | None:
                 cells.append(None)
         board.append(cells)
     return board
+
+
+def _read_next_piece(rows: list[list[tuple[str, object]]], origin) -> str | None:
+    """Read the preview box right of the well, or None when not confident.
+
+    Bastet paints each preview cell with the same per-tetromino colour as the
+    well and the palette is one colour per piece, so a single recognised colour
+    identifies the next block. Two different colours in the window mean the
+    region is mislocated (or something else there is coloured); report "not
+    confident" so the caller falls back to single-ply search.
+    """
+    y0, x0 = origin
+    found = None
+    for y in range(y0, min(len(rows), y0 + BOARD_HEIGHT)):
+        row = rows[y]
+        for x in range(x0 + NEXT_PIECE_MIN_DX, min(len(row), x0 + NEXT_PIECE_MAX_DX)):
+            piece = _background_piece(row[x][1])
+            if piece is None:
+                continue
+            if found is None:
+                found = piece
+            elif found != piece:
+                return None
+    return found
+
+
+def parse_screen(raw: str):
+    """Read (well board, next piece) from a styled Bastet screen."""
+    rows = _styled_rows(raw)
+    origin = _well_origin(rows)
+    if origin is None:
+        return None, None
+    return _read_well(rows, origin), _read_next_piece(rows, origin)
+
+
+def parse_board(raw: str) -> list[list[str | None]] | None:
+    """Read occupied piece colors from a styled Bastet screen."""
+    return parse_screen(raw)[0]
 
 
 def _find_active(board: list[list[str | None]]):
@@ -298,50 +364,85 @@ def _lock_and_clear(board, shape, x: int, y: int, piece: str):
     return [[None] * BOARD_WIDTH for _ in range(cleared)] + remaining, cleared
 
 
-def _board_value(board, cleared: int) -> float:
-    heights = []
+def _well_features(board):
+    """Row/column transitions, holes, wells and column heights in one pass."""
+    heights = [0] * BOARD_WIDTH
     holes = 0
     for x in range(BOARD_WIDTH):
-        occupied = [y for y in range(BOARD_HEIGHT) if board[y][x] is not None]
-        if not occupied:
-            heights.append(0)
-            continue
-        top = occupied[0]
-        heights.append(BOARD_HEIGHT - top)
-        holes += sum(board[y][x] is None for y in range(top, BOARD_HEIGHT))
-    aggregate_height = sum(heights)
-    bumpiness = sum(abs(heights[x] - heights[x + 1]) for x in range(BOARD_WIDTH - 1))
+        occupied = False
+        for y in range(BOARD_HEIGHT):
+            if board[y][x] is not None:
+                if not occupied:
+                    occupied = True
+                    heights[x] = BOARD_HEIGHT - y
+            elif occupied:
+                holes += 1
+    row_transitions = 0
+    for y in range(BOARD_HEIGHT):
+        previous = True  # the left wall counts as filled
+        for x in range(BOARD_WIDTH):
+            current = board[y][x] is not None
+            if current != previous:
+                row_transitions += 1
+            previous = current
+        if not previous:  # the right wall counts as filled
+            row_transitions += 1
+    column_transitions = 0
+    for x in range(BOARD_WIDTH):
+        previous = False  # the ceiling counts as empty
+        for y in range(BOARD_HEIGHT):
+            current = board[y][x] is not None
+            if current != previous:
+                column_transitions += 1
+            previous = current
+        if not previous:  # the floor counts as filled
+            column_transitions += 1
+    well_sums = 0
+    for x in range(BOARD_WIDTH):
+        for y in range(BOARD_HEIGHT):
+            if board[y][x] is not None:
+                continue
+            if (x == 0 or board[y][x - 1] is not None) and (
+                x == BOARD_WIDTH - 1 or board[y][x + 1] is not None
+            ):
+                well_sums += 1
+                below = y + 1
+                while below < BOARD_HEIGHT and board[below][x] is None:
+                    well_sums += 1
+                    below += 1
+    return heights, row_transitions, column_transitions, holes, well_sums
+
+
+def _board_value(board, cleared: int, landing_height: float, weights: dict) -> float:
+    _heights, row_transitions, column_transitions, holes, well_sums = _well_features(board)
     return (
-        cleared * 12.0
-        - aggregate_height * 0.52
-        - holes * 5.5
-        - bumpiness * 0.24
-        - max(heights, default=0) * 0.35
+        weights["rows_cleared"] * cleared
+        + weights["landing_height"] * landing_height
+        + weights["row_transitions"] * row_transitions
+        + weights["column_transitions"] * column_transitions
+        + weights["holes"] * holes
+        + weights["well_sums"] * well_sums
     )
 
 
-def plan_keys(board: list[list[str | None]]) -> list[str] | None:
-    """Choose a reachable placement that clears lines and keeps the well open."""
-    active = _find_active(board)
-    if active is None:
-        return None
-    piece, start_x, start_y, start_o, points = active
-    static = [row.copy() for row in board]
-    for col, row in points:
-        static[row][col] = None
+def _placements(static, piece: str, start):
+    """Every reachable landing position with the key path that reaches it.
 
-    start = (start_x, start_y, start_o)
-    queue = deque([start])
-    previous = {start: None}
+    The search walks Bastet's move set (Left/Right/rotate CW/CCW) at the spawn
+    height and hard-drops from each visited state, so a placement is reachable
+    exactly when the same key sequence reaches it in the game. States that land
+    identically collapse to their shortest key sequence.
+    """
+    start_x, start_y, start_o = start
+    queue = deque([(start_x, start_y, start_o)])
+    previous = {(start_x, start_y, start_o): None}
     move_keys = (
         (-1, 0, 0, "Left"),
         (1, 0, 0, "Right"),
         (0, 0, 1, "Space"),
         (0, 0, -1, "Up"),
     )
-    best_value = float("-inf")
-    best_path = None
-
+    landings = {}
     while queue:
         state = queue.popleft()
         x, y, orientation = state
@@ -357,14 +458,10 @@ def plan_keys(board: list[list[str | None]]) -> list[str] | None:
         landing_y = y
         while _fits(static, shape, x, landing_y + 1):
             landing_y += 1
-        locked = _lock_and_clear(static, shape, x, landing_y, piece)
-        if locked is not None:
-            settled, cleared = locked
-            value = _board_value(settled, cleared) - len(path) * 0.03
-            piece_center = x + sum(dx for dx, _ in shape) / len(shape)
-            value -= abs(piece_center - (BOARD_WIDTH - 1) / 2) * 0.15
-            if value > best_value:
-                best_value, best_path = value, path
+        if all(landing_y + dy >= 0 for _, dy in shape):
+            landing = (x, landing_y, orientation)
+            if landing not in landings or len(path) < len(landings[landing]):
+                landings[landing] = path
 
         for dx, dy, turn, key in move_keys:
             next_orientation = (orientation + turn) % 4
@@ -379,13 +476,87 @@ def plan_keys(board: list[list[str | None]]) -> list[str] | None:
                 continue
             previous[next_state] = (state, key)
             queue.append(next_state)
+    return [(x, y, o, path) for (x, y, o), path in landings.items()]
+
+
+def _landing_height(shape, landing_y: int) -> float:
+    """Height of the piece's centre above the floor (0.5 rests on the floor)."""
+    rows = [landing_y + dy for _, dy in shape]
+    return BOARD_HEIGHT - 0.5 - (min(rows) + max(rows)) / 2.0
+
+
+def _single_ply(static, piece: str, weights: dict):
+    """Best (value, path) that `piece` can reach on `static`, without lookahead."""
+    best_value = float("-inf")
+    best_path = None
+    for x, landing_y, orientation, path in _placements(
+        static, piece, (SPAWN_X, MIN_ACTIVE_ANCHOR_Y, 0)
+    ):
+        locked = _lock_and_clear(static, SHAPES[piece][orientation], x, landing_y, piece)
+        if locked is None:
+            continue
+        settled, cleared = locked
+        value = _board_value(
+            settled, cleared, _landing_height(SHAPES[piece][orientation], landing_y), weights,
+        )
+        if value > best_value or (
+            value == best_value and (best_path is None or len(path) < len(best_path))
+        ):
+            best_value, best_path = value, path
+    return best_value, best_path
+
+
+def _followup_value(static, piece: str, weights: dict) -> float:
+    """Best value `piece` could still reach on `static` (the 2-ply term)."""
+    value, _path = _single_ply(static, piece, weights)
+    if value == float("-inf"):
+        return -1e9
+    return value
+
+
+def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
+              weights: dict | None = None) -> list[str] | None:
+    """Choose a reachable placement that clears lines and keeps the well open."""
+    active = _find_active(board)
+    if active is None:
+        return None
+    weights = weights or load_weights()
+    piece, start_x, start_y, start_o, points = active
+    static = [row.copy() for row in board]
+    for col, row in points:
+        if row >= 0:
+            static[row][col] = None
+
+    lookahead = weights["next_piece_weight"]
+    use_lookahead = next_piece is not None and lookahead != 0
+
+    best_value = float("-inf")
+    best_path = None
+    for x, landing_y, orientation, path in _placements(
+        static, piece, (start_x, start_y, start_o)
+    ):
+        locked = _lock_and_clear(static, SHAPES[piece][orientation], x, landing_y, piece)
+        if locked is None:
+            continue
+        settled, cleared = locked
+        value = _board_value(
+            settled, cleared, _landing_height(SHAPES[piece][orientation], landing_y), weights,
+        )
+        if use_lookahead:
+            value += lookahead * _followup_value(settled, next_piece, weights)
+        value += weights["path_length"] * len(path)
+        if value > best_value or (
+            value == best_value and (best_path is None or len(path) < len(best_path))
+        ):
+            best_value, best_path = value, path
 
     if best_path is None or len(best_path) > MAX_PLAN_KEYS:
         return None
     return best_path
 
 
-def decide(text: str, weights: dict, color_text: str | None = None) -> list[str] | None:
+def decide(text: str, weights: dict, color_text: str | None = None,
+           next_piece: str | None = None) -> list[str] | None:
     lower = text.lower()
     if any(marker in lower for marker in MENU_MARKERS):
         return None
@@ -396,10 +567,10 @@ def decide(text: str, weights: dict, color_text: str | None = None) -> list[str]
         # Without cell colors, any gameplay key would repeat the old blind-drop
         # policy; wait for the next observation instead.
         return None
-    board = parse_board(color_text)
+    board, preview = parse_screen(color_text)
     if board is None:
         return None
-    plan = plan_keys(board)
+    plan = plan_keys(board, preview if next_piece is None else next_piece, weights)
     if plan is None:
         # In colored mode, do not send blind inputs when the piece is hidden or
         # cannot be identified from the current board.

@@ -69,20 +69,67 @@ def incoming_i_board():
     return board
 
 
-def colored_capture(board, *, acs_controls=False):
-    """Build an ANSI capture matching Bastet's two-colored-space cell layout."""
-    color = {"O": 47, "I": 46, "Z": 41, "T": 45, "J": 44, "S": 42, "L": 43}
+COLOR = {"O": 47, "I": 46, "Z": 41, "T": 45, "J": 44, "S": 42, "L": 43}
+# Relative cell offsets of the orientation-0 shapes, matching Bastet Block.cpp.
+PREVIEW_SHAPES = {
+    "O": ((1, 1), (2, 1), (1, 0), (2, 0)),
+    "I": ((0, 1), (1, 1), (2, 1), (3, 1)),
+    "Z": ((1, 1), (2, 1), (0, 0), (1, 0)),
+    "T": ((0, 1), (1, 1), (2, 1), (1, 0)),
+    "J": ((0, 1), (1, 1), (2, 1), (0, 0)),
+    "S": ((0, 1), (1, 1), (1, 0), (2, 0)),
+    "L": ((0, 1), (1, 1), (2, 1), (2, 0)),
+}
+
+
+def _panel(row: int, preview):
+    """The right-hand boxes of the real pane (Ui::_nextWin / _scoreWin).
+
+    The next window is 5x14 inner cells and the score window 7x14, stacked one
+    row below the other; every dot is painted as two terminal columns.
+    """
+    def inner(label="", dots=()):
+        cols = list(label.ljust(14)[:14])
+        for dx, dy in dots:
+            for offset in (0, 1):
+                cols[2 * (2 + dx) + offset] = f"\x1b[{COLOR[preview]}m \x1b[0m"
+        return "".join(cols)
+
+    shape = PREVIEW_SHAPES.get(preview, ())
+    if row == 0:
+        return " l" + "q" * 14 + "k"
+    if 1 <= row <= 5:
+        dots = tuple((dx, dy) for dx, dy in shape if 2 + dy == row - 1)
+        return " x" + inner("Next block:" if row == 1 else "", dots) + "x"
+    if row == 6:
+        return " m" + "q" * 14 + "j"
+    if row == 7:
+        return " l" + "q" * 14 + "k"
+    if 8 <= row <= 14:
+        label = {9: "Score:      0", 11: "Lines:      0", 13: "Level:      0"}.get(row, "")
+        return " x" + inner(label) + "x"
+    if row == 15:
+        return " m" + "q" * 14 + "j"
+    return " " * 16
+
+
+def colored_capture(board, *, acs_controls=False, preview=None):
+    """Build an ANSI capture matching Bastet's two-colored-space cell layout.
+
+    ``preview`` mirrors the real "Next block" window: Bastet paints the preview
+    with the same per-piece colours one cell to the right of the well.
+    """
     left = "\x0e" if acs_controls else ""
     right = "\x0f" if acs_controls else ""
-    lines = ["     " + left + "l" + "q" * 20 + "k" + right]
-    for row in board:
+    lines = ["     " + left + "l" + "q" * 20 + "k" + right + _panel(0, preview)]
+    for index, row in enumerate(board):
         line = "     " + left + "x" + right
         for cell in row:
             if cell is None:
                 line += "  "
             else:
-                line += f"\x1b[{color[cell]}m  \x1b[0m"
-        line += left + "x" + right
+                line += f"\x1b[{COLOR[cell]}m  \x1b[0m"
+        line += left + "x" + right + _panel(index + 1, preview)
         lines.append(line)
     lines.append("     " + left + "m" + "q" * 20 + "j" + right)
     lines.append("Score:      0")
@@ -135,11 +182,12 @@ def test_weight_hot_swap(tmp_path):
     weights.write_text('{"hard_drop":0}')
     code, out = run(text, weights, styled)
     assert code == 0
+    # Soft drop only: the placement plan is withheld and the piece just descends.
     assert out["actions"][0]["keys"] == ["Down"]
     weights.write_text('{"hard_drop":1}')
     code, out = run(text, weights, styled)
     assert code == 0
-    assert out["actions"][0]["keys"] == ["Enter"]
+    assert out["actions"][0]["keys"][-1] == "Enter"
 
 
 def test_colored_board_plans_line_clear(tmp_path):
@@ -168,9 +216,11 @@ def test_colored_board_does_not_treat_settled_piece_as_active(tmp_path):
 
 
 def test_colored_board_ignores_tmux_acs_mode_controls(tmp_path):
-    assert colored_decide(colored_capture(incoming_i_board(), acs_controls=True), tmp_path) == [
-        {"type": "key", "keys": ["Enter"]}
-    ]
+    # SO/SI must not shift the well's columns; any legal plan proves the grid
+    # still lines up, and it must finish with the hard drop.
+    actions = colored_decide(colored_capture(incoming_i_board(), acs_controls=True), tmp_path)
+    assert len(actions) == 1
+    assert actions[0]["keys"][-1] == "Enter"
 
 
 def test_colored_capture_menu_remains_silent(tmp_path):
@@ -184,7 +234,9 @@ def test_colored_capture_menu_remains_silent(tmp_path):
 def test_invalid_weights_fall_back(raw, tmp_path):
     (tmp_path / "weights.json").write_text(raw)
     actions = colored_decide(colored_capture(incoming_i_board()), tmp_path)
-    assert actions == [{"type": "key", "keys": ["Enter"]}]
+    # Invalid values fall back to the defaults, which still hard-drop.
+    assert len(actions) == 1
+    assert actions[0]["keys"][-1] == "Enter"
 
 
 def test_config_contract():
@@ -215,3 +267,50 @@ def test_partially_visible_spawn_needs_matching_color(tmp_path):
         board[0][x] = "L"
     board[0][4] = "J"  # mixed colors are not one piece
     assert colored_decide(colored_capture(board), tmp_path) == []
+
+
+# A settled wall with a one-cell step: the "Next block" preview decides whether
+# the incoming I is worth keeping a channel for (fixture from self-play).
+def _preview_fixture():
+    """A mid-game board plus the incoming horizontal I from the spawn anchor."""
+    rows = [[None] * 10 for _ in range(20)]
+    settled = [
+        "I",
+        "I",
+        "I........J",
+        "IT..JJJL.J",
+        "J.SSSSOOJI",
+    ]
+    for offset, row in enumerate(settled):
+        for x, cell in enumerate(row):
+            if cell != ".":
+                rows[15 + offset][x] = cell
+    for dx in range(4):
+        rows[1][3 + dx] = "I"
+    return rows
+
+
+def test_next_block_preview_parses_from_the_real_panel_layout(tmp_path):
+    board = _preview_fixture()
+    assert colored_decide(colored_capture(board, preview="T"), tmp_path)[0]["keys"] == [
+        "Right", "Right", "Right", "Space", "Right", "Enter",
+    ]
+
+
+def test_next_block_preview_changes_the_placement(tmp_path):
+    board = _preview_fixture()
+    without = colored_decide(colored_capture(board), tmp_path)
+    with_l = colored_decide(colored_capture(board, preview="L"), tmp_path)
+    assert without != with_l
+    assert without[0]["keys"] == ["Right", "Right", "Right", "Space", "Right", "Enter"]
+    assert with_l[0]["keys"] == ["Right", "Enter"]
+
+
+def test_unreadable_preview_falls_back_to_single_ply(tmp_path):
+    board = _preview_fixture()
+    plain = colored_decide(colored_capture(board), tmp_path)
+    # A pane whose preview window shows two different block colours is not the
+    # next block; the brain must not guess and must keep its single-ply plan.
+    styled = colored_capture(board, preview="O")
+    mixed = styled.replace("\x1b[47m \x1b[0m", "\x1b[41m \x1b[0m", 1)
+    assert colored_decide(mixed, tmp_path) == plain
