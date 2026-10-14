@@ -3154,3 +3154,184 @@ def test_hanjuku_prediction_ownership_is_absent_without_an_owned_round(tmp_path)
     assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
     _prediction_round(tmp_path, None)
     assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
+
+
+def _prediction_memory_module(source):
+    """Execute only the projection's AST with a memory-only filesystem."""
+    import ast
+    import io
+    import math
+    from pathlib import PurePosixPath
+    from types import SimpleNamespace
+
+    nodes = {"/": {"kind": "dir"}, "/memory": {"kind": "dir"},
+             "/memory/runtimes": {"kind": "dir"},
+             "/memory/runtimes/rt-1": {"kind": "dir"}}
+    handles, reads, opens = {}, [], []
+
+    def resolve(path):
+        path = str(path)
+        for prefix, node in sorted(nodes.items(), key=lambda item: -len(item[0])):
+            if node["kind"] == "symlink" and (path == prefix or path.startswith(prefix + "/")):
+                path = node["target"] + path[len(prefix):]
+                break
+        return nodes.get(path), path
+
+    class MemoryPath:
+        def __init__(self, path):
+            self.path = path.path if isinstance(path, MemoryPath) else PurePosixPath(path)
+
+        def __str__(self):
+            return str(self.path)
+
+        def __truediv__(self, name):
+            return MemoryPath(self.path / name)
+
+        @property
+        def parent(self):
+            return MemoryPath(self.path.parent)
+
+        @property
+        def parents(self):
+            return tuple(MemoryPath(parent) for parent in self.path.parents)
+
+        @property
+        def anchor(self):
+            return self.path.anchor
+
+        @property
+        def parts(self):
+            return self.path.parts
+
+        @property
+        def name(self):
+            return self.path.name
+
+        def is_symlink(self):
+            return nodes.get(str(self), {}).get("kind") == "symlink"
+
+        def is_dir(self):
+            node, _ = resolve(self)
+            return bool(node and node["kind"] == "dir")
+
+        def is_file(self):
+            node, _ = resolve(self)
+            return bool(node and node["kind"] == "file")
+
+        def stat(self):
+            node, _ = resolve(self)
+            if node is None:
+                raise FileNotFoundError
+            return SimpleNamespace(st_size=node.get("reported_size", len(node.get("raw", b""))))
+
+        def read_text(self, encoding):
+            node, path = resolve(self)
+            reads.append({"path": path, "limit": None, "bytes": len(node["raw"])})
+            return node["raw"].decode(encoding)
+
+    def memory_open(path, flags, *, dir_fd=None):
+        parent = handles[dir_fd][0] if dir_fd is not None else "/"
+        absolute = str(PurePosixPath(parent) / str(path))
+        node = nodes.get(absolute)
+        opens.append({"path": absolute, "flags": flags})
+        if node is None:
+            raise FileNotFoundError
+        if node["kind"] == "symlink" and flags & os.O_NOFOLLOW:
+            raise OSError("refused link")
+        if flags & os.O_DIRECTORY and node["kind"] != "dir":
+            raise NotADirectoryError
+        fd = max([100, *handles]) + 1
+        handles[fd] = (absolute, node)
+        return fd
+
+    class MemoryReader(io.BytesIO):
+        def __init__(self, fd):
+            self.path, node = handles[fd]
+            super().__init__(node.get("raw", b""))
+
+        def read(self, limit=-1):
+            data = super().read(limit)
+            reads.append({"path": self.path, "limit": limit, "bytes": len(data)})
+            return data
+
+    fake_os = SimpleNamespace(
+        O_RDONLY=os.O_RDONLY, O_DIRECTORY=os.O_DIRECTORY, O_NOFOLLOW=os.O_NOFOLLOW,
+        O_CLOEXEC=getattr(os, "O_CLOEXEC", 0), O_NONBLOCK=os.O_NONBLOCK,
+        open=memory_open, close=lambda fd: handles.pop(fd),
+        fstat=lambda fd: SimpleNamespace(st_mode={"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                                                 "fifo": stat.S_IFIFO}.get(handles[fd][1]["kind"], 0)),
+        fdopen=lambda fd, mode, closefd: MemoryReader(fd))
+    names = {"_supervisor_directory", "_supervisor_read", "_bounded_prediction_record",
+             "_collect_hanjuku_prediction_ownership", "_finite_number", "_is_digest"}
+    constants = {"_HANJUKU_PREDICTION_RECORD_LIMIT", "_HANJUKU_PREDICTION_IDENTITY_KEYS",
+                 "_HANJUKU_PREDICTION_TERMINAL_REASONS", "_HANJUKU_PREDICTION_BLOCKERS"}
+    selected = [node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name in names
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    namespace = {"Path": MemoryPath, "json": json, "math": math, "stat": stat,
+                 "os": fake_os, "time": SimpleNamespace(time=lambda: 1000.0)}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "<memory-prediction-projection>", "exec"), namespace)
+    return SimpleNamespace(module=namespace, nodes=nodes, reads=reads, opens=opens, handles=handles,
+                           path=MemoryPath)
+
+
+def test_prediction_record_rejects_each_symlink_component_without_reading():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    for link in ("/memory/runtimes", "/memory/runtimes/rt-1", record):
+        memory = _prediction_memory_module(source)
+        memory.nodes[record] = {"kind": "file", "raw": b'{"safe":true}'}
+        memory.nodes[link] = {"kind": "symlink", "target": "/outside"}
+        memory.nodes["/outside"] = {"kind": "file", "raw": b'{"private":true}'}
+        memory.nodes["/outside/rt-1/hanjuku_run.json"] = memory.nodes[record]
+        memory.nodes["/outside/hanjuku_run.json"] = {"kind": "file", "raw": b'{"private":true}'}
+        value, _, readable = memory.module["_bounded_prediction_record"](memory.path(record))
+        assert value is None and readable is False
+        assert memory.reads == [] and memory.handles == {}
+
+
+def test_prediction_record_caps_the_actual_read_even_if_size_changes():
+    memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    memory.nodes[record] = {"kind": "file", "reported_size": 128,
+                            "raw": b'{"safe":true}' + b" " * 18000}
+    assert memory.module["_bounded_prediction_record"](memory.path(record)) == (None, True, False)
+    assert len(memory.reads) == 1
+    assert memory.reads[0]["limit"] == 16385 and memory.reads[0]["bytes"] == 16385
+    assert memory.handles == {}
+
+
+def test_prediction_record_memory_controls_preserve_bounds_and_cleanup():
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    for raw, expected in ((b'{"safe":true}', ({"safe": True}, True, True)),
+                          (b"{}" + b" " * 16382, ({}, True, True)),
+                          (b"{}" + b" " * 16383, (None, True, False)),
+                          (b"not-json", (None, True, False)),
+                          (b"[]", (None, True, False)),
+                          (b"\xff", (None, True, False))):
+        memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+        memory.nodes[record] = {"kind": "file", "raw": raw}
+        assert memory.module["_bounded_prediction_record"](memory.path(record)) == expected
+        assert memory.handles == {}
+        assert all(read["limit"] == 16385 and read["bytes"] <= 16385 for read in memory.reads)
+    for kind in (None, "dir", "fifo"):
+        memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+        if kind is not None:
+            memory.nodes[record] = {"kind": kind}
+        value, _, readable = memory.module["_bounded_prediction_record"](memory.path(record))
+        assert value is None and readable is False
+        assert memory.reads == [] and memory.handles == {}
+
+
+def test_prediction_ownership_rejects_a_symlinked_runtime_parent():
+    memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+    memory.nodes["/memory/runtimes"] = {"kind": "symlink", "target": "/outside"}
+    memory.nodes["/outside/rt-1"] = {"kind": "dir"}
+    memory.nodes["/outside/rt-1/hanjuku_run.json"] = {
+        "kind": "file", "raw": json.dumps({**_HANJUKU_ROUND_IDENTITY,
+            "terminal_reason": "game_over", "frame_sha256": "a" * 64}).encode()}
+    result = memory.module["_collect_hanjuku_prediction_ownership"](
+        "/memory", {"next_poll_at": 1300}, dict(_HANJUKU_ROUND_IDENTITY))
+    assert result["blocker"] == "runtime-missing" and result["runtime_present"] is False
+    assert memory.reads == [] and memory.handles == {}
