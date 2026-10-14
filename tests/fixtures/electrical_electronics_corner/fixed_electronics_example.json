@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "corner": "electrical_electronics",
+  "fixtureId": "fixed-electronics-corner-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed electronics fixture for planning and input-contract acceptance only. It is not a real device or verified measurement, and its title, URLs and details must not be presented as verified electrical data or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Inverter-Driven Induction Motor with Power Factor and Thermal Limits",
+    "topicId": "fixed-electronics-inverter-motor-001",
+    "electricalTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "electronicTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "circuitTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "deviceTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "electricalEngineeringTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "powerElectronicsTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "buildingTheme": "インバータ駆動誘導モータと電力・熱・制御のトレードオフ",
+    "subjectSystem": "インバータ + 誘導モータ + 電源 + 制御",
+    "operatingEnvironment": "hypothetical industrial drive in a ventilated control cabinet with 200-400V three-phase supply and ambient 40C",
+    "siteContext": "hypothetical industrial drive in a ventilated control cabinet",
+    "applicationContext": "hypothetical industrial drive in a ventilated control cabinet",
+    "useCase": "変速機械駆動における電力・熱・制御のトレードオフ",
+    "thirtySecondSummary": "合成fixture: インバータ駆動誘導モータを成立させるために、入出力・電気原理・回路構造・損失/ノイズ/熱・故障モードと保護・トレードオフを整合させる planning 例。",
+    "oneLineSummary": "合成fixture: 電気・電子工学コーナーの入力契約を示す、回路・電力・信号を扱う planning 例。",
+    "requirementsAndConstraints": [
+      "入力電圧・電流・力率・過負荷耐量",
+      "絶縁耐圧・EMC・安全規格",
+      "冷却・温度上昇・放熱",
+      "コスト・サイズ・効率"
+    ],
+    "inputOutput": "入力: 三相交流電源/速度指令。出力: 可変周波数三相交流/機械トルク。",
+    "inputsAndOutputs": "入力: 三相交流電源/速度指令。出力: 可変周波数三相交流/機械トルク。",
+    "inputAndOutput": "入力: 三相交流電源/速度指令。出力: 可変周波数三相交流/機械トルク。",
+    "inputToOutput": "交流電源 -> 整流 -> DCリンク -> インバータ -> モータ -> 機械負荷",
+    "inputToMechanismToOutput": "交流電源 -> 整流 -> DCリンク -> インバータ -> モータ -> 機械負荷",
+    "electricalPrinciple": "パルス幅変調により平均電圧/周波数を制御し、モータのトルクを調整する。",
+    "electricalPrinciples": [
+      "PWM平均電圧制御",
+      "V/f制御",
+      "トルク電流制御"
+    ],
+    "principles": [
+      "PWM平均電圧制御",
+      "V/f制御",
+      "トルク電流制御"
+    ],
+    "physicalPrinciples": [
+      "PWM平均電圧制御",
+      "V/f制御",
+      "トルク電流制御"
+    ],
+    "physicalQuantities": [
+      "電圧",
+      "電流",
+      "周波数",
+      "トルク",
+      "温度",
+      "損失"
+    ],
+    "structure": "整流器-DCリンク-インバータ-MCU-センサ構成。",
+    "structureAndMaterials": "Si IGBT/MOSFET、銅母線、アルミ電解コンデンサ、鉄心モータ、ヒートシンク。",
+    "circuitStructure": "整流器-DCリンク-インバータ-MCU-センサ構成。",
+    "deviceStructure": "整流器-DCリンク-インバータ-MCU-センサ構成。",
+    "circuitAndDeviceStructure": "整流器-DCリンク-インバータ-MCU-センサ構成。",
+    "circuitTopology": "AC-DC-AC 電力変換、3相2レベルインバータ。",
+    "lossesNoiseThermal": "導通損失・スイッチング損失・鉄損・銅損・PWMノイズ・温度上昇。",
+    "lossesNoiseHeat": "導通損失・スイッチング損失・鉄損・銅損・PWMノイズ・温度上昇。",
+    "lossNoiseThermal": "導通損失・スイッチング損失・鉄損・銅損・PWMノイズ・温度上昇。",
+    "losses": "導通損失・スイッチング損失・鉄損・銅損。",
+    "noise": "PWMキャリア由来の電磁ノイズ。",
+    "thermal": "温度上昇と放熱設計。",
+    "failureModes": [
+      "過電流",
+      "過電圧",
+      "熱暴走",
+      "短絡",
+      "接地故障"
+    ],
+    "faultModes": [
+      "過電流",
+      "過電圧",
+      "熱暴走",
+      "短絡",
+      "接地故障"
+    ],
+    "failureModesAndProtection": [
+      "過電流遮断",
+      "過電圧保護",
+      "サーマルシャットダウン",
+      "短絡保護",
+      "接地漏れ検出"
+    ],
+    "faultModesAndProtection": [
+      "過電流遮断",
+      "過電圧保護",
+      "サーマルシャットダウン",
+      "短絡保護",
+      "接地漏れ検出"
+    ],
+    "weakPoints": "スイッチング素子の熱疲労、コンデンサの劣化、センサ故障時の誤制御。",
+    "safetyDesign": "保護リレー、ヒューズ、サーマルセンサ、フェイルセーフ遮断、インターロック。",
+    "protection": "保護リレー、ヒューズ、サーマルセンサ、フェイルセーフ遮断、インターロック。",
+    "protectionDesign": "保護リレー、ヒューズ、サーマルセンサ、フェイルセーフ遮断、インターロック。",
+    "tradeoffs": "効率 vs コスト、スイッチング周波数 vs EMI、冷却 vs サイズ、制御精度 vs センサコスト。",
+    "designRationale": "電力変換効率と制御応答を両立するため、SiC素子と低損失磁性材料を選択し、保護回路を冗長化した。",
+    "designTradeoffs": "効率 vs コスト、スイッチング周波数 vs EMI、冷却 vs サイズ、制御精度 vs センサコスト。",
+    "limitations": "合成 fixture であり、実 devices の計測・検証・一般化は未実施である。データシート値・損失算出は架空であり、一次資料で再確認する必要がある。",
+    "figureOrDiagram": "ブロック図、回路図、電力フロー、熱設計図、故障モード表を overlay 用に分離する。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、30秒要約、回路構成、電気原理、損失/ノイズ/熱、故障モードと保護、なぜこの設計かを独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/electronics/synthetic-inverter-motor",
+      "https://example.org/electronics/synthetic-inverter-motor/datasheet"
+    ],
+    "sourcePriority": [
+      "component-datasheets",
+      "manufacturer-technical-material",
+      "standards-and-regulations",
+      "public-institution",
+      "university-research",
+      "academic-paper",
+      "engineering-textbook",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "signals": [
+      "PWM",
+      "速度指令",
+      "電流センサ"
+    ],
+    "power": "200-400V 三相交流",
+    "control": "速度/トルク制御",
+    "components": [
+      "整流器",
+      "DCリンク",
+      "インバータ",
+      "MCU",
+      "モータ"
+    ],
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、主張の根拠はデータシート/規格/一次技術資料で再確認する。",
+    "url": "https://example.org/electronics/synthetic-inverter-motor",
+    "uncertainty": "合成fixtureであり、回路値・損失・熱設計は未検証。",
+    "todayExample": "合成 fixture: インバータ駆動誘導モータ",
+    "era": "現代",
+    "region": "hypothetical industrial setting"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/electronics/synthetic-motor-inverter-circuit",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "91772c4ba9d4deb46f6eb83820de81a3e18fddde99c36f5de1e28d734b8d8266",
+        "excerpt": "Synthetic verified technical material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic motor inverter power electronics circuit"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealBuilding": true,
+    "mustNotClaimRealDevice": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustIncludeSeismicAndEquipment": true,
+    "mustIncludeFailureAndSafety": true,
+    "mustIncludeCircuitAndPower": true,
+    "mustIncludeElectricalPrinciples": true,
+    "mustIncludeCircuitStructure": true,
+    "mustIncludeInputOutput": true,
+    "mustIncludeLossesNoiseThermal": true,
+    "mustIncludeFailureModesAndProtection": true,
+    "mustIncludeTradeoffs": true,
+    "mustIncludePowerElectronics": true,
+    "mustIncludeSignals": true,
+    "mustIncludeThermal": true,
+    "mustIncludeNoise": true,
+    "mustIncludeProtection": true,
+    "mustIncludeStandards": true,
+    "mustNotClaimRealPublication": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
