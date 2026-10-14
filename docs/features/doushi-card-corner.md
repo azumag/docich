@@ -195,6 +195,17 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
   `period` / `limit` は RPC で fail-closed に検証（`period ∈ {all,7d,30d}`、`limit ∈ 1..100`、
   route 側は `limit ∈ 1..50`）し、RPC は `service_role` のみに `REVOKE`/`GRANT` してある。
   route は `no-store`、`42883` と payload 欠落は 503、rate limit は `overlayCardRankingGet`（60/分）。
+- **公開の可否は配信者単位の opt-in で決める（2026-10-15 オーナー判断）**。TwiCa は
+  `streamers.publish_card_ranking BOOLEAN NOT NULL DEFAULT FALSE` を持ち、公開 route が呼ぶ
+  wrapper `public.get_published_card_ranking(uuid, text, integer)` が未 opt-in を SQLSTATE `P0002`
+  で fail-closed にする。route はこれを **404** へ写像し、未知の streamer と同じ応答にして
+  「どのチャンネルが opt-in 済みか」を探れないようにする。
+  - **ユーザー向けの設定 UI は作らない**。既定は OFF のままで、有効化は operator が
+    migration で行う。初期有効化は docich が表示するチャンネル1つだけ
+    （DoCiAI / Twitch login `dociai`）。他チャンネルを有効化する場合も同じ形で行う。
+  - docich 側は 404 を取得失敗として扱い、前回値を出さず当該コーナーを開始しない
+    （`tests/test_doushi_view.py` の
+    `test_doushi_preflight_skips_when_twica_has_not_opted_the_channel_in` で固定）。
 - ③ 蒐集カード数には §7-8 の推奨どおり**除外判定を適用**した（①②④ と同じ）。
 - `card_type_total` は §4-3 の「◯/全カード種類数」を表示するための母数で、
   docich 側 allowlist に追加した唯一の追加キー（`is_active` なカード種類数）。
@@ -203,17 +214,26 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 - `user_twitch_id`・`card_id` などの内部 id、token・IP・メールは **返さない**。§3.1 の同率決定に使う id は API 内部でだけ参照する。
 - 返すのは集計済みの上位 `limit` 件のみ（生の履歴行・`drawers[]` 全文は返さない）。
 - 並び順は §3.1 を API 側で確定させる（クライアントにソートさせない）。
-- 認証は既存 `/api/overlay/{streamerId}/events` と同じ「streamerId を知っているだけ」の公開水準とし、
-  既存と同じレート制限・キャッシュ無効化に従う（設計は TwiCa 側で確定）。
-- 既存の認証必須 API を service トークンで叩く案は、docich に資格情報を増やし、
-  視聴者向け公開情報としては過剰権限になるため **採らない**（§7-8 で再確認）。
+- レート制限・キャッシュ無効化は既存 `/api/overlay/{streamerId}/events` と同じ扱いにする。
+- **認証情報は要求しない**。ただし「streamerId を知っているだけ」では取得できず、配信者の
+  opt-in が前提になる（上記）。既存 `/events` との違いはここにある: `/events` は配信中の
+  演出に必要な逐次イベント（誰が何を引いたか）を返すのに対し、本 API は名前つきの集計
+  （消費チャネルポイント・蒐集数）を返すため、公開の同意を配信者に求める。
+- 認証必須 API を service トークンで叩く案を採らない理由（2026-10-15 更新）:
+  `SOREN_DIRECT_TWICA_OVERLAY_URL` には既に presence capability（TTL 30日）が入っており、
+  「docich に資格情報が無い」わけではない。ただしそれは配信（connect）用の capability で、
+  読み取りへ流用すると過剰権限になり、非ブラウザの docich HTTP クライアントでは TTL/refresh の
+  実装も要る。公開の同意は配信者側の opt-in として DB に置く方が権限も責務も小さく、
+  設定 UI を持たない運用とも整合する。
 
 ## 7. 未確定・オーナー判断が要る点
 
 > 実装時の扱い: ③（表示時間）は提案値（15 秒 × 4 ページ、上限既定 2 分／最大 14 分）のまま、
 > ①（集計期間）は `all` を既定に実装した（`7d` / `30d` は API 側で選べるが catalog からは選ばない）。
 > ⑤（人気カードの主指標）は**枚数優先**、⑧（③の除外適用）は**除外を適用**した。
-> それ以外（②最低ライン、④数の見せ方、⑥opt-out、⑦対象チャンネル）は未確定のまま。
+> 公開 opt-in（⑥の前提）は 2026-10-15 オーナー判断で実装した（既定 OFF・ユーザー向け UI 無し・
+> docich が表示するチャンネルのみ初期有効）。
+> それ以外（②最低ライン、④数の見せ方、⑥の周知、⑦対象チャンネル）は未確定のまま。
 > `enabled=true` 化と VM 反映はオーナー承認を待つ。
 
 1. **集計期間**: 全期間（既定）か、直近 7日 / 30日 か。全期間は 2026-07-04 境界の影響を受ける。
@@ -222,8 +242,10 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 4. **「数」の見せ方**: ページ1・2 は TwiCa 正本の「排出カード枚数（N連はN件）」を提案している。
    「引き換え回数」で見せたい場合は別定義が必要。
 5. **人気カードの主指標**: 枚数順（既定）か人数順か。両方出すか。
-6. **opt-out / 不適切名**: 表示名を配信画面へ出すための周知・非表示申請・不適切名の扱い（未確定）。
-7. **対象チャンネル**: Soren の 1 チャンネルのみでよいか（複数にする場合の合算方針）。
+6. **opt-out / 不適切名**: 公開 opt-in（既定 OFF）は実装済みだが、**配信画面へ名前を出す前の周知**・
+   視聴者ごとの非表示申請・不適切名の扱いは未確定。`enabled=true` 化の前提として残る。
+7. **対象チャンネル**: 公開 opt-in は配信者単位で、初期有効化は docich が表示する 1 チャンネル
+   （DoCiAI）のみ。複数チャンネルへ広げる場合は operator が同じ形で有効化する（合算方針は未確定）。
 8. **③ の除外適用**: `get_gacha_users_for_streamer` に除外判定が入っていない（§3 の既知の差異）。
    新設 API で「除外済みの蒐集数」に揃えるか、現行の素の集計を出すか。
    （推奨: ①②④ と揃えて除外を適用する）
@@ -231,8 +253,10 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 ## 8. MVP / 実装ステップ（PR 分割案）
 
 1. ~~**PR-1（本PR）**: 本ドキュメント（仕様・起案）のみ。コード変更なし。~~ 完了。
-2. **PR-2（azumag/twica#1810）**: §6 の公開読み取り専用ランキング API。**実装・push 済み（未マージ）**。
+2. **PR-2（azumag/twica#1810）**: §6 の読み取り専用ランキング API。**実装・push 済み（未マージ）**。
    除外判定・対象述語・並び順は既存関数に合わせ、追加の集計は DB 内 RPC で行う。
+   公開は `publish_card_ranking` の opt-in（既定 OFF・UI 無し）で gate し、未 opt-in は
+   wrapper が `P0002` → route が 404 にする（初期有効化は DoCiAI のみ）。
    ローカル PostgreSQL 17 で RPC と fixture の検証 DO ブロックを実測し、route / migration の静的テストを追加した。
 3. **PR-3（docich 本ブランチ）**: API クライアントのオフライン中核（HTTP は注入・ネットワーク無し）＋テスト。
    **実装済み** `src/docich/doushi_ranking.py`。
@@ -249,10 +273,13 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 TwiCa 側（azumag/twica#1810）:
 
 ```sh
-npx vitest run tests/unit/card-ranking-rpc-migration.test.ts tests/unit/overlay-card-ranking-api.test.ts
+npx vitest run tests/unit/card-ranking-rpc-migration.test.ts \
+  tests/unit/overlay-card-ranking-api.test.ts tests/unit/streamers-safe-columns.test.ts
 npm run typecheck && npm run lint
 # DB 内 RPC はローカル PostgreSQL 17 に migration と tests/fixtures/card-ranking-postgres.sql を
 # 適用し、fixture 内の検証 DO ブロックが通ることを実測した。
+# 公開 opt-in（publish_card_ranking）は、opt-in 済みが集計本体と一致すること・未 opt-in と
+# 未知の streamer が同じ P0002 になることを fixture の DO ブロックで実測する。
 ```
 
 docich 側（本ブランチ）:
@@ -262,6 +289,10 @@ python3 -m pytest tests/test_doushi_ranking.py tests/test_doushi_view.py \
   tests/test_doushi_corner.py tests/test_doushi_narration.py -q
 python3 -m pytest tests/ ops/vm_actions/tests/ -q   # 既存退行なし
 ```
+
+- 未 opt-in のチャンネル（404）では前回値を出さず当該コーナーを開始しないことを、
+  `tests/test_doushi_view.py::test_doushi_preflight_skips_when_twica_has_not_opted_the_channel_in`
+  で固定する。
 
 - production への反映・VM 配備・`enabled=true` 化は**行っていない**。
   `config/docich.soren-live.toml` への `doushi-card` 追加は既定無効（`enabled=false, manual_only=true`）のみで、

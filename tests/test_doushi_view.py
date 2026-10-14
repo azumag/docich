@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from urllib.error import HTTPError
 import uuid
 
 import pytest
@@ -295,6 +296,35 @@ def test_doushi_preflight_fails_closed_without_the_overlay_url_or_on_a_broken_bo
     message = str(raised.value)
     assert message == "同志カードランキングを取得できないため開始できません"
     for secret in ("SECRET", STREAMER, "twica.example", "period="):
+        assert secret not in message
+    assert not adapter.payload_path.exists()
+
+
+def test_doushi_preflight_skips_when_twica_has_not_opted_the_channel_in(
+        tmp_path, monkeypatch):
+    """TwiCa 側の公開オプトインが無いチャンネルは 404 を返す（設計 §6）。
+
+    docich は前回値を出さず当該コーナーを開始しない。404 という事実も URL も
+    例外文言へ運ばず、固定文言だけで skip することを固定する。
+    """
+    g = _global(tmp_path)
+    spec = _spec(tmp_path)
+    adapter = make_coordinator_adapter(g, spec)
+    monkeypatch.setattr(doushi_program.ProgramViewAdapter, "preflight", lambda *_: None)
+    monkeypatch.setenv("SOREN_DIRECT_TWICA_OVERLAY_URL", OVERLAY_URL)
+
+    def not_published(url, timeout):
+        # urllib は非 2xx で HTTPError を送出する（実経路と同じ形）。
+        raise HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(doushi_program, "http_get", not_published)
+
+    with pytest.raises(AdapterError) as raised:
+        adapter.preflight(time.monotonic() + 10, None)
+
+    message = str(raised.value)
+    assert message == "同志カードランキングを取得できないため開始できません"
+    for secret in ("SECRET", STREAMER, "twica.example", "404", "Not Found", "period="):
         assert secret not in message
     assert not adapter.payload_path.exists()
 

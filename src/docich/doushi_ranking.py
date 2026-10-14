@@ -5,6 +5,8 @@
 
 - endpoint は既存 ``SOREN_DIRECT_TWICA_OVERLAY_URL``（``/overlay/{streamerId}``）の
   origin から導出し、URL 本文・クエリ・トークンをログ・argv・state へ残さない。
+- 公開は TwiCa 側の配信者単位 opt-in で gate される。未 opt-in のチャンネルは 404 を返すため、
+  非 2xx は取得失敗として扱い当該コーナーを開始しない（design §6）。
 - 返却 payload は design §6 の allowlist だけ。検証に失敗した場合は前回値を出さず
   ``DoushiRankingError`` で失敗させる（当該コーナーの開始 skip = fail-closed）。
 - 並びは TwiCa 正本のまま。docich は再ソートしない・順位を付け直さない。
