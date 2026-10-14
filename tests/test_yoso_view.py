@@ -218,7 +218,7 @@ def test_view_handler_rejects_invalid_generation(tmp_path, generation):
         handler_for(tmp_path, "g4-view", generation=generation)
 
 
-def test_yoso_program_view_is_registered_and_respects_the_game_viewport(tmp_path, monkeypatch):
+def test_yoso_program_view_is_registered_and_owns_the_full_broadcast_frame(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
     monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
@@ -234,13 +234,34 @@ def test_yoso_program_view_is_registered_and_respects_the_game_viewport(tmp_path
         "--lease-id", spec.lease_id,
     ]
     assert adapter._game_session_env()["PYTHONPATH"].endswith("src")
+    # 予想王は weather と同じ配信ネイティブ情報画面なので、ディスプレイ全画面を所有する
+    # （#2237。ステータス枠・通知枠はその間だけ覆われ、位置・サイズは変えない）。
     viewer = adapter._viewer_command()
     assert viewer[0] == sys.executable
+    assert ("--x", "0") == (viewer[viewer.index("--x")], viewer[viewer.index("--x") + 1])
+    assert ("--y", "0") == (viewer[viewer.index("--y")], viewer[viewer.index("--y") + 1])
+    assert ("--width", "1280") == (viewer[viewer.index("--width")], viewer[viewer.index("--width") + 1])
+    assert ("--height", "720") == (viewer[viewer.index("--height")], viewer[viewer.index("--height") + 1])
+    assert f"--app=http://127.0.0.1:{DEFAULT_PORT}/broadcast" in viewer
+    assert "--window-size=1280,720" in viewer
+    assert "--lang=ja-JP" in viewer
+    assert "--disable-translate" in viewer
+    assert "--disable-features=Translate,TranslateUI,BackForwardCache" in viewer
+    assert spec.runtime_id in " ".join(viewer)
+
+
+def test_yoso_program_view_falls_back_to_the_game_viewport_without_a_display_size(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    g.display.width = 0
+    g.display.height = 0
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
+
+    viewer = make_coordinator_adapter(g, _spec(tmp_path))._viewer_command()
+
     assert ("--x", "0") == (viewer[viewer.index("--x")], viewer[viewer.index("--x") + 1])
     assert ("--y", "90") == (viewer[viewer.index("--y")], viewer[viewer.index("--y") + 1])
     assert ("--width", "960") == (viewer[viewer.index("--width")], viewer[viewer.index("--width") + 1])
     assert ("--height", "540") == (viewer[viewer.index("--height")], viewer[viewer.index("--height") + 1])
-    assert f"--app=http://127.0.0.1:{DEFAULT_PORT}/broadcast" in viewer
     assert "--window-size=960,540" in viewer
 
 
