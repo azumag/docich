@@ -299,6 +299,22 @@ def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
     assert 'yourPieces' not in extras['game_result']
 
 
+def test_yosou_end_reason_survives_diagnostics():
+    # The 予想王 corner is manual-only and default-disabled, so diagnostics is the
+    # only place an operator can read why a bounded run ended. An unknown value
+    # still collapses to None.
+    module=load_collector()
+    for reason in ('duration','manual','operator-moved-during-yosou',
+                   'operator-moved-after-start','operator-moved-before-restore',
+                   'operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'yosou-view','end_reason':reason})
+        assert output['end_reason']==reason
+        assert output['game']=='yosou-view'
+    assert module._project_corner_state(
+        {'status':'completed','game':'yosou-view','end_reason':'SECRET-END-REASON'})['end_reason'] is None
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

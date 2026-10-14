@@ -3694,6 +3694,8 @@ def _project_corner_state(data):
                            "switch-terminal-before-corner-active", "game-completed",
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",
                            "operator-moved-during-tsuitate",
+                           "operator-moved-during-yosou",
+                           "duration",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
                            "operator-stopped-before-start"} else None),
