@@ -410,3 +410,207 @@ def test_latecomer_does_not_overtake_earlier_waiter(tmp_path):
             pass
     assert _queue(tmp_path, 'a')['status'] == 'waiting'
     assert _queue(tmp_path, 'b')['status'] == 'expired'
+
+
+def _memory_program_waiter(monkeypatch):
+    """Exercise the real slot flow with only in-memory queue/lock side effects."""
+    from pathlib import PurePosixPath
+    from docich import corner_boundary as boundary
+    from docich import game_switch
+
+    state = SimpleNamespace(clock=100.0, held=False, lock_busy=False,
+                            owner_busy=False, earlier=False, audio_busy=False,
+                            prediction_busy=False, queue={}, registry=[],
+                            queue_writes=[], boundary_checks=[], closed=0)
+
+    class MemoryLock:
+        def __enter__(self):
+            return self
+
+        def fileno(self):
+            return self
+
+        def __exit__(self, *args):
+            state.held = False
+            state.closed += 1
+
+    class MemoryPath(PurePosixPath):
+        def mkdir(self, **kwargs):
+            pass
+
+        def open(self, mode):
+            assert self.name == 'docich_program.lock' and mode == 'a'
+            return MemoryLock()
+
+    def flock(lock, flags):
+        assert flags == fcntl.LOCK_EX | fcntl.LOCK_NB
+        if state.lock_busy:
+            raise BlockingIOError
+        assert not state.held
+        state.held = True
+
+    def queue_write(root, key, **fields):
+        state.queue.setdefault(key, {}).update(fields)
+        state.queue_writes.append((key, dict(fields)))
+
+    def audio_quiet(root):
+        state.boundary_checks.append((state.clock, state.held, state.audio_busy))
+        return not state.audio_busy
+
+    def register(path, value):
+        assert state.held, 'owner registration must remain inside the program lock'
+        state.registry.append(dict(value))
+
+    monkeypatch.setattr(boundary, 'Path', MemoryPath)
+    monkeypatch.setattr(boundary, 'resolve_soren_root', lambda g: MemoryPath('/synthetic/soren'))
+    monkeypatch.setattr(boundary, 'fcntl', SimpleNamespace(flock=flock,
+                         LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB))
+    monkeypatch.setattr(boundary, 'time', SimpleNamespace(time=lambda: state.clock))
+    monkeypatch.setattr(boundary, '_queue_write', queue_write)
+    monkeypatch.setattr(boundary, '_queue_read', lambda root, key: state.queue.get(key, {}))
+    monkeypatch.setattr(boundary, '_owner_free', lambda root, owner: not state.owner_busy)
+    monkeypatch.setattr(boundary, '_earlier_waiter_exists', lambda root, key, requested: state.earlier)
+    monkeypatch.setattr(boundary, '_prediction_in_flight', lambda root: state.prediction_busy)
+    monkeypatch.setattr(boundary, '_fresh_boundary', lambda *args: False)
+    monkeypatch.setattr(boundary, '_audio_queue_quiet', audio_quiet)
+    monkeypatch.setattr(game_switch, 'atomic_write_json', register)
+    return boundary, state, MemoryPath('/synthetic/soren/next_corner.json')
+
+
+@pytest.mark.parametrize('wait_reason', ['lock', 'owner', 'fifo'])
+def test_program_slot_rechecks_audio_after_wait_without_holding_lock(monkeypatch, wait_reason):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+    setattr(state, {'lock': 'lock_busy', 'owner': 'owner_busy', 'fifo': 'earlier'}[wait_reason], True)
+    sleeps = []
+
+    def sleep(seconds):
+        assert not state.held, 'busy audio must be waited for after closing the lock'
+        assert not state.registry, 'the waiting corner must not register as owner'
+        assert state.queue['next_corner'] == {
+            'status': 'waiting_turn', 'requested_at': 90.0, 'wait_deadline_ts': 120.0}
+        sleeps.append(seconds)
+        assert len(sleeps) <= 2
+        state.clock += seconds
+        if len(sleeps) == 1:
+            state.lock_busy = state.owner_busy = state.earlier = False
+            state.audio_busy = True
+        else:
+            state.audio_busy = False
+
+    with boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=120.0,
+                               sleep=sleep, poll_s=1.0, now=lambda: state.clock) as root:
+        assert str(root) == '/synthetic/soren/tmp/state'
+        assert sleeps == [1.0, 1.0], 'must recheck audio that became busy during slot wait'
+        assert not state.audio_busy and state.held
+        assert state.registry == [{'owner_state': str(owner)}]
+        assert state.queue['next_corner']['status'] == 'running'
+    assert not state.held
+    assert state.queue['next_corner']['status'] == 'done'
+    assert state.boundary_checks[-1] == (102.0, True, False)
+
+
+def test_program_slot_recheck_busy_expires_at_original_deadline(monkeypatch):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+    state.lock_busy = True
+    sleeps = []
+
+    def sleep(seconds):
+        assert not state.held and not state.registry
+        sleeps.append(seconds)
+        assert len(sleeps) <= 2
+        state.clock += seconds
+        state.lock_busy = False
+        state.audio_busy = True
+
+    with pytest.raises(CornerWaitExpired):
+        with boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=102.0,
+                                   sleep=sleep, poll_s=1.0, now=lambda: state.clock):
+            pytest.fail('audio remained busy: an expired waiter must never yield')
+    assert sleeps == [1.0, 1.0]
+    assert state.queue['next_corner'] == {
+        'status': 'expired', 'requested_at': 90.0, 'wait_deadline_ts': 102.0}
+    assert not state.registry and not state.held
+
+
+def test_program_slot_recheck_preserves_prediction_gate(monkeypatch):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+    state.lock_busy = True
+    sleeps = []
+
+    def sleep(seconds):
+        assert not state.held and not state.registry
+        sleeps.append(seconds)
+        assert len(sleeps) <= 2
+        state.clock += seconds
+        state.lock_busy = False
+        state.prediction_busy = len(sleeps) == 1
+
+    with boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=120.0,
+                               sleep=sleep, poll_s=1.0, now=lambda: state.clock):
+        assert sleeps == [1.0, 1.0]
+        assert state.held and not state.prediction_busy
+    assert state.queue['next_corner']['status'] == 'done'
+
+
+@pytest.mark.parametrize('entrypoint', ['program_slot', '_program_slot', 'program_lock'])
+def test_program_slot_boundary_opt_out_and_direct_callers_remain_ungated(monkeypatch, entrypoint):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+    state.audio_busy = state.prediction_busy = True
+
+    def no_sleep(seconds):
+        pytest.fail('ungated callers must keep their existing immediate-start behavior')
+
+    if entrypoint == 'program_slot':
+        slot = boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=120.0,
+                                     wait_boundary=False, sleep=no_sleep, now=lambda: state.clock)
+    elif entrypoint == '_program_slot':
+        slot = boundary._program_slot(boundary.resolve_soren_root(None) / 'tmp/state', owner,
+                                      120.0, requested_at=90.0, sleep=no_sleep)
+    else:
+        slot = boundary.program_lock(None, owner, wait_deadline_ts=120.0, sleep=no_sleep)
+    with slot:
+        assert state.held and state.audio_busy and state.prediction_busy
+        assert not state.boundary_checks
+    assert state.queue['next_corner']['status'] == 'done'
+    assert not state.held
+
+
+def test_program_slot_recheck_registry_error_stays_fail_closed(monkeypatch):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+
+    def corrupt_registry(root, owner_state):
+        raise ProgramRegistryError('synthetic corrupt registry')
+
+    monkeypatch.setattr(boundary, '_owner_free', corrupt_registry)
+    with pytest.raises(ProgramRegistryError):
+        with boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=120.0,
+                                   sleep=lambda _: pytest.fail('must fail closed'),
+                                   now=lambda: state.clock):
+            pytest.fail('corrupt registry must never yield')
+    assert not state.registry and not state.held
+    assert state.queue['next_corner']['status'] == 'error'
+
+
+@pytest.mark.parametrize('interruption', [RuntimeError, KeyboardInterrupt])
+def test_program_slot_recheck_wait_interruption_stays_cancelled(monkeypatch, interruption):
+    boundary, state, owner = _memory_program_waiter(monkeypatch)
+    state.lock_busy = True
+    sleeps = []
+
+    def sleep(seconds):
+        assert not state.held and not state.registry
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            state.lock_busy = False
+            state.audio_busy = True
+            state.clock += seconds
+        else:
+            raise interruption('synthetic stop')
+
+    with pytest.raises(interruption):
+        with boundary.program_slot(None, owner, requested_at=90.0, wait_deadline_ts=120.0,
+                                   sleep=sleep, poll_s=1.0, now=lambda: state.clock):
+            pytest.fail('interrupted boundary recheck must never yield')
+    assert sleeps == [1.0, 1.0]
+    assert state.queue['next_corner']['status'] == 'cancelled'
+    assert not state.registry and not state.held

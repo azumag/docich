@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from ..comment_queue import comment_queue_dir
 from ..config import ConfigError, GlobalConfig, load_game
 from ..meriken_voice import resolve_meriken_speaker
 from ..overlay_queue import append_event, regenerate_overlay
@@ -217,9 +219,13 @@ def enqueue_audio_text(
         command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3"'
         command.append(json.dumps(runtime_fence, separators=(",", ":")))
     try:
+        env = os.environ.copy()
+        # Share the reader's resolved queue without sourcing the whole .env.
+        env["COMMENT_QUEUE_DIR"] = str(comment_queue_dir(root))
         proc = subprocess.run(
             command,
             cwd=str(root),
+            env=env,
             text=True,
             capture_output=True,
             timeout=30.0,
