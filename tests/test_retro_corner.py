@@ -216,6 +216,45 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertIsNone(result["last_error_code"])
         self.assertEqual(coordinator.calls, [])
 
+    def test_switch_deadline_timeout_terminalizes_the_rolled_back_failed_corner(self):
+        # #2187: the request-wide deadline expiring during the start switch
+        # reports ERROR_TIMEOUT (`game_switch._failure_code`), and its own
+        # rollback restores the previous game exactly like the other start
+        # errors. Missing this code latched the rotation forever for retry
+        # corners (game/nethack/meriken), because recover-failed refused.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="timeout")
+
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertIsNone(result["last_error"])
+        self.assertIsNone(result["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
+    def test_switch_deadline_timeout_keeps_its_evidence_gates(self):
+        # Accepting the code must not weaken any existing proof: a mismatched
+        # receipt code, cleanup pending, a non-ready canonical, or another
+        # game owning the slot still refuses to terminalize.
+        mgr, _, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="timeout")
+        receipt = mgr.store.receipts.load(request_id)
+        receipt["result"]["error_code"] = "start_failed"
+        mgr.store.receipts.save(receipt)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+        mgr, _, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="timeout")
+        receipt = mgr.store.receipts.load(request_id)
+        receipt["result"]["cleanup_pending"] = True
+        mgr.store.receipts.save(receipt)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
     def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
         for state_error, receipt_error in (
             ("start_failed", "agent_start_failed"),
