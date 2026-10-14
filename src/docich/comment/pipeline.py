@@ -58,7 +58,8 @@ def cli_comment(args) -> int:
     if getattr(args, "output_dir", None):
         os.environ["DOCICH_COMMENT_OUTPUT_DIR"] = args.output_dir
 
-    result = run_pipeline(intake)
+    result = run_pipeline(intake, llm_agents=getattr(args, "agents", None),
+                          llm_timeout_sec=getattr(args, "llm_timeout", None))
     print(f"docich: comment {'ok' if result.ok else 'failed'} reply_chars={len(result.reply_text)}")
     for path in result.delivery_files:
         print(f"  {path}")
@@ -234,16 +235,11 @@ def run_pipeline(
         generator = dispatch
 
     if generator is None:
-        if use_llm or llm_agents is not None or env.get("DOCICH_COMMENT_AGENTS") or env.get("COMMENT_AI_AGENTS") or env.get(
-            "COMMENT_CODEX_AGENTS"
-        ) or env.get("LLM_COMMENT_AGENTS") or env.get("DOCICH_ALLOW_REAL_AI") == "1":
-            generator = make_llm_dispatch_generator(
-                env=dict(env if isinstance(env, dict) else os.environ),
-                agents=llm_agents,
-                timeout_sec=llm_timeout_sec,
-            )
-        else:
-            generator = stub_generator()
+        generator = make_llm_dispatch_generator(
+            env=dict(env if isinstance(env, dict) else os.environ),
+            agents=llm_agents,
+            timeout_sec=llm_timeout_sec,
+        )
 
     reply_text = ""
     dispatch_detail = ""

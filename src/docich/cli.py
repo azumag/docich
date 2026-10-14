@@ -287,6 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_comment.add_argument("--host-mode", choices=["main", "soren91"], default="main")
     p_comment.add_argument("--batch-id", metavar="ID", help="batch id")
     p_comment.add_argument("--output-dir", metavar="DIR", help="delivery sink directory")
+    p_comment.add_argument("--agents", metavar="LIST", help="COMMENT agent chain for docich.llm dispatch (requires DOCICH_ALLOW_REAL_AI=1)")
+    p_comment.add_argument("--llm-timeout", metavar="SEC", type=int, default=None, help="LLM dispatch timeout")
     p_comment.add_argument("--dry-run", action="store_true", help="実行せず入力/出力先を表示する")
 
     p_radio = sub.add_parser(
