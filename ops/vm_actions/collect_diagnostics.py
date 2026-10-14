@@ -5789,9 +5789,24 @@ def _severity(workers, queues, ai, improvement, corners=None):
 DROP_STAGES = ('capture', 'analyze', 'ranking', 'decide', 'input', 'holdInput',
                'cooldown', 'poll', 'overlap', 'unattributed')
 DROP_CALLS = DROP_STAGES[:-2]
+# Top-level loop stages as written by the v1 `flush()` (no holdInput / overlap /
+# unattributed). Used for the open-attempt projection.
+DROP_LOOP_STAGES = ('capture', 'analyze', 'ranking', 'decide', 'input',
+                    'cooldown', 'poll')
 DROP_REASONS = ('unknown-current', 'uncalibrated', 'invalid-board', 'confirm-frame',
                 'preview-changed', 'board-moving', 'stable', 'stable-slow-advance',
                 'non-move', 'other')
+DROP_OUTCOMES = ('observe', 'hold-sent', 'drop-sent', 'error')
+# Mirrors SAFE_FAILURE_CLASSES in soviet_now `soren91/loop_metrics.mjs`. A class
+# added upstream is reported as the fixed label `unknown`, never as raw text.
+DROP_FAILURE_CLASSES = (
+    'capture-budget-exhausted', 'capture-session-busy', 'capture-timeout',
+    'capture-invalid-geometry', 'capture-invalid-png', 'capture-invalid-jpeg',
+    'capture-invalid-image', 'capture-pixel-scale-mismatch',
+    'capture-geometry-changed', 'input-stale-observation',
+    'input-calibration-mismatch', 'input-geometry-changed', 'other',
+)
+DROP_INTERVAL_KEYS = ('samples', 'last', 'p50', 'p95', 'max')
 DROP_MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -5832,10 +5847,67 @@ def _drop_summary(rows):
             'reasonCounts': {k: sum(r['reasonCounts'][k] for r in rows) for k in DROP_REASONS}}
 
 
+def _drop_current_summary(data):
+    """Bounded projection of the currently open loop attempt in the metrics file.
+
+    The legacy top-level counters are rewritten while the bot loop is alive,
+    including while it never reaches a drop. They are the only read-only
+    evidence of what the loop is doing now: a plot that sends no drop has no
+    completed ``dropProfile.records`` at all, so ``all`` stays empty. Only
+    fixed enums and finite numbers are published; every unexpected or
+    oversized value degrades to ``null`` / ``unknown`` and raw text, paths,
+    error messages and free-form reasons are never emitted.
+    """
+    outcome = data.get('outcome')
+    if outcome not in DROP_OUTCOMES:
+        outcome = 'unknown'
+    counters = {}
+    for key in ('observations', 'holds'):
+        value = data.get(key)
+        counters[key] = value if _drop_number(value, True) else None
+    raw_stages = data.get('stageMs')
+    stage_ms = {}
+    for stage in DROP_LOOP_STAGES:
+        value = raw_stages.get(stage) if isinstance(raw_stages, dict) else None
+        stage_ms[stage] = value if _drop_number(value) else None
+    raw_reasons = data.get('reasonCounts')
+    reason_counts = {}
+    for reason in DROP_REASONS:
+        value = raw_reasons.get(reason) if isinstance(raw_reasons, dict) else None
+        reason_counts[reason] = value if _drop_number(value, True) else None
+    last_failure = None
+    raw_failure = data.get('lastFailure')
+    if isinstance(raw_failure, dict):
+        stage = raw_failure.get('stage')
+        error_class = raw_failure.get('errorClass')
+        last_failure = {
+            'stage': stage if stage in DROP_LOOP_STAGES else 'unknown',
+            'errorClass': error_class if error_class in DROP_FAILURE_CLASSES else 'unknown',
+        }
+    raw_intervals = data.get('dropSentIntervalMs')
+    intervals = {}
+    for key in DROP_INTERVAL_KEYS:
+        value = raw_intervals.get(key) if isinstance(raw_intervals, dict) else None
+        intervals[key] = value if _drop_number(value, key == 'samples') else None
+    return {
+        'outcome': outcome,
+        'observations': counters['observations'],
+        'holds': counters['holds'],
+        'stageMs': stage_ms,
+        'reasonCounts': reason_counts,
+        'lastFailure': last_failure,
+        'dropSentIntervals': intervals,
+    }
+
+
 def _drop_profile_summary(data):
     p = data.get('dropProfile')
+    current = _drop_current_summary(data)
+    # The open attempt stays observable even when the completed-interval
+    # schema is unknown/unsupported: it is the only view of a stalled loop.
+    invalid = {'profileStatus': 'invalid', 'current': current}
     if p is None:
-        return {'profileStatus': 'missing'}
+        return {'profileStatus': 'missing', 'current': current}
     if (type(data.get('schemaVersion')) is not int or data['schemaVersion'] != 1
             or not isinstance(p, dict) or type(p.get('schemaVersion')) is not int
             or p['schemaVersion'] != 1 or p.get('basis') != 'sent-to-sent'
@@ -5846,7 +5918,7 @@ def _drop_profile_summary(data):
             or not all(_drop_number(p.get(k), True) for k in ('totalSamples', 'evictedSamples'))
             or not isinstance(p.get('records'), list) or len(p['records']) > 128
             or p['totalSamples'] != p['evictedSamples'] + len(p['records'])):
-        return {'profileStatus': 'invalid'}
+        return dict(invalid)
     rows = p['records']
     usable = []
     for i, r in enumerate(rows, p['evictedSamples'] + 1):
@@ -5858,16 +5930,16 @@ def _drop_profile_summary(data):
                 or type(r.get('accountingValid')) is not bool
                 or type(r.get('accountingErrorMs')) not in (int, float)
                 or not math.isfinite(r['accountingErrorMs'])):
-            return {'profileStatus': 'invalid'}
+            return dict(invalid)
         for field, keys, integer in (('stageMs', DROP_STAGES, False),
                                      ('phaseCalls', DROP_CALLS, True),
                                      ('reasonCounts', DROP_REASONS, True)):
             if (not isinstance(r.get(field), dict)
                     or not all(_drop_number(r[field].get(k), integer) for k in keys)):
-                return {'profileStatus': 'invalid'}
+                return dict(invalid)
         error = r['durationMs'] - sum(r['stageMs'][k] for k in DROP_STAGES)
         if abs(error - r['accountingErrorMs']) > .11:
-            return {'profileStatus': 'invalid'}
+            return dict(invalid)
         if r['accountingValid'] and abs(error) <= 1 and r['durationMs'] > 0:
             usable.append(r)
     deferred = lambda r: any(r['reasonCounts'][k] for k in DROP_REASONS
@@ -5891,6 +5963,7 @@ def _drop_profile_summary(data):
         'firstEndedAtMs': rows[0]['endedAtMs'] if rows else None,
         'latestDropAtMs': max((r['endedAtMs'] for r in rows), default=None),
         'gameCount': len(games), 'omittedGameGroups': max(0, len(games) - 4),
+        'current': current,
         'all': _drop_summary(usable),
         'groups': {k: _drop_summary(v) for k, v in groups.items()},
         'games': [{'game': g, **_drop_summary([r for r in usable if r['game'] == g])}

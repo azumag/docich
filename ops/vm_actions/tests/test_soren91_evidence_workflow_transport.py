@@ -9,13 +9,20 @@ RETENTION_WORKFLOW = ROOT / ".github" / "workflows" / "vm-bundle-retention.yml"
 
 
 class EvidenceWorkflowTransportTests(unittest.TestCase):
-    def test_evidence_export_serializes_with_runtime_monitor(self):
+    def test_evidence_export_uses_its_own_concurrency_group(self):
         evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
         monitor = MONITOR_WORKFLOW.read_text(encoding="utf-8")
 
-        shared_group = "group: vm-storage-monitor-${{ github.repository }}"
-        self.assertIn(shared_group, evidence)
-        self.assertIn(shared_group, monitor)
+        # #1922: a stale queued run in the shared monitor group cancels every
+        # later owner-triggered evidence request, so the export owns its own
+        # group. The scheduled monitor keeps its own group; VM operations stay
+        # serialized by the gateway's fixed vm-operations.lock.
+        self.assertIn(
+            "group: soren91-evidence-export-${{ github.repository }}",
+            evidence,
+        )
+        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", evidence)
+        self.assertIn("group: vm-storage-monitor-${{ github.repository }}", monitor)
         self.assertIn("cancel-in-progress: false", evidence)
         self.assertIn("cancel-in-progress: false", monitor)
 

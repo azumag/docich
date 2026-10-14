@@ -493,6 +493,25 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - sinceDropSentMsは最後のflush時点の未完了末尾であり、現在の停滞時間ではない。
   実行revision・撮影方式・プロセス開始時刻・計測負荷はこのJSONだけでは証明しない。
   送信完了間隔であってゲーム側の受理率・投下数の計測ではない。
+- `current` は同じファイルの**未完了の1試行**（top-levelのlegacyカウンタ）を
+  そのままbounded projectionしたもの。投下を一度も送らない試合は
+  `dropProfile.records` が空で `all` が全部nullになるため、停滞中のループを
+  観測できるのはこの節だけになる（2026-10-14の投下ゼロ実測が契機）。
+  - 公開するのは固定enumと有限数値のみ: `outcome`
+    （observe / hold-sent / drop-sent / error / unknown）、`observations`、
+    `holds`、`stageMs`（capture/analyze/ranking/decide/input/cooldown/poll）、
+    `reasonCounts`（v1の固定10 reason）、`dropSentIntervals`
+    （samples/last/p50/p95/max）、`lastFailure`（stage ×
+    errorClass。errorClassは `soren91/loop_metrics.mjs` の
+    SAFE_FAILURE_CLASSESを写した固定enumで、未知値は`unknown`）。
+  - 想定外の型・範囲・自由文はすべてnullまたは`unknown`へ劣化させ、生の
+    エラー文・パス・reason文字列は出さない。schemaが未知でprofileが
+    `missing`/`invalid`でも`current`だけは返す。
+  - `observations`/`reasonCounts`は最後の`begin()`以降の観測で、turn遷移で
+    リセットされる。したがって「その試行で何を見ていたか」の証拠であり、
+    試合の受理・進行・投下数の証明ではない。値は最大1秒ごとに上書きされ、
+    プロセス停止後は最後のflush時点のスナップショットが残る。
+- 24KB予算の間引き対象は従来どおり試合別→比較別で、`current`は残す。
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
@@ -630,6 +649,13 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 なる場合がある（secret 断片との偶然一致。漏洩ではない）。
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
+
+owner起動の Soren91 evidence export（`.github/workflows/soren91-evidence-export.yml`）は
+専用の concurrency group `soren91-evidence-export-<repo>` を持つ。#1922 のとおり、
+scheduled `vm-storage-monitor` と同一 group を共有すると、開始しない queued run が
+group を占有して以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなる。
+VM 操作の直列化は gateway の固定 `vm-operations.lock` が担うため、group は二重の
+防御であり、失敗時に owner の read-only 証跡取得まで止める必要はない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
