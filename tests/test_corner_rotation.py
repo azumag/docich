@@ -1193,13 +1193,21 @@ def test_stop_queues_durable_request_while_owner_is_starting(tmp_path, monkeypat
     assert isinstance(marker_state["requested_at"], (int, float))
 
 
-def _policy_config(root, *, mode=None, cooldown_hours=None):
+def _policy_config(root, *, mode=None, cooldown_hours=None, interval_minutes=None):
     root.mkdir(parents=True, exist_ok=True)
     lines = ["[corner_rotation]", "enabled=true"]
     if mode is not None:
         lines.append(f'schedule_mode="{mode}"')
     if cooldown_hours is not None:
         lines.append(f"cooldown_hours={cooldown_hours}")
+    if interval_minutes is not None:
+        if isinstance(interval_minutes, str):
+            rendered = f'"{interval_minutes}"'
+        elif isinstance(interval_minutes, bool):
+            rendered = "true" if interval_minutes else "false"
+        else:
+            rendered = interval_minutes
+        lines.append(f"interval_minutes={rendered}")
     path = root / "config.toml"
     path.write_text("\n".join(lines) + '\n[paths]\nstate_dir="run"\n')
     return load_global(root, path)
@@ -1224,6 +1232,53 @@ def test_queue_mode_dispatches_back_to_back_without_interval(tmp_path):
     assert len(set(picks)) == 3
     assert state(manager)["interval_seconds"] is None
     assert state(manager)["next_due_at"] == clock[0]
+
+
+def test_interval_mode_uses_the_configured_fixed_interval(tmp_path):
+    """`interval_minutes` replaces the 24h/N target (#2187 follow-up)."""
+
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    assert manager.tick()["status"] == "ready"
+    saved = state(manager)
+    assert saved["interval_seconds"] == 3600
+    assert saved["next_due_at"] == clock[0] + 3600
+
+    # Still inside the hour: no second pick.
+    clock[0] += 59 * 60
+    waited = manager.tick()
+    assert waited["status"] == "waiting" and waited["reason"] == "not-due"
+    assert len(executor.calls) == 1
+
+    clock[0] += 60
+    assert manager.tick()["status"] == "ready"
+    assert len(executor.calls) == 2
+
+
+def test_interval_mode_without_the_knob_keeps_the_24h_over_n_target(tmp_path):
+    g = _policy_config(tmp_path, mode="interval")
+    clock = [1000000.0]
+    manager = _policy_manager(g, clock, Executor())
+
+    manager.tick()
+
+    assert state(manager)["interval_seconds"] == DAY / 3
+
+
+def test_interval_minutes_is_bounded_and_numeric(tmp_path):
+    from docich.corner_catalog import CornerCatalogError
+
+    for value in (0, -1, 24 * 60 + 1, "60", True):
+        with pytest.raises(CornerCatalogError):
+            _policy_manager(_policy_config(tmp_path / f"v{value!r}", mode="interval",
+                                           interval_minutes=value),
+                            [1000000.0], Executor())
+    # A valid boundary value is accepted.
+    _policy_manager(_policy_config(tmp_path / "ok", mode="interval", interval_minutes=24 * 60),
+                    [1000000.0], Executor())
 
 
 def test_queue_mode_uses_configured_cooldown_and_reanchors_when_empty(tmp_path):

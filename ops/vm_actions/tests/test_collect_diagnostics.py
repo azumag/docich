@@ -44,6 +44,7 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     (tmp_path / "corner_rotation.json").write_text(json.dumps({
         "status": "waiting", "seed": "DO-NOT-PUBLISH-SEED", "slot": 3,
         "last_seen_at": 100, "next_due_at": 200, "eligible": ["paper", "meriken"],
+        "interval_seconds": 3600,
         "pending": {"request_id": "DO-NOT-PUBLISH-REQUEST", "prompt": "DO-NOT-PUBLISH-BODY"},
     }))
     output = {}
@@ -54,8 +55,9 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert projection["pending"] is True
     assert projection["eligible_count"] == 2
     # The configured dispatch policy is projected; the production profile runs
-    # the continuous queue with a 24h rolling cooldown (#948 follow-up).
-    assert projection["schedule_mode"] == "queue"
+    # the fixed hourly interval with a 24h rolling cooldown (#2187 follow-up).
+    assert projection["schedule_mode"] == "interval"
+    assert projection["interval_seconds"] == 3600
     assert projection["cooldown_seconds"] == 86400.0
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 

@@ -47,13 +47,17 @@ games = []
 
 [corner_rotation]
 enabled = true
-# "queue": 共有スロットが空き次第、cooldown外の候補を決定論的順で連続発火する
-# (24h/Nの間隔アンカーを使わない)。"interval" は従来のcadence。
-schedule_mode = "queue"
-# 同一cornerの再選択を許すまでのrolling窓。小さいほど連続性が上がる。
+# "interval": 一定間隔。次の発火は「直近の発火 + interval_minutes」。
+# "queue": 間隔アンカーを使わず、共有スロットが空き次第、cooldown外の候補から
+#          一様ランダム（seed再現・slotごとに再抽選）で連続発火する。
+schedule_mode = "interval"
+# 目標間隔（分）。60 = 1時間ごとに1本。未設定なら 24h/N（N=11 なら約2時間11分）。
+interval_minutes = 60
+# 同一cornerの再選択を許すまでのrolling窓。予約・実開始・終了・手動使用を数える。
 cooldown_hours = 24.0
-# 唯一のproduction corner catalog。実行可能で休止していないN件で24h/N。
-# 選択・実行履歴はrolling 24hで除外。adapter設定のstart_hourは互換用のみ。
+# 唯一のproduction corner catalog。選択・実行履歴はrolling 24hで除外。
+# 候補数Nは実行可能・非休止の件数（24h/Nはinterval_minutes未設定時の目標）。
+# adapter設定のstart_hourは互換用のみ。
 # 定期tickは canonical `docich-corner-rotation.timer`（移行期間は
 # `docich-retro-corner.timer` が同unitへのalias）が毎分実行する。
 corners = [

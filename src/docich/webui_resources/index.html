@@ -2181,6 +2181,12 @@ function recentFailuresText(r){
     return `${esc(f.corner||"コーナー不明")}（${esc(FAILED_RESOLUTION_JA[f.resolution]||"不明")}${why} / ${esc(f.error_kind||"unknown")}、${esc(when)}）`;
   }).join(" / ");
 }
+function intervalText(r){
+  const sec=r&&r.interval_seconds;
+  if(sec==null) return "";
+  const min=sec/60;
+  return min>=60?`（${(min/60).toFixed(min%60===0?0:1)}時間ごと）`:`（${Math.round(min)}分ごと）`;
+}
 function autoRestoreText(r){
   const a=r&&r.auto_restore;
   if(!a||a.attempts==null) return "なし";
@@ -2264,7 +2270,7 @@ function renderCorners(d){
       ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
       ["手動の開始予約",esc(queuedText)],
       [blocked?"開始を待たせている手動要求":"手動の実行要求",esc(manualText)],
-      ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?"一定間隔":esc(r.schedule_mode||"-")} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
+      ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?`一定間隔${intervalText(r)}`:`${esc(r.schedule_mode||"-")}`} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
       ["自動選択できる数",`${r.eligible_count==null?"-":esc(r.eligible_count)} 件`],
       ["直近の失敗",recentFailuresText(r)],
       ["自動restore試行",autoRestoreText(r)],

@@ -2009,6 +2009,16 @@ class TestHttpHandlers(unittest.TestCase):
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
 
+    def test_get_corners_publishes_the_effective_interval_seconds(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="waiting", pending=None,
+            reason="not-due", interval_seconds=3600)
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["rotation"]["interval_seconds"], 3600)
+
     def test_get_corners_publishes_the_bounded_auto_restore_budget(self):
         self._write_weather_catalog_config()
         self._write_rotation_state(status="recovery_required", pending=None,

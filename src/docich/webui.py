@@ -2076,6 +2076,7 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
         last_slot_at=_view_time(raw.get("last_slot_at")),
         next_due_at=_view_time(raw.get("next_due_at")),
         last_seen_at=_view_time(raw.get("last_seen_at")),
+        interval_seconds=_view_int(raw.get("interval_seconds")),
         eligible_count=len(eligible),
         eligible=eligible,
     )

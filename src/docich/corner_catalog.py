@@ -32,11 +32,16 @@ class Corner:
     manual_only: bool = False
 
 
-# Dispatch policies. "interval" keeps the 24h/N cadence; "queue" fires the next
-# eligible corner as soon as the shared slot is free (cooldown-limited).
+# Dispatch policies. "interval" keeps a fixed cadence: `interval_minutes` when
+# configured, otherwise the 24h/N cadence. "queue" fires the next eligible
+# corner as soon as the shared slot is free (cooldown-limited).
 SCHEDULE_MODES = ("interval", "queue")
 DEFAULT_COOLDOWN_HOURS = 24.0
 MAX_COOLDOWN_HOURS = 24 * 30
+# A fixed interval replaces the 24h/N target. One minute .. 24 hours keeps the
+# value a cadence rather than a hidden second cooldown.
+MIN_INTERVAL_MINUTES = 1.0
+MAX_INTERVAL_MINUTES = 24 * 60.0
 
 
 def rotation_config(g) -> dict:
@@ -52,6 +57,14 @@ def rotation_config(g) -> dict:
     if (type(cooldown) not in (int, float) or isinstance(cooldown, bool)
             or not 0 < float(cooldown) <= MAX_COOLDOWN_HOURS):
         raise CornerCatalogError("corner_rotation.cooldown_hours must be a positive number")
+    interval = raw.get("interval_minutes")
+    if interval is not None and (
+            type(interval) not in (int, float) or isinstance(interval, bool)
+            or not MIN_INTERVAL_MINUTES <= float(interval) <= MAX_INTERVAL_MINUTES):
+        raise CornerCatalogError(
+            "corner_rotation.interval_minutes must be a number of minutes between "
+            f"{MIN_INTERVAL_MINUTES:g} and {MAX_INTERVAL_MINUTES:g}"
+        )
     return raw
 
 
@@ -65,6 +78,13 @@ def schedule_mode(g) -> str:
 
 def cooldown_seconds(g) -> float:
     return float(rotation_config(g).get("cooldown_hours", DEFAULT_COOLDOWN_HOURS)) * 3600.0
+
+
+def configured_interval_seconds(g) -> float | None:
+    """Fixed interval-mode cadence, or None to keep the 24h/N target."""
+
+    interval = rotation_config(g).get("interval_minutes")
+    return None if interval is None else float(interval) * 60.0
 
 
 def load_catalog(g) -> tuple[Corner, ...]:
