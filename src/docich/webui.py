@@ -1812,7 +1812,7 @@ CORNER_RECOVER_TIMEOUT_SEC = 60
 CORNER_MANUAL_STATE_FILES = (
     "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
-    "weather_corner", "tsuitate_corner",
+    "weather_corner", "tsuitate_corner", "yoso_corner",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({
@@ -1846,10 +1846,17 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
-_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate"})
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso"})
+# adapter -> (fixed WebUI error-code prefix, operator-facing label).
+_CORNER_QUEUED_MANUAL_LABELS = {
+    "weather": ("weather", "天気"),
+    "tsuitate": ("tsuitate", "衝立将棋"),
+    "yoso": ("yoso", "予想王"),
+}
 _MANUAL_RESERVATION_CORNERS = frozenset({
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91", "paper", "meriken", "tsuitate",
+    "yosou-oh",
 })
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
 # paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
@@ -2224,6 +2231,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                              "switch-terminal-before-corner-active", "game-completed",
                              "queue-timeout", "beta-stopped", "manual", "match-timeout",
                              "operator-moved-during-tsuitate",
+                             "operator-moved-during-yosou",
+                             "duration",
                              "operator-moved-after-start",
                              "operator-moved-before-restore",
                              "operator-stopped-before-start"} else None),
@@ -2256,6 +2265,7 @@ _CORNER_STATE_FILE_BY_ADAPTER = {
     "paper": "paper_corner",
     "weather": "weather_corner",
     "tsuitate": "tsuitate_corner",
+    "yoso": "yoso_corner",
 }
 
 
@@ -4955,18 +4965,24 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_queued_corner_action(self, row, action: str, data: dict) -> int:
         """Reserve/stop a durable common-rotation program corner."""
         from .corner_rotation import CornerRotationManager, RotationError
-        from .corner_adapters import TsuitateCornerAdapter, WeatherCornerAdapter
+        from .corner_adapters import TsuitateCornerAdapter, WeatherCornerAdapter, YosoCornerAdapter
         from .tsuitate_corner import TsuitateCornerError
         from .weather_corner import WeatherCornerError
+        from .yoso_corner import YosoCornerError
 
+        adapter_types = {
+            "weather": WeatherCornerAdapter,
+            "tsuitate": TsuitateCornerAdapter,
+            "yoso": YosoCornerAdapter,
+        }
+        code_prefix, label = _CORNER_QUEUED_MANUAL_LABELS[row.adapter]
         if action == "start" and row.adapter == "weather" and "duration_minutes" in data:
             duration = data["duration_minutes"]
             if type(duration) is not int or duration != row.duration_minutes:
                 self._send_error_json(400, "invalid_duration",
                                       "天気の表示時間はカタログの設定を使用します")
                 return 400
-        adapter_type = WeatherCornerAdapter if row.adapter == "weather" else TsuitateCornerAdapter
-        label = "天気" if row.adapter == "weather" else "衝立将棋"
+        adapter_type = adapter_types[row.adapter]
         try:
             if action == "start":
                 outcome = CornerRotationManager(self.g).queue_manual(row.game)
@@ -4974,8 +4990,7 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 status = adapter_type(self.g, row).manager.stop()
                 if status == "not-active":
-                    code = "weather_not_active" if row.adapter == "weather" else "tsuitate_not_active"
-                    self._send_error_json(409, code,
+                    self._send_error_json(409, f"{code_prefix}_not_active",
                                           f"{label}は実行中ではありません。予約中は開始後に停止できます")
                     return 409
         except RotationError as exc:
@@ -4986,18 +5001,15 @@ class _Handler(BaseHTTPRequestHandler):
                 "manual_queue_conflict": "別の手動予約が残っています",
                 "hanjuku_not_eligible": f"{label}が無効・休止中、または現在利用できません",
             }
-            code = "weather_manual_refused" if row.adapter == "weather" else "tsuitate_manual_refused"
-            self._send_error_json(409, code,
+            self._send_error_json(409, f"{code_prefix}_manual_refused",
                                   reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
             return 409
-        except (OSError, ValueError, WeatherCornerError, TsuitateCornerError):
-            code = "weather_manual_unavailable" if row.adapter == "weather" else "tsuitate_manual_unavailable"
-            self._send_error_json(409, code,
+        except (OSError, ValueError, WeatherCornerError, TsuitateCornerError, YosoCornerError):
+            self._send_error_json(409, f"{code_prefix}_manual_unavailable",
                                   f"{label}の設定または所有者の状態を確認できません")
             return 409
         except Exception:
-            code = "weather_manual_failed" if row.adapter == "weather" else "tsuitate_manual_failed"
-            self._send_error_json(500, code,
+            self._send_error_json(500, f"{code_prefix}_manual_failed",
                                   f"{label}の操作を完了できません")
             return 500
         self._send_json(200, {

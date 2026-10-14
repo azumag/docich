@@ -425,6 +425,7 @@ class RetiredCornerObserver:
         "paper": "paper_corner.json",
         "weather": "weather_corner.json",
         "tsuitate": "tsuitate_corner.json",
+        "yoso": "yoso_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -616,6 +617,42 @@ class WeatherCornerAdapter:
         return self.manager.resources_released()
 
 
+class YosoCornerAdapter:
+    """Bounded, manual-only 予想王 leaderboard display through the shared slot."""
+
+    def __init__(self, g, corner):
+        from .yoso_corner import DEFAULT_DURATION_MINUTES, YosoCornerManager
+        from .yoso_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Yoso identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = YosoCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -623,6 +660,7 @@ ADAPTERS = {
     "nethack": NethackCornerAdapter,
     "weather": WeatherCornerAdapter,
     "tsuitate": TsuitateCornerAdapter,
+    "yoso": YosoCornerAdapter,
 }
 
 

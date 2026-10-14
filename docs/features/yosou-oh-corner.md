@@ -1,9 +1,16 @@
 # 予想王コーナー — チャネルポイント予想の的中率ランキング（設計案）
 
-- Status: **Proposal（起案）**。実装・配備は未着手。production の corner catalog は変更しない。
+- Status: **PR-1（オフライン中核）／PR-3（`yoso` adapter・view・catalog登録）実装済み**。
+  production catalog には **既定無効（`enabled = false`）・`manual_only = true`** で登録済みで、
+  自動抽選には入らない。有効化（手動予約の受付）はオーナー承認後に
+  `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行う（§4参照）。
+  PR-2（予想精算時の記録フック）・PR-4（読み上げ/overlay・本番反映）は未着手。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
-- 関連実装: `src/docich/prediction_leaderboard.py`（本PRのオフライン中核。記録・集計・ランキングの契約）、
+- 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
+  `src/docich/yoso_view.py`（読み取り専用 960×540 view）、
+  `src/docich/yoso_corner.py`（GameSwitch slot 上の有界な表示 lifecycle）、
+  `src/docich/adapters/yoso_program.py`（`yosou-view` program adapter）、
   `src/docich/hanjuku_prediction_api.py` / `src/docich/hanjuku_predictions.py`（半熟英雄の予想）、
   `games/soviet_now/twitch_predictions.sh` / `games/soviet_now/lib/prediction_round.py`（Soren の12試合予想）、
   `src/docich/corner_catalog.py` / `corner_rotation.py` / `corner_adapters.py`（24時間ローテーション）
@@ -97,9 +104,24 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true }
   ```
 
-- 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（例: 2 分）で自動終了し、
-  既存の GameSwitch 復帰経路へ戻す。
-- 有効化・catalog への追加は **オーナー承認後**（本 PR では行わない）。
+- 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（既定 2 分、
+  catalog の `duration_minutes` で 1〜14 分）で自動終了し、既存の GameSwitch 復帰経路へ戻す。
+  手動 stop は開始前・表示中・復帰中のどこでも同じ bounded な restore 経路を通る。
+- 実装済みの catalog 登録（**既定無効**）:
+
+  ```toml
+  # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
+  # 既定無効・手動予約のみ。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true }
+  ```
+
+- **有効化の手順（オーナー承認後）**: `enabled = false` の行は rotation の適格判定で
+  `disabled-or-paused` になるため、WebUI の手動予約も `hanjuku_not_eligible` で拒否される。
+  手動予約を受け付けるには、同じ行を `enabled = true` にする（`manual_only = true` を維持する限り
+  自動抽選には入らない）。この1行を変えるだけで、`manual_only` の自動除外契約はそのまま働く。
+  視聴者の表示名を配信へ出す opt-in / privacy 確認（§5）が済むまで `enabled = false` を維持する。
+- 有効化後も自動抽選へ入れない（`manual_only = true` のまま）。本番反映は
+  `branch → PR → protected main → owner-only gateway` の正規フローで行う。
 
 ## 5. プライバシー・同意（要検討）
 
@@ -109,20 +131,31 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 
 ## 6. MVP
 
-- [x] 台帳の検証・記録（冪等）・ランキング集計の**オフライン中核**（`prediction_leaderboard.py`、本PR）
+- [x] 台帳の検証・記録（冪等）・ランキング集計の**オフライン中核**（`prediction_leaderboard.py`、PR-1）
 - [ ] 予想精算時の記録フック（半熟英雄 `hanjuku_predictions.py`）
 - [ ] 予想精算時の記録フック（Soren `twitch_predictions.sh`）
-- [ ] `yoso` adapter ＋ 読み取り専用 view
-- [ ] corner catalog 登録（既定無効・手動予約）
+- [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
+- [x] corner catalog 登録（既定無効・`manual_only`。手動予約の受付は `enabled = true` で有効化、PR-3）
 - [ ] 読み上げ原稿
 - [ ] overlay / Twica 表示
 
 ## 7. 実装ステップ（PR 分割案）
 
-1. **PR-1（本PR）**: オフライン中核 `prediction_leaderboard.py` ＋ `tests/test_prediction_leaderboard.py` ＋ 本設計 doc。
+1. **PR-1**: オフライン中核 `prediction_leaderboard.py` ＋ `tests/test_prediction_leaderboard.py` ＋ 本設計 doc。
 2. **PR-2**: 半熟英雄 / Soren の予想精算で `RESOLVED` を観測したときに台帳へ記録する配線
    （共有 lock・atomic write・fail-closed）。予想本体の作成・精算ロジックは変えない。
-3. **PR-3**: `yoso` adapter ＋ view ＋ catalog 登録（既定無効）。
+3. **PR-3（実装済み）**: `yoso` adapter ＋ view ＋ catalog 登録（既定無効）。
+   - `src/docich/yoso_view.py`: 台帳を read-only で読み、`予想王` ランキングを 960×540 へ描画する
+     loopback限定 view（`/broadcast` と `/api/yosou`。台帳不正時は 503 で休止表示）。
+   - `src/docich/adapters/yoso_program.py`: `yosou-view` の program adapter（readiness は
+     runtime identity 付きの `/api/yosou`）。`src/docich/adapters/__init__.py` に登録。
+   - `src/docich/yoso_corner.py`: GameSwitch slot 上の有界 lifecycle（既定2分、停止要求で即 restore、
+     operator移動では上書きしない、`reconcile_failed_start` は terminal rollback のみ確定）。
+   - `src/docich/corner_adapters.py` / `corner_catalog.py`: `yoso` adapter と identity 検証
+     （`id=yosou-oh`、`game=yosou-view`、`duration_minutes` 1〜14、weather専用設定を拒否）。
+   - `src/docich/webui.py`: 既存の durable manual queue 経由で予約・停止（専用 runner は追加しない）。
+     `ops/vm_actions/collect_diagnostics.py` は `yoso_corner.json` の状態のみを投影する。
+   - 回帰: `tests/test_yoso_view.py` / `tests/test_yoso_corner.py` / `tests/test_webui.py`（`yosou`）。
 4. **PR-4**: 読み上げ・overlay、オーナー承認後の有効化と VM 反映。
 
 ## 8. 未確定・オーナー判断が要る点
@@ -138,7 +171,18 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 
 ```sh
 env -u PYTHONPATH python3 -m pytest -q tests/test_prediction_leaderboard.py
+env -u PYTHONPATH python3 -m pytest -q tests/test_yoso_view.py tests/test_yoso_corner.py
+env -u PYTHONPATH python3 -m pytest -q tests/test_corner_rotation.py tests/test_webui.py -k "corner or yosou or rotation"
 ```
 
-エビデンス: 本PRの時点で 22 件すべて green（`src/docich/prediction_leaderboard.py`）。
-Twitch・ゲーム・本番 VM への接続は行わない。
+エビデンス: PR-1 の時点で中核 22 件 green。PR-3 では view / adapter / lifecycle / WebUI 予約の
+回帰を追加し、既存の rotation・webui・diagnostics の回帰も緑のまま。
+Twitch・ゲーム・本番 VM への接続は行わない（view は loopback のみ、テストは GameSwitch を
+fake runtime で駆動する）。
+
+frame 描画の目視確認: [`docs/features/yosou-oh-corner-view.png`](yosou-oh-corner-view.png)
+（合成台帳12名・8予想を headless Chromium で 960×540 に描画）。四辺・見出し・
+最終行（10位）・footer の欠けがないことを確認した。実行コマンドは
+`python3 -m docich.yoso_view --state-dir <合成台帳> --port 8811 ...` を起動し、
+`Google Chrome --headless=new --window-size=960,540 --screenshot=... /broadcast`。
+合成データのみで、実際の視聴者情報は使っていない。

@@ -28,7 +28,8 @@ Observed sources (all read-only):
     filenames), Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
-    (game_switch.json, game-switch/requests/*.json, weather_corner.json, retro_corner.json, paper_corner.json,
+    (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
+    yoso_corner.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
     trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
@@ -2886,6 +2887,7 @@ CORNER_STATE_FILES = {
     "game_switch": "game_switch.json",
     "weather_corner": "weather_corner.json",
     "tsuitate_corner": "tsuitate_corner.json",
+    "yoso_corner": "yoso_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -2902,7 +2904,9 @@ ROTATION_CORNER_FILES = (
 # Automatic reservation ownership includes the weather manager. Keep the
 # separate manual-owner allowlist above unchanged: its state_file contract is
 # intentionally narrower and is not inferred from catalog input.
-ROTATION_PENDING_OWNER_FILES = (*ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner")
+ROTATION_PENDING_OWNER_FILES = (
+    *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
+)
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91",
@@ -4442,6 +4446,7 @@ def _collect_corner_files(state_dir, payload, now):
         "nethack_corner",
         "nethack_corner_manual",
         "tsuitate_corner",
+        "yoso_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -4610,6 +4615,7 @@ def _collect_programs(state_dir, soren, now):
         },
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
+        "yoso_corner": {"present": False, "readable": False},
         "game_switch_fifo": {
             "present": False,
             "readable": False,
