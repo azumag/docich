@@ -15,7 +15,13 @@ import sys
 import time
 import uuid
 
-from .corner_catalog import cooldown_seconds, load_catalog, rotation_enabled, schedule_mode
+from .corner_catalog import (
+    configured_interval_seconds,
+    cooldown_seconds,
+    load_catalog,
+    rotation_enabled,
+    schedule_mode,
+)
 from .corner_adapters import (
     make_corner_adapter,
     CornerExecutionCoordinator,
@@ -170,6 +176,8 @@ class CornerRotationManager:
         # flipping schedule_mode must not rewrite the durable ledger.
         self.schedule_mode = schedule_mode(g)
         self.cooldown_seconds = cooldown_seconds(g)
+        # Fixed interval-mode cadence, or None for the 24h/N target.
+        self.configured_interval = configured_interval_seconds(g)
         self.path = Path(g.state_dir) / "corner_rotation.json"
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
 
@@ -603,6 +611,13 @@ class CornerRotationManager:
                     if stamp > previous:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
         return busy
+
+    def _target_interval(self, eligible):
+        """Interval-mode target cadence: configured value, else 24h/N (or None)."""
+
+        if self.configured_interval is not None:
+            return self.configured_interval
+        return DAY / len(eligible) if eligible else None
 
     def _eligible(self, *, include_manual_only=False):
         result, excluded = [], {}
@@ -1169,7 +1184,7 @@ class CornerRotationManager:
                     return outcome
                 eligible, excluded = self._eligible()
                 manual_eligible, _ = self._eligible(include_manual_only=True)
-                interval = DAY / len(eligible) if eligible else None
+                interval = self._target_interval(eligible)
                 state.update(
                     eligible=eligible, excluded=excluded,
                     # interval_seconds only describes the interval policy; the
@@ -1672,10 +1687,11 @@ def run_manual(g, manager, games):
         if now < state["last_seen_at"]:
             raise RotationError("clock regressed")
         eligible, _ = rotation._eligible()
+        interval_seconds = (rotation._target_interval(eligible)
+                            if rotation.schedule_mode == "interval" else None)
         state.update(
             eligible=eligible,
-            interval_seconds=(DAY / len(eligible) if eligible else None)
-            if rotation.schedule_mode == "interval" else None,
+            interval_seconds=interval_seconds,
         )
         path = getattr(manager, "state_path", None) or manager.path
         request = state.get("manual_pending")
@@ -1712,7 +1728,7 @@ def run_manual(g, manager, games):
             state["slot"] += 1
             state["history"].append(dict(corner=chosen.id, at=now, source="manual-reservation"))
             state["last_slot_at"] = now
-            state["next_due_at"] = (now + DAY / len(eligible)
+            state["next_due_at"] = (now + interval_seconds
                                     if rotation.schedule_mode == "interval" else now)
         # Limit multi-game retro manual starts to the same reserved selection.
         if hasattr(manager, "config"):
@@ -1765,7 +1781,7 @@ def run_manual(g, manager, games):
                 state["last_slot_at"] = max(now, finished)
                 if eligible:
                     state["next_due_at"] = (
-                        state["last_slot_at"] + DAY / len(eligible)
+                        state["last_slot_at"] + interval_seconds
                         if rotation.schedule_mode == "interval" else finished
                     )
                 state.update(status="ready", reason=None)

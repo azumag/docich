@@ -48,11 +48,16 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 
 ## dispatch policy（`schedule_mode`）
 
-- `interval`（既定）: 目標間隔は常に86400/N秒。毎tickに実効Nを再評価する。N=0なら待機する。
-  遅延やcornerの長さによってN回/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
-- `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補を
-  決定論的順位（seed・slot・corner IDのSHA-256）で連続発火する。`next_due_at`は
-  「次に発火可能な時刻」の意味になり、候補が空のときだけ最も早いcooldown明けへ再アンカーする。
+- `interval`: 目標間隔は `interval_minutes`（分）秒。未設定なら 86400/N秒で、毎tickに実効Nを
+  再評価する（N=0なら待機）。次の発火は「直近の発火 + 目標間隔」。遅延やcornerの長さによって
+  本数/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
+  例: N=11・`interval_minutes=60` なら1時間ごとに1本。24h cooldownを併用すると、N件を
+  消化した後は最も早いcooldown明け（初回発火の24時間後）まで待機する。
+- `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補から
+  **一様ランダム**に1本選んで連続発火する。乱数は `seed`・`slot`・corner IDのSHA-256で
+  与えるため、同じledger seedと同じslotでは再現でき、再起動で再抽選しない（`slot`は発火ごとに
+  進むので順序は毎回引き直される）。`next_due_at`は「次に発火可能な時刻」の意味になり、
+  候補が空のときだけ最も早いcooldown明けへ再アンカーする。
   発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
 - `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
   どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
