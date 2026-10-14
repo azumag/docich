@@ -42,7 +42,7 @@ MoYoGarden の AI エージェント社会を定点観測し、前回との差�
 ### 取得対象
 
 1. `/api/meta`: 利用可能領域・既定領域・version の確認のみ。
-2. `/api/health`: tick / paused / tickMode / alarm 状態の観測。mutation しない。
+2. `/api/health`: tick / paused / tickMode / catch-up 観測（`virtualTicksDue` / `simulationLagMs` / `lastSimulatedAt`）の観測。mutation しない。`alarm` フィールドは上流に存在しない。
 3. `/api/world/snapshot`: 完全 WorldState。観測・差分計算に使う。
 4. `/api/events?afterTick=<lastObservedTick>&limit=<cap>`: 前回観測以降の公開イベント。
 
@@ -70,7 +70,7 @@ WorldState から抽出するのは以下のみで、それ以外は保存しな
 - `maxGeneration` / `pairCount` / `familyCount`: **上流に存在しない**（`Agent` に generation / pair / family フィールドはない）。MVP 対象外とし、将来派生規則（lineage depth / reproductiveRole / pregnancy などから定義）を追加する場合のみ導入する。
 - `regionPopulation`: MVP では `{<observed regionId>: living}` の **単一 entry のみ**。複数 region 横断マップは上流 snapshot 1 回からは取得できない。将来 `/api/world/halo`（`occupants` / `occupantsByFaction`）を read-only bounded 対象に追加した上で、`OBSERVATION_MAX_REGIONS` と上限を再定義して拡張する。
 - `events`: **上流 `WorldState.events`（`WorldEvent[]`）を正規化**。上流の実フィールドは `id` / `tick` / `kind` / `message` / `agentId?` / `factionId?` / `position?` / `data?`。ローカル storage にも上流名をそのまま使う（`type`/`summary`/`actorId`/`location` という別名は使わない）。`recentEvents` は WorldState のフィールドではなく、`/api/agents/:id/perception` 応答のフィールドであるため MVP 入力には使わない（perception 全 agent fan-out は bounded 範囲外）。
-- `EventKind`（`src/protocol.ts:171-189`）に **birth/death 種別は存在しない**。出生・死亡トピックは agent 集合差分から導出する旨を明記する（kind による検出を実装しない）。
+- `EventKind`（`src/protocol.ts:174-189`）に **birth/death 種別は存在しない**。出生・死亡トピックは agent 集合差分から導出する旨を明記する（kind による検出を実装しない）。
 
 取得に失敗または validation 失敗した observation は **部分公開しない**。前回公開 snapshot は再表示しない（weather と同様の fail-closed）。
 
@@ -115,6 +115,10 @@ WorldState から抽出するのは以下のみで、それ以外は保存しな
 ## 非本番受入条件（固定 fixture）
 
 固定 fixture を `tests/fixtures/ai_civilization_observer/observation_v1.json` に置き、
+fixture の `snapshot` は上流 `WorldState` の **bounded サンプル（raw upstream layer）** であり、
+`population` / `regionPopulation` など観測側で導出する値は含めない。
+観測側の正規化済み記録は `previous`（保存スキーマ doc:89-94）が担う層であることを
+`source` / `scenario` と合わせて識別できるようにする。
 オフラインの schema / bounds テスト（`tests/test_ai_civilization_observer_contract.py`）で
 以下を検証する（CI/本番接続なし）。
 
