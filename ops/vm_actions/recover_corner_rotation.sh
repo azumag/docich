@@ -92,17 +92,20 @@ try:
             raise ValueError("invalid meriken automatic reservation")
         print("meriken")
     else:
-        # View / PAPER owners keep their failed-start evidence in their own
+        # Adapter-owned owners keep their failed-start evidence in their own
         # manager and terminalize it inside `corner-rotation recover` (their
         # adapter implements reconcile_failed_start). A retro CLI recovery
         # cannot see those files, so running it here only risks a refusal or a
         # queue that blocks the step which actually clears the latch (#2187).
+        # The manual NetHack / Meriken records are listed too: the dedicated
+        # automatic CLIs above deliberately do not own a manual reservation.
         record = pending if isinstance(pending, dict) else manual
         state_file = record.get("state_file") if isinstance(record, dict) else None
         if state_file in ("tsuitate_corner.json", "weather_corner.json",
                           "yoso_corner.json", "paper_corner.json",
-                          "paper_corner_manual.json"):
-            print("view")
+                          "paper_corner_manual.json",
+                          "nethack_corner_manual.json", "soren91_corner_manual.json"):
+            print("adapter")
         else:
             print("other")
 except (TypeError, ValueError, KeyError):
@@ -118,11 +121,11 @@ if [[ "$recovery_owner" == "nethack" ]]; then
   if ! "$launcher" --config "$config" nethack-corner recover-failed-rotation >/dev/null 2>&1; then
     fail "automatic NetHack failed-slot restore refused or incomplete" 70
   fi
-elif [[ "$recovery_owner" == "view" ]]; then
-  # tsuitate / weather / yoso / PAPER terminalize their own prelaunch failure
-  # through the adapter inside `corner-rotation recover` below. Running a retro
-  # CLI recovery for a slot it does not own could only refuse or queue, and
-  # that refusal blocked the step that clears the latch (#2187).
+elif [[ "$recovery_owner" == "adapter" ]]; then
+  # tsuitate / weather / yoso / PAPER と手動 NetHack / Meriken は失敗証拠を自
+  # manager に持ち、`corner-rotation recover` の adapter reconcile が確定する。
+  # ここで corner 固有 CLI を先に走らせると、その拒否/queue が本来の解除 step を
+  # 塞いでいた（#2187）。
   :
 else
 corner_cli="retro-corner"

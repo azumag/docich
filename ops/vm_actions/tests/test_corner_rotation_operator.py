@@ -352,20 +352,31 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertEqual(
             classify({**base, "pending": {"corner": "meriken", "request_id": "r"}}),
             (0, "meriken"))
-        # View / PAPER owners own their failed-start evidence and terminalize
+        # Adapter-owned owners keep their failed-start evidence and terminalize
         # it inside `corner-rotation recover`; a retro CLI step cannot see it
         # and its refusal used to block the step that clears the latch (#2187).
+        # The manual NetHack / Meriken records are adapter-owned too: the
+        # dedicated automatic CLIs above do not own a manual reservation.
         for state_file in ("tsuitate_corner.json", "weather_corner.json",
-                           "yoso_corner.json", "paper_corner.json"):
+                           "yoso_corner.json", "paper_corner.json",
+                           "nethack_corner_manual.json", "soren91_corner_manual.json"):
             with self.subTest(state_file=state_file):
                 self.assertEqual(
                     classify({**base, "pending": {"corner": "tsuitate", "request_id": "r",
                                                   "state_file": state_file}}),
-                    (0, "view"))
+                    (0, "adapter"))
         self.assertEqual(
             classify({**base, "manual_pending": {"corner": "yosou-oh", "request_id": "r",
                                                  "state_file": "yoso_corner.json"}}),
-            (0, "view"))
+            (0, "adapter"))
+        self.assertEqual(
+            classify({**base, "manual_pending": {"corner": "nethack", "request_id": "r",
+                                                 "state_file": "nethack_corner_manual.json"}}),
+            (0, "adapter"))
+        self.assertEqual(
+            classify({**base, "manual_pending": {"corner": "meriken", "request_id": "r",
+                                                 "state_file": "soren91_corner_manual.json"}}),
+            (0, "adapter"))
         # Retro game owners keep the retro CLI step, and unknown owners keep the
         # previous fail-closed behaviour.
         self.assertEqual(
@@ -382,12 +393,12 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertEqual(classify({"status": "running"})[0], 1)
 
         text = RECOVER_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('elif [[ "$recovery_owner" == "view" ]]; then', text)
-        # The view branch must not run any corner CLI of its own.
-        view_branch = text.split('elif [[ "$recovery_owner" == "view" ]]; then', 1)[1]
-        view_branch = view_branch.split("else", 1)[0]
-        self.assertNotIn("corner_cli", view_branch)
-        self.assertNotIn("recover-failed", view_branch)
+        self.assertIn('elif [[ "$recovery_owner" == "adapter" ]]; then', text)
+        # The adapter branch must not run any corner CLI of its own.
+        adapter_branch = text.split('elif [[ "$recovery_owner" == "adapter" ]]; then', 1)[1]
+        adapter_branch = adapter_branch.split("else", 1)[0]
+        self.assertNotIn("corner_cli", adapter_branch)
+        self.assertNotIn("recover-failed", adapter_branch)
 
     def test_recover_runtime_script_is_fixed_and_runs_the_reviewed_cli(self):
         text = RECOVER_RUNTIME_SCRIPT.read_text(encoding="utf-8")
