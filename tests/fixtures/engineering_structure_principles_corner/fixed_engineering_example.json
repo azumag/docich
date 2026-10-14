@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "corner": "engineering",
+  "fixtureId": "fixed-engineering-structure-principles-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed engineering fixture for planning and input-contract acceptance only. It is not a real specimen or measured system, and its title, URLs and quantities must not be presented as verified engineering data or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: High-Speed Train Nose and Air Pressure at Tunnel Entry",
+    "topicId": "fixed-engineering-train-nose-air-pressure-001",
+    "subjectSystem": "shinkansen-style high-speed train",
+    "operatingEnvironment": "high-speed rail, tunnel entry/exit, ambient wind",
+    "thirtySecondSummary": "合成fixture: 高速列車がトンネルへ進入する際に生じる圧力波を抑えるために、先頭形状・断面積変化・緩和構造を設計する必要があることを示す planning 例。",
+    "oneLineSummary": "合成fixture: トンネル進入時の圧力波を、先頭形状と断面積変化の設計で抑える工学コーナーの入力例。",
+    "problemStatement": "高速でトンネルに入ると空気は短時間で圧縮され、出口側へ圧力波が伝播する。騒音・微気圧波・乗客負荷を設計要求内に収める必要がある。",
+    "principles": [
+      "質量保存と運動量保存",
+      "断面積変化と圧力勾配",
+      "圧縮性流体での波動伝播",
+      "減衰と反射"
+    ],
+    "structure": "先頭形状、車体断面、トンネル portals、緩衝構造、圧力放出経路を断面図と模式図で示す。形状は尖端だけでなく、断面積変化の連続性を扱う。",
+    "inputToMechanismToOutput": "入力: 列車速度・トンネル断面・外界条件。機械: 先頭形状と車体が空気を圧縮・整流。出力: トンネル内圧力波、騒音、微気圧波。",
+    "physicalQuantities": [
+      "列車速度",
+      "トンネル断面積",
+      "車両断面積",
+      "圧力変化",
+      "波速",
+      "騒音レベル"
+    ],
+    "failureModes": [
+      "微気圧波が要求値を超える",
+      "不連続な断面積変化による反射",
+      " portal 設計不足による圧力急変",
+      "風・勾配・他列車条件での想定外増幅"
+    ],
+    "weakPoints": [
+      "先端形状だけを最適化し断面変化を無視する",
+      "単一速度条件でのみ検証する",
+      "実路の保守状態を固定値扱いする"
+    ],
+    "safetyDesign": "余裕係数、冗長な portal 設計、風条件ごとの制限、保守閾値、監視と保守計画を分離して設計する。",
+    "tradeoffs": "低騒音・低圧力波のために長く緩やかな先頭形状にすると、車両長・製造コスト・保守性とトレードオフになる。",
+    "limitations": "合成 fiction fixture であり、実車両・実トンネルでの計測、独立検証、運用条件の一般化は未実施である。一次資料を優先して更新する必要がある。",
+    "figureOrDiagram": "先頭形状の断面図、入力 -> 機構 -> 出力フロー、圧力波の伝播模式図、故障箇所と安全装置の位置を overlay 用に分離する。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、30 秒要約、実物映像、問題定義、原理、構造、故障、安全設計、トレードオフを独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/engineering/synthetic-train-nose-pressure",
+      "https://example.org/engineering/synthetic-train-nose-pressure/specification"
+    ],
+    "sourcePriority": [
+      "manufacturer-technical-material",
+      "standards-and-public-institution",
+      "university-research",
+      "academic-paper",
+      "patent",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192,
+      "maxQueries": 3,
+      "maxFetchAttempts": 4
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、主張の根拠は一次技術資料で再確認する。"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/engineering/synthetic-train-nose-pressure",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "91772c4ba9d4deb46f6eb83820de81a3e18fddde99c36f5de1e28d734b8d8266",
+        "excerpt": "Synthetic verified technical material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic high-speed train nose pressure tunnel entry"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealSpecimen": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustIncludeFailureAndSafety": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
