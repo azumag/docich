@@ -161,6 +161,57 @@ def _volume_percent(value: str) -> int:
     return number
 
 
+# Bounded re-projection budget for the presenter's own player (#2097). The
+# output display restart is short, so a 60s window with a 2s cadence covers it
+# while still giving up (and leaving the failed state for the operator path).
+REPROJECT_WINDOW_S = 60.0
+REPROJECT_INTERVAL_S = 2.0
+REPROJECT_ATTEMPT_LIMIT = 30
+# After a re-projected player has survived this long, the next loss gets a
+# fresh budget instead of inheriting the exhausted one.
+REPROJECT_RESET_AFTER_S = 10.0
+
+
+class ReprojectPolicy:
+    """One bounded restart budget for the owned projection player.
+
+    Only the player this process started is ever restarted: no other process is
+    adopted, no window is re-searched and the game/viewer children are left
+    untouched. Attempts stop at the window or the attempt limit, after which the
+    presenter keeps publishing ``presentation_failed`` for the operator path.
+    """
+
+    def __init__(self, *, window_s: float = REPROJECT_WINDOW_S,
+                 interval_s: float = REPROJECT_INTERVAL_S,
+                 limit: int = REPROJECT_ATTEMPT_LIMIT) -> None:
+        self.window_s = window_s
+        self.interval_s = interval_s
+        self.limit = limit
+        self.lost_at: float | None = None
+        self.last_attempt_at: float | None = None
+        self.attempts = 0
+
+    def lost(self, now: float) -> None:
+        if self.lost_at is None:
+            self.lost_at = now
+
+    def due(self, now: float) -> bool:
+        if self.lost_at is None or self.attempts >= self.limit:
+            return False
+        if now - self.lost_at > self.window_s:
+            return False
+        return self.last_attempt_at is None or now - self.last_attempt_at >= self.interval_s
+
+    def attempted(self, now: float) -> None:
+        self.attempts += 1
+        self.last_attempt_at = now
+
+    def reset(self) -> None:
+        self.lost_at = None
+        self.last_attempt_at = None
+        self.attempts = 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--display', required=True)
@@ -200,6 +251,16 @@ def _parser() -> argparse.ArgumentParser:
     # exact named window changes; never restart repeatedly against one failed
     # window.
     parser.add_argument('--rebind-window', action='store_true')
+    # Opt-in: the shared output display can be recreated (start_all.sh restart)
+    # and take our own projection ffplay with it while the game keeps running.
+    # Re-attaching that player to the still-owned source window is bounded and
+    # never adopts another process; without this flag the projection stays
+    # failed for the operator path (#2097).
+    parser.add_argument('--reproject-on-player-loss', action='store_true')
+    parser.add_argument('--reproject-window-sec', type=float, default=REPROJECT_WINDOW_S,
+                        help='How long the owned projection may be re-attached (default 60s)')
+    parser.add_argument('--reproject-interval-sec', type=float, default=REPROJECT_INTERVAL_S,
+                        help='Minimum seconds between re-projection attempts (default 2s)')
     parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
     # Opt-in: make the viewer ffplay and the x11grab projection ffplay use
@@ -219,6 +280,8 @@ def main(argv=None) -> int:
         parser.error('command and positive presentation dimensions are required')
     if args.rebind_window and not args.window_pattern:
         parser.error('--rebind-window requires --window-pattern')
+    if args.reproject_window_sec <= 0 or args.reproject_interval_sec <= 0:
+        parser.error('re-projection window and interval must be positive')
     children = []
 
     def stop(_sig, _frame):
@@ -402,6 +465,10 @@ def main(argv=None) -> int:
         projection_failed = False
         projection_failed_at = None
         missing_since = None
+        reproject = (ReprojectPolicy(window_s=args.reproject_window_sec,
+                                     interval_s=args.reproject_interval_sec)
+                     if (args.reproject_on_player_loss and args.runtime_state) else None)
+        player_alive_since = time.monotonic()
         while all(process.poll() is None for process in watched):
             if args.runtime_state and player.poll() is not None and not projection_failed:
                 _write_state(args.runtime_state, status='presentation_failed',
@@ -409,6 +476,30 @@ def main(argv=None) -> int:
                              groups=[child.pid for child in children])
                 projection_failed = True
                 projection_failed_at = time.monotonic()
+                if reproject is not None:
+                    reproject.lost(projection_failed_at)
+            if reproject is not None:
+                now = time.monotonic()
+                if player.poll() is None:
+                    if now - player_alive_since >= REPROJECT_RESET_AFTER_S:
+                        reproject.reset()
+                elif reproject.due(now):
+                    # Our own player died with the output display (start_all.sh
+                    # restart) while the game kept running: re-attach it to the
+                    # same owned source window. Bounded, opt-in, no adoption.
+                    reproject.attempted(now)
+                    try:
+                        player, width, height = start_projection(window)
+                    except Exception as exc:  # noqa: BLE001 - keep supervising
+                        print(f'reproject failed: {exc}', flush=True)
+                    else:
+                        player_alive_since = now
+                        projection_failed = False
+                        projection_failed_at = None
+                        if args.runtime_state:
+                            _write_state(args.runtime_state, status='ready', projection=projection,
+                                         display=f':{number}', window=window, width=width,
+                                         height=height, groups=[child.pid for child in children])
             if args.rebind_window:
                 current_window = find_window()
                 now = time.monotonic()
@@ -446,6 +537,7 @@ def main(argv=None) -> int:
                                 player.wait()
                         window = current_window
                         player, width, height = start_projection(window)
+                        player_alive_since = time.monotonic()
                         projection_failed = False
                         projection_failed_at = None
                         if args.runtime_state:
