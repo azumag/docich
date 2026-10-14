@@ -76,6 +76,8 @@
 **受入基準**
 - 世代数に上限、または十分な圧縮率で、増加が有界になること。
 
+**設計**: `docs/adr/0005-strategy-permanent-archive-generation.md`（gzip + reader fallback を推奨。reader は `azumag/soviet_now` 側のため Phase A が前提）。可観測性（`strategy_archive_formats`）は同ADRの §5.3 として diagnostics に実装済み。圧縮 helper は gateway stdin 予算（`storage_reclaim.sh` 15,803 B / 上限 16,384 B）と reader gate 設計が owner 判断事項のため未実施。
+
 ---
 
 ## Issue E: VM ルーチン回収手順の明文化

@@ -23,7 +23,9 @@ Observed sources (all read-only):
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
   - fixed-category storage attribution for OpenCode DB/WAL/SHM, Soren
-    logs/tmp/runtime caches, strategy archive, Git metadata, and VOICEVOX;
+    logs/tmp/runtime caches, the strategy archive (total plus a fixed
+    plaintext/compressed format split: counts and bytes only, never
+    filenames), Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, retro_corner.json, paper_corner.json,
@@ -201,6 +203,14 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+# Fixed on-disk formats of the strategy permanent archive (by_hash). "plain" is
+# what the soviet_now readers open today; "compressed" is what a reviewed
+# reclaim step may produce once every reader can fall back to it. Bounded
+# growth of this archive is judged by these two numbers only.
+STRATEGY_ARCHIVE_FORMATS = (
+    ("plain", ".py"),
+    ("compressed", ".py.gz"),
+)
 OPENCODE_ATTRIBUTION_WINDOW_SEC = 24 * 60 * 60
 OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC = 2.0
 OPENCODE_CALLER_BUCKETS = (
@@ -408,6 +418,70 @@ def _storage_file_usage(path):
     return result
 
 
+def _storage_suffix_usage(path, formats, *, max_entries=STORAGE_MAX_ENTRIES):
+    """Bounded, identity-free per-format accounting for one fixed tree.
+
+    Emits only counts and allocated bytes per fixed suffix (never a filename,
+    a path or file content), so an archive whose on-disk format is being
+    changed by a reviewed reclaim step stays observable. The scan mirrors
+    ``_storage_tree_usage``: bounded by ``max_entries``, symlinks are never
+    followed, and hardlinked inodes are charged once. Any doubt marks the
+    result incomplete instead of silently reporting a partial total.
+    """
+    path = Path(path)
+    result = {
+        "present": False,
+        "scan_complete": True,
+        "max_entries": int(max_entries),
+        "formats": {name: {"count": 0, "allocated_bytes": 0} for name, _suffix in formats},
+    }
+    suffixes = tuple(formats)
+    try:
+        root_st = os.lstat(path)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["scan_complete"] = False
+        return result
+
+    result["present"] = True
+    if stat.S_ISLNK(root_st.st_mode) or not stat.S_ISDIR(root_st.st_mode):
+        result["scan_complete"] = False
+        return result
+
+    seen = set()
+    scanned = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if scanned >= max_entries:
+                        result["scan_complete"] = False
+                        return result
+                    scanned += 1
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        result["scan_complete"] = False
+                        continue
+                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+                        continue
+                    key = (int(st.st_dev), int(st.st_ino))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    for name, suffix in suffixes:
+                        if entry.name.endswith(suffix):
+                            bucket = result["formats"][name]
+                            bucket["count"] += 1
+                            bucket["allocated_bytes"] += _storage_allocated_bytes(st)
+        except OSError:
+            result["scan_complete"] = False
+    return result
+
+
 def _storage_db_family(db_path):
     db_path = Path(db_path)
     entries = {
@@ -459,6 +533,11 @@ def _collect_storage_breakdown(
         ),
         "strategy_archive": _storage_tree_usage(
             soren / "strategy_versions_archive" / "by_hash", max_entries=max_entries
+        ),
+        "strategy_archive_formats": _storage_suffix_usage(
+            soren / "strategy_versions_archive" / "by_hash",
+            STRATEGY_ARCHIVE_FORMATS,
+            max_entries=max_entries,
         ),
         "docich_git": _storage_tree_usage(prod_root / ".git", max_entries=max_entries),
         "soren_live_git": _storage_tree_usage(soren / ".git", max_entries=max_entries),
