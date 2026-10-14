@@ -203,6 +203,21 @@ def test_verify_accepts_an_equivalent_instant_and_normalizes_the_reason():
     assert review.verify(unmapped, _terminal(reason="repetition")) is False
 
 
+def test_aborted_result_uses_the_worker_interrupted_reason():
+    # Worker parsePublicResult overrides every aborted result to interrupted,
+    # independent of the site's raw reason. Only the HTTP transport is fake.
+    terminal = _terminal(outcome="unknown", reason="interrupted")
+    for reason in ("aborted", "unknown", "checkmate"):
+        fixture = _fixture(result="aborted", reason=reason)
+        parsed = review.parse_review(fixture, GAME_ID)
+        assert review.normalized_reason(parsed) == "interrupted"
+        assert review.verify(parsed, terminal, color="gote") is True
+        assert review.verify(parsed, _terminal(outcome="unknown", reason="unknown"), color="gote") is False
+        summary = review.read_summary(
+            GAME_ID, terminal, color="gote", opener=_Opener(json.dumps(fixture).encode()))
+        assert summary is not None and summary["outcome"] == "unknown"
+
+
 def test_summary_for_bot_keeps_only_counts_and_timings():
     parsed = review.parse_review(_fixture(), GAME_ID)
     summary = review.summary_for_bot(parsed, color="gote")

@@ -240,6 +240,8 @@ SITE_REASONS = {
 
 
 def normalized_reason(review: dict) -> str:
+    if review.get("result") == "aborted":
+        return "interrupted"
     return SITE_REASONS.get(review.get("reason"), "unknown")
 
 
