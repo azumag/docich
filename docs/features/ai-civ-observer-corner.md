@@ -11,6 +11,7 @@ runtime実装、LLM日記生成、overlay表示、corner開始/終了、配備/�
 - 実世界書き込み、simulation起動、配備/有効化を行わない。
 
 対象リポジトリ HEAD at planning: `azumag/docich` `origin/main` `a4eeecfc45131a437bbd67c812d5129ab6f6d1dc`。
+参照した MoYoGarden 上流 HEAD: `azumag/MoYoGarden` `main` `4a4481764b458bd2e0f146954fa54420fc937370`。
 
 ## ねらい
 
@@ -25,6 +26,8 @@ MoYoGarden の AI エージェント社会を定点観測し、前回との差�
   - `GET /api/health`
   - `GET /api/world/snapshot`
   - `GET /api/events?afterTick=<lastTick>&limit=<n>`
+- 将来拡張（MVP では未対象だが read-only / passive を維持する場合のみ追加可）:
+  - `GET /api/world/halo`（近隣 region の人口・占有を read-only 取得。mutation しない）
 - 禁止:
   - `POST /api/admin/*` を含む全 mutation
   - `/api/agents/:id/commands`
@@ -46,7 +49,7 @@ MoYoGarden の AI エージェント社会を定点観測し、前回との差�
 ### 上限
 
 - `OBSERVATION_MAX_BYTES = 262144`（1 応答 256 KiB、weather 側 precedent に合わせる）
-- `OBSERVATION_MAX_EVENTS_PER_PAGE = 100`（上流 contract の `limit` 上限）
+- `OBSERVATION_MAX_EVENTS_PER_PAGE = 200`（上流 contract は既定 100 / 上限 200: `src/worker.ts` の `parseBoundedInteger(limit, 100, 1, 200)`。MVP は上流上限 200 を使う）
 - `OBSERVATION_MAX_EVENTS_PER_RUN = 1000`（1 回の観測で fold する公開イベントの総上限）
 - `OBSERVATION_MAX_REGIONS = 1`（MVP）
 - `OBSERVATION_HTTP_TIMEOUT_S = 4`（socket timeout、weather precedent; wall-clock 厳密上限ではないことを明記）
@@ -54,16 +57,20 @@ MoYoGarden の AI エージェント社会を定点観測し、前回との差�
 - `OBSERVATION_SNAPSHOT_STALE_AFTER_S = 900` 以降の snapshot は再取得が必要
 - redirect は拒否、固定 host/region allowlist を使う。
 
-### 入力の正規化（MVP が依存するフィールド）
+### 入力の正規化（MVP が依存する上流フィールド）
 
-WorldState から以下のみを抽出する。それ以外は保存しない。
+MoYoGarden の `WorldState`（`src/protocol.ts:202`）には living/births/deaths 等の人口カウンタは **存在しない**。
+WorldState から抽出するのは以下のみで、それ以外は保存しない。
 
-- `tick`: int, `>= 0`
-- `regionId`: bounded string
-- `population.living`, `.births`, `.deaths`, `.maxGeneration`（存在しない場合は欠測 `null`、補完しない）
-- `regionPopulation`: regionId -> living count の bounded map
-- `pairCount` / `familyCount`（存在する場合のみ）
-- `recentEvents`: 公開イベント配列（id/tick/type/summary に正規化）
+- `tick`: int, `>= 0`（上流 `WorldState.tick`）
+- `regionId`: bounded string（上流 `WorldState.regionId`）
+- `population.living`: **観測側で導出**。`agents.filter(a => a.hp > 0).length`。上流 precedent: `src/settlement-migration.ts:646` が同式を使用。
+- `births`: **観測側で導出**。前回観測との agent-id 集合差分で、今回に新規出現した agent id の数（migration による流入も含まれる window 増分）。上流に累積カウンタはないため「観測窓ごとの増分」であり、前回 stored 値との累積解釈はしない。
+- `deaths`: **観測側で導出**。前回観測の agent-id 集合に含まれ今回欠落、または `hp <= 0` になった agent の数（window 増分）。
+- `maxGeneration` / `pairCount` / `familyCount`: **上流に存在しない**（`Agent` に generation / pair / family フィールドはない）。MVP 対象外とし、将来派生規則（lineage depth / reproductiveRole / pregnancy などから定義）を追加する場合のみ導入する。
+- `regionPopulation`: MVP では `{<observed regionId>: living}` の **単一 entry のみ**。複数 region 横断マップは上流 snapshot 1 回からは取得できない。将来 `/api/world/halo`（`occupants` / `occupantsByFaction`）を read-only bounded 対象に追加した上で、`OBSERVATION_MAX_REGIONS` と上限を再定義して拡張する。
+- `events`: **上流 `WorldState.events`（`WorldEvent[]`）を正規化**。上流の実フィールドは `id` / `tick` / `kind` / `message` / `agentId?` / `factionId?` / `position?` / `data?`。ローカル storage にも上流名をそのまま使う（`type`/`summary`/`actorId`/`location` という別名は使わない）。`recentEvents` は WorldState のフィールドではなく、`/api/agents/:id/perception` 応答のフィールドであるため MVP 入力には使わない（perception 全 agent fan-out は bounded 範囲外）。
+- `EventKind`（`src/protocol.ts:171-189`）に **birth/death 種別は存在しない**。出生・死亡トピックは agent 集合差分から導出する旨を明記する（kind による検出を実装しない）。
 
 取得に失敗または validation 失敗した observation は **部分公開しない**。前回公開 snapshot は再表示しない（weather と同様の fail-closed）。
 
@@ -83,12 +90,10 @@ WorldState から以下のみを抽出する。それ以外は保存しない。
     "populationLiving": 100,
     "births": 4,
     "deaths": 1,
-    "maxGeneration": 3,
-    "pairCount": 12,
-    "regionPopulation": {"north": 40, "west": 30}
+    "regionPopulation": {"garden-1": 100}
   },
   "topicSeeds": [
-    {"eventId": "evt-...", "kind": "migration", "title": "食料不足を起点に西部から大規模な移住", "firstSeenTick": 123}
+    {"eventId": "evt-...", "kind": "agent_conversation", "title": "食料不足を起点に西部から大規模な移住", "firstSeenTick": 123}
   ],
   "seenEventIds": ["evt-..."]
 }
@@ -98,9 +103,9 @@ WorldState から以下のみを抽出する。それ以外は保存しない。
 - 保存失敗時は observation を `draft` にとどめ、公開しない。
 - 同一 tick の再観測でも `observedAt` を更新しない（idempotent）。差分が 0 なら「変化なし」として topic 0 件で終端。
 
-## 重複İベント識別契約
+## 重複イベント識別契約
 
-- イベント識別子は `(regionId, tick, type, actorId?, location?)`。上流が id を返す場合はそれを優先。
+- イベント識別子は `(regionId, tick, kind, agentId?, position?)`（上流 `WorldEvent` のフィールド名に合わせる）。上流が `id` を返す場合はそれを優先。
 - `seenEventIds` に含まれるイベントは「紹介済み」とし、再度 topic に選出しない。
 - `seenEventIds` の上限 `OBSERVER_SEEN_EVENT_CAP = 500`。上限超過時は最古から削除（FIFO）。
 - topic 選定は importance score 降順、同点は tick 昇順 → eventId 昇順で deterministic。
@@ -110,16 +115,18 @@ WorldState から以下のみを抽出する。それ以外は保存しない。
 ## 非本番受入条件（固定 fixture）
 
 固定 fixture を `tests/fixtures/ai_civilization_observer/observation_v1.json` に置き、
-以下をオフラインで検証する（CI/本番接続なし）。
+オフラインの schema / bounds テスト（`tests/test_ai_civilization_observer_contract.py`）で
+以下を検証する（CI/本番接続なし）。
 
 1. schema validation: 必須キー・型・上限が満たされる。
-2. 入力 bound: `events` 配列長 <= 1000、snapshot bytes <= 256 KiB。
-3. 差分計算 deterministic: 同一入力で metrics diff と topic 選定が一致。
-4. 重複排除: 2 回目の observation で seen 済み topic が再選出されない。
-5. read-only: fixture 基盤テストには HTTP mutation が存在しない（静的検査）。
-6. MoYoGarden activity: administer tick counter は変化しない（fixture で N/A、実測は後続）。
+2. 入力 bound: `events` 配列長 <= 1000、snapshot の JSON bytes <= 256 KiB。
+3. 重複排除契約: fixture の event id が unique（same run での topic 再選出を防ぐ前提）。
+4. read-only: fixture 基盤テストには HTTP mutation が存在しない（静的検査）。
+5. MoYoGarden activity: administer tick counter は変化しない（fixture で N/A、実測は後続）。
 
 fixture には個人を特定しうる raw BOT データを含めない。集計値と合成 id のみ。
+`births` / `deaths` は window 増分として扱うため、fixture の living/births/deaths が feeding 相当に見えても
+reconciliation を要求しない（migration により living 変化と births/deaths が分離し得る）。
 
 ## 後続カード（今回実施しない）
 
@@ -136,5 +143,6 @@ fixture には個人を特定しうる raw BOT データを含めない。集計
 - 対象 repo clone は kanban scratch に作成。
 - 分岐元 `origin/main` (SHA `a4eeecfc...`)。`git log --oneline origin/main..HEAD` は空。
 - `gh issue view 1705` で本文・comments=0 を確認。
-- テストコード追加なし（計画段階）。runtime 実装後に focused regression を追加する。
+- MoYoGarden 上流 `src/protocol.ts` / `src/worker.ts` / `src/halo-region.ts` を読み、入力契約のフィールド名・上限を照合した。
+- schema/bounds のオフラインテストを `tests/test_ai_civilization_observer_contract.py` に追加し、`pytest` で green を確認。
 - 本番接続・deploy・activation は未実施。

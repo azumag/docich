@@ -7,7 +7,7 @@
     "tick": 42,
     "regionId": "garden-1",
     "population": {"living": 103, "births": 8, "deaths": 2, "maxGeneration": 3},
-    "regionPopulation": {"north": 42, "west": 31, "east": 30},
+    "regionPopulation": {"garden-1": 103},
     "pairCount": 15
   },
   "previous": {
@@ -18,11 +18,11 @@
       "deaths": 1,
       "maxGeneration": 2,
       "pairCount": 12,
-      "regionPopulation": {"north": 40, "west": 28, "east": 32}
+      "regionPopulation": {"garden-1": 100}
     }
   },
   "events": [
-    {"id": "evt-1", "tick": 35, "type": "migration", "summary": "食料不足を起点に西部から大規模な移住"},
-    {"id": "evt-2", "tick": 40, "type": "birth", "summary": "初めて3世代目の個体が誕生"}
+    { "id": "evt-1", "tick": 35, "kind": "agent_conversation", "message": "食料不足を起点に西部から大規模な移住", "agentId": "agent-7" },
+    { "id": "evt-2", "tick": 40, "kind": "resource_gathered", "message": "初めて3世代目の個体が誕生", "agentId": "agent-9" }
   ]
 }
