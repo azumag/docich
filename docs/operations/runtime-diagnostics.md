@@ -455,6 +455,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
+- boundary.audio: 共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定
+  `<soren>/tmp/.comment_queue`）の `comment_*.txt` / `comment_*.playing` の
+  件数、最古itemのage、固定enum `reason`（`quiet` / `queued` / `playing` /
+  `queued+playing` / `unreadable`）、`present` / `readable`。item名・本文・
+  queue内のログは読まない・出さない。Soren `.env` は読まない（secretを含むため。
+  本番は既定値）。キューが無い・読めない場合は `quiet=true`（#2236の境界は
+  塞がない）。**どのコーナーが何で待っているか**は、この `reason` と
+  `corner_boundary_prediction.json` の age、worker健全性の組み合わせで読む。
 - A/B: Soren `tmp/state/ab_state.json`（pattern / started_at / 件数 / mtime）、
   `ab_games.jsonl`（行数・tainted 数・最終 arm）、`ab_candidate/`（有無）。
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement

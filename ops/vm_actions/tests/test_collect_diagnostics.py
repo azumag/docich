@@ -1299,6 +1299,55 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(boundary["prediction"]["present"], False)
         self.assertEqual(boundary["prediction"]["age_sec"], -1)
 
+    def test_boundary_reports_the_shared_audio_queue(self):
+        module = load_collector()
+        queue = self.soren / "tmp" / ".comment_queue"
+        queue.mkdir(parents=True)
+        queued = queue / "comment_announce_1_2_3_chat.txt"
+        queued.write_text("DO-NOT-PUBLISH-TEXT")
+        playing = queue / "comment_announce_4_5_6_yosou-intro.playing"
+        playing.write_text("DO-NOT-PUBLISH-TEXT-2")
+        os.utime(queued, (self.now - 120, self.now - 120))
+        os.utime(playing, (self.now - 30, self.now - 30))
+        (queue / "processed_batch_hashes.log").write_text("DO-NOT-PUBLISH-LOG")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        self.assertEqual(result["boundary"]["audio"], {
+            "present": True,
+            "readable": True,
+            "queued": 1,
+            "playing": 1,
+            "oldest_age_sec": 120,
+            "quiet": False,
+            "reason": "queued+playing",
+        })
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
+
+    def test_boundary_audio_queue_absent_or_unreadable_never_blocks(self):
+        module = load_collector()
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], True)
+        self.assertEqual(audio["queued"], 0)
+        self.assertEqual(audio["playing"], 0)
+        self.assertEqual(audio["oldest_age_sec"], -1)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "quiet")
+        # A path that cannot be listed is reported, but the corners still run.
+        (self.soren / "tmp" / ".comment_queue").write_text("not a directory")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], False)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "unreadable")
+
     def test_ab_state_is_reported_without_hashes_or_env(self):
         module = load_collector()
         root = self.soren / "tmp" / "state"
@@ -2335,6 +2384,33 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
     assert module.ROTATION_AUTO_RESTORE_STATUSES == corner_rotation.AUTO_RESTORE_STATUSES
     assert (module.ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT
             == corner_rotation.AUTO_RESTORE_ATTEMPT_LIMIT)
+
+
+def test_audio_queue_projection_matches_the_corner_boundary_contract(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich import comment_queue
+
+    module = load_collector()
+    (tmp_path / "tmp" / "state").mkdir(parents=True)
+    queue = tmp_path / "tmp" / ".comment_queue"
+    queue.mkdir()
+    (queue / "comment_announce_1_2_3_chat.txt").write_text("x")
+    (queue / "comment_announce_4_5_6_chat.playing").write_text("y")
+    (queue / "processed_batch_hashes.log").write_text("z")
+    (queue / "radio_1_2_news_3.txt").write_text("w")
+    (queue / "comment_announce_7_8_9_chat.txt.speaker").write_text("speaker")
+    with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": str(queue)}):
+        audio = module._collect_audio_queue(tmp_path, int(time.time()))
+        counts = comment_queue.backlog_counts(queue)
+        assert comment_queue.is_quiet(queue) is False
+    assert counts == (audio["queued"], audio["playing"]) == (1, 1)
+    assert audio["quiet"] is False
+    # The collector's read-only projection and the boundary resolver must agree
+    # about which files are queue items, or diagnostics would explain the wrong
+    # reason a corner is waiting.
+    assert comment_queue.comment_queue_dir(tmp_path) == queue
 
 
 def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):

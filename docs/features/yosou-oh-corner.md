@@ -122,6 +122,12 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   queue が混んで発話が上限まで残る run は `end_reason = "duration"` で終わる。
   判定は `yoso_narration.voice_items_in_flight()`（自分の `yosou:intro` / `yosou:ranking` の
   `.txt` / `.playing` マーカーだけを数える）で、他 source のコメントや他 corner は数えない。
+- 開始境界（#2236）: 共有 audio queue が完全に静か（`comment_*.txt` / `comment_*.playing` が
+  0件）で、Soren の予想が in-flight なら確定境界が来るまで開始しない。待ちは
+  `rotation_wait_minutes`（既定10分）で有界で、超えるとその回は `expired` で飛ぶ。
+  再生中のコメントの後ろにイントロが割り込まないようにするための、**入り**の条件
+  （終了条件の `audio-complete` とは別）。詳細は `docs/corner-rotation.md` の
+  「コーナー入りの境界」。
 - 翻訳対象外: view は常に日本語表示で、翻訳すると集計の意味が変わる。
   `yoso_view.HTML` は `<html lang="ja" translate="no">` と
   `<meta name="google" content="notranslate">` を持ち、日本語UIのブラウザが出す

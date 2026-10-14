@@ -97,6 +97,38 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
+## コーナー入りの境界（`boundary_ready`: Soren予想 + オーディオキュー、#2236）
+
+実行枠を取る前に、`program_slot(wait_boundary=True)`が共有境界（`src/docich/corner_boundary.py`）を
+待つ。待ちは既存の`rotation_wait_minutes`（既定10分）で有界で、期限切れは`CornerWaitExpired`として
+**実行せず**`queued`/`expired`でその回を飛ばす（latchは残さない）。境界は次の2つ。
+
+1. **Sorenの予想がin-flightのとき**だけ、`tmp/state/corner_boundary_prediction.json`の
+   `completed_at`が要求時刻以降になるまで待つ。`prediction_worker`が停止・休止中は
+   `ACTIVE`/`LOCKED`が残っていても待たない（停止したworkerが全コーナーを永久に塞がない）。
+2. **共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定`<soren>/tmp/.comment_queue`）が
+   完全に静かになるまで待つ**。対象は`comment_*.txt`（キュー待ち）と`comment_*.playing`
+   （再生中）の両方で、どちらかが1件でもあれば開始しない（視聴者コメントや他コーナーの
+   告知の後ろにイントロが割り込まないため）。キューが無い・読めない場合は「静か」とみなし、
+   壊れたキューで全コーナーを塞がない。
+
+- ディレクトリ解決は`src/docich/comment_queue.py`の1箇所で、soviet_nowのshell sink
+  （`lib/outbound_queue.sh` → `broadcast/comment.sh`の`get_comment_backlog_counts`）と同じ規則:
+  プロセス環境の`COMMENT_QUEUE_DIR` → `<soren>/.env`の`COMMENT_QUEUE_DIR` → `tmp/.comment_queue`。
+  相対値はSoren root基準（shellはcwd=Soren rootで動く）。
+- **改善サイクルとA/Bは意図的にゲートしない**（試合/ラウンド境界はgame-switch coordinatorが
+  所有し、A/Bは一時停止して再開する）。
+- 境界待ちをするのは`wait_boundary=True`のコーナー（view系=weather/tsuitate/yoso、
+  external video、paper/retroの通常経路）。**NetHackとSoren91（Meriken）は既存設計で
+  `wait_boundary=False`**であり、この境界を待たない（Soren91はoverlay-only linkage、
+  NetHackは自前のround boundaryが正本）。この除外は#2236でも変更していない。
+- 無線の背景ラジオは専用の`RADIO_DEFERRED_QUEUE_DIR`（`tmp/.radio_deferred_queue`）で流れるため
+  この境界では待たない。コーナー告知は共有キューへ`comment_announce_*`として入るので待つ。
+- 残る注意: `audio_worker`自体が停止していると`.txt`/`.playing`が残り続け、全コーナーが
+  期限切れを繰り返す（開始しないだけで、枠・latch・他workerは壊さない）。診断の
+  `corners.boundary.audio`（`queued`/`playing`/`oldest_age_sec`/`reason`）とworker健全性で
+  切り分ける。
+
 ### 失敗したcornerの隔離とlatch（`failed_corners` / `status=recovery_required`、#2187）
 
 **1つのcornerの失敗で他のcornerのローテーションを止めない。** 予約後の実行が例外で終了した
