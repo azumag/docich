@@ -22,6 +22,8 @@ from . import (
     speech,
     tts,
 )
+
+from .comment import pipeline as comment_pipeline  # noqa: E402
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter, make_coordinator_adapter
 from .adapters.cli_game import GAME_SESSION, RUNTIME_GAME_SESSION_ENV
@@ -277,6 +279,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_chat.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
+    p_comment = sub.add_parser(
+        "comment", help="コメント応答を native pipeline (docich comment) で生成する (#829)"
+    )
+    p_comment.add_argument("--comments-file", metavar="PATH", help="コメント batch (1行=author: text)")
+    p_comment.add_argument("--text", metavar="TEXT", help="コメント batch を直接指定")
+    p_comment.add_argument("--host-mode", choices=["main", "soren91"], default="main")
+    p_comment.add_argument("--batch-id", metavar="ID", help="batch id")
+    p_comment.add_argument("--output-dir", metavar="DIR", help="delivery sink directory")
+    p_comment.add_argument("--dry-run", action="store_true", help="実行せず入力/出力先を表示する")
+
     p_radio = sub.add_parser(
         "radio", help="ラジオ生成を参照実行する (soviet_now broadcast/radio_engine.sh)"
     )
@@ -422,6 +434,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return chat.cli_radio(args)
     if command == "ai":
         return ai_generate.cli_ai(args)
+    if command == "comment":
+        return comment_pipeline.cli_comment(args)
     if command == "paper-ai-canary":
         return paper_ai_canary.cli_canary(g, args)
     if command == "voicevox":
