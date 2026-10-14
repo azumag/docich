@@ -2979,6 +2979,12 @@ ROTATION_ERROR_KINDS = frozenset({
     "unexpected",
 })
 ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+# Fixed exclusion vocabulary of `CornerRotationManager._eligible()`. An enabled
+# manual-only corner is `manual-only`; a disabled or paused one is
+# `disabled-or-paused`, so the map distinguishes "enabled for manual reservation"
+# from "not enabled at all" without needing a reservation.
+ROTATION_EXCLUDED_REASONS = frozenset({"disabled-or-paused", "manual-only", "adapter-unavailable"})
+ROTATION_EXCLUDED_LIMIT = 32
 # Fixed resolutions of the `failed_corners` ledger rows (#2187). `released`
 # means the scheduler settled the failed corner and kept rotating; the other
 # value means the shared slot could not be proven free, so the fail-closed
@@ -4071,6 +4077,28 @@ def _rotation_error_kind(value):
     return "unknown"
 
 
+def _rotation_excluded_projection(value):
+    """Bounded corner-id -> fixed exclusion reason map from the last rotation tick.
+
+    ``CornerRotationManager._eligible()`` persists why each catalog corner was left
+    out of the automatic rotation (``disabled-or-paused`` / ``manual-only`` /
+    ``adapter-unavailable``). Projecting it makes catalog changes observable without
+    a reservation: an enabled manual-only corner reads ``manual-only``, while a
+    disabled one reads ``disabled-or-paused``. Only catalog ids, fixed reasons and
+    a bounded count are emitted; unknown values collapse to ``unknown``.
+    """
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for corner, reason in sorted(value.items()):
+        if len(out) >= ROTATION_EXCLUDED_LIMIT:
+            break
+        if not isinstance(corner, str) or not corner or len(corner) > 64:
+            continue
+        out[corner] = reason if reason in ROTATION_EXCLUDED_REASONS else "unknown"
+    return out or None
+
+
 def _rotation_failed_corners_projection(data):
     """Bounded, fixed-shape corner failures that no longer stop the rotation.
 
@@ -4409,6 +4437,7 @@ def _collect_corner_files(state_dir, payload, now):
             ),
             scheduled_manual_blocked_reason=scheduled_blocked_reason,
             error_kind=_rotation_error_kind(data.get("error_kind")),
+            excluded=_rotation_excluded_projection(data.get("excluded")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
