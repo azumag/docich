@@ -3659,6 +3659,11 @@ class GameSwitchCoordinator:
         method = getattr(adapter, "cancel_round_boundary", None) if adapter else None
         if not callable(method):
             return False, "adapter.cancel_round_boundary がcallableではありません"
+        before, _ = self.store.canonical.load()
+        identity_keys = ("phase", "request_id", "active", "candidate", "previous")
+        identity = {key: copy.deepcopy(before.get(key)) for key in identity_keys}
+        if identity["phase"] != "draining" or identity["request_id"] != request_id:
+            raise RoundBoundaryStateChangedError("cancel開始時にdraining identityが変化しました")
         # Exactly-once adapter cancellation (#2145): claim this request first.
         # The stale driver's failure path and a recovering switch can both pass
         # the identity check below, so a concurrent caller must reuse the
@@ -3673,12 +3678,16 @@ class GameSwitchCoordinator:
             timeout = max(self.step_timeouts.round_cancel_s, 0.1)
             tx.release_for_wait()
             try:
-                return claim.wait(timeout)
+                outcome = claim.wait(timeout)
             finally:
                 tx.reacquire_for_wait(
                     deadline=time.monotonic() + max(self.round_reacquire_timeout_s, 0.1),
                     poll_interval_s=self.poll_interval_s,
                 )
+            current, _ = self.store.canonical.load()
+            if any(current.get(key) != identity[key] for key in identity_keys):
+                raise RoundBoundaryStateChangedError("cancel結果待機中にdraining identityが変化しました")
+            return outcome
         try:
             outcome = self._cancel_round_boundary_once(tx, method, request_id)
         except BaseException:
