@@ -18,9 +18,7 @@
 
 1. **STT は Cloudflare Workers AI `@cf/openai/whisper-large-v3-turbo`** を使う（スライス2で実装済み）。
 2. **TTS は VOICEVOX ENGINE** を使う（スライス4で実装済み）。Cloudflare 側の TTS は日本語の要件を満たさないため採らない。
-3. **記憶スコープは `(guild, channel, user)` の完全一致**とする。既定は **Voice Channel 単位で分離**（テキスト版とは別スコープ）。
-   同一Guild内でテキスト版と記憶を共有したい配備だけが、`DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` に
-   ペアのテキスト Channel ID を明示して **opt-in** する。**別 Guild 間の完全分離は常に維持する。**
+3. **記憶スコープは `(guild, channel, user)` の完全一致**とする。分離の粒度は **channel ID** であり、既定では joined Voice Channel ID と異なる channel ID を持つ履歴と voice の履歴は混ざらない。ただし **同一 Voice Channel に埋め込まれた text chat は channel ID が一致するため、env 設定なしで voice がその履歴を読む（既定共有）** となる。同一Guild内で voice が **別** text channel の履歴を読む配備だけが、`DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` にペアのテキスト Channel ID を明示して **opt-in** する。text/voice の modality 自体を常時分離する変更は行わない（storage key / 既存履歴に係る別仕様判断）。**別 Guild 間の完全分離は常に維持する。**
 4. 会話ターンは**Discord への再生成功 ACK の後だけ**記憶へ確定する（barge-in / TTS失敗 / 再生失敗 / 停止では保存しない）。
    これは先行スライスで実装済みの挙動で、本 ADR でもそのまま維持する。
 
@@ -94,11 +92,11 @@ memory は `(guild_id, channel_id, author_id)` の完全一致スコープで直
 
 **決定と理由**
 
-- **既定は候補2**。Voice Channel はテキスト Channel と ID が異なるため、既定では voice の記憶は
-  text の記憶と混ざらない。「Bot が参加していない Voice Channel の音声を処理しない」という
-  セキュリティ要件とも整合し、**共有は事故ではなく明示操作でだけ起きる**。
+- **既定は候補2**。joined Voice Channel ID と異なる channel ID の text 履歴とは voice の履歴が既定で混ざらない（channel ID が分離境界）。**ただし同一 Voice Channel に埋め込まれた text chat は channel ID が一致するため、env 設定なしで voice の recall 対象になる（既定共有）**。`DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` は joined VC とは異なる text channel とのペアにのみ使う。「Bot が参加していない Voice Channel の音声を処理しない」というセキュリティ要件とも整合し、**別 channel ID 間の共有は事故ではなく明示操作でだけ起きる**。
 - **候補1 は opt-in**。`DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` に同一 Guild のペアとなるテキスト Channel ID を
   設定した配備だけが、text/voice で同じスコープを読み書きする。未設定なら Voice Channel ID にフォールバックする。
+  **同一 Voice Channel に埋め込まれた text chat は channel ID が一致するため candidate 1 の opt-in 対象外であり、
+  env 設定なしで既定共有になる。**
 - **候補3 は保留**。「user 単位の長期記憶」を channel 横断で引くには recall クエリを guild+author へ広げる必要があり、
   他人のチャンネル横断履歴を混ぜるリスクと削除セマンティクスの再設計を伴う。必要性が実受入で確認できてから扱う。
 - **別 Guild 間は常に完全分離**。スコープに `guild_id` が必須で、`/voice/reply`・`/voice/commit` も
