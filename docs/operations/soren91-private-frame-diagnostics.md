@@ -75,3 +75,28 @@ The transfer contains no runtime paths, credentials, logs, or arbitrary files.
 The helper's fixture tests exercise archive validation and local private
 receipt. Runtime SSH execution and Library storage remain a separate owner
 operation after review and deployment; no image is published to GitHub Actions.
+
+## Unfinished-game frame in the public evidence export
+
+The public Actions export (`Soren91 manual evidence export`,
+`ops/vm_actions/soren91_evidence_export.py`) also carries the saved frame of the
+one unfinished game when the loop telemetry is fresh. A run that never sends a
+drop has no completed records, so this partial frame plus the raw
+`soren91_loop_metrics.json` is the only evidence of what the bot was observing.
+
+- `partial/game_NNNN/screenshots/turn_TTTT.jpg` is the downscaled review copy
+  produced by ffmpeg from the validated, in-window source snapshot.
+- `partial/game_NNNN/original/turn_TTTT.<ext>` keeps the same snapshot
+  byte-identical at the capture resolution, because the downscaled copy cannot
+  reproduce a recognition failure. It is added only when the transcode
+  succeeded and the source is at most `MAX_ORIGINAL_SCREENSHOT_BYTES` (1 MiB);
+  the decision is published as `partialEvidence.originalScreenshotStatus`
+  (`included` / `oversize` / `identical-to-transcode` /
+  `screenshot-unavailable`). Both files come from the same checked snapshot, so
+  a concurrent rewrite of the live file never reaches the bundle.
+- The 3 MiB bundle cap and the `original` bound keep the export inside the
+  existing size contract. An `oversize` original is omitted rather than
+  failing the export.
+- The saved calibration (`partial/game_NNNN/calibration.json`) stays optional
+  and is reported through `partialEvidence.calibrationStatus`; a recognition
+  failure must be reproduced from the original frame when it is absent.
