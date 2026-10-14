@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "corner": "architecture",
+  "fixtureId": "fixed-architecture-corner-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed architecture fixture for planning and input-contract acceptance only. It is not a real building or verified measurement, and its title, URLs and details must not be presented as verified structural data or used for external distribution.",
+  "topic": {
+    "title": "Synthetic Fixture: Mid-Rise Timber Housing in a Seismic Urban Block",
+    "topicId": "fixed-architecture-timber-housing-seismic-001",
+    "buildingTheme": "木造中層住宅と都市街区における耐震設計",
+    "siteContext": "hypothetical dense urban block on soft alluvial soil with height and setback limits",
+    "thirtySecondSummary": "合成fixture: 木造中層住宅を都市街区で成立させるために、要求条件・構法・耐震・設備・動線・施工のトレードオフを整合させる必要があることを示す planning 例。",
+    "oneLineSummary": "合成fixture: 都市の中層木造住宅を題材に、意匠と構造・設備・法規のトレードオフを説明する建築/建築工学コーナーの入力例。",
+    "requirementsAndConstraints": [
+      "地下埋蔵物・高さ制限・セットバック・採光斜線",
+      "防火・準耐火・避難距離",
+      "コスト・工期・近隣騒音制約",
+      "Z階/延床規模の法規整合"
+    ],
+    "structureAndMaterials": "在来軸組とCLTハイブリッド、基礎は杭基礎、床はCLT+コンクリート複合スラブ、接合部はドリフトピン接合を想定。",
+    "seismicSafety": "耐力壁の配置・偏心回避、免震/制震の比較、落成後の変形追従、非構造材の固定と天井・設備の耐震。",
+    "buildingEquipment": "中央空調+局所換気、給排水の竪配管、電気容量と太陽光、消防設備と受水槽、維持管理導線。",
+    "circulationAndUse": "住戸へのアプローチ、エレベータ・階段の配置、共用部と住戸内動線、災害時避難経路、フレキシブル住戸。",
+    "constructionMethod": "プレカット+CLTパネル建て方、乾式工法、小規模搬入、寒暑雨天時の養生、近隣交通調整、検査 testimonies。",
+    "designRationale": " wooden structure は地域材と断熱性能、都市密度を両立するが、耐火・耐震・コストとのトレードオフが大きい。CLTの面剛性と在来軸組の柔軟性を組み合わせ、設備シャフトを芯に近づけることで動線と施工を整合させた。",
+    "limitations": "合成 fixture であり、実在物件の計測・検証・一般化は未実施である。構造計算値・材料特性・コストは架空であり、一次資料で再確認する必要がある。",
+    "figureOrDiagram": "街区配置図、建物断面・伏図、耐力壁配置の平面図、設備シャフトの模式図、施工工程のタイムラインを overlay 用に分離する。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、30秒要約、実物映像、要求条件、構造・材料、耐震/免震、設備、動線、施工、なぜこの設計かを独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/architecture/synthetic-timber-housing-seismic",
+      "https://example.org/architecture/synthetic-timber-housing-seismic/specification"
+    ],
+    "sourcePriority": [
+      "building-standards-and-regulations",
+      "manufacturer-technical-material",
+      "public-institution",
+      "university-research",
+      "academic-paper",
+      "engineering-textbook",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、主張の根拠は一次技術・規格資料で再確認する。規格・構造計算の根拠は必ず一次資料側で確認する。"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/architecture/synthetic-timber-housing-seismic",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "91772c4ba9d4deb46f6eb83820de81a3e18fddde99c36f5de1e28d734b8d8266",
+        "excerpt": "Synthetic verified technical material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic mid-rise timber housing seismic urban block"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealBuilding": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustIncludeSeismicAndEquipment": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
