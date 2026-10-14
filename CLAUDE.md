@@ -13,3 +13,6 @@
 8. 障害時は復旧を最優先し、原因究明・恒久対応は follow-up Issue で後追いにする。
 
 詳細・理由は [`AGENTS.md`](./AGENTS.md) を参照。
+
+Code Modernization の導入・小さな範囲での初回評価は
+[`docs/code-modernization.md`](./docs/code-modernization.md) を参照。
