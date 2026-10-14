@@ -121,7 +121,8 @@ last_seen、pending、request UUID、結果をatomic writeする。
 3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
    `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
    自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
-   行を残す。latchは**毎分のtickが同じ判定を再試行**する: 1.のterminal commitか2.のslot証明が
+   行を残す（**同一requestにつき1行**。latchを毎分再判定しても増やさない）。
+   latchは**毎分のtickが同じ判定を再試行**する: 1.のterminal commitか2.のslot証明が
    成立した時点で、operator無しで自動解除して次のcornerへ進む（証明が成立しない限り解除しない）。
 
 例外本文はstateに書かない（provider出力やcredentialを含み得るため）。`failed_corners`にも
