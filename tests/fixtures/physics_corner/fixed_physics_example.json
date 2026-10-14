@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "corner": "physics",
+  "fixtureId": "fixed-physics-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed physics fixture for planning and input-contract acceptance only. It is not a real measurement, observation record, or verified physical value, and its title, figures, constants, URLs and details must not be presented as verified physics data or used for external distribution.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic saturation vapour pressure boiling temperature ambient pressure"
+    ],
+    "items": [
+      {
+        "url": "https://example.org/verified/web/material/physics",
+        "query_indexes": [
+          0
+        ],
+        "excerpt": "Verified short excerpt (synthetic): a liquid boils when its saturation vapour pressure equals the ambient pressure, and saturation vapour pressure grows exponentially with temperature, so lowering the ambient pressure lowers the boiling temperature. The often-quoted 100 degrees Celsius is the boiling point of water only at standard atmospheric pressure. Use this as contract material only, not as a verified measurement.",
+        "excerpt_sha256": "a000efaf35c3945ddafc630db930e5e3520ce92633d14afedf1029227e357702",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealPhysics": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePublicResearchAndStandardsSources": true,
+    "mustIncludeTodaysQuestion": true,
+    "mustIncludeIntuitivePrediction": true,
+    "mustIncludeObservedPhenomenon": true,
+    "mustIncludePhysicalLaw": true,
+    "mustIncludeSimpleFormulaOrModel": true,
+    "mustIncludeExperimentAndTechnologyApplication": true,
+    "mustIncludeIntuitionFailurePoint": true,
+    "mustIncludeFigureAndFormulaHandling": true,
+    "mustNotPresentFormulasAsGoal": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepCitations": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Synthetic Fixture: Why Water Boils at a Lower Temperature on a Mountain",
+    "topicId": "fixed-physics-boiling-pressure-001",
+    "physicsField": "合成fixture: 熱・流体 (飽和蒸気圧と沸点)",
+    "todaysQuestion": "合成fixture: 高い山の上では、なぜ水は100℃より低い温度で沸くのか。",
+    "intuitivePrediction": "合成fixture: 多くの聴衆は「水は100℃で沸く」と答える。これは1気圧という条件を省略した直感的な予想である。",
+    "observedPhenomenon": "合成fixture: 高地の観測点では、水は100℃より低い温度で沸騰し、その沸点は標高が高いほど下がる。密閉した圧力鍋では、さらに高い温度で沸騰するまで加熱できる。",
+    "physicalLaw": "合成fixture: 沸騰の条件 (液体の飽和蒸気圧が周囲の圧力と等しくなる) と、クラウジウス・クラペイロンの関係 (飽和蒸気圧の温度変化率が気化熱と分子の運動で決まる)。",
+    "formulaAndModel": "合成fixture: 沸騰条件 p_sat(T) = p_ambient と、クラウジウス・クラペイロンの式 d ln p_sat / dT = L / (R T^2)。両式を合わせると「圧力を下げると沸点が下がる」が説明できる。",
+    "experimentAndTechnologyApplication": "合成fixture: 圧力鍋は圧力を上げて沸点を上げ調理時間を短縮し、高地の調理指南はこれを補正する。真空濃縮・凍結乾燥は圧力を下げて低温で沸騰させ、熱に弱い成分を保護する。実験室の沸点測定は大気圧を同時記録する。",
+    "intuitionFailurePoint": "合成fixture: 100℃は水の固有の定数ではなく、1気圧という条件下での値である。直感が外れるのは「沸点は水の性質」と思い込み、圧力という外部変数を落としている点。同じ落とし穴が、お湯を沸かす「温度」と、やけどのしやすさを結びつける場面でも現れる。",
+    "thirtySecondSummary": "合成fixture: 沸点は水の性質ではなく飽和蒸気圧と周囲圧力の一致点であり、式は「圧力を下げると沸点が下げられる」という説明を持つ planning 例。",
+    "oneLineSummary": "合成fixture: 身近な「水は100℃で沸く」から熱力学の入力契約を示す planning 例。",
+    "requirementsAndConstraints": [
+      "飽和蒸気圧と周囲圧力の一致という沸騰条件",
+      "気化熱と温度依存性の仮定 (定数近似の範囲)",
+      "大気圧の記録と単位 (Pa / atm) の明示",
+      "純水であるという前提 (不純物・溶質の影響)",
+      "高地・低圧環境での安全な取り扱い"
+    ],
+    "figureAndFormulaHandling": "Diagram handling note: scope = saturation vapour pressure curve and the ambient pressure line for a synthetic mountain-to-pressure-cooker comparison; simplification = ideal-gas vapour and constant latent heat over a narrow temperature range, schematic axes only; caveat = not a measurement and not a real vapour-pressure table.",
+    "formulaEntries": [
+      {
+        "formula": "p_sat(T) = p_ambient",
+        "whatItExplains": "合成fixture: 沸騰は「この温度になったから」ではなく、液体の飽和蒸気圧が周囲の圧力に追いついたときに起きることを説明する。",
+        "symbolDefinitions": "合成fixture: p_sat(T) = 温度 T における飽和蒸気圧 (Pa)。p_ambient = 液体表面の周囲圧力 (Pa)。",
+        "units": "合成fixture: p_sat と p_ambient はともに Pa (または atm、1 atm = 101325 Pa)、T は K。",
+        "validityRange": "合成fixture: 液相と気相が平衡にある範囲。過熱・核生成の遅れがある場合は、見かけの沸点が条件から外れる。",
+        "numericExample": "合成fixture: 大気圧 0.70 atm (標高約3000 m、架空値) では、水の飽和蒸気圧が 0.70 atm に達する温度およそ90℃が沸点となる。",
+        "plainRestatement": "合成fixture: 水は、まわりの圧力と同じ強さまで蒸気を押し出せるようになった温度で沸く。山の上はまわりの圧力が小さいので、その温度は低くなる。",
+        "diagramReference": "合成fixture: 縦軸 p_sat・横軸 T の曲線に、高度別の水平な周囲圧力ラインを重ね、交点が沸点であることを示す概略図。"
+      },
+      {
+        "formula": "d ln p_sat / dT = L / (R T^2)",
+        "whatItExplains": "合成fixture: 飽和蒸気圧が温度とともに指数関数的に増える理由を、気化熱と分子の熱運動で説明する。",
+        "symbolDefinitions": "合成fixture: L = モル気化熱 (J/mol)。R = 気体定数 8.314 J/(mol K)。T = 絶対温度 (K)。",
+        "units": "合成fixture: L は J/mol、R は J/(mol K)、T は K。左辺の単位は 1/K。",
+        "validityRange": "合成fixture: 気相を理想気体とみなせ、L を温度依存しないと近似できる狭い温度範囲でのみ使用する。広い範囲や臨界点近傍では適用しない。",
+        "numericExample": "合成fixture: 水の L を 40.7 kJ/mol (架空値) とし、100℃ (373.15 K) と 90℃ (363.15 K) の間で積分すると、飽和蒸気圧はおよそ 0.7 倍まで下がる。",
+        "plainRestatement": "合成fixture: 温度が少し上がるだけで、水蒸気を押し出す力は割合でぐんと増える。その増えっぷりが気化熱で決まる。",
+        "diagramReference": "合成fixture: 同じ p_sat-T 図で、曲線の勾配が気化熱に比例することを矢印と接線で示す概略図。"
+      }
+    ],
+    "labelsPolicy": "Every generated segment must be labeled fact, analysis, or forecast.",
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成 fixture であり、実測の飽和蒸気圧表・標高別沸点・定数の精度検証は未実施である。数値は架空であり、一次資料または標準参照データで再確認する必要がある。",
+    "uncertainty": "定数近似の有効範囲、実大気の非理想性、不純物の影響は未検証であり、本番使用前に標準参照データと測定記録で裏付けが必要である。",
+    "figureOrDiagram": "飽和蒸気圧曲線と高度別の周囲圧力ラインを1枚の概略図に重ね、交点としての沸点と、圧力鍋・真空濃縮の作動点を別レイヤで示す。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、問いと直感的な予想から入り、観測・法則・式の意味・応用・直感が外れる点を独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/physics/synthetic-saturation-vapour-pressure",
+      "https://example.org/physics/synthetic-boiling-point-reference-data"
+    ],
+    "sourcePriority": [
+      "public-institution-and-research-institute",
+      "measurement-standards-and-reference-data",
+      "academic-paper",
+      "physics-textbook",
+      "university-lecture-material",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、飽和蒸気圧・気化熱・沸点の主張は標準参照データと一次資料で再確認する。",
+    "url": "https://example.org/physics/synthetic-saturation-vapour-pressure"
+  }
+}
