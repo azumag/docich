@@ -1,0 +1,104 @@
+name: Prepare 2145 follower identity PR (one-shot)
+
+on:
+  push:
+    branches: ['fix/2145-cancel-follower-identity-20261015']
+    paths:
+      - '.github/workflows/prepare-2145-follower.yml'
+      - '.github/pr-preparation/2145-followup.patch'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-2145-follower-identity
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository_id == '1327276249' && github.actor_id == '9018513' && github.ref == 'refs/heads/fix/2145-cancel-follower-identity-20261015'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+          submodules: false
+      - name: Verify exact base and reviewed patch
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          assert git('rev-parse', 'HEAD^') == '31f4a2604fa15656294cb51de54de25d2907632d'
+          assert git('rev-parse', 'HEAD:src/docich/game_switch.py') == 'c1d35b947d4033492317b07f7bbd1105f769084a'
+          assert git('rev-parse', 'HEAD:AGENTS.md') == 'f5cc399d0386ca21b1f8940ef1909f5861c91145'
+          for directory in ('.', 'src', 'src/docich', 'tests', '.github', '.github/workflows', '.github/pr-preparation'):
+              for name in ('AGENTS.md', 'AGENTS.override.md'):
+                  path = pathlib.Path(directory) / name
+                  if path != pathlib.Path('AGENTS.md'):
+                      assert not path.exists(), f'Additional instructions require review: {path}'
+          patch = pathlib.Path('.github/pr-preparation/2145-followup.patch')
+          assert hashlib.sha256(patch.read_bytes()).hexdigest() == '5872e66d48f57ac5fb7823dbb67df0afaadd661fe11266d80d18d16ecca6ccef'
+          subprocess.run(['git', 'apply', '--check', str(patch)], check=True)
+          PY
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install existing test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Reproduce seven failures on unchanged source
+        run: |
+          git apply --include='tests/test_round_boundary_cancel_follower_identity.py' .github/pr-preparation/2145-followup.patch
+          python3 - <<'PY'
+          import os, pathlib, subprocess, xml.etree.ElementTree as ET
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / '2145-red.xml'
+          result = subprocess.run(['python3', '-m', 'pytest', '-q', 'tests/test_round_boundary_cancel_follower_identity.py', f'--junitxml={report}'])
+          suites = ET.parse(report).getroot().iter('testsuite')
+          totals = {key: 0 for key in ('tests', 'failures', 'errors', 'skipped')}
+          for suite in suites:
+              for key in totals:
+                  totals[key] += int(suite.get(key, '0'))
+          assert result.returncode == 1 and totals == {'tests': 8, 'failures': 7, 'errors': 0, 'skipped': 0}, totals
+          print('Verified baseline: 7 failed / 1 passed')
+          PY
+      - name: Apply source fix and run real-package regressions
+        run: |
+          git apply --include='src/docich/game_switch.py' .github/pr-preparation/2145-followup.patch
+          git diff --check
+          python3 -m compileall -q src tests
+          python3 -m pytest -q tests/test_round_boundary_cancel_follower_identity.py tests/test_round_boundary.py
+      - name: Store only the two validated Git blobs (no ref or production writes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, urllib.error, urllib.request
+          source = 'src/docich/game_switch.py'
+          test = 'tests/test_round_boundary_cancel_follower_identity.py'
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard'], text=True).splitlines()
+          assert changed == [source], changed
+          assert untracked == [test], untracked
+          endpoint = 'https://api.github.com/repos/azumag/docich/git/blobs'
+          for label, filename in (('SOURCE_BLOB', source), ('TEST_BLOB', test)):
+              raw = pathlib.Path(filename).read_bytes()
+              expected = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+              body = json.dumps({'encoding': 'utf-8', 'content': raw.decode('utf-8')}).encode()
+              request = urllib.request.Request(endpoint, data=body, method='POST', headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      result = json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'Git blob creation failed: HTTP {error.code}') from None
+              assert re.fullmatch('[0-9a-f]{40}', result['sha']) and result['sha'] == expected
+              print(f'{label}={expected}')
+          PY
