@@ -315,6 +315,47 @@ def test_yosou_end_reason_survives_diagnostics():
         {'status':'completed','game':'yosou-view','end_reason':'SECRET-END-REASON'})['end_reason'] is None
 
 
+def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
+    # The 予想王 ledger and the Soren handoff are the only new runtime state this
+    # feature adds. Diagnostics must show whether records are landing, and must
+    # never emit a viewer name, title or row body.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    soren=tmp_path/'soren'
+    (state_dir).mkdir(parents=True)
+    (soren/'tmp'/'state').mkdir(parents=True)
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':1,
+        'rounds':{
+            'p1':{'corner':'soren','title':'SECRET-TITLE','predictors':[
+                {'user_id':'u1','user_name':'SECRET-NAME','user_login':'secret','hit':True}]},
+            'p2':{'corner':'hanjuku','predictors':[{'user_id':'u2','hit':False}]},
+        }}),encoding='utf-8')
+    (soren/'tmp'/'state'/'prediction_resolved.jsonl').write_text(
+        json.dumps({'id':'p1','status':'RESOLVED'})+'\n\n',encoding='utf-8')
+    (state_dir/'soren_predictions_cursor.json').write_text('{}',encoding='utf-8')
+
+    result=module._collect_programs(state_dir,soren,int(time.time()))
+
+    ledger=result['prediction_leaderboard']
+    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2}
+    handoff=result['soren_predictions']
+    assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
+    assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-NAME' not in rendered and 'SECRET-TITLE' not in rendered
+
+    # A missing or broken ledger stays a bounded, non-fatal projection.
+    (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
+    broken=module._collect_programs(state_dir,soren,int(time.time()))
+    assert broken['prediction_leaderboard']=={
+        'present':True,'readable':False,'rounds':0,'viewers':0}
+    (state_dir/'prediction_leaderboard.json').unlink()
+    missing=module._collect_programs(state_dir,soren,int(time.time()))
+    assert missing['prediction_leaderboard']=={
+        'present':False,'readable':False,'rounds':0,'viewers':0}
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

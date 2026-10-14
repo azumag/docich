@@ -597,3 +597,16 @@ view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（
 オーナー承認後に `enabled = true` へ変える1行で、その時点で `queue_manual` が通り、
 `manual_only` の自動除外は維持される。diagnostics は `yoso_corner.json` の
 status / timestamps / counts だけを投影し、視聴者名やランキング内容は出さない。
+
+### Soren 予想の台帳記録（`soren_predictions.tick`、#933 PR-2b）
+
+common timer の `tick()` は半熟英雄の予想 tick の隣で `soren_predictions.tick(g)` を呼ぶ。
+Soren の `twitch_predictions.sh` が resolve 成功時に追記する
+`<soren_root>/tmp/state/prediction_resolved.jsonl`（最大50行）を bounded に読み、
+`record_resolved(corner='soren')` で台帳へ冪等に記録する。
+変更の無いファイルは `<state_dir>/soren_predictions_cursor.json` の size/mtime で飛ばすため、
+毎分の timer が台帳を読み直さない。symlink・oversize・契約違反の行は記録せず固定コードを返し、
+台帳の read/write に失敗した tick は cursor を進めないので同じ row を再試行する。
+この tick は best-effort で、失敗しても rotation の tick は止めない。
+診断は `prediction_leaderboard`（rounds/viewers の件数のみ）と `soren_predictions`
+（handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
