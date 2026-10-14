@@ -64,7 +64,7 @@ def test_derive_endpoint_accepts_loopback_http_and_rejects_everything_else():
             derive_endpoint(bad)
 
 
-@pytest.mark.parametrize("bad", [None, 12, object()])
+@pytest.mark.parametrize("bad", [None, 12, ["not", "a", "url"]])
 def test_derive_endpoint_rejects_non_string_config(bad):
     with pytest.raises(DoushiRankingError):
         derive_endpoint(bad)
