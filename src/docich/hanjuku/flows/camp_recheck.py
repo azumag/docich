@@ -9,6 +9,8 @@ from ...hanjuku_egg_stock import observed_uses
 RETRY_TICKS = 30
 ATTEMPT_LIMIT = 3
 READ_LIMIT = 3
+ARRIVAL_READ_LIMIT = 3
+ARRIVAL_RETRY_TICKS = 120
 
 
 def _clean_name(name):
@@ -19,6 +21,7 @@ def _clean_name(name):
 _ALLOWED_KINDS = {
     'recheck_roster_open': {'main_menu', 'map', 'unknown'},
     'recheck_pick': {'text', 'main_menu', 'unknown'},
+    'recheck_roster_read': {'text', 'unknown'},
     'recheck_focus': {'map', 'text', 'unknown'},
     'recheck_status': {'text', 'map', 'unknown'},
     'recheck_read': {'text', 'unknown'},
@@ -40,7 +43,7 @@ def _owner_shape(mem, state):
             or type(state.get('steps')) is not int or state['steps'] < 0
             or type(now) is not int or now < 0 or type(chapter) is not int or chapter <= 0
             or identity is None or any(type(state[key]) is not bool for key in
-                                      ('retreat_recheck', 'anonymous_recheck') if key in state)
+                                      ('retreat_recheck', 'anonymous_recheck', 'arrival_check_only') if key in state)
             or not (state.get('retreat_recheck') or state.get('anonymous_recheck'))):
         return False
     if any(key in state and (type(state[key]) is not int or not 0 <= state[key] <= limit)
@@ -250,6 +253,8 @@ def _defer(mem, state, reason, *, status='needs_observation'):
     row = _scope(mem).get(actor)
     if row is not None:
         row.update(status=status, retry_after=mem['tick'] + RETRY_TICKS)
+        if state.get('arrival_check_only'):
+            row.update(status='arrival_unconfirmed', retry_after=mem['tick'] + ARRIVAL_RETRY_TICKS)
         if _valid_camp(mem, state):
             row['camp_observation'] = state['camp_observation']
     mem.pop('recall', None)
@@ -298,7 +303,7 @@ def _named_step(screen, mem, frame, state):
     from ..os_layer.world import NAME
     from . import house
     stage, actor = state['stage'], state.get('general')
-    if stage in ('recheck_roster_open', 'recheck_pick', 'recheck_focus') and not _valid_episode(mem, state):
+    if stage in ('recheck_roster_open', 'recheck_pick', 'recheck_roster_read', 'recheck_focus') and not _valid_episode(mem, state):
         _defer(mem, state, '本人focusのUI episodeを確認できず旧状態では操作しない')
         return [pad('b')] if screen.kind in ('text', 'main_menu') else []
     if stage in ('recheck_status', 'recheck_read') and not _valid_camp(mem, state):
@@ -331,9 +336,40 @@ def _named_step(screen, mem, frame, state):
             return [pad('down')]
         move = menu_to(screen, actor)
         if move == 'here':
+            if state.get('arrival_check_only'):
+                _advance(state, 'recheck_roster_read')
+                return [pad('a')]  # current named status, not SELECT/camp inference
             _advance(state, 'recheck_focus')
             return [pad('select')]  # roster SELECT focuses the selected named general
         return [move] if move else _wait(mem, state, '本人の実カーソルを確認できない', close=True)
+    if stage == 'recheck_roster_read':
+        info = house.general_status(screen)
+        main_panel = (info is not None and any(line.y == 39
+            and line.span(24, 88).strip() == actor
+            and line.span(88, 136) == 'しょうぐん' for line in screen.lines))
+        if not main_panel or info['general'] != actor:
+            return _wait(mem, state, '帰還後の本人の現名簿ステータスが未確認', close=True)
+        if type(info.get('hp')) is not int or info['hp'] < 0:
+            return _wait(mem, state, '帰還後の本人HPが未確認', close=True)
+        if info['hp'] == 0:
+            _invalidate(mem, '帰還後再確認で本人HP0を観測。死亡や到着は断定しない', actor)
+            return [pad('b')]
+        if info.get('location') == 'castle' and info.get('location_observed') is True:
+            observation = {'identity': state['identity'], 'chapter': state['chapter'],
+                           'general': actor, 'hp': info['hp'], 'tick': mem['tick'],
+                           'location': 'castle', 'destination_confirmed': False}
+            verification = mem.get('recall_verification') or {}
+            if verification.get('general') == actor:
+                mem['recall_verification'] = {**verification, 'status': 'in_castle_observed',
+                                              'observation': observation}
+            _invalidate(mem, '本人の現在ステータスで城内を観測し再帰還のintentを終了', actor)
+            _record(mem, 'recall_in_castle_observed', chart_step=None, general=actor,
+                    observed_metric=observation, resulting_event='in_castle_destination_unconfirmed',
+                    reason='本人の実ステータスで城内を確認。指定城到着や帰還成立とは断定せず再指示を終了')
+            return [pad('b')]
+        _defer(mem, state, '本人の城内を確認できず帰還成立とはしない。帰還Aは再送せず後で再観測',
+               status='arrival_unconfirmed')
+        return [pad('b')]
     if stage == 'recheck_focus':
         cursor = _cursor(screen)
         camps = own_camps(frame) if frame is not None and screen.kind == 'map' else []
@@ -465,6 +501,30 @@ def _anonymous_budget(mem, queue):
     return budget
 
 
+def _arrival_request(mem, actor, row):
+    """A scoped actual dispatch permits bounded reads, never another return A."""
+    proof = row.get('arrival_request', mem.get('recall_verification'))
+    identity = roster_receipts.run_identity(mem.get('_run_identity'))
+    if (not isinstance(proof, dict) or identity is None
+            or proof.get('input_sent') is not True or proof.get('status') != 'arrival_unconfirmed'
+            or proof.get('general') != actor
+            or roster_receipts.run_identity(proof.get('identity')) != identity
+            or type(proof.get('chapter')) is not int or proof['chapter'] != mem.get('chapter')
+            or type(proof.get('requested_tick')) is not int
+            or not row['tick'] <= proof['requested_tick'] <= mem['tick']):
+        return None
+    trace = proof.get('request_trace')
+    if (not isinstance(trace, dict) or roster_receipts.run_identity(trace) != identity
+            or not isinstance(trace.get('decision_id'), str)
+            or not trace['decision_id'].startswith(f"{identity['runtime_id']}:{identity['generation']}:")
+            or not trace['decision_id'].rsplit(':', 1)[-1].isdigit()
+            or not isinstance(trace.get('frame_sha256'), str) or len(trace['frame_sha256']) != 64
+            or any(c not in '0123456789abcdef' for c in trace['frame_sha256'])):
+        return None
+    return {k: proof[k] for k in ('identity', 'chapter', 'general', 'input_sent',
+                                 'status', 'requested_tick', 'request_trace')}
+
+
 def step(screen, mem, frame, existing):
     """Keep named observation retries separate from the anonymous camp cooldown."""
     from .map import world_map_step
@@ -483,11 +543,27 @@ def step(screen, mem, frame, existing):
         return [pad('b')] if is_camp_menu(screen) else None
     if not state and screen.kind == 'map' and frame is not None and not any(
             mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')):
-        actor = next((name for name, row in queue.items() if row['attempts'] < ATTEMPT_LIMIT
+        arrival_actor = next((name for name, row in queue.items()
+            if _arrival_request(mem, name, row) is not None
+            and type(row.get('arrival_reads', 0)) is int
+            and 0 <= row.get('arrival_reads', 0) < ARRIVAL_READ_LIMIT
+            and mem['tick'] >= row['retry_after']), None)
+        actor = arrival_actor or next((name for name, row in queue.items() if row['attempts'] < ATTEMPT_LIMIT
                       and mem['tick'] >= row['retry_after']), None)
         if actor is not None:
-            queue[actor]['attempts'] += 1
+            if arrival_actor:
+                queue[actor]['arrival_request'] = _arrival_request(mem, actor, queue[actor])
+                queue[actor]['arrival_reads'] = queue[actor].get('arrival_reads', 0) + 1
+                from ..decision_log import _record
+                _record(mem, 'recall_arrival_status_started', chart_step=None, general=actor,
+                        observed_metric={'check_number': queue[actor]['arrival_reads'],
+                                         'request_trace': queue[actor]['arrival_request']['request_trace']},
+                        resulting_event='read_planned_location_unconfirmed',
+                        reason='帰還Aの同run送信記録をもとに本人状態を再読する。帰還Aは再送しない')
+            else:
+                queue[actor]['attempts'] += 1
             mem['recall'] = {'stage': 'recheck_roster_open', 'steps': 0, 'general': actor,
+                             'arrival_check_only': arrival_actor is not None,
                              'retreat_recheck': True, 'identity': queue[actor]['identity'],
                              'chapter': queue[actor]['chapter'], 'recheck_tick': queue[actor]['tick'],
                              'camp_episode': _new_episode(mem)}
@@ -528,7 +604,7 @@ def step(screen, mem, frame, existing):
             current['camp_episode'] = _new_episode(mem)
             current['camp_observation'] = _observe_camp(screen, mem, frame, current, 'anonymous_map_open')
         return actions
-    if screen.kind == 'text' and state['stage'] != 'recheck_read' and not (
+    if screen.kind == 'text' and state['stage'] not in ('recheck_read', 'recheck_roster_read') and not (
             is_camp_menu(screen) or 'Aボタンでステータスひょうじ' in screen.text):
         _defer(mem, state, '別のtext表示で本人UIを失ったため通常の表示処理へ戻す')
         return None
@@ -554,6 +630,11 @@ def step(screen, mem, frame, existing):
             mem['recall_skip'] = skip_before
         verification = mem.get('recall_verification') or {}
         status = verification.get('status') if verification.get('general') == state['general'] else None
+        row = _scope(mem).get(state['general'])
+        if row is not None:
+            request = _arrival_request(mem, state['general'], {**row, 'arrival_request': verification})
+            if request is not None and row.get('arrival_request') != request:
+                row.update(arrival_request=request, arrival_reads=0)
         _defer(mem, state, '操作の有限終了後も本人の到着は未確認として再観測へ残す',
                status=status if status in ('arrival_unconfirmed', 'dispatch_unconfirmed') else 'needs_observation')
     return actions

@@ -123,6 +123,8 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+                              'recall_arrival_status_started','recall_in_castle_observed',
+                              'battle_survival_critical_recheck',
                               'house_dispatch_requested','house_arrival_seen',
                               'soldiers_seen','soldier_refill','soldier_refill_receipt','egg_priority_replan'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
