@@ -215,6 +215,12 @@ AI観測は同じprivate window全体、入力は同じprivate display/windowへ
 
 `presentation.json` は `starting → ready → stopped`（異常時 `presentation_failed` / `cleanup_failed`）を記録する。
 投影のffplayだけが終了した場合、native game/Xvfbと入力経路は保持する。TERM/HUPは通常どおり応答する。
+**配信側displayの再起動（`start_all.sh --supervisor`）で投影ffplayだけが死んだ場合**は、
+presenterが**自分が起動したplayerだけ**を、同じprivate window・同じgeometryで再作成する
+（`--reproject-on-player-loss`、既定60秒窓・2秒間隔・上限付き。他プロセスのadoptやwindow再探索はしない）。
+再作成に成功すると `presentation_failed` から `ready` へ戻る。窓内に復帰できなければ
+`presentation_failed` のまま据え置き、既存のoperator復旧経路（`recover_hanjuku_projection.py` 等）に委ねる。
+投影ffplayが10秒以上生き延びた後の次の喪失には、新しい再作成budgetを与える。
 停止時はwrapperが所有するXvfb・dbus/RetroArch・ffplayのプロセスグループだけを終了し、
 leaderをwaitした上でグループ消滅を確認する。tmux pane消滅・deadだけでは終了成功にしない。
 終了記録が欠ける/子が残る場合は次ゲームを起動せず復旧待ちにする。
@@ -233,7 +239,8 @@ OSからの強制終了や別sessionへ離脱する子まで救済する仕組�
 - deployは未実施。今回の設定・コード変更はこのworktreeだけで、共有mainとVMにはまだ反映していない。
   ローカルテスト合格だけでVMの自動抽選/無人プレイやROM実プレイを証明しない。
 
-契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`。
+契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`、
+`tests/test_presentation_reproject.py`（display再起動後の有界な再投影）。
 ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本タスクでは実施しない。
 
 

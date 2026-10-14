@@ -486,6 +486,11 @@ class RetroArchCoordinatorAdapter:
                 '--window-pattern', '^RetroArch',
                 *(['--framerate', str(HANJUKU_MIRROR_FRAMERATE), '--nearest', '--align', 'right'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
+                # A shared display restart must not leave the broadcast game area
+                # black: the presenter re-attaches its own projection, bounded
+                # (#2097). If that budget is exhausted the state stays
+                # presentation_failed and the operator recovery path remains.
+                '--reproject-on-player-loss',
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
                 '--', *command]
