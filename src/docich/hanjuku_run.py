@@ -16,10 +16,14 @@ import uuid
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
 from .hanjuku_bot import BOT_VERSION, classify
+from .hanjuku_hotload import logic_generation as _logic_generation
 from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
 from .naming import runtime_id_generation
 from . import hanjuku_repetition
+
+# The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
+LOGIC_GENERATION = _logic_generation()
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
