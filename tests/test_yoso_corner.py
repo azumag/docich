@@ -136,13 +136,13 @@ def _yoso_adapter(g, corner, switch, now, sleep):
     return adapter
 
 
-def test_production_catalog_keeps_yosou_oh_default_disabled_and_manual_only():
+def test_production_catalog_enables_yosou_oh_manual_reservation_only():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert len(catalog) == 12
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
-    assert row.enabled is False and row.manual_only is True
+    assert row.enabled is True and row.manual_only is True
     assert row.live_eligible is False and row.paused is False
     assert row.duration_minutes is None and row.audio_enabled is False
     assert row.fetch_on_start is False and row.target_matches is None

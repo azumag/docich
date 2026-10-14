@@ -2,8 +2,8 @@
 
 - Status: **PR-1（オフライン中核）／PR-2a（半熟英雄の記録フック）／PR-2b（Soren の記録フック）／
   PR-3（`yoso` adapter・view・catalog登録）／PR-4 の実装部分（読み上げ・eventOverlay）実装済み**。
-  production catalog には **既定無効（`enabled = false`）・`manual_only = true`** で登録済みで、
-  自動抽選には入らない。有効化（手動予約の受付）はオーナー承認後に
+  production catalog は **2026-10-14 オーナー承認で `enabled = true`・`manual_only = true`**
+  （手動予約のみ。自動抽選には入らない）。有効化は
   `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行い、
   読み上げも行う場合は `audio_enabled = true` を足す（§4参照）。TwiCa 前景への表示は
   TwiCa 側の正本が必要なため未着手。
@@ -114,37 +114,44 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   同列の**合成 view**（GameSwitch の program slot に乗る読み取り専用ビュー）。
 - ビューは台帳を **read-only** で読み、`予想王` ランキング表を 960×540 へ描画する。
   既存ゲーム本体・配信 encoder・Soren の予想 worker は変更しない。
-- catalog 例（**既定無効・手動予約可**で提案）:
+- catalog 例（**手動予約のみ**で提案）:
 
   ```toml
-  # 予想王: 予想的中率ランキング。既定は無効。opt-in と privacy 確認が前提。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true }
+  # 予想王: 予想的中率ランキング。手動予約のみ。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true }
   ```
 
 - 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（既定 2 分、
   catalog の `duration_minutes` で 1〜14 分）で自動終了し、既存の GameSwitch 復帰経路へ戻す。
   手動 stop は開始前・表示中・復帰中のどこでも同じ bounded な restore 経路を通る。
-- 実装済みの catalog 登録（**既定無効**）:
+- 配備済みの catalog 登録（**2026-10-14 オーナー承認で有効化**）:
 
   ```toml
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
-  # 既定無効・手動予約のみ。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true }
+  # 2026-10-14 オーナー承認で手動予約を有効化（enabled = true）。manual_only を
+  # 維持するため自動抽選には入らない。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true }
   ```
 
-- **有効化の手順（オーナー承認後）**: `enabled = false` の行は rotation の適格判定で
+- **有効化の契約**: `enabled = false` の行は rotation の適格判定で
   `disabled-or-paused` になるため、WebUI の手動予約も `hanjuku_not_eligible` で拒否される。
   手動予約を受け付けるには、同じ行を `enabled = true` にする（`manual_only = true` を維持する限り
-  自動抽選には入らない）。この1行を変えるだけで、`manual_only` の自動除外契約はそのまま働く。
-  視聴者の表示名を配信へ出す opt-in / privacy 確認（§5）が済むまで `enabled = false` を維持する。
+  自動抽選には入らず、適格判定では `manual-only` として除外される）。
+  視聴者の表示名を配信へ出す扱いはオーナー判断（§5）。
 - 有効化後も自動抽選へ入れない（`manual_only = true` のまま）。本番反映は
   `branch → PR → protected main → owner-only gateway` の正規フローで行う。
 
-## 5. プライバシー・同意（要検討）
+## 5. プライバシー・同意
 
-- 視聴者の表示名を配信画面へ出すため、参加者への周知と、荒らし・不適切名の扱い、
-  個別 opt-out（非表示申請）の手段を要検討。未確定。
-- 本案は既定無効。オーナーの明示承認なしに production catalog へ入れない。
+- 2026-10-14 オーナー判断: 配信で扱う情報であり、視聴者の表示名（Twitch が公開する
+  `id / login / 表示名`）を配信画面へ出すための個別 opt-in / privacy 同意は不要。
+  別途の同意取得は行わず、閲覧者への個別 opt-out 手段も設けない。
+- 表示名は既存の表示契約どおり制御文字を除去し24文字へ丸める（`yoso_view`）。
+  荒らし・不適切名への追加のフィルタや通報経路は設けない（オーナー判断）。
+- トークン・IP 等の非公開情報は引き続き保存しない。診断へは件数のみを出し、
+  視聴者名は出さない（§2）。
+- オーナーの明示承認なしに production catalog を有効化しない。この判断は上記の
+  2026-10-14 承認に対応する。
 
 ## 6. MVP
 
@@ -152,9 +159,11 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - [x] 予想精算時の記録フック（半熟英雄 `hanjuku_predictions.py`、PR-2a）
 - [x] 予想精算時の記録フック（Soren `twitch_predictions.sh` ＋ `soren_predictions.py`、PR-2b）
 - [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
-- [x] corner catalog 登録（既定無効・`manual_only`。手動予約の受付は `enabled = true` で有効化、PR-3）
+- [x] corner catalog 登録（`manual_only`。2026-10-14 オーナー承認で `enabled = true`、PR-3＋有効化PR）
 - [x] 読み上げ原稿（`yoso_narration.py`、`audio_enabled` opt-in、PR-4）
 - [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）／ TwiCa 前景は別リポジトリ作業
+- [ ] 台帳に実データを入れて ranking を実測する（初回は「確定した予想がまだありません」）
+- [ ] TwiCa 前景への表示（TwiCa 側の正本が必要。§4参照）
 
 ## 7. 実装ステップ（PR 分割案）
 
