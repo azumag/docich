@@ -4095,7 +4095,7 @@ def _rotation_excluded_projection(value):
             break
         if not isinstance(corner, str) or not corner or len(corner) > 64:
             continue
-        out[corner] = reason if reason in ROTATION_EXCLUDED_REASONS else "unknown"
+        out[corner] = reason if isinstance(reason, str) and reason in ROTATION_EXCLUDED_REASONS else "unknown"
     return out or None
 
 
@@ -7742,6 +7742,43 @@ def _collect_nethack_boundary(state_dir, now):
 _PRESENTATION_STATUSES = ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped")
 
 
+def _presentation_record_nofollow(path):
+    """Bounded JSON object and mtime from one pinned regular record."""
+    directory_fd = record_fd = None
+    try:
+        path = Path(path)
+        parent = path.parent
+        directory_fd = _supervisor_directory(parent.anchor or ".")
+        components = parent.parts[1:] if parent.anchor else parent.parts
+        for component in components:
+            previous_fd = directory_fd
+            directory_fd = _supervisor_directory(component, dir_fd=previous_fd)
+            os.close(previous_fd)
+        flags = (os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                 | getattr(os, "O_CLOEXEC", 0))
+        record_fd = os.open(path.name, flags, dir_fd=directory_fd)
+        info = os.fstat(record_fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("unsafe presentation record")
+        with os.fdopen(record_fd, "rb", closefd=False) as stream:
+            raw = stream.read(65536 + 1)
+        if len(raw) > 65536:
+            raise ValueError("oversized presentation record")
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("invalid presentation record")
+        return True, True, value, info.st_mtime
+    except FileNotFoundError:
+        return False, False, None, None
+    except (OSError, ValueError, RecursionError):
+        return True, False, None, None
+    finally:
+        if record_fd is not None:
+            os.close(record_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
 def _collect_runtime_presentation(state_dir, now):
     """Bounded view of the *active* runtime's projector state (#2097).
 
@@ -7762,21 +7799,21 @@ def _collect_runtime_presentation(state_dir, now):
         "height": None,
         "age_sec": None,
     }
-    try:
-        data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return result
-    if not isinstance(data, dict):
+    _, readable, data, _ = _presentation_record_nofollow(
+        Path(state_dir) / "game_switch.json"
+    )
+    if not readable:
         return result
     active = data.get("active")
     if not isinstance(active, dict):
         return result
     runtime_id = active.get("runtime_id")
-    if not isinstance(runtime_id, str) or not _RUNTIME_ID_RE.fullmatch(runtime_id):
+    if (not isinstance(runtime_id, str) or runtime_id in (".", "..")
+            or not _RUNTIME_ID_RE.fullmatch(runtime_id)):
         return result
     result["active_runtime"] = True
     path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
-    present, readable, state = _load_state_file(path)
+    present, readable, state, modified = _presentation_record_nofollow(path)
     result["present"] = present
     result["readable"] = readable
     if not readable or not isinstance(state, dict):
@@ -7794,10 +7831,6 @@ def _collect_runtime_presentation(state_dir, now):
         value = state.get(key)
         if type(value) is int and 0 < value <= 4096:
             result[key] = value
-    try:
-        modified = path.stat().st_mtime
-    except OSError:
-        return result
     if 0 <= modified <= now + 86400:
         result["age_sec"] = max(0, int(now - modified))
     return result
