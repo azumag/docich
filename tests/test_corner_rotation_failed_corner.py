@@ -92,6 +92,19 @@ class Adapter:
         return self.released
 
 
+class RestoreAdapter(Adapter):
+    """Adapter that exposes the reviewed timer restore replay (#2187)."""
+
+    def __init__(self, *args, restore_recovery=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._restore_recovery = restore_recovery
+
+    def recover_failed_restore(self):
+        if self._restore_recovery is None:
+            return None
+        return self._restore_recovery(self)
+
+
 class Executor:
     def __init__(self, result="completed"):
         self.calls = []
@@ -104,7 +117,8 @@ class Executor:
         return self.result
 
 
-def build(tmp_path, *, storages, states=None, released=True, executor=None):
+def build(tmp_path, *, storages, states=None, released=True, executor=None,
+          restore_recovery=None):
     """Build a two-corner queue rotation with per-corner fake stores."""
 
     path = tmp_path / "config.toml"
@@ -114,15 +128,17 @@ def build(tmp_path, *, storages, states=None, released=True, executor=None):
     g = load_global(tmp_path, path)
     clock = [1000000.0]
     catalog = [Corner("a", "game", "gamea"), Corner("b", "game", "gameb")]
-    adapters = {
-        corner.id: Adapter(
-            g, corner,
-            store=storages.get(corner.id),
-            states=(states or {}).get(corner.id, []),
-            released=released,
-        )
-        for corner in catalog
-    }
+    restore_recovery = restore_recovery or {}
+    adapters = {}
+    for corner in catalog:
+        common = dict(store=storages.get(corner.id),
+                      states=(states or {}).get(corner.id, []),
+                      released=released)
+        if corner.id in restore_recovery:
+            adapters[corner.id] = RestoreAdapter(
+                g, corner, restore_recovery=restore_recovery[corner.id], **common)
+        else:
+            adapters[corner.id] = Adapter(g, corner, **common)
     executor = executor or Executor()
     manager = CornerRotationManager(
         g, clock=lambda: clock[0], seed="seed", catalog=catalog,
@@ -314,6 +330,166 @@ def test_latched_failure_stays_recorded_without_duplicating(tmp_path):
     rows = ledger(manager)["failed_corners"]
     assert len(rows) == 1
     assert rows[0]["resolution"] == "recovery-required"
+
+
+def test_latched_end_failure_is_replayed_by_the_timer(tmp_path):
+    """A corner end that left its own game on screen is restored by the timer."""
+
+    def replay(adapter):
+        adapter.manager.store.canonical = _Canonical(CLEAN_CANONICAL)
+        adapter.states = []
+        return SimpleNamespace(status="succeeded")
+
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+        restore_recovery={"a": replay, "b": replay},
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    blocked = pending["corner"]
+    # The corner ran and ended; its own game still holds the plane.
+    adapters[blocked].states = [{"status": "failed", "started_at": 1.0,
+                                 "rotation_request_id": pending["request_id"]}]
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert result["corner"] != blocked
+    after = ledger(manager)
+    assert after["auto_restore"]["attempts"] == 1
+    assert after["auto_restore"]["last_status"] == "succeeded"
+    assert after["status"] == "ready"
+    assert last_failure(after)["resolution"] == "released-unverified"
+
+
+def test_auto_restore_respects_backoff_and_then_records_exhaustion(tmp_path):
+    calls = []
+
+    def replay(_adapter):
+        calls.append(1)
+        return SimpleNamespace(status="failed")
+
+    manager, clock, _executor, adapters = build(
+        tmp_path,
+        # The request's receipt is not terminal yet, so the finished leftover
+        # cannot be reclaimed: the replay retries with backoff and then gives up.
+        storages={"a": Store(canonical=owned_canonical("gamea"),
+                             default_receipt={"status": "queued"}),
+                  "b": Store(canonical=owned_canonical("gameb"),
+                             default_receipt={"status": "queued"})},
+        executor=Executor(result="failed"),
+        restore_recovery={"a": replay, "b": replay},
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    adapters[pending["corner"]].states = [
+        {"status": "failed", "started_at": 1.0, "rotation_request_id": pending["request_id"]}
+    ]
+
+    # First attempt runs immediately.
+    assert manager.tick()["status"] == "recovery_required"
+    state = ledger(manager)
+    assert state["auto_restore"]["attempts"] == 1
+    assert state["auto_restore"]["next_attempt_at"] == clock[0] + 300
+
+    # A tick inside the backoff window must not replay again.
+    assert manager.tick()["status"] == "recovery_required"
+    assert ledger(manager)["auto_restore"]["attempts"] == 1
+
+    clock[0] += 301
+    assert manager.tick()["status"] == "recovery_required"
+    assert ledger(manager)["auto_restore"]["attempts"] == 2
+
+    clock[0] += 901
+    assert manager.tick()["status"] == "recovery_required"
+    assert ledger(manager)["auto_restore"]["attempts"] == 3
+
+    # The cap is reached: automation gives up exactly once and the latch stays.
+    clock[0] += 2701
+    assert manager.tick()["status"] == "recovery_required"
+    after = ledger(manager)
+    assert after["auto_restore"]["attempts"] == 3
+    exhausted = [row for row in after["failed_corners"]
+                 if row.get("reason_code") == "restore-recovery-exhausted"]
+    assert len(exhausted) == 1
+    assert exhausted[0]["resolution"] == "recovery-required"
+
+    clock[0] += 2701
+    assert manager.tick()["status"] == "recovery_required"
+    assert len([row for row in ledger(manager)["failed_corners"]
+                if row.get("reason_code") == "restore-recovery-exhausted"]) == 1
+    assert len(calls) == 3
+
+
+def test_auto_restore_is_skipped_without_the_adapter_entry(tmp_path):
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+
+    assert manager.tick()["status"] == "recovery_required"
+
+    assert "auto_restore" not in ledger(manager)
+
+
+def test_finished_corner_leftover_is_reclaimed_and_the_next_corner_runs(tmp_path):
+    """A finished corner's leftover game must not stop the rotation (#2187)."""
+
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    blocked = pending["corner"]
+    # The corner ran and ended, but its own game still holds the plane.
+    adapters[blocked].states = [{"status": "failed", "started_at": 1.0,
+                                 "rotation_request_id": pending["request_id"]}]
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert result["corner"] != blocked
+    after = ledger(manager)
+    assert after["status"] == "ready"
+    released = last_failure(after)
+    assert released["corner"] == blocked
+    assert released["resolution"] == "released-unverified"
+    assert released["reason_code"] == "base-game-unrestored"
+
+
+def test_unstarted_owner_still_keeps_the_latch(tmp_path):
+    """The same plane shape with a corner that never started must stay latched."""
+
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    blocked = pending["corner"]
+    adapters[blocked].states = [{"status": "failed",
+                                 "rotation_request_id": pending["request_id"]}]
+    executor.result = "completed"
+
+    assert manager.tick()["status"] == "recovery_required"
+    assert ledger(manager)["status"] == "recovery_required"
+    assert last_failure(ledger(manager))["resolution"] == "recovery-required"
 
 
 def test_ledger_error_kinds_still_latch(tmp_path):

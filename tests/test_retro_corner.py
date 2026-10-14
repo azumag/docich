@@ -1923,6 +1923,56 @@ class TestRestoreRecoveryBoundaries(RetroCornerTestBase):
 
 
 
+class TestTimerRestoreRecoveryEntry(RetroCornerTestBase):
+    """The rotation timer may call only the reviewed restore-recovery subset."""
+
+    def test_timer_entry_is_a_noop_for_a_prelaunch_failure(self):
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+        request_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(status="failed", game="robots", previous_game="sorengame",
+                     rotation_request_id=request_id, switch_request_id=request_id,
+                     completed_at=self.now_value.isoformat(), last_error_code="timeout")
+        mgr._write_state(state)
+
+        result = mgr.recover_failed_restore()
+
+        # A prelaunch failure is not a restore failure: never terminalize it,
+        # never retry the general path and never select or start a game.
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(coordinator.calls, [])
+        self.assertEqual(mgr.status()["status"], "failed")
+
+    def test_timer_entry_never_replays_without_proven_restore_evidence(self):
+        current = ["robots"]
+        mgr, coordinator = self.manager(current)
+        request_id = str(uuid.uuid4())
+        restore_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(status="failed", game="robots", previous_game="sorengame",
+                     rotation_request_id=request_id, switch_request_id=restore_id,
+                     started_at=self.now_value.isoformat(),
+                     completed_at=self.now_value.isoformat())
+        mgr._write_state(state)
+        names = runtime_names(1)
+        canonical = mgr.store.initialize()
+        canonical.update(phase="ready", next_generation=2, active={
+            "game": "robots", "adapter": "cli", "generation": 1,
+            "runtime_id": "g1-abcdef", "lease_id": str(uuid.uuid4()),
+            "game_window": names.game_window, "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-23T12:00:00Z",
+        })
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed_restore()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(coordinator.calls, [])
+        self.assertEqual(mgr.status()["status"], "failed")
+
+
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_start_bounds_game_switch_by_the_saved_slot_deadline(self):
         current = ["sorengame"]

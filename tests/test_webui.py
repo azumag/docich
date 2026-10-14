@@ -2009,6 +2009,31 @@ class TestHttpHandlers(unittest.TestCase):
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
 
+    def test_get_corners_publishes_the_bounded_auto_restore_budget(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="recovery_required", pending=None,
+            reason="execution-or-state-unverified",
+            failed_corners=[
+                {"corner": "ninvaders", "request_id": "PRIVATE-REQUEST", "at": time.time() - 60,
+                 "resolution": "recovery-required", "reason_code": "restore-recovery-exhausted",
+                 "error_kind": "execution-error"},
+            ],
+            auto_restore={"request_id": "PRIVATE-REQUEST", "corner": "ninvaders",
+                          "attempts": 3, "next_attempt_at": time.time() + 600,
+                          "last_status": "failed", "exhausted_recorded": True})
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        rotation = data["rotation"]
+        self.assertEqual(rotation["recent_failures"][0]["reason_code"],
+                         "restore-recovery-exhausted")
+        self.assertEqual(rotation["auto_restore"]["corner"], "ninvaders")
+        self.assertEqual(rotation["auto_restore"]["attempts"], 3)
+        self.assertEqual(rotation["auto_restore"]["attempt_limit"], 3)
+        self.assertEqual(rotation["auto_restore"]["status"], "failed")
+        self.assertNotIn("PRIVATE-REQUEST", json.dumps(data))
+
     def test_get_corners_manual_owner_requires_exact_declared_identity_and_fixed_status(self):
         self._write_weather_catalog_config()
         self._write_rotation_state(status="waiting", pending=None,

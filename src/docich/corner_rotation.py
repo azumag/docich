@@ -64,6 +64,26 @@ RELEASED_REASON = "failed-corner-slot-released"
 # Fixed resolutions for the `failed_corners` ledger rows; diagnostics projects
 # only these values (ops/vm_actions/collect_diagnostics.py).
 FAILED_CORNER_RESOLUTIONS = frozenset({"released-unverified", "recovery-required"})
+FAILED_CORNER_REASONS = frozenset({
+    RELEASED_REASON,
+    "execution-or-state-unverified",
+    # The plane was reclaimed from an already finished corner whose own game
+    # could not be restored; the rotation continues, the base game is recorded
+    # as not restored so it stays fixable (#2187).
+    "base-game-unrestored",
+    "restore-recovery-exhausted",
+})
+
+# A failed corner *end* can leave the corner's own game on screen, so the
+# shared slot is not free and releasing the reservation would abandon the
+# background game. The reviewed, bounded restore replay is then run by the
+# timer itself, but only within this budget: a permanently failing restore
+# retries a few times with backoff and then keeps the latch for the operator
+# (#2187, owner decision 2026-10-14).
+AUTO_RESTORE_ATTEMPT_LIMIT = 3
+AUTO_RESTORE_BACKOFF_SECONDS = (300.0, 900.0, 2700.0)
+AUTO_RESTORE_STATUSES = frozenset({"succeeded", "queued", "failed", "noop", "interrupted",
+                                   "completed", "unknown", "none"})
 
 
 class RotationError(RuntimeError):
@@ -668,6 +688,56 @@ class CornerRotationManager:
         game = getattr(corner, "game", None)
         return game if isinstance(game, str) and game else None
 
+    def _finished_owner(self, adapter, request_id):
+        """Prove the corner that still holds the plane has already ended (#2187).
+
+        A shared slot held by a *finished* corner is reclaimable: game-switch
+        can quiesce that leftover runtime and switch away from it, which is
+        exactly what the next corner does. A slot held by a corner that never
+        started, or that may still be live, is not reclaimable.
+        """
+
+        if not isinstance(request_id, str) or not request_id or adapter is None:
+            return False
+        try:
+            observations = list(adapter.observations())
+        except Exception:
+            return False
+        for raw in observations:
+            if not isinstance(raw, dict) or raw.get("rotation_request_id") != request_id:
+                continue
+            status = raw.get("status")
+            if status in {"completed", "interrupted", "expired", "idle"}:
+                return True
+            if status == "failed":
+                # A failed *end* records the run it finished; a failed start
+                # never started and must keep its fail-closed latch.
+                return raw.get("started_at") is not None
+        return False
+
+    def _leftover_corner_game(self, adapter, reservation):
+        """True when the plane is held by this corner's own, already ended run."""
+
+        game = self._corner_game(adapter)
+        request_id = (reservation or {}).get("request_id")
+        if game is None or not isinstance(request_id, str) or not request_id:
+            return False
+        manager = getattr(adapter, "manager", None)
+        store = getattr(manager, "store", None)
+        if store is None:
+            return False
+        try:
+            with store.lock(exclusive=False):
+                canonical, missing = store.canonical.load()
+        except Exception:
+            return False
+        if missing or not isinstance(canonical, dict):
+            return False
+        active = canonical.get("active")
+        if not isinstance(active, dict) or active.get("game") != game:
+            return False
+        return self._finished_owner(adapter, request_id)
+
     def _slot_reusable(self, adapter, reservation):
         """Prove the shared program slot is free of one failed request (#2187).
 
@@ -716,8 +786,13 @@ class CornerRotationManager:
             return False
         game = self._corner_game(adapter)
         if game is not None and active["game"] == game:
-            # The plane still owns this corner's game: never reuse the slot.
-            return False
+            # The plane still owns this corner's game. That is reusable only
+            # when the corner that owns it has already ended: a finished
+            # runtime is a leftover game-switch can quiesce and switch away
+            # from, so the rotation must not stop for it (#2187). A corner that
+            # never started or may still be live is never reclaimed.
+            if not self._finished_owner(adapter, request_id):
+                return False
         if isinstance(receipt, dict) and receipt.get("status") not in TERMINAL_RECEIPT_STATUSES:
             return False
         if isinstance(queued, list):
@@ -733,7 +808,8 @@ class CornerRotationManager:
                 return False
         return True
 
-    def _record_failed_corner(self, state, reservation, *, resolution, error_kind, now):
+    def _record_failed_corner(self, state, reservation, *, resolution, error_kind, now,
+                              reason_code=None):
         """Append one bounded, fixed-shape anomaly row for an operator to fix."""
 
         rows = state.get("failed_corners")
@@ -744,12 +820,15 @@ class CornerRotationManager:
             "request_id": reservation.get("request_id"),
             "at": now,
             "resolution": resolution if resolution in FAILED_CORNER_RESOLUTIONS else "recovery-required",
-            "reason_code": RELEASED_REASON if resolution == "released-unverified" else "execution-or-state-unverified",
+            "reason_code": (reason_code if reason_code in FAILED_CORNER_REASONS else
+                            (RELEASED_REASON if resolution == "released-unverified"
+                             else "execution-or-state-unverified")),
             "error_kind": error_kind if error_kind in ERROR_KINDS else "unexpected",
         })
         state["failed_corners"] = rows[-FAILED_CORNER_LIMIT:]
 
-    def _record_failed_corner_once(self, state, reservation, *, resolution, error_kind, now):
+    def _record_failed_corner_once(self, state, reservation, *, resolution, error_kind, now,
+                                   reason_code=None):
         """Record the anomaly only once per request.
 
         The latch is re-evaluated every tick, so the failure must stay
@@ -763,7 +842,81 @@ class CornerRotationManager:
                 for row in rows):
             return
         self._record_failed_corner(state, reservation, resolution=resolution,
-                                   error_kind=error_kind, now=now)
+                                   error_kind=error_kind, now=now, reason_code=reason_code)
+
+    def _auto_restore_budget(self, state, pending, now):
+        """Return (allowed, record) for the bounded timer restore replay.
+
+        The budget belongs to one pending request: a new reservation starts a
+        fresh budget, and the attempt count plus the next allowed time are
+        durable so a restart cannot turn the cap into an unbounded loop.
+        """
+
+        record = state.get("auto_restore")
+        if (not isinstance(record, dict)
+                or record.get("request_id") != pending.get("request_id")):
+            record = {"request_id": pending.get("request_id"),
+                      "corner": pending.get("corner"),
+                      "attempts": 0,
+                      "next_attempt_at": now,
+                      "last_status": None,
+                      "exhausted_recorded": False}
+            state["auto_restore"] = record
+        attempts = record.get("attempts")
+        if type(attempts) is not int or attempts < 0:
+            attempts = 0
+            record["attempts"] = 0
+        if attempts >= AUTO_RESTORE_ATTEMPT_LIMIT:
+            return False, record
+        next_at = record.get("next_attempt_at")
+        if isinstance(next_at, (int, float)) and not isinstance(next_at, bool) and now < next_at:
+            return False, record
+        return True, record
+
+    def _run_auto_restore_recovery(self, state, pending, adapter, now):
+        """Replay the reviewed restore recovery once, inside its own budget.
+
+        Returns a settled outcome when the replay made the reservation
+        committable; otherwise ``None`` keeps the latch and the next tick
+        retries after the backoff (until the cap records the exhaustion).
+        """
+
+        runner = getattr(adapter, "recover_failed_restore", None)
+        if not callable(runner):
+            return None
+        allowed, record = self._auto_restore_budget(state, pending, now)
+        if not allowed:
+            attempts = record.get("attempts")
+            if (type(attempts) is int and attempts >= AUTO_RESTORE_ATTEMPT_LIMIT
+                    and not record.get("exhausted_recorded")):
+                record["exhausted_recorded"] = True
+                state["auto_restore"] = record
+                self._record_failed_corner(
+                    state, pending, resolution="recovery-required",
+                    error_kind=state.get("error_kind") or "execution-unverified", now=now,
+                    reason_code="restore-recovery-exhausted",
+                )
+            return None
+        try:
+            recovered = runner()
+        except Exception:
+            recovered = None
+        status = getattr(recovered, "status", None) if recovered is not None else None
+        if status is None and isinstance(recovered, str):
+            status = recovered
+        attempts = int(record.get("attempts") or 0) + 1
+        record.update(attempts=attempts,
+                      last_status=status if status in AUTO_RESTORE_STATUSES else
+                      ("none" if status is None else "unknown"),
+                      next_attempt_at=now + AUTO_RESTORE_BACKOFF_SECONDS[
+                          min(attempts, len(AUTO_RESTORE_BACKOFF_SECONDS)) - 1])
+        state["auto_restore"] = record
+        try:
+            return self._commit_verified_failed_start(
+                state, pending, adapter, manual=False, now=now
+            )
+        except Exception:
+            return None
 
     def _mark_released_request(self, state, corner, request_id, now):
         """Remember one released failure per corner so `_observe` can skip it.
@@ -785,17 +938,21 @@ class CornerRotationManager:
                 released.pop(key, None)
         state["released_requests"] = released
 
-    def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now):
+    def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
+                               base_unrestored=False):
         """Settle an unproven automatic failure without stopping the rotation.
 
         Only the shared-slot proof gates this; the corner's own state is left
         untouched (an operator or the adapter's own recovery still fixes it).
         The failed use is recorded in history so the rolling cooldown applies
-        and the corner returns at its normal cadence.
+        and the corner returns at its normal cadence. ``base_unrestored`` marks
+        the case where the plane was reclaimed from a finished corner whose own
+        game could not be restored, so the operator can still fix the base.
         """
 
         self._record_failed_corner(state, reservation, resolution="released-unverified",
-                                   error_kind=error_kind, now=now)
+                                   error_kind=error_kind, now=now,
+                                   reason_code="base-game-unrestored" if base_unrestored else None)
         self._mark_released_request(state, reservation["corner"], reservation.get("request_id"), now)
         state["history"].append(dict(corner=reservation["corner"], at=now, source="failure"))
         state["pending"] = None
@@ -813,10 +970,11 @@ class CornerRotationManager:
         """Try to clear a corner-failure latch without an operator (#2187).
 
         Returns the tick outcome when the pending automatic reservation was
-        settled; ``None`` keeps the latch. The same two proofs as the dispatch
-        path are used: an exact terminal rollback commit first, then the shared
-        slot proof. Nothing here starts a corner, drops history or bypasses the
-        program slot.
+        settled; ``None`` keeps the latch. Three proofs are tried in order: an
+        exact terminal rollback commit, the reviewed bounded restore replay
+        (only for an end failure that still owns the corner's game), and the
+        shared slot proof. Nothing here starts a corner, drops history or
+        bypasses the program slot.
         """
 
         pending = state.get("pending")
@@ -836,16 +994,26 @@ class CornerRotationManager:
         if outcome is not None:
             return outcome
         kind = state.get("error_kind") or "execution-unverified"
-        if not self._slot_reusable(adapter, pending):
-            # Keep the latch, but the failure must stay recorded for the
-            # operator even when the tick only re-reads the latch (#2187).
-            self._record_failed_corner_once(state, pending,
-                                            resolution="recovery-required",
-                                            error_kind=kind, now=now)
-            return None
-        return self._release_failed_corner(
-            state, pending, adapter, error_kind=kind, now=now,
-        )
+        # A finished corner whose own game is still on screen does not block
+        # the rotation: the slot is reclaimable. Try the reviewed restore
+        # recovery first (bounded by the per-request budget) so the base game
+        # stays honest, then hand the slot to the next corner regardless.
+        leftover = self._leftover_corner_game(adapter, pending)
+        if leftover:
+            replayed = self._run_auto_restore_recovery(state, pending, adapter, now)
+            if replayed is not None:
+                return replayed
+        if self._slot_reusable(adapter, pending):
+            return self._release_failed_corner(
+                state, pending, adapter, error_kind=kind, now=now,
+                base_unrestored=leftover,
+            )
+        # Keep the latch, but the failure must stay recorded for the operator
+        # even when the tick only re-reads the latch (#2187).
+        self._record_failed_corner_once(state, pending,
+                                        resolution="recovery-required",
+                                        error_kind=kind, now=now)
+        return None
 
     @staticmethod
     def _expired_capture_has_no_live_owner(reservation, adapter):
@@ -894,9 +1062,11 @@ class CornerRotationManager:
                 # shared slot is provably free; the timer retries this every
                 # tick, so a latch usually clears itself without an operator.
                 outcome = self._auto_release_latch(state, now)
+                # The retry can add the durable anomaly row and the bounded
+                # restore-replay budget, so persist even when it keeps the latch.
+                self.save(state)
                 if outcome is None:
                     return {"status": "recovery_required", "reason": state.get("reason")}
-                self.save(state)
             future_manual = self._import_manual_queue(state, now)
             if now < state["last_seen_at"]:
                 return self._wait(state, "clock-regressed")
@@ -1127,10 +1297,13 @@ class CornerRotationManager:
                     state["history"] = list(latest.values())
                 elif status in {"queued", "waiting", "already-running"}:
                     state.update(status="waiting", reason="execution-pending")
-                elif self._slot_reusable(adapter, pending):
+                elif (self._slot_reusable(adapter, pending)
+                      and not self._leftover_corner_game(adapter, pending)):
                     # The corner failed with no terminal proof, but the shared
                     # slot provably holds nothing from it: record the anomaly
-                    # and let the next corner run (#2187).
+                    # and let the next corner run (#2187). A plane still held by
+                    # a *finished* run is reclaimed by the next tick, which
+                    # first replays the reviewed restore recovery.
                     outcome = self._release_failed_corner(
                         state, pending, adapter,
                         error_kind="execution-unverified", now=now,
@@ -1172,11 +1345,14 @@ class CornerRotationManager:
                 else:
                     error = exc
                 kind = _error_kind(error)
+                failed_adapter = (self.adapters.get(pending.get("corner"))
+                                  if pending is not None else None)
                 if (pending is not None and manual is None
                         and kind not in LEDGER_ERROR_KINDS
-                        and self._slot_reusable(self.adapters.get(pending.get("corner")), pending)):
+                        and self._slot_reusable(failed_adapter, pending)
+                        and not self._leftover_corner_game(failed_adapter, pending)):
                     outcome = self._release_failed_corner(
-                        state, pending, self.adapters.get(pending.get("corner")),
+                        state, pending, failed_adapter,
                         error_kind=kind, now=now,
                     )
                     self.save(state)

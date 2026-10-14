@@ -175,7 +175,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   失敗したcornerの記録として `failed_corners`（直近8件、`corner` / `at` /
   `resolution`（`released-unverified`＝記録して他cornerのローテーションを継続、
   `recovery-required`＝共有slotの安全が証明できずlatch維持、不正値は`unknown`）/
+  `reason_code`（`failed-corner-slot-released` / `execution-or-state-unverified` /
+  `base-game-unrestored`（終了済みcornerの枠を取り戻して継続したがbase gameが未復帰）/
+  `restore-recovery-exhausted` の固定enum。欠落はnull、不正値は`unknown`）/
   `error_kind`（固定enum））を出す（#2187）。request identity・例外本文・自由文は出さない。
+  end失敗の自動restore再実行の予算を `auto_restore_corner` / `auto_restore_attempts` /
+  `auto_restore_attempt_limit` / `auto_restore_next_at` / `auto_restore_status`
+  （固定enum）で出す（#2187）。request identityは出さない。
   自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
   `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
   `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、

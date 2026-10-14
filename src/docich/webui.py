@@ -1821,6 +1821,16 @@ _ROTATION_ERROR_KIND_ENUM = frozenset({
 })
 # Corner failures the scheduler no longer stops the rotation for (#2187).
 _ROTATION_FAILED_RESOLUTIONS = frozenset({"released-unverified", "recovery-required"})
+_ROTATION_FAILED_REASONS = frozenset({
+    "failed-corner-slot-released",
+    "execution-or-state-unverified",
+    "base-game-unrestored",
+    "restore-recovery-exhausted",
+})
+_ROTATION_AUTO_RESTORE_STATUSES = frozenset({
+    "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
+})
+_ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
 _ROTATION_FAILED_MAX = 5
 _PENDING_PHASE_ENUM = frozenset({"selected", "dispatched"})
 _CORNER_STATUS_ENUM = frozenset({
@@ -1958,13 +1968,34 @@ def _rotation_failures_view(raw: Any) -> list[dict[str, Any]]:
                 continue
             resolution = row.get("resolution")
             error_kind = row.get("error_kind")
+            reason_code = row.get("reason_code")
             out.append({
                 "corner": _view_str(row.get("corner")),
                 "at": _view_time(row.get("at")),
                 "resolution": resolution if resolution in _ROTATION_FAILED_RESOLUTIONS else "unknown",
+                "reason_code": (reason_code if reason_code in _ROTATION_FAILED_REASONS
+                                else ("unknown" if reason_code is not None else None)),
                 "error_kind": error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM else "unknown",
             })
     return out
+
+
+def _rotation_auto_restore_view(raw: Any) -> dict[str, Any] | None:
+    """Bounded view of the timer's restore-replay budget (#2187)."""
+
+    record = raw.get("auto_restore") if isinstance(raw, dict) else None
+    if not isinstance(record, dict):
+        return None
+    attempts = record.get("attempts")
+    status = record.get("last_status")
+    return {
+        "corner": _view_str(record.get("corner")),
+        "attempts": attempts if type(attempts) is int and 0 <= attempts <= 100 else None,
+        "attempt_limit": _ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT,
+        "next_at": _view_time(record.get("next_attempt_at")),
+        "status": (status if status in _ROTATION_AUTO_RESTORE_STATUSES
+                   else ("unknown" if status is not None else None)),
+    }
 
 
 def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
@@ -2016,6 +2047,7 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return out
     out["recent_failures"] = _rotation_failures_view(raw)
+    out["auto_restore"] = _rotation_auto_restore_view(raw)
     status = raw.get("status")
     status = status if status in _ROTATION_STATUS_ENUM else "unknown"
     pending = raw.get("pending")

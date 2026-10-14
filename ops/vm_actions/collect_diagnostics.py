@@ -2888,6 +2888,18 @@ ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
 # value means the shared slot could not be proven free, so the fail-closed
 # latch stayed.
 ROTATION_FAILED_CORNER_RESOLUTIONS = frozenset({"released-unverified", "recovery-required"})
+# Fixed reason codes of those rows, plus the bounded timer restore replay's
+# own statuses (#2187). Keep in sync with docich.corner_rotation.
+ROTATION_FAILED_CORNER_REASONS = frozenset({
+    "failed-corner-slot-released",
+    "execution-or-state-unverified",
+    "base-game-unrestored",
+    "restore-recovery-exhausted",
+})
+ROTATION_AUTO_RESTORE_STATUSES = frozenset({
+    "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
+})
+ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
 ROTATION_FAILED_CORNER_MAX = 8
 
 WEATHER_CORNER_STATUSES = frozenset({
@@ -3973,6 +3985,7 @@ def _rotation_failed_corners_projection(data):
             if not isinstance(row, dict):
                 continue
             resolution = row.get("resolution")
+            reason_code = row.get("reason_code")
             projected.append({
                 "corner": _bounded_str(row.get("corner"), 64),
                 "at": _bounded_time(row.get("at")),
@@ -3980,9 +3993,36 @@ def _rotation_failed_corners_projection(data):
                     resolution if resolution in ROTATION_FAILED_CORNER_RESOLUTIONS
                     else "unknown"
                 ),
+                "reason_code": (
+                    reason_code if reason_code in ROTATION_FAILED_CORNER_REASONS
+                    else ("unknown" if reason_code is not None else None)
+                ),
                 "error_kind": _rotation_error_kind(row.get("error_kind")),
             })
     return {"failed_corners": projected}
+
+
+def _rotation_auto_restore_projection(data):
+    """Bounded view of the timer's restore replay budget (#2187).
+
+    A failed corner end can leave the corner's game on screen; the timer then
+    replays the reviewed restore recovery a few times. The operator needs to
+    see whether that is still running or already exhausted.
+    """
+    record = data.get("auto_restore")
+    out = {"auto_restore_corner": None, "auto_restore_attempts": None,
+           "auto_restore_attempt_limit": ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT,
+           "auto_restore_next_at": None, "auto_restore_status": None}
+    if not isinstance(record, dict):
+        return out
+    out["auto_restore_corner"] = _bounded_str(record.get("corner"), 64)
+    attempts = record.get("attempts")
+    out["auto_restore_attempts"] = attempts if type(attempts) is int and 0 <= attempts <= 100 else None
+    out["auto_restore_next_at"] = _bounded_time(record.get("next_attempt_at"))
+    status = record.get("last_status")
+    out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
+                                  else ("unknown" if status is not None else None))
+    return out
 
 
 def _rotation_pending_projection(state_dir, data, now):
@@ -4273,6 +4313,7 @@ def _collect_corner_files(state_dir, payload, now):
         rotation.update(_rotation_pending_projection(state_dir, data, now))
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
+        rotation.update(_rotation_auto_restore_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
