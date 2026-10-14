@@ -62,6 +62,38 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path):
+    """Enabling a manual-only corner must be observable without a reservation."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "all-corners-cooling-down", "slot": 236,
+        "seed": "DO-NOT-PUBLISH-SEED", "last_seen_at": 100, "eligible": [],
+        "excluded": {"yosou-oh": "manual-only", "nethack": "disabled-or-paused",
+                     "tsuitate": "adapter-unavailable", "weird": "DO-NOT-PUBLISH-REASON"},
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    projection = output["corner_rotation"]
+    assert projection["excluded"] == {"nethack": "disabled-or-paused",
+                                      "tsuitate": "adapter-unavailable",
+                                      "weird": "unknown", "yosou-oh": "manual-only"}
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_rotation_excluded_map_is_absent_and_bounded(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["corner_rotation"]["excluded"] is None
+
+    bounded = module._rotation_excluded_projection(
+        {f"corner-{index}": "manual-only" for index in range(100)})
+    assert bounded is not None and len(bounded) == module.ROTATION_EXCLUDED_LIMIT
+    assert module._rotation_excluded_projection({"": "manual-only"}) is None
+    assert module._rotation_excluded_projection(["manual-only"]) is None
+
+
 def test_rotation_projection_reports_scheduled_manual_without_request_identity(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({

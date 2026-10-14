@@ -162,6 +162,12 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
   eligible_count、pending有無、`queued_manual`（ledgerまたは固定inboxに手動予約があるboolean）、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
+  `excluded` は直近のtickが `CornerRotationManager._eligible()` で自動抽選から外した
+  corner idを固定理由（`disabled-or-paused` / `manual-only` / `adapter-unavailable`、
+  想定外は`unknown`）へ対応づけたboundedなmap（最大32件、id順。無ければnull）。
+  **有効化はここで読める**: 手動予約を受け付けるcornerは`manual-only`、無効・休止中は
+  `disabled-or-paused`になるため、予約を実行しなくてもcatalogの有効化を実測できる。
+  validなcatalog id以外は出さず、理由の自由文は出さない。
   さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
   例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。
   直近のlatch分類として次にlatchし直すまで残る）と、予約（`pending`）が在る限り
