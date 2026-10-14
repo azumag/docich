@@ -555,8 +555,7 @@ def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
     return best_path
 
 
-def decide(text: str, weights: dict, color_text: str | None = None,
-           next_piece: str | None = None) -> list[str] | None:
+def decide(text: str, weights: dict, color_text: str | None = None) -> list[str] | None:
     lower = text.lower()
     if any(marker in lower for marker in MENU_MARKERS):
         return None
@@ -570,7 +569,7 @@ def decide(text: str, weights: dict, color_text: str | None = None,
     board, preview = parse_screen(color_text)
     if board is None:
         return None
-    plan = plan_keys(board, preview if next_piece is None else next_piece, weights)
+    plan = plan_keys(board, preview, weights)
     if plan is None:
         # In colored mode, do not send blind inputs when the piece is hidden or
         # cannot be identified from the current board.
