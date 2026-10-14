@@ -168,13 +168,31 @@ def run_pipeline(
     reply_text = ""
     dispatch_detail = ""
     dispatch_result = None
+    base_prompt = prompt_text
     for attempt in range(max(1, retries)):
+        current_prompt = base_prompt if attempt == 0 else prompt.retry_prompt(base_prompt, intake.host_mode)
+        dispatch_result = None
         try:
-            generated, dispatch_result = generator(prompt_text if attempt == 0 else prompt.retry_prompt(prompt_text, intake.host_mode))
+            generated_out = generator(current_prompt)
         except Exception as exc:  # pragma: no cover - defensive
             dispatch_detail = f"generator_error: {exc}"
             generated = ""
             break
+        if isinstance(generated_out, tuple):
+            if len(generated_out) == 0:
+                generated = ""
+            elif len(generated_out) == 1:
+                generated = generated_out[0]
+            else:
+                generated = generated_out[0]
+                dispatch_result = generated_out[1]
+        elif isinstance(generated_out, str):
+            generated = generated_out
+        elif hasattr(generated_out, "output"):
+            generated = getattr(generated_out, "output") or ""
+            dispatch_result = generated_out
+        else:
+            generated = generated_out
         dispatch_detail = getattr(dispatch_result, "failure_kind", "") or ""
         if isinstance(generated, tuple):
             generated = generated[0] if generated else ""
@@ -191,8 +209,7 @@ def run_pipeline(
             break
         # keep last guarded candidate for reporting even when invalid
         reply_text = cleaned or guarded or generated
-        # retry uses retry_prompt form next iteration
-        prompt_text = prompt.retry_prompt(prompt_text, intake.host_mode)
+    prompt_text = current_prompt
 
     translated = translate_reply(reply_text, translator=translator)
 
