@@ -294,6 +294,28 @@ def test_latch_auto_releases_when_the_slot_becomes_provable(tmp_path):
     assert last_failure(after)["resolution"] == "released-unverified"
 
 
+def test_latched_failure_stays_recorded_without_duplicating(tmp_path):
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    assert len(ledger(manager)["failed_corners"]) == 1
+
+    # Every later tick re-evaluates the latch and must not append a new row
+    # per minute, but the failure must remain visible.
+    for _ in range(3):
+        outcome = manager.tick()
+        assert outcome["status"] == "recovery_required"
+
+    rows = ledger(manager)["failed_corners"]
+    assert len(rows) == 1
+    assert rows[0]["resolution"] == "recovery-required"
+
+
 def test_ledger_error_kinds_still_latch(tmp_path):
     manager, _clock, _executor, adapters = build(
         tmp_path,

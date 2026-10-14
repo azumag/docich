@@ -749,6 +749,22 @@ class CornerRotationManager:
         })
         state["failed_corners"] = rows[-FAILED_CORNER_LIMIT:]
 
+    def _record_failed_corner_once(self, state, reservation, *, resolution, error_kind, now):
+        """Record the anomaly only once per request.
+
+        The latch is re-evaluated every tick, so the failure must stay
+        diagnosable without appending a row per minute (#2187).
+        """
+
+        request_id = reservation.get("request_id")
+        rows = state.get("failed_corners")
+        if isinstance(rows, list) and any(
+                isinstance(row, dict) and row.get("request_id") == request_id
+                for row in rows):
+            return
+        self._record_failed_corner(state, reservation, resolution=resolution,
+                                   error_kind=error_kind, now=now)
+
     def _mark_released_request(self, state, corner, request_id, now):
         """Remember one released failure per corner so `_observe` can skip it.
 
@@ -819,11 +835,16 @@ class CornerRotationManager:
             outcome = None
         if outcome is not None:
             return outcome
+        kind = state.get("error_kind") or "execution-unverified"
         if not self._slot_reusable(adapter, pending):
+            # Keep the latch, but the failure must stay recorded for the
+            # operator even when the tick only re-reads the latch (#2187).
+            self._record_failed_corner_once(state, pending,
+                                            resolution="recovery-required",
+                                            error_kind=kind, now=now)
             return None
         return self._release_failed_corner(
-            state, pending, adapter,
-            error_kind=state.get("error_kind") or "execution-unverified", now=now,
+            state, pending, adapter, error_kind=kind, now=now,
         )
 
     @staticmethod
@@ -1163,9 +1184,9 @@ class CornerRotationManager:
                 # Keep the failed corner diagnosable even while the shared slot
                 # stays unproven: the row is the operator's starting point.
                 if isinstance(reservation, dict):
-                    self._record_failed_corner(state, reservation,
-                                               resolution="recovery-required",
-                                               error_kind=kind, now=now)
+                    self._record_failed_corner_once(state, reservation,
+                                                    resolution="recovery-required",
+                                                    error_kind=kind, now=now)
                 # Do not persist exception text: provider/config errors may carry
                 # output or credentials. The pending request remains inspectable.
                 state.update(status="recovery_required",
