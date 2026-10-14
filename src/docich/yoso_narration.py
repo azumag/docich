@@ -24,10 +24,10 @@ announcement text.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import time
 
+from .comment_queue import comment_queue_dir
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
 from .trading.soren_output import enqueue_audio_text, resolve_soren_root
 from .yoso_view import board as read_board
@@ -51,7 +51,6 @@ SPEECH_ITEMS = (("intro", INTRO_CONTEXT), ("ranking", CONTEXT))
 # evidence the generic (non-weather) queue exposes.
 VOICE_CONTEXTS = tuple(context for _kind, context in SPEECH_ITEMS)
 VOICE_MARKER_SUFFIXES = (".txt", ".playing")
-VOICE_QUEUE_DEFAULT = ("tmp", ".comment_queue")
 INTRO_TEXT = (
     "ここからは予想王のコーナーです。チャンネルポイントで予想した結果の的中率ランキング、"
     "上位3名を発表します。しばらくお付き合いください。"
@@ -168,10 +167,7 @@ def announcement(g, *, audio_enabled=False, **kwargs) -> dict:
 
 def voice_queue_dir(g) -> Path:
     """Directory of the shared comment queue that this corner speaks through."""
-    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
-    root = Path(resolve_soren_root(g))
-    path = Path(raw) if raw else Path(*VOICE_QUEUE_DEFAULT)
-    return path if path.is_absolute() else root / path
+    return comment_queue_dir(resolve_soren_root(g))
 
 
 def voice_items_in_flight(g) -> int:

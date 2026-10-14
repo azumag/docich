@@ -70,6 +70,10 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the shared comment/audio queue the corners also gate on
+    (${COMMENT_QUEUE_DIR:-tmp/.comment_queue}): only comment_*.txt /
+    comment_*.playing counts, a fixed reason enum and the oldest item's age.
+    Item names, texts and the Soren .env are never read out.
   - Soren game-lifecycle pause provenance (tmp/state/game_lifecycle/
     request.json, ack.json and the four fixed pause-ownership records):
     only the fixed request/ack status enums, whether a handover is active,
@@ -3554,6 +3558,82 @@ def _file_age_sec(path, now):
         return -1
 
 
+AUDIO_QUEUE_DEFAULT = "tmp/.comment_queue"
+AUDIO_ITEM_PREFIX = "comment_"
+AUDIO_QUEUED_SUFFIX = ".txt"
+AUDIO_PLAYING_SUFFIX = ".playing"
+
+
+def _comment_queue_dir(soren):
+    """The queue the audio worker consumes, as far as diagnostics may resolve it.
+
+    ``COMMENT_QUEUE_DIR`` from the collector's own environment wins; otherwise
+    the shell default ``tmp/.comment_queue`` below the Soren root. The Soren
+    ``.env`` is deliberately not read here: it holds secrets, and production
+    uses the default.
+    """
+    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
+    path = Path(raw) if raw else Path(AUDIO_QUEUE_DEFAULT)
+    return path if path.is_absolute() else soren / path
+
+
+def _collect_audio_queue(soren, now):
+    """Backlog of the shared comment/audio queue the corners gate on.
+
+    Only counts, fixed enums and ages are surfaced; item names, texts, the
+    queue's own logs and the Soren ``.env`` are never read. A missing or
+    unreadable queue is "quiet" because the corner boundary does not block on
+    it.
+    """
+    directory = _comment_queue_dir(Path(soren))
+    queued = playing = 0
+    readable = True
+    oldest_age = -1
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.startswith(AUDIO_ITEM_PREFIX):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                if name.endswith(AUDIO_QUEUED_SUFFIX):
+                    queued += 1
+                elif name.endswith(AUDIO_PLAYING_SUFFIX):
+                    playing += 1
+                else:
+                    continue
+                age = _file_age_sec(Path(entry.path), now)
+                if age >= 0 and (oldest_age < 0 or age > oldest_age):
+                    oldest_age = age
+    except FileNotFoundError:
+        pass  # No queue yet: nothing is queued, and that is not an error.
+    except OSError:
+        readable = False
+    if not readable:
+        reason = "unreadable"
+    elif queued and playing:
+        reason = "queued+playing"
+    elif queued:
+        reason = "queued"
+    elif playing:
+        reason = "playing"
+    else:
+        reason = "quiet"
+    return {
+        "present": directory.is_dir(),
+        "readable": readable,
+        "queued": queued,
+        "playing": playing,
+        "oldest_age_sec": oldest_age,
+        "quiet": reason in ("quiet", "unreadable"),
+        "reason": reason,
+    }
+
+
 def _collect_boundary(root, now):
     """Freshness of the confirmed cycle boundaries the corners gate on.
 
@@ -3571,6 +3651,8 @@ def _collect_boundary(root, now):
             "completed_at": completed,
             "age_sec": int(now - completed) if completed is not None else -1,
         }
+    # root is <soren>/tmp/state, so the Soren root is two levels up.
+    result["audio"] = _collect_audio_queue(root.parent.parent, now)
     return result
 
 

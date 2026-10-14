@@ -24,6 +24,13 @@ def _owner(path, status):
     path.write_text(json.dumps({'status': status}))
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_audio_queue(monkeypatch):
+    # The audio gate reads COMMENT_QUEUE_DIR; a developer shell that exports it
+    # must not change which queue these tests inspect.
+    monkeypatch.delenv('COMMENT_QUEUE_DIR', raising=False)
+
+
 def _queue(root, key):
     return _queue_read(root, key)
 
@@ -84,6 +91,126 @@ def test_corrupt_future_or_nonfinite_boundary_does_not_unlock(tmp_path):
     for value in ['{', '{"completed_at": NaN}', '{"completed_at": true}', '{"completed_at": "101"}']:
         (state / 'corner_boundary_prediction.json').write_text(value)
         assert not boundary_ready(state, 100)
+
+
+def _audio_queue(root):
+    return root / 'tmp' / '.comment_queue'
+
+
+def test_boundary_waits_for_a_completely_quiet_audio_queue(tmp_path):
+    state = _state_dir(tmp_path)
+    queue = _audio_queue(tmp_path)
+    queue.mkdir(parents=True)
+    assert boundary_ready(state, 100)
+    # A queued item blocks even though nothing is playing yet.
+    (queue / 'comment_announce_1_2_3_chat.txt').write_text('viewer comment')
+    assert not boundary_ready(state, 100)
+    # The worker renames it while playing; that still blocks (an intro must not
+    # cut into a comment that is already being read out).
+    (queue / 'comment_announce_1_2_3_chat.txt').rename(
+        queue / 'comment_announce_1_2_3_chat.playing')
+    assert not boundary_ready(state, 100)
+    (queue / 'comment_announce_1_2_3_chat.playing').unlink()
+    assert boundary_ready(state, 100)
+
+
+def test_boundary_audio_gate_counts_only_queue_items(tmp_path):
+    state = _state_dir(tmp_path)
+    queue = _audio_queue(tmp_path)
+    queue.mkdir(parents=True)
+    (queue / 'comment_announce_1_2_3_chat.txt.speaker').write_text('sidecar')
+    (queue / 'processed_batch_hashes.log').write_text('log')
+    (queue / 'radio_1_2_news_3.txt').write_text('radio has its own queue')
+    (queue / 'spoken_history').mkdir()
+    (queue / 'comment_announce_4_5_6_chat.txt').mkdir()
+    assert boundary_ready(state, 100)
+
+
+def test_boundary_audio_gate_honors_the_queue_override(tmp_path, monkeypatch):
+    state = _state_dir(tmp_path)
+    custom = tmp_path / 'custom_queue'
+    custom.mkdir()
+    monkeypatch.setenv('COMMENT_QUEUE_DIR', str(custom))
+    (custom / 'comment_announce_1_2_3_chat.txt').write_text('x')
+    assert not boundary_ready(state, 100)
+    # The default queue is not consulted when it is overridden.
+    default = _audio_queue(tmp_path)
+    default.mkdir(parents=True)
+    (custom / 'comment_announce_1_2_3_chat.txt').unlink()
+    assert boundary_ready(state, 100)
+
+
+def test_boundary_audio_gate_reads_the_soren_env_like_the_sink(tmp_path):
+    state = _state_dir(tmp_path)
+    (tmp_path / '.env').write_text('COMMENT_QUEUE_DIR=tmp/env_queue\n')
+    env_queue = tmp_path / 'tmp' / 'env_queue'
+    env_queue.mkdir(parents=True)
+    (env_queue / 'comment_announce_1_2_3_chat.txt').write_text('x')
+    assert not boundary_ready(state, 100)
+
+
+def test_missing_and_unreadable_audio_queue_never_block(tmp_path):
+    state = _state_dir(tmp_path)
+    assert boundary_ready(state, 100)
+    # A path that cannot be listed is "quiet" too: a broken queue must not hold
+    # every corner back.
+    queue = _audio_queue(tmp_path)
+    queue.parent.mkdir(parents=True, exist_ok=True)
+    queue.write_text('not a directory')
+    assert boundary_ready(state, 100)
+
+
+def test_boundary_requires_both_prediction_and_audio(tmp_path):
+    state = _state_dir(tmp_path)
+    queue = _audio_queue(tmp_path)
+    queue.mkdir(parents=True)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({'status': 'ACTIVE'}))
+    (queue / 'comment_announce_1_2_3_chat.txt').write_text('x')
+    assert not boundary_ready(state, 100)
+    # A fresh prediction boundary alone is not enough while audio is busy.
+    (state / 'corner_boundary_prediction.json').write_text(
+        json.dumps({'completed_at': time.time() - 1}))
+    assert not boundary_ready(state, 100)
+    (queue / 'comment_announce_1_2_3_chat.txt').unlink()
+    assert boundary_ready(state, 100)
+
+
+def test_program_slot_waits_for_audio_then_owns_slot(tmp_path):
+    state = tmp_path / 'tmp' / 'state'
+    state.mkdir(parents=True)
+    queue = _audio_queue(tmp_path)
+    queue.mkdir()
+    item = queue / 'comment_announce_1_2_3_chat.txt'
+    item.write_text('x')
+    owner = tmp_path / 'retro_corner.json'
+    _owner(owner, 'idle')
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        item.unlink()
+
+    with program_slot(_fake_g(tmp_path), owner, requested_at=time.time() - 10,
+                      wait_deadline_ts=time.time() + 60, sleep=sleep, poll_s=0):
+        pass
+    assert slept, 'must wait for the audio queue to become quiet'
+    assert _queue(state, 'retro_corner')['status'] == 'done'
+
+
+def test_program_slot_expires_while_audio_is_still_busy(tmp_path):
+    state = tmp_path / 'tmp' / 'state'
+    state.mkdir(parents=True)
+    queue = _audio_queue(tmp_path)
+    queue.mkdir()
+    (queue / 'comment_announce_1_2_3_chat.playing').write_text('x')
+    owner = tmp_path / 'retro_corner.json'
+    _owner(owner, 'idle')
+    with pytest.raises(CornerWaitExpired):
+        with program_slot(_fake_g(tmp_path), owner, requested_at=time.time() - 10,
+                          wait_deadline_ts=time.time() - 1, sleep=lambda s: None, poll_s=0):
+            pass
+    assert _queue(state, 'retro_corner')['status'] == 'expired'
 
 
 def test_boundary_waiter_does_not_block_waiting_turn(tmp_path):

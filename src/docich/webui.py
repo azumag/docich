@@ -46,6 +46,7 @@ from typing import Any, Mapping
 
 from . import speech
 from . import overlay_queue as shared_overlay_queue
+from .comment_queue import comment_queue_dir
 from .webui_resources_loader import ResourceLoader
 from .config import (
     GlobalConfig,
@@ -1024,20 +1025,7 @@ def _top_override_path(soren_root: Path) -> Path:
 
 
 def _comment_queue_dir(soren_root: Path) -> Path:
-    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    try:
-        dotenv = _read_dotenv_dict(soren_root)
-        cand = dotenv.get("COMMENT_QUEUE_DIR", "").strip()
-        if cand:
-            # dotenv dict already strips quotes
-            p = Path(cand)
-            return p if p.is_absolute() else (soren_root / p)
-    except Exception:
-        pass
-    return soren_root / "tmp/.comment_queue"
+    return comment_queue_dir(soren_root)
 
 
 def _comment_audio_dedup_dir(soren_root: Path) -> Path:
