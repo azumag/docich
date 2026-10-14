@@ -246,6 +246,65 @@ class StorageBreakdownTests(unittest.TestCase):
         self.assertTrue(item["scan_complete"])
         self.assertEqual(item["hardlink_duplicates"], 1)
 
+    # ---- new: strategy permanent archive format split ------------------
+
+    def archive_dir(self):
+        path = self.soren / "strategy_versions_archive" / "by_hash"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_strategy_archive_formats_split_counts_plain_and_compressed(self):
+        archive = self.archive_dir()
+        self.write(archive / "a1b2c3.py", 8000)
+        self.write(archive / "d4e5f6.py.gz", 1000)
+        # A suffix outside the fixed vocabulary must never be attributed.
+        self.write(archive / "notes.txt", 4096)
+
+        result = self.collect()
+        item = result["strategy_archive_formats"]
+
+        self.assertTrue(item["present"])
+        self.assertTrue(item["scan_complete"])
+        self.assertEqual(item["formats"]["plain"]["count"], 1)
+        self.assertEqual(item["formats"]["compressed"]["count"], 1)
+        self.assertGreater(item["formats"]["plain"]["allocated_bytes"], 0)
+        self.assertGreater(item["formats"]["compressed"]["allocated_bytes"], 0)
+        encoded = json.dumps(result)
+        self.assertNotIn("a1b2c3", encoded)
+        self.assertNotIn("d4e5f6", encoded)
+        self.assertNotIn("notes.txt", encoded)
+
+    def test_strategy_archive_formats_marks_scan_incomplete_on_entry_bound(self):
+        archive = self.archive_dir()
+        for index in range(4):
+            self.write(archive / f"{index:064x}.py", 100)
+
+        result = self.collect(max_entries=1)
+        item = result["strategy_archive_formats"]
+
+        self.assertFalse(item["scan_complete"])
+        self.assertLessEqual(
+            item["formats"]["plain"]["count"] + item["formats"]["compressed"]["count"], 1
+        )
+
+    def test_strategy_archive_formats_symlink_root_is_not_followed(self):
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.write(outside / "leak.py", 4096)
+        (self.soren / "strategy_versions_archive").mkdir(parents=True)
+        (self.soren / "strategy_versions_archive" / "by_hash").symlink_to(
+            outside, target_is_directory=True
+        )
+
+        result = self.collect()
+        item = result["strategy_archive_formats"]
+
+        self.assertTrue(item["present"])
+        self.assertFalse(item["scan_complete"])
+        self.assertEqual(item["formats"]["plain"]["count"], 0)
+        self.assertEqual(item["formats"]["compressed"]["count"], 0)
+        self.assertNotIn(str(outside), json.dumps(result))
+
 
 class StorageSummaryTests(unittest.TestCase):
 
@@ -354,6 +413,53 @@ class StorageSummaryTests(unittest.TestCase):
         available, incomplete, context = summary.render({})
         self.assertEqual((available, incomplete), (0, 1))
         self.assertEqual(context, "storage_breakdown_unavailable=1")
+
+    def test_renders_strategy_archive_format_split_as_fixed_numbers(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 123}
+        breakdown = {
+            "version": 1,
+            "strategy_archive": leaf,
+            "strategy_archive_formats": {
+                "present": True,
+                "scan_complete": True,
+                "max_entries": 100000,
+                "formats": {
+                    "plain": {"count": 4488, "allocated_bytes": 800 * 1024 * 1024},
+                    "compressed": {"count": 112, "allocated_bytes": 12 * 1024 * 1024},
+                },
+            },
+        }
+
+        available, incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual((available, incomplete), (1, 1))
+        self.assertIn("strategy_archive_formats_complete=1", context)
+        self.assertIn("strategy_archive_plain_count=4488", context)
+        self.assertIn("strategy_archive_compressed_count=112", context)
+        self.assertIn("strategy_archive_plain_bytes=838860800", context)
+        self.assertIn("strategy_archive_compressed_bytes=12582912", context)
+        self.assertIn("strategy_archive_compressed_share_pct=1", context)
+        self.assertNotIn("/", context)
+        self.assertNotIn("home", context)
+
+    def test_strategy_archive_formats_missing_or_incomplete_reports_zero_and_flags(self):
+        leaf = {"present": True, "scan_complete": True, "count": 0, "allocated_bytes": 0}
+        for formats in ({}, {"scan_complete": False}):
+            available, incomplete, context = summary.render(
+                {
+                    "storage_breakdown": {
+                        "version": 1,
+                        "strategy_archive": leaf,
+                        "strategy_archive_formats": formats,
+                    }
+                }
+            )
+            self.assertEqual(available, 1)
+            self.assertEqual(incomplete, 1)
+            self.assertIn("strategy_archive_formats_complete=0", context)
+            self.assertIn("strategy_archive_plain_count=0", context)
+            self.assertIn("strategy_archive_compressed_count=0", context)
+            self.assertIn("strategy_archive_compressed_share_pct=0", context)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,10 @@ TREE_CATEGORIES = (
     "voicevox_archive",
 )
 
+# Fixed on-disk formats of the strategy permanent archive. The split is what
+# makes "growth stays bounded" checkable without reading any strategy content.
+STRATEGY_ARCHIVE_FORMATS = ("plain", "compressed")
+
 
 def _uint(mapping, key):
     value = mapping.get(key) if isinstance(mapping, dict) else None
@@ -87,6 +91,33 @@ def render(data):
         parts.append(f"{category}_complete={int(complete)}")
         parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
         parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    formats = breakdown.get("strategy_archive_formats")
+    formats = formats if isinstance(formats, dict) else {}
+    formats_complete = formats.get("scan_complete") is True
+    incomplete = incomplete or not formats_complete
+    parts.append(f"strategy_archive_formats_complete={int(formats_complete)}")
+    buckets = formats.get("formats") if formats_complete else None
+    buckets = buckets if isinstance(buckets, dict) else {}
+    for name in STRATEGY_ARCHIVE_FORMATS:
+        bucket = buckets.get(name)
+        bucket = bucket if isinstance(bucket, dict) else {}
+        parts.append(
+            f"strategy_archive_{name}_count="
+            f"{_uint(bucket, 'count') if formats_complete else 0}"
+        )
+        parts.append(
+            f"strategy_archive_{name}_bytes="
+            f"{_uint(bucket, 'allocated_bytes') if formats_complete else 0}"
+        )
+    if formats_complete:
+        plain_bytes = _uint(buckets.get("plain"), "allocated_bytes")
+        compressed_bytes = _uint(buckets.get("compressed"), "allocated_bytes")
+        total_bytes = plain_bytes + compressed_bytes
+        share = (compressed_bytes * 100) // total_bytes if total_bytes else 0
+    else:
+        share = 0
+    parts.append(f"strategy_archive_compressed_share_pct={share}")
 
     attribution = data.get("opencode_session_attribution")
     attribution_complete = (
