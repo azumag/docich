@@ -36,6 +36,10 @@ MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 MAX_SCREENSHOT_DIMENSION = 8192
 MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
 MAX_SCREENSHOTS_PER_GAME = 3
+# The one in-progress frame is also transferred byte-identical, because the
+# review copy is downscaled and re-encoded and cannot reproduce a recognition
+# failure. Keep it small enough that the 3MiB bundle cap still holds.
+MAX_ORIGINAL_SCREENSHOT_BYTES = 1 * 1024 * 1024
 MAX_BUNDLE_BYTES = 3 * 1024 * 1024
 CHUNK_BYTES = 24 * 1024
 EXPORT_TTL_MS = 10 * 60 * 1000
@@ -516,6 +520,8 @@ def _prepare_partial_evidence(
         "telemetrySourceMtimeMs": loop_info.st_mtime_ns // 1_000_000,
         "telemetrySourceAgeMs": now_ms - loop_info.st_mtime_ns // 1_000_000,
         "calibrationStatus": calibration_status, "screenshotStatus": screenshot_status,
+        # Set below once the bounded byte-identical copy is decided.
+        "originalScreenshotStatus": "screenshot-unavailable",
     }
 
     def record_file(dst: Path, data: bytes, source: Path, info: os.stat_result, kind: str, **extra) -> None:
@@ -554,6 +560,22 @@ def _prepare_partial_evidence(
         if image:
             record_file(dst, image, screenshot_path, screenshot[1], "partial-screenshot",
                         sourceWidth=dimensions[0], sourceHeight=dimensions[1])
+            # The downscaled review copy cannot reproduce a recognition failure,
+            # so also keep the exact captured bytes. This reuses the same
+            # validated, in-window source snapshot and adds no new read.
+            if screenshot[0] == image:
+                metadata["originalScreenshotStatus"] = "identical-to-transcode"
+            elif len(screenshot[0]) > MAX_ORIGINAL_SCREENSHOT_BYTES:
+                metadata["originalScreenshotStatus"] = "oversize"
+            else:
+                original_dst = (partial_dir / "original"
+                                / f"turn_{turn:04d}{screenshot_path.suffix.lower()}")
+                _copy_bytes(original_dst, screenshot[0])
+                record_file(original_dst, screenshot[0], screenshot_path, screenshot[1],
+                            "partial-original-screenshot",
+                            relationship="same-source-as-partial-screenshot",
+                            sourceWidth=dimensions[0], sourceHeight=dimensions[1])
+                metadata["originalScreenshotStatus"] = "included"
         else:
             dst.unlink(missing_ok=True)
             if metadata["screenshotStatus"] == "included":

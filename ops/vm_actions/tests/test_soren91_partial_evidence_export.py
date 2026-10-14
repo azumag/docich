@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
@@ -202,9 +203,11 @@ class PartialEvidenceExportTests(unittest.TestCase):
         self.assertEqual(partial["telemetrySession"], "2f63f769-e7e6-4272-8230-16664c594344")
         self.assertNotIn("session", partial)
         self.assertEqual(partial["telemetryAgeMs"], 24 * 60 * 60_000)
+        self.assertEqual(partial["originalScreenshotStatus"], "included")
         self.assertEqual(set(files), {
             "manifest.json", "telemetry/soren91_loop_metrics.json",
             "partial/game_0009/history.jsonl", "partial/game_0009/screenshots/turn_0002.jpg",
+            "partial/game_0009/original/turn_0002.png",
             "partial/game_0009/calibration.json",
         })
         projection = json.loads(files["partial/game_0009/calibration.json"])
@@ -212,10 +215,18 @@ class PartialEvidenceExportTests(unittest.TestCase):
         self.assertNotIn("url", projection["screen"])
         self.assertNotIn(b"do-not-export", b"".join(files.values()))
         self.assertEqual(files["partial/game_0009/history.jsonl"], before[history])
+        self.assertEqual(files["partial/game_0009/original/turn_0002.png"], before[shot])
         image_meta = next(item for item in manifest["files"] if item["kind"] == "partial-screenshot")
         self.assertEqual(image_meta["sourceMinusTelemetryMs"], -3000)
         self.assertEqual(image_meta["sourceAgeMs"], 24 * 60 * 60_000 + 3000)
         self.assertEqual((image_meta["sourceWidth"], image_meta["sourceHeight"]), (3, 2))
+        original_meta = next(item for item in manifest["files"]
+                             if item["kind"] == "partial-original-screenshot")
+        self.assertEqual(original_meta["relationship"], "same-source-as-partial-screenshot")
+        self.assertEqual(original_meta["source"], image_meta["source"])
+        self.assertEqual(original_meta["sha256"],
+                         hashlib.sha256(before[shot]).hexdigest())
+        self.assertEqual((original_meta["sourceWidth"], original_meta["sourceHeight"]), (3, 2))
         cal_meta = next(item for item in manifest["files"] if item["kind"] == "partial-calibration")
         self.assertEqual(cal_meta["relationship"], "separate-saved-calibration")
         self.assertIs(cal_meta["screenMatchesScreenshot"], True)
@@ -235,6 +246,30 @@ class PartialEvidenceExportTests(unittest.TestCase):
         image_meta = next(item for item in manifest["files"] if item["kind"] == "partial-screenshot")
         self.assertTrue(image_meta["source"].endswith("turn_0002.jpg"))
         self.assertEqual((image_meta["sourceWidth"], image_meta["sourceHeight"]), (3, 2))
+        self.assertIn("partial/game_0009/original/turn_0002.jpg", files)
+
+    def test_original_frame_is_omitted_with_a_bounded_status(self):
+        shot, _, _ = self.write_partial()
+        original = shot.read_bytes()
+        with patch.object(self.mod, "MAX_ORIGINAL_SCREENSHOT_BYTES", len(original) - 1):
+            _, manifest, files = self.read_bundle()
+            self.assertEqual(manifest["partialEvidence"]["originalScreenshotStatus"], "oversize")
+            self.assertFalse(any("/original/" in name for name in files))
+            self.assertIn("partial/game_0009/screenshots/turn_0002.jpg", files)
+
+        def copy_transcode(src, dst):
+            dst.write_bytes(src.read_bytes())
+        _, manifest, files = self.read_bundle(transcode=copy_transcode)
+        self.assertEqual(manifest["partialEvidence"]["originalScreenshotStatus"],
+                         "identical-to-transcode")
+        self.assertFalse(any("/original/" in name for name in files))
+
+        def failed_transcode(src, dst):
+            raise subprocess.CalledProcessError(1, "ffmpeg")
+        _, manifest, files = self.read_bundle(transcode=failed_transcode)
+        self.assertEqual(manifest["partialEvidence"]["originalScreenshotStatus"],
+                         "screenshot-unavailable")
+        self.assertFalse(any("/original/" in name for name in files))
 
     def test_schema_two_projects_only_numeric_arena_and_hud_fields(self):
         _, _, calibration = self.write_partial()
@@ -352,7 +387,10 @@ class PartialEvidenceExportTests(unittest.TestCase):
             self.fake_transcode(src, dst)
         _, _, files = self.read_bundle(transcode=mutate_then_transcode)
         self.assertEqual(files["partial/game_0009/screenshots/turn_0002.jpg"], b"JPEG:" + original)
-        self.assertFalse(any(name.endswith(".png") for name in files))
+        # The byte-identical copy comes from the same checked snapshot, so the
+        # live file's later replacement never reaches the bundle.
+        self.assertEqual(files["partial/game_0009/original/turn_0002.png"], original)
+        self.assertNotIn(b"private-new-source", b"".join(files.values()))
 
     def test_symlinked_partial_sources_are_rejected(self):
         for index in range(3):
