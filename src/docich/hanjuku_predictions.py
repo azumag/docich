@@ -88,9 +88,13 @@ def _stamp(value):
 
 
 def _checked_result(value, identity):
+    # The accepted reasons must be exactly the terminals hanjuku_run can report:
+    # _result() writes evidence['terminal_reason'] verbatim into the durable
+    # record, so a narrower set here would refuse what the module itself just
+    # wrote and spin forever in error=invalid_state (#933).
     if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
             or any(value.get(k) != v for k, v in identity.items())
-            or value.get('reason') not in {'game_over', 'screen_stalled'}
+            or value.get('reason') not in hanjuku_run.TERMINAL_REASONS
             or not isinstance(value.get('frame_sha256'), str)
             or len(value['frame_sha256']) != 64
             or any(c not in '0123456789abcdef' for c in value['frame_sha256'])

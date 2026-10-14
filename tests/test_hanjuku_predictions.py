@@ -83,6 +83,11 @@ def terminal(env, reason='game_over', identity=ID):
     row = {**identity, 'schema': 1, 'terminal_reason': reason, 'frame_sha256': DIGEST,
            'name_entered': True, 'gameplay_seen': True, 'phase': 'title', 'title_count': 3,
            'observed_monotonic': 10, 'title_since': 7, 'unchanged_seconds': 300}
+    if reason == 'input_stalled':
+        # hanjuku_run.terminal() bounds input_stalled by monotonic deltas
+        # (INPUT_STALL_SECONDS / INPUT_STALL_OBSERVATIONS), not by game_over fields.
+        row.update(observed_monotonic=1000, observations=500,
+                   last_input_monotonic=100, last_input_observations=200)
     atomic_write_json(runtime / 'hanjuku_run.json', row)
 
 
@@ -217,7 +222,7 @@ def test_existing_unrelated_remote_is_never_modified(env, status):
     assert env.tick(190)['mode'] == 'active'
 
 
-@pytest.mark.parametrize('reason', ['game_over', 'screen_stalled'])
+@pytest.mark.parametrize('reason', ['game_over', 'screen_stalled', 'input_stalled'])
 @pytest.mark.parametrize('chapter, index', [(1,2), (2,1), (3,0), (7,0)])
 def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter, index):
     env.tick()
@@ -234,6 +239,31 @@ def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapte
     env.tick(131)
     assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
     assert len([c for c in env.remote.calls if c[0] == 'PATCH' and c[2] == 'RESOLVED']) == 1
+
+
+def test_input_stalled_terminal_survives_the_durable_reread(env):
+    """The accepted terminal reasons must match hanjuku_run.TERMINAL_REASONS.
+
+    Regression (#933), observed in production on 2026-10-14: with
+    ``terminal_reason='input_stalled'`` the first ``_result()`` wrote the durable
+    ``hanjuku_prediction_result.json``, and the second ``_result()`` in the same
+    ``_advance()`` refused that record because the accepted set was hardcoded to
+    ``{game_over, screen_stalled}``. ``_advance`` raised before the round was
+    persisted, so the tick looped forever in ``error=invalid_state`` with the
+    fixed 300 s retry and the prediction could never be settled or canceled.
+    """
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 2, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'input_stalled')
+    assert env.tick(101)['mode'] == 'resolved'
+    row = env.state()['round']
+    assert row['result']['reason'] == 'input_stalled' and row['result']['cleared'] == 1
+    # Reading the same durable record again (what _load/_result do every tick)
+    # must keep accepting it, and the settled round must stay terminal.
+    assert p._load(env.g.state_dir, 1)['round']['result']['reason'] == 'input_stalled'
+    assert env.tick(131)['mode'] == 'resolved'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-1'
+    assert env.state()['best_cleared'] == 1
 
 
 def test_next_run_uses_new_record(env):
