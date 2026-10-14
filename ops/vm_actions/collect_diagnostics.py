@@ -4559,17 +4559,29 @@ _HANJUKU_PREDICTION_BLOCKERS = (
 
 
 def _bounded_prediction_record(path):
-    """(value, present, readable) for one bounded regular JSON record."""
+    """(value, present, readable) for one bounded no-follow JSON record."""
+    directory_fd = None
     try:
-        if path.is_symlink():
-            return None, True, False
-        if not path.is_file():
-            return None, False, False
-        if path.stat().st_size > _HANJUKU_PREDICTION_RECORD_LIMIT:
-            return None, True, False
-        value = json.loads(path.read_text(encoding="utf-8"))
+        # Open every parent component without following links. The directory
+        # descriptor anchors the record even if a pathname is replaced later.
+        path = Path(path)
+        parent = path.parent
+        directory_fd = _supervisor_directory(parent.anchor or ".")
+        components = parent.parts[1:] if parent.anchor else parent.parts
+        for component in components:
+            previous_fd = directory_fd
+            directory_fd = _supervisor_directory(component, dir_fd=previous_fd)
+            os.close(previous_fd)
+        raw = _supervisor_read(path.name, _HANJUKU_PREDICTION_RECORD_LIMIT,
+                               dir_fd=directory_fd)
+        value = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return None, False, False
     except (OSError, ValueError, RecursionError):
         return None, True, False
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
     if not isinstance(value, dict):
         return None, True, False
     return value, True, True
@@ -4606,7 +4618,8 @@ def _collect_hanjuku_prediction_ownership(state_dir, data, row):
         return out
     runtime = Path(state_dir) / "runtimes" / runtime_id
     try:
-        present = runtime.is_dir() and not runtime.is_symlink()
+        present = (not any(parent.is_symlink() for parent in (runtime, *runtime.parents))
+                   and runtime.is_dir())
     except OSError:
         present = None
     out["runtime_present"] = present
