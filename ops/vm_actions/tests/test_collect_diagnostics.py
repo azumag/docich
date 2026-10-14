@@ -80,6 +80,12 @@ def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path)
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_excluded_map_collapses_non_string_reasons():
+    module = load_collector()
+    for reason in ([], {}, [{}], {"unexpected": "DO-NOT-PUBLISH"}, None, True, 7, 3.5):
+        assert module._rotation_excluded_projection({"yosou-oh": reason}) == {"yosou-oh": "unknown"}
+
+
 def test_rotation_excluded_map_is_absent_and_bounded(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
@@ -3367,3 +3373,245 @@ def test_prediction_ownership_rejects_a_symlinked_runtime_parent():
         "/memory", {"next_poll_at": 1300}, dict(_HANJUKU_ROUND_IDENTITY))
     assert result["blocker"] == "runtime-missing" and result["runtime_present"] is False
     assert memory.reads == [] and memory.handles == {}
+
+
+def _presentation_memory_module(source):
+    """Reuse the dictionary-backed FD harness; never create state fixtures."""
+    import ast
+    import io
+    import posixpath
+    from types import SimpleNamespace
+
+    memory = _prediction_memory_module(source)
+    nodes, handles, reads = memory.nodes, memory.handles, memory.reads
+    stats = []
+
+    def resolve(path):
+        path = posixpath.normpath(str(path))
+        for prefix, node in sorted(nodes.items(), key=lambda item: len(item[0])):
+            if node["kind"] == "symlink" and (path == prefix or path.startswith(prefix + "/")):
+                path = posixpath.normpath(node["target"] + path[len(prefix):])
+                break
+        node = nodes.get(path)
+        if node is None:
+            raise FileNotFoundError
+        return path, node
+
+    class MemoryPath(memory.path):
+        def __truediv__(self, name):
+            return MemoryPath(self.path / name)
+
+        def is_file(self):
+            try:
+                return resolve(self)[1]["kind"] == "file"
+            except FileNotFoundError:
+                return False
+
+        def read_text(self, encoding="utf-8"):
+            path, node = resolve(self)
+            if node["kind"] != "file":
+                raise OSError("synthetic nonregular text source")
+            raw = node["raw"]
+            reads.append({"path": path, "limit": None, "bytes": len(raw)})
+            return raw.decode(encoding)
+
+        def stat(self):
+            path, node = resolve(self)
+            stats.append({"kind": "path_stat", "path": path})
+            return SimpleNamespace(st_mtime=node.get("path_mtime", 1))
+
+    class MemoryReader(io.StringIO):
+        """Latin-1 backing preserves every byte for a fake binary FD read."""
+        def __init__(self, path, node, binary=False):
+            self.path, self.binary = path, binary
+            raw = node.get("raw", b"")
+            super().__init__(raw.decode("latin-1" if binary else "utf-8", errors="replace"))
+            self.read_error = node.get("read_error")
+
+        def read(self, limit=-1):
+            if self.read_error:
+                raise OSError("synthetic read error")
+            value = super().read(limit)
+            if self.binary:
+                value = value.encode("latin-1")
+            reads.append({"path": self.path, "limit": limit,
+                          "bytes": len(value) if self.binary else len(value.encode())})
+            return value
+
+    def fstat(fd):
+        path, node = handles[fd]
+        stats.append({"kind": "fstat", "path": path, "fd": fd})
+        if node.get("fstat_error"):
+            raise OSError("synthetic stat error")
+        return SimpleNamespace(
+            st_mode={"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                     "fifo": stat.S_IFIFO}.get(node["kind"], 0),
+            st_size=node.get("reported_size", len(node.get("raw", b""))),
+            st_mtime=node.get("fd_mtime", 999))
+
+    def fdopen(fd, mode, closefd=False):
+        path, node = handles[fd]
+        return MemoryReader(path, node, binary=True)
+
+    def text_open(path, mode, encoding=None, errors=None):
+        path, node = resolve(path)
+        return MemoryReader(path, node)
+
+    memory.module.update(Path=MemoryPath, open=text_open, re=__import__("re"))
+    memory.module["os"].fstat = fstat
+    memory.module["os"].fdopen = fdopen
+    names = {"_presentation_record_nofollow", "_collect_runtime_presentation",
+             "_read_text_capped", "_load_state_file"}
+    constants = {"_PRESENTATION_STATUSES", "_RUNTIME_ID_RE"}
+    selected = [node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name in names
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    exec(compile(ast.Module(body=selected, type_ignores=[]),
+                 "<memory-presentation-projection>", "exec"), memory.module)
+    memory.stats, memory.path = stats, MemoryPath
+    return memory
+
+
+def _presentation_memory_fixture(source, runtime_id="g7-abcdef12"):
+    memory = _presentation_memory_module(source)
+    record = "/memory/runtimes/" + runtime_id + "/presentation.json"
+    memory.nodes["/memory/runtimes/" + runtime_id] = {"kind": "dir"}
+    memory.nodes["/memory/game_switch.json"] = {
+        "kind": "file", "raw": json.dumps({"active": {"runtime_id": runtime_id}}).encode()}
+    memory.nodes[record] = {"kind": "file", "raw": json.dumps({
+        "status": "ready", "display": ":99", "window": "123456789012",
+        "width": 640, "height": 480, "pid": 1234,
+        "argv": ["DO-NOT-PUBLISH"], "private": "DO-NOT-PUBLISH"}).encode(),
+        "fd_mtime": 999, "path_mtime": 1}
+    return memory, record
+
+
+def _presentation_memory_collect(memory):
+    result = memory.module["_collect_runtime_presentation"]("/memory", 1000)
+    assert memory.handles == {}
+    assert "DO-NOT-PUBLISH" not in json.dumps(result)
+    # The shared fake rejects link/nonregular nodes on other grounds too.
+    # Check flags explicitly so removing a safety flag cannot stay green.
+    for call in memory.opens:
+        assert call["flags"] & os.O_NOFOLLOW
+        if not call["flags"] & os.O_DIRECTORY:
+            assert call["flags"] & os.O_NONBLOCK
+    return result
+
+
+def test_presentation_memory_retains_status_geometry_and_same_fd_mtime():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for status in ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped"):
+        memory, record = _presentation_memory_fixture(source)
+        value = json.loads(memory.nodes[record]["raw"])
+        value["status"] = status
+        memory.nodes[record]["raw"] = json.dumps(value).encode()
+        assert _presentation_memory_collect(memory) == {
+            "present": True, "readable": True, "active_runtime": True,
+            "status": status, "display": ":99", "window": "123456789012",
+            "width": 640, "height": 480, "age_sec": 1}
+        assert all(call["kind"] == "fstat" for call in memory.stats)
+        assert all(call["limit"] == 65537 for call in memory.reads)
+
+
+def test_presentation_memory_rejects_dot_components_before_record_lookup():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for runtime_id, outside in ((".", "/memory/runtimes/presentation.json"),
+                                ("..", "/memory/presentation.json")):
+        memory, record = _presentation_memory_fixture(source, runtime_id)
+        memory.nodes[outside] = memory.nodes[record]
+        result = _presentation_memory_collect(memory)
+        assert result["active_runtime"] is False and result["readable"] is False
+        assert [call["path"] for call in memory.reads] == ["/memory/game_switch.json"]
+        assert all(call["path"] != outside for call in memory.opens)
+
+
+def test_presentation_memory_rejects_each_parent_and_leaf_symlink():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    record = "/memory/runtimes/g7-abcdef12/presentation.json"
+    for link in ("/memory", "/memory/game_switch.json", "/memory/runtimes",
+                 "/memory/runtimes/g7-abcdef12", record):
+        memory, _ = _presentation_memory_fixture(source)
+        memory.nodes["/outside"] = dict(memory.nodes[link])
+        for name, node in tuple(memory.nodes.items()):
+            if name.startswith(link + "/"):
+                memory.nodes["/outside" + name[len(link):]] = dict(node)
+        memory.nodes[link] = {"kind": "symlink", "target": "/outside"}
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False and result["status"] is None
+        assert all(not call["path"].startswith("/outside") for call in memory.reads)
+        assert len(memory.reads) == (0 if link in ("/memory", "/memory/game_switch.json") else 1)
+
+
+def test_presentation_memory_caps_actual_canonical_and_record_reads():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        memory, record = _presentation_memory_fixture(source)
+        path = "/memory/game_switch.json" if target == "canonical" else record
+        node = memory.nodes[path]
+        node.update(raw=node["raw"] + b" " * (1024 * 1024), reported_size=1)
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False
+        assert result["active_runtime"] is (target == "presentation")
+        assert memory.reads[-1] == {"path": path, "limit": 65537, "bytes": 65537}
+
+
+def test_presentation_memory_accepts_exact_byte_limit_and_rejects_one_more():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for size in (65536, 65537):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            raw = memory.nodes[path]["raw"]
+            memory.nodes[path]["raw"] = raw + b" " * (size - len(raw))
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is (size == 65536)
+            assert all(call["limit"] == 65537 and call["bytes"] <= 65537 for call in memory.reads)
+
+
+def test_presentation_memory_fails_closed_for_bad_or_nonregular_records():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for replacement in (None, {"kind": "dir"}, {"kind": "fifo"},
+                            {"kind": "file", "raw": b"not-json"},
+                            {"kind": "file", "raw": b"[]"},
+                            {"kind": "file", "raw": b"\xff"},
+                            {"kind": "file", "raw": b"{}", "read_error": True},
+                            {"kind": "file", "raw": b"{}", "fstat_error": True},
+                            {"kind": "file", "raw": b"[" * 2000 + b"]" * 2000}):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            if replacement is None:
+                del memory.nodes[path]
+            else:
+                memory.nodes[path] = dict(replacement)
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is False and result["status"] is None
+            if replacement is None and target == "presentation":
+                assert result["present"] is False
+            if replacement and replacement["kind"] in ("dir", "fifo"):
+                assert all(call["path"] != path for call in memory.reads)
+
+
+def test_presentation_memory_preserves_field_bounds_and_public_shape():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for state in ({"status": [], "display": ":1234", "window": "a",
+                   "width": True, "height": 4097, "secret": "DO-NOT-PUBLISH"},
+                  {"status": "DO-NOT-PUBLISH", "display": ":-1", "window": "1" * 13,
+                   "width": 0, "height": -1}):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["raw"] = json.dumps(state).encode()
+        result = _presentation_memory_collect(memory)
+        assert result == {"present": True, "readable": True, "active_runtime": True,
+                          "status": None, "display": None, "window": None,
+                          "width": None, "height": None, "age_sec": 1}
+
+
+def test_presentation_memory_preserves_age_bounds():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for mtime, expected in ((-1, None), (0, 1000), (999, 1), (1001, 0),
+                             (1000 + 86400, 0), (1001 + 86400, None)):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["fd_mtime"] = mtime
+        assert _presentation_memory_collect(memory)["age_sec"] == expected
