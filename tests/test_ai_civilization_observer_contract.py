@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from unittest import TestCase
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "ai_civilization_observer" / "observation_v1.json"
 MAX_BYTES = 262144
 MAX_EVENTS_PER_RUN = 1000
+MAX_TRACKED_AGENT_IDS = 10000
 
 WORLD_STATE_REQUIRED = {
     "schemaVersion", "worldId", "regionId", "revision", "tick",
@@ -14,6 +16,16 @@ WORLD_STATE_REQUIRED = {
 
 def load_fixture():
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def assert_previous_population_consistent(previous, region_id):
+    """Validate the complete bounded ID set required for the fixture's exact diff."""
+    ids = previous["livingAgentIds"]
+    assert len(ids) == len(set(ids)), "previous living IDs must be unique"
+    assert len(ids) <= MAX_TRACKED_AGENT_IDS, "incomplete/over-cap ID sets cannot support exact MVP diffs"
+    metrics = previous["metrics"]
+    assert metrics["populationLiving"] == len(ids), "previous population must match its complete living-ID set"
+    assert metrics["regionPopulation"] == {region_id: len(ids)}, "single-region population must match the same observation"
 
 
 def test_fixture_exists_and_parses():
@@ -74,6 +86,39 @@ def test_previous_shape():
     for optional in ("births", "deaths"):
         if optional in metrics:
             assert isinstance(metrics[optional], int), optional
+    assert_previous_population_consistent(prev, data["snapshot"]["regionId"])
+
+
+def test_previous_population_mismatch_is_rejected():
+    data = load_fixture()
+    previous = data["previous"]
+    previous["metrics"]["populationLiving"] = 100
+    previous["metrics"]["regionPopulation"] = {data["snapshot"]["regionId"]: 100}
+    with TestCase().assertRaises(AssertionError):
+        assert_previous_population_consistent(previous, data["snapshot"]["regionId"])
+
+
+def test_previous_duplicate_ids_are_rejected():
+    data = load_fixture()
+    previous = data["previous"]
+    previous["livingAgentIds"] = ["agent-0", "agent-0", "agent-1"]
+    with TestCase().assertRaises(AssertionError):
+        assert_previous_population_consistent(previous, data["snapshot"]["regionId"])
+
+
+def test_previous_id_cap_requires_complete_bounded_set():
+    region_id = "garden-1"
+    ids = [f"agent-{i}" for i in range(MAX_TRACKED_AGENT_IDS)]
+    previous = {"livingAgentIds": ids, "metrics": {"populationLiving": len(ids), "regionPopulation": {region_id: len(ids)}}}
+    assert_previous_population_consistent(previous, region_id)
+    # An unchanged population over the cap cannot be accepted as an exact
+    # previous record; FIFO deletion would create a false birth next time.
+    over_cap = ids + ["agent-over-cap"]
+    previous = {"livingAgentIds": over_cap, "metrics": {"populationLiving": len(over_cap), "regionPopulation": {region_id: len(over_cap)}}}
+    with TestCase().assertRaises(AssertionError):
+        assert_previous_population_consistent(previous, region_id)
+    assert set(over_cap) - set(over_cap) == set()
+    assert set(over_cap) - set(over_cap[1:]) == {"agent-0"}
 
 
 def test_window_births_deaths_derived():
@@ -84,6 +129,7 @@ def test_window_births_deaths_derived():
     previous_living = set(prev["livingAgentIds"])
     births = len(current_alive - previous_living)
     deaths = len(previous_living - current_alive)
+    assert len(current_alive) == prev["metrics"]["populationLiving"] + births - deaths
     exp = data.get("derivedExpectations", {})
     if "windowBirths" in exp:
         assert births == exp["windowBirths"], (births, exp["windowBirths"])
