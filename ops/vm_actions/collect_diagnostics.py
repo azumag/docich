@@ -7739,6 +7739,70 @@ def _collect_nethack_boundary(state_dir, now):
     return result
 
 
+_PRESENTATION_STATUSES = ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped")
+
+
+def _collect_runtime_presentation(state_dir, now):
+    """Bounded view of the *active* runtime's projector state (#2097).
+
+    Reads only ``<state_dir>/runtimes/<runtime_id>/presentation.json`` for the
+    runtime that currently owns the slot, and projects fixed enums plus the
+    projection geometry and the record's mtime. A shared display restart must be
+    observable (``presentation_failed`` -> ``ready``) without ever exposing
+    pids, argv, paths or pane text.
+    """
+    result = {
+        "present": False,
+        "readable": False,
+        "active_runtime": False,
+        "status": None,
+        "display": None,
+        "window": None,
+        "width": None,
+        "height": None,
+        "age_sec": None,
+    }
+    try:
+        data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    active = data.get("active")
+    if not isinstance(active, dict):
+        return result
+    runtime_id = active.get("runtime_id")
+    if not isinstance(runtime_id, str) or not _RUNTIME_ID_RE.fullmatch(runtime_id):
+        return result
+    result["active_runtime"] = True
+    path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
+    present, readable, state = _load_state_file(path)
+    result["present"] = present
+    result["readable"] = readable
+    if not readable or not isinstance(state, dict):
+        return result
+    status = state.get("status")
+    if isinstance(status, str) and status in _PRESENTATION_STATUSES:
+        result["status"] = status
+    display = state.get("display")
+    if isinstance(display, str) and re.fullmatch(r":[0-9]{1,3}", display):
+        result["display"] = display
+    window = state.get("window")
+    if isinstance(window, str) and window.isdigit() and len(window) <= 12:
+        result["window"] = window
+    for key in ("width", "height"):
+        value = state.get(key)
+        if type(value) is int and 0 < value <= 4096:
+            result[key] = value
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        return result
+    if 0 <= modified <= now + 86400:
+        result["age_sec"] = max(0, int(now - modified))
+    return result
+
+
 def _collect_nethack_panes(state_dir, now):
     """Bounded read-only view of the committed NetHack runtime's tmux windows.
 
@@ -8215,6 +8279,7 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
+        "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),

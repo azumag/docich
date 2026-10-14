@@ -88,6 +88,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
                      "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
+  "runtime_presentation": {"present": true, "readable": true, "active_runtime": true,
+                           "status": "ready", "display": ":1", "window": "2097160",
+                           "width": 299, "height": 224, "age_sec": 12},
   "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
             "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
             "served_reachable": true, "served_matches_deployed": true,
@@ -116,6 +119,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `runtime_presentation` は **canonical が active とする runtime** の投影状態
+  （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
+  `status` は `starting` / `ready` / `presentation_failed` / `cleanup_failed` / `stopped` の
+  固定enumに限定し、`display` / `window` / `width` / `height` は形式検証済みの値、
+  `age_sec` は記録ファイルのmtimeからの経過秒。`groups`（pid）・argv・path・自由文は出さない。
+  共有display再起動後に投影が復帰したことは、`status` が `presentation_failed` から
+  `ready` へ戻り `age_sec` が更新されることで確認する（#2097）。
 - `corners.<id>.end_reason` は固定enumのみを出す。`interrupted` で
   `switch-terminal-before-corner-active` の場合、その枠は**ゲーム切替が起動前に
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
