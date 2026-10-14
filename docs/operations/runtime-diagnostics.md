@@ -172,6 +172,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
   これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
   証跡から区別できる（#986）。
+  失敗したcornerの記録として `failed_corners`（直近8件、`corner` / `at` /
+  `resolution`（`released-unverified`＝記録して他cornerのローテーションを継続、
+  `recovery-required`＝共有slotの安全が証明できずlatch維持、不正値は`unknown`）/
+  `error_kind`（固定enum））を出す（#2187）。request identity・例外本文・自由文は出さない。
   自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
   `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
   `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、

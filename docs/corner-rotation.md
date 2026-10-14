@@ -92,16 +92,42 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
-### latchとoperator復旧（`status=recovery_required`、#986）
+### 失敗したcornerの隔離とlatch（`failed_corners` / `status=recovery_required`、#2187）
 
-予約後の実行が例外で終了した場合、まず当該requestのadapter state、同一requestのterminalな
-rollback receipt、復帰先のcanonical owner、残存資源を照合する。失敗したstartが一度もcornerを
-activeにせず、安全に元へ戻ったと全て確認できれば、corner stateを`interrupted`として予約を
-確定し、`recovery_required`へ移行しない。手動予約ではledgerに記録された`state_file`を使い、
-そのcorner固有の手動stateだけを照合する。例外本文はstateに書かない（provider出力やcredentialを
-含み得るため）。rollback証拠がない、cornerが実行中、所有権や資源解放が不明な場合は
-`status=recovery_required` / `reason=execution-or-state-unverified` / `error_kind=<固定enum>`で
-latchし、`tick()`は自動開始と手動startを拒否する。latchは自動では解けないfail-closed契約とする。
+**1つのcornerの失敗で他のcornerのローテーションを止めない。** 予約後の実行が例外で終了した
+場合は、次の順で判定する。
+
+1. 当該requestのadapter state、同一requestのterminalなrollback receipt、復帰先のcanonical
+   owner、残存資源を照合し、失敗したstartが一度もcornerをactiveにせず安全に元へ戻ったと
+   全て確認できれば、corner stateを`interrupted`として予約を確定する（cooldown維持・二重起動なし）。
+   手動予約ではledgerに記録された`state_file`を使い、そのcorner固有の手動stateだけを照合する。
+2. そのterminal証拠が無い場合でも、**共有program slotとgame-switch planeが当該requestを
+   保持していないと証明できれば**（`_slot_reusable()`: canonicalが`idle`/`ready`で安定した
+   非corner runtimeを所有、`operation`/`request_id`/`deadline_at`/`candidate`/`previous`/`retiring`
+   が空、当該requestのreceiptがterminalまたは不在、FIFOに当該requestが残っていない、
+   adapterの`resources_released()`が真）、予約を解放して**次のcornerをそのまま起動する**。
+   このとき
+   - `corner_rotation.json`の`failed_corners`へ`{corner, request_id, at, resolution, reason_code,
+     error_kind}`を**固定shape・有界件数（16件）**で追記し、`resolution=released-unverified` /
+     `reason_code=failed-corner-slot-released`として残す（直すための記録。request identityは
+     診断・UIへ出さない）。同時に`released_requests`（cornerごとに直近の解放requestを1件だけ持つ
+     有界な写像）へも記録する、
+   - 失敗した使用を`history`へ`source=failure`で記録する（rolling cooldownは通常どおり効くので、
+     同じcornerは既定24時間後にまた抽選されうる）、
+   - `status`は`waiting`/`ready`のままで、`tick()`は止まらない。
+   解放済みの失敗はadapter観測が`failed`等のBUSYのまま残り得る。`_observe()`は
+   `released_requests`が指すrequestに限り、**その時点で`_slot_reusable()`が
+   再び真のときだけ**BUSY観測を枠占有として数えない（後で別ownerが所有すれば即座に待機へ戻る）。
+3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
+   `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
+   自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
+   行を残す。latchは**毎分のtickが同じ判定を再試行**する: 1.のterminal commitか2.のslot証明が
+   成立した時点で、operator無しで自動解除して次のcornerへ進む（証明が成立しない限り解除しない）。
+
+例外本文はstateに書かない（provider出力やcredentialを含み得るため）。`failed_corners`にも
+例外本文・payload・request identityは保存しない（固定reason_codeと固定`error_kind`のみ）。
+手動予約（`manual_pending`）はoperatorの枠であり暗黙に解放しない: 1.のterminal commitだけを
+自動で試し、成立しなければ従来どおり待機/latchを維持する。
 
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
@@ -183,6 +209,10 @@ ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時
 診断は `corners.corner_rotation` に `error_kind` と `pending_corner` / `pending_phase` /
 `pending_age_sec` / `pending_owner` / `pending_owner_status` を固定投影し（予約が在る限り、
 latch中かどうかを問わず出す）、latch自体を総合 `warn` としてruntime health alertへ届ける。
+失敗したcornerは `failed_corners`（直近8件、`corner` / `at` / `resolution` / `error_kind`）として
+固定投影する。`resolution=released-unverified` は「記録して他cornerのローテーションを継続した」、
+`recovery-required` は「共有slotの安全が証明できずlatchを維持した」を表し、
+request identity・例外本文は出さない。
 復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
 `dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
 

@@ -1982,6 +1982,33 @@ class TestHttpHandlers(unittest.TestCase):
         for secret in ("PRIVATE-OWNER", "PRIVATE-QUEUE", "PRIVATE-BODY"):
             self.assertNotIn(secret, json.dumps(data))
 
+    def test_get_corners_publishes_failed_corners_without_request_identity(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="waiting", pending=None,
+            reason="failed-corner-slot-released",
+            failed_corners=[
+                {"corner": "tsuitate", "request_id": "PRIVATE-REQUEST", "at": time.time() - 60,
+                 "resolution": "released-unverified", "reason_code": "failed-corner-slot-released",
+                 "error_kind": "execution-unverified", "detail": "PRIVATE-DETAIL"},
+                {"corner": "weather", "request_id": "PRIVATE-REQUEST-2", "at": time.time() - 30,
+                 "resolution": "not-a-resolution", "error_kind": "not-a-kind"},
+            ])
+        ledger = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger.read_bytes()
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        failures = data["rotation"]["recent_failures"]
+        self.assertEqual([row["corner"] for row in failures], ["tsuitate", "weather"])
+        self.assertEqual(failures[0]["resolution"], "released-unverified")
+        self.assertEqual(failures[0]["error_kind"], "execution-unverified")
+        self.assertEqual(failures[1]["resolution"], "unknown")
+        self.assertEqual(failures[1]["error_kind"], "unknown")
+        self.assertEqual(ledger.read_bytes(), before)
+        for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
+            self.assertNotIn(secret, json.dumps(data))
+
     def test_get_corners_manual_owner_requires_exact_declared_identity_and_fixed_status(self):
         self._write_weather_catalog_config()
         self._write_rotation_state(status="waiting", pending=None,

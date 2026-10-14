@@ -1819,6 +1819,9 @@ _ROTATION_ERROR_KIND_ENUM = frozenset({
     "adapter-state", "adapter-timestamp", "catalog-mismatch", "execution-error",
     "execution-unverified", "invalid-state", "unexpected",
 })
+# Corner failures the scheduler no longer stops the rotation for (#2187).
+_ROTATION_FAILED_RESOLUTIONS = frozenset({"released-unverified", "recovery-required"})
+_ROTATION_FAILED_MAX = 5
 _PENDING_PHASE_ENUM = frozenset({"selected", "dispatched"})
 _CORNER_STATUS_ENUM = frozenset({
     "idle", "waiting", "starting", "active", "restoring", "preparing",
@@ -1940,6 +1943,30 @@ def _rotation_manual_view(g: GlobalConfig, raw: Any) -> dict[str, str] | None:
     return out
 
 
+def _rotation_failures_view(raw: Any) -> list[dict[str, Any]]:
+    """Bounded fixed projection of failed corners (#2187); no request ids.
+
+    The ledger records every corner failure so it stays fixable even though the
+    scheduler keeps rotating. Only the corner id, time, fixed resolution and
+    fixed error kind are published.
+    """
+    rows = raw.get("failed_corners") if isinstance(raw, dict) else None
+    out: list[dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows[-_ROTATION_FAILED_MAX:]:
+            if not isinstance(row, dict):
+                continue
+            resolution = row.get("resolution")
+            error_kind = row.get("error_kind")
+            out.append({
+                "corner": _view_str(row.get("corner")),
+                "at": _view_time(row.get("at")),
+                "resolution": resolution if resolution in _ROTATION_FAILED_RESOLUTIONS else "unknown",
+                "error_kind": error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM else "unknown",
+            })
+    return out
+
+
 def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     """Bounded, read-only projection of corner_rotation.json (#seed/uuid は出さない)."""
     from .corner_catalog import cooldown_seconds, rotation_config, rotation_enabled
@@ -1988,6 +2015,7 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
         out["cooldown_seconds"] = None
     if not isinstance(raw, dict):
         return out
+    out["recent_failures"] = _rotation_failures_view(raw)
     status = raw.get("status")
     status = status if status in _ROTATION_STATUS_ENUM else "unknown"
     pending = raw.get("pending")

@@ -1,0 +1,330 @@
+"""One failed corner must not stop the other corners (#2187).
+
+The scheduler releases a failed automatic reservation as soon as the *shared*
+program slot provably holds nothing from that request, records a fixed anomaly
+row and keeps rotating. Only an unprovable shared slot keeps the fail-closed
+latch, and even then the timer retries the release every tick.
+"""
+from contextlib import nullcontext
+import json
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from docich.config import load_global
+from docich.corner_catalog import Corner
+from docich.corner_rotation import (
+    CornerRotationManager,
+    FAILED_CORNER_LIMIT,
+    RELEASED_REASON,
+    RotationError,
+)
+
+CLEAN_CANONICAL = {
+    "phase": "ready",
+    "operation": None,
+    "request_id": None,
+    "deadline_at": None,
+    "candidate": None,
+    "previous": None,
+    "retiring": [],
+    "active": {"game": "sorengame", "runtime_id": "g1-abcdef", "generation": 1,
+               "lease_id": "lease"},
+}
+TERMINAL_RECEIPT = {"status": "rolled_back", "result": {"status": "rolled_back"}}
+
+
+def owned_canonical(game):
+    """A plane that still owns the corner's own game is never reusable."""
+    return {**CLEAN_CANONICAL, "active": {**CLEAN_CANONICAL["active"], "game": game}}
+
+
+class _Canonical:
+    def __init__(self, data, missing=False):
+        self.data, self.missing = data, missing
+
+    def load(self):
+        return (self.data, self.missing)
+
+
+class _Receipts:
+    def __init__(self, rows=None, queued=None, default=None):
+        self.rows = dict(rows or {})
+        self.queue = list(queued or [])
+        self.default = default
+
+    def load(self, request_id):
+        return self.rows.get(request_id, self.default)
+
+    def queued(self):
+        return list(self.queue)
+
+
+class Store:
+    def __init__(self, canonical=None, *, missing=False, queued=None, default_receipt=None,
+                 rows=None):
+        self.canonical = _Canonical(CLEAN_CANONICAL if canonical is None else canonical, missing)
+        self.receipts = _Receipts(rows=rows, queued=queued, default=default_receipt)
+
+    def lock(self, exclusive=False):
+        return nullcontext()
+
+
+class Adapter:
+    def __init__(self, g, corner, *, store=None, states=None, released=True, available=True):
+        self.corner = corner
+        self.manager = SimpleNamespace(store=store) if store is not None else None
+        self.states = list(states or [])
+        self.released = released
+        self.available = available
+
+    def eligible(self):
+        return self.available
+
+    def observations(self):
+        return list(self.states)
+
+    def resources_released(self):
+        return self.released
+
+
+class Executor:
+    def __init__(self, result="completed"):
+        self.calls = []
+        self.result = result
+
+    def execute(self, adapter, request):
+        self.calls.append(dict(request))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def build(tmp_path, *, storages, states=None, released=True, executor=None):
+    """Build a two-corner queue rotation with per-corner fake stores."""
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[corner_rotation]\nenabled=true\nschedule_mode="queue"\n[paths]\nstate_dir="run"\n'
+    )
+    g = load_global(tmp_path, path)
+    clock = [1000000.0]
+    catalog = [Corner("a", "game", "gamea"), Corner("b", "game", "gameb")]
+    adapters = {
+        corner.id: Adapter(
+            g, corner,
+            store=storages.get(corner.id),
+            states=(states or {}).get(corner.id, []),
+            released=released,
+        )
+        for corner in catalog
+    }
+    executor = executor or Executor()
+    manager = CornerRotationManager(
+        g, clock=lambda: clock[0], seed="seed", catalog=catalog,
+        adapter_factory=lambda g, corner: adapters[corner.id], executor=executor,
+    )
+    return manager, clock, executor, adapters
+
+
+def ledger(manager):
+    return json.loads(manager.path.read_text())
+
+
+def last_failure(state):
+    rows = state["failed_corners"]
+    assert rows
+    return rows[-1]
+
+
+def test_failed_corner_is_released_and_the_next_corner_runs(tmp_path):
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+
+    outcome = manager.tick()
+
+    # The failure settles the reservation without latching the rotation.
+    assert outcome == {"status": "waiting", "corner": outcome["corner"],
+                       "reason": RELEASED_REASON, "result": "unverified"}
+    state = ledger(manager)
+    failed = last_failure(state)
+    assert failed["resolution"] == "released-unverified"
+    assert failed["error_kind"] == "execution-unverified"
+    assert failed["corner"] == outcome["corner"]
+    assert state["status"] == "waiting"
+    assert state["pending"] is None
+    # The failed use still counts toward the rolling cooldown.
+    assert any(row["corner"] == failed["corner"] and row["source"] == "failure"
+               for row in state["history"])
+
+    # The very next tick runs a different corner instead of stopping.
+    executor.result = "completed"
+    result = manager.tick()
+
+    assert result["corner"] != failed["corner"]
+    assert result["status"] == "ready"
+    assert ledger(manager)["status"] == "ready"
+
+
+def test_failed_corner_keeps_the_latch_while_the_slot_is_not_proven(tmp_path):
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+
+    with pytest.raises(RotationError):
+        manager.tick()
+
+    state = ledger(manager)
+    assert state["status"] == "recovery_required"
+    assert state["pending"] is not None
+    failed = last_failure(state)
+    assert failed["resolution"] == "recovery-required"
+    assert failed["corner"] == state["pending"]["corner"]
+
+
+def test_failed_corner_stays_latched_for_an_unreadable_plane(tmp_path):
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(missing=True, default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(missing=True, default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+
+    with pytest.raises(RotationError):
+        manager.tick()
+
+    assert ledger(manager)["status"] == "recovery_required"
+
+
+def test_released_failure_does_not_block_the_other_corner(tmp_path):
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    released_corner = last_failure(ledger(manager))["corner"]
+    request_id = last_failure(ledger(manager))["request_id"]
+    assert ledger(manager)["released_requests"][released_corner]["request_id"] == request_id
+
+    # The released corner keeps a stale BUSY record on disk …
+    failed_adapter = manager.adapters[released_corner]
+    failed_adapter.states = [{"status": "failed", "rotation_request_id": request_id}]
+    executor.result = "completed"
+
+    # … and the other corner still runs.
+    result = manager.tick()
+    assert result["corner"] != released_corner
+
+    # A later owner of that corner's game stops the skip (fail closed again).
+    manager.adapters[released_corner].manager.store.canonical = _Canonical(
+        owned_canonical(failed_adapter.corner.game)
+    )
+    waited = manager.tick()
+    assert waited["status"] == "waiting"
+    assert waited["reason"] == "other-corner-needs-finish-or-recovery"
+
+
+def test_released_failure_skip_survives_audit_list_rollover(tmp_path):
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    released_corner = last_failure(state)["corner"]
+    request_id = state["released_requests"][released_corner]["request_id"]
+
+    # The bounded audit list rolls over, but the per-corner row keeps the
+    # released observation from stalling the rotation.
+    rotated = state
+    rotated["failed_corners"] = [
+        {"corner": "x%d" % n, "request_id": str(n), "at": n,
+         "resolution": "released-unverified", "error_kind": "execution-unverified"}
+        for n in range(FAILED_CORNER_LIMIT + 4)
+    ]
+    manager.save(rotated)
+    manager.adapters[released_corner].states = [
+        {"status": "failed", "rotation_request_id": request_id}
+    ]
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert result["corner"] != released_corner
+
+
+def test_latch_auto_releases_when_the_slot_becomes_provable(tmp_path):
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea")),
+                  "b": Store(canonical=owned_canonical("gameb"))},
+        executor=Executor(result="failed"),
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    latched = ledger(manager)
+    assert latched["status"] == "recovery_required"
+    blocked_corner = latched["pending"]["corner"]
+
+    # The plane recovers (the rollback finishes) and the timer retries: no
+    # operator is needed to clear the latch.
+    adapters[blocked_corner].manager.store.canonical = _Canonical(CLEAN_CANONICAL)
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert result["corner"] != blocked_corner
+    after = ledger(manager)
+    assert after["status"] == "ready"
+    assert last_failure(after)["resolution"] == "released-unverified"
+
+
+def test_ledger_error_kinds_still_latch(tmp_path):
+    manager, _clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        states={"a": [{"status": "not-a-status"}]},
+    )
+
+    with pytest.raises(RotationError):
+        manager.tick()
+
+    state = ledger(manager)
+    assert state["status"] == "recovery_required"
+    assert state["error_kind"] == "adapter-state"
+
+
+def test_released_failure_rows_stay_bounded(tmp_path):
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+    )
+    state = {"failed_corners": [{"corner": "a", "request_id": str(n), "at": n,
+                                 "resolution": "released-unverified",
+                                 "reason_code": RELEASED_REASON,
+                                 "error_kind": "execution-unverified"}
+                                for n in range(FAILED_CORNER_LIMIT + 4)]}
+
+    manager._record_failed_corner(state, {"corner": "b", "request_id": "x"},
+                                  resolution="released-unverified",
+                                  error_kind="execution-unverified", now=1.0)
+
+    assert len(state["failed_corners"]) == FAILED_CORNER_LIMIT
+    assert state["failed_corners"][-1]["corner"] == "b"
