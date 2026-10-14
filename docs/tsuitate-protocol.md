@@ -35,6 +35,24 @@ allowlist から組み立てます。`outcome`（Bot視点）/ `reason` / `ended
 - `tsuitate_corner` は自身の runId が一致し `finished` のときだけ結果をコーナー状態へ保存します。
   別 run の結果は混入しません。
 
+## broadcast view の制御capability
+
+`tsuitate-view` は GameSwitch の世代session（tmux）で `python -m docich.tsuitate_view` として
+動き、`/api/tsuitate` の応答を自分で `POST /beta-control status` から組み立てます。view が
+制御APIへ到達できないと状態ラベルではなく「制御接続を確認できません」を返します。
+
+tmux は session の環境を server から作るため、`TsuitateProgramViewAdapter._game_session_env()`
+が `DOCICH_BETA_CONTROL_SECRET` / `DOCICH_BETA_CONTROL_URL`（`CAPABILITY_ENV_KEYS`）を
+session へ明示的に渡します。`TsuitateCornerAdapter.run()` も同じ2 keyだけを
+`runtime_environment()` で1局のスコープへ出し、WebUI の operator/viewer token は渡しません。
+
+この2 keyが欠けると `/api/tsuitate` は `ok:false` を返し続け、adapter の readiness が成立せず、
+switch は deadline 超過で rollback してコーナーは一度も active になれません。
+
+配信ページ自体もブラウザ翻訳の対象外にします（`<html lang="ja" translate="no">` と
+`<meta name="google" content="notranslate">`）。翻訳ツールバーは右上の枠に重なるため、
+view 側の標準は [`broadcast-html-view-standard.md`](broadcast-html-view-standard.md) に従います。
+
 ## コーナーの有界終了
 
 `TsuitateCornerManager` は beta が active になってから `max_match_seconds`（既定1800秒）を超えると、

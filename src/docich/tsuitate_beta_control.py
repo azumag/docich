@@ -13,6 +13,10 @@ import urllib.parse
 import urllib.request
 
 PREFIX = b"beta-control-v1\nPOST\n/beta-control\n"
+#: The only environment keys this capability is ever read from.  Single source
+#: of truth for the corner adapter's scoped environment and for the broadcast
+#: view's own tmux session, so neither can quietly grow a third credential.
+CAPABILITY_ENV_KEYS = ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 STATES = {"stopped", "queued", "playing", "draining", "finished", "queue_timeout", "paused"}
 ERRORS = {"token_not_configured", "run_locked", "run_mismatch", "control_not_configured",

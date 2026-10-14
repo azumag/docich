@@ -402,6 +402,57 @@ def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):
     assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
 
 
+def test_rotation_run_scope_carries_only_beta_control_env(tmp_path, monkeypatch):
+    """The match — not just eligibility — runs with the control capability.
+
+    ``TsuitateCornerManager`` calls status/start/stop from this process, and
+    ``TsuitateProgramViewAdapter._game_session_env`` reads this same process
+    environment while the switch materializes the view's tmux session.
+    """
+    home = tmp_path / "home"
+    env_file = home / ".config" / "docich" / "webui.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "DOCICH_BETA_CONTROL_SECRET=fixture-control-secret-12345678901234567890\n"
+        "DOCICH_BETA_CONTROL_URL=https://docich-tsuitate-bot.fixture.workers.dev\n"
+        "DOCICH_WEBUI_TOKEN=operator-secret-never-export\n"
+        "OTHER_PRIVATE_VALUE=never-read\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("DOCICH_WEBUI_TOKEN", "operator-secret-never-export")
+    for key in ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL",
+                "DOCICH_WEBUI_READONLY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    captured = {}
+
+    def run_rotation(request_id):
+        import os
+        captured["request_id"] = request_id
+        captured["secret"] = os.environ.get("DOCICH_BETA_CONTROL_SECRET")
+        captured["url"] = os.environ.get("DOCICH_BETA_CONTROL_URL")
+        captured["webui"] = os.environ.get("DOCICH_WEBUI_TOKEN")
+        captured["other"] = os.environ.get("OTHER_PRIVATE_VALUE")
+        return "completed"
+
+    adapter.manager.run_rotation = run_rotation
+    assert adapter.run({"request_id": REQ}) == "completed"
+    assert captured == {
+        "request_id": REQ,
+        "secret": "fixture-control-secret-12345678901234567890",
+        "url": "https://docich-tsuitate-bot.fixture.workers.dev",
+        "webui": "operator-secret-never-export",
+        "other": None,
+    }
+    import os
+    assert os.environ.get("DOCICH_BETA_CONTROL_SECRET") is None
+    assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
+
+
 def _failed_rollback_setup(tmp_path):
     """Craft the prod latch shape on disk: a start that failed *and* whose
     rollback failed (``rollback_failed``), since recovered by a later

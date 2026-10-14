@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from docich.adapters import make_coordinator_adapter
-from docich.adapters import cli_game, tsuitate_program
+from docich.adapters import cli_game, program, tsuitate_program
 from docich.adapters.base import AdapterError
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec
 from docich.naming import runtime_names
@@ -80,7 +80,7 @@ def _response(data, status=200):
 def test_tsuitate_view_factory_uses_generation_owned_loopback_page(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
-    monkeypatch.setattr(tsuitate_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
     monkeypatch.setattr(tsuitate_program, "call_beta_control", lambda *_: _status())
 
     adapter = make_coordinator_adapter(g, spec)
@@ -97,6 +97,10 @@ def test_tsuitate_view_factory_uses_generation_owned_loopback_page(tmp_path, mon
     viewer = adapter._viewer_command()
     assert "--app=http://127.0.0.1:8804/broadcast" in viewer
     assert spec.runtime_id in " ".join(viewer)
+    # Repository standard: no browser translation over the broadcast frame.
+    assert "--lang=ja-JP" in viewer
+    assert "--disable-translate" in viewer
+    assert "--disable-features=Translate,TranslateUI,BackForwardCache" in viewer
 
 
 def test_tsuitate_view_preflight_requires_ready_beta_owner(tmp_path, monkeypatch):
@@ -149,6 +153,22 @@ def test_broadcast_view_shows_the_settled_result_but_never_a_live_one(monkeypatc
     )
     malformed = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
     assert malformed["ok"] is True and malformed["gameResult"] is None
+
+
+def test_broadcast_reports_a_missing_control_capability(monkeypatch):
+    """Without the capability the page can only say 「制御接続を確認できません」.
+
+    This is the production symptom the view's own tmux session used to hit: the
+    corner process held the capability but the session environment is built by
+    tmux, so the view answered ``ok:false`` and readiness never settled.
+    """
+    monkeypatch.delenv("DOCICH_BETA_CONTROL_SECRET", raising=False)
+    monkeypatch.delenv("DOCICH_BETA_CONTROL_URL", raising=False)
+    data = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
+    assert data["ok"] is False
+    assert data["error"] == "control_not_configured"
+    assert data["runtime_id"] == "g4-a1b2c3d4"
+    assert "制御接続を確認できません" in tsuitate_view.HTML
 
 
 def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
@@ -237,7 +257,7 @@ def test_tsuitate_readiness_requires_exact_runtime_identity(tmp_path, monkeypatc
 def test_tsuitate_materialize_runtime_carries_the_import_path(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
-    monkeypatch.setattr(tsuitate_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
     adapter = make_coordinator_adapter(g, spec)
 
     recorded: dict[str, Any] = {}
@@ -263,9 +283,42 @@ def test_tsuitate_materialize_runtime_carries_the_import_path(tmp_path, monkeypa
     # command itself: tmux builds a new session's environment from the server
     # and never inherits the operator's PYTHONPATH.
     assert recorded["session"] == spec.adapter_session
-    assert recorded["session_env"] == {"PYTHONPATH": str(tsuitate_program.DOCICH_SRC)}
+    assert recorded["session_env"] == {"PYTHONPATH": str(program.DOCICH_SRC)}
     # The viewer window is a browser, so it needs no import path.
     assert "PYTHONPATH" not in (recorded["window_env"] or {})
+
+
+def test_tsuitate_session_env_carries_only_the_beta_control_capability(tmp_path, monkeypatch):
+    """The view's own process must reach the control API; nothing else moves.
+
+    tmux builds the session environment from the server, so the two reviewed
+    control keys have to be carried explicitly.  Without them ``/api/tsuitate``
+    answers ``ok:false`` forever, the adapter's readiness loop never settles,
+    and the broadcast shows 「制御接続を確認できません」 until the switch rolls
+    back.
+    """
+    g = _global(tmp_path)
+    adapter = make_coordinator_adapter(g, _spec(tmp_path))
+    secret = "fixture-control-secret-12345678901234567890"
+    monkeypatch.setenv("DOCICH_BETA_CONTROL_SECRET", secret)
+    monkeypatch.setenv("DOCICH_BETA_CONTROL_URL",
+                       "https://docich-tsuitate-bot.fixture.workers.dev")
+    monkeypatch.setenv("DOCICH_WEBUI_TOKEN", "operator-secret-never-export")
+
+    carried = adapter._game_session_env()
+    assert carried == {
+        "PYTHONPATH": str(program.DOCICH_SRC),
+        "DOCICH_BETA_CONTROL_SECRET": secret,
+        "DOCICH_BETA_CONTROL_URL": "https://docich-tsuitate-bot.fixture.workers.dev",
+    }
+    # Operator/viewer credentials never enter the view's session.
+    assert "DOCICH_WEBUI_TOKEN" not in carried
+
+    # Absent capability keys are omitted, never invented.
+    monkeypatch.delenv("DOCICH_BETA_CONTROL_SECRET")
+    monkeypatch.delenv("DOCICH_BETA_CONTROL_URL")
+    bare = adapter._game_session_env()
+    assert bare == {"PYTHONPATH": str(program.DOCICH_SRC)}
 
 
 def test_tsuitate_session_env_is_what_makes_the_view_importable(tmp_path):
@@ -273,7 +326,7 @@ def test_tsuitate_session_env_is_what_makes_the_view_importable(tmp_path):
     adapter = make_coordinator_adapter(g, _spec(tmp_path))
     carried = adapter._game_session_env()
     assert carried is not None
-    assert carried == {"PYTHONPATH": str(tsuitate_program.DOCICH_SRC)}
+    assert carried["PYTHONPATH"] == str(program.DOCICH_SRC)
     assert (Path(carried["PYTHONPATH"]) / "docich" / "tsuitate_view.py").is_file()
 
     def _import(extra):

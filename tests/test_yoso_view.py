@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich import prediction_leaderboard as lb  # noqa: E402
 from docich.adapters import make_coordinator_adapter  # noqa: E402
 from docich.adapters.base import AdapterError  # noqa: E402
-from docich.adapters import cli_game, yoso_program  # noqa: E402
+from docich.adapters import cli_game, program, yoso_program  # noqa: E402
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.yoso_view import (  # noqa: E402
@@ -221,7 +221,7 @@ def test_view_handler_rejects_invalid_generation(tmp_path, generation):
 def test_yoso_program_view_is_registered_and_respects_the_game_viewport(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
-    monkeypatch.setattr(yoso_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
 
     adapter = make_coordinator_adapter(g, spec)
 

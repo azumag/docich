@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .corner_terminal import failed_improvement_is_terminal, normalize_terminal_paper_failure
 from .retro_corner import RetroCornerManager, load_retro_corner_config
+from .tsuitate_beta_control import CAPABILITY_ENV_KEYS as CONTROL_ENV_KEYS
 
 
 class CornerExecutionError(RuntimeError):
@@ -494,7 +495,7 @@ class RetiredCornerObserver:
 class TsuitateCornerAdapter:
     """One beta.tsuitate.info match through the shared program slot."""
 
-    CONTROL_KEYS = ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL")
+    CONTROL_KEYS = CONTROL_ENV_KEYS
     FORBIDDEN_SECRET_KEYS = ("DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN")
 
     def __init__(self, g, corner):
@@ -575,7 +576,11 @@ class TsuitateCornerAdapter:
         return iter(self.manager.observations())
 
     def run(self, request):
-        return self.manager.run_rotation(request["request_id"])
+        # The capability must cover the whole match, not just eligibility: the
+        # manager calls status/start/stop from this process, and the view's own
+        # tmux session env is built from this process during the switch.
+        with self.runtime_environment():
+            return self.manager.run_rotation(request["request_id"])
 
     def reconcile_failed_start(self, request_id, *, state_file=None):
         if state_file is not None and state_file != self.state_path.name:

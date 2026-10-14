@@ -20,8 +20,8 @@ from .tsuitate_beta_control import (
 DEFAULT_PORT = 8804
 VIEW_NAME = "tsuitate-view"
 
-HTML = """<!doctype html><html lang="ja"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+HTML = """<!doctype html><html lang="ja" translate="no"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="google" content="notranslate">
 <title>AI衝立将棋</title>
 <style>
 html,body{margin:0;background:#101317;color:#f4f5f7;font-family:system-ui,-apple-system,sans-serif}

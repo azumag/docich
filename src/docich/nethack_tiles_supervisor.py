@@ -22,6 +22,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 if __package__:
+    from .broadcast_view import BROADCAST_TRANSLATE_ARGS
     from .game_switch import GameSwitchStore, atomic_write_json
     from .nethack_spectator_live import (
         ActiveRuntime,
@@ -32,6 +33,7 @@ if __package__:
     from .nethack_spectator_server import NethackSpectatorFrameServer
 else:  # production invokes this file as a script through presentation.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from docich.broadcast_view import BROADCAST_TRANSLATE_ARGS
     from docich.game_switch import GameSwitchStore, atomic_write_json
     from docich.nethack_spectator_live import (
         ActiveRuntime,
@@ -681,6 +683,10 @@ class NethackTilesSupervisor:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--hide-scrollbars",
+            # Repository standard: no browser translation tip over the stream.
+            # The tiles page is the game's own UI, so no Japanese UI language
+            # is pinned here; only the translation switches apply.
+            *BROADCAST_TRANSLATE_ARGS,
         ]
 
     def _start_browser(self) -> None:

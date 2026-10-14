@@ -12,6 +12,7 @@ fall back to the 80x24 text dashboard in xterm without a code change.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import time
@@ -19,6 +20,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ..broadcast_view import (
+    BROADCAST_TRANSLATE_ARGS,
+    JAPANESE_LANG_ARG,
+)
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError
 from .base import AdapterError
@@ -32,6 +37,64 @@ VIEW_READY_MARKER = "PAPER 暗号資産コーナー"
 
 #: Loopback port for the HTML dashboard server.
 DEFAULT_DASHBOARD_PORT = 8799
+
+#: ``src/`` of this checkout.  tmux builds a new session's environment from the
+#: *server* and never inherits the operator's ``PYTHONPATH``, so any view whose
+#: command imports ``docich`` must carry the import path through
+#: ``_game_session_env`` (Issue #1992).
+DOCICH_SRC = Path(__file__).resolve().parents[2]
+
+
+def broadcast_browser_command(
+    url: str,
+    *,
+    window_size: tuple[int, int],
+    window_position: tuple[int, int],
+    profile_dir: str | Path,
+    japanese: bool = True,
+    label: str = "docich broadcast view",
+) -> list[str]:
+    """Standard chromium command for one docich broadcast page.
+
+    Every docich-opened broadcast window disables browser translation here
+    instead of repeating the switch list in each view adapter (repository
+    standard).  A view that serves a Japanese page passes ``japanese=True``
+    (the default) so the UI language is pinned as well.
+    """
+    browser = _browser_bin()
+    if not browser:
+        raise AdapterError(f"chromium が見つかりません ({label})")
+    command = [
+        browser,
+        f"--app={url}",
+        f"--window-size={int(window_size[0])},{int(window_size[1])}",
+        f"--window-position={int(window_position[0])},{int(window_position[1])}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--hide-scrollbars",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+    ]
+    if japanese:
+        command.append(JAPANESE_LANG_ARG)
+    command.extend(BROADCAST_TRANSLATE_ARGS)
+    command.append(f"--user-data-dir={profile_dir}")
+    return command
+
+
+def broadcast_view_session_env(*, capability_keys: tuple[str, ...] = ()) -> dict[str, str]:
+    """Environment a generation-owned broadcast view needs in its own session.
+
+    tmux builds a session environment from the server, so both the import path
+    and any capability the view's own process must call have to be carried
+    explicitly.  Keys absent from this process are omitted, never invented.
+    """
+    env = {"PYTHONPATH": str(DOCICH_SRC)}
+    for key in capability_keys:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
 
 
 def paper_view_game_config() -> GameConfig:
@@ -95,22 +158,13 @@ def _browser_bin() -> str | None:
 
 
 def _browser_command(port: int) -> list[str]:
-    browser = _browser_bin()
-    if not browser:
-        raise AdapterError("chromium が見つかりません (PAPER HTML dashboard)")
-    return [
-        browser,
-        f"--app=http://127.0.0.1:{port}/",
-        "--window-size=960,540",
-        "--window-position=0,0",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--hide-scrollbars",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-features=Translate,BackForwardCache",
-        f"--user-data-dir=/tmp/docich-paper-view-{port}",
-    ]
+    return broadcast_browser_command(
+        f"http://127.0.0.1:{port}/",
+        window_size=(960, 540),
+        window_position=(0, 0),
+        profile_dir=f"/tmp/docich-paper-view-{port}",
+        label="PAPER HTML dashboard",
+    )
 
 
 class ProgramViewAdapter(CliCoordinatorAdapter):

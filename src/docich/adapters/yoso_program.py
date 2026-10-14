@@ -19,10 +19,12 @@ from ..prediction_leaderboard import LeaderboardError
 from ..yoso_view import DEFAULT_PORT, VIEW_NAME, YosoViewError, board
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
-from .program import ProgramViewAdapter, _browser_bin
+from .program import (
+    ProgramViewAdapter,
+    broadcast_browser_command,
+    broadcast_view_session_env,
+)
 
-#: ``src/`` of this checkout, the import path the view needs at runtime.
-DOCICH_SRC = Path(__file__).resolve().parents[2]
 READY_PATH = "/api/yosou"
 
 
@@ -61,27 +63,16 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
     def _game_session_env(self) -> dict[str, str]:
         # tmux starts the command from the server environment and never
         # inherits the operator's PYTHONPATH, so bind this checkout explicitly.
-        return {"PYTHONPATH": str(DOCICH_SRC)}
+        return broadcast_view_session_env()
 
     def _viewer_command(self) -> list[str]:
-        browser = _browser_bin()
-        if not browser:
-            raise AdapterError("chromium が見つかりません (yosou HTML view)")
-        command = [
-            browser,
-            f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
-            "--window-size=960,540",
-            "--window-position=0,0",
-            "--lang=ja-JP",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--hide-scrollbars",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-translate",
-            "--disable-features=Translate,TranslateUI,BackForwardCache",
-            f"--user-data-dir={self.spec.runtime_dir / 'yosou-browser-profile'}",
-        ]
+        command = broadcast_browser_command(
+            f"http://127.0.0.1:{self.dashboard_port}/broadcast",
+            window_size=(960, 540),
+            window_position=(0, 0),
+            profile_dir=self.spec.runtime_dir / "yosou-browser-profile",
+            label="yosou HTML view",
+        )
         display = self.g.display
         if display.viewport_width > 0 and display.viewport_height > 0:
             return [
