@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "corner": "math",
+  "fixtureId": "fixed-math-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed math fixture for planning and input-contract acceptance only. It is not a real measurement, observation record, or verified mathematical value, and its title, figures, constants, URLs and details must not be presented as verified math data or used for external distribution.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic birthday problem collision probability 23 people"
+    ],
+    "items": [
+      {
+        "url": "https://example.org/verified/web/material/math",
+        "query_indexes": [
+          0
+        ],
+        "excerpt": "Verified short excerpt (synthetic): in the birthday problem, the probability of a shared birthday among n independent uniform choices from k days grows roughly as 1 minus exp of minus n(n minus 1) over 2k, so 23 people already reach about one half. 100 days of naive linear intuition is not the right scale. Use this as contract material only.",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "1ca5957fd7963a009116d414cd6f9b1122acb57b7f64ed67b2c16e4e8305d031"
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealMathematics": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePublicResearchAndStandardsSources": true,
+    "mustIncludeTodaysQuestion": true,
+    "mustIncludeIntuitivePrediction": true,
+    "mustIncludeObservedPhenomenon": true,
+    "mustIncludeSmallExample": true,
+    "mustIncludeMathematicalPrinciple": true,
+    "mustIncludeMathematicalModel": true,
+    "mustIncludeMathematicalLaw": true,
+    "mustIncludeSimpleFormulaOrModel": true,
+    "mustIncludeGeneralization": true,
+    "mustIncludeExperimentAndTechnologyApplication": true,
+    "mustIncludeRealWorldApplication": true,
+    "mustIncludeIntuitionFailurePoint": true,
+    "mustIncludeIntuitiveSummary": true,
+    "mustIncludeFigureAndFormulaHandling": true,
+    "mustNotPresentFormulasAsGoal": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepCitations": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Synthetic Fixture: Why Do 23 People Make a Birthday Match Likely?",
+    "topicId": "fixed-math-birthday-match-001",
+    "mathField": "合成fixture: 確率・組合せ (誕生日問題)",
+    "mathematicsField": "合成fixture: 確率・組合せ (誕生日問題)",
+    "mathTopic": "合成fixture: 確率・組合せ (誕生日問題)",
+    "todaysQuestion": "合成fixture: 23人を集めると、その中に誕生日が同じペアがいる確率はなぜ約50%になるのか。",
+    "intuitivePrediction": "合成fixture: 多くの聴衆は「365日あるから23人では重ならない」と答える。これは365と23を直接比べた直感的な予想である。",
+    "observedPhenomenon": "合成fixture: 23人の集まりでは、誕生日が重なる確率が約0.507となり、50%を越える。人数を増やすと確率は急に上がり、70人では約0.999に近づく。",
+    "smallExample": "合成fixture: 2人なら重なる確率は1/365≈0.0027。3人なら1 − (365/365)(364/365)(363/365)≈0.0082。小さい例を順に並べると、確率の伸び方が線形ではなく累積的であることが見える。",
+    "mathematicalPrinciple": "合成fixture: 重ならない側の確率を積で表し、1から引くという相補事象の考え方。",
+    "mathematicalModel": "合成fixture: n人がk個の日 (k=365) から独立に選んだとき、少なくとも2人が同じ値を引く確率 p(n,k) = 1 − ∏_{i=0}^{n−1}(1 − i/k)。",
+    "mathematicalLaw": "合成fixture: 相補事象と独立同分布の下での乗法原理。",
+    "mathModel": "合成fixture: p(n,k)=1−∏_{i=0}^{n−1}(1−i/k)。",
+    "formulaAndModel": "合成fixture: 相補事象 ∏(1 − i/k) と、nが大きいときの近似 p≈1−exp(−n(n−1)/(2k))。",
+    "generalization": "合成fixture: 日数 k を任意のresolution (ハッシュ値・ビット長・ID空間) に置き換えれば、衝突確率の一般形になる。暗号・データ構造・サンプリング設計へ展開できる。",
+    "experimentAndTechnologyApplication": "合成fixture: ハッシュ衝突・誕生日攻撃・フィンガープリントの衝突見積り、キャッシュ・ID空間設計、乱数のサンプルサイズ計画に応用する。",
+    "application": "合成fixture: ハッシュ衝突・乱数サンプル・ID空間設計。",
+    "realWorldApplication": "合成fixture: 暗号 (誕生日攻撃)、データ構造 (ハッシュ表)、実験計画 (サンプルサイズ) で利用する。",
+    "intuitionFailurePoint": "合成fixture: 365という大きい数を見ると線形に重なりにくさが増すと思いがちだが、実際は対の数 n(n−1)/2 が支配するため急激に衝突が増える。",
+    "intuitionFailure": "合成fixture: 鳩の巣 (366人) を待たなくても probabilistic collision が早く起きる。",
+    "intuitiveSummary": "合成fixture: 対の数が日数を追い越すところで確率が半分を越える、という直感的な見立て。",
+    "intuitiveConclusion": "合成fixture: 23人で半分、という驚きの最小例から、対の数の効果を覚える。",
+    "thirtySecondSummary": "合成fixture: 誕生日問題は相補事象で解け、n=23で約50%になるのは対の数が日数より速く増えているからである。",
+    "oneLineSummary": "合成fixture: 身近な「23人で半分?」から確率の入力契約を示す planning 例。",
+    "requirementsAndConstraints": [
+      "独立同分布・365日 (うるう年を扱わない) という前提の明示",
+      "対の数 n(n−1)/2 が支配することの説明",
+      "近似式の有効範囲 (n ≪ k) と誤差の明示",
+      " units と dimensionless 確率の明示",
+      "合成数値であり実測統計ではないことの明記"
+    ],
+    "figureAndFormulaHandling": "Diagram handling note: scope = probability as function of group size; simplification = uniform 365-day year, independent choices; not a measurement.",
+    "formulaEntries": [
+      {
+        "formula": "p(n,k) = 1 − ∏_{i=0}^{n−1}(1 − i/k)",
+        "whatItExplains": "合成fixture: n人の群の中で、少なくとも2人が同じ誕生日を持つ確率を、逆に「誰も重ならない」側から計算して求める。",
+        "symbolDefinitions": "合成fixture: p = 少なくとも1組が一致する確率; n = 人数; k = 誕生日の候補数 (365日); i = 既に選ばれた人数。",
+        "units": "合成fixture: pは dimensionless。nとiは人数 (count)。kは候補数 (count)。単位はいずれも counting number。",
+        "validityRange": "合成fixture: 選択が独立で一様である範囲。季節・双子・記録誤差の影響があると範囲外。k finite、n > k では確率1に近づく。",
+        "numericExample": "合成fixture: n=23,k=365ではp≈0.507。k=365,n=2 gives p≈0.0027、n=70 gives p≈0.999。",
+        "plainRestatement": "合成fixture: 人数を1人増やすと、重ならない側が少しずつ減り、23人で半分以上が重なる側に回る。",
+        "diagramReference": "合成fixture: 横軸人数・縦軸確率の曲線図。n=23での50%横線を重ねる。"
+      },
+      {
+        "formula": "p ≈ 1 − exp(−n(n−1)/(2k))",
+        "whatItExplains": "合成fixture: 対の数 n(n−1)/2 が、日数 k に対してどれだけの衝突圧力を持つかを指数近似で説明する。",
+        "symbolDefinitions": "合成fixture: exp(·)=e^{·}; eは自然対数の底。n,kは上記と同じ。",
+        "units": "合成fixture: 指数の引数は dimensionless (n(n−1)/(2k) は count/count)。",
+        "validityRange": "合成fixture: n ≪ k かつ n(n−1)/(2k) がそれほど大きくない範囲。nがkに近い場合は正確な積公式を使う。",
+        "numericExample": "合成fixture: n=23,k=365: −23×22/(2×365)=−0.693…、exp≈0.500、p≈0.500 (実際は0.507)。",
+        "plainRestatement": "合成fixture: 対の数が日数の半分を超えると、衝突の odds が指数的に大きくなる。",
+        "diagramReference": "合成fixture: 近似曲線と正確な曲線を重ね、n=23での誤差を示す。"
+      }
+    ],
+    "labelsPolicy": "Every generated segment must be labeled fact, analysis, or forecast.",
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成fixtureであり、実際の人口分布・ seasonality・双子頻度の影響は未検証。数値は教育目的の架空例。",
+    "uncertainty": "均一独立を仮定しており、実社会の誕生日分布は一様ではない。本番使用前に再計算と一次資料で裏付けが必要。",
+    "figureOrDiagram": "n versus p の曲線図に、n=23での50%オーバーレイと、対の数が生む増加率の矢印を重ねる。概略図。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは、問いと直感的な予想から入り、小さい例・モデル・一般化・応用・直感の見立てを独立した原稿として再構成する。",
+    "primarySources": [
+      "https://example.org/math/synthetic-birthday-probability",
+      "https://example.org/math/synthetic-combinatorics-reference"
+    ],
+    "sourcePriority": [
+      "public-institution-and-research-institute",
+      "measurement-standards-and-reference-data",
+      "academic-paper",
+      "mathematics-textbook",
+      "university-lecture-material",
+      "technical-manual"
+    ],
+    "citationKeepUrl": true,
+    "url": "https://example.org/math/synthetic-birthday-probability",
+    "materialContract": {
+      "maxExcerptBytes": 8192,
+      "maxFetchAttempts": 4,
+      "maxQueries": 3,
+      "maxVerifiedMaterials": 4,
+      "minPrimarySources": 1
+    },
+    "sourceAccessNote": "公開 Web 資料は確認補助として使い、組合せ・確率の主張は一次資料と教科書で再確認する。"
+  }
+}
