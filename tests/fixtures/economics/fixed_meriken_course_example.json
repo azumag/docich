@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "corner": "economics",
+  "fixtureId": "fixed-meriken-economics-course-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed meriken-economics fixture for planning and input-contract acceptance only. It is not a real event or verified statement, and its title, URLs and details must not be presented as verified economic data or used for external distribution.",
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "queries_used": [
+      "synthetic meriken economics inflation interest rates"
+    ],
+    "items": [
+      {
+        "url": "https://example.org/meriken-economics/synthetic-inflation-and-rates",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "6d3edfc722492653314e35235640686c9833412bead47e5a9bbd342d88c90ec4",
+        "excerpt": "Synthetic verified meriken economics material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealEvent": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustPrioritizePrimaryAndInstitutions": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustPrioritizePrimaryEconomicSources": true,
+    "mustIncludeFailureAndSafety": true,
+    "mustIncludeUncertaintyAndLabels": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustIncludeResearchCaveats": true,
+    "mustStatePreprintStatusIfUnreviewed": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  },
+  "topic": {
+    "title": "Synthetic Fixture: Why do prices rise? Inflation and central-bank rates",
+    "topicId": "fixed-meriken-economics-course-001",
+    "todayQuestion": "なぜ物価が上がるのか？金利を上げると景気が冷えるのはなぜか？",
+    "questionOfDay": "なぜインフレになる？",
+    "currentQuestion": "なぜインフレになるのか、誰が負担し誰が得するのか",
+    "theme": "インフレと金利",
+    "themeId": "fixed-meriken-economics-course-001",
+    "merikenView": "市場と価格信号を重視し、利益・競争・成長の側からインフレの原因と対応を読み解く。",
+    "merikenPerspective": "市場・利益・競争・成長の視点",
+    "merikenStance": "資本主義側の立場をキャラクターとして明確に持ちつつ、断定を避ける。",
+    "economicModel": "IS-LM・フィリップス曲線・期待形成・貸出・消費・投資のモデルで説明",
+    "model": "aggregate demand and supply with monetary policy transmission",
+    "dataEvidence": "公的統計・一次資料・中央銀行データを出典付きで保持し、合成値は実測ではない。",
+    "data": "公的統計・一次資料",
+    "evidence": "CPI・賃金・金利・為替などの指標",
+    "empirics": "実証研究の解釈と限界を併記",
+    "counterArguments": "市場失敗・外部不経済・格差・制度的制約・反対論も併記する。",
+    "counterpoints": "価格統制・所得再分配・市場介入の観点",
+    "opposingViews": [
+      "市場重視",
+      "規制・再分配重視"
+    ],
+    "opposingViewpoints": [
+      "市場重視",
+      "規制・再分配重視"
+    ],
+    "multiplePerspectives": [
+      "市場・利益",
+      "労働・消費者",
+      "政策・制度",
+      "国際経済"
+    ],
+    "conditions": "供給制約・期待・国際価格・賃金に依存する条件付き結論。",
+    "caveats": "因果の向き・内生性・ omitted variables を明示。",
+    "distributionalImpact": "誰が得て誰が負担するかを所得・世代・地域・産業別に分ける。",
+    "whoGainsWhoBears": "物価上昇時の利害関係者分布",
+    "winnersAndLosers": [
+      "物価上昇で有利な群",
+      "物価上昇で不利な群"
+    ],
+    "costBenefitDistribution": "価格・賃金・資産・債務の再配分",
+    "newsApplication": "最新のニュースや家計の疑問に経済理論を適用する。",
+    "applicationToNews": "ニュース解説への適用",
+    "realWorldNewsApplication": "ニュース適用例",
+    "currentNewsApplication": "身近な疑問への応用",
+    "marketFailure": "独占・外部不経済・情報非対称・公共財。",
+    "externalities": "環境・健康・地域への外部不経済",
+    "inequality": "所得・資産格差と機会",
+    "institutionalConstraints": "法・規制・制度・政治的制約",
+    "publicEconomics": "税・公共財・再分配",
+    "laborMarket": "最低賃金・失業・賃金",
+    "industryOrganization": "独占と競争",
+    "internationalEconomics": "貿易・為替・関税",
+    "macroEconomics": "インフレ・金利・財政",
+    "microEconomics": "価格・需要・供給・均衡",
+    "thirtySecondSummary": "合成fixture: インフレや金利のニュースを入口に、ミクロ・マクロ・国際経済・労働・産業組織・公共経済を解説する planning 例。",
+    "oneLineSummary": "合成fixture: メリケンの経済学講座コーナーの入力例。",
+    "todayQuestionTitle": "今日の問い",
+    "merikenSection": "メリケンの見方",
+    "modelSection": "経済学上のモデル",
+    "dataSection": "データ/実証",
+    "counterSection": "反対論・条件",
+    "distributionSection": "誰が得て誰が負担するか",
+    "newsSection": "現実のニュースへの適用",
+    "question": "今日の問い",
+    "merikenViewTitle": "メリケンの見方",
+    "modelTitle": "経済学上のモデル",
+    "dataTitle": "データ/実証",
+    "counterTitle": "反対論・条件",
+    "distributionTitle": "誰が得て誰が負担するか",
+    "newsTitle": "現実のニュースへの適用",
+    "labelsPolicy": {
+      "fact": "primary or corroborated",
+      "analysis": "interpretation",
+      "forecast": "conditional scenario"
+    },
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "factAnalysisForecastLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成 fiction fixture であり、実統計・実ニュース・実政策の検証は未実施。一次資料で更新が必要。",
+    "limitationsAndCaveats": "synthetic fixture only; no real verification",
+    "uncertainty": "未確認の公表、非公開合意、市場・政策の不確実性。",
+    "figureOrDiagram": "需要供給・金利伝達・分配を overlay 用に分離した概念図。",
+    "overlayPlan": "question, meriken view, model, data, counterarguments, distribution, news application",
+    "youtubeIndependentDraft": "YouTube 切り出しでは30秒要約、今日の問い、メリケンの見方、モデル、データ、反対論、負担分布、ニュース適用を独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/meriken-economics/synthetic-inflation-and-rates",
+      "https://example.org/meriken-economics/synthetic-inflation-and-rates/statement"
+    ],
+    "sourcePriority": [
+      "primary-economic-data-or-official-statistics",
+      "primary-official-statistics",
+      "primary-statement-or-official-document",
+      "official-institution",
+      "public-institution",
+      "established-media-multiple",
+      "academic-or-thinktank",
+      "fact-check-source",
+      "verified-web-material"
+    ],
+    "citationKeepUrl": true,
+    "sourceUrls": [
+      "https://example.org/meriken-economics/synthetic-inflation-and-rates"
+    ],
+    "eventUrl": "https://example.org/meriken-economics/synthetic-inflation-and-rates",
+    "url": "https://example.org/meriken-economics/synthetic-inflation-and-rates",
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192,
+      "maxQueries": 3,
+      "maxFetchAttempts": 4
+    }
+  }
+}
