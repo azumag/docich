@@ -6,7 +6,7 @@
   （手動予約のみ。自動抽選には入らない）。有効化は
   `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行い、
   読み上げも行う場合は `audio_enabled = true` を足す（§4参照）。TwiCa 前景への表示は
-  TwiCa 側の正本が必要なため未着手。
+  **2026-10-15 のオーナー判断で対象外**（§4.1。docich 側は共通 eventOverlay までを担当する）。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
 - 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
@@ -141,6 +141,26 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 有効化後も自動抽選へ入れない（`manual_only = true` のまま）。本番反映は
   `branch → PR → protected main → owner-only gateway` の正規フローで行う。
 
+### 4.1 TwiCa 前景への表示は対象外（2026-10-15 オーナー判断）
+
+**予想と TwiCa にデータ上の接点は無い。** TwiCa 前景は
+`SOREN_DIRECT_TWICA_OVERLAY_URL`（`/overlay/...`）の1ページが
+**配信者のカードガチャ履歴**（`GET /api/overlay/<streamerId>/events` と
+`/realtime-config`）を購読し、カード排出演出を RGBA で合成する仕組みで、
+予想を扱うテーブルも投入経路も持たない（`azumag/twica` を検索しても prediction 系は無い）。
+`src/docich/twica_*.py` 側も URL をブラウザで開くだけで、任意のパネルを送る API を持たない。
+
+一方で予想王は、Twitch Helix `top_predictors` → docich の台帳 → `yosou-view`
+（GameSwitch のゲーム領域 960×540 全面に ranking 表）＋ 共通 eventOverlay の
+`prediction` category 告知までを担当しており、**コーナーとしての表示は完結している**。
+TwiCa 前景に同じ ranking を前景演出として重ねる必然性は無い。
+
+したがって 2026-10-15 のオーナー判断で **TwiCa 連携は対象外**とする。
+将来 TwiCa のカード風前景でも予想王を出したくなった場合は、`azumag/twica` 側に
+「予想を扱う API / イベント種別と描画」を新設する別リポジトリの設計・PR として起票する
+（`docs/features/doushi-card-corner.md` が TwiCa 側 API 新設を前提にしているのと同じ扱い）。
+docich 単独で TwiCa の描画や配信フィードを追加しない。
+
 ## 5. プライバシー・同意
 
 - 2026-10-14 オーナー判断: 配信で扱う情報であり、視聴者の表示名（Twitch が公開する
@@ -161,9 +181,9 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
 - [x] corner catalog 登録（`manual_only`。2026-10-14 オーナー承認で `enabled = true`、PR-3＋有効化PR）
 - [x] 読み上げ原稿（`yoso_narration.py`、`audio_enabled` opt-in、PR-4）
-- [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）／ TwiCa 前景は別リポジトリ作業
+- [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）
+- [x] TwiCa 前景への表示: 2026-10-15 オーナー判断で**対象外**（§4.1）
 - [ ] 台帳に実データを入れて ranking を実測する（初回は「確定した予想がまだありません」）
-- [ ] TwiCa 前景への表示（TwiCa 側の正本が必要。§4参照）
 
 ## 7. 実装ステップ（PR 分割案）
 
@@ -220,10 +240,12 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
      保存するため、crash / resume で同じランキングを二度読むことはない（at-most-once）。
      sink 失敗は `overlay_announcements` / `narration` の件数カウンタに残し、corner は
      失敗させない（診断は件数のみで、例外本文・視聴者名は出さない）。
-   - **TwiCa 前景への表示は docich 単独では実装しない**（TwiCa 側の正本・配信フィードが
-     必要。`docs/features/doushi-card-corner.md` と同じく別リポジトリの作業）。docich 側は
-     共通 eventOverlay までを担当する。
+   - **TwiCa 前景への表示は docich 単独では実装せず、2026-10-15 のオーナー判断で対象外**
+     （§4.1。TwiCa 側の正本・配信フィードが必要で、予想と TwiCa にデータ接点が無い）。
+     docich 側は共通 eventOverlay までを担当する。
    - 有効化と VM 反映はオーナー承認後（`enabled = true`、発話するなら `audio_enabled = true`）。
+     2026-10-14 に `enabled = true` で配備済み。読み上げは 2026-10-15 のオーナー判断で
+     **入れない**（`audio_enabled` は未設定のまま＝ eventOverlay 告知のみ）。
 
 ## 8. 未確定・オーナー判断が要る点
 
@@ -231,7 +253,8 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 2. `top_predictors` の件数上限（Twitch 非公開。`MAX_PREDICTORS` は安全上限で 100）。
 3. `min_rounds`（既定 3）・`limit`（既定 10）・コーナー表示時間（例: 2 分）。
 4. 集計期間: 全期間 or 直近 N 日。
-5. opt-out / 不適切名の扱い。
+5. ~~opt-out / 不適切名の扱い~~ → **2026-10-14 オーナー判断で解決**（配信で扱う情報であり
+   個別の opt-in / opt-out は設けない。制御文字除去と24文字上限のみ。§5）。
 6. 既存予想への遡及（Helix は `id` 指定で過去予想も取得できるが、初回のみ 25 件/ページ）。
 
 ## 9. 検証
