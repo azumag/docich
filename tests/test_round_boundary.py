@@ -1431,3 +1431,57 @@ def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
             release.set()
             old.boundary_release.set()
             worker.join(2.0)
+
+
+def test_boundary_cancel_claim_invokes_the_adapter_once_for_concurrent_callers():
+    """#2145: two paths can observe the same expired drain.
+
+    The stale driver's failure path and a recovering switch both pass the
+    draining identity check, so the adapter's ``cancel_round_boundary`` must be
+    claimed by exactly one caller: a concurrent caller reuses that claim instead
+    of cancelling the same boundary a second time.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+        request_id = str(uuid.uuid4())
+        state, _ = store.canonical.load()
+        state.update(phase="draining", operation="switch", request_id=request_id,
+                     deadline_at="2000-01-01T00:00:00Z")
+        store.canonical.save(state)
+        adapter = factory.adapters[("nethack", 1)]
+        calls = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_cancel(rid, deadline, cancel):
+            calls.append(rid)
+            entered.set()
+            release.wait(3.0)
+            return True
+
+        adapter.cancel_round_boundary = blocking_cancel
+        from types import SimpleNamespace as _SimpleNamespace
+        tx = _SimpleNamespace(release_for_wait=lambda: None,
+                              reacquire_for_wait=lambda **_: None)
+        results = []
+
+        def cancel():
+            results.append(coordinator._cancel_round_boundary_locked(tx, adapter, request_id))
+
+        first = threading.Thread(target=cancel)
+        first.start()
+        assert entered.wait(1.0)
+        # The first caller is inside the adapter with the claim held; a second
+        # caller for the same request must not reach the adapter.
+        second = threading.Thread(target=cancel)
+        second.start()
+        time.sleep(0.05)
+        release.set()
+        first.join(3.0)
+        second.join(3.0)
+        assert not first.is_alive() and not second.is_alive()
+        assert calls == [request_id]
+        assert results == [(True, None), (True, None)]

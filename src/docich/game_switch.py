@@ -1843,6 +1843,30 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
             pass
 
 
+class _BoundaryCancelClaim:
+    """One in-process claim for cancelling a request's round boundary (#2145).
+
+    The first caller performs the adapter call and publishes its result; any
+    concurrent caller waits for that result instead of invoking the adapter a
+    second time. The claim lives as long as its coordinator instance, which is
+    enough for the same-process stale-driver/recovery race; the durable
+    draining identity re-checks keep covering cross-process writers.
+    """
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: tuple[bool, str | None] | None = None
+
+    def finish(self, result: tuple[bool, str | None]) -> None:
+        self.result = result
+        self.event.set()
+
+    def wait(self, timeout: float) -> tuple[bool, str | None]:
+        if not self.event.wait(timeout) or self.result is None:
+            return False, "cancel_boundaryの結果を確認できません"
+        return self.result
+
+
 class GameSwitchCoordinator:
     """Replace-mode state machine over the P0 store (design v2 §5, §7)."""
 
@@ -1885,6 +1909,12 @@ class GameSwitchCoordinator:
         # The retiring loop is serial under the game-switch lock, so one slot
         # is enough: each teardown overwrites it and is read right after.
         self.last_teardown_evidence: TeardownEvidence | None = None
+        # The adapter contract is "cancel the round boundary exactly once per
+        # request". The stale driver's own failure path and a recovering switch
+        # can both observe the same expired drain, so one caller claims the
+        # request and any concurrent caller reuses its result (#2145).
+        self._boundary_cancel_claims: dict[str, _BoundaryCancelClaim] = {}
+        self._boundary_cancel_claims_lock = threading.Lock()
 
     def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
         _log_ctx_var.set(
@@ -3629,6 +3659,47 @@ class GameSwitchCoordinator:
         method = getattr(adapter, "cancel_round_boundary", None) if adapter else None
         if not callable(method):
             return False, "adapter.cancel_round_boundary がcallableではありません"
+        # Exactly-once adapter cancellation (#2145): claim this request first.
+        # The stale driver's failure path and a recovering switch can both pass
+        # the identity check below, so a concurrent caller must reuse the
+        # claimer's result instead of cancelling the same boundary again.
+        with self._boundary_cancel_claims_lock:
+            claim = self._boundary_cancel_claims.get(request_id)
+            owner = claim is None
+            if owner:
+                claim = _BoundaryCancelClaim()
+                self._boundary_cancel_claims[request_id] = claim
+        if not owner:
+            timeout = max(self.step_timeouts.round_cancel_s, 0.1)
+            tx.release_for_wait()
+            try:
+                return claim.wait(timeout)
+            finally:
+                tx.reacquire_for_wait(
+                    deadline=time.monotonic() + max(self.round_reacquire_timeout_s, 0.1),
+                    poll_interval_s=self.poll_interval_s,
+                )
+        try:
+            outcome = self._cancel_round_boundary_once(tx, method, request_id)
+        except BaseException:
+            claim.finish((False, "cancel_boundaryの結果を確認できません"))
+            self._retire_boundary_cancel_claim(request_id, claim)
+            raise
+        claim.finish(outcome)
+        if outcome[0] is not True:
+            # A refused cancellation keeps ``draining`` durable, so the same
+            # request must stay retryable by the next recovery attempt.
+            self._retire_boundary_cancel_claim(request_id, claim)
+        return outcome
+
+    def _retire_boundary_cancel_claim(self, request_id: str, claim: _BoundaryCancelClaim) -> None:
+        with self._boundary_cancel_claims_lock:
+            if self._boundary_cancel_claims.get(request_id) is claim:
+                self._boundary_cancel_claims.pop(request_id, None)
+
+    def _cancel_round_boundary_once(self, tx, method, request_id: str) -> tuple[bool, str | None]:
+        """Perform the single claimed adapter cancellation for one request."""
+
         before, _ = self.store.canonical.load()
         identity_keys = ("phase", "request_id", "active", "candidate", "previous")
         identity = {key: copy.deepcopy(before.get(key)) for key in identity_keys}
