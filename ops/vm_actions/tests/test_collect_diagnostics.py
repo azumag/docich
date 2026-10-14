@@ -342,7 +342,7 @@ def test_yosou_end_reason_survives_diagnostics():
     # only place an operator can read why a bounded run ended. An unknown value
     # still collapses to None.
     module=load_collector()
-    for reason in ('duration','manual','operator-moved-during-yosou',
+    for reason in ('duration','audio-complete','manual','operator-moved-during-yosou',
                    'operator-moved-after-start','operator-moved-before-restore',
                    'operator-stopped-before-start'):
         output=module._project_corner_state(

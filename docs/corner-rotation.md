@@ -611,12 +611,16 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 ### 予想王コーナー（`yoso` adapter、既定無効・手動予約のみ）
 
 `config/docich.soren-live.toml` の catalog に `{ id = "yosou-oh", adapter = "yoso",
-game = "yosou-view", enabled = false, manual_only = true }` を登録した。チャネルポイント予想の
+game = "yosou-view", enabled = true, manual_only = true, audio_enabled = true }` を登録している
+（2026-10-14 に有効化、2026-10-15 に読み上げを有効化）。チャネルポイント予想の
 的中率ランキング（上位予想者のみ集計）を 960×540 の読み取り専用 view で表示する。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
 view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（catalog の `duration_minutes` で
-1〜14 分）で自動終了し、common slot の停止・復帰は既存 GameSwitch 経路を通る。
+1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
+`end_reason = "audio-complete"` として早期に終了する（天気予報 corner の音声完了と同じ考え方）。
+queue が混んで発話が上限まで残る場合は従来どおり `end_reason = "duration"` で終わる。
+common slot の停止・復帰は既存 GameSwitch 経路を通る。
 
 `manual_only = true` のため自動抽選には入らない。`enabled = false` の行は rotation の
 適格判定で `disabled-or-paused` になるので、WebUI の手動予約も拒否される。有効化は
@@ -641,10 +645,20 @@ Soren の `twitch_predictions.sh` が resolve 成功時に追記する
 
 予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
 `yoso_narration.announcement()` を呼ぶ。共通 eventOverlay の既存 `prediction` category へ
-「予想王」+ 上位5件 + 件数を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
-yosou:<request_id>` で同一 run の重複を抑止）に積む。catalog の `audio_enabled = true` を
-明示したときだけ、上位3件を1発話（上限300字、`context="yosou:ranking"`、共有 audio worker の
-既定音声）として enqueue する。
+**コーナー紹介と ranking の2件**を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
+yosou:intro:<request_id>` / `yosou:ranking:<request_id>`。共有 queue は `source_id` ごとに
+最新1件だけを残すため分ける）に積む。catalog の `audio_enabled = true` を明示したときだけ、
+同じ2件を発話として enqueue する（紹介 `context="yosou:intro"` → ranking
+`context="yosou:ranking"` の順、各上限300字、共有 audio worker の既定音声）。
+
+読み上げを入れた run は、`yoso_narration.voice_items_in_flight()` が自分の
+`yosou:intro` / `yosou:ranking` の queue マーカー（`.txt` / `.playing`）を数え、
+0 になった時点で `audio-complete` として早期終了する。共有 audio worker は再生前に
+`.playing` へ rename し、再生試行が終わってから削除するため、マーカーの不在が
+この queue で得られる唯一の完了証拠である（他 source のコメントや他 corner は数えない）。
+内容重複で sink が落とした発話はファイルを作らないため、その場合も「待つものが無い」として
+同じ扱いになる。`duration_minutes` は上限として残り、queue が混んで発話が残る run は
+`duration` で終わる。
 
 呼び出しは `announce_request_id` を副作用の前に state へ保存する at-most-once で、
 crash / resume で同じランキングを二度読まない。sink 失敗は `overlay_announcements`

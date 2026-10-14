@@ -2233,6 +2233,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                              "operator-moved-during-tsuitate",
                              "operator-moved-during-yosou",
                              "duration",
+                             "audio-complete",
                              "operator-moved-after-start",
                              "operator-moved-before-restore",
                              "operator-stopped-before-start"} else None),

@@ -3715,6 +3715,7 @@ def _project_corner_state(data):
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
                            "duration",
+                           "audio-complete",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
                            "operator-stopped-before-start"} else None),

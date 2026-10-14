@@ -612,3 +612,63 @@ def test_yoso_restore_replay_reuses_one_fresh_request_when_it_fails(tmp_path):
     second = json.loads(adapter.state_path.read_text())["restore_recovery"]["request_id"]
     assert second == first
     assert [call[1]["request_id"] for call in calls if isinstance(call, tuple)] == [first, first]
+
+
+def _voice_manager(monkeypatch, *, in_flight, now, sleep):
+    """A manager whose audio wait is driven by a stubbed queue observation."""
+    request_id = "22222222-2222-4222-8222-222222222222"
+    identity = {"game": VIEW_NAME, "runtime_id": "memory-yoso",
+                "generation": 3, "lease_id": request_id}
+    state = {"yoso_runtime_identity": identity, "status": "active",
+             "voice_pending": 2, "ends_at": now[0] + 3.0}
+    restores = []
+    manager = object.__new__(YosoCornerManager)
+    manager.g = SimpleNamespace()
+    manager.clock = lambda: now[0]
+    manager.sleep = sleep
+    manager.poll_s = 1.0
+    manager._stop_requested = lambda: False
+    manager._canonical = lambda: {"phase": "ready", "active": identity, "candidate": None,
+                                  "previous": None, "retiring": []}
+
+    def restore(_state, *, end_reason):
+        restores.append(end_reason)
+        _state.update(status="completed", end_reason=end_reason)
+        return "completed"
+
+    manager._restore = restore
+    monkeypatch.setattr("docich.yoso_narration.voice_items_in_flight",
+                        lambda _g: in_flight)
+    return manager, state, restores
+
+
+@pytest.mark.parametrize("in_flight, expected", [(0, "audio-complete"), (1, "duration")])
+def test_yoso_ends_with_the_read_aloud_not_with_the_duration(
+        monkeypatch, in_flight, expected):
+    """A finished read-aloud ends the corner; a queued item falls back to the cap."""
+    now = [1000.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager, state, restores = _voice_manager(
+        monkeypatch, in_flight=in_flight, now=now, sleep=sleep)
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert restores == [expected]
+    assert state["end_reason"] == expected
+
+
+def test_yoso_never_ends_early_without_queued_speech(monkeypatch):
+    """With no speech item enqueued there is nothing to wait for or to shorten."""
+    now = [1000.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager, state, restores = _voice_manager(
+        monkeypatch, in_flight=0, now=now, sleep=sleep)
+    state.pop("voice_pending")
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert restores == ["duration"]

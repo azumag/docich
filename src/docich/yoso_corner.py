@@ -368,6 +368,12 @@ class YosoCornerManager:
             state["narration"] = {"enqueued": speech["sent"],
                                   "delivery_failed": speech["failed"],
                                   "skipped": speech["skipped"]}
+            # Speech items this run has to wait for; the run may end as soon as
+            # every one of them has left the shared queue.
+            if speech["sent"] > 0:
+                state["voice_pending"] = speech["sent"]
+            else:
+                state.pop("voice_pending", None)
         self._save(state)
 
     @staticmethod
@@ -379,6 +385,23 @@ class YosoCornerManager:
         except YosoCornerError:
             return False
         return actual == identity
+
+    def _voice_finished(self, state):
+        """True when every spoken item of this run has left the audio queue.
+
+        The catalog duration stays the hard cap: a comment backlog can keep the
+        items queued past it, and then the corner ends with `duration` exactly as
+        before. Only a run that actually enqueued speech can end early.
+        """
+        pending = state.get("voice_pending")
+        if type(pending) is not int or pending <= 0:
+            return False
+        from .yoso_narration import voice_items_in_flight
+
+        try:
+            return voice_items_in_flight(self.g) == 0
+        except Exception:
+            return False
 
     def _wait_and_restore(self, state):
         identity = state.get("yoso_runtime_identity")
@@ -415,6 +438,11 @@ class YosoCornerManager:
                 raise YosoCornerError("yosou runtime ownership is in an unsafe switch phase")
             if not self._matches_active(canonical, identity):
                 return self._mark_interrupted(state, "operator-moved-during-yosou")
+            if self._voice_finished(state):
+                # The read-aloud ended: end the corner now instead of holding the
+                # display until the catalog duration cap (weather forecast does
+                # the same with its own audio receipts).
+                return self._restore(state, end_reason="audio-complete")
             ends_at = state.get("ends_at")
             if type(ends_at) not in (int, float) or isinstance(ends_at, bool) or ends_at < 0:
                 raise YosoCornerError("yosou end time is invalid")

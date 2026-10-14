@@ -24,6 +24,8 @@ announcement text.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import time
 
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
@@ -43,6 +45,13 @@ FOOTER_TEXT = "上位予想者だけを集計しています。"
 # `source_id`, so each one needs its own suffix.
 OVERLAY_KINDS = ("intro", "ranking")
 SPEECH_ITEMS = (("intro", INTRO_CONTEXT), ("ranking", CONTEXT))
+# Queue markers of one speech item: the shared audio worker renames the queued
+# `<name>_<context>.txt` to `.playing` before playback and removes it only after
+# the playback attempt finished, so the marker's absence is the completion
+# evidence the generic (non-weather) queue exposes.
+VOICE_CONTEXTS = tuple(context for _kind, context in SPEECH_ITEMS)
+VOICE_MARKER_SUFFIXES = (".txt", ".playing")
+VOICE_QUEUE_DEFAULT = ("tmp", ".comment_queue")
 INTRO_TEXT = (
     "ここからは予想王のコーナーです。チャンネルポイントで予想した結果の的中率ランキング、"
     "上位3名を発表します。しばらくお付き合いください。"
@@ -155,3 +164,32 @@ def announce(g, board, *, request_id, audio_enabled=False, overlay=None,
 def announcement(g, *, audio_enabled=False, **kwargs) -> dict:
     """Read the current board from ``g.state_dir`` and announce it."""
     return announce(g, read_board(g.state_dir), audio_enabled=audio_enabled, **kwargs)
+
+
+def voice_queue_dir(g) -> Path:
+    """Directory of the shared comment queue that this corner speaks through."""
+    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
+    root = Path(resolve_soren_root(g))
+    path = Path(raw) if raw else Path(*VOICE_QUEUE_DEFAULT)
+    return path if path.is_absolute() else root / path
+
+
+def voice_items_in_flight(g) -> int:
+    """Count this corner's speech items still queued or being played.
+
+    Zero means nothing is left to read: the item either finished its playback
+    attempt (the worker removes the marker afterwards) or the shared sink
+    dropped it as a duplicate and never wrote a file. Both cases leave the
+    corner with no audio work to wait for. Only this corner's own contexts are
+    counted, so a viewer comment or another corner in the queue never extends
+    the run.
+    """
+    queue = voice_queue_dir(g)
+    count = 0
+    for context in VOICE_CONTEXTS:
+        for suffix in VOICE_MARKER_SUFFIXES:
+            try:
+                count += sum(1 for _ in queue.glob(f"*_{context}{suffix}"))
+            except OSError:
+                continue
+    return count
