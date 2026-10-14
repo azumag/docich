@@ -200,6 +200,19 @@ class GameCornerAdapter:
             return False
         return manager.reconcile_failed_rotation_start(request_id)
 
+    def recover_failed_restore(self):
+        """Timer-safe restore recovery for a failed corner *end* (#2187).
+
+        Only managers that expose the reviewed, bounded restore replay are
+        eligible; anything else returns ``None`` so the scheduler keeps its
+        fail-closed latch. The scheduler owns the attempt budget.
+        """
+
+        runner = getattr(self.manager, "recover_failed_restore", None)
+        if not callable(runner):
+            return None
+        return runner()
+
     def improvement_paths(self):
         root = Path(self.g.state_dir)
         return (root / "locks" / f"corner-improve-{self.corner.game}.lock",

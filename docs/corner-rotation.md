@@ -130,6 +130,29 @@ last_seen、pending、request UUID、結果をatomic writeする。
 手動予約（`manual_pending`）はoperatorの枠であり暗黙に解放しない: 1.のterminal commitだけを
 自動で試し、成立しなければ従来どおり待機/latchを維持する。
 
+#### 終了済みcornerが枠を保持している場合（reclaim、#2187）
+
+2.のslot判定でcanonicalが**そのcorner自身のgame**を所有している場合でも、そのcornerが
+**すでに終了している**なら枠は空きとして扱う（reclaim可能）。終了済みruntimeはgame-switchが
+停止して切り替えられる残骸であり、「枠が埋まっている」ことを停止理由にしない。
+
+- 終了済みと認定するのは、adapter観測が当該requestで `status ∈ {completed, interrupted, expired, idle}`、
+  または `status=failed` かつ `started_at` がある場合だけ。**起動前失敗（`started_at` なし）や
+  `active`/`restoring` 等は生きたコーナーの可能性があるため reclaim しない**（従来どおりlatch）。
+- timerはまずadapterの`recover_failed_restore()`（review済みrestore復旧の狭い入口。prelaunch失敗の
+  確定・general retry・game選択/起動を含まない）でbase game（recorded `previous_game`）への復帰を試す。
+  予算は**requestごとに3回**、間隔は**5分・15分・45分**（`auto_restore` recordへdurableに保存）。
+  各試行は既存の420s上限・boundary延長なし・durable recordの再利用に従う（新しいrequestを乱造しない）。
+- 復帰に成功すればcorner stateがterminalになり、1.または2.で予約が確定して次のcornerへ進む。
+- 復帰に失敗しても、**枠がreclaim可能な限り予約を解放して次のcornerへ進む**。
+  このとき`failed_corners`へ`reason_code=base-game-unrestored`を記録し、base gameが
+  戻っていないことを後から直せるようにする（履歴・cooldownは通常どおり）。
+- 枠がreclaim可能になるまで（planeが`ready`でない・in-flight・receipt未終端・FIFO未終端・
+  資源未解放など）は自動試行を続け、3回で打ち切って`reason_code=restore-recovery-exhausted`を
+  **1回だけ**記録しlatchを維持する（以後はoperatorの固定operation）。
+- 予算の状態は診断 `corners.corner_rotation.auto_restore_*`（corner / attempts / attempt_limit /
+  next_at / last_status）で見える。request identityは出さない。
+
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
 1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
@@ -170,7 +193,9 @@ last_seen、pending、request UUID、結果をatomic writeする。
      Case A/Bとも終端前に`retiring=[]`と最新cleanup証拠を確認する。
      receiptはfinalize前に保存されるため、成功receiptだけでは資源解放を認定しない。
      generationは正整数、cleanupは欠落/nullまたは厳密なfalseだけを受け入れる。
-     明示error codeを旧復旧文言より優先し、timerはこのrestore経路へ入らない。
+     明示error codeを旧復旧文言より優先する。timerはこのrestore経路へ
+     **自動では入らない**（固定operationが実行する）。ただし後述の「end失敗の自動restore再実行」だけは
+     timerも同じreview済み経路を試行上限・backoff付きで呼ぶ（#2187、オーナー判断2026-10-14）。
      restore候補のreceiptが欠落・不正でもgeneral retryへfallbackしない。
      accepted driverの中断は同じrequestのcoordinator recoveryへ収束させる。
      ただし初回source検査前の`validating`ではsource fenceを先に確認し、

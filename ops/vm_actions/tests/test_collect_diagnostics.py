@@ -140,8 +140,10 @@ def test_failed_corner_rows_are_fixed_shape_and_never_publish_request_identity(t
     rows = output["corner_rotation"]["failed_corners"]
     assert rows == [
         {"corner": "tsuitate", "at": 90, "resolution": "released-unverified",
+         "reason_code": "failed-corner-slot-released",
          "error_kind": "execution-unverified"},
-        {"corner": "weather", "at": 95, "resolution": "unknown", "error_kind": "unknown"},
+        {"corner": "weather", "at": 95, "resolution": "unknown", "reason_code": None,
+         "error_kind": "unknown"},
     ]
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
     assert "SECRET" not in json.dumps(output)
@@ -161,6 +163,44 @@ def test_failed_corner_projection_is_bounded(tmp_path):
     rows = output["corner_rotation"]["failed_corners"]
     assert len(rows) == module.ROTATION_FAILED_CORNER_MAX
     assert rows[-1]["corner"] == "c%d" % (module.ROTATION_FAILED_CORNER_MAX + 4)
+
+
+def test_failed_corner_reason_and_auto_restore_budget_are_fixed_enums(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "recovery_required",
+        "failed_corners": [
+            {"corner": "ninvaders", "request_id": "DO-NOT-PUBLISH", "at": 90,
+             "resolution": "recovery-required", "reason_code": "restore-recovery-exhausted",
+             "error_kind": "execution-error"},
+            {"corner": "nsnake", "at": 95, "resolution": "recovery-required",
+             "reason_code": "not-a-reason"},
+        ],
+        "auto_restore": {"request_id": "DO-NOT-PUBLISH", "corner": "ninvaders",
+                         "attempts": 3, "next_attempt_at": 120,
+                         "last_status": "failed", "exhausted_recorded": True},
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert [row["reason_code"] for row in rotation["failed_corners"]] == [
+        "restore-recovery-exhausted", "unknown"]
+    assert rotation["auto_restore_corner"] == "ninvaders"
+    assert rotation["auto_restore_attempts"] == 3
+    assert rotation["auto_restore_attempt_limit"] == module.ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT
+    assert rotation["auto_restore_next_at"] == 120
+    assert rotation["auto_restore_status"] == "failed"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_restore_corner"] is None and rotation["auto_restore_attempts"] is None
+    assert rotation["auto_restore_status"] is None
 
 
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
@@ -2173,9 +2213,14 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
     import sys
 
     sys.path.insert(0, str(ROOT / "src"))
-    from docich.corner_rotation import ERROR_KINDS
+    from docich import corner_rotation
 
-    assert load_collector().ROTATION_ERROR_KINDS == ERROR_KINDS
+    module = load_collector()
+    assert module.ROTATION_ERROR_KINDS == corner_rotation.ERROR_KINDS
+    assert module.ROTATION_FAILED_CORNER_REASONS == corner_rotation.FAILED_CORNER_REASONS
+    assert module.ROTATION_AUTO_RESTORE_STATUSES == corner_rotation.AUTO_RESTORE_STATUSES
+    assert (module.ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT
+            == corner_rotation.AUTO_RESTORE_ATTEMPT_LIMIT)
 
 
 def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):

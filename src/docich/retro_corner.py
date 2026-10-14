@@ -3233,6 +3233,34 @@ class RetroCornerManager:
             return CornerResult("failed", game=game, previous_game=previous,
                                 detail="terminal restore proof refused")
 
+    def recover_failed_restore(self) -> CornerResult:
+        """Timer-safe subset of ``recover_failed``: restore recovery only (#2187).
+
+        The common rotation timer may call this. Unlike the fixed operator
+        entry it never terminalizes a prelaunch failure, never retries the
+        general canonical-recovery path and never selects or starts a game: it
+        only settles a proven terminal restore or replays the already recorded
+        restore inside that record's own bounded deadline. The caller owns the
+        attempt budget and backoff; this method is idempotent per record.
+        """
+
+        with self._locked():
+            state = self._read_state()
+            if not self._restore_failure_candidate(state):
+                return CornerResult("noop", detail="not-a-restore-failure")
+            terminal = self._recover_terminal_hanjuku_restore(state)
+            if terminal is not None:
+                return terminal
+            adopted = self._settle_adopted_restore(state)
+            if adopted is not None:
+                return adopted
+            restored = self._recover_restore_failed(state)
+            if restored is not None:
+                return restored
+            return CornerResult("failed", game=state.get("game"),
+                                previous_game=state.get("previous_game"),
+                                detail="restore-recovery-unproven")
+
     def recover_failed(self) -> CornerResult:
         """Recover and retry one failed retro slot without selecting a new game.
 
