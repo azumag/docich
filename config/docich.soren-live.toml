@@ -79,6 +79,7 @@ corners = [
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
   # 既定無効・手動予約のみ。視聴者の表示名を配信へ出す opt-in/privacy 確認が
   # 済むまで自動抽選へ入れない（docs/features/yosou-oh-corner.md）。
+  # 読み上げも行う場合だけ audio_enabled = true を足す（既定は eventOverlay のみ）。
   { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = false, manual_only = true },
 ]
 

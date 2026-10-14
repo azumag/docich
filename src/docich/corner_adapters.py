@@ -632,6 +632,7 @@ class YosoCornerAdapter:
             duration_minutes=(corner.duration_minutes
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
+            audio_enabled=corner.audio_enabled,
         )
         self.state_path = self.manager.state_path
 

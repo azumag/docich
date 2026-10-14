@@ -3741,6 +3741,8 @@ def _project_corner_state(data):
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
+        "overlay_announcements": _project_counts(data.get("overlay_announcements"),
+                                                 ("sent", "failed", "skipped")),
         "game_audio": _project_game_audio(data.get("game_audio")),
         "hotload": _project_hotload(data.get("hotload")),
     }

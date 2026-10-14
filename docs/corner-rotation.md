@@ -610,3 +610,20 @@ Soren の `twitch_predictions.sh` が resolve 成功時に追記する
 この tick は best-effort で、失敗しても rotation の tick は止めない。
 診断は `prediction_leaderboard`（rounds/viewers の件数のみ）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
+
+### 予想王コーナーの発表（読み上げ・eventOverlay、#933 PR-4）
+
+予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
+`yoso_narration.announcement()` を呼ぶ。共通 eventOverlay の既存 `prediction` category へ
+「予想王」+ 上位5件 + 件数を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
+yosou:<request_id>` で同一 run の重複を抑止）に積む。catalog の `audio_enabled = true` を
+明示したときだけ、上位3件を1発話（上限300字、`context="yosou:ranking"`、共有 audio worker の
+既定音声）として enqueue する。
+
+呼び出しは `announce_request_id` を副作用の前に state へ保存する at-most-once で、
+crash / resume で同じランキングを二度読まない。sink 失敗は `overlay_announcements`
+（sent/failed/skipped）と `narration`（enqueued/delivery_failed/skipped）の件数カウンタに
+残し、corner 本体・GameSwitch は失敗させない。診断は件数のみを投影し、例外本文・
+視聴者名・overlay 本文は出さない。音声は opt-in なので、既定（`audio_enabled` 未設定）では
+overlay のみが出る。TwiCa 前景への表示は TwiCa 側の配信フィードが必要なため docich 単独では
+行わない。

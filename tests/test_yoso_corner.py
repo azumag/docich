@@ -157,7 +157,9 @@ def test_yoso_catalog_row_requires_the_reviewed_identity_and_bounds(tmp_path):
 
     row = load('{id="yosou-oh",adapter="yoso",game="yosou-view",enabled=false,manual_only=true}')
     assert len(row) == 1 and row[0].manual_only is True and row[0].duration_minutes is None
+    assert row[0].audio_enabled is False
     assert load('{id="yosou-oh",adapter="yoso",game="yosou-view",duration_minutes=8}')[0].duration_minutes == 8
+    assert load('{id="yosou-oh",adapter="yoso",game="yosou-view",audio_enabled=true}')[0].audio_enabled is True
 
     for bad in (
         '{id="yoso",adapter="yoso",game="yosou-view"}',
@@ -165,10 +167,10 @@ def test_yoso_catalog_row_requires_the_reviewed_identity_and_bounds(tmp_path):
     ):
         with pytest.raises(CornerCatalogError, match="yosou-oh"):
             load(bad)
-    with pytest.raises(CornerCatalogError, match="weather-only"):
-        load('{id="yosou-oh",adapter="yoso",game="yosou-view",audio_enabled=true}')
-    with pytest.raises(CornerCatalogError, match="weather-only"):
+    with pytest.raises(CornerCatalogError, match="fetch_on_start"):
         load('{id="yosou-oh",adapter="yoso",game="yosou-view",fetch_on_start=true}')
+    with pytest.raises(CornerCatalogError, match="audio_enabled"):
+        load('{id="yosou-oh",adapter="yoso",game="yosou-view",audio_enabled="yes"}')
     for duration in ("0", "15", "true", "1.5"):
         with pytest.raises(CornerCatalogError, match="1-14"):
             load(f'{{id="yosou-oh",adapter="yoso",game="yosou-view",duration_minutes={duration}}}')
@@ -335,5 +337,87 @@ def test_yoso_corner_stop_before_start_needs_no_game_switch(tmp_path):
     state = json.loads(adapter.state_path.read_text())
     assert state["status"] == "interrupted"
     assert state["end_reason"] == "operator-stopped-before-start"
+    canonical, _ = store.canonical.load()
+    assert canonical["active"]["game"] == "robots"
+
+
+def test_yoso_adapter_carries_the_catalog_audio_opt_in(tmp_path):
+    g, _now, _factory, _store, _switch = _setup(tmp_path, duration=3)
+
+    assert YosoCornerAdapter(g, _corner(duration=3)).manager.audio_enabled is False
+    assert YosoCornerAdapter(g, _corner(duration=3, audio_enabled=True)).manager.audio_enabled is True
+
+
+def test_yoso_corner_announces_once_per_request_and_records_counters(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    calls = []
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _yoso_adapter(g, _corner(), switch, now, sleep)
+    adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
+        (request_id, audio_enabled)) or {"overlay": "sent", "speech": "skipped"}
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+
+    assert adapter.manager._dispatch_start(state) is None
+
+    assert calls == [(request_id, False)]
+    assert state["announce_request_id"] == request_id
+    assert state["overlay_announcements"] == {"sent": 1, "failed": 0, "skipped": 0}
+    assert "narration" not in state  # speech stays off without the opt-in
+
+    # A resumed owner never publishes the same ranking twice.
+    adapter.manager._announce_once(state)
+    assert calls == [(request_id, False)]
+
+
+def test_yoso_corner_speaks_only_when_the_audio_opt_in_is_set(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    calls = []
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _yoso_adapter(g, _corner(audio_enabled=True), switch, now, sleep)
+    adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
+        audio_enabled) or {"overlay": "sent", "speech": "sent"}
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+
+    assert adapter.manager._dispatch_start(state) is None
+
+    assert calls == [True]
+    assert state["narration"] == {"enqueued": 1, "delivery_failed": 0, "skipped": 0}
+
+
+def test_a_failing_announcer_never_fails_the_corner(tmp_path):
+    g, now, _factory, store, switch = _setup(tmp_path)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("SECRET-ANNOUNCER-BODY")
+
+    manager = CornerRotationManager(
+        g,
+        clock=lambda: now[0],
+        sleep=sleep,
+        seed="yoso-announce",
+        adapter_factory=lambda gg, corner: _yoso_adapter(gg, corner, switch, now, sleep),
+    )
+    for adapter in manager.adapters.values():
+        adapter.manager.announce = boom
+
+    assert manager.tick()["status"] == "ready"
+
+    state = json.loads((Path(g.state_dir) / "yoso_corner.json").read_text())
+    assert state["status"] == "completed"
+    assert state["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
+    assert "SECRET-ANNOUNCER-BODY" not in json.dumps(state)
     canonical, _ = store.canonical.load()
     assert canonical["active"]["game"] == "robots"
