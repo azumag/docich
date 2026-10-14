@@ -3500,6 +3500,41 @@ def _collect_ab(soren, now):
     return entry
 
 
+_HOTLOAD_STATES = frozenset({"consistent", "mixed", "partial", "unestablished"})
+_HOTLOAD_ROLES = ("agent", "corner")
+_HOTLOAD_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+
+
+def _hotload_digest(value):
+    return value if isinstance(value, str) and _HOTLOAD_DIGEST.fullmatch(value) else None
+
+
+def _project_hotload(value):
+    """Hanjuku hot-load generation agreement (#1469): state, roles, digests.
+
+    ``state=partial``/``mixed`` means the agent and the corner disagree (or one
+    side's durable evidence never landed), and ``grace_exceeded=true`` means the
+    bounded hold expired and the stall teardown was taken anyway.  Both are
+    otherwise only visible in ``hanjuku_events.jsonl`` and the corner state, so
+    the read-only diagnostics carry them explicitly.
+    """
+    if not isinstance(value, dict):
+        return None
+    state = value.get("state")
+    published = value.get("published")
+    return {
+        "state": state if state in _HOTLOAD_STATES else None,
+        "published": ([role for role in _HOTLOAD_ROLES if role in published]
+                      if isinstance(published, list) else []),
+        "agent": _hotload_digest(value.get("agent")),
+        "corner": _hotload_digest(value.get("corner")),
+        "deployed": _hotload_digest(value.get("deployed")),
+        "grace_exceeded": (
+            value.get("grace_exceeded") if isinstance(value.get("grace_exceeded"), bool) else None
+        ),
+    }
+
+
 def _project_corner_state(data):
     reports = data.get("reports")
     announcements = None
@@ -3604,6 +3639,7 @@ def _project_corner_state(data):
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
         "game_audio": _project_game_audio(data.get("game_audio")),
+        "hotload": _project_hotload(data.get("hotload")),
     }
 
 

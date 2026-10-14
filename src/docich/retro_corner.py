@@ -2423,6 +2423,13 @@ class RetroCornerManager:
                                         'terminal_reason': terminal_reason, **hotload_status})
                     self._sleep(2.)
                     continue
+                # The bounded hold exists so a process that stopped observing
+                # cannot block the corner forever (owner 2026-10-14).  Keep the
+                # expiry durable and visible: the corner state's ``hotload`` and
+                # the read-only diagnostics both carry ``grace_exceeded``, so a
+                # teardown taken on disagreeing generations is auditable rather
+                # than silent.
+                hotload_status = {**hotload_status, 'grace_exceeded': True}
                 event(runtime_dir, {'event': 'hotload_generation_timeout', 'at': time.time(),
                                     'terminal_reason': terminal_reason, **hotload_status})
             try:

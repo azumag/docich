@@ -367,8 +367,16 @@ def test_green_map_encounter_prompt_is_confirmed_not_waited_on():
 def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
+    from docich import hanjuku_hotload
+    from docich.naming import runtime_directory
     state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY),
            'ends_at':'2000-01-01T00:00:00+00:00'}
+    # Both observers publish one generation: this test pins the deadline and
+    # terminal behaviour, not the hot-load gate, and #2180 keeps a missing
+    # agent record ('partial') closing that gate.
+    runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True,exist_ok=True)
+    hanjuku_hotload.publish(runtime,IDENTITY,'agent',refresh=True)
     observations=iter([
         {'phase':'battle','terminal_reason':None,'actions_sent':5},
         {'phase':'field','terminal_reason':None,'actions_sent':6},
