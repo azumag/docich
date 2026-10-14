@@ -3700,16 +3700,17 @@ def test_tsuitate_review_projection_is_bounded():
     module=load_collector()
     output=module._project_corner_state({
         'status':'completed','game':'tsuitate-view',
-        'review':{'source':'replay','kind':'ai','failure':'verify-failed','moves':50,
-                  'text':'DO-NOT-PUBLISH','opponent':'someone','moves_list':['5g5h']},
+        'review':{'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet',
+                  'moves':50,'text':'DO-NOT-PUBLISH','opponent':'someone','moves_list':['5g5h']},
         'overlay_announcements':{'sent':1,'failed':0,'skipped':0},
         'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
-    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed','moves':50}
+    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet','moves':50}
     assert 'DO-NOT-PUBLISH' not in json.dumps(output)
     assert 'someone' not in json.dumps(output)
     assert '5g5h' not in json.dumps(output)
 
     assert module._project_corner_state({'status':'idle'})['review'] is None
     assert module._project_corner_state(
-        {'status':'completed','review':{'source':'SECRET','kind':'x','failure':'boom','moves':'many'}}
-    )['review']=={'source':None,'kind':None,'failure':None,'moves':None}
+        {'status':'completed','review':{'source':'SECRET','kind':'x','failure':'boom',
+                                       'boundary':'later','moves':'many'}}
+    )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,'moves':None}

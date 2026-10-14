@@ -233,3 +233,76 @@ def test_review_label_is_a_dispatch_legal_identifier():
 
     assert validate_label(tn.REVIEW_LABEL) == tn.REVIEW_LABEL
     assert tn.REVIEW_LABEL.startswith("RADIO")
+
+
+# --- 感想戦前のオーディオ境界待ち -----------------------------------------
+
+def _queue(tmp_path, *, queued=0, playing=0):
+    directory = tmp_path / "queue"
+    directory.mkdir(exist_ok=True)
+    for index in range(queued):
+        (directory / f"comment_{index}.txt").write_text("x", encoding="utf-8")
+    for index in range(playing):
+        (directory / f"comment_p{index}.playing").write_text("x", encoding="utf-8")
+    return directory
+
+
+def test_boundary_wait_returns_quiet_immediately(env, tmp_path):
+    directory = _queue(tmp_path)
+    calls = []
+    outcome = tn.wait_for_audio_boundary(
+        env.g, queue_dir=directory, sleep=calls.append,
+        monotonic=lambda: 0.0)
+    assert outcome == "quiet"
+    assert calls == []  # already quiet: no polling at all
+
+
+def test_boundary_wait_polls_until_the_queue_drains(env, tmp_path):
+    directory = _queue(tmp_path, queued=1, playing=1)
+    clock = {"now": 0.0}
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+        if len(sleeps) == 2:  # the worker finishes after two polls
+            for entry in directory.iterdir():
+                entry.unlink()
+
+    outcome = tn.wait_for_audio_boundary(
+        env.g, queue_dir=directory, sleep=sleep, monotonic=lambda: clock["now"],
+        poll_s=1.0, timeout_s=10.0)
+    assert outcome == "quiet"
+    assert len(sleeps) == 2
+
+
+def test_boundary_wait_is_bounded_and_fails_open(env, tmp_path):
+    directory = _queue(tmp_path, playing=1)
+    clock = {"now": 0.0}
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    outcome = tn.wait_for_audio_boundary(
+        env.g, queue_dir=directory, sleep=sleep, monotonic=lambda: clock["now"],
+        poll_s=1.0, timeout_s=5.0)
+    assert outcome == "timeout"
+    assert clock["now"] >= 5.0
+
+
+def test_boundary_wait_treats_a_missing_or_unresolvable_queue_as_quiet(env, tmp_path):
+    # A missing queue is quiet, exactly like the corner-entry boundary.
+    assert tn.wait_for_audio_boundary(
+        env.g, queue_dir=tmp_path / "missing", monotonic=lambda: 0.0) == "quiet"
+
+    # An unresolvable Soren root is reported, never raised.
+    class _NoRoot:
+        state_dir = tmp_path
+
+    assert tn.wait_for_audio_boundary(
+        _NoRoot(), queue_dir=None, monotonic=lambda: 0.0) == "unavailable"
+
+
+def test_boundary_vocabulary_is_fixed():
+    assert tn.BOUNDARY_OUTCOMES == ("quiet", "timeout", "unavailable", "skipped")
+    assert tn.REVIEW_BOUNDARY_WAIT_S > 0

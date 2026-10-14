@@ -81,6 +81,24 @@ corner state に残るのは生成した読み上げ文と `review`（`source` /
 安全でない出力（長さ・記号・URL・英語比率）は定型文へ fallback します。モデルには盤面を渡さず、
 駒種・捕獲・隠し情報を推測しないよう指示します。
 
+### 感想戦前のオーディオ境界待ち
+
+感想戦は、共有オーディオqueue（`comment_queue` が解決する `comment_*.txt` /
+`comment_*.playing`）が**完全に静かになるまで待ってから**読み上げます。再生中のコメントや
+コーナー告知の途中に感想戦が割り込まないためで、コーナー入りの境界（#2236）と同じ判定を
+出口側でも使います。
+
+- 待ちは `REVIEW_BOUNDARY_WAIT_S`（既定180秒）で有界。**期限切れでも感想戦は読みます**
+  （fail-open）。queue が無い・読めない場合も「静か」として即座に進み、コーナーや
+  GameSwitch を塞ぎません。
+- 待っている間は結果カードが画面に出たままです（コーナーが共有program枠を保持）。
+- 音声が無効（catalog の `audio_enabled` が false）のときは待ちません（読み上げないため）。
+- 結果は `review.boundary`（`quiet` / `timeout` / `unavailable` / `skipped`）として state と
+  診断に残します。
+- コーナー**入り**の境界（予想in-flight + audio queue 静穏、`rotation_wait_minutes` で有界）は
+  既存の `corner_boundary` が担い、view系コーナーはそれを待ってから開始します。この節は
+  その**出口**側の待ちです。
+
 ## コーナーの有界終了
 
 `TsuitateCornerManager` は beta が active になってから `max_match_seconds`（既定1800秒）を超えると、

@@ -33,6 +33,7 @@ import time
 import tomllib
 from pathlib import Path
 
+from .comment_queue import comment_queue_dir, is_quiet
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
 from .trading.soren_output import enqueue_audio_text, resolve_soren_root
 
@@ -46,6 +47,15 @@ MIN_REVIEW_CHARS = 40
 GENERATE_TIMEOUT_S = 20
 REVIEW_LABEL = "RADIO:tsuitate-review"
 SITE_NAME = "王様のかくれんぼ"
+
+#: How long the 感想戦 waits for the shared audio queue to reach a boundary.
+#: The corner keeps the result card on screen while it waits, so the wait is
+#: bounded and the review is still spoken after the bound (fail-open): a busy
+#: queue must never hold the shared program slot or lose the 感想戦.
+REVIEW_BOUNDARY_WAIT_S = 180.0
+REVIEW_BOUNDARY_POLL_S = 1.0
+#: Fixed outcome vocabulary recorded in the corner state and diagnostics.
+BOUNDARY_OUTCOMES = ("quiet", "timeout", "unavailable", "skipped")
 
 #: Spoken once when the corner takes the display, before the match is found.
 INTRO_TEXT = (
@@ -271,6 +281,38 @@ def announce_intro(g, *, request_id, audio_enabled=False, overlay=None,
         speech=enqueue_audio_text if speech is None else speech,
         now=now, speaker=speaker,
     )
+
+
+def wait_for_audio_boundary(g, *, timeout_s=REVIEW_BOUNDARY_WAIT_S, sleep=time.sleep,
+                            monotonic=time.monotonic, poll_s=REVIEW_BOUNDARY_POLL_S,
+                            queue_dir=None) -> str:
+    """Wait (bounded) until the shared audio queue reaches a boundary.
+
+    The 感想戦 is spoken after whatever the audio worker is already reading, so
+    it does not cut into a comment or a corner announcement that is playing.
+    The corner holds the result card while it waits, so the wait is bounded by
+    ``timeout_s`` and **fails open**: after the bound the review is still spoken.
+
+    Returns a fixed outcome: ``quiet`` (boundary reached), ``timeout`` (bound
+    expired), ``unavailable`` (the queue could not be resolved).  A missing or
+    unreadable queue counts as quiet, exactly like the corner-entry boundary.
+    """
+    try:
+        directory = Path(queue_dir) if queue_dir is not None else comment_queue_dir(
+            Path(resolve_soren_root(g)))
+    except Exception:
+        return "unavailable"
+    try:
+        if is_quiet(directory):
+            return "quiet"
+        deadline = monotonic() + max(0.0, float(timeout_s))
+        while monotonic() < deadline:
+            sleep(min(poll_s, max(deadline - monotonic(), 0.01)))
+            if is_quiet(directory):
+                return "quiet"
+    except Exception:
+        return "unavailable"
+    return "timeout"
 
 
 def overlay_body(text, terminal) -> str:

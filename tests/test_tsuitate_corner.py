@@ -21,7 +21,7 @@ REQ = "11111111-1111-4111-8111-111111111111"
 
 def _global(tmp_path):
     state = tmp_path / "run"
-    state.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(state_dir=state, config_path=None)
 
 
@@ -858,6 +858,7 @@ def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
     reads, generated, published = [], [], []
     manager = TsuitateCornerManager(
         g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        wait_boundary=lambda g: "quiet",
         read_review=lambda game_id, terminal, *, color: (
             reads.append((game_id, color, terminal.get("durationMs"))) or summary),
         review_text=lambda g, summary, terminal, *, agents: (
@@ -878,7 +879,8 @@ def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
     assert published[0][1].startswith("AIは反則を重ねて")
     assert published[0][2].startswith("AIの負け / 反則負け / 50手")
     saved = json.loads(manager.path.read_text())
-    assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok", "moves": 50}
+    assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok",
+                               "boundary": "quiet", "moves": 50}
     assert saved["review_request_id"] == REQ
     # The raw move list, the board and the model prompt never reach the state.
     raw = manager.path.read_text()
@@ -1023,7 +1025,7 @@ def test_review_reads_the_public_replay_end_to_end(tmp_path, monkeypatch):
 
     saved = json.loads(manager.path.read_text())
     assert saved["review"] == {"source": "replay", "kind": "fallback",
-                               "failure": "ok", "moves": 50}
+                               "failure": "ok", "boundary": "skipped", "moves": 50}
     assert published and published[0][1].startswith("AIの負け / 反則負け / 50手")
 
 
@@ -1057,3 +1059,77 @@ def test_review_records_why_the_public_replay_was_unusable(tmp_path, monkeypatch
     manager._save(state)
     manager._announce_review_once(state)
     assert json.loads(manager.path.read_text())["review"]["failure"] == "invalid-game-id"
+
+
+def _boundary_manager(tmp_path, *, audio_enabled, wait_boundary):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=audio_enabled,
+        wait_boundary=wait_boundary,
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "持ち時間の使い方も落ち着いていました。次もお付き合いください。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append(request_id) or dict(_COUNTS)),
+    )
+    manager._save(state)
+    return manager, published
+
+
+def test_review_waits_for_the_audio_boundary_before_speaking(tmp_path):
+    calls = []
+
+    def wait(g):
+        calls.append(1)
+        return "quiet"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=wait)
+    manager._announce_review_once(manager._read_state())
+
+    assert calls == [1]
+    assert published
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "quiet"
+
+
+def test_review_skips_the_boundary_wait_when_speech_is_off(tmp_path):
+    calls = []
+
+    def wait(g):
+        calls.append(1)
+        return "quiet"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=False, wait_boundary=wait)
+    manager._announce_review_once(manager._read_state())
+
+    assert calls == []
+    assert published
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "skipped"
+
+
+def test_review_speaks_even_when_the_boundary_wait_fails(tmp_path):
+    def broken(g):
+        raise RuntimeError("queue unreadable")
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=broken)
+    manager._announce_review_once(manager._read_state())
+
+    assert published  # fail-open: the 感想戦 is never lost to a queue problem
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "unavailable"
+
+    def unexpected(g):
+        return "later"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=unexpected)
+    manager._announce_review_once(manager._read_state())
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "unavailable"
+
+
+def test_boundary_outcome_vocabulary_matches_the_narration_module():
+    from docich import tsuitate_narration as narration
+
+    assert TsuitateCornerManager.BOUNDARY_OUTCOMES == narration.BOUNDARY_OUTCOMES
