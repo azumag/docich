@@ -4596,6 +4596,67 @@ def _collect_retro_program_queues(soren):
     return queues
 
 
+def _collect_prediction_leaderboard(state_dir):
+    """Counts only; the 予想王 ledger never exposes viewer names or titles."""
+    path = Path(state_dir) / "prediction_leaderboard.json"
+    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0}
+    try:
+        if path.is_symlink() or not path.is_file():
+            return entry
+    except OSError:
+        return entry
+    entry["present"] = True
+    raw = _read_text_capped(path, 512 * 1024)
+    try:
+        data = json.loads(raw) if raw is not None else None
+    except ValueError:
+        data = None
+    if (not isinstance(data, dict) or data.get("schema") != 1
+            or not isinstance(data.get("rounds"), dict)):
+        return entry
+    viewers = set()
+    for round_ in data["rounds"].values():
+        predictors = round_.get("predictors") if isinstance(round_, dict) else None
+        if not isinstance(predictors, list):
+            continue
+        for item in predictors:
+            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
+                viewers.add(item["user_id"])
+    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
+                 viewers=min(len(viewers), 100000))
+    return entry
+
+
+def _collect_soren_predictions(soren, state_dir):
+    """Presence and bounded counts of the Soren→予想王 handoff; never its rows."""
+    entry = {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
+             "handoff_oversized": False, "cursor_present": False}
+    try:
+        entry["cursor_present"] = (Path(state_dir) / "soren_predictions_cursor.json").is_file()
+    except OSError:
+        pass
+    if soren is None:
+        return entry
+    path = Path(soren) / "tmp" / "state" / "prediction_resolved.jsonl"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return entry
+        size = path.stat().st_size
+    except OSError:
+        return entry
+    entry["handoff_present"] = True
+    entry["handoff_bytes"] = min(size, 10 * 1024 * 1024)
+    if size > 512 * 1024:
+        entry["handoff_oversized"] = True
+        return entry
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return entry
+    entry["handoff_rows"] = min(sum(1 for line in lines if line.strip()), 1000)
+    return entry
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -4618,6 +4679,9 @@ def _collect_programs(state_dir, soren, now):
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
+        "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
+        "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
+                              "handoff_oversized": False, "cursor_present": False},
         "game_switch_fifo": {
             "present": False,
             "readable": False,
@@ -4641,6 +4705,8 @@ def _collect_programs(state_dir, soren, now):
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
+    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir)
+    payload["soren_predictions"] = _collect_soren_predictions(soren, state_dir)
     retro = payload.get("retro_corner")
     game_switch = payload.get("game_switch")
     if (isinstance(retro, dict) and retro.get("readable") is True
