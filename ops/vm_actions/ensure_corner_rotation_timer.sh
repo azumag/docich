@@ -58,6 +58,43 @@ install_regular_unit() {
   TEMP_PATH=""
 }
 
+# Older installations can still dispatch PAPER through its dedicated timer.
+# Add only the optional capability-file setting; do not replace the hand-placed
+# service, install/enable a second timer, unmask it, or restart an in-flight tick.
+# The existing daemon-reload below loads this drop-in for the next invocation.
+reconcile_paper_corner_environment() {
+  local service="$unit_dir/docich-paper-corner.service"
+  local dropin_dir="${service}.d" dest
+  dest="$dropin_dir/50-docich-paper-ai.conf"
+
+  if [[ -L "$service" ]]; then
+    [[ "$(readlink "$service")" == "/dev/null" ]] && return 0
+    fail "unexpected dedicated PAPER service symlink; refusing to reconcile" 42
+  fi
+  [[ -e "$service" ]] || return 0
+  [[ -f "$service" ]] || fail "dedicated PAPER service is not a regular file" 42
+  [[ ! -L "$dropin_dir" && ! -L "$dest" ]] || \
+    fail "unexpected PAPER drop-in symlink; refusing to reconcile" 42
+  [[ ! -e "$dropin_dir" || -d "$dropin_dir" ]] || \
+    fail "PAPER drop-in directory is not a directory" 42
+  [[ ! -e "$dest" || -f "$dest" ]] || \
+    fail "PAPER drop-in is not a regular file" 42
+
+  mkdir -p "$dropin_dir"
+  TEMP_PATH="$(mktemp "$dropin_dir/.paper-ai.XXXXXX")" || \
+    fail "cannot create a temporary PAPER drop-in" 40
+  printf '%s\n' '[Service]' 'EnvironmentFile=-%h/.config/docich/paper-ai.env' > "$TEMP_PATH"
+  if [[ -f "$dest" ]]; then
+    cmp -s "$TEMP_PATH" "$dest" || \
+      fail "unexpected local changes in the managed PAPER drop-in" 42
+    rm -f "$TEMP_PATH"
+  else
+    chmod 0644 "$TEMP_PATH"
+    mv -f -- "$TEMP_PATH" "$dest"
+  fi
+  TEMP_PATH=""
+}
+
 verify_timer_enabled_active() {
   local timer="$1"
   systemctl --user is-enabled --quiet "$timer" || fail "corner rotation timer is not enabled: $timer" 25
@@ -76,6 +113,7 @@ verify_alias_resolution() {
 }
 
 mkdir -p "$unit_dir"
+reconcile_paper_corner_environment
 
 legacy_aliases=0
 if [[ -L "$unit_dir/$legacy_service" || -L "$unit_dir/$legacy_timer" ]]; then

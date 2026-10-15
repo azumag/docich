@@ -22,6 +22,7 @@ from .presentation import PresentationError, read_presentation, write_presentati
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
+from .strategy_store import load_strategy_policy
 from .status import build_public_status, write_public_status
 from .settlement import MultiLegSettlement, settlement_observation_id, simulate_multileg_settlement
 
@@ -660,7 +661,10 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             ledger.close()
     if command == "strategy-cycle":
         snapshot = _load_strategy_snapshot(Path(args.snapshot))
-        candidates = tuple(scan_opportunities(snapshot["frames"], now=snapshot["as_of"])) + tuple(
+        # Reload before scanning: main(argv) may be invoked repeatedly in one
+        # process, and a previous PAPER experiment must not cross state dirs.
+        policy = load_strategy_policy(state_dir)
+        candidates = tuple(scan_opportunities(snapshot["frames"], now=snapshot["as_of"], policy=policy)) + tuple(
             scan_relative_value_opportunities(snapshot["frames"], snapshot["markets"], now=snapshot["as_of"])
         )
         selection = select_diversified_opportunities(candidates, snapshot["frames"])

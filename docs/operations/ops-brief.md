@@ -6,20 +6,28 @@ primary checkout・worktreeの位置から推測しない。内部運用記録�
 公開Gitへ追加しない。checkoutごとの複製やSorenサブモジュール・VM側への独立更新はしない。
 既存のVM側handoffは自動では削除しないが、この生成・検証・配布経路では読まない。
 
+**配信トピックの入力は handoff ではない。** 公開してよい小さな tracked
+`ops/runtime_context/ops_brief_source.md` だけが投影元である。handoff は
+非公開の作業ログ・引き継ぎであり、その編集がコミット対象の
+`ops/runtime_context/ops_brief.json` を動かすことはない。この分離により、handoff を
+有界化・アーカイブ・要約し直しても、並行PRが同じ数行で衝突しない。
+
 ## 入力からruntimeまで
 
-1. 共通領域の非公開 `handoff.md` を更新する。先頭の `##` 見出し3件は配信で使うため、
-   見出しには機密情報や未確認の「本番反映済み」を書かない。
+1. 公開用トピックを tracked `ops/runtime_context/ops_brief_source.md` で管理する。
+   先頭の `## ` 見出し3件は配信で使うため、見出しには機密情報や未確認の
+   「本番反映済み」を書かない。変更は配信で触れる価値があるときだけ行う。
 2. 親の `ops/vm_actions/ops_brief.py build` が日付・`Issue #123` / `docich#123` /
    `PR #899` 等の内部番号を取り除き、
    最大70文字の公開用topicとソース全体のSHA-256、生成markdownのSHA-256を
    `ops/runtime_context/ops_brief.json` に保存する。時刻・絶対パス・本文は含めない。
-3. `check-source` が明示参照した正本から再生成してJSON全体を比較する。本文だけの変更も
-   ソースSHAで検出する。参照未設定・正本欠落の場合は失敗し、checkout・VM・Soren側へfallbackしない。
+3. `check-source` はartifactの `source` が指すソースから再生成してJSON全体を比較する。
+   既定はtracked sourceなので追加設定は不要で、checkoutに含まれるCIでも照合できる。
+   旧 `handoff.md` を `source` に持つartifactは従来どおり `DOCICH_HANDOFF_PATH` /
+   `--handoff` で検証する。artifactと別のソースを渡した場合は成功にしない。
 4. JSONを**docichの作業ブランチだけ**でコミットしてレビューする。
-   CIの `check-artifact` はschema・正規化・出力SHAを検証し、回帰テストは
-   ソース変更・改変・欠落・rollbackを検証する。CIは非公開ソースを持たないので、
-   **CI成功だけで最新handoffとの一致を主張しない**。ローカル照合結果が必要。
+   CIの `check-artifact` と `check-source` はschema・正規化・出力SHA・tracked sourceとの
+   一致を検証し、回帰テストはソース変更・改変・欠落・rollbackを検証する。
 5. 将来の承認済みmain統合時に、既存のowner-only `VM operations` が親コミットを
    bundleで送る。gatewayはそのコミットのJSONを検証してmarkdownを生成し、
    `/home/ubuntu/soren/prompts/ops_brief.md` にdescriptor-bound projectionで配布する。
@@ -36,30 +44,26 @@ Sorenコードの変更は従来どおりSoren側PRと親gitlinkで扱う。
 ## ローカル操作
 
 docichルートで実行する（生成・検証だけ。ネットワーク・VM操作はない）。
-`build` / `check-source` のソースは `--handoff`、次に `DOCICH_HANDOFF_PATH` の順に選ぶ。
-どちらも絶対パスの通常ファイル `handoff.md` を指定する。checkoutルートの既定値はない。
-次は参照設定の例であり、実際の共有場所や移行完了を示すものではない。
 
 ```bash
-export DOCICH_HANDOFF_PATH=/approved/shared/docich/handoff.md
 python3 ops/vm_actions/ops_brief.py build
 python3 ops/vm_actions/ops_brief.py check-source
 python3 ops/vm_actions/ops_brief.py check-artifact
 ```
 
-一時的な明示指定では `build` と `check-source` に
-`--handoff /approved/shared/docich/handoff.md` を追加する。環境設定より優先される。
-正本のコピーは作らない。`check-artifact` / `materialize` は非公開ソースや参照設定を必要としない。
+既定のソースは tracked `ops/runtime_context/ops_brief_source.md` で、環境設定は要らない。
+非公開 `handoff.md` を入力にしたい場合だけ `--source`（別名 `--handoff`）で絶対パスの
+`handoff.md` を渡す。`DOCICH_HANDOFF_PATH` は `--source` が無いときの既定として使われる。
+checkoutルートからの暗黙fallbackはしない。正本のコピーは作らない。
+`materialize` は非公開ソースや参照設定を必要としない。
 markdownのローカル照合が必要なら `materialize --output run/ops_brief.md` を使う。
 共有サブモジュール内のtracked fileへ出力しない。コマンドは成功/失敗だけ表示する。
 
-正本は並行更新され得るため、過去の `check-source` 結果は将来の同期保証ではない。
-公開投影 `ops/runtime_context/ops_brief.json` を変更する担当者だけが、最終commit・push直前に
-現在の共通正本から `build` → `check-source` を実行し、生成物をコミットする。
-コミット後・push直前にも `check-source` を再実行し、差分が出たら再生成からやり直す。
-通常のコード・テスト・文書変更には、この非公開ソース照合を一律に要求しない。
-正本を参照できない場合は既存投影を維持し、未読・更新未実施・最新性未確認をPRへ残す。
-ソース欠落や照合失敗を成功扱いせず、ソース照合成功をコード・文書に恒久的な事実として残さない。
+公開投影 `ops/runtime_context/ops_brief.json` を変更するときは、tracked sourceを編集して
+最終commit・push直前に `build` → `check-source` を実行し、生成物をコミットする。
+`check-source` は `--source` 無しでartifactの `source` を解決するため、追加設定は要らない。
+旧 `handoff.md` 由来のartifactを検証する場合だけ共通正本を参照する。参照できない場合は
+既存投影を維持し、未読・更新未実施をPRへ残す。ソース欠落や照合失敗を成功扱いしない。
 
 ## handoff の有界化とアーカイブ
 
@@ -100,8 +104,16 @@ GitHub上の自動コミット、常駐watcherは導入しない。
 - `gateway.py` はVM上のroot-owned installed copyで動く。通常のコード配備だけでは
   更新されない。承認済みownerの導入手順で **gateway.py、ops_brief.py、projection_io.pyをセット**で
   installする必要がある。本変更の実装作業ではinstall/VM操作を行っていない。
-- workflowは配布前にstatusの `capabilities` に `parent_ops_brief_v1` と
-  `projection_no_clobber_v1` があることを
+- tracked source対応は2段階で導入する。旧gatewayは旧artifactしか `validate` できないため、
+  配備順序を守る。
+  1. **互換導入**: `ops_brief.py` がtracked source identityも受け付け、
+     `ops_brief.CAPABILITY_TRACKED_SOURCE`（`parent_ops_brief_tracked_source_v1`）を
+     広告する。artifactは旧 `handoff.md` のままで挙動は変わらない。
+  2. **切替**: artifactの `source` をtracked sourceへ切り替え、workflowが配布前に
+     新capabilityを必須確認する。ownerが手順1のgatewayを導入していない場合、
+     deployはupload前に拒否され、中途半端な投影は作られない。
+- workflowは配布前にstatusの `capabilities` に `parent_ops_brief_v1`、
+  `parent_ops_brief_tracked_source_v1`、`projection_no_clobber_v1` があることを
   必須確認する。古いgatewayが生成物を無視してdeploy成功を返すケースを防ぐ。
 - 初回はVM生成物が旧gitlinkのtracked blobとバイト/mode一致する場合だけ移行する。
   古い別版・手動編集・未知の差分はfail-closed。原因を調べて既存のreviewed recovery
@@ -170,3 +182,17 @@ main統合、gateway install、配布、実タイトル確認は未実施。
 - PR #902の独立レビュー指摘に対応したが、修正後の独立再レビュー・GitHub CIは
   親担当へ引き継ぐ。Linuxでの全体CIと、将来の承認済みgateway導入・VM projection・
   実タイトル確認は別の確認段階とする。
+
+## tracked source 切替の引き継ぎ（未完了）
+
+`ops/runtime_context/ops_brief_source.md` を投影元に切り替え、handoff の有界化ツールを
+追加した作業の現状。実装は docich の作業ブランチ上で、**main統合・gateway install・
+VM配布・実タイトル確認は未実施**。
+
+- 配備順序は上記「初回移行と検証の境界」の2段階。ownerが手順1のgateway
+  （`ops/vm_actions/install_vm_gateway.sh`）を導入するまで、手順2のartifact切替を
+  mainへ統合しない。統合しても新capability不足でdeployはupload前に拒否される。
+- 旧 `handoff.md` を `source` に持つartifactの検証経路は残してある。共通正本の
+  参照が未設定の環境では、tracked sourceの `check-source` だけを実行する。
+- 有界化は非公開正本のみを対象とし、公開Gitの内容は変えない。アーカイブは
+  checkout外の非公開領域へ置く。
