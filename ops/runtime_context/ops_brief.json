@@ -1,10 +1,10 @@
 {
-  "output_sha256": "5e7419237e184527f506100141323529b1e41c6b1587293aa0a809f6d48ebf6e",
+  "output_sha256": "197c3c2d8eddccebc8678c356aeb681f39364d4f6a8464c9f50a0f039bd5f16b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "22a46d0cc4781cea90750242ace33ddc3a53840413364a964920f9fab6cf6507",
+  "source_sha256": "662567e96fad1449e32ce35ffa44366976450399b6e4ed198cd4a599e1cec691",
   "topics": [
-    "同志カード初回準備失敗からSoren復帰、timer設定参照を修正中",
+    "同志カードのtimer設定参照を正規配備、自然実行の受入待ち",
     "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中",
     "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認"
   ]
