@@ -22,8 +22,12 @@ def _state(mem, ally, enemy):
     scope = [battle['ally'], battle['enemy'], ally.name, enemy.name]
     value = battle.get(_STATE_KEY)
     if (not isinstance(value, dict) or value.get('scope') != scope
-            or type(value.get('greeting_submitted')) is not bool):
-        value = battle[_STATE_KEY] = {'scope': scope, 'greeting_submitted': False}
+            or type(value.get('greeting_submitted')) is not bool
+            or type(value.get('greeting_unverified_attempt', False)) is not bool):
+        value = battle[_STATE_KEY] = {'scope': scope, 'greeting_submitted': False,
+                                      'greeting_unverified_attempt': False}
+    else:
+        value.setdefault('greeting_unverified_attempt', False)
     return value
 
 
@@ -34,15 +38,28 @@ def akematsu_assessment(mem, ally, enemy):
         return {'action': 'skill2', 'rule': 'unscoped_hospitality',
                 'greeting_submitted': False}
     sent = value['greeting_submitted']
-    return {'action': 'skill2' if sent else 'skill1',
-            'rule': 'hospitality_after_greeting' if sent else 'greeting_once',
-            'greeting_submitted': sent}
+    attempted = value['greeting_unverified_attempt']
+    return {'action': 'skill2' if sent or attempted else 'skill1',
+            'rule': ('hospitality_after_greeting' if sent else
+                     'hospitality_after_unverified_attempt' if attempted else
+                     'greeting_once'),
+            'greeting_submitted': sent,
+            'greeting_unverified_attempt': attempted}
 
 
-def akematsu_command_selected(mem, ally, enemy, action):
-    """Never count a cursor prediction or a planned-but-unconfirmed action."""
+def akematsu_command_selected(mem, ally, enemy, action, *, cursor_confirmed=True):
+    """Record exactly one command attempt, distinguishing measured cursor.
+
+    The input gateway's acceptance is not observable here. A predicted-cursor
+    command is only an *unverified attempt*; never claim the swap happened.
+    But do not send greeting forever on a permanently unread cursor either.
+    """
     if action != 'skill1':
         return
     state = _state(mem, ally, enemy)
-    if state is not None:
+    if state is None:
+        return
+    if cursor_confirmed:
         state['greeting_submitted'] = True
+    else:
+        state['greeting_unverified_attempt'] = True
