@@ -4,6 +4,8 @@ from __future__ import annotations
 import http.client
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +26,7 @@ from docich.adapters import program as program_adapter  # noqa: E402
 from docich.doushi_ranking import DoushiRankingError, derive_endpoint  # noqa: E402
 from docich.doushi_view import (  # noqa: E402
     DEFAULT_PORT,
+    HTML,
     PAGE_COUNT,
     PAGE_SECONDS,
     VIEW_NAME,
@@ -125,6 +128,59 @@ def test_load_payload_revalidates_the_adapter_written_file(tmp_path):
         "ok", "period", "generated_at", "metric_labels", "note", "card_type_total",
         "by_count", "by_points", "by_unique", "popular_cards", "limit",
     }
+
+
+def test_browser_renderer_preserves_full_names_counts_and_units_on_all_pages():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the view renderer")
+    payload = make_payload()
+    for key in ("by_count", "by_points", "by_unique", "popular_cards"):
+        row = payload[key][0]
+        payload[key] = [dict(row, rank=i + 1) for i in range(10)]
+    payload["by_count"][0]["username"] = "<b>同志テスト</b>"
+    script = HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+    # Run the shipped JavaScript against a minimal DOM sink, rather than
+    # reproducing its formatting logic in Python. textContent must keep the
+    # whole value (and literal markup) on all four pages, including rank 10.
+    harness = r'''
+const fs = require('node:fs');
+const vm = require('node:vm');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+function element() {
+  return {style:{}, children:[], textContent:'',
+    append(child) { this.children.push(child); },
+    replaceChildren() { this.children = []; }};
+}
+const nodes = new Map();
+const document = {
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, element());
+    return nodes.get(id);
+  },
+  createElement: element,
+};
+const context = vm.createContext({document, innerWidth:960, innerHeight:540,
+  addEventListener(){}, fetch:()=>new Promise(()=>{}),
+  AbortSignal:{timeout(){return null;}}, fixture:input.payload});
+vm.runInContext(input.script, context);
+const pages = [];
+for(let i=0; i<4; i++) {
+  vm.runInContext(`render(fixture, ${i})`, context);
+  pages.push(nodes.get('rows').children.map(row=>row.children.map(cell=>cell.textContent)));
+}
+process.stdout.write(JSON.stringify(pages));
+'''
+    result = subprocess.run(
+        [node, "-e", harness], input=json.dumps({"script": script, "payload": payload}),
+        text=True, capture_output=True, timeout=5, check=True,
+    )
+    pages = json.loads(result.stdout)
+    assert pages[0][0] == ["1", "<b>同志テスト</b>", "50 枚"]
+    assert pages[1][0] == ["1", "alice0", "5000 pt"]
+    assert pages[2][0] == ["1", "alice0", "40 種類"]
+    assert pages[3][0] == ["1", "カード0", "30 枚（20人が獲得）"]
+    assert all(len(page) == 10 and page[-1][0] == "10" for page in pages)
 
 
 @pytest.mark.parametrize("body", [

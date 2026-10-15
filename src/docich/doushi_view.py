@@ -96,11 +96,11 @@ function render(data,index){
  const body=document.getElementById('rows');body.replaceChildren();
  for(const row of rows){
   const tr=document.createElement('tr');
-  const cells=[[String(row.rank),'rank'],...page.row(row)];
+  const cells=[String(row.rank),...page.row(row)];
   for(let i=0;i<cells.length;i++){
    const td=document.createElement('td');
    td.className=i===0?'rank':i===1?'name':'value';
-   td.textContent=cells[i][0];tr.append(td);
+   td.textContent=cells[i];tr.append(td);
   }
   body.append(tr);
  }
