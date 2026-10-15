@@ -13,7 +13,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, configure_jev_route_clef, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]
       target:
         description: VM target
         required: true
@@ -1112,6 +1112,23 @@ jobs:
           else
             < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_clef docich production $SHA"
           fi
+
+      - name: Provision the Clef route from the VM's own Cloudflare credentials
+        if: ${{ steps.auth.outputs.operation == 'configure_jev_route_clef_reuse' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # First-time Clef provisioning that reuses this VM's own reviewed
+          # Cloudflare pair (the reviewed allowlist lives in the configurator).
+          # Deliberately no secret binding and no stdin payload: the values
+          # never leave the VM, so nothing can reach the runner, the log or the
+          # environment of this job.
+          < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_clef_reuse docich production $SHA"
 
       - name: Disable docich Jev route delegation
         if: ${{ steps.auth.outputs.operation == 'disable_jev_route' }}

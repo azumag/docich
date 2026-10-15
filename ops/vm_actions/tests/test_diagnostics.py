@@ -308,7 +308,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-            "configure_jev_route_vercel, configure_jev_route_clef, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
+            "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
             "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)

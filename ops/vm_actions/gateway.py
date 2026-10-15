@@ -14,7 +14,8 @@ _projection_spec.loader.exec_module(projection_io)
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
-     'configure_jev_route_vercel','configure_jev_route_clef','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
+     'configure_jev_route_vercel','configure_jev_route_clef','configure_jev_route_clef_reuse','disable_jev_route',
+     'diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
                    'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
@@ -123,6 +124,7 @@ REASON_CODES={
  'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
  'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
  'configure_jev_route_clef is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_clef_reuse is production-only':'configure_jev_route_production_only',
  'disable_jev_route is production-only':'disable_jev_route_production_only',
  'github auth diagnostics preflight timeout':'github_auth_preflight_timeout',
  'github auth diagnostics checkout unavailable':'github_auth_checkout_unavailable',
@@ -1177,7 +1179,7 @@ def _clef_credential_payload(raw):
         raise ValueError('invalid Clef credential payload')
     return account,token
 
-def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
+def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False,reuse_existing=False):
     """Run the fixed docich semantic-decision route configurator (#882), owner-only.
 
     Mirrors configure_jev's own contract exactly, for the disjoint
@@ -1191,17 +1193,28 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     since neither writes a new secret -- route='direct' only requires
     TYPESAFE_API_KEY (#678's own key) to already be live on the running worker,
     which the script itself verifies, not this gateway.
+
+    ``reuse_existing`` selects the first-time provisioning variant that takes
+    the pair from the VM's own reviewed Cloudflare pair: it also requires empty
+    stdin, because no secret is accepted, transferred or logged on that path.
     """
-    label='disable_jev_route' if disable else f'configure_jev_route_{route}'
+    if reuse_existing and (disable or route != 'clef'):
+        raise ValueError('invalid forced command')
+    label=('configure_jev_route_clef_reuse' if reuse_existing
+           else 'disable_jev_route' if disable else f'configure_jev_route_{route}')
     if target != 'production':
         raise ValueError(f'{label} is production-only')
     root=Path(cfg['repos'][repo]['production'])
     if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
         raise ValueError('production checkout is not the requested commit')
-    raw=sys.stdin.buffer.read(CLEF_CREDENTIAL_MAX+1 if route=='clef' else 4097)
+    raw=sys.stdin.buffer.read(CLEF_CREDENTIAL_MAX+1 if route=='clef' and not reuse_existing else 4097)
     key=''
     clef_account=''; clef_token=''
-    if route=='clef':
+    if reuse_existing:
+        # The reuse path never carries a secret: empty stdin is not optional.
+        if raw:
+            raise ValueError('invalid Jev route key payload')
+    elif route=='clef':
         # Empty stdin means "switch with the pair the chat worker already
         # retains" (the rollback contract: no re-entry, no code change). A
         # non-empty payload is the one-time provisioning pair and must be
@@ -1247,6 +1260,8 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
         env[CLEF_TOKEN_ENV]=clef_token
     argv=[sys.executable,'-','--soren-root',soren_root]
     argv += ['--disable'] if disable else ['--route',route]
+    if reuse_existing:
+        argv.append('--reuse-existing-cloudflare-credentials')
     with os.fdopen(fd,'wb') as out:
         p=subprocess.run(
             argv,
@@ -1664,6 +1679,8 @@ def main():
             elif op=='configure_jev_route_direct': result=configure_jev_route(cfg,repo,target,sha,route='direct')
             elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
             elif op=='configure_jev_route_clef': result=configure_jev_route(cfg,repo,target,sha,route='clef')
+            elif op=='configure_jev_route_clef_reuse':
+                result=configure_jev_route(cfg,repo,target,sha,route='clef',reuse_existing=True)
             elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)

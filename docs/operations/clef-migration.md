@@ -15,7 +15,32 @@ backend名 `COMMENT_CLASSIFIER_BACKEND=jev` は互換性のため維持する。
 ## owner-only CLI
 
 初回だけ、承認済みsecret管理経路で次のペアを設定用プロセスの環境へ渡す。
-値をコマンド引数・チャット・公開ログへ書かない。
+値をコマンド引数・チャット・公開ログへ書かない。このVMが既にCloudflareの組を
+発行済みなら、**secretを一度も転送しない**次の経路を使える。
+
+```text
+VM operations (workflow_dispatch, target=production, ref=main, confirm=production)
+  configure_jev_route_clef_reuse   初回provisioning。VM自身のレビュー済みpairを流用
+```
+
+`--reuse-existing-cloudflare-credentials`（gateway operationでは
+`configure_jev_route_clef_reuse`）は、稼働中chat workerのenvironから
+`CLEF_REUSE_SOURCES` の順に**providerごとのaccount/token組**を探し、最初に
+成立した組だけをClefの専用名へ書く。別providerのaccountとtokenを混ぜない。
+accountが32文字小文字16進でない場合は推測せず `clef_source_account_invalid`、
+どの組も成立しなければ `clef_source_credentials_missing` で**設定ファイルを変更する前に**
+失敗する。tokenの `_FILE` 間接参照は `docich.discord_chat.read_secret` と同じ契約
+（valueとの併用禁止・symlink不追従・regular file・他者書込不可・4096バイト上限）で解決する。
+流用元の変数は書き換えも削除もしない。
+
+```text
+CLEF_REUSE_SOURCES（レビュー済みの流用元。追加はレビュー対象の変更）
+  DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID            + CLOUDFLARE_API_TOKEN            （Workers AI direct）
+  DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID + DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN
+```
+
+専用の組を別途発行した場合は、従来どおり `configure_jev_route_clef` のstdinで
+ペアを渡す。両者は併用でき、どちらも設定後に検証される。
 
 ```text
 DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID
@@ -40,9 +65,10 @@ python3 ops/vm_actions/configure_jev_route.py --route direct
 
 ```text
 VM operations (workflow_dispatch, target=production, ref=main, confirm=production)
-  configure_jev_route_clef     Clefを選択（JEVへは同じCLIの --route direct で戻す）
-  configure_jev_route_direct   JEV(direct)へ戻す
-  disable_jev_route            既定directへ戻す（Clefの保存済み認証は残す）
+  configure_jev_route_clef       初回のみstdinでpairを渡してClefを選択
+  configure_jev_route_clef_reuse VM自身のpairを流用して初回provisioning（secret不要）
+  configure_jev_route_direct     JEV(direct)へ戻す
+  disable_jev_route              既定directへ戻す（Clefの保存済み認証は残す）
 ```
 
 `configure_jev_route_clef` のstdinは初回のみのaccount/tokenペアで、2つの値は
@@ -69,6 +95,13 @@ Clefの保存済み認証はこの操作でも残す。既存Vercel設定・削�
 - REST接続先とmodelは固定し、account IDは32文字の小文字16進に限定する。
 - Cloudflareのsuccess/errors/result envelopeを検証し、従来と同じstrict validatorへ渡す。
 - 推論子プロセスへは選択中providerの認証だけを渡す。保持用の非選択キーは渡さない。
+- `configure_jev_route_clef_reuse` は流用元の値を**読むだけ**で、書き換え・削除・
+  出力をしない。書き込むのはClefの専用名2つだけで、流用元のサービスは従来どおり
+  自分の名前を読み続ける。流用元の組が片方でも欠ければ失敗し、他providerの片割れを
+  補って成立させない。
+- 流用は権限を増やさない。Clefは `@cf/cloudflare/clef`（Workers AI）であり、流用元の
+  Workers AI pairと同じcapability familyを使う。専用tokenを発行する場合は
+  Account > Workers AI > Read を持つものを用いる。
 - timeout、HTTP失敗、不正応答でも、ClefからJEVへ自動fallbackしない。
 - 通知保護・入力投影・目的別gateは変更しない。noul/score/画像入力は今回追加しない。
 
@@ -119,14 +152,18 @@ worker lifecycleとHTTPはmock。実際の本番restart・通信を行った証�
 
 **本番切替は未実施。以下が残るため、この変更を移行完了と扱わない。**
 
-1. root-owned gatewayの更新。`configure_jev_route_clef` は
-   `ops/vm_actions/gateway.py` の固定operationとして登録されているが、VM上の
-   installed copy（`/usr/local/libexec/azumag-vm-ops/gateway.py`）は通常のコード配備
-   では更新されない。管理者がレビュー済みprotected mainから
-   `ops/vm_actions/install_vm_gateway.sh` を root で一度実行する必要がある。
-   通常deployの成功だけでgateway更新済みとみなさない。
-2. Environment `vm-operations` への `DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID` /
-   `DOCICH_JEV_CLOUDFLARE_API_TOKEN` の登録。初回切替だけがこのpairをstdinへ載せる。
+1. root-owned gatewayの更新。`configure_jev_route_clef` /
+   `configure_jev_route_clef_reuse` は `ops/vm_actions/gateway.py` の固定operationとして
+   登録されているが、VM上の installed copy
+   （`/usr/local/libexec/azumag-vm-ops/gateway.py`）は通常のコード配備では更新されない。
+   管理者がレビュー済みprotected mainから `ops/vm_actions/install_vm_gateway.sh` を
+   root で一度実行する必要がある。通常deployの成功だけでgateway更新済みとみなさない。
+   未更新gatewayは新operationを `VM operation rejected: operation_rejected` で拒否する
+   （2026-10-16に実測）。
+2. 初回のClef pair。環境にレビュー済みCloudflare組があれば
+   `configure_jev_route_clef_reuse` でsecretを転送せずprovisioningできる。
+   レビュー済み組が無く、専用pairも発行する場合は Environment `vm-operations` に
+   `DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID` / `DOCICH_JEV_CLOUDFLARE_API_TOKEN` を登録する。
    2回目以降は保存済みのworker認証を再利用するため、secretなしで切り替えられる。
 3. 既存全体CI、独立レビュー、コメント分類/調査振り分け/radio/ゲームのconsumer確認、
    日本語評価セット、本番と同条件のcanary、実際の往復切替の確認。

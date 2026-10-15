@@ -135,7 +135,7 @@ class AuthorizeTests(unittest.TestCase):
 
     def test_configure_jev_route_requires_production_main_and_confirmation(self):
         for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
-                   'disable_jev_route'):
+                   'configure_jev_route_clef_reuse', 'disable_jev_route'):
             p=self.run_auth(
                 GITHUB_REPOSITORY_PRIVATE='false',
                 INPUT_OPERATION=op,
@@ -729,12 +729,13 @@ class GatewayTests(unittest.TestCase):
             'args=sys.argv[1:]\n'
             'route = args[args.index("--route")+1] if "--route" in args else ("disable" if "--disable" in args else None)\n'
             'Path(os.environ["SOREN_ROOT"], "observed").write_text(\n'
-            '    "route=%s vercel_key=%s typesafe_key_untouched=%s clef_account=%s clef_token=%s" % (\n'
+            '    "route=%s vercel_key=%s typesafe_key_untouched=%s clef_account=%s clef_token=%s reuse=%s" % (\n'
             '        route,\n'
             '        "present" if os.environ.get("DOCICH_JEV_VERCEL_API_KEY") else "absent",\n'
             '        "yes" if "TYPESAFE_API_KEY" not in os.environ else "no",\n'
             '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID") else "absent",\n'
             '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_API_TOKEN") else "absent",\n'
+            '        "yes" if "--reuse-existing-cloudflare-credentials" in args else "no",\n'
             '    )\n'
             ')\n'
             'print("configured")\n',
@@ -755,14 +756,14 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
                          'route=direct vercel_key=absent typesafe_key_untouched=yes '
-                         'clef_account=absent clef_token=absent')
+                         'clef_account=absent clef_token=absent reuse=no')
         # vercel: stdin carries only the vercel key, withheld from stdout/logs.
         p=self.call(f'configure_jev_route_vercel docich production {sha}',b'SECRET_VERCEL_KEY')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertNotIn(b'SECRET_VERCEL_KEY',p.stdout)
         self.assertEqual((soren/'observed').read_text(),
                          'route=vercel vercel_key=present typesafe_key_untouched=yes '
-                         'clef_account=absent clef_token=absent')
+                         'clef_account=absent clef_token=absent reuse=no')
         logs=sorted((self.state/'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)
         self.assertTrue(logs)
         self.assertNotIn('SECRET_VERCEL_KEY', logs[-1].read_text())
@@ -772,7 +773,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
                          'route=clef vercel_key=absent typesafe_key_untouched=yes '
-                         'clef_account=absent clef_token=absent')
+                         'clef_account=absent clef_token=absent reuse=no')
         # clef with the one-time provisioning pair: both halves reach the
         # configurator and neither value reaches stdout or the VM log.
         p=self.call(f'configure_jev_route_clef docich production {sha}',
@@ -782,7 +783,7 @@ class GatewayTests(unittest.TestCase):
         self.assertNotIn(account.encode(),p.stdout)
         self.assertEqual((soren/'observed').read_text(),
                          'route=clef vercel_key=absent typesafe_key_untouched=yes '
-                         'clef_account=present clef_token=present')
+                         'clef_account=present clef_token=present reuse=no')
         log_text=''.join(p.read_text() for p in sorted((self.state/'logs').glob('*.log')))
         self.assertNotIn(token, log_text)
         self.assertNotIn(account, log_text)
@@ -791,7 +792,17 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
                          'route=disable vercel_key=absent typesafe_key_untouched=yes '
-                         'clef_account=absent clef_token=absent')
+                         'clef_account=absent clef_token=absent reuse=no')
+        # clef_reuse: the fixed reuse operation appends its own flag, sends no
+        # secret to the child, and still requires empty stdin.
+        p=self.call(f'configure_jev_route_clef_reuse docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=yes')
+        p=self.call(f'configure_jev_route_clef_reuse docich production {sha}',b'UNEXPECTED')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('configure_jev_route_key_invalid',p.stderr.decode())
 
     def test_configure_jev_route_clef_rejects_malformed_or_partial_credential_pair(self):
         soren=self.base/'soren'; soren.mkdir()
@@ -825,9 +836,13 @@ class GatewayTests(unittest.TestCase):
         self.assertFalse((soren/'observed').exists())
 
     def test_configure_jev_route_clef_is_production_only(self):
-        p=self.call(f'configure_jev_route_clef docich preview {"0"*40}')
-        self.assertNotEqual(p.returncode,0)
-        self.assertIn('configure_jev_route_production_only',p.stderr.decode())
+        # The gateway reports only fixed reason codes, so this proves the
+        # production gate for both Clef operations; that the reuse operation is
+        # recognised at all is covered by its empty-stdin execution test.
+        for op in ('configure_jev_route_clef', 'configure_jev_route_clef_reuse'):
+            p=self.call(f'{op} docich preview {"0"*40}')
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('configure_jev_route_production_only',p.stderr.decode(),op)
 
     def test_configure_jev_route_direct_rejects_unexpected_stdin_payload(self):
         soren=self.base/'soren'; soren.mkdir()
@@ -1027,13 +1042,14 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_jev_route_configuration_uses_environment_secret_and_fixed_gateway_operation(self):
         text=WF.read_text()
         for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
-                   'disable_jev_route'):
+                   'configure_jev_route_clef_reuse', 'disable_jev_route'):
             self.assertIn(op,text)
         self.assertIn('DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         self.assertIn('printf \'%s\' "$DOCICH_JEV_VERCEL_API_KEY" | ssh',text)
         self.assertIn('"configure_jev_route_direct docich production $SHA"',text)
         self.assertIn('"configure_jev_route_vercel docich production $SHA"',text)
         self.assertIn('"configure_jev_route_clef docich production $SHA"',text)
+        self.assertIn('"configure_jev_route_clef_reuse docich production $SHA"',text)
         self.assertIn('"disable_jev_route docich production $SHA"',text)
         self.assertNotIn('VM_COMMAND: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         # The direct route never binds or sends #678's own TYPESAFE_API_KEY
