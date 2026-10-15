@@ -102,7 +102,7 @@ def test_absent_zero_and_recheck_history_remain_and_reappear_when_membership_exp
 
 @pytest.mark.parametrize('change', ['partial', 'foreign', 'month', 'chapter', 'malformed',
                                   'duplicate', 'new_scan', 'pending_employee'])
-def test_unconfirmed_membership_never_releases_other_owners_or_reserve(change):
+def test_unconfirmed_membership_keeps_owners_but_skipped_recovery_may_fund_troops(change):
     mem = memory(); survey = mem['roster_survey']
     if change == 'partial': survey['receipt']['complete'] = False
     elif change == 'foreign': mem['_run_identity']['lease_id'] = 'foreign'
@@ -112,9 +112,26 @@ def test_unconfirmed_membership_never_releases_other_owners_or_reserve(change):
     elif change == 'duplicate': survey['receipt']['names'].append(p.NAME)
     elif change == 'new_scan': mem['house'] = {'roster_started': mem['tick']}
     else: mem['recruit_payroll_pending'] = ['シナモン']
-    assert 'アルテミス' in economy._egg_recovery_targets(mem)
-    economy._refresh_egg_priority(mem, mem['shop'], native(9331).header)
-    assert mem['shop']['reserve'] >= 40 and mem['shop']['egg_priority']
+    stock = deepcopy(mem['egg_uses']); recheck = deepcopy(mem['egg_recheck'])
+    targets = economy._egg_recovery_targets(mem)
+    assert 'アルテミス' in targets
+    header = native(9331).header
+    economy._refresh_egg_priority(mem, mem['shop'], header)
+    # A budget reallocation is never proof of roster membership or recovery.
+    assert mem['egg_uses'] == stock and mem['egg_recheck'] == recheck
+    assert economy._egg_recovery_targets(mem) == targets
+    assert mem['shop']['egg_priority'] and mem['shop']['egg'] == 'skipped'
+    assert not any(r['decision'] == 'egg_reserve_roster_reconciled' for r in mem.get('_records', []))
+    if change in ('foreign', 'pending_employee'):
+        assert mem['shop']['reserve'] >= 40  # no current army / unresolved payroll
+    else:
+        # Owner 2026-10-15: this fresh measured zero army may be refilled
+        # after a known skip even while historical egg membership is unknown.
+        assert mem['shop']['reserve'] == 0
+        assert 0 < mem['shop']['soldiers'] <= 50
+        assert header['gold'] - mem['shop']['soldiers'] >= economy._soldier_wage_hold(mem)
+        assert mem['soldiers_seen'] == 0 and not mem['shop'].get('soldier_receipt')
+        assert any(r['decision'] == 'soldier_refill_after_egg_skip' for r in mem['_records'])
 
 
 @pytest.mark.parametrize('flag', ['opened', 'unverified', 'tracked'])

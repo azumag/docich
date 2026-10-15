@@ -12,6 +12,7 @@ from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, _owned
 from .orders import _hero_egg_broken
+from .soldier_fallback import egg_deferred_for_soldiers, refresh_soldier_egg_deferral
 
 
 # ---------------------------------------------------------------- month
@@ -65,7 +66,7 @@ def _zero_army_refill(mem, shop, header):
             or not shop or shop.get('key') != _month_key(header)
             or shop.get('soldier_receipt') or mem.get('month_sub')
             or shop.get('recruit') in ('opened', 'unverified')
-            or _egg_before_soldiers(shop)):
+            or _egg_before_soldiers(shop) or egg_deferred_for_soldiers(shop)):
         return
     gold = (header or {}).get('gold')
     available = _soldier_spendable(mem, shop, header, recruit=False)
@@ -199,7 +200,7 @@ def _soldiers_enough(mem, shop, header):
 # The month boundary pays 収入 − 総賃金; ending a month at 0G forced a
 # dismissal in g358 (-1G) and g407 (-3G, 6 generals lost). Keep this much
 # gold unspent so a shortfall month cannot push the balance negative
-# (owner 2026-09-28: そもそも将軍解雇はしないで欲しい).
+# (owner 2026-09-28: そもそも将軍解雇はしないで欲しい)。
 WAGE_RESERVE = 30
 # 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
 EGG_RECOVER_COST = 50
@@ -288,6 +289,8 @@ def _extras_reserve(mem, header):
     gold = (header or {}).get('gold')
     # Owner (2026-10-12): depleted eggs take their money before troops,
     # including armies below fifty. An unknown count cannot waive recovery.
+    # Owner (2026-10-15): a known skip may release this hold for a measured
+    # insufficient army, once, through refresh_soldier_egg_deferral.
     if type(gold) is not int or gold < 0 or not cost:
         reserve = 0
     else:
@@ -307,7 +310,9 @@ def _egg_recheck(mem):
 
 
 def _refresh_egg_priority(mem, shop, header):
-    """Keep depleted eggs ahead of a cached troop purchase."""
+    """Keep recoverable eggs first; a known skip must not starve the army."""
+    if refresh_soldier_egg_deferral(mem, shop, header):
+        return
     key = _month_key(header) if header else None
     if (key is None or key != shop.get('key')
             or shop.get('egg') in ('done', 'not_needed')):
@@ -344,7 +349,8 @@ def _refresh_egg_priority(mem, shop, header):
 
 def _egg_before_soldiers(shop):
     return bool((shop.get('egg_priority') or shop.get('egg_before_recruit'))
-                and shop.get('egg') not in ('done', 'not_needed'))
+                and shop.get('egg') not in ('done', 'not_needed')
+                and not egg_deferred_for_soldiers(shop))
 
 
 def _prepare_recruit_egg_check(mem, shop, gold):
@@ -356,7 +362,7 @@ def _prepare_recruit_egg_check(mem, shop, gold):
     """
     if (shop.get('recruit') not in ('pending', 'check')
             or shop.get('egg') in ('done', 'not_needed')
-            or shop.get('egg_before_recruit')):
+            or shop.get('egg_before_recruit') or egg_deferred_for_soldiers(shop)):
         return
     shop['egg_before_recruit'] = True
     if shop.get('egg') in (None, 'check', 'skipped'):
@@ -634,7 +640,9 @@ def _prioritise_recruit(mem, shop, gold):
     Includes existing cached shops on hotload. Original card purchases and
     the existing egg/wage reserves are kept; unconfirmed deaths are not used.
     """
-    if shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army') or _stop_unneeded_recruit(mem, shop):
+    if (egg_deferred_for_soldiers(shop)
+            or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
+            or _stop_unneeded_recruit(mem, shop)):
         return
     if 'soldiers_before_recruit' not in shop:
         shop['soldiers_before_recruit'] = (None if shop.get('recruit_budget_version') == 2

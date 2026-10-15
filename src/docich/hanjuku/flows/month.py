@@ -336,13 +336,13 @@ def month_step(screen: Screen, mem):
         extra = _month_extra(screen, mem, shop, egg_only=True)
         if extra is not None:
             return extra
-        # Too little money, unreadable recovery, or an unverified attempt:
-        # preserve the recovery money instead of spending it on more troops.
-        # A measured empty army is the exception: its refill already holds
-        # the recovery reserve, and zeroing it here while _zero_army_refill
-        # re-armed it every frame looped the month menu (g747 2-4, #2116).
-        if not (_soldier_count_current(mem, screen.header) and mem.get('soldiers_seen') == 0
-                and shop.get('zero_army_refill_recorded')):
+        # A known skip may release the unusable egg hold for a measured
+        # shortage in this same observation. Unverified payments still hold.
+        _refresh_egg_priority(mem, shop, screen.header)
+        # Keep the old bounded zero-army exception if no new deferral applies.
+        if (_egg_before_soldiers(shop)
+                and not (_soldier_count_current(mem, screen.header) and mem.get('soldiers_seen') == 0
+                         and shop.get('zero_army_refill_recorded'))):
             shop['soldiers'] = 0
             shop['soldiers_done'] = True
     if (shop and shop.get('recruit_priority')
@@ -890,6 +890,21 @@ def interrupt_month_payment(mem):
             reason='別イベントを確認したため旧月初取引の残金差を支払証拠にせず、既確認の募集費だけ保持する')
 
 
+def _unpaid_egg_return(screen, mem, shop, sub):
+    """A canceled pre-confirmation flow with an unchanged, same-month balance."""
+    header = screen.header or {}
+    return (sub.get('kind') == 'egg' and sub.get('aborted') is True
+            and sub.get('left_menu') is True and sub.get('stage') in (None, 'choosing')
+            and not sub.get('payment_interrupted')
+            and all(sub.get(k) is None for k in ('quoted_cost', 'confirm_identity', 'confirm_chapter', 'confirm_actor'))
+            and all(type(header.get(k)) is int for k in ('year', 'month', 'gold'))
+            and header['gold'] >= 0 and type(sub.get('gold_before')) is int
+            and header['gold'] == sub['gold_before']
+            and _soldier_count_scope(mem, header) is not None
+            and sub.get('key') == (shop or {}).get('key') == _month_key(header)
+            and month_menu_ready(screen) and _month_menu_quiet(screen))
+
+
 def _finish_month_sub(screen, mem, shop) -> bool:
     """Back on the month menu: judge the sub-action by the gold it cost.
 
@@ -963,6 +978,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         if wait < MONTH_SUB_MENU_WAIT:
             return False
     sub = mem.pop('month_sub')
+    unpaid_egg = not paid and _unpaid_egg_return(screen, mem, shop, sub)
     if sub['kind'] == 'egg' and sub.get('key') == mem.get('month'):
         from ..os_layer.roster import dirty_status
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
@@ -970,7 +986,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         dirty_status(mem, [actor] if actor
                      else _egg_recovery_targets(mem), fields=('egg',))
     if shop and shop.get(sub['kind']) == 'opened':
-        shop[sub['kind']] = 'done' if paid else 'unverified'
+        shop[sub['kind']] = 'done' if paid else 'skipped' if unpaid_egg else 'unverified'
     if sub['kind'] == 'recruit':
         from ..os_layer.roster import invalidate
         invalidate(mem)  # payment/return never proves an extra general
@@ -1086,12 +1102,15 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                              'full_selected': sub.get('full_selected'), 'quoted_cost': cost,
                              'individual_actor': sub.get('individual_actor'),
                              'payment_verified': bool(paid),
+                             'unpaid_decline_verified': bool(unpaid_egg),
                              'menu_ready': month_menu_ready(screen),
                              'fee_receipt_gold': sub.get('recruit_paid_gold'),
                              'joined_announced': sub.get('joined_names', [])},
-            deviation_reason=(None if paid else 'payment_interrupted'
+            deviation_reason=(None if paid or unpaid_egg else 'payment_interrupted'
                               if sub.get('payment_interrupted') else 'cost_not_observed'),
             reason=('月一メニュー復帰時の所持金で実行を確認' if paid else
+                    '支払い確定前の中止と同月メニューの残金不変を確認。回復は見送り、兵士補充は別途判定する'
+                    if unpaid_egg else
                     '別イベント割込み後の残金差は旧取引の支払証拠にしない'
                     if sub.get('payment_interrupted') else
                     '月一メニュー復帰時の支払い・操作可能状態を照合できない'))
