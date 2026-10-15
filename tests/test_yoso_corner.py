@@ -137,13 +137,14 @@ def _yoso_adapter(g, corner, switch, now, sleep):
     return adapter
 
 
-def test_production_catalog_enables_yosou_oh_manual_reservation_only():
+def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert len(catalog) == 12
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
-    assert row.enabled is True and row.manual_only is True
+    # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。
+    assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
     assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None

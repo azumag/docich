@@ -139,9 +139,9 @@ def load_catalog(g) -> tuple[Corner, ...]:
             if item.duration_minutes is not None or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")
         elif item.adapter == "yoso":
-            # Default-disabled, manual-only leaderboard view. The duration is an
-            # optional upper bound (1-14 minutes, same ceiling as weather); the
-            # entry runs only when the owner reserves it. Speech is a separate
+            # Read-only leaderboard view. The duration is an optional upper bound
+            # (1-14 minutes, same ceiling as weather); the catalog row decides
+            # whether it is auto-selected or manual-only. Speech is a separate
             # opt-in because it reads viewer display names aloud.
             if item.id != "yosou-oh" or item.game != "yosou-view":
                 raise CornerCatalogError("yoso requires id=yosou-oh and game=yosou-view")

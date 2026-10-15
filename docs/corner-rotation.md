@@ -644,11 +644,12 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
-### 予想王コーナー（`yoso` adapter、既定無効・手動予約のみ）
+### 予想王コーナー（`yoso` adapter、自動抽選＋手動予約）
 
 `config/docich.soren-live.toml` の catalog に `{ id = "yosou-oh", adapter = "yoso",
-game = "yosou-view", enabled = true, manual_only = true, audio_enabled = true }` を登録している
-（2026-10-14 に有効化、2026-10-15 に読み上げを有効化）。チャネルポイント予想の
+game = "yosou-view", enabled = true, audio_enabled = true }` を登録している
+（2026-10-14 に有効化、2026-10-15 に `manual_only` を解除して自動抽選へ追加・読み上げを有効化）。
+チャネルポイント予想の
 的中率ランキング（上位予想者のみ集計）を 960×540 の読み取り専用 view で表示する。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
@@ -658,10 +659,11 @@ view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（
 queue が混んで発話が上限まで残る場合は従来どおり `end_reason = "duration"` で終わる。
 common slot の停止・復帰は既存 GameSwitch 経路を通る。
 
-`manual_only = true` のため自動抽選には入らない。`enabled = false` の行は rotation の
-適格判定で `disabled-or-paused` になるので、WebUI の手動予約も拒否される。有効化は
-オーナー承認後に `enabled = true` へ変える1行で、その時点で `queue_manual` が通り、
-`manual_only` の自動除外は維持される。diagnostics は `yoso_corner.json` の
+`manual_only` を付けないため24時間 rolling rotation の自動抽選に入り、WebUI の手動予約
+（`queue_manual`）も従来どおり使える。`enabled = false` の行は rotation の適格判定で
+`disabled-or-paused` になるので、WebUI の手動予約も拒否される。`manual_only = true` に戻せば
+適格判定で `manual-only` として自動抽選から外れ、手動予約だけを受け付ける。
+diagnostics は `yoso_corner.json` の
 status / timestamps / counts だけを投影し、視聴者名やランキング内容は出さない。
 
 ### Soren 予想の台帳記録（`soren_predictions.tick`、#933 PR-2b）
