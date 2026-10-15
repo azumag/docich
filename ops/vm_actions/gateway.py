@@ -14,7 +14,7 @@ _projection_spec.loader.exec_module(projection_io)
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
-     'configure_jev_route_vercel','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
+     'configure_jev_route_vercel','configure_jev_route_clef','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
                    'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
@@ -31,6 +31,12 @@ DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
 CONFIGURE_ERROR_RE=re.compile(rb'configuration failed: ([a-z][a-z0-9_]{0,80})')
+# The one-time Clef provisioning pair (#2301) and the fixed shape its account
+# ID must have. Only configure_jev_route's clef route accepts two stdin values.
+CLEF_ACCOUNT_ENV='DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID'
+CLEF_TOKEN_ENV='DOCICH_JEV_CLOUDFLARE_API_TOKEN'
+CLEF_ACCOUNT_RE=re.compile(r'[0-9a-f]{32}\Z')
+CLEF_CREDENTIAL_MAX=8192
 PROJECTION_REVIEW_PATH_MAX=25
 BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
 BUNDLE_AGE_7D_SEC=7*24*60*60
@@ -116,12 +122,14 @@ REASON_CODES={
  'production checkout is not the requested commit':'configure_jev_stale_checkout',
  'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
  'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_clef is production-only':'configure_jev_route_production_only',
  'disable_jev_route is production-only':'disable_jev_route_production_only',
  'github auth diagnostics preflight timeout':'github_auth_preflight_timeout',
  'github auth diagnostics checkout unavailable':'github_auth_checkout_unavailable',
  'github auth diagnostics SHA mismatch':'github_auth_sha_mismatch',
  'configured Jev route script missing':'configure_jev_route_script_missing',
  'invalid Jev route key payload':'configure_jev_route_key_invalid',
+ 'invalid Clef credential payload':'configure_jev_route_clef_credential_invalid',
  'reconcile production only':'reconcile_production_only',
  'invalid reconcile payload':'reconcile_invalid_request',
  'reviewed reconcile helper missing':'reconcile_helper_missing',
@@ -1150,17 +1158,39 @@ def configure_jev(cfg,repo,target,sha,*,disable=False):
         result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
     return result
 
+def _clef_credential_payload(raw):
+    """Split the one-time Clef account/token pair, logging neither half.
+
+    The account ID is fixed-shape (32 lowercase hex), so the first newline is
+    the only separator a correct pair can have; a malformed or partial pair is
+    rejected here rather than combined with the live worker's other half.
+    """
+    if len(raw)>CLEF_CREDENTIAL_MAX or b'\0' in raw or b'\r' in raw:
+        raise ValueError('invalid Clef credential payload')
+    try:
+        account,separator,token=raw.decode('ascii').partition('\n')
+    except UnicodeDecodeError as exc:
+        raise ValueError('invalid Clef credential payload') from exc
+    if not separator or not CLEF_ACCOUNT_RE.fullmatch(account):
+        raise ValueError('invalid Clef credential payload')
+    if not 1<=len(token)<=4096 or any(not 33<=ord(char)<127 for char in token):
+        raise ValueError('invalid Clef credential payload')
+    return account,token
+
 def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     """Run the fixed docich semantic-decision route configurator (#882), owner-only.
 
     Mirrors configure_jev's own contract exactly, for the disjoint
-    DOCICH_SEMANTIC_BACKEND/DOCICH_JEV_ROUTE/DOCICH_JEV_VERCEL_API_KEY keys
+    DOCICH_JEV_ROUTE/DOCICH_JEV_VERCEL_API_KEY/DOCICH_JEV_CLOUDFLARE_* keys
     instead of configure_jev's COMMENT_CLASSIFIER_*/TYPESAFE_API_KEY keys.
     Never executes caller-supplied shell. Stdin carries the Vercel API key
-    only when route='vercel'; every other case (route='direct', disable)
-    requires empty stdin, since neither writes a new secret -- route='direct'
-    only requires TYPESAFE_API_KEY (#678's own key) to already be live on the
-    running worker, which the script itself verifies, not this gateway.
+    only when route='vercel', and the Clef account/token pair only when
+    route='clef' is explicitly provisioning it for the first time; route='clef'
+    with empty stdin is the normal reversible switch that reuses the running
+    worker's retained pair, and route='direct'/disable require empty stdin,
+    since neither writes a new secret -- route='direct' only requires
+    TYPESAFE_API_KEY (#678's own key) to already be live on the running worker,
+    which the script itself verifies, not this gateway.
     """
     label='disable_jev_route' if disable else f'configure_jev_route_{route}'
     if target != 'production':
@@ -1168,9 +1198,17 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     root=Path(cfg['repos'][repo]['production'])
     if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
         raise ValueError('production checkout is not the requested commit')
-    raw=sys.stdin.buffer.read(4097)
+    raw=sys.stdin.buffer.read(CLEF_CREDENTIAL_MAX+1 if route=='clef' else 4097)
     key=''
-    if disable or route=='direct':
+    clef_account=''; clef_token=''
+    if route=='clef':
+        # Empty stdin means "switch with the pair the chat worker already
+        # retains" (the rollback contract: no re-entry, no code change). A
+        # non-empty payload is the one-time provisioning pair and must be
+        # complete; a new token is never mixed with the worker's old account.
+        if raw:
+            clef_account,clef_token=_clef_credential_payload(raw)
+    elif disable or route=='direct':
         if raw:
             raise ValueError('invalid Jev route key payload')
     else:
@@ -1202,6 +1240,11 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
          'SOREN_ROOT':soren_root}
     if route=='vercel':
         env['DOCICH_JEV_VERCEL_API_KEY']=key
+    elif route=='clef' and clef_token:
+        # Pass exactly the selected provider's pair. Leaving both out is what
+        # makes the ordinary switch reuse the worker's retained credentials.
+        env[CLEF_ACCOUNT_ENV]=clef_account
+        env[CLEF_TOKEN_ENV]=clef_token
     argv=[sys.executable,'-','--soren-root',soren_root]
     argv += ['--disable'] if disable else ['--route',route]
     with os.fdopen(fd,'wb') as out:
@@ -1620,6 +1663,7 @@ def main():
             elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
             elif op=='configure_jev_route_direct': result=configure_jev_route(cfg,repo,target,sha,route='direct')
             elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
+            elif op=='configure_jev_route_clef': result=configure_jev_route(cfg,repo,target,sha,route='clef')
             elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)

@@ -36,6 +36,22 @@ python3 ops/vm_actions/configure_jev_route.py --route clef
 python3 ops/vm_actions/configure_jev_route.py --route direct
 ```
 
+通常の本番操作はこのCLIを直接叩かず、owner-only固定operationを使う。
+
+```text
+VM operations (workflow_dispatch, target=production, ref=main, confirm=production)
+  configure_jev_route_clef     Clefを選択（JEVへは同じCLIの --route direct で戻す）
+  configure_jev_route_direct   JEV(direct)へ戻す
+  disable_jev_route            既定directへ戻す（Clefの保存済み認証は残す）
+```
+
+`configure_jev_route_clef` のstdinは初回のみのaccount/tokenペアで、2つの値は
+`account_id\napi_token` の1行区切りで渡す。account IDは32文字の小文字16進に
+限定し、片方だけ・壊れた片方・改行やNULを含むtokenは設定ファイルを変更する前に
+拒否する。stdinが空の場合は、稼働中chat workerが保持しているペアを再利用する
+（キー再入力なしの往復切替）。gatewayは選択中providerの認証だけを子プロセスへ渡し、
+非選択キーは渡さない。どちらの値もstdout・VMログ・Actionsログへ出さない。
+
 初回以降は専用キーの再入力不要。明示環境に片方だけある場合は、既存worker側の
 もう片方と混ぜず失敗する。token更新時はペアを明示する。
 
@@ -56,6 +72,26 @@ Clefの保存済み認証はこの操作でも残す。既存Vercel設定・削�
 - timeout、HTTP失敗、不正応答でも、ClefからJEVへ自動fallbackしない。
 - 通知保護・入力投影・目的別gateは変更しない。noul/score/画像入力は今回追加しない。
 
+## 診断投影
+
+`docich.semantic_decision.diagnostics.describe()` は選択中routeの
+`requested_model` と、そのroute自身の認証の存在だけを秘密なしで返す。Clefのように
+endpointをaccount IDで埋めるrouteは `account` も返すが、値ではなく形状だけを返す。
+
+```text
+not_applicable  このrouteはaccount IDを取らない
+absent          未設定
+invalid         設定済みだがendpointを埋められない
+valid           固定endpointを埋められる32文字小文字16進
+```
+
+collectorの固定allowlist（`ops/vm_actions/collect_diagnostics.py`）は
+`DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID` と `DOCICH_JEV_CLOUDFLARE_API_TOKEN` を含み、
+live chat workerのenvironからこの2つのNAMEだけを読む。値は
+`_read_allowlisted_environ` から出ず、`describe()` が存在・形状へ変換する。
+`DOCICH_JEV_ROUTE=clef` のとき owner は `route=clef` / `requested_model=clef` /
+`credential=present` / `account=valid` の組み合わせで設定完了を確認できる。
+
 ## 検証と残件
 
 `python3 -m pytest -q tests/test_clef_switching.py`: **37 passed**。
@@ -71,11 +107,15 @@ worker lifecycleとHTTPはmock。実際の本番restart・通信を行った証�
 
 **本番切替は未実施。以下が残るため、この変更を移行完了と扱わない。**
 
-1. Clefをowner-only VM gateway / workflowの固定operationへ公開することと、初回の
-   専用secretペアの承認済み配布経路の接続。今回CLIへは追加したが、gateway側に
-   `configure_jev_route_clef` が追加済みとは扱わない。
-2. runtime診断collectorの固定4キー投影を拡張し、Clefの設定・認証の存在と実効modelを
-   秘密なしで観測可能にする。現行collectorだけではClefの認証を正しく観測できない。
+1. root-owned gatewayの更新。`configure_jev_route_clef` は
+   `ops/vm_actions/gateway.py` の固定operationとして登録されているが、VM上の
+   installed copy（`/usr/local/libexec/azumag-vm-ops/gateway.py`）は通常のコード配備
+   では更新されない。管理者がレビュー済みprotected mainから
+   `ops/vm_actions/install_vm_gateway.sh` を root で一度実行する必要がある。
+   通常deployの成功だけでgateway更新済みとみなさない。
+2. Environment `vm-operations` への `DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID` /
+   `DOCICH_JEV_CLOUDFLARE_API_TOKEN` の登録。初回切替だけがこのpairをstdinへ載せる。
+   2回目以降は保存済みのworker認証を再利用するため、secretなしで切り替えられる。
 3. 既存全体CI、独立レビュー、コメント分類/調査振り分け/radio/ゲームのconsumer確認、
    日本語評価セット、本番と同条件のcanary、実際の往復切替の確認。
 
