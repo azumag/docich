@@ -806,6 +806,7 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'vercel',
                       'requested_model': 'typesafe-ai/jev', 'credential': 'present', 'account': 'not_applicable',
+                      'retained': {'direct': {'credential': 'absent', 'account': 'not_applicable'}, 'vercel': {'credential': 'present', 'account': 'not_applicable'}, 'clef': {'credential': 'absent', 'account': 'absent'}},
                       'fallback_route': None, 'fallback_credential': 'not_applicable',
                       'fallback_account': 'not_applicable'}
     assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
@@ -823,6 +824,7 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'direct',
                       'requested_model': 'jev-1.13.0', 'credential': 'absent', 'account': 'not_applicable',
+                      'retained': {'direct': {'credential': 'absent', 'account': 'not_applicable'}, 'vercel': {'credential': 'absent', 'account': 'not_applicable'}, 'clef': {'credential': 'absent', 'account': 'absent'}},
                       'fallback_route': None, 'fallback_credential': 'not_applicable',
                       'fallback_account': 'not_applicable'}
     with mock.patch.object(module.Path, 'read_bytes',
@@ -831,6 +833,7 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
                       'backend': 'heuristic', 'route': None,
                       'requested_model': None, 'credential': 'not_applicable', 'account': 'not_applicable',
+                      'retained': {},
                       'fallback_route': None, 'fallback_credential': 'not_applicable',
                       'fallback_account': 'not_applicable'}
 
@@ -853,6 +856,7 @@ def test_semantic_decision_clef_route_is_observed_from_the_fixed_allowlist_only(
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'clef', 'requested_model': 'clef',
                       'credential': 'present', 'account': 'valid',
+                      'retained': {'direct': {'credential': 'present', 'account': 'not_applicable'}, 'vercel': {'credential': 'absent', 'account': 'not_applicable'}, 'clef': {'credential': 'present', 'account': 'valid'}},
                       'fallback_route': None, 'fallback_credential': 'not_applicable',
                       'fallback_account': 'not_applicable'}
     rendered = json.dumps(result)
@@ -863,6 +867,43 @@ def test_semantic_decision_clef_route_is_observed_from_the_fixed_allowlist_only(
         assert name in module.SEMANTIC_DECISION_ENV_ALLOWLIST
         assert name not in rendered
     assert 'DOCICH_SEMANTIC_BACKEND' not in module.SEMANTIC_DECISION_ENV_ALLOWLIST
+
+
+def test_semantic_decision_retained_block_preflights_both_switch_directions():
+    # #2301: the live worker is normally on `direct,vercel` while the owner
+    # prepares a Clef switch (and back). Both providers' retained credentials
+    # must therefore be observable from the same fixed allowlist, by presence
+    # and shape only, before any switch is attempted.
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    environ = _synthetic_environ({
+        'COMMENT_CLASSIFIER_BACKEND': 'jev',
+        'DOCICH_JEV_ROUTE': 'direct,vercel',
+        'TYPESAFE_API_KEY': 'SYNTHETIC_TYPESAFE_SECRET',
+        'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
+        'DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID': '0123456789abcdef0123456789abcdef',
+        'DOCICH_JEV_CLOUDFLARE_API_TOKEN': 'SYNTHETIC_CLEF_SECRET',
+    })
+    with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
+        result = module._collect_semantic_decision(workers)
+    assert result['retained'] == {
+        'direct': {'credential': 'present', 'account': 'not_applicable'},
+        'vercel': {'credential': 'present', 'account': 'not_applicable'},
+        'clef': {'credential': 'present', 'account': 'valid'},
+    }
+    rendered = json.dumps(result)
+    for secret in ('SYNTHETIC_TYPESAFE_SECRET', 'SYNTHETIC_VERCEL_SECRET',
+                   'SYNTHETIC_CLEF_SECRET', '0123456789abcdef0123456789abcdef'):
+        assert secret not in rendered
+
+    # A worker with only the JEV rollback key still reports Clef as absent
+    # rather than guessing: `absent` is an observed value, not a default.
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': 'jev',
+                                                            'TYPESAFE_API_KEY': 'SYNTHETIC_TYPESAFE_SECRET'})):
+        result = module._collect_semantic_decision(workers)
+    assert result['retained']['clef'] == {'credential': 'absent', 'account': 'absent'}
+    assert result['retained']['direct']['credential'] == 'present'
 
 
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
