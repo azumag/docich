@@ -83,7 +83,7 @@ function apply(d){
 const PIECE={P:"歩",L:"香",N:"桂",S:"銀",G:"金",B:"角",R:"飛",K:"玉"};
 const PROM={P:"と",L:"成香",N:"成桂",S:"成銀",B:"馬",R:"龍",K:"玉"};
 const WINDOW=12;
-let kifu=null, kifuLease=null;
+let kifu=null,kifuLease=null;
 function square(code){
  if(code===".."||code.length<2)return '<div class="sq"></div>';
  const ch=code[1],role=ch.toUpperCase(),gote=ch!==role;
@@ -105,14 +105,14 @@ function renderKifu(show){
  let list="";
  for(const m of moves){if(m.n<from||m.n>to)continue;list+='<div class="mv'+(m.n===index?" cur":"")+'">'+m.n+"."+m.notation+"</div>";}
  const r=show.result||{};
- const head="<div class="head"><b>AI衝立将棋 感想戦</b><span>"+
+ const head='<div class="head"><b>AI衝立将棋 感想戦</b><span>'+
   (show.opponent?("相手 "+show.opponent+" / "):"")+
   (outcomeLabel[r.outcome]||"結果未確定")+" / "+(reasonLabel[r.reason]||"理由未確定")+" / "+
-  (r.moveNumber||0)+"手</span></div>";
+  (r.moveNumber||0)+'手</span></div>';
  document.getElementById("kifu").innerHTML=head+
-  (cells?('<div class="board">'+cells+"</div>"):'<div class="board"></div>')+
-  '<div class="side"><div class="moves">'+list+"</div>"+
-  '<div class="cmt">'+currentComment(index)+"</div></div>";
+  (cells?'<div class="board">'+cells+'</div>':'<div class="board"></div>')+
+  '<div class="side"><div class="moves">'+list+'</div>'+
+  '<div class="cmt">'+currentComment(index)+'</div></div>';
 }
 async function loadKifu(){
  if(kifuLease===null)return;
