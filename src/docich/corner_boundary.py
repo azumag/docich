@@ -14,6 +14,14 @@ QUEUE_DIR = 'docich_program_queue'
 REGISTRY_FILE = 'docich_program_active.json'
 # program_lock の保持中に他コーナーが starting/active のまま残る状態。
 BUSY_OWNER_STATUSES = frozenset({'starting', 'active', 'restoring', 'recovery_required', 'failed'})
+# 復帰失敗例外 (corner_terminal.normalize_terminal_paper_failure) を使える専用view state。
+# canonical が記録済みの元ゲームへ戻った証明があるときだけ terminal とみなし、
+# それ以外の game/retro 等の failed は従来どおり fail-closed とする。
+RECOVERED_FAILURE_OWNER_TARGETS = {
+    'paper_corner.json': 'paper-view',
+    'paper_corner_manual.json': 'paper-view',
+    'doushi_corner.json': 'doushi-view',
+}
 
 
 class CornerWaitExpired(RuntimeError):
@@ -130,13 +138,14 @@ def program_lock(g, owner_state=None, *, wait_deadline_ts=None, sleep=time.sleep
 
 
 def _observed_owner_status(previous, state, owner_state):
-    # Only dedicated PAPER records in this canonical state directory may use
+    # Only dedicated view records in this canonical state directory may use
     # the recovered-failure exception. Retro/other profiles remain fail-closed.
     previous = Path(previous)
-    if (previous.name in {'paper_corner.json', 'paper_corner_manual.json'}
+    target_game = RECOVERED_FAILURE_OWNER_TARGETS.get(previous.name)
+    if (target_game is not None
             and previous.parent.resolve() == Path(owner_state).parent.resolve()):
         from .corner_terminal import normalize_terminal_paper_failure
-        state = normalize_terminal_paper_failure(previous.parent, state)
+        state = normalize_terminal_paper_failure(previous.parent, state, target_game)
     return state.get('status')
 
 

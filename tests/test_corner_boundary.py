@@ -305,6 +305,50 @@ def test_program_owner_paper_terminal_contract(tmp_path, monkeypatch, filename, 
     assert previous.read_bytes() == original_bytes
 
 
+@pytest.mark.parametrize("case", ["restored", "mismatch", "draining", "recovery-required", "no-completion", "missing", "corrupt", "other-directory", "wrong-game"])
+@pytest.mark.parametrize("queued", [False, True])
+def test_program_owner_doushi_terminal_contract(tmp_path, monkeypatch, case, queued):
+    # #2278: an automatic DOUSHI start recorded failed after its prepare_failed
+    # rollback. Once canonical proves the previous game is back, the record is
+    # observed as terminal and the shared program slot is free again; every
+    # unproven or mismatched shape keeps blocking.
+    from docich import corner_terminal
+    root = _state_dir(tmp_path)
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    previous = state_dir / "doushi_corner.json"
+    original = {"status": "failed", "game": "doushi-view", "previous_game": "sorengame",
+                "requested_at": 99, "completed_at": 100, "last_error_code": "prepare_failed",
+                "recovery_required": case == "recovery-required"}
+    if case == "no-completion":
+        original.pop("completed_at")
+    if case == "wrong-game":
+        original["game"] = "nethack-view"
+    previous.write_text(json.dumps(original))
+    original_bytes = previous.read_bytes()
+    (root / REGISTRY_FILE).write_text(json.dumps({"owner_state": str(previous)}))
+    mine = (tmp_path if case == "other-directory" else state_dir) / "next_corner.json"
+    _owner(mine, "idle")
+
+    def load():
+        if case == "corrupt":
+            raise ValueError("invalid canonical")
+        return {"phase": "draining" if case == "draining" else "ready",
+                "active": {"game": "nsnake" if case == "mismatch" else "sorengame"}}, case == "missing"
+
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: SimpleNamespace(canonical=SimpleNamespace(load=load)))
+    scope = (_program_slot(root, mine, time.time() - 1, sleep=lambda _: None)
+             if queued else program_lock(_fake_g(tmp_path), mine))
+    if case == "restored":
+        with scope:
+            assert json.loads((root / REGISTRY_FILE).read_text())["owner_state"] == str(mine)
+    else:
+        with pytest.raises(CornerWaitExpired if queued else RuntimeError):
+            with scope:
+                pytest.fail("unsafe owner must block")
+    assert previous.read_bytes() == original_bytes
+
+
 @pytest.mark.parametrize("completed", ["", "invalid", "2026-09-22T00:00:00", True, -1, float("nan"), float("inf"), []])
 def test_invalid_completion_never_releases_paper_owner(tmp_path, monkeypatch, completed):
     from docich import corner_terminal
