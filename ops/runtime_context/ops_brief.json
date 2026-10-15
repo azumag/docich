@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f136b73d67af343b062de072958a2997cd6687fcf2288c2067f604bc4dfec4e5",
+  "output_sha256": "0b2af85f6ac90c58f1a721c6c7f031d10e823cb10a4bcfe7ed49bd1ecece7a3b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "823c6eedb125c4b347bc69f610f3b473592fce4d8d329b71c9ba0dd2f98433b8",
+  "source_sha256": "c0f155032c2af94b0834d251169268825a4f3f3685b16604452de5b7963fdb33",
   "topics": [
-    "soren91 投下間隔 9.6s → 3.0s（実測）、残る停滞モードと deploy 事象を記録",
-    "ついたて将棋の制御接続修正と、配信HTML viewの翻訳抑止をリポジトリ標準化",
-    "本番配備の実測、#2097 の投影自動復旧、投影statusの診断投影、常駐観測"
+    "配信viewのJS構文エラー（「接続確認中」で停止）を修正、棋譜ショー経路を本番受入",
+    "通常コーナーBGMの別サーバー接続を特定し、正規修正を準備",
+    "同志カードのリリース再開（競合解消・検証中）"
   ]
 }
