@@ -47,7 +47,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                     "scan_complete": 1, "unknown": 0, "drift_detected": 0},
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
-              "unregistered": [], "required_down": [], "required_stale": [], "details": {}},
+              "unregistered": [], "required_down": [], "required_stale": [], "details": {},
+              "chat_worker": {"pid": 1234, "alive": true, "stale_pid_file": false}},
   "semantic_decision": {"present": true, "readable": true,
                         "comment_classifier_backend": "jev", "backend": "jev",
                         "route": "direct", "requested_model": "jev-1.13.0",
@@ -488,6 +489,12 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   積極的に示すが、未知のsourceを特定の旧commitやloaded関数の版と断定しない。
   停止なしの確実なreload経路がない間は、効果測定を自然の次回supervisor起動まで待つ。
   この診断を理由にhotpatch・kill・service restartで適用を強制しない。
+- workers: 登録workerの `expected`/`running`/`stopped`/`paused`/`duplicates`/`zombies`/
+  `stale_pid_files`/`required_down`/`required_stale` と、名前ごとの `details`。
+  サイズ予算は `details` を丸ごと落とすため、**登録chat workerの同一性だけは
+  `details` の外側**（`workers.chat_worker` の `pid`/`alive`/`stale_pid_file`）にも出す。
+  分類器のproviderを切り替えるowner（#2301）が置換前後を比較するために必要で、
+  PID・生存・pid fileのstaleはsecretではなく、`webui.main_pid` と同じ扱い。
 - webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
   `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
   is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、
