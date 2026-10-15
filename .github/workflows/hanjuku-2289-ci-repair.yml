@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.repository == 'azumag/docich' && github.event.head_commit.message == 'chore: run isolated merchant CI repair'
+    if: github.repository == 'azumag/docich'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,7 +29,7 @@ jobs:
           import hashlib
           import subprocess
 
-          expected_parent = '50c825db9af297a1f9841f0fa8af9088d127f609'
+          expected_parent = '4105044561d78abba403c907d6c0aea4e67bcbaa'
           parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
           if parent != expected_parent:
               raise SystemExit('Repair base moved; review before retrying')
@@ -169,7 +169,7 @@ jobs:
           REPAIR_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          test "$(git rev-parse HEAD^)" = 50c825db9af297a1f9841f0fa8af9088d127f609
+          test "$(git rev-parse HEAD^)" = 4105044561d78abba403c907d6c0aea4e67bcbaa
           git diff --check
           git config user.name 'docich CI repair'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
