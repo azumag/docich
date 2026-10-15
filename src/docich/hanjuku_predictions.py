@@ -203,6 +203,43 @@ def _has_predictors(remote):
                and outcome['top_predictors'] for outcome in outcomes)
 
 
+def _contested_outcomes(remote):
+    """Number of outcomes that received at least one bet, or None if unreadable.
+
+    Twitch exposes ``users`` and ``channel_points`` per outcome to the
+    broadcaster token. Unreadable counts return None so the caller keeps the
+    existing behaviour instead of inventing a settle rule.
+    """
+    outcomes = remote.get('outcomes') if isinstance(remote, dict) else None
+    if not isinstance(outcomes, list) or not outcomes:
+        return None
+    counted = known = 0
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            return None
+        for key in ('users', 'channel_points'):
+            value = outcome.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            known += 1
+            if value > 0:
+                counted += 1
+                break
+    return counted if known else None
+
+
+def _no_contest(remote):
+    """True only while the counts prove that fewer than two outcomes were bet.
+
+    A prediction where only one outcome (or none) ever received a bet never
+    formed a contest: resolving it would take points from viewers who had no
+    opposing side, so it is canceled and refunded instead (オーナー判断
+    2026-10-15).
+    """
+    counted = _contested_outcomes(remote)
+    return counted is not None and counted <= 1
+
+
 def _record_settled(root, remote, now, client):
     """Record one RESOLVED prediction in the 予想王 leaderboard (fail-closed).
 
@@ -318,10 +355,23 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 else:
                     index = winner(result['cleared'], row['target'], row['middle'])
                     # Lock before publishing the winner, including early endings.
+                    settled_from = remote
                     if remote['status'] == 'ACTIVE':
-                        client.end(row['id'], 'LOCKED')
-                    response = client.end(row['id'], 'RESOLVED', row['outcome_ids'][index])
-                    desired = 'RESOLVED'
+                        locked = client.end(row['id'], 'LOCKED')
+                        # Betting is closed after the lock, so the locked row is
+                        # the authoritative count when it carries one.
+                        if (isinstance(locked, list) and len(locked) == 1
+                                and _matches(locked[0], row)
+                                and _contested_outcomes(locked[0]) is not None):
+                            settled_from = locked[0]
+                    if _no_contest(settled_from):
+                        # 賭けが成立していない予想は勝者を出さず中止し、投票済みの
+                        # チャンネルポイントを全額返却する。
+                        response = client.end(row['id'], 'CANCELED')
+                        desired = 'CANCELED'
+                    else:
+                        response = client.end(row['id'], 'RESOLVED', row['outcome_ids'][index])
+                        desired = 'RESOLVED'
                 if len(response) != 1 or not _matches(response[0], row) or response[0]['status'] != desired:
                     raise APIError('invalid_response')
                 if desired == 'RESOLVED':
