@@ -300,6 +300,104 @@ def test_unknown_score_refunds_instead_of_guessing_zero(env):
     assert env.state()['round']['result']['cleared'] is None
 
 
+def _set_bets(env, users_by_outcome):
+    """Give the created round's outcomes explicit Twitch bet totals."""
+    for index, outcome in enumerate(env.remote.rows[0]['outcomes']):
+        users = users_by_outcome.get(index, 0)
+        outcome['users'] = users
+        outcome['channel_points'] = 100 * users
+
+
+@pytest.mark.parametrize('outcomes, expected', [
+    ([{'users': 0, 'channel_points': 0}, {'users': 2, 'channel_points': 500}], 1),
+    ([{'users': 1}, {'channel_points': 1}], 2),
+    ([{'users': None, 'channel_points': 0}, {'channel_points': 3}], 1),
+    ([{'id': 'a'}], None),
+    ([], None),
+    ([{'users': True}], None),
+    ([{'users': '1'}], None),
+    (['not-an-outcome'], None),
+])
+def test_contested_outcomes_counts_only_readable_bets(outcomes, expected):
+    assert p._contested_outcomes({'outcomes': outcomes}) == expected
+    assert p._contested_outcomes(None) is None
+
+
+def test_no_contest_is_false_when_the_counts_are_unreadable():
+    assert p._no_contest({'outcomes': [{'users': 0}]}) is True
+    assert p._no_contest({'outcomes': [{'users': 1}, {'users': 0}]}) is True
+    assert p._no_contest({'outcomes': [{'users': 1}, {'users': 2}]}) is False
+    assert p._no_contest({'outcomes': [{'id': 'a'}]}) is False
+
+
+def test_a_single_outcome_with_bets_is_canceled_and_refunded(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+
+    assert _settle(env)['mode'] == 'canceled'
+
+    statuses = [c[2] for c in env.remote.calls if c[0] == 'PATCH']
+    assert statuses == ['LOCKED', 'CANCELED']
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+def test_no_bets_at_all_is_canceled_and_refunded(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {})
+
+    assert _settle(env)['mode'] == 'canceled'
+
+    assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+def test_a_contested_prediction_resolves_as_before(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {0: 1, 2: 3})
+
+    assert _settle(env)['mode'] == 'resolved'
+
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-1'
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['LOCKED', 'RESOLVED']
+
+
+def test_unreadable_bet_counts_resolve_as_before(env):
+    # Twitch only omits users/channel_points when the caller cannot see them, so
+    # the old settle path stays in place instead of inventing a cancel.
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+
+    assert _settle(env)['mode'] == 'resolved'
+
+
+def test_the_locked_row_decides_the_contest(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {0: 1, 2: 1})
+    original = env.remote.end
+
+    def end_with_a_late_correction(prediction_id, status, outcome_id=None):
+        rows = original(prediction_id, status, outcome_id)
+        if status == 'LOCKED':
+            # Betting is closed at the lock, so this row is authoritative even
+            # when it disagrees with the earlier GET.
+            for index, outcome in enumerate(rows[0]['outcomes']):
+                outcome['users'] = 1 if index == 2 else 0
+                outcome['channel_points'] = 100 if index == 2 else 0
+        return rows
+
+    env.remote.end = end_with_a_late_correction
+
+    assert _settle(env)['mode'] == 'canceled'
+    assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
+
+
 def test_wrong_lease_or_bad_terminal_never_settles(env):
     env.tick()
     terminal(env)

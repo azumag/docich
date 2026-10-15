@@ -83,6 +83,29 @@ corner state に残るのは生成した読み上げ文と `review`（`source` /
 （`none` / `unsafe` / `gate` / `timeout` / `rate_limit` / `provider` / `exception`）として state と
 診断に残し、無言の fallback を追えるようにします。
 
+### 感想戦の棋譜ショー（盤面＋棋譜＋一手ごとの表示）
+
+感想戦は結果の読み上げではなく、**公開棋譜を追いながら一手ずつ盤面と棋譜を出して解説する**
+ショーです。実装は `tsuitate_show`（payloadと進行）と `tsuitate_view`（表示）。
+
+- **盤面の再構成**: 公開リプレイは指し手（USI）と終局SFENしか持たないため、標準初期局面へ
+  指し手を適用して盤面を作ります（`shogi_board`）。ルールエンジンではなく**適用器**で、
+  合法性・王手・詰みは判定しません。`reconstruct` が**サイトの `finalSfen` と一致しなければ
+  盤面を出さず**、棋譜リストだけを表示します（fail-closed）。
+- **payload**: corner が `<state_dir>/tsuitate_review.json` に1つだけ書きます（atomic・
+  0600・上限256KiB・最大512手）。view の runtime identity（`runtime_id` / `generation`）で
+  固定し、別世代の payload は表示しません。着手列・盤面はこのショーのためだけの一時データで、
+  コーナー終了（世代終了）とともに消えます。
+- **表示**: `tsuitate-view` はショーが有効なとき盤面（漢字の駒、後手は反転）と現在の手を
+  中心にした棋譜リスト、その区間の解説文を出します。`/api/tsuitate` が現在の手数、
+  `/api/tsuitate/kifu` が棋譜本体を返します。**対局中は従来どおり**盤面・持ち駒・棋譜を
+  出しません（終局後にサイトが公開したものだけを、終局後のショーとして表示します）。
+- **進行**: ゲームを最大6区間に分け、区間ごとにLLM解説（`chunk_commentary`、失敗区間は
+  決定的な定型解説）を1本話し、その間 display は一手ずつ進みます。全体は
+  `MAX_SHOW_SECONDS`（420秒）で有界。区間の切れ目では共有オーディオqueueの境界を待ちます。
+- ショーの成否は `review.show`（`moves` / `board` / `commentary_ai` / `commentary_fallback` /
+  `seconds`）に残し、コーナーや GameSwitch を失敗させません。
+
 ### 感想戦前のオーディオ境界待ち
 
 感想戦は、共有オーディオqueue（`comment_queue` が解決する `comment_*.txt` /
