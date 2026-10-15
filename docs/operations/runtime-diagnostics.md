@@ -718,6 +718,14 @@ diagnostics は active runtime と manifest のgeneration/ownership一致、固�
 
 ## Runtime 変更 checklist
 
+通常コーナーの共通BGMは、独立した `corner_bgm` 要約で確認する。
+`soren-bgm.service` の状態、workerの30秒heartbeatとMainPIDの一致、開始判定の固定reason、
+所有ffplayの生存・終了コード・終了回数、専用Pulse識別子と親子関係で確認したstreamの
+mute/corked/音量/`soren_null`への接続を投影する。古いworkerのsnapshotは `stale` とし、
+その判定を現在の状態に流用しない。一般の `pulse_sink_inputs.streams` が出力予算で省略されても
+この要約は保持する。`running` や `mute=false` は信号・配信音声の確認を意味しない。
+読み取り不能は不明として扱い、raw環境変数・argv・音源パス・playerのstderrは出力しない。
+
 worker / queue / model / provider / fallback / runtime component を変えたら：
 
 - [ ] runtime registry / manifest（`runtime_registry.py`）

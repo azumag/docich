@@ -7004,6 +7004,99 @@ def _collect_pulse_sink_inputs():
     }
 
 
+BGM_REASONS = frozenset({
+    'eligible', 'audio_missing', 'canonical_unreadable', 'request_unreadable',
+    'ack_unreadable', 'pause_unreadable', 'invalid_state', 'switch_not_ready',
+    'invalid_game', 'excluded_game', 'native_stop_unconfirmed', 'invalid_request',
+    'invalid_generation', 'invalid_deadline', 'ack_mismatch', 'handover_changed',
+    'policy_unavailable', 'worker_stopped',
+})
+
+
+def _bgm_owned_player(pid, worker_pid, proc_root=Path('/proc')):
+    """Require the tagged ffplay to be the systemd worker's direct child."""
+    if type(pid) is not int or pid <= 0 or not worker_pid:
+        return False
+    try:
+        root = proc_root / str(pid)
+        args = _supervisor_read(root / 'cmdline', 8192).split(b'\0')
+        fields = _supervisor_read(root / 'stat', 4096).rsplit(b')', 1)[1].split()
+        return (fields[0] != b'Z' and int(fields[1]) == worker_pid
+                and _supervisor_read(root / 'comm', 64).strip() == b'ffplay'
+                and any(args[i:i + 2] == [b'-window_title', b'soren-bgm-loop']
+                        for i in range(len(args) - 1)))
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _collect_corner_bgm(soren, now):
+    """Small independent BGM summary, retained when generic Pulse rows drop.
+
+    Live ownership and the worker heartbeat are distinct from audibility.
+    No environment, arbitrary command line, player stderr or audio is emitted.
+    """
+    result = dict(service='unknown', worker_present=None, telemetry='missing',
+                  state='unknown', reason='unknown', age_sec=None,
+                  player_present=None, player_exits=None, last_exit=None,
+                  pulse_readable=False, identified_streams=None,
+                  owned_streams=None, streams=[])
+    unit = _systemctl_system(['show', _REG.CORNER_BGM['unit'],
+                             '--property=ActiveState,MainPID'])
+    worker_pid = None
+    if unit and unit[0] == 0:
+        props = dict(line.split('=', 1) for line in unit[1].splitlines() if '=' in line)
+        if props.get('ActiveState') in {'active', 'inactive', 'failed', 'activating', 'deactivating'}:
+            result['service'] = props['ActiveState']
+        value = props.get('MainPID', '')
+        if value.isdigit() and len(value) <= 10:
+            worker_pid = int(value)
+            result['worker_present'] = worker_pid > 0
+    try:
+        data = json.loads(_supervisor_read(Path(soren) / _REG.CORNER_BGM['state_file'], 4096))
+        if not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1:
+            raise ValueError('invalid snapshot')
+        observed = data.get('observed_at')
+        if type(observed) not in (int, float) or not math.isfinite(observed) or observed > now:
+            raise ValueError('invalid timestamp')
+        result['age_sec'] = min(int(now - observed), 2**31 - 1)
+        fresh = result['age_sec'] <= _REG.CORNER_BGM['heartbeat_max_age_sec']
+        matches = type(data.get('worker_pid')) is int and data['worker_pid'] == worker_pid and bool(worker_pid)
+        result['telemetry'] = 'current' if fresh and matches else 'stale'
+        # Never present a previous worker's decision as the live worker's state.
+        if result['telemetry'] == 'current':
+            if data.get('state') in {'blocked', 'starting', 'running', 'restarting', 'stopped'}:
+                result['state'] = data['state']
+            if isinstance(data.get('reason'), str) and data['reason'] in BGM_REASONS:
+                result['reason'] = data['reason']
+            result['player_present'] = _bgm_owned_player(data.get('player_pid'), worker_pid)
+            for key, upper in (('player_exits', 2**31 - 1), ('last_exit', 255)):
+                value = data.get(key)
+                if type(value) is int and 0 <= value <= upper:
+                    result[key] = value
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError):
+        result['telemetry'] = 'unreadable'
+    from docich.pulse_volume import MEDIA_ROLES, parse_sink_inputs, sink_names
+    listing, failure = _pulse_listing('list', 'sink-inputs')
+    if failure is not None:
+        return result
+    items = parse_sink_inputs(listing)
+    if listing.strip() and not items:
+        return result
+    identified = [s for s in items if s.get('corner_bgm_id') and s.get('corner_bgm_restore')]
+    owned = [s for s in identified if _bgm_owned_player(s.get('pid'), worker_pid)]
+    result.update(pulse_readable=True, identified_streams=len(identified), owned_streams=len(owned))
+    short, _ = _pulse_listing('list', 'short', 'sinks')
+    names = sink_names(short or '')
+    # Only the fixed target name crosses this additional boundary.
+    for item in owned[:2]:
+        projected = _project_pulse_stream(item, names, MEDIA_ROLES)
+        result['streams'].append({key: projected[key] for key in ('mute', 'corked', 'volume_percent')} |
+                                 {'on_target_sink': projected['sink'] == 'soren_null' if projected['sink'] else None})
+    return result
+
+
 def _read_hanjuku_record(path):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     file_fd = None
@@ -8424,6 +8517,7 @@ def main(argv):
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),

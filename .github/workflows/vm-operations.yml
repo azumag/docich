@@ -445,6 +445,7 @@ jobs:
         if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
           SHA: ${{ steps.candidate.outputs.sha }}
@@ -457,7 +458,12 @@ jobs:
 
           restart_required=0
           if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
-            restart_required=1
+            before_soren="$(git -C candidate rev-parse "$BEFORE_SHA:games/soviet_now")"
+            after_soren="$(git -C candidate rev-parse "$SHA:games/soviet_now")"
+            [[ "$before_soren" =~ ^[0-9a-f]{40}$ && "$after_soren" =~ ^[0-9a-f]{40}$ ]]
+            gh api "repos/azumag/soviet_now/compare/$before_soren...$after_soren" > "$RUNNER_TEMP/soren-restart-scope.json"
+            scope="$(python3 control/ops/vm_actions/soren_restart_scope.py "$RUNNER_TEMP/soren-restart-scope.json" "$before_soren" "$after_soren")"
+            [[ "$scope" == bgm-only ]] || restart_required=1
           fi
           if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/radio_worker_restart_epoch; then
             restart_required=1
