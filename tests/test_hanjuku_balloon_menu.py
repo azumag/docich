@@ -51,8 +51,11 @@ def test_menu_recovery_shout_and_recovery_cycle(records):
     assert mem['battle']['balloon_finch_survival']['pending']['action'] == 'skill2'
     assert menus.monster_menu_step(screen(700), mem) == [menus.pad('a')]
     assert mem['monster_menu_choice'] == 'skill1'
-    assert mem['battle']['balloon_finch_survival']['damage'] == 200
-    assert mem['battle']['balloon_finch_survival']['samples'] == 1
+    # Own-HP halving (1800 -> 900) must not be counted as enemy damage.
+    # The observed residual loss (900 -> 700) is conservatively doubled
+    # because enemy damage may have occurred before シャウト.
+    assert mem['battle']['balloon_finch_survival']['damage'] == 400
+    assert mem['battle']['balloon_finch_survival']['samples'] == 2
 
 
 def test_predicted_cursor_does_not_establish_damage_evidence(records):
