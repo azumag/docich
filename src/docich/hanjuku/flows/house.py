@@ -24,6 +24,10 @@ TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
 INTERRUPTION_RETRIES = 2
+# Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
+# This covers a castle footprint/localisation error and either axis-first route;
+# it is not a measured terrain path or permission to invent detour waypoints.
+HOUSE_ROUTE_CLEARANCE = 8
 PRE_DISPATCH_PHASES = frozenset({
     'find_castle', 'castle_view', 'castle_open', 'castle_verify',
     'castle_sortie', 'castle_pick', 'castle_kit', 'castle_confirm'})
@@ -298,6 +302,8 @@ def _view_move(screen, mem, frame, target, next_phase, tolerance=0.6):
         _apply_world_flags(mem, flags)
     dx, dy = target[0] - cursor[0], target[1] - cursor[1]
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
+        if next_phase == 'house_confirm' and _defer_unsafe_house_route(mem):
+            return []
         _phase(state, next_phase)
         return [pad('a')]
     return [pad('right' if dx > 0 else 'left', min(56, max(1, round(abs(dx) * 2))))] if abs(dx) > tolerance else [
@@ -310,6 +316,77 @@ def _castle_view(mem, name):
     x, y = chart.castles(mem['chapter'])[name]
     ox, oy = Y_JUMP_OFFSET[mem['chapter']]
     return x / 8 + ox, y / 8 + oy
+
+
+def _house_route_problem(mem):
+    """Reject unsafe/unknown repair routes; never use the destination cursor as origin.
+
+    The game chooses the actual marching path. A line-only intersection test
+    misses axis-first movement, so use the expanded source/destination box.
+    We have no verified waypoint execution for repairs: a castle in that
+    envelope must have a recent own flag, otherwise defer rather than attack
+    it or guess a bypass. Field generals without a named source are unknown.
+    """
+    from ... import hanjuku_chart as chart
+    from ..os_layer.navigation import Y_JUMP_OFFSET
+    from ..os_layer.world import WORLD_FLAG_TRUST, _owned
+    state = mem['house']
+    chapter = mem.get('chapter')
+    source = state.get('source')
+    castles = chart.castles(chapter)
+    expected = chart.CASTLE_NAMES.get(chapter)
+    if (chapter not in HOUSE_TARGET or chapter not in Y_JUMP_OFFSET
+            or not expected or not set(expected) <= castles.keys()):
+        return '修理ルートの城配置が未確認のため派遣を保留', []
+    if source not in castles:
+        return '修理対象の出発地点が未確認のため派遣を保留', []
+    owned = _owned(mem)
+    flags = mem.get('world_flags') or {}
+    source_flag = flags.get(source) or {}
+    if (source not in owned or (source_flag.get('chapter') == chapter
+                               and source_flag.get('kind') == 'enemy')):
+        return '修理の出発城が自軍と確認できないため派遣を保留', [source]
+    start, target = _castle_view(mem, source), HOUSE_TARGET[chapter]
+    margin = HOUSE_ROUTE_CLEARANCE
+    bounds = [(min(a, b) - margin, max(a, b) + margin) for a, b in zip(start, target)]
+    now = mem.get('tick')
+    blocked = []
+    for castle in castles:
+        if castle == source:
+            continue
+        position = _castle_view(mem, castle)
+        if not all(lo <= value <= hi for value, (lo, hi) in zip(position, bounds)):
+            continue
+        seen = flags.get(castle) or {}
+        observed = seen.get('tick')
+        own = (castle in owned and seen.get('kind') == 'own'
+               and seen.get('chapter') == chapter
+               and type(now) is int and type(observed) is int
+               and 0 <= now - observed <= WORLD_FLAG_TRUST)
+        if not own:
+            blocked.append(castle)
+    if blocked:
+        return '修理ルートに敵城または所属未確認の城があり、確実な迂回を確認できないため派遣を保留', sorted(blocked)
+    return None
+
+
+def _defer_unsafe_house_route(mem):
+    problem = _house_route_problem(mem)
+    if problem is None:
+        return False
+    reason, blocked = problem
+    state = mem['house']
+    # A serialized/partially prepared movement intent is not an issued trip.
+    # Close through the existing bounded cancel path and retain the broken egg
+    # observation; _finish applies the normal field-scan cooldown.
+    state.pop('departure_pending', None)
+    _record(mem, 'route_deferred', source=state.get('source'),
+            observed_metric={'blocked_castles': blocked,
+                             'target': HOUSE_TARGET.get(mem.get('chapter')),
+                             'clearance_view_pixels': HOUSE_ROUTE_CLEARANCE},
+            reason=reason)
+    _exit(mem, reason)
+    return True
 
 
 def _next_general(mem):
@@ -948,6 +1025,8 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '派遣確定前に全快HPを確認できないため出撃を取り消す')
         if not affordable_gift(mem.get('gold'), WAGE_RESERVE):
             return _exit(mem, '派遣前に修理資金が不足したため出撃を取り消す')
+        if _defer_unsafe_house_route(mem):
+            return []
         actions = _choose(screen, 'うむッ!')
         if actions == [pad('a')]:
             _phase(state, 'out_target')
@@ -961,6 +1040,8 @@ def _repair_step(screen, mem, frame):
         return _view_move(screen, mem, frame, HOUSE_TARGET[mem['chapter']], 'house_confirm')
     if phase == 'house_confirm':
         if screen.kind == 'map_target':
+            if _defer_unsafe_house_route(mem):
+                return []
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
                     observed_metric={'view': HOUSE_TARGET[mem['chapter']]},
