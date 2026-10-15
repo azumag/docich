@@ -753,7 +753,8 @@ def _hero_retreat_open(mem, cur):
             castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur.get('start_ally_hp'),
-                             'melee_balance': _melee_balance(cur)},
+                             'melee_balance': _melee_balance(cur),
+                             'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return _human_menu_open(cur, 'retreat')
 
