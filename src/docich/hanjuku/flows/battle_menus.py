@@ -1304,14 +1304,18 @@ def monster_menu_step(screen: Screen, mem):
     damage_first = _monster_damage_first(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
+    # Each named monster has an ordered two-skill table. When one label is
+    # partly unreadable, requiring both exact OCR matches accidentally falls
+    # back to the generic first-skill loop. Owner must still be proven by the
+    # reference table, and at least one slot must match exactly.
     balloon_cycle = (owner == 'ally' and ally is not None
-                     and ally.name == 'バルーンフィンチ' and len(skill_lines) >= 2
-                     and _fold_skill(skill_lines[0].known) == _fold_skill('ふくらむ')
-                     and _fold_skill(skill_lines[1].known) == _fold_skill('シャウト'))
+                     and ally.name == 'バルーンフィンチ' and len(skill_lines) == 2
+                     and (_fold_skill(skill_lines[0].known) == _fold_skill('ふくらむ')
+                          or _fold_skill(skill_lines[1].known) == _fold_skill('シャウト')))
     akematsu_cycle = (owner == 'ally' and ally is not None
                       and ally.name == 'あけまつ' and len(skill_lines) == 2
-                      and _fold_skill(skill_lines[0].known) == _fold_skill('ごあいさつ')
-                      and _fold_skill(skill_lines[1].known) == _fold_skill('おもてなし'))
+                      and (_fold_skill(skill_lines[0].known) == _fold_skill('ごあいさつ')
+                           or _fold_skill(skill_lines[1].known) == _fold_skill('おもてなし')))
     akematsu = akematsu_assessment(mem, ally, enemy) if akematsu_cycle else None
     special_cycle = balloon_cycle or akematsu_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
