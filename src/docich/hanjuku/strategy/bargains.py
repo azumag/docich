@@ -59,7 +59,12 @@ def bargain_spendable(mem, shop, header):
 
 def merchant_card_spendable(mem, shop, header, name, price):
     """Chart purchases keep their old gate; extras recheck the stricter one."""
-    if name not in (shop.get('bargain_cards') or []):
+    extras = shop.get('bargain_cards', [])
+    if (not isinstance(extras, list)
+            or any(not isinstance(n, str) or n not in BARGAIN_TARGETS for n in extras)
+            or len(extras) != len(set(extras))):
+        return None
+    if name not in extras:
         return _merchant_spendable(mem, shop, header)
     if (type(price) is not int or price <= 0 or name not in BARGAIN_TARGETS
             or price > KNOWN_PRICES[name]):
@@ -67,7 +72,12 @@ def merchant_card_spendable(mem, shop, header, name, price):
     cash = bargain_spendable(mem, shop, header)
     if cash is None or _charted_purchase_ahead(mem, header):
         return None
-    return cash
+    # A saved quantity target is not authority to bypass the planning caps.
+    bought = shop.get('bought', [])  # validated by bargain_spendable
+    used = sum(q for n, q, _ in bought if n in extras)
+    same = sum(q for n, q, _ in bought if n == name)
+    copies = max(0, min(BARGAIN_MONTHLY_COPIES - used, BARGAIN_TARGETS[name] - same))
+    return min(cash, copies * price)
 
 
 def plan_bargains(mem, shop, header, *, listed=None):
