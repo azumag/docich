@@ -167,6 +167,46 @@ def _register_owner(root, owner_state):
     atomic_write_json(registry, {'owner_state': str(owner_state)})
 
 
+def release_program_owner(g, owner_state):
+    """Drop the shared program registry row that still names a released corner.
+
+    The rotation releases a failed corner without rewriting that corner's own
+    state (#2187), so the registry can keep naming a corner whose request the
+    ledger already proved released.  ``_owner_free`` reads only that row and
+    observes ``failed`` as BUSY forever, which livelocks every later corner in
+    the shared program slot (#2282).
+
+    The row is dropped only while it still names exactly this state file, and
+    only under the program flock, so a corner that has since taken the slot
+    keeps its own ownership.  A flock held by a running corner means the
+    registry already names that corner, so there is nothing stale to drop.
+    Returns True when a row was actually removed.
+    """
+    root = resolve_soren_root(g) / 'tmp/state'
+    root.mkdir(parents=True, exist_ok=True)
+    registry = root / REGISTRY_FILE
+    target = str(owner_state)
+    try:
+        with (root / 'docich_program.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return False
+            try:
+                current = json.loads(registry.read_text())
+            except (OSError, ValueError):
+                return False
+            if not isinstance(current, dict) or current.get('owner_state') != target:
+                return False
+            try:
+                registry.unlink()
+            except OSError:
+                return False
+            return True
+    except OSError:
+        return False
+
+
 def _owner_free(root, owner_state):
     """他コーナーが starting/active で占有していなければ True。"""
     registry = root / REGISTRY_FILE

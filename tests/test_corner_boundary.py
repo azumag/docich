@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
+import docich.corner_boundary as boundary
 from docich.corner_boundary import (
     CornerWaitExpired,
     QUEUE_DIR,
@@ -658,3 +659,88 @@ def test_program_slot_recheck_wait_interruption_stays_cancelled(monkeypatch, int
     assert sleeps == [1.0, 1.0]
     assert state.queue['next_corner']['status'] == 'cancelled'
     assert not state.registry and not state.held
+
+
+@pytest.mark.parametrize('status', ['failed', 'interrupted'])
+def test_release_program_owner_drops_only_the_matching_row(tmp_path, status):
+    # #2282: a released corner's own state stays ``failed`` forever, and the
+    # registry row is the only thing that still names it. ``_owner_free``
+    # reads just that row, so leaving it in place observed ``failed`` as BUSY
+    # and livelocked every later corner in the shared program slot.
+    from docich.corner_boundary import release_program_owner
+
+    root = _state_dir(tmp_path)
+    g = _fake_g(tmp_path)
+    mine = root / 'doushi_corner.json'
+    other = root / 'weather_corner.json'
+    _owner(mine, status)
+    _owner(other, status)
+    registry = root / REGISTRY_FILE
+
+    registry.write_text(json.dumps({'owner_state': str(mine)}))
+    assert release_program_owner(g, mine) is True
+    assert not registry.exists()
+
+    registry.write_text(json.dumps({'owner_state': str(other)}))
+    assert release_program_owner(g, mine) is False
+    assert json.loads(registry.read_text())['owner_state'] == str(other)
+
+
+def test_release_program_owner_tolerates_a_missing_or_corrupt_registry(tmp_path):
+    from docich.corner_boundary import release_program_owner
+
+    root = _state_dir(tmp_path)
+    g = _fake_g(tmp_path)
+    mine = root / 'doushi_corner.json'
+    _owner(mine, 'failed')
+    registry = root / REGISTRY_FILE
+
+    assert release_program_owner(g, mine) is False
+    assert not registry.exists()
+
+    registry.write_text('{ not json')
+    assert release_program_owner(g, mine) is False
+    assert registry.exists()
+
+
+def test_release_program_owner_keeps_the_row_while_the_program_lock_is_held(tmp_path):
+    # A running corner holds the program flock while the registry names it, so
+    # a concurrent release must not race it out of the slot (#2282).
+    import docich.corner_boundary as boundary
+
+    root = _state_dir(tmp_path)
+    g = _fake_g(tmp_path)
+    mine = root / 'doushi_corner.json'
+    _owner(mine, 'failed')
+    registry = root / REGISTRY_FILE
+    registry.write_text(json.dumps({'owner_state': str(mine)}))
+
+    with (root / 'docich_program.lock').open('a') as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert boundary.release_program_owner(g, mine) is False
+    assert json.loads(registry.read_text())['owner_state'] == str(mine)
+
+
+def test_release_program_owner_frees_the_slot_for_the_next_corner(tmp_path):
+    # The regression the issue describes, end to end: the released corner's row
+    # is dropped, so the next corner in the same program slot is no longer
+    # refused by ``_register_owner``/``_owner_free`` and can take the slot.
+    from docich.corner_boundary import release_program_owner
+
+    root = _state_dir(tmp_path)
+    g = _fake_g(tmp_path)
+    released = root / 'doushi_corner.json'
+    next_corner = root / 'weather_corner.json'
+    _owner(released, 'failed')
+    registry = root / REGISTRY_FILE
+    registry.write_text(json.dumps({'owner_state': str(released)}))
+
+    assert boundary._owner_free(root, str(next_corner)) is False
+    with pytest.raises(RuntimeError):
+        boundary._register_owner(root, next_corner)
+
+    assert release_program_owner(g, released) is True
+
+    assert boundary._owner_free(root, str(next_corner)) is True
+    with boundary.program_lock(g, next_corner):
+        assert json.loads((root / REGISTRY_FILE).read_text())['owner_state'] == str(next_corner)
