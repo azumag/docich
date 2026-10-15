@@ -1,10 +1,11 @@
 """Bounded character-creation gate, separate from the P3b gameplay policy.
 
 Only returns Actions; never sends keys itself or bypasses the agent lease fence.
-No save/restore, recovery, gameplay prompt, or new-run restart automation lives here,
-with one exception: the ``--More--`` of NetHack's ``Restoring save file...`` banner is
-advanced (see ``_RESTORE_MORE_RE``), because a resumed run never shows a creation prompt
-and would otherwise sit on it forever.
+No save/restore, recovery, or new-run restart automation lives here.
+Resume pagers can hide the player before the first complete map. Advance a
+normalized ``more`` only with visible living-game vitals or a previously
+accepted exact restore banner, within the existing startup budgets. The
+legacy restore-banner and character-creation paths remain separate.
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ class NethackStartup:
         self.actions = 0
         self._last_answered = ""
         self._creation_seen = False
+        self._restore_seen = False
 
     def _state(self, state: str) -> None:
         if self.state != state:
@@ -108,7 +110,21 @@ class NethackStartup:
         if key is None and has_gameplay:
             self._state("gameplay")
             return None
-        if key is None and not has_gameplay and _RESTORE_MORE_RE.search(text):
+        restore_more = not has_gameplay and bool(_RESTORE_MORE_RE.search(text))
+        if key is None and restore_more:
+            key = " "
+        if key is None and obs.prompt == "more" and (
+            self._restore_seen
+            or (
+                obs.vitals.dungeon_level is not None
+                and obs.vitals.hp is not None and obs.vitals.hp > 0
+                and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
+            )
+        ):
+            # A resumed game's text can cover '@' without character creation
+            # in this session. Only recognized pagers with resume evidence
+            # qualify; arbitrary pre-game '--More--' remains blocked. Common
+            # budgets and duplicate-frame suppression still apply below.
             key = " "
         if key is None and self._creation_seen and "--more--" in text:
             # The intro/--More-- screen can show the status lines below the
@@ -123,6 +139,10 @@ class NethackStartup:
         if text == self._last_answered:
             self._state("waiting")
             return []
+        if restore_more and key == " ":
+            # The brain rolls this evidence back if fresh-frame validation
+            # rejects the action before transport (startup checkpoint).
+            self._restore_seen = True
         self._last_answered = text
         self.actions += 1
         self._state("answering")
