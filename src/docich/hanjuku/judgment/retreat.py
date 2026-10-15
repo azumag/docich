@@ -56,7 +56,9 @@ def retreat_profile(cur):
 
 def _live_melee(cur):
     """Use current bounded HP/troops, never a saved monster or unknown army."""
-    if (cur.get('ally') in (None, NAME, 'しゅじんこう')
+    if (cur.get('side') != 'attack'
+            or (cur.get('hero_retreat') or {}).get('selected')
+            or cur.get('ally') in (None, NAME, 'しゅじんこう')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
             or cur.get('egg_battle') or cur.get('card_summon_observed')

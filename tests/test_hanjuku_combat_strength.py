@@ -43,12 +43,17 @@ def test_lower_hp_with_higher_attack_is_not_the_hp_only_behind_signal():
     assert p._hold_melee_egg({'battle': cur}, cur, {'きりふだ', 'たまごをつかう'}) is True
 
 
-def test_hp_double_alone_cannot_release_retreat_protection_for_weak_attack():
+def test_hp_double_is_not_advantage_but_weak_general_can_accept_risk():
     cur = duel(hp=39)
     cur['survival'] = {'exhausted': True, 'cards_uncertain': False}
     assert p._healthy_melee_advantage(cur) is False
-    assert p._hero_retreat_needed(cur) is True
-    assert p._hero_retreat_open({'battle': cur}, cur) == [p.pad('b')]
+    assert p._hero_retreat_needed(cur) is False
+    assert p._hero_retreat_open({'battle': cur}, cur) is None
+    assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'
+    cur['survival']['exhausted'] = False
+    assert p._survival_needed(cur) is True
+    assert p._hero_retreat_needed(cur) is False
+    assert cur['retreat_assessment']['threshold_active'] is False
 
 
 def test_current_soldiers_can_offset_attack_but_unknown_soldiers_cannot():
@@ -213,7 +218,8 @@ def test_observed_zero_is_not_a_conserved_rescue_resource(uses):
     if uses == 0:
         assert cur['survival']['exhausted'] is True
         assert not cur['survival'].get('conserving_melee')
-        assert p._hero_retreat_needed(cur)
+        assert not p._hero_retreat_needed(cur)
+        assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'
     else:
         assert cur['survival']['conserving_melee'] is True
         assert cur['survival']['exhausted'] is False
@@ -231,7 +237,9 @@ def test_hotloaded_conservation_rechecks_a_new_named_zero_before_continuing():
     assert not p._hold_melee_egg(mem, cur, {'たまごをつかう'})
     assert p.battle_step(panel(mem, soldiers=(0, 0)), mem) == [p.pad('b')]
     p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem)
-    assert cur['survival']['exhausted'] is True and p._hero_retreat_needed(cur)
+    assert cur['survival']['exhausted'] is True and not p._hero_retreat_needed(cur)
+    assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'
+    assert mem['egg_uses']['チコリ'] == 0
 
 
 @pytest.mark.parametrize('cached', [False, True])

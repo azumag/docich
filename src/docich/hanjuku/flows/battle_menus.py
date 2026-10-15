@@ -141,7 +141,8 @@ def _hero_retreat_menu(screen, mem, cur):
     _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
-            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
+            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                             'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             resulting_event='retreat_selected_not_yet_confirmed',
             reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
     return [pad('a')]
