@@ -1,11 +1,11 @@
 {
-  "output_sha256": "871dc3e5d3bbacdcbc48ba738151c4c724c896234b1c67130ab67bc67c7032a5",
+  "output_sha256": "5e7419237e184527f506100141323529b1e41c6b1587293aa0a809f6d48ebf6e",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "50d9e674de871838c3ee2af846f9594aa3b58b579888364919880a2b584afbda",
+  "source_sha256": "22a46d0cc4781cea90750242ace33ddc3a53840413364a964920f9fab6cf6507",
   "topics": [
+    "同志カード初回準備失敗からSoren復帰、timer設定参照を修正中",
     "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中",
-    "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認",
-    "同志カードのTwiCa本番受入完了・docich最終CI待ち"
+    "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認"
   ]
 }
