@@ -85,6 +85,18 @@ invalid         設定済みだがendpointを埋められない
 valid           固定endpointを埋められる32文字小文字16進
 ```
 
+加えて `retained` が、レビュー済み3 route（`direct` / `vercel` / `clef`）それぞれの
+`credential` と `account` を同じ語彙で返す。**選択中でないproviderの保持状態も見える**
+ため、切替の前に双方向を確認できる。
+
+- Clefへ切り替える前に: `retained.clef.credential=present` かつ `retained.clef.account=valid`
+- JEVへ戻す前に: `retained.direct.credential=present`（#678の `TYPESAFE_API_KEY`）
+
+`absent` は「その環境にその名前が無い」という実測であり、既定値ではない。Jevが無効
+（`backend=heuristic`）かenvironを読めない場合は `retained` が `{}` になり、
+「保持の証拠が無い」ことを示す（存在しないことの主張はしない）。値そのものは
+どの形でも返さない。
+
 collectorの固定allowlist（`ops/vm_actions/collect_diagnostics.py`）は
 `DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID` と `DOCICH_JEV_CLOUDFLARE_API_TOKEN` を含み、
 live chat workerのenvironからこの2つのNAMEだけを読む。値は
