@@ -646,7 +646,7 @@ def _month_chikujou(screen, mem, shop):
                         'chikujou_identity': run_identity(mem.get('_run_identity')),
                         'chikujou_chapter': mem.get('chapter')}
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
-            observed_metric={'reserve': reserve, 'tried': tried},
+            observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
     return [pad('a')]
 
@@ -677,7 +677,7 @@ def _chikujou_continue_list(screen, mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     key = sub.get('key')
     header = screen.header or {}
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter'), ())}
+    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())}
     rows = sorted((x, y, word) for x, y, word in _options(screen) if word in known)
     if (identity is None or identity != run_identity(sub.get('chikujou_identity'))
             or sub.get('chikujou_chapter') != mem.get('chapter')
