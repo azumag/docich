@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 from .routes import RouteProfile
 
@@ -42,6 +43,8 @@ def validate_request(request, profile: RouteProfile) -> None:
     questions = request["questions"]
     if type(questions) is not dict or not questions:
         raise ValueError("invalid_request")
+    if profile.account_env is not None and len(questions) > 64:
+        raise ValueError("input_limit")
     for key, question in questions.items():
         if (type(key) is not str or not key or type(question) is not dict
                 or set(question) != {"type", "instructions", "criteria"}
@@ -53,6 +56,10 @@ def validate_request(request, profile: RouteProfile) -> None:
                 or any(type(label) is not str or not label
                        or type(description) is not str
                        for label, description in criteria.items())):
+            raise ValueError("invalid_request")
+        if profile.account_env is not None and (
+                re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", key) is None
+                or not 2 <= len(criteria) <= 255):
             raise ValueError("invalid_request")
 
 
@@ -102,3 +109,17 @@ def validate_response(data, request, profile: RouteProfile) -> dict:
         raise ValueError("invalid_response")
     return {"model": data["model"], "answers": clean,
             "usage": {k: usage[k] for k in ("input_tokens", "output_tokens")}}
+
+
+def validate_wire_response(data, request, profile: RouteProfile) -> dict:
+    """Unwrap only the selected provider's success envelope, then validate.
+
+    The parent revalidates the sanitized System One result. Cloudflare errors
+    and echoed context never escape. Existing bare Jev responses are unchanged.
+    """
+    if profile.account_env is not None:
+        if (type(data) is not dict or data.get("success") is not True
+                or data.get("errors") != []):
+            raise ValueError("invalid_response")
+        data = data.get("result")
+    return validate_response(data, request, profile)

@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Select the docich comment classifier's Jev route (#882), owner-only.
 
-Manages ONLY ``DOCICH_JEV_ROUTE`` / ``DOCICH_JEV_VERCEL_API_KEY`` in soren's
-.env -- the route keys ``docich.comment_classifier`` reads. It never touches
+Manages route assignments and, on explicit Clef provisioning, its dedicated
+account/token in soren's .env. Clef credentials are retained on a switch back
+to direct, so the next Clef switch needs no secret re-entry. It never touches
 ``COMMENT_CLASSIFIER_BACKEND``, ``COMMENT_CLASSIFIER_JEV_*`` or
 ``TYPESAFE_API_KEY``: whether Jev is called at all, and its timeout/threshold
 and direct-route credential, stay owned by ``configure_comment_classifier_jev.py``
 (#678). This script only decides which reviewed route(s) those calls use.
 
-The fixed gateway operations map to fixed values (never caller-supplied):
+``--route clef`` selects Clef only (not an automatic fallback chain). Initial
+account/token provisioning uses this process's dedicated environment pair;
+subsequent switches reuse the existing chat worker's pair. Both Jev and Clef
+credentials are preserved and checked on the replacement chat worker. This
+CLI option is not yet exposed as a new fixed VM gateway operation.
 
-- ``configure_jev_route_direct`` (``--route direct``): ``DOCICH_JEV_ROUTE=direct``,
+The existing fixed gateway operations map to fixed values:
+
+- ``configure_jev_route_direct`` (``--route direct``): ``DOCICH_JEV_ROUTE=direct`,
   direct only, Vercel secret removed.
 - ``configure_jev_route_vercel`` (``--route vercel``): ``DOCICH_JEV_ROUTE=direct,vercel``
   plus the Vercel secret -- direct stays primary and Vercel is the automatic
@@ -36,6 +43,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -79,9 +87,10 @@ restart_chat_worker_verified = _classifier.restart_chat_worker_verified
 
 MANAGED_KEYS = ("DOCICH_JEV_ROUTE", "DOCICH_JEV_VERCEL_API_KEY")
 RETIRED_KEYS = ("DOCICH_SEMANTIC_BACKEND",)
-ROUTES = ("direct", "vercel")
+CLEF_KEYS = ("DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID", "DOCICH_JEV_CLOUDFLARE_API_TOKEN")
+ROUTES = ("direct", "vercel", "clef")
 # --route -> the exact DOCICH_JEV_ROUTE value written and then verified live.
-ROUTE_VALUES = {"direct": "direct", "vercel": "direct,vercel"}
+ROUTE_VALUES = {"direct": "direct", "vercel": "direct,vercel", "clef": "clef"}
 
 
 def validate_vercel_key(value: str) -> None:
@@ -91,7 +100,8 @@ def validate_vercel_key(value: str) -> None:
         raise ConfigureError("invalid_vercel_api_key")
 
 
-def _rewrite_route_env(env_file: Path, managed_lines: list[str]) -> Path:
+def _rewrite_route_env(env_file: Path, managed_lines: list[str], *,
+                       managed_keys=MANAGED_KEYS) -> Path:
     """Atomically replace only this script's own managed assignments.
 
     Reuses configure_comment_classifier_jev's backup/atomic-write primitives
@@ -108,7 +118,7 @@ def _rewrite_route_env(env_file: Path, managed_lines: list[str]) -> Path:
     kept = []
     for line in text.splitlines(keepends=True):
         match = ASSIGNMENT.match(line)
-        if match and match.group(1) in MANAGED_KEYS + RETIRED_KEYS:
+        if match and match.group(1) in managed_keys + RETIRED_KEYS:
             continue
         kept.append(line)
     if kept and not kept[-1].endswith(("\n", "\r")):
@@ -141,6 +151,27 @@ def configure_vercel_env(env_file: Path, vercel_api_key: str) -> Path:
     ])
 
 
+def clef_settings(env) -> tuple[str, str]:
+    """Validate a single account/token pair without exposing either value."""
+    account, token = (env.get(key, "") for key in CLEF_KEYS)
+    if type(account) is not str or re.fullmatch(r"[0-9a-f]{32}", account) is None:
+        raise ConfigureError("invalid_clef_account_id")
+    if (type(token) is not str or not 1 <= len(token) <= 4096
+            or any(not 33 <= ord(char) < 127 for char in token)):
+        raise ConfigureError("invalid_clef_api_token")
+    return account, token
+
+
+def configure_clef_env(env_file: Path, account: str, token: str) -> Path:
+    """Select Clef, leaving the existing TYPESAFE_API_KEY bytes untouched."""
+    clef_settings(dict(zip(CLEF_KEYS, (account, token))))
+    return _rewrite_route_env(env_file, [
+        "DOCICH_JEV_ROUTE=clef\n",
+        f"{CLEF_KEYS[0]}={shlex.quote(account)}\n",
+        f"{CLEF_KEYS[1]}={shlex.quote(token)}\n",
+    ], managed_keys=MANAGED_KEYS + CLEF_KEYS)
+
+
 def disable_env(env_file: Path) -> Path:
     """Return to the default direct route and remove the vercel secret.
 
@@ -163,9 +194,12 @@ def _require_default_direct_route_ready(runtime_env: dict[str, str]) -> None:
         raise ConfigureError("direct_route_requires_existing_typesafe_api_key")
 
 
-def verify_jev_route(route: str | None):
+def verify_jev_route(route: str | None, *, retained_credentials=None):
     """route=None means reset to the default route with no vercel secret."""
     def verify(runtime_env: dict[str, str]) -> None:
+        for key, expected in (retained_credentials or {}).items():
+            if runtime_env.get(key) != expected:
+                raise ConfigureError("chat_worker_retained_credential_mismatch")
         if route is None:
             if runtime_env.get("DOCICH_JEV_ROUTE"):
                 raise ConfigureError("chat_worker_docich_route_still_set")
@@ -175,6 +209,8 @@ def verify_jev_route(route: str | None):
             return
         if runtime_env.get("DOCICH_JEV_ROUTE") != ROUTE_VALUES[route]:
             raise ConfigureError("chat_worker_docich_route_mismatch")
+        if route == "clef":
+            clef_settings(runtime_env)
         if route == "vercel" and not runtime_env.get("DOCICH_JEV_VERCEL_API_KEY"):
             raise ConfigureError("chat_worker_vercel_api_key_missing")
         if route == "direct" and not runtime_env.get("TYPESAFE_API_KEY"):
@@ -197,6 +233,8 @@ def main() -> int:
     current = _classifier._process_env(
         _classifier._read_worker_pid(args.soren_root / _classifier.WORKER_PID_FILE) or -1
     )
+    retained = {key: current[key] for key in (*CLEF_KEYS, "TYPESAFE_API_KEY")
+                if current.get(key)}
     if args.disable:
         # Reset means default-direct, not "turn Jev off". If Jev is currently
         # active, prove the direct credential exists before removing the
@@ -212,13 +250,23 @@ def main() -> int:
             raise ConfigureError("direct_route_requires_existing_typesafe_api_key")
         backup = configure_direct_env(env_file)
         route = "direct"
+    elif args.route == "clef":
+        # A reversible migration must retain the already-working Jev route.
+        if not current.get("TYPESAFE_API_KEY"):
+            raise ConfigureError("clef_switch_requires_existing_typesafe_api_key")
+        # Never combine a token from one source with an account from another.
+        source = os.environ if any(key in os.environ for key in CLEF_KEYS) else current
+        account, token = clef_settings(source)
+        backup = configure_clef_env(env_file, account, token)
+        retained.update(zip(CLEF_KEYS, (account, token)))
+        route = "clef"
     else:
         vercel_api_key = os.environ.get("DOCICH_JEV_VERCEL_API_KEY", "")
         backup = configure_vercel_env(env_file, vercel_api_key)
         route = "vercel"
 
     old_pid, new_pid = restart_chat_worker_verified(
-        args.soren_root, verify=verify_jev_route(route))
+        args.soren_root, verify=verify_jev_route(route, retained_credentials=retained))
     print(json.dumps({
         "status": "default_route" if route is None else "configured",
         "route": ROUTE_VALUES[route] if route else "direct",
