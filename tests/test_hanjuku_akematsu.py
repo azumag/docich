@@ -98,6 +98,18 @@ def test_cached_predeploy_greeting_is_replaced_after_first_new_policy_tick(event
     assert state['monster_menu_choice_policy_epoch'] == '20261016-balloon-akematsu-v2'
 
 
+@pytest.mark.parametrize('skills', [
+    ['ごあいさつ', 'おもてなし?'],
+    ['ごあいさ?', 'おもてなし'],
+])
+def test_one_recognized_skill_preserves_akematsu_policy(events, skills):
+    state = mem()
+    assert menus.monster_menu_step(view(skills=skills), state) == [menus.pad('a')]
+    assert state['battle']['akematsu_exchange']['greeting_submitted'] is True
+    assert menus.monster_menu_step(view(skills=skills), state) == [menus.pad('down')]
+    assert state['monster_menu_choice'] == 'skill2'
+
+
 def test_enemy_owned_akematsu_menu_is_not_assumed_ours(events):
     state = mem()
     assert menus.monster_menu_step(view(swapped=True), state) == []
