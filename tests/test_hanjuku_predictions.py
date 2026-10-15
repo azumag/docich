@@ -108,8 +108,15 @@ def test_outcomes_cover_disjoint_ranges():
         middle = target // 2
         expected = [2] * middle + [1] * (target - middle) + [0] * (13 - target)
         assert [p.winner(i, target, middle) for i in range(13)] == expected
-    assert p.outcome_titles(2,1) == ['2話突破（新記録）', '1話突破', '1話突破できず']
-    assert p.outcome_titles(6,3) == ['6話突破（新記録）', '3〜5話突破', '3話突破できず']
+    # 4択目（画面停滞で一時終了）は run の終わり方で選ぶため、突破数の区分には入らない。
+    assert p.outcome_titles(2,1) == ['2話突破（新記録）', '1話突破', '1話突破できず',
+                                     '画面停滞で一時終了（同じ状態から再開予定）']
+    assert p.outcome_titles(6,3) == ['6話突破（新記録）', '3〜5話突破', '3話突破できず',
+                                     '画面停滞で一時終了（同じ状態から再開予定）']
+    # 受理は「生成は4択・row が自己申告する3か4択」。#2238 の legacy 互換。
+    legacy, current = p.accepted_outcome_titles(2, 1)
+    assert legacy == p.outcome_titles(2, 1)[:3]
+    assert current == p.outcome_titles(2, 1)
 
 
 def test_reach_two_is_one_clear_and_monotonic(env):
@@ -223,8 +230,13 @@ def test_existing_unrelated_remote_is_never_modified(env, status):
 
 
 @pytest.mark.parametrize('reason', ['game_over', 'screen_stalled', 'input_stalled'])
-@pytest.mark.parametrize('chapter, index', [(1,2), (2,1), (3,0), (7,0)])
-def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter, index):
+@pytest.mark.parametrize('chapter', [1, 2, 3, 7])
+def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter):
+    # 4択目（画面停滞で一時終了）は run の終わり方で選ぶため突破数に依存しない。
+    # game_over / input_stalled は従来どおり突破数で判定する（#2238）。
+    index = {'game_over': {1: 2, 2: 1, 3: 0, 7: 0},
+             'input_stalled': {1: 2, 2: 1, 3: 0, 7: 0},
+             'screen_stalled': {1: 3, 2: 3, 3: 3, 7: 3}}[reason][chapter]
     env.tick()
     progress.record(env.runtime, ID, {'chapter': chapter, 'chapter_evidence': 'header'}, [], DIGEST)
     terminal(env, reason)
@@ -239,6 +251,59 @@ def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapte
     env.tick(131)
     assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
     assert len([c for c in env.remote.calls if c[0] == 'PATCH' and c[2] == 'RESOLVED']) == 1
+
+
+def test_created_prediction_always_offers_four_outcomes(env):
+    """選択肢は run 開始時に固定されるため、checkpoint の有無によらず常に4択（#2238）。"""
+    env.tick()
+    row = env.state()['round']
+    assert row['outcome_titles'] == p.outcome_titles(2, 1)
+    assert len(row['outcome_titles']) == 4 and len(row['outcome_ids']) == 4
+    assert env.remote.rows[0]['outcomes'][3]['title'] == p.STALLED_OUTCOME_TITLE
+    # 同じ4択 row は durable reread（_load）でも受理される。
+    assert p._load(env.g.state_dir, 1)['round']['outcome_ids'] == row['outcome_ids']
+
+
+def test_screen_stalled_without_progress_also_resolves_as_the_fourth_outcome(env):
+    """突破数の証拠が無い停滞終了も CANCELED にせず4択目で記帳する（#2238）。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'screen_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'resolved'
+    row = env.state()['round']
+    assert row['result']['reason'] == 'screen_stalled' and row['result']['cleared'] is None
+    assert row['status'] == 'RESOLVED'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
+
+
+def test_input_stalled_without_progress_still_cancels(env):
+    """input_stalled は4択目に含めない（owner 決定 2026-10-15）。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert 'winning_outcome_id' not in env.remote.rows[0]
+
+
+def test_legacy_three_option_row_is_accepted_and_settles_as_before(env):
+    """デプロイ前の3択 row は受理し、停滞終了でも従来どおり CANCELED にする。
+
+    4択へ変えた後に legacy row を `_load` が拒否すると #2213 の invalid_state
+    ループが再発するため、受理だけ legacy を許す（生成は常に4択）。
+    """
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    state = env.state()
+    row = state['round']
+    row['outcome_titles'] = row['outcome_titles'][:3]
+    row['outcome_ids'] = row['outcome_ids'][:3]
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    env.remote.rows[0]['outcomes'] = env.remote.rows[0]['outcomes'][:3]
+    assert len(p._load(env.g.state_dir, 1)['round']['outcome_titles']) == 3
+    terminal(env, 'screen_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    assert env.state()['round']['status'] == 'CANCELED'
 
 
 def test_input_stalled_terminal_survives_the_durable_reread(env):
@@ -288,13 +353,25 @@ def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
     env.setup(ID2)
     env.remote.failure = None
     assert env.tick(401, None)['mode'] == 'resolved'
-    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    # 画面停滞の終端なので、突破数ではなく4択目（outcome-3）で確定する（#2238）。
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
 
 
-def test_unknown_score_refunds_instead_of_guessing_zero(env):
+def test_unknown_score_resolves_as_temporary_end_without_guessing_zero(env):
+    """突破数の証拠が無い停滞終了は、0 と推測せず4択目で記帳する（#2238）。"""
     (env.runtime / progress.FILE).unlink()
     env.tick()
     terminal(env, 'screen_stalled')
+    assert env.tick(101)['mode'] == 'resolved'
+    assert env.state()['round']['result']['cleared'] is None
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
+
+
+def test_unknown_score_refunds_instead_of_guessing_zero(env):
+    """停滞終了でも4択目でもない終端（input_stalled）は従来どおり返金する。"""
+    (env.runtime / progress.FILE).unlink()
+    env.tick()
+    terminal(env, 'input_stalled')
     assert env.tick(101)['mode'] == 'canceled'
     assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
     assert env.state()['round']['result']['cleared'] is None
@@ -363,7 +440,8 @@ def test_a_contested_prediction_resolves_as_before(env):
 
     assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-1'
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    # 4択すべてに top predictor が1人ずついる（_seed_top_predictors）。
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
     assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['LOCKED', 'RESOLVED']
 
 
@@ -650,7 +728,8 @@ def test_saved_settlement_survives_runtime_retention(env):
     shutil.rmtree(env.runtime)
     env.remote.failure = None
     assert env.tick(401, None)['mode'] == 'resolved'
-    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    # 画面停滞の終端なので4択目で確定する（#2238）。
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
     assert env.state()['best_cleared'] == 2
 
 
@@ -734,7 +813,7 @@ def test_settled_round_is_recorded_in_the_yosou_leaderboard(env):
         f'u{index}': outcome['id'] == round_['winning_outcome_id']
         for index, outcome in enumerate(env.remote.rows[0]['outcomes'])
     }
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
 
     # The runtime-retention tick after teardown never counts the round twice.
     env.tick(131)
@@ -762,7 +841,7 @@ def test_patch_response_without_predictors_uses_one_authoritative_read(env):
                    if call[0] == 'PATCH' and call[2] == 'RESOLVED')
     assert any(call == ('GET', prediction_id) for call in calls[patch_at + 1:])
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
 
 
 def test_broken_ledger_keeps_the_settled_round_retryable(env):

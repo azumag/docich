@@ -35,6 +35,16 @@ ERRORS = {'transport', 'auth', 'rate_limited', 'rejected', 'invalid_response',
 MODES = {'incompatible_soren', 'idle', 'disabled', 'explore', 'unconfigured', 'paused', 'blocked', 'pending',
          'active', 'settling', 'resolved', 'canceled', 'known_result', 'complete_record', 'error'}
 
+#: 4つ目の選択肢（owner 決定 2026-10-15 / Issue #2238）。画面停滞（フレーム静止）または
+#: 入力ループで「一時終了」した run をここで確定する。予想は run 開始時に作られ選択肢が
+#: 固定されるため、checkpoint の有無で出し分けず常に4択にする。
+STALLED_OUTCOME_TITLE = '画面停滞で一時終了（同じ状態から再開予定）'
+#: 4択目を使う終端理由。`hanjuku_run.TERMINAL_REASONS` のうち `game_over` は従来どおり
+#: 突破数で判定し、`input_stalled` は4択目に含めない。
+STALLED_REASON = 'screen_stalled'
+#: デプロイ前に作られた予想の選択肢数（受理だけ legacy として許す）。
+LEGACY_OUTCOME_COUNT = 3
+
 
 def thresholds(best):
     progress.count(best)
@@ -50,7 +60,37 @@ def thresholds(best):
 def outcome_titles(target, middle):
     middle_title = (f'{middle}話突破' if middle == target - 1
                     else f'{middle}〜{target - 1}話突破')
-    return [f'{target}話突破（新記録）', middle_title, f'{middle}話突破できず']
+    return [f'{target}話突破（新記録）', middle_title, f'{middle}話突破できず',
+            STALLED_OUTCOME_TITLE]
+
+
+def accepted_outcome_titles(target, middle):
+    """Titles a stored intent may declare: the new 4-choice and the legacy 3-choice.
+
+    選択肢は予想の作成時に固定される。4択へ変えた後に、デプロイ前に作られた3択の
+    row を `_load` が拒否すると #2213 の `invalid_state` ループが再発するため、
+    「生成は4択・受理は row が自己申告する3か4択」とする（Issue #2238）。
+    """
+    titles = outcome_titles(target, middle)
+    return (titles[:LEGACY_OUTCOME_COUNT], titles)
+
+
+def resolve_index(row, result):
+    """Outcome index for one terminal result, or ``None`` when it must be canceled.
+
+    4択の row で画面停滞/ループ終了（``reason=screen_stalled``）だったときだけ
+    4択目を使う。``game_over`` は従来どおり突破数で判定し、``input_stalled``
+    （画面は観測できているが操作AIが無入力）は4択目に含めない（owner 決定
+    2026-10-15 / Issue #2238）。legacy 3択の row は作成時の選択肢を変えられない
+    ため、停滞終了でも従来の判定のままにする。
+    """
+    titles = row.get('outcome_titles')
+    if (isinstance(titles, list) and len(titles) > LEGACY_OUTCOME_COUNT
+            and result.get('reason') == STALLED_REASON):
+        return LEGACY_OUTCOME_COUNT
+    if result.get('cleared') is None:
+        return None
+    return winner(result['cleared'], row['target'], row['middle'])
 
 
 def voting_window(target, ending_window):
@@ -128,12 +168,15 @@ def _load(root, seed):
                 or row.get('status') not in LIVE | DONE | {'INTENT'}
                 or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
                 or row.get('title') != _title(row['nonce'])
-                or row.get('outcome_titles') != outcome_titles(row['target'], row['middle'])):
+                or row.get('outcome_titles')
+                   not in accepted_outcome_titles(row['target'], row['middle'])):
             raise ValueError('invalid prediction intent')
         if row.get('id') is not None:
             ids = row.get('outcome_ids')
+            expected = len(row['outcome_titles'])
             if (not isinstance(row['id'], str) or not 1 <= len(row['id']) <= 128
-                    or not isinstance(ids, list) or len(ids) != 3 or len(set(ids)) != 3
+                    or not isinstance(ids, list) or len(ids) != expected
+                    or len(set(ids)) != expected
                     or not all(isinstance(i, str) and 1 <= len(i) <= 128 for i in ids)):
                 raise ValueError('invalid prediction ownership')
         if row.get('result') is not None:
@@ -340,7 +383,10 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 state['mode'] = remote['status'].lower()
                 return
             result = owned_completed
-            cancel = bool(result and result['cleared'] is None)
+            # 4択の row では画面停滞/ループ終了を4択目で確定する。突破数の証拠が
+            # 無い停滞終了（従来は CANCELED）も、この選択肢がある run は記帳する。
+            index = resolve_index(row, result) if result else None
+            cancel = bool(result) and index is None
             # An explicit ready different runtime is an interruption, not a loss.
             cancel = cancel or (ready and not same(row) and result is None)
             if not ready and result is None:
@@ -353,7 +399,6 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     response = client.end(row['id'], 'CANCELED')
                     desired = 'CANCELED'
                 else:
-                    index = winner(result['cleared'], row['target'], row['middle'])
                     # Lock before publishing the winner, including early endings.
                     settled_from = remote
                     if remote['status'] == 'ACTIVE':
