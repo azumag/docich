@@ -3816,6 +3816,7 @@ def _project_corner_state(data):
             "hanjuku-script-v1", "hanjuku-chart-v2",
             "hanjuku-chart-v224-overwhelming-melee-egg-save",
             "hanjuku-chart-v225-merchant-bargains",
+            "hanjuku-chart-v226-general-egg-recheck",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
