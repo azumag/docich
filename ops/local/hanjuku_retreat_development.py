@@ -66,7 +66,9 @@ def update_expectations():
                      "assert p._hero_retreat_open({'battle': cur}, cur) is None\n"
                      "    assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'\n"
                      "    cur['survival']['exhausted'] = False\n"
-                     "    assert p._hero_retreat_needed(cur) is True", 1))
+                     "    assert p._survival_needed(cur) is True\n"
+                     "    assert p._hero_retreat_needed(cur) is False\n"
+                     "    assert cur['retreat_assessment']['threshold_active'] is False", 1))
     function_edit(path, 'test_observed_zero_is_not_a_conserved_rescue_resource', lambda old: once(old,
         '        assert p._hero_retreat_needed(cur)\n',
         '        assert not p._hero_retreat_needed(cur)\n'
