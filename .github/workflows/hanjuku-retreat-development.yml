@@ -1,0 +1,56 @@
+name: Hanjuku retreat development
+
+on:
+  push:
+    branches: [fix/hanjuku-retreat-value-20261015]
+    paths:
+      - '.github/workflows/hanjuku-retreat-development.yml'
+      - 'ops/local/hanjuku_retreat_development.py'
+      - 'src/docich/hanjuku/judgment/retreat.py'
+      - 'tests/test_hanjuku_retreat_value.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hanjuku-retreat-development
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'azumag/docich' && github.actor == 'azumag' && github.ref == 'refs/heads/fix/hanjuku-retreat-value-20261015'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: 'requirements*.txt'
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Apply only the reviewed development patch
+        run: python3 ops/local/hanjuku_retreat_development.py apply
+      - name: Compile changed modules
+        run: python3 -m compileall -q src/docich/hanjuku tests/test_hanjuku_retreat_value.py
+      - name: Regression tests for retreat, resources and current-force evidence
+        run: python3 -m pytest -q tests/test_hanjuku_retreat_value.py tests/test_hanjuku_hero_guard.py tests/test_hanjuku_combat_strength.py tests/test_hanjuku_survival.py --junitxml=retreat-development-report/tests.xml
+      - name: Publish tested source changes to this feature branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ops/local/hanjuku_retreat_development.py publish
+      - name: Retain bounded development evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hanjuku-retreat-development
+          path: retreat-development-report/
+          retention-days: 1
+          if-no-files-found: ignore
