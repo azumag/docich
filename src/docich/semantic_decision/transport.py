@@ -1,4 +1,4 @@
-"""One bounded stdlib HTTP path for direct and explicit Vercel choice requests.
+"""One bounded stdlib HTTP path for reviewed System One choice providers.
 
 POSIX only. Main-thread callers defer signals until child cleanup; threaded
 callers retain child ownership through the deadline and the consumer joins them
@@ -23,10 +23,10 @@ import urllib.request
 if __name__ == "__main__" and not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from docich.semantic_decision.routes import resolve_route
+from docich.semantic_decision.routes import resolve_endpoint, resolve_route
 from docich.semantic_decision.validator import (
     MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, dumps, encode_request, strict_json,
-    validate_response,
+    validate_response, validate_wire_response,
 )
 
 _ERRORS = frozenset({"auth_error", "rate_limited", "overloaded", "server_error",
@@ -57,6 +57,7 @@ def _http_worker(request, route: str, timeout: float, env) -> dict:
     """The sole HTTP implementation; never return exception text/headers/bodies."""
     try:
         profile = resolve_route(route)
+        endpoint = resolve_endpoint(profile, env)
         payload = encode_request(request, profile)
         key = env.get(profile.credential_env, "")
         if not _valid_key(key):
@@ -66,7 +67,7 @@ def _http_worker(request, route: str, timeout: float, env) -> dict:
             urllib.request.HTTPSHandler(context=ssl.create_default_context()),
         )
         req = urllib.request.Request(
-            profile.endpoint, data=payload, method="POST",
+            endpoint, data=payload, method="POST",
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         )
         with opener.open(req, timeout=timeout) as response:
@@ -75,7 +76,7 @@ def _http_worker(request, route: str, timeout: float, env) -> dict:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             return {"status": "invalid_response"}
-        return {"status": "ok", "data": validate_response(strict_json(raw), request, profile)}
+        return {"status": "ok", "data": validate_wire_response(strict_json(raw), request, profile)}
     except urllib.error.HTTPError as exc:
         try:
             retry = int(exc.headers.get("Retry-After", "0"))
@@ -179,6 +180,10 @@ def request_once(request, *, route=None, env=None, timeout_ms: int | None = None
         profile = resolve_route(env.get("DOCICH_JEV_ROUTE", "direct") if route is None else route)
         if os.name != "posix":
             return finish("invalid_config")
+        try:
+            resolve_endpoint(profile, env)
+        except (ValueError, TypeError):
+            return finish("invalid_config")
         if timeout_ms is None:
             configured_timeout = env.get("DOCICH_JEV_TIMEOUT_MS", "1500")
             if type(configured_timeout) is not str or not configured_timeout.isascii() or not configured_timeout.isdecimal():
@@ -200,11 +205,14 @@ def request_once(request, *, route=None, env=None, timeout_ms: int | None = None
         remaining = timeout_ms / 1000 - (time.monotonic() - started)
         if remaining <= 0:
             return finish("timeout")
+        child_env = {profile.credential_env: key, "LANG": "C.UTF-8"}
+        if profile.account_env is not None:
+            child_env[profile.account_env] = env[profile.account_env]
         raw = _bounded_process(
             [sys.executable, "-I", str(Path(__file__).resolve()), "--http-worker",
              profile.name, str(remaining)],
             data=payload, timeout=remaining,
-            env={profile.credential_env: key, "LANG": "C.UTF-8"},
+            env=child_env,
         )
         if time.monotonic() - started > timeout_ms / 1000:
             return finish("timeout")

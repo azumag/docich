@@ -7,6 +7,7 @@ next route, and the consumer decides which outcomes may do so.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from types import MappingProxyType
 
 
@@ -17,6 +18,7 @@ class RouteProfile:
     requested_model: str
     credential_env: str
     resolved_models: tuple[str, ...]
+    account_env: str | None = None
 
 
 _PROFILES = MappingProxyType({
@@ -29,6 +31,12 @@ _PROFILES = MappingProxyType({
     "vercel": RouteProfile(
         "vercel", "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
         "typesafe-ai/jev", "DOCICH_JEV_VERCEL_API_KEY", ("typesafe-ai/jev",),
+    ),
+    "clef": RouteProfile(
+        "clef",
+        "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/cloudflare/clef",
+        "clef", "DOCICH_JEV_CLOUDFLARE_API_TOKEN", ("clef",),
+        "DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID",
     ),
 })
 
@@ -53,3 +61,13 @@ def parse_route_chain(value="direct") -> tuple[str, ...]:
     for name in names:
         resolve_route(name)
     return names
+
+
+def resolve_endpoint(profile: RouteProfile, env) -> str:
+    """Fill only a validated account ID; never accept a caller-supplied URL."""
+    if profile.account_env is None:
+        return profile.endpoint
+    account_id = env.get(profile.account_env, "")
+    if type(account_id) is not str or re.fullmatch(r"[0-9a-f]{32}", account_id) is None:
+        raise ValueError("invalid_config")
+    return profile.endpoint.format(account_id=account_id)
