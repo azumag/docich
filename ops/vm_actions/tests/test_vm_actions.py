@@ -134,7 +134,8 @@ class AuthorizeTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr)
 
     def test_configure_jev_route_requires_production_main_and_confirmation(self):
-        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
+                   'disable_jev_route'):
             p=self.run_auth(
                 GITHUB_REPOSITORY_PRIVATE='false',
                 INPUT_OPERATION=op,
@@ -728,10 +729,12 @@ class GatewayTests(unittest.TestCase):
             'args=sys.argv[1:]\n'
             'route = args[args.index("--route")+1] if "--route" in args else ("disable" if "--disable" in args else None)\n'
             'Path(os.environ["SOREN_ROOT"], "observed").write_text(\n'
-            '    "route=%s vercel_key=%s typesafe_key_untouched=%s" % (\n'
+            '    "route=%s vercel_key=%s typesafe_key_untouched=%s clef_account=%s clef_token=%s" % (\n'
             '        route,\n'
             '        "present" if os.environ.get("DOCICH_JEV_VERCEL_API_KEY") else "absent",\n'
             '        "yes" if "TYPESAFE_API_KEY" not in os.environ else "no",\n'
+            '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID") else "absent",\n'
+            '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_API_TOKEN") else "absent",\n'
             '    )\n'
             ')\n'
             'print("configured")\n',
@@ -744,26 +747,87 @@ class GatewayTests(unittest.TestCase):
             'docich':{'production':str(self.doc),'mode':'git',
                       'projections':{'games/soviet_now':str(soren)}}
         }}))
+        account='a'*32
+        token='SYNTHETIC_CLEF_TOKEN'
         # direct: no stdin secret, TYPESAFE_API_KEY (a #678-owned key) never
         # flows through this operation at all.
         p=self.call(f'configure_jev_route_direct docich production {sha}')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
-                         'route=direct vercel_key=absent typesafe_key_untouched=yes')
+                         'route=direct vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent')
         # vercel: stdin carries only the vercel key, withheld from stdout/logs.
         p=self.call(f'configure_jev_route_vercel docich production {sha}',b'SECRET_VERCEL_KEY')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertNotIn(b'SECRET_VERCEL_KEY',p.stdout)
         self.assertEqual((soren/'observed').read_text(),
-                         'route=vercel vercel_key=present typesafe_key_untouched=yes')
+                         'route=vercel vercel_key=present typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent')
         logs=sorted((self.state/'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)
         self.assertTrue(logs)
         self.assertNotIn('SECRET_VERCEL_KEY', logs[-1].read_text())
-        # disable: no stdin secret either.
+        # clef with empty stdin: the reversible switch that reuses the running
+        # chat worker's already-retained pair. Neither half is sent here.
+        p=self.call(f'configure_jev_route_clef docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent')
+        # clef with the one-time provisioning pair: both halves reach the
+        # configurator and neither value reaches stdout or the VM log.
+        p=self.call(f'configure_jev_route_clef docich production {sha}',
+                    ('%s\n%s' % (account, token)).encode())
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertNotIn(token.encode(),p.stdout)
+        self.assertNotIn(account.encode(),p.stdout)
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=present clef_token=present')
+        log_text=''.join(p.read_text() for p in sorted((self.state/'logs').glob('*.log')))
+        self.assertNotIn(token, log_text)
+        self.assertNotIn(account, log_text)
+        # disable: no stdin secret either; the retained Clef pair is not sent.
         p=self.call(f'disable_jev_route docich production {sha}')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
-                         'route=disable vercel_key=absent typesafe_key_untouched=yes')
+                         'route=disable vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent')
+
+    def test_configure_jev_route_clef_rejects_malformed_or_partial_credential_pair(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_jev_route.py').write_text('print("should not run")\n', encoding='utf-8')
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev route configurator'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        account_ref='a'*32
+        cases={
+            'token only': b'SYNTHETIC_CLEF_TOKEN',
+            'account only': account_ref.encode(),
+            'empty token': ('%s\n' % account_ref).encode(),
+            'empty account': b'\nSYNTHETIC_CLEF_TOKEN',
+            'uppercase account': ('%s\n%s' % ('A'*32, 'SYNTHETIC_CLEF_TOKEN')).encode(),
+            'short account': ('%s\n%s' % ('a'*31, 'SYNTHETIC_CLEF_TOKEN')).encode(),
+            'token with newline': ('%s\n%s\n%s' % (account_ref, 'SYNTHETIC', 'CLEF_TOKEN')).encode(),
+            'carriage return': ('%s\n%s' % (account_ref, 'SYNTHETIC\rTOKEN')).encode(),
+            'nul byte': ('%s\n%s' % (account_ref, 'SYNTHETIC\0TOKEN')).encode(),
+            'oversized': account_ref.encode() + b'\n' + b't'*9000,
+        }
+        for label,payload in cases.items():
+            p=self.call(f'configure_jev_route_clef docich production {sha}',payload)
+            self.assertNotEqual(p.returncode,0,label)
+            self.assertIn('configure_jev_route_clef_credential_invalid',p.stderr.decode(),label)
+        # A rejected payload must not have run the configurator at all.
+        self.assertFalse((soren/'observed').exists())
+
+    def test_configure_jev_route_clef_is_production_only(self):
+        p=self.call(f'configure_jev_route_clef docich preview {"0"*40}')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('configure_jev_route_production_only',p.stderr.decode())
 
     def test_configure_jev_route_direct_rejects_unexpected_stdin_payload(self):
         soren=self.base/'soren'; soren.mkdir()
@@ -962,12 +1026,14 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_jev_route_configuration_uses_environment_secret_and_fixed_gateway_operation(self):
         text=WF.read_text()
-        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
+                   'disable_jev_route'):
             self.assertIn(op,text)
         self.assertIn('DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         self.assertIn('printf \'%s\' "$DOCICH_JEV_VERCEL_API_KEY" | ssh',text)
         self.assertIn('"configure_jev_route_direct docich production $SHA"',text)
         self.assertIn('"configure_jev_route_vercel docich production $SHA"',text)
+        self.assertIn('"configure_jev_route_clef docich production $SHA"',text)
         self.assertIn('"disable_jev_route docich production $SHA"',text)
         self.assertNotIn('VM_COMMAND: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         # The direct route never binds or sends #678's own TYPESAFE_API_KEY
@@ -978,6 +1044,26 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('TYPESAFE_API_KEY: ${{',block)
         self.assertNotIn('"$TYPESAFE_API_KEY"',block)
         self.assertIn('< /dev/null ssh',block)
+
+    def test_clef_route_step_sends_both_secrets_or_none_and_keeps_jev_reversible(self):
+        # #2301: the Clef switch is explicit and reversible. When the dedicated
+        # pair is configured it is the only stdin payload; when it is absent the
+        # step must still run with empty stdin so the worker's already-retained
+        # Clef credentials are reused instead of demanding re-entry.
+        text=WF.read_text()
+        start=text.index('Route Jev classification through Cloudflare Workers AI (clef)')
+        end=text.index('Disable docich Jev route delegation',start)
+        block=text[start:end]
+        self.assertIn('DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID }}',block)
+        self.assertIn('DOCICH_JEV_CLOUDFLARE_API_TOKEN: ${{ secrets.DOCICH_JEV_CLOUDFLARE_API_TOKEN }}',block)
+        self.assertIn('printf \'%s\\n%s\' "$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID" "$DOCICH_JEV_CLOUDFLARE_API_TOKEN" | ssh',block)
+        self.assertIn('< /dev/null ssh',block)
+        self.assertIn('"configure_jev_route_clef docich production $SHA"',block)
+        # Never bind either Clef half as a generic command channel, and never
+        # let the JEV-direct key or the Vercel key ride the Clef step.
+        self.assertNotIn('VM_COMMAND',block)
+        self.assertNotIn('TYPESAFE_API_KEY',block)
+        self.assertNotIn('DOCICH_JEV_VERCEL_API_KEY',block)
 
     def test_reconcile_uses_dedicated_narrow_operation_without_exec_shell(self):
         # Issue #225: the reviewed pre-synced reconcile must not ride the

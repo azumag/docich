@@ -1539,18 +1539,22 @@ def _collect_workers(soren, now):
 
 
 # Fixed name allowlist (#882): only these exact variable NAMES are ever read
-# from a live worker's environ. Values for the two credential names never
-# leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
-# converts them to presence-only before this module ever formats output.
+# from a live worker's environ. Values for the credential names never leave
+# _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
+# converts them to presence/shape-only before this module ever formats output.
 # These are exactly the names docich.comment_classifier reads:
 # COMMENT_CLASSIFIER_BACKEND (plain enum gate, never a credential, so its
 # value is also reported as-is below) and DOCICH_JEV_ROUTE plus that route's
-# own credential. The retired DOCICH_SEMANTIC_BACKEND is no longer read by
-# anything, so it is deliberately not read here either.
+# own credential -- including Clef's account/token pair (#2301), without which
+# a selected clef route cannot reach Workers AI at all. The retired
+# DOCICH_SEMANTIC_BACKEND is no longer read by anything, so it is deliberately
+# not read here either.
 SEMANTIC_DECISION_ENV_ALLOWLIST = (
     "DOCICH_JEV_ROUTE",
     "TYPESAFE_API_KEY",
     "DOCICH_JEV_VERCEL_API_KEY",
+    "DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID",
+    "DOCICH_JEV_CLOUDFLARE_API_TOKEN",
     "COMMENT_CLASSIFIER_BACKEND",
 )
 COMMENT_CLASSIFIER_BACKEND_STR_MAX = 64

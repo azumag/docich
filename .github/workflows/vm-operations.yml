@@ -13,7 +13,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, configure_jev_route_clef, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]
       target:
         description: VM target
         required: true
@@ -1085,6 +1085,33 @@ jobs:
           # The stdin payload is only the Vercel secret. The VM gateway loads
           # the configurator from this exact reviewed SHA; no caller shell is run.
           printf '%s' "$DOCICH_JEV_VERCEL_API_KEY" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_vercel docich production $SHA"
+
+      - name: Route Jev classification through Cloudflare Workers AI (clef)
+        if: ${{ steps.auth.outputs.operation == 'configure_jev_route_clef' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID }}
+          DOCICH_JEV_CLOUDFLARE_API_TOKEN: ${{ secrets.DOCICH_JEV_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # The pair is deliberately optional. With neither environment secret
+          # set, empty stdin asks the configurator to reuse the Clef credentials
+          # the running chat worker already retains -- the reversible switch
+          # that needs no re-entry. When either is set, both must be, and the
+          # only payload on stdin is that pair: a half-provisioned pair is
+          # never combined with the worker's retained other half.
+          if [[ -n "$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID" || -n "$DOCICH_JEV_CLOUDFLARE_API_TOKEN" ]]; then
+            [[ -n "$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID" && -n "$DOCICH_JEV_CLOUDFLARE_API_TOKEN" ]]
+            # The VM gateway loads the configurator from this exact reviewed
+            # SHA; no caller shell is run and no secret is printed.
+            printf '%s\n%s' "$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID" "$DOCICH_JEV_CLOUDFLARE_API_TOKEN" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_clef docich production $SHA"
+          else
+            < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_clef docich production $SHA"
+          fi
 
       - name: Disable docich Jev route delegation
         if: ${{ steps.auth.outputs.operation == 'disable_jev_route' }}

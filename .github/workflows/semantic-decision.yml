@@ -17,6 +17,7 @@ on:
       - 'tests/fixtures/semantic_choice_direct.json'
       - 'tests/fixtures/jev_direct_golden.json'
       - 'tests/test_jev_direct_golden.py'
+      - 'tests/test_clef_switching.py'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
@@ -38,6 +39,7 @@ on:
       - 'tests/fixtures/semantic_choice_direct.json'
       - 'tests/fixtures/jev_direct_golden.json'
       - 'tests/test_jev_direct_golden.py'
+      - 'tests/test_clef_switching.py'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
@@ -86,6 +88,7 @@ jobs:
             --root-path 'tests/fixtures/semantic_choice_direct.json' \
             --root-path 'tests/fixtures/jev_direct_golden.json' \
             --root-path 'tests/test_jev_direct_golden.py' \
+            --root-path 'tests/test_clef_switching.py' \
             --root-path 'requirements-test.txt' \
             --root-path '.github/workflows/semantic-decision.yml' \
             --root-path '.github/scripts/soren_gitlink_gate.py' \
@@ -113,7 +116,7 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Core without any game checkout
-        run: python3 -m pytest -q tests/test_semantic_decision.py tests/test_semantic_decision_diagnostics.py
+        run: python3 -m pytest -q tests/test_semantic_decision.py tests/test_semantic_decision_diagnostics.py tests/test_clef_switching.py
       - name: docich-owned comment classifier without any game checkout
         run: python3 -m pytest -q tests/test_comment_classifier.py tests/test_comment_classifier_screen.py tests/test_comment_classifier_active_game.py tests/test_jev_direct_golden.py tests/test_comment_classifier_canary.py
       - name: Check out the reviewed Soren delegation contract
