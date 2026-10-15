@@ -646,7 +646,7 @@ def _month_chikujou(screen, mem, shop):
                         'chikujou_identity': run_identity(mem.get('_run_identity')),
                         'chikujou_chapter': mem.get('chapter')}
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
-            observed_metric={'reserve': reserve, 'tried': list(tried)},
+            observed_metric={'reserve': reserve, 'tried': tried},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
     return [pad('a')]
 
@@ -677,7 +677,7 @@ def _chikujou_continue_list(screen, mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     key = sub.get('key')
     header = screen.header or {}
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())}
+    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter'), ())}
     rows = sorted((x, y, word) for x, y, word in _options(screen) if word in known)
     if (identity is None or identity != run_identity(sub.get('chikujou_identity'))
             or sub.get('chikujou_chapter') != mem.get('chapter')
@@ -1251,9 +1251,6 @@ def month_sub_step(screen: Screen, mem):
                         and type(gold) is int and before - gold == RECRUIT_COST)
         if (paid and sub.get('aborted') and not sub.get('paid_receipt_recovered')
                 and not sub.get('payment_interrupted')):
-            # v16 may already have entered the old 8-observation abort. The
-            # measured paid candidate screen is new progress, so recover once;
-            # repeated/unknown screens can never reset this second bound again.
             # g662 1-10 02:41: うむッ paid 50G (144->94G), the next fade had no
             # header, the unread gold was judged "no spare cash" and aborted;
             # the trio's 「おめにかかれて こうえいです」 introduction (not the
@@ -1329,7 +1326,7 @@ def month_sub_step(screen: Screen, mem):
                 and backs % 2 == 0 and backs <= MONTH_SUB_ABORT_B_LIMIT + 2 * RECRUIT_CANDIDATE_LIMIT):
             if not sub.get('abort_text_advance'):
                 sub['abort_text_advance'] = True
-                _record(mem, 'abort_text_advance', screen=kind,
+                _record(mem, 'month_sub_abort_text_advance', screen=kind,
                         observed_metric={'backs': backs, 'text': screen.text[-40:]},
                         reason='離脱のBで進まない会話文のため、カーソル・確認のない文だけAで送る')
             return [pad('a')]

@@ -24,8 +24,9 @@ def refresh_soldier_egg_deferral(mem, shop, header):
     """Replan one unpaid refill after a known skip; never renew its budget."""
     # Local import keeps the budget implementation in economy and avoids an
     # import cycle: economy calls this only after its module is initialized.
-    from .economy import (_month_key, _soldier_count_current, _soldier_count_scope,
-                          _soldier_spendable, SOLDIER_ENOUGH)
+    from .economy import (_egg_recovery_targets, _month_key, _soldier_count_current,
+                          _soldier_count_scope, _soldier_spendable, SOLDIER_ENOUGH)
+    from ..os_layer.roster import completed_survey
 
     state = shop.get(DEFERRAL_KEY)
     if isinstance(state, dict):
@@ -41,6 +42,10 @@ def refresh_soldier_egg_deferral(mem, shop, header):
             or shop.get('egg') != 'skipped' or mem.get('month_sub')
             or shop.get('soldier_receipt')
             or shop.get('recruit') in ('opened', 'unverified')):
+        return False
+    # A complete roster with no remaining targets has its own reconciliation
+    # and pre-recruit probe. Do not relabel it as an unaffordable recovery.
+    if completed_survey(mem) is not None and not _egg_recovery_targets(mem):
         return False
     check = mem.get('army_count_check')
     if (isinstance(check, dict) and check.get('scope') == scope

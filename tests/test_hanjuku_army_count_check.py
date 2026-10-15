@@ -363,29 +363,32 @@ def test_orchestrator_does_not_fallback_to_a_on_a_frozen_unread_count_check():
 
 
 def test_skipped_egg_priority_does_not_cancel_the_measured_zero_army_refill():
-    # g747 2-4 (2026-10-13 18:40-19:50): an egg recovery skipped as
-    # unaffordable zeroed the refill (soldiers_done) while the zero-army plan
-    # re-armed it on the next frame, so the bot walked to も〜おしまい!, then
-    # refused its own exit for an hour (#2116). The zero-army plan already
-    # holds the recovery reserve, so it must win and the refill must open.
+    # g747 2-4 (#2116): a skipped recovery must not zero/rearm the refill
+    # every frame and loop through month exit. Owner (2026-10-15): once
+    # recovery is skipped, its hold may fund necessary troops, not only the
+    # spare cash left after holding recovery money that cannot be spent.
     mem=memory()
     p.month_step(screen(),mem)
     s=observe_count(mem,0)
     p.month_step(s,mem)
     mem['shop'].update(egg_priority=True, egg='skipped', reserve=20)
     assert p.month_step(screen(),mem)==[p.pad('a')]
-    # 72G minus the full 30G wage floor and the 20G recovery reserve.
-    assert mem['shop']['soldiers']==22 and mem['shop']['soldiers_done'] is False
+    assert mem['shop']['soldiers']==42 and mem['shop']['soldiers_done'] is False
     assert not mem.get('month_exit')
-    assert mem['shop']['reserve']==20       # the recovery money stays held
+    assert mem['shop']['reserve']==0
+    assert mem['shop']['egg']=='skipped' and mem['soldiers_seen']==0
+    assert not mem['shop'].get('soldier_receipt')
 
 
-def test_skipped_egg_priority_still_preserves_money_without_a_measured_zero_army():
+def test_skipped_egg_priority_refills_a_measured_positive_but_insufficient_army():
+    # The latest owner rule applies to ten soldiers too, not only zero.
     mem=memory()
     p.month_step(screen(),mem)
     s=observe_count(mem,10)
     p.month_step(s,mem)
     mem['shop'].update(soldiers=30, soldiers_done=False, soldiers_recalculated=True,
                        egg_priority=True, egg='skipped', reserve=20)
-    p.month_step(screen(),mem)
-    assert mem['shop']['soldiers']==0 and mem['shop']['soldiers_done'] is True
+    assert p.month_step(screen(),mem)==[p.pad('a')]
+    assert mem['shop']['soldiers']==40 and mem['shop']['soldiers_done'] is False
+    assert mem['shop']['reserve']==0 and mem['shop']['egg']=='skipped'
+    assert mem['soldiers_seen']==10 and not mem['shop'].get('soldier_receipt')
