@@ -90,6 +90,7 @@ def test_tsuitate_view_factory_uses_generation_owned_loopback_page(tmp_path, mon
     assert adapter._game_command() == [
         sys.executable, "-m", "docich.tsuitate_view",
         "--port", "8804",
+        "--state-dir", str(g.state_dir),
         "--runtime-id", spec.runtime_id,
         "--generation", str(spec.generation),
         "--lease-id", spec.lease_id,

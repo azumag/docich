@@ -334,6 +334,8 @@ def summary_for_bot(review: dict, *, color: str) -> dict:
 #: corner records it so a silent fallback is diagnosable without a log.
 REVIEW_FAILURES = frozenset({
     "ok", "read-failed", "verify-failed", "invalid-color", "invalid-game-id",
+    #: The move list did not reproduce the site's final position, so no board.
+    "board-mismatch",
 })
 
 
@@ -386,3 +388,34 @@ def read_summary(game_id: str, terminal: dict, *, color: str | None = None,
                  opener=None) -> dict | None:
     """Read, verify and summarize the public replay, or ``None``."""
     return read_summary_detail(game_id, terminal, color=color, opener=opener)[0]
+
+
+def read_kifu_detail(game_id: str, terminal: dict, *, color: str | None = None,
+                     opener=None) -> tuple[dict | None, str]:
+    """Read and verify the replay, then rebuild its kifu and boards.
+
+    Same identity rules as :func:`read_summary_detail`; the kifu is only
+    returned when ``shogi_board.reconstruct`` reproduced the site's own final
+    position, so a board can never be shown from an unverified move list.
+    """
+    if not isinstance(game_id, str) or not GAME_ID.fullmatch(game_id):
+        return None, "invalid-game-id"
+    try:
+        review = read_replay(game_id, opener=opener)
+    except (ReviewError, KeyError, TypeError, ValueError):
+        return None, "read-failed"
+    settled = dict(terminal) if isinstance(terminal, dict) else {}
+    settled["gameId"] = game_id
+    resolved = color if color in COLORS else _infer_color(review, settled.get("outcome"))
+    if resolved not in COLORS:
+        return None, "invalid-color"
+    if not verify(review, settled, color=resolved):
+        return None, "verify-failed"
+    try:
+        from .shogi_board import reconstruct
+    except ImportError:  # pragma: no cover - the module ships with the package
+        return None, "read-failed"
+    kifu = reconstruct(review["moves"], review.get("finalSfen"))
+    if kifu is None:
+        return None, "board-mismatch"
+    return {"kifu": kifu, "color": resolved, "review": review}, "ok"

@@ -200,6 +200,65 @@ def fallback_text(summary, terminal) -> str:
 MODEL_FAILURES = ("none", "unsafe", "gate", "timeout", "rate_limit", "provider", "exception")
 
 
+#: One commentary line per stretch of the kifu.  Short by design: the display
+#: advances through the stretch while the line is on air.
+CHUNK_MIN_CHARS = 20
+CHUNK_LABEL = REVIEW_LABEL
+CHUNK_RULES = (
+    "条件: 与えられた指し手だけを使う / 駒の種類・捕獲・盤面・形勢を推測して書かない / "
+    "相手の心中や隠れた情報に触れない / 絵文字・記号・箇条書き・括弧書き・URLを使わない / "
+    "話し言葉の日本語で2文、120字以内。\n"
+    "出力は読み上げる本文だけにしてください。前置きや説明は書かないでください。"
+)
+
+
+def build_chunk_prompt(facts: str) -> str:
+    return (
+        "あなたは将棋配信の司会です。いま「衝立将棋」（相手の駒が見えない状態で指す将棋）の"
+        "1局を、公開された棋譜に沿って振り返っています。次の区間を解説してください。\n"
+        + facts + "\n" + CHUNK_RULES
+    )
+
+
+def sanitize_chunk(text) -> str | None:
+    """One short spoken line for a stretch, or ``None`` when unusable."""
+    if not isinstance(text, str):
+        return None
+    value = " ".join(text.replace("　", " ").split()).strip("「」『』\"' ")
+    if not CHUNK_MIN_CHARS <= len(value) <= MAX_CHUNK_SPEECH or _UNSAFE.search(value):
+        return None
+    if len(_KANA_KANJI.findall(value)) < len(value) * 0.5:
+        return None
+    if not _SENTENCE.search(value):
+        return None
+    return value
+
+
+def chunk_commentary(g, agents: str, moves, start: int, end: int, *, generate_fn=None) -> tuple[str, str]:
+    """``(text, kind)`` for one stretch: model prose, else the fixed text."""
+    from .tsuitate_show import chunk_facts, fallback_chunk_text
+
+    fallback = fallback_chunk_text(moves, start, end)
+    if not agents:
+        return fallback, "fallback"
+    facts = chunk_facts(moves, start, end)
+    try:
+        if generate_fn is not None:
+            text = sanitize_chunk(generate_fn(g, agents, facts))
+        else:
+            from .ai_generate import run_prompt
+
+            env = {**os.environ, "DOCICH_ALLOW_REAL_AI": "1"}
+            result = run_prompt(
+                g, label=CHUNK_LABEL, agents=agents, prompt_text=build_chunk_prompt(facts),
+                timeout=GENERATE_TIMEOUT_S, timeout_sec=float(GENERATE_TIMEOUT_S + 10), env=env,
+            )
+            text = sanitize_chunk(result.output) if result.returncode == 0 else None
+    except Exception:
+        text = None
+    return (text, "ai") if text else (fallback, "fallback")
+
+
 def _model_failure(failure_kind) -> str:
     kind = failure_kind if isinstance(failure_kind, str) else ""
     return {"gate_giveup": "gate", "timeout": "timeout",

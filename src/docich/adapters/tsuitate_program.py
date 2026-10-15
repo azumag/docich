@@ -42,6 +42,7 @@ class TsuitateProgramViewAdapter(ProgramViewAdapter):
         return [
             sys.executable, "-m", "docich.tsuitate_view",
             "--port", str(self.dashboard_port),
+            "--state-dir", str(self.g.state_dir),
             "--runtime-id", self.spec.runtime_id,
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
