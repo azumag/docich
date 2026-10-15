@@ -34,7 +34,7 @@ MAX_SFEN = 200
 GAME_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 #: USI square pair with an optional promotion, or a drop (``P*5b``).
 USI = re.compile(r"(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])\Z")
-SFEN = re.compile(r"[A-Za-z0-9+/ ]{1,%d}\Z" % MAX_SFEN)
+SFEN = re.compile(r"[A-Za-z0-9+/ \-]{1,%d}\Z" % MAX_SFEN)
 NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 REASON = re.compile(r"[a-z_]{1,32}\Z")
 SITE_RESULTS = {"sente_win", "gote_win", "draw", "aborted"}

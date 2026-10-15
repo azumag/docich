@@ -18,6 +18,9 @@ non-empty ``[tsuitate_corner] review_agents`` chain is configured, the shared LL
 dispatch turns those facts into natural prose; any failure, timeout or unsafe
 output falls back to the fixed text below.  The model is never given the raw
 board and is instructed not to invent pieces, captures or hidden information.
+The per-stretch show uses deterministic board analysis instead of free prose.
+Its model call may only select a supplied focal point; even provider outages
+retain the explanation and comparison (see ``tsuitate_analysis``).
 The shared dispatch label starts with ``RADIO`` like every other corner closing,
 so a busy improvement lane can make the shared gate wait; the wait is bounded by
 this module's overall budget and then falls back to the fixed text.
@@ -27,6 +30,7 @@ fails the corner or the game switch.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -200,51 +204,52 @@ def fallback_text(summary, terminal) -> str:
 MODEL_FAILURES = ("none", "unsafe", "gate", "timeout", "rate_limit", "provider", "exception")
 
 
-#: One commentary line per stretch of the kifu.  Short by design: the display
-#: advances through the stretch while the line is on air.
-CHUNK_MIN_CHARS = 20
+#: The model chooses a focal point, never supplies unchecked board claims.
 CHUNK_LABEL = REVIEW_LABEL
 CHUNK_RULES = (
-    "条件: 与えられた指し手だけを使う / 駒の種類・捕獲・盤面・形勢を推測して書かない / "
-    "相手の心中や隠れた情報に触れない / 絵文字・記号・箇条書き・括弧書き・URLを使わない / "
-    "話し言葉の日本語で2文、120字以内。\n"
-    "出力は読み上げる本文だけにしてください。前置きや説明は書かないでください。"
+    "候補は公開棋譜と駒の動きから検証した感想戦です。狙い、利点と代償、比較候補の説明が"
+    "視聴者に最も役立つ焦点を1つ選んでください。指し手の列挙はしません。"
+    "公開後の盤面と対局中に見えた情報は区別します。候補は最善手や形勢評価ではありません。"
+    '出力は候補のfocusを選んだJSONだけです。例: {"focus": 3}。本文や追加情報は書かないでください。'
 )
 
 
 def build_chunk_prompt(facts: str) -> str:
     return (
-        "あなたは将棋配信の司会です。いま「衝立将棋」（相手の駒が見えない状態で指す将棋）の"
-        "1局を、公開された棋譜に沿って振り返っています。次の区間を解説してください。\n"
+        "あなたは衝立将棋の感想戦の編集者です。次の区間の転機を選んでください。\n"
         + facts + "\n" + CHUNK_RULES
     )
 
 
-def sanitize_chunk(text) -> str | None:
-    """One short spoken line for a stretch, or ``None`` when unusable."""
-    if not isinstance(text, str):
+def select_chunk(text, cards) -> str | None:
+    """Only a supplied card can go on air, never the model's arbitrary prose."""
+    if not isinstance(text, str) or len(text) > 100:
         return None
-    value = " ".join(text.replace("　", " ").split()).strip("「」『』\"' ")
-    if not CHUNK_MIN_CHARS <= len(value) <= MAX_CHUNK_SPEECH or _UNSAFE.search(value):
+    try:
+        selection = json.loads(text)
+    except ValueError:
         return None
-    if len(_KANA_KANJI.findall(value)) < len(value) * 0.5:
+    if (not isinstance(selection, dict) or set(selection) != {"focus"}
+            or type(selection["focus"]) is not int):
         return None
-    if not _SENTENCE.search(value):
-        return None
-    return value
+    return next((card["text"] for card in cards if card["focus"] == selection["focus"]), None)
 
 
 def chunk_commentary(g, agents: str, moves, start: int, end: int, *, generate_fn=None) -> tuple[str, str]:
-    """``(text, kind)`` for one stretch: model prose, else the fixed text."""
-    from .tsuitate_show import chunk_facts, fallback_chunk_text
+    """Select and render grounded analysis; outages retain the full explanation."""
+    from .tsuitate_analysis import UNAVAILABLE, analysis_cards
+    from .tsuitate_show import chunk_facts
 
-    fallback = fallback_chunk_text(moves, start, end)
+    cards = analysis_cards(moves, start, end)
+    if not cards:
+        return UNAVAILABLE, "fallback"
+    fallback = cards[0]["text"]
     if not agents:
         return fallback, "fallback"
-    facts = chunk_facts(moves, start, end)
+    facts = chunk_facts(moves, start, end, cards=cards)
     try:
         if generate_fn is not None:
-            text = sanitize_chunk(generate_fn(g, agents, facts))
+            text = select_chunk(generate_fn(g, agents, facts), cards)
         else:
             from .ai_generate import run_prompt
 
@@ -253,7 +258,7 @@ def chunk_commentary(g, agents: str, moves, start: int, end: int, *, generate_fn
                 g, label=CHUNK_LABEL, agents=agents, prompt_text=build_chunk_prompt(facts),
                 timeout=GENERATE_TIMEOUT_S, timeout_sec=float(GENERATE_TIMEOUT_S + 10), env=env,
             )
-            text = sanitize_chunk(result.output) if result.returncode == 0 else None
+            text = select_chunk(result.output, cards) if result.returncode == 0 else None
     except Exception:
         text = None
     return (text, "ai") if text else (fallback, "fallback")

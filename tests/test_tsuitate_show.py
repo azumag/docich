@@ -53,13 +53,14 @@ def test_chunk_ranges_cover_every_move_with_a_bounded_count():
         show.chunk_ranges(-1)
 
 
-def test_fallback_chunk_text_reads_only_reviewed_facts():
+def test_fallback_chunk_text_explains_a_turning_point_and_a_comparison():
     text = show.fallback_chunk_text(_kifu(), 1, 5)
 
-    assert text.startswith("1手目から5手目です。")
-    assert "▲7六歩" in text and "△3四歩" in text
-    assert "角を取ります" in text or "角成" in text
-    assert "4秒考えました" in text  # 4200ms is the longest think in the stretch
+    assert "焦点は3手目▲2二角成" in text
+    assert "4手目△同銀で取り返され" in text
+    assert "交換の代償" in text and "比較候補" in text
+    assert "最善手は判定していません" in text
+    assert "▲7六歩、△3四歩" not in text
     assert len(text) <= show.MAX_CHUNK_SPEECH
     assert show.fallback_chunk_text(_kifu(), 9, 12) == ""
 
@@ -68,8 +69,9 @@ def test_chunk_facts_are_the_models_only_input():
     facts = show.chunk_facts(_kifu(), 1, 5)
 
     assert "対象: 1手目から5手目まで" in facts
-    assert "指し手: ▲7六歩、△3四歩、▲2二角成、△同銀、▲5二角打" in facts
-    assert "長考: 5手目4秒" in facts
+    assert '"focus": 3' in facts
+    assert "比較候補" in facts and "交換の代償" in facts
+    assert "当時の見え方や最善手は判定していません" in facts
     assert "board" not in facts and "finalSfen" not in facts
 
 

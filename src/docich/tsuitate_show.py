@@ -10,7 +10,7 @@ payload the broadcast view renders and the pacing the corner drives:
 - :func:`chunk_ranges` splits the game into at most ``MAX_CHUNKS`` stretches so a
   long game still gets a bounded number of commentary lines.
 - :func:`fallback_chunk_text` is the deterministic commentary for one stretch
-  (captures, promotions, drops, long thinks), used when the model is not
+  (a focal move, its tradeoffs and a checked comparison), used when the model is not
   configured or fails.
 - :func:`write_show` / :func:`read_show` are the only file access: one bounded,
   atomic JSON in the corner's state directory, read by the loopback view for the
@@ -71,49 +71,23 @@ def _ms(move) -> int:
 
 
 def fallback_chunk_text(moves, start: int, end: int) -> str:
-    """Deterministic commentary for one stretch of the kifu.
+    """Use the same grounded analysis even when the language model is unavailable."""
+    from .tsuitate_analysis import UNAVAILABLE, analysis_cards
 
-    Only facts the reconstruction proved: the moves, the pieces that moved,
-    captures, promotions, drops and the thinking time the site published.
-    """
-    window = [move for move in moves if start <= move["n"] <= end]
-    if not window:
+    if not any(start <= move["n"] <= end for move in moves):
         return ""
-    parts = [f"{start}手目から{end}手目です。"]
-    for move in window:
-        line = move["notation"]
-        if move.get("captured"):
-            line += f"、{move['captured']}を取ります"
-        elif move.get("promote"):
-            line += "、成ります"
-        elif move.get("drop"):
-            line += "、持ち駒を打ちます"
-        parts.append(line + "。")
-    slowest = max(window, key=_ms)
-    if _ms(slowest) >= 3000:
-        parts.append(f"{slowest['n']}手目で{_ms(slowest) // 1000}秒考えました。")
-    captures = sum(1 for move in window if move.get("captured"))
-    if captures >= 3:
-        parts.append(f"この区間だけで{captures}枚の駒が入れ替わりました。")
-    return "".join(parts)[:MAX_CHUNK_SPEECH]
+    cards = analysis_cards(moves, start, end)
+    return cards[0]["text"] if cards else UNAVAILABLE
 
 
-def chunk_facts(moves, start: int, end: int) -> str:
-    """The reviewed facts of one stretch, as the model's only input."""
-    window = [move for move in moves if start <= move["n"] <= end]
-    lines = [f"対象: {start}手目から{end}手目まで"]
-    lines.append("指し手: " + "、".join(move["notation"] for move in window))
-    for move in window:
-        if move.get("captured"):
-            lines.append(f"{move['n']}手目: {move['notation']}で{move['captured']}を取る")
-        if move.get("promote"):
-            lines.append(f"{move['n']}手目: {move['notation']}で成る")
-        if move.get("drop"):
-            lines.append(f"{move['n']}手目: {move['notation']}で持ち駒を打つ")
-    slow = [move for move in window if _ms(move) >= 2000]
-    if slow:
-        lines.append("長考: " + "、".join(f"{move['n']}手目{_ms(move) // 1000}秒" for move in slow[:4]))
-    return "\n".join(lines)
+def chunk_facts(moves, start: int, end: int, *, cards=None) -> str:
+    """Bounded explanatory choices; no names, raw board or invented variations."""
+    from .tsuitate_analysis import analysis_cards
+
+    if cards is None:
+        cards = analysis_cards(moves, start, end)
+    return (f"対象: {start}手目から{end}手目まで\n"
+            + json.dumps(cards, ensure_ascii=False))
 
 
 def build_show(moves, *, color: str, opponent=None, result=None, request_id=None,

@@ -1255,3 +1255,26 @@ def test_review_show_is_bounded_and_never_fails_the_corner(tmp_path):
     broken._save(state)
     broken._announce_review_once(broken._read_state())
     assert json.loads(broken.path.read_text())["review"]["show"] is None
+
+
+def test_review_show_publishes_and_speaks_analysis_without_a_model(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_game_id="fixtureGame01", beta_color="sente")
+    spoken = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), audio_enabled=True, clock=lambda: 1000.0,
+        sleep=lambda *_: None, read_kifu=lambda *a, **k: _show_kifu(),
+        speak_chunk=lambda g, text, request_id: spoken.append(text),
+        wait_boundary=lambda g: "quiet",
+    )
+    manager._save(state)
+    result = manager._run_review_show(state, _settled_result(), None, "req-analysis")
+    payload = show.read_show(g.state_dir)
+    assert result["commentary_fallback"] == 1 and result["commentary_ai"] == 0
+    assert payload["done"] and payload["index"] == 5
+    assert spoken == [payload["commentary"]["1"]]
+    assert "交換の代償" in spoken[0] and "比較候補" in spoken[0]
+    assert "最善手は判定していません" in spoken[0]

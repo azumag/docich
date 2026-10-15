@@ -308,3 +308,25 @@ def test_review_never_persists_the_move_list():
     for forbidden in ("import os", "json.dump", "atomic_write", "os.replace",
                       "Path(", "state_dir", "write_text", "mkdir", "json.dump("):
         assert forbidden not in source, forbidden
+
+
+def test_empty_hands_public_replay_reaches_grounded_analysis():
+    from docich import shogi_board as sb
+    from docich import tsuitate_narration as narration
+
+    moves = [{"usi": "7g7f", "by": "sente", "ms": 120, "foulsBefore": 0},
+             {"usi": "3c3d", "by": "gote", "ms": 300, "foulsBefore": 0}]
+    board, _, hands = sb.parse_sfen(sb.STANDARD_START)
+    for move in moves:
+        sb.apply_move(board, hands, move["usi"], move["by"])
+    final = sb.to_sfen(board, hands, "b", 3)
+    assert " - " in final
+    payload = _fixture(moves=moves, final_sfen=final)
+    detail, failure = review.read_kifu_detail(
+        GAME_ID, _terminal(outcome="loss", moveNumber=2), color="sente",
+        opener=_Opener(json.dumps(payload).encode()),
+    )
+    assert failure == "ok" and detail is not None
+    text, kind = narration.chunk_commentary(None, "", detail["kifu"]["moves"], 1, 2)
+    assert kind == "fallback"
+    assert "角の通り道" in text and "比較候補" in text
