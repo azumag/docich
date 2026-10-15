@@ -31,13 +31,14 @@ from docich.game_switch import GameSwitchStore, RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.nethack_tiles_supervisor import browser_binary  # noqa: E402
 from docich.tmux import Tmux, TmuxOwnership  # noqa: E402
+from nethack_gui_failure_diagnostics import readiness_with_diagnostics  # noqa: E402
 
 
 GUI_BINARIES = ("Xvfb", "xdotool", "tmux", "ffplay", "xterm")
 GUI_AVAILABLE = all(shutil.which(name) for name in GUI_BINARIES) and browser_binary() is not None
 
 
-def _visible_window_summary(display: str | None) -> dict:
+def _visible_window_summary(display: str | None, *, counts_only: bool = False) -> dict:
     """Return bounded, fixture-only X11 titles/classes for smoke failures."""
     xdotool = shutil.which("xdotool")
     if not xdotool or not isinstance(display, str) or not display.startswith(":"):
@@ -53,6 +54,8 @@ def _visible_window_summary(display: str | None) -> dict:
     except (OSError, subprocess.TimeoutExpired):
         return {"available": False}
     ids = found.stdout.split() if found.returncode == 0 else []
+    if counts_only:
+        return {"available": True, "visible_count": min(len(ids), 16)}
     windows = []
     for window_id in ids[:16]:
         details = {}
@@ -227,7 +230,10 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
                 # The supervisor and browser must be ready while canonical
                 # state still says idle; otherwise startup would deadlock on
                 # the coordinator's later ready commit.
-                adapter.readiness(time.monotonic() + 30, None)
+                readiness_with_diagnostics(
+                    adapter, time.monotonic() + 30, None, runtime_dir, display_name,
+                    lambda display: _visible_window_summary(display, counts_only=True),
+                )
                 manifest_path = runtime_dir / "nethack_tiles.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 try:
@@ -362,3 +368,4 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
