@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 
+from .tsuitate_show import read_show, show_view
 from .tsuitate_beta_control import (
     ControlError,
     call_beta_control,
@@ -53,6 +54,7 @@ h1{font-size:38px;line-height:1.05;margin:0 0 7px}.sub{color:#aeb7c2;font-size:1
 <div class="panel"><span class="k">対局状態</span><br><span id="game" class="v">-</span></div>
 <div class="note">owner側ではBot自身のPlayerViewを検証済みHMAC statusとして保持できますが、このbroadcast viewには駒配置・持ち駒・raw checkpoint・公開棋譜由来の盤面を渡しません。</div>
 </section>
+<div id="kifu" class="kifu"></div>
 </main>
 <script>
 const labels={stopped:"待機中",queued:"対戦相手を待っています",playing:"対局中",draining:"終局後に停止します",finished:"対局終了",queue_timeout:"対戦相手が見つかりませんでした",paused:"結果確認待ち"};
@@ -78,17 +80,80 @@ function apply(d){
   document.getElementById("rv-moves").textContent=String(r.moveNumber)+"手まで";
  }
 }
-async function refresh(){try{const r=await fetch("/api/tsuitate",{cache:"no-store"});apply(await r.json());}catch(e){apply({ok:false});}}
+const PIECE={P:"歩",L:"香",N:"桂",S:"銀",G:"金",B:"角",R:"飛",K:"玉"};
+const PROM={P:"と",L:"成香",N:"成桂",S:"成銀",B:"馬",R:"龍",K:"玉"};
+const WINDOW=12;
+let kifu=null, kifuLease=null;
+function square(code){
+ if(code===".."||code.length<2)return '<div class="sq"></div>';
+ const ch=code[1],role=ch.toUpperCase(),gote=ch!==role;
+ const name=code[0]==="+"?(PROM[role]||"?"):(PIECE[role]||"?");
+ return '<div class="sq'+(gote?" gote":"")+'">'+name+'</div>';
+}
+function currentComment(index){
+ if(!kifu||!kifu.commentary)return "";
+ const keys=Object.keys(kifu.commentary).map(Number).filter(n=>n<=index).sort((a,b)=>a-b);
+ return keys.length?kifu.commentary[String(keys[keys.length-1])]:"";
+}
+function renderKifu(show){
+ if(!kifu){document.getElementById("kifu").innerHTML="";return;}
+ const index=show.index|0,moves=kifu.moves||[];
+ const board=index>0&&moves[index-1]&&moves[index-1].board?moves[index-1].board:null;
+ let cells="";
+ if(board){for(let i=0;i<81;i++)cells+=square(board.slice(2*i,2*i+2));}
+ const from=Math.max(1,index-WINDOW),to=Math.min(moves.length,index+WINDOW);
+ let list="";
+ for(const m of moves){if(m.n<from||m.n>to)continue;list+='<div class="mv'+(m.n===index?" cur":"")+'">'+m.n+"."+m.notation+"</div>";}
+ const r=show.result||{};
+ const head="<div class="head"><b>AI衝立将棋 感想戦</b><span>"+
+  (show.opponent?("相手 "+show.opponent+" / "):"")+
+  (outcomeLabel[r.outcome]||"結果未確定")+" / "+(reasonLabel[r.reason]||"理由未確定")+" / "+
+  (r.moveNumber||0)+"手</span></div>";
+ document.getElementById("kifu").innerHTML=head+
+  (cells?('<div class="board">'+cells+"</div>"):'<div class="board"></div>')+
+  '<div class="side"><div class="moves">'+list+"</div>"+
+  '<div class="cmt">'+currentComment(index)+"</div></div>";
+}
+async function loadKifu(){
+ if(kifuLease===null)return;
+ if(kifu!==null)return;
+ try{const r=await fetch("/api/tsuitate/kifu",{cache:"no-store"});
+  if(r.ok){kifu=await r.json();}}catch(e){}
+}
+function applyReview(d){
+ const show=d.review;
+ if(show&&show.active){
+  document.body.classList.add("reviewing");
+  if(kifuLease!==d.lease_id){kifu=null;kifuLease=d.lease_id;}
+  loadKifu().then(()=>renderKifu(show));
+ }else{
+  document.body.classList.remove("reviewing");
+  kifu=null;kifuLease=null;
+ }
+}
+async function refresh(){try{const r=await fetch("/api/tsuitate",{cache:"no-store"});const d=await r.json();apply(d);applyReview(d);}catch(e){apply({ok:false});}}
 refresh();setInterval(refresh,1000);
 </script></html>"""
 
 
-def status_projection(runtime_id: str, generation: int, lease_id: str) -> dict:
+def read_review(state_dir, runtime_id: str, generation: int) -> dict | None:
+    """The 感想戦 payload published for this exact view runtime, or ``None``."""
+    if not state_dir:
+        return None
+    try:
+        return read_show(state_dir, runtime_id=runtime_id, generation=generation)
+    except Exception:
+        return None
+
+
+def status_projection(runtime_id: str, generation: int, lease_id: str,
+                      *, state_dir=None) -> dict:
     base = {
         "runtime_id": runtime_id,
         "generation": generation,
         "lease_id": lease_id,
     }
+    show = show_view(read_review(state_dir, runtime_id, generation))
     try:
         status = call_beta_control("status")
     except ControlError as exc:
@@ -126,10 +191,11 @@ def status_projection(runtime_id: str, generation: int, lease_id: str) -> dict:
         "gameActive": status["state"] in {"playing", "draining"},
         "spectatorView": spectator_view,
         "gameResult": game_result,
+        "review": show,
     }
 
 
-def handler_for(runtime_id: str, generation: int, lease_id: str):
+def handler_for(runtime_id: str, generation: int, lease_id: str, *, state_dir=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path in {"/", "/broadcast"}:
@@ -137,8 +203,20 @@ def handler_for(runtime_id: str, generation: int, lease_id: str):
                 kind = "text/html; charset=utf-8"
                 status = 200
             elif self.path == "/api/tsuitate":
-                data = status_projection(runtime_id, generation, lease_id)
+                data = status_projection(runtime_id, generation, lease_id,
+                                         state_dir=state_dir)
                 body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                kind = "application/json"
+                status = 200
+            elif self.path == "/api/tsuitate/kifu":
+                payload = read_review(state_dir, runtime_id, generation)
+                if payload is None:
+                    self.send_error(404)
+                    return
+                body = json.dumps(
+                    {"moves": payload.get("moves"), "move_count": payload.get("move_count"),
+                     "commentary": payload.get("commentary")},
+                    ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 kind = "application/json"
                 status = 200
             else:
@@ -162,8 +240,11 @@ def handler_for(runtime_id: str, generation: int, lease_id: str):
     return Handler
 
 
-def serve(*, port: int, runtime_id: str, generation: int, lease_id: str) -> None:
-    HTTPServer(("127.0.0.1", port), handler_for(runtime_id, generation, lease_id)).serve_forever()
+def serve(*, port: int, runtime_id: str, generation: int, lease_id: str,
+          state_dir=None) -> None:
+    HTTPServer(("127.0.0.1", port),
+               handler_for(runtime_id, generation, lease_id,
+                           state_dir=state_dir)).serve_forever()
 
 
 def main(argv=None) -> int:
@@ -172,10 +253,12 @@ def main(argv=None) -> int:
     parser.add_argument("--runtime-id", required=True)
     parser.add_argument("--generation", type=int, required=True)
     parser.add_argument("--lease-id", required=True)
+    parser.add_argument("--state-dir", default=None)
     args = parser.parse_args(argv)
     if not 1024 <= args.port <= 65535 or args.generation < 1:
         parser.error("invalid runtime arguments")
-    serve(port=args.port, runtime_id=args.runtime_id, generation=args.generation, lease_id=args.lease_id)
+    serve(port=args.port, runtime_id=args.runtime_id, generation=args.generation,
+          lease_id=args.lease_id, state_dir=args.state_dir)
     return 0
 
 
