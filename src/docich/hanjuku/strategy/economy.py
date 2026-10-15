@@ -243,7 +243,7 @@ def _egg_measured_cost(mem):
     This is the price the month menu gates on: a recheck name is a question,
     not a debt, and pricing it there would refuse a check the game may quote at
     nothing (g574 2-9: one unread name priced 50G against 55G on hand, the
-    screen was never opened; 3-2: two names priced 100G, the quote was 50G).
+    screen was never opened; 3-2: two names priced 100G, the screen was 50G).
     The monthly hold in ``_extras_reserve`` stays an upper bound and the quote
     screen keeps its own wage floor, so opening cheap can never pay less than
     the reservation.
@@ -763,6 +763,11 @@ def _charted_purchase_ahead(mem, header):
 
 
 def _plan(mem, header):
+    from .bargains import plan_bargains
+    return plan_bargains(mem, _base_month_plan(mem, header), header)
+
+
+def _base_month_plan(mem, header):
     key = _month_key(header)
     shop = mem.get('shop')
     if shop and shop.get('key') == key:
