@@ -1004,11 +1004,12 @@ def _hero_losing_melee(cur):
 
 
 def _melee_continuation_evidence(mem, cur):
-    """A wounded ordinary general can finish a measured, one-sided melee.
+    """An ordinary general may conserve an overwhelming current advantage.
 
-    This compares remaining forces, not a damage formula or a promised win.
-    Only this runtime's observed healthy opening, our HP loss and a current
-    enemy HP/troop reduction can relax the full-HP conservation gate.
+    A scoped opening need not be above 70% of maximum HP: that percentage
+    alone does not erase a measured twofold advantage in HP, army and combat.
+    Once our HP falls, require actual enemy HP/troop progress as before.
+    This is a remaining-force heuristic, never a promised win or egg loss.
     """
     from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
@@ -1030,9 +1031,8 @@ def _melee_continuation_evidence(mem, cur):
             or cur.get('card_flow') or cur.get('card_damage_rescue_needed')
             or any(type(n) is not int or n <= 0 for n in
                    (hp, enemy, start, enemy_start, maximum, enemy_maximum))
-            or not GENERAL_CRITICAL_RETREAT_HP < hp < start <= maximum
+            or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
             or not enemy <= enemy_start <= enemy_maximum
-            or start * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
             or hp <= enemy * 2):
         return None
     balance = _melee_balance(cur)
@@ -1045,17 +1045,19 @@ def _melee_continuation_evidence(mem, cur):
     army_known = (isinstance(opening_army, list) and len(opening_army) == 2
                   and all(type(n) is int and 0 <= n <= 6 for n in opening_army))
     soldier_progress = army_known and cur['enemy_soldiers'] < opening_army[1]
-    if enemy >= enemy_start and not soldier_progress:
+    if hp < start and enemy >= enemy_start and not soldier_progress:
         return None
-    return {'rule': 'melee_finish_after_damage', 'ally_hp': hp, 'enemy_hp': enemy,
+    return {'rule': 'melee_finish_after_damage' if hp < start else 'melee_advantage_at_opening',
+            'ally_hp': hp, 'enemy_hp': enemy,
             'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
             'opening_soldiers': list(opening_army) if army_known else None,
-            'enemy_progress': 'hp' if enemy < enemy_start else 'soldiers',
+            'enemy_progress': ('hp' if enemy < enemy_start else
+                               'soldiers' if soldier_progress else 'not_observed'),
             'ally_max_hp': maximum, **balance}
 
 
 def _hold_melee_egg(mem, cur, labels):
-    """Preserve a healthy advantage or a scoped, measured melee finish.
+    """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
     Compare current HP pools weighted by each named general's combat stat.
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
@@ -1065,9 +1067,9 @@ def _hold_melee_egg(mem, cur, labels):
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True
             or cur.get('egg_battle') or mem.get('egg_battle')
-            or cur.get('card_summon_observed')):
-        return False
-    if 'きりふだ' not in labels and cur.get('ally') in (NAME, 'しゅじんこう'):
+            or cur.get('card_summon_observed')
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS):
         return False
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
@@ -1082,6 +1084,15 @@ def _hold_melee_egg(mem, cur, labels):
             and hp * 10 > maximum * BEHIND_EGG_RATIO_TENTHS
             and (hp + 10 * ours) * 10 > (enemy + 10 * theirs) * BEHIND_EGG_RATIO_TENTHS
             and scores[0] > scores[1])
+    if 'きりふだ' not in labels and cur.get('ally') in (NAME, 'しゅじんこう'):
+        # No cards is not itself a reason to spend the hero's last egg.
+        # Keep his full-health/game-over protection and demand a larger
+        # current margin than for an ordinary healthy general.
+        return (healthy and hp <= maximum and hp > enemy * 2
+                and hp + 10 * ours > 2 * (enemy + 10 * theirs)
+                and scores[0] > 2 * scores[1]
+                and not cur.get('card_flow') and not cur.get('card_damage_rescue_needed')
+                and not _hero_losing_melee(cur))
     return healthy or _melee_continuation_evidence(mem, cur) is not None
 
 
