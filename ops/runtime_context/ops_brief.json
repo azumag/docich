@@ -1,11 +1,11 @@
 {
-  "output_sha256": "197c3c2d8eddccebc8678c356aeb681f39364d4f6a8464c9f50a0f039bd5f16b",
+  "output_sha256": "3bd34c12d5146c120c7b69fb32977371a3671fbacc485e5012aff75e9e3a428b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "662567e96fad1449e32ce35ffa44366976450399b6e4ed198cd4a599e1cec691",
+  "source_sha256": "a6a9aab2075ae35619544a4aee2bd26c3181bfba2f11b504324f858f6836c295",
   "topics": [
+    "VM通常再起動でTwitch配信復旧、原因と中断slotを追跡",
     "同志カードのtimer設定参照を正規配備、自然実行の受入待ち",
-    "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中",
-    "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認"
+    "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中"
   ]
 }
