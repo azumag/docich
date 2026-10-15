@@ -69,6 +69,14 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 追記単位: `rounds[<prediction_id>]` に、**`RESOLVED` になった予想を1回だけ**記録する。
   - `prediction id` をキーにした冪等追記。再送・再精算の tick が二重計上しない。
   - `ACTIVE` / `LOCKED` / `CANCELED` は記録しない（未確定・返還のため）。
+- **賭けが成立していない予想は `CANCELED` にして全額返却する**（2026-10-15 オーナー判断）:
+  精算の直前（半熟英雄は `LOCKED` 後、Soren は `resolve` の直前）に `GET /helix/predictions` の
+  `outcomes[].users` / `channel_points` を見て、賭けが入った選択肢が1つ以下（0件を含む）なら
+  勝者を出さず `CANCELED` にして投票済みポイントを全額返却する。1択しか賭けが無い予想は
+  賭けが成立しておらず、その1択が外れた場合に視聴者のポイントだけが失われるため。
+  件数が読めないとき（フィールド欠落・取得失敗・応答不正）は**現行どおり `RESOLVED` へ進む**
+  （settle を新しい理由で止めない）。半熟英雄は `hanjuku_predictions._no_contest`、
+  Soren は `twitch_predictions.sh` の `_contested_outcome_count` が同じ規則を実装する。
 - 1 round の内容:
   `{ corner, title, ended_at, winning_outcome_id, outcomes[{id,title,users,points}], predictors[] }`
 - 1 predictor の内容:
