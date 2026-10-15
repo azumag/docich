@@ -1964,6 +1964,24 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A", "x": 1})
         self.assertEqual(status, 400, data)
 
+    def test_special_corner_category_search_releases_lock_before_error_response(self):
+        # #2267: エラー応答を lock 保持中に送ると、応答直後に次を送るクライアントが
+        # 解放前に到着して 429 search_busy を観測し得る。送信時点で未保持を固定する。
+        from docich import webui
+
+        observed = []
+        original = webui._Handler._send_error_json
+
+        def spy(handler, code, error, detail="", field=""):
+            if code in (400, 502):
+                observed.append(webui._SPECIAL_CATEGORY_SEARCH_LOCK.locked())
+            return original(handler, code, error, detail, field)
+
+        with mock.patch.object(webui._Handler, "_send_error_json", spy):
+            status, data = self._request("POST", "/api/special-corner/category-search", {"query": "-x"})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(observed, [False])
+
     def test_special_corner_manual_start_and_receiver_require_operator_and_confirm(self):
         from docich import special_corner
         with mock.patch.object(special_corner, "launch_corner") as launch, \
