@@ -10,10 +10,19 @@ and direct-route credential, stay owned by ``configure_comment_classifier_jev.py
 (#678). This script only decides which reviewed route(s) those calls use.
 
 ``--route clef`` selects Clef only (not an automatic fallback chain). Initial
-account/token provisioning uses this process's dedicated environment pair;
-subsequent switches reuse the existing chat worker's pair. Both Jev and Clef
-credentials are preserved and checked on the replacement chat worker. This
-CLI option is not yet exposed as a new fixed VM gateway operation.
+account/token provisioning takes the pair from this process's dedicated
+environment pair, or -- with ``--reuse-existing-cloudflare-credentials`` -- from
+this VM's own reviewed Cloudflare pair (see ``CLEF_REUSE_SOURCES``), which keeps
+the secret off the wire entirely. Subsequent switches reuse the existing chat
+worker's pair. Both Jev and Clef credentials are preserved and checked on the
+replacement chat worker.
+
+The fixed gateway operations are:
+
+- ``configure_jev_route_direct`` / ``configure_jev_route_vercel`` /
+  ``configure_jev_route_clef`` / ``disable_jev_route`` for this script's routes,
+- ``configure_jev_route_clef_reuse`` for the reuse provisioning above (empty
+  stdin: it never accepts or needs a secret).
 
 The existing fixed gateway operations map to fixed values:
 
@@ -46,6 +55,7 @@ import os
 import re
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import sys
 import types
@@ -91,6 +101,79 @@ CLEF_KEYS = ("DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID", "DOCICH_JEV_CLOUDFLARE_API_TOKE
 ROUTES = ("direct", "vercel", "clef")
 # --route -> the exact DOCICH_JEV_ROUTE value written and then verified live.
 ROUTE_VALUES = {"direct": "direct", "vercel": "direct,vercel", "clef": "clef"}
+# Reviewed sources for reusing this VM's own, already-issued Cloudflare pair as
+# the Clef pair (#2301). Each entry is ONE provider's account/token pair, so a
+# token is never combined with another source's account. Both are Workers AI
+# capable: the first is the direct Workers AI chat provider's own pair, the
+# second the reviewed Web Search pair. Adding a source is a reviewed change.
+CLEF_REUSE_SOURCES = (
+    ("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"),
+    ("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID", "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"),
+)
+CLEF_ACCOUNT_RE = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def _read_existing_secret(env, name: str) -> str:
+    """Resolve NAME, or its reviewed NAME_FILE indirection, without printing it.
+
+    Mirrors ``docich.discord_chat.read_secret``: the value and its file form are
+    mutually exclusive, the file must be a regular non-world-accessible file
+    opened without following a symlink, and the result must be a short,
+    printable ASCII token. Any deviation is a fixed, secret-free failure.
+    """
+    value = env.get(name, "")
+    filename = env.get(name + "_FILE", "")
+    value = value.strip() if isinstance(value, str) else ""
+    filename = filename.strip() if isinstance(filename, str) else ""
+    if value and filename:
+        raise ConfigureError("clef_source_credentials_conflicting")
+    if not filename:
+        return value
+    try:
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ConfigureError("clef_source_credentials_unreadable") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o007:
+            raise ConfigureError("clef_source_credentials_unreadable")
+        raw = os.read(descriptor, 4097)
+    except OSError as exc:
+        raise ConfigureError("clef_source_credentials_unreadable") from exc
+    finally:
+        os.close(descriptor)
+    if len(raw) > 4096:
+        raise ConfigureError("clef_source_credentials_unreadable")
+    try:
+        text = raw.decode("ascii").removesuffix("\n").removesuffix("\r")
+    except UnicodeError as exc:
+        raise ConfigureError("clef_source_credentials_unreadable") from exc
+    if not text or any(not 33 <= ord(char) <= 126 for char in text):
+        raise ConfigureError("clef_source_credentials_unreadable")
+    return text
+
+
+def clef_credentials_from_existing(env) -> tuple[str, str]:
+    """Return the first usable reviewed Cloudflare pair from this VM's env.
+
+    Only the pair that is actually configured is returned, and only to the
+    caller; neither half is ever printed or written anywhere but soren's .env
+    and its protected rollback backup. Nothing is inferred: an account that is
+    absent or not the reviewed 32-lowercase-hex shape, or a token that is
+    missing or unusable, makes that source ineligible rather than guessed.
+    """
+    for account_name, token_name in CLEF_REUSE_SOURCES:
+        account = env.get(account_name, "")
+        account = account.strip() if isinstance(account, str) else ""
+        if account and CLEF_ACCOUNT_RE.fullmatch(account) is None:
+            raise ConfigureError("clef_source_account_invalid")
+        if not account:
+            continue
+        token = _read_existing_secret(env, token_name)
+        if not token:
+            continue
+        return clef_settings(dict(zip(CLEF_KEYS, (account, token))))
+    raise ConfigureError("clef_source_credentials_missing")
 
 
 def validate_vercel_key(value: str) -> None:
@@ -227,8 +310,13 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--route", choices=ROUTES)
     group.add_argument("--disable", action="store_true")
+    parser.add_argument("--reuse-existing-cloudflare-credentials", action="store_true",
+                        help="--route clef only: provision the Clef pair from this VM's own "
+                             "reviewed Cloudflare pair instead of from this process's environment")
     args = parser.parse_args()
 
+    if args.reuse_existing_cloudflare_credentials and args.route != "clef":
+        raise ConfigureError("clef_reuse_requires_clef_route")
     env_file = args.soren_root / ".env"
     current = _classifier._process_env(
         _classifier._read_worker_pid(args.soren_root / _classifier.WORKER_PID_FILE) or -1
@@ -254,9 +342,15 @@ def main() -> int:
         # A reversible migration must retain the already-working Jev route.
         if not current.get("TYPESAFE_API_KEY"):
             raise ConfigureError("clef_switch_requires_existing_typesafe_api_key")
-        # Never combine a token from one source with an account from another.
-        source = os.environ if any(key in os.environ for key in CLEF_KEYS) else current
-        account, token = clef_settings(source)
+        if args.reuse_existing_cloudflare_credentials:
+            # First-time provisioning from this VM's own, already-issued pair.
+            # The live worker's environ is the already-shell-resolved source, so
+            # no .env parsing and no secret on the wire or on a command line.
+            account, token = clef_credentials_from_existing(current)
+        else:
+            # Never combine a token from one source with an account from another.
+            source = os.environ if any(key in os.environ for key in CLEF_KEYS) else current
+            account, token = clef_settings(source)
         backup = configure_clef_env(env_file, account, token)
         retained.update(zip(CLEF_KEYS, (account, token)))
         route = "clef"
