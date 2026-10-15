@@ -91,7 +91,7 @@ corner state に残るのは生成した読み上げ文と `review`（`source` /
 - **盤面の再構成**: 公開リプレイは指し手（USI）と終局SFENしか持たないため、標準初期局面へ
   指し手を適用して盤面を作ります（`shogi_board`）。ルールエンジンではなく**適用器**で、
   合法性・王手・詰みは判定しません。`reconstruct` が**サイトの `finalSfen` と一致しなければ
-  盤面を出さず**、棋譜リストだけを表示します（fail-closed）。
+  棋譜ショーを行わず**、検証済みの終局結果へ戻ります（fail-closed）。
 - **payload**: corner が `<state_dir>/tsuitate_review.json` に1つだけ書きます（atomic・
   0600・上限256KiB・最大512手）。view の runtime identity（`runtime_id` / `generation`）で
   固定し、別世代の payload は表示しません。着手列・盤面はこのショーのためだけの一時データで、
