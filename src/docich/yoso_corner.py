@@ -6,9 +6,9 @@ restoration; this module only persists the corner's request, the full runtime
 identity and a fixed end time. It never writes the prediction ledger, never
 talks to Twitch and never generates speech.
 
-The catalog entry is default-disabled and manual-only (docs/features/yosou-oh-corner.md):
-the owner starts it from the WebUI/manual queue, and it always ends on the
-reviewed duration bound or an explicit stop.
+The catalog entry runs from the 24h rolling rotation and can still be reserved
+from the WebUI/manual queue (docs/features/yosou-oh-corner.md). It always ends on
+the reviewed duration bound (or the audio-complete receipt) or an explicit stop.
 """
 from __future__ import annotations
 

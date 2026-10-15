@@ -77,11 +77,12 @@ corners = [
   # 音声の再生完了receiptに合わせて全国→11地点→全国を進行。4分は安全上限で、完了時は即復帰。
   { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 4, fetch_on_start = true, audio_enabled = true },
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
-  # 2026-10-14 オーナー承認で手動予約を有効化（enabled = true）。manual_only を
-  # 維持するため自動抽選には入らない（docs/features/yosou-oh-corner.md）。
+  # 2026-10-14 オーナー承認で有効化（enabled = true）。
   # 2026-10-15 オーナー判断で読み上げを有効化（audio_enabled = true）。
+  # 2026-10-15 オーナー判断で manual_only を解除し、24時間 rolling rotation の
+  # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
   # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true, audio_enabled = true },
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true },
 ]
 
 [nethack_corner]

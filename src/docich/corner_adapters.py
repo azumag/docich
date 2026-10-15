@@ -646,7 +646,7 @@ class WeatherCornerAdapter:
 
 
 class YosoCornerAdapter:
-    """Bounded, manual-only 予想王 leaderboard display through the shared slot."""
+    """Bounded 予想王 leaderboard display through the shared slot (auto rotation or manual queue)."""
 
     def __init__(self, g, corner):
         from .yoso_corner import DEFAULT_DURATION_MINUTES, YosoCornerManager
