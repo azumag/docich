@@ -22,6 +22,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _wounded_summoner, _summoner_return_risk)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first)
+from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -111,7 +112,7 @@ def _hero_retreat_menu(screen, mem, cur):
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
         return None
-    if 'たいきゃく' not in {w for _,_,w in _options(screen)}:
+    if 'たいきゃく' not in {w for _, _, w in _options(screen)}:
         flow['unavailable'] = True
         _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'),
@@ -1301,6 +1302,10 @@ def monster_menu_step(screen: Screen, mem):
     damage_first = _monster_damage_first(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
+    balloon_cycle = (owner == 'ally' and ally is not None
+                     and ally.name == 'バルーンフィンチ' and len(skill_lines) >= 2
+                     and _fold_skill(skill_lines[0].known) == _fold_skill('ふくらむ')
+                     and _fold_skill(skill_lines[1].known) == _fold_skill('シャウト'))
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
@@ -1316,10 +1321,6 @@ def monster_menu_step(screen: Screen, mem):
                      and len(skill_lines) == 2
                      and {_fold_skill(first), _fold_skill(second)}
                      == _MONSTER_SKILLS['ウゴカザル'])
-        balloon_cycle = (owner == 'ally' and ally is not None
-                         and ally.name == 'バルーンフィンチ'
-                         and _fold_skill(first) == _fold_skill('ふくらむ')
-                         and _fold_skill(second) == _fold_skill('シャウト'))
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
         if damage_first:
@@ -1327,13 +1328,11 @@ def monster_menu_step(screen: Screen, mem):
         elif damage_second:
             default = 'skill2'
         elif balloon_cycle:
-            # Owner rule 2026-10-06: Balloon Finch must inflate all the way to
-            # the actual HP cap before shouting.  A seen-so-far maximum is not
-            # enough: ふくらむ doubles HP, so intermediate values (384, 768,
-            # ...) must keep choosing skill1.  After シャウト halves our HP,
-            # the same rule naturally sends it back to ふくらむ.
-            default = ('skill1' if type(ally_hp) is not int
-                       or ally_hp < BALLOON_FINCH_MAX_HP else 'skill2')
+            # Owner 2026-10-16: full HP is not mandatory when the HP left
+            # after shouting survives three buffered enemy turns. Unknown
+            # damage retains the previous cap-based fallback.
+            balloon = balloon_assessment(mem, ally, enemy, BALLOON_FINCH_MAX_HP)
+            default = balloon['action']
         elif heal_first:
             # Generic heal-first monsters still use the best HP observed in
             # this menu session as their recovery target.
@@ -1352,7 +1351,7 @@ def monster_menu_step(screen: Screen, mem):
         key = experience.situation_key('monster_menu', mem)
         # Balloon Finch is an explicit owner tactic, not an exploratory choice:
         # do not let generic retreat heuristics or learned experience replace
-        # ふくらむ before cap / シャウト at cap.
+        # the measured recovery/shout cycle (cap fallback if damage is unknown).
         action = (default if balloon_cycle else
                   'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
@@ -1376,13 +1375,19 @@ def monster_menu_step(screen: Screen, mem):
             label = 'たまごに もどれ'
             why = '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
         elif balloon_cycle:
-            if action == 'skill2':
-                label = second
+            label = second if action == 'skill2' else first
+            if balloon['rule'] == 'survival_buffer':
+                why = (f"シャウト後HP{balloon['post_shout_hp']}が、被ダメージ推定"
+                       f"{balloon['incoming_damage']}に25%の余裕を加えた"
+                       f"{balloon['survival_hits']}回分を超えるため全回復を待たず攻撃")
+            elif action == 'skill2':
                 why = f'HPが上限{BALLOON_FINCH_MAX_HP}なので「シャウト」で相手を削る'
+            elif balloon['incoming_damage'] is not None:
+                why = (f"HPが{ally_hp}で耐久目標{balloon['target_hp']}未満なので"
+                       '「ふくらむ」で次のシャウトに備える')
             else:
-                label = first
-                why = (f'HPが{ally_hp}で上限{BALLOON_FINCH_MAX_HP}未満なので'
-                       '「ふくらむ」で最大まで戻す')
+                why = ('敵の被ダメージを分離して推定できないため、'
+                       f'従来どおり「ふくらむ」でHP上限{BALLOON_FINCH_MAX_HP}を目指す')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -1401,7 +1406,8 @@ def monster_menu_step(screen: Screen, mem):
                 expected_metric='召喚獣ターンの選択と戦闘結果',
                 observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
-                                 'target_hp': BALLOON_FINCH_MAX_HP if balloon_cycle else None,
+                                 'target_hp': balloon['target_hp'] if balloon_cycle else None,
+                                 'balloon_survival': balloon if balloon_cycle else None,
                                  'damage_first': damage_first,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
@@ -1430,4 +1436,6 @@ def monster_menu_step(screen: Screen, mem):
     if target < cur - 4:
         mem['monster_menu_cursor'] = cur - 16
         return [pad('up')]
+    if balloon_cycle and screen.menu_cursor == target:
+        balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
     return [pad('a')]
