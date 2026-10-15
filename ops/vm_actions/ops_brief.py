@@ -31,7 +31,10 @@ ALLOWED_SOURCES = (SOURCE_LEGACY, SOURCE_TRACKED)
 DEFAULT_SOURCE = SOURCE_TRACKED
 MAX_SOURCE = 4 * 1024 * 1024
 MAX_ARTIFACT = 4096
-HEADER = "# 直近の裏側の改修 (docichの公開用ops brief。手で編集しない)\n"
+# Schema 1 hashes include this exact historical header. Preserve its bytes even
+# with a tracked source so the already-installed compatibility gateway can read
+# both the previous baseline and the candidate in one deployment transaction.
+HEADER = "# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
 HANDOFF_ENV = "DOCICH_HANDOFF_PATH"
 
 

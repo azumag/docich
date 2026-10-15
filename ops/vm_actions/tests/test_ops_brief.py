@@ -18,6 +18,15 @@ SOURCE = "## 2026-09-22 — 最新の修正 Issue #123\nprivate body\n## 2026-09
 
 
 class BriefGenerationTests(unittest.TestCase):
+    def test_schema_one_rendering_preserves_installed_gateway_bytes(self):
+        expected = ("# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
+                    "- 最新の修正\n- 配信復旧\n").encode()
+        for source in (brief.SOURCE_LEGACY, brief.SOURCE_TRACKED):
+            with self.subTest(source=source):
+                data = brief.build(SOURCE, source)
+                self.assertEqual(brief.render(data), expected)
+                self.assertEqual(brief.validate(data)["output_sha256"], brief.digest(expected))
+
     def clean_env(self):
         env = dict(os.environ)
         env.pop(brief.HANDOFF_ENV, None)
