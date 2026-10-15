@@ -332,6 +332,58 @@ def test_doushi_preflight_fetches_once_and_stores_the_transient_payload(tmp_path
     assert load_payload(adapter.payload_path)["ok"] is True
 
 
+def test_doushi_preflight_reads_only_overlay_setting_from_soren_env_when_timer_has_no_env(
+        tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    root = tmp_path / "soren"
+    root.mkdir()
+    g.webui = SimpleNamespace(soren_root=str(root))
+    (root / ".env").write_text(
+        f'SOREN_DIRECT_TWICA_OVERLAY_URL="{OVERLAY_URL}"\n'
+        'UNRELATED_SECRET=must-not-export\n', encoding="utf-8")
+    monkeypatch.delenv("SOREN_DIRECT_TWICA_OVERLAY_URL", raising=False)
+    monkeypatch.delenv("UNRELATED_SECRET", raising=False)
+    adapter = make_coordinator_adapter(g, _spec(tmp_path))
+    monkeypatch.setattr(doushi_program.ProgramViewAdapter, "preflight", lambda *_: None)
+    seen = []
+    def http_get(url, timeout):
+        seen.append(url)
+        return api_body()
+    monkeypatch.setattr(doushi_program, "http_get", http_get)
+
+    adapter.preflight(time.monotonic() + 10, None)
+
+    assert seen == [derive_endpoint(OVERLAY_URL) + "?period=all&limit=10"]
+    assert "SECRET-QUERY" not in adapter.payload_path.read_text()
+    assert "UNRELATED_SECRET" not in doushi_program.os.environ
+    assert "SOREN_DIRECT_TWICA_OVERLAY_URL" not in doushi_program.os.environ
+    assert "SOREN_DIRECT_TWICA_OVERLAY_URL" not in adapter._game_session_env()
+
+
+@pytest.mark.parametrize("explicit", [OVERLAY_URL, "", "not-a-url"])
+def test_doushi_explicit_environment_does_not_fall_back_to_another_channel(
+        tmp_path, monkeypatch, explicit):
+    g = _global(tmp_path)
+    root = tmp_path / "soren"
+    root.mkdir()
+    g.webui = SimpleNamespace(soren_root=str(root))
+    (root / ".env").write_text('SOREN_DIRECT_TWICA_OVERLAY_URL="https://other.example/overlay/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"\n')
+    monkeypatch.setenv("SOREN_DIRECT_TWICA_OVERLAY_URL", explicit)
+    adapter = make_coordinator_adapter(g, _spec(tmp_path))
+    seen = []
+    def http_get(url, timeout):
+        seen.append(url)
+        return api_body()
+    monkeypatch.setattr(doushi_program, "http_get", http_get)
+    if explicit == OVERLAY_URL:
+        adapter.fetch_ranking_payload()
+        assert seen == [derive_endpoint(OVERLAY_URL) + "?period=all&limit=10"]
+    else:
+        with pytest.raises(AdapterError):
+            adapter.fetch_ranking_payload()
+        assert seen == []
+
+
 @pytest.mark.parametrize("missing", [True, False])
 def test_doushi_preflight_fails_closed_without_the_overlay_url_or_on_a_broken_body(
         tmp_path, monkeypatch, missing):
