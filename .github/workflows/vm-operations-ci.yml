@@ -52,6 +52,8 @@ jobs:
         env:
           PYTHONPATH: src
         run: python3 -m pytest -ra -v ops/vm_actions/tests/test_supervisor_identity_diagnostics.py
+      - name: Common BGM diagnostics and bounded restart scope
+        run: python3 -m pytest -q ops/vm_actions/tests/test_corner_bgm_diagnostics.py ops/vm_actions/tests/test_soren_restart_scope.py
       - name: Validate parent-owned operations brief (private handoff stays local)
         run: python3 ops/vm_actions/ops_brief.py check-artifact
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
