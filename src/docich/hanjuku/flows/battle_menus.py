@@ -1419,6 +1419,9 @@ def monster_menu_step(screen: Screen, mem):
                 why = '能力交換の「ごあいさつ」はこの戦闘で1回だけ送信し、その後は召喚技へ移る'
             elif akematsu['rule'] == 'unscoped_hospitality':
                 why = '戦闘の同一性が読めないため能力交換を繰り返さず「おもてなし」で交代する'
+            elif akematsu['rule'] == 'hospitality_after_unverified_attempt':
+                why = ('カーソル未読で「ごあいさつ」を1回試みたため、交換成功は未確認だが'
+                       '同じ技の無限試行を防ぎ「おもてなし」に切り替える')
             else:
                 why = '「ごあいさつ」を1回送信済みのため、以降は「おもてなし」で別の召喚獣を呼ぶ'
         elif action == 'skill2' and len(skill_lines) >= 2:
@@ -1470,9 +1473,13 @@ def monster_menu_step(screen: Screen, mem):
     if target < cur - 4:
         mem['monster_menu_cursor'] = cur - 16
         return [pad('up')]
-    if screen.menu_cursor == target:
-        if balloon_cycle:
-            balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
-        if akematsu_cycle:
-            akematsu_command_selected(mem, ally, enemy, action)
+    if screen.menu_cursor == target and balloon_cycle:
+        balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
+    if akematsu_cycle and action == 'skill1':
+        # The cursor may remain unreadable for the entire menu. This is only
+        # an attempted input, never evidence of a successful stat exchange.
+        # Nevertheless, sending ごあいさつ on every frame is worse.
+        akematsu_command_selected(
+            mem, ally, enemy, action,
+            cursor_confirmed=(screen.menu_cursor == target))
     return [pad('a')]
