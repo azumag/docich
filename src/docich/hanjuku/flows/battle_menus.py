@@ -1329,9 +1329,8 @@ def monster_menu_step(screen: Screen, mem):
         elif damage_second:
             default = 'skill2'
         elif balloon_cycle:
-            # Owner 2026-10-16: full HP is not mandatory when the HP left
-            # after shouting survives three buffered enemy turns. Unknown
-            # damage retains the previous cap-based fallback.
+            # Measured hits use a three-turn reserve; absent measurements,
+            # a conservative explicitly-unproven reserve prevents 9999 loops.
             balloon = balloon_assessment(mem, ally, enemy, BALLOON_FINCH_MAX_HP)
             default = balloon['action']
         elif heal_first:
@@ -1381,14 +1380,23 @@ def monster_menu_step(screen: Screen, mem):
                 why = (f"シャウト後HP{balloon['post_shout_hp']}が、被ダメージ推定"
                        f"{balloon['incoming_damage']}に25%の余裕を加えた"
                        f"{balloon['survival_hits']}回分を超えるため全回復を待たず攻撃")
+            elif balloon['rule'] == 'observed_zero_reserve':
+                why = (f"無被弾の確定観測が{balloon['zero_loss_samples']}回あり、"
+                       f"HP{ally_hp}が暫定目標{balloon['target_hp']}に達したためシャウト"
+                       "（今後の被ダメージは未確定）")
+            elif balloon['rule'] == 'unmeasured_reserve':
+                why = (f"被ダメージ未推定だがHP{ally_hp}が保守的な暫定目標"
+                       f"{balloon['target_hp']}に達したためシャウト"
+                       "（3回生存の保証ではない）")
             elif action == 'skill2':
                 why = f'HPが上限{BALLOON_FINCH_MAX_HP}なので「シャウト」で相手を削る'
             elif balloon['incoming_damage'] is not None:
                 why = (f"HPが{ally_hp}で耐久目標{balloon['target_hp']}未満なので"
                        '「ふくらむ」で次のシャウトに備える')
             else:
-                why = ('敵の被ダメージを分離して推定できないため、'
-                       f'従来どおり「ふくらむ」でHP上限{BALLOON_FINCH_MAX_HP}を目指す')
+                why = (f"敵ダメージ未推定のため、HP{ally_hp}を暫定目標"
+                       f"{balloon['target_hp']}まで「ふくらむ」で確保する"
+                       f"（無被弾の確定観測{balloon['zero_loss_samples']}回）")
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
