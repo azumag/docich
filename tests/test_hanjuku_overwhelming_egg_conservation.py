@@ -117,7 +117,7 @@ def test_hero_without_cards_saves_egg_only_with_a_large_healthy_margin():
 
 @pytest.mark.parametrize('change', [
     {'ally_hp': 12}, {'card_summon_observed': True}, {'egg_battle': True},
-    {'enemy': 'クイーン'}, {'enemy_soldiers': None},
+    {'enemy': 'クイーン'}, {'enemy_soldiers': -1},
     {'card_flow': {'stage': 'list'}}, {'card_damage_rescue_needed': True},
 ])
 def test_hero_no_card_conservation_keeps_game_over_protections(change):

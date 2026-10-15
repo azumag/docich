@@ -16,7 +16,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
-                               _melee_continuation_evidence,
+                               _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk)
@@ -173,9 +173,10 @@ def _survival_menu(screen, mem, cur):
         rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
         _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
                 observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur),
-                                 'conservation': (_melee_continuation_evidence(mem, cur)
+                                 'conservation': (_healthy_melee_margin_evidence(mem, cur)
+                                                  or _melee_continuation_evidence(mem, cur)
                                                   or {'rule': 'healthy_melee_advantage'})},
-                reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る')
+                reason='実HP・戦闘力と観測兵数または未読兵数の不利側境界で白兵優位のため卵を温存して戻る')
         return [pad('b')]
     rescue.pop('conserving_melee', None)
     if (critical and (egg_ready or (safe_card and 'きりふだ' in labels))

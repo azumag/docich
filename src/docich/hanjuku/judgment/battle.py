@@ -1117,6 +1117,64 @@ def _melee_continuation_evidence(mem, cur):
             'ally_max_hp': maximum, **balance}
 
 
+def _healthy_melee_margin_evidence(mem, cur):
+    """A scoped, healthy advantage even under pessimistic unread troop bounds.
+
+    A resource inspection is not evidence that an egg must be spent. Unknown
+    CURRENT troops range from zero to six: credit us with the lower bound
+    and the enemy with the upper bound, never store either as an observation.
+    Require a 3:2 combat-weighted margin, healthy HP and no losing HP trade.
+    These are conservative policy thresholds, not a damage/win prediction.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    ally, enemy_name = cur.get('ally'), cur.get('enemy')
+    if identity is None or not all(isinstance(n, str) for n in (ally, enemy_name)):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum = general_max_hp('しゅじんこう' if ally == NAME else ally)
+    enemy_maximum = general_max_hp(enemy_name)
+    if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
+            or cur.get('card_soldiers_current') is not True
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
+            or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
+            or _own_egg_empty(mem, cur)
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
+            or not enemy <= enemy_start <= enemy_maximum
+            or hp <= enemy or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS):
+        return None
+    # A high starting score must not excuse a one-sided or losing live trade.
+    if hp < start and (enemy >= enemy_start
+                       or (start - hp) * enemy_start > (enemy_start - enemy) * start):
+        return None
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    if any(n is not None and (type(n) is not int or not 0 <= n <= 6)
+           for n in (ours, theirs)):
+        return None
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if any(type(n) is not int or not 1 <= n <= 15 for n in (ac, ec)):
+        return None
+    own_min, enemy_max = (ours if ours is not None else 0), (theirs if theirs is not None else 6)
+    own_force, enemy_force = hp + 10 * own_min, enemy + 10 * enemy_max
+    own_score, enemy_score = own_force * ac, enemy_force * ec
+    if (own_force * 10 <= enemy_force * BEHIND_EGG_RATIO_TENTHS
+            or own_score * 2 <= enemy_score * 3):
+        return None
+    return {'rule': 'healthy_melee_margin', 'ally_hp': hp, 'enemy_hp': enemy,
+            'ally_max_hp': maximum, 'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+            'soldiers_observed': [ours, theirs], 'ally_soldiers_min': own_min,
+            'enemy_soldiers_max': enemy_max, 'ally_force_min': own_force,
+            'enemy_force_max': enemy_force, 'ally_melee_score_min': own_score,
+            'enemy_melee_score_max': enemy_score, 'score_margin': [3, 2],
+            'army_basis': 'observed' if ours is not None and theirs is not None else 'pessimistic_bounds'}
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
@@ -1132,6 +1190,8 @@ def _hold_melee_egg(mem, cur, labels):
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS):
         return False
+    if _healthy_melee_margin_evidence(mem, cur) is not None:
+        return True
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
     maximum = max((n for n in (general_max_hp('しゅじんこう' if cur.get('ally') == NAME
