@@ -256,6 +256,11 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions = prompts_flow.trade_guard_step(screen, mem, phase=phase)
         trade_guard_hold = (phase == 'dialogue' and actions == []
                             and (mem.get('trade_guard') or {}).get('held') is True)
+    bijin_guard_hold = False
+    if actions is None:
+        actions = prompts_flow.bijin_guard_step(screen, mem, phase=phase)
+        bijin_guard_hold = (phase == 'dialogue' and actions == []
+                            and (mem.get('bijin_guard') or {}).get('held') is True)
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -399,7 +404,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold
+    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
             and not isinstance(mem.get('resume_egg_ritual'), dict)
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'

@@ -748,13 +748,21 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
+<<<<<<< HEAD
     assert state['bot_version'] == 'hanjuku-chart-v227-healthy-egg-margin'
+=======
+    assert state['bot_version'] == 'hanjuku-chart-v227-bijin-request-decline'
+>>>>>>> 5fd38819 (fix(hanjuku): 美女の依頼は所持金1000G以下・読取不明では必ず断る)
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_finishing_resource_policy():
     from docich.hanjuku_bot import BOT_VERSION
+<<<<<<< HEAD
     assert BOT_VERSION == 'hanjuku-chart-v227-healthy-egg-margin'
+=======
+    assert BOT_VERSION == 'hanjuku-chart-v227-bijin-request-decline'
+>>>>>>> 5fd38819 (fix(hanjuku): 美女の依頼は所持金1000G以下・読取不明では必ず断る)
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -978,6 +986,94 @@ def test_unaffordable_gift_request_is_recognised_and_answered():
     assert s.kind == 'gift_request'
     assert policy.gift_step(s, mem)[0]['buttons'] == ['a']
     assert mem['_records'][-1]['observed_metric'] == {'price': 100, 'affordable': False}
+
+
+def test_bijin_request_at_the_gold_floor_declines_with_the_refusal_choice():
+    # 倒転王国 monthlyevent.html: her question carries custom choices
+    # うんデヘヘ! (accept → 香水100G/車200G/家500G menu) / けえんな! (decline).
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 1000G')
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    c.text(184, 183, 'うんデヘヘ!')
+    c.text(184, 199, 'けえんな!')
+    c.hand(162, 177)   # the game rests the hand on the accept row
+    mem = {}
+    assert policy.bijin_guard_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    d = Canvas()
+    d.text(48, 15, '1ねん 6のつき 1000G')
+    d.text(24, 39, 'きょうは おねがいが あって きたの')
+    d.text(24, 55, 'きいてくれる?')
+    d.text(184, 183, 'うんデヘヘ!')
+    d.text(184, 199, 'けえんな!')
+    d.hand(162, 193)
+    assert policy.bijin_guard_step(parse(d.frame()), mem)[0]['buttons'] == ['a']
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'decline_bijin_below_floor' and rec['choice'] == 'けえんな!'
+
+
+def test_bijin_request_with_standard_labels_also_declines_below_the_floor():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 500G')
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    mem = {}
+    s = parse(c.frame())
+    assert s.kind == 'yes_no'
+    assert policy.bijin_guard_step(s, mem)[0]['buttons'] == ['down']
+
+
+def test_bijin_request_above_the_floor_keeps_the_existing_route():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 1001G')
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    c.text(184, 183, 'うんデヘヘ!')
+    c.text(184, 199, 'けえんな!')
+    c.hand(162, 177)
+    mem = {}
+    assert policy.bijin_guard_step(parse(c.frame()), mem) is None
+    assert 'bijin_guard' not in mem
+
+
+def test_bijin_request_with_unreadable_gold_declines():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき')   # no G amount on the header
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    c.text(184, 183, 'うんデヘヘ!')
+    c.text(184, 199, 'けえんな!')
+    c.hand(162, 193)   # already on the refusal row
+    mem = {}
+    assert policy.bijin_guard_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_bijin_unread_gold'
+
+
+def test_bijin_request_with_unreadable_refusal_row_holds_without_blind_a():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 500G')
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    c.text(184, 183, 'うんデヘヘ!')
+    c.text(184, 199, '????????')
+    c.hand(162, 193)
+    mem = {}
+    assert policy.bijin_guard_step(parse(c.frame()), mem) == []
+    assert (mem.get('bijin_guard') or {}).get('held') is True
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+def test_bijin_request_speech_page_keeps_the_ordinary_progress():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 500G')
+    c.text(24, 39, 'きょうは おねがいが あって きたの')
+    c.text(24, 55, 'きいてくれる?')
+    mem = {}
+    assert policy.bijin_guard_step(parse(c.frame()), mem) is None
+    assert isinstance(mem.get('bijin_guard'), dict)
 
 
 def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source():
