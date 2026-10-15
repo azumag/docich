@@ -112,6 +112,7 @@ GitHub上の自動コミット、常駐watcherは導入しない。
   2. **切替**: artifactの `source` をtracked sourceへ切り替え、workflowが配布前に
      新capabilityを必須確認する。ownerが手順1のgatewayを導入していない場合、
      deployはupload前に拒否され、中途半端な投影は作られない。
+- schema 1 の `output_sha256` は見出しを含むバイト列の契約です。tracked source への切替でも既存の見出しを維持します。見出し中の `handoff.md` は互換表記で、実際の入力は artifact の `source` と `source_sha256` で検証します。見出し変更は別schemaの移行として扱い、既存gatewayのcapabilityだけで互換と判断しません。
 - workflowは配布前にstatusの `capabilities` に `parent_ops_brief_v1`、
   `parent_ops_brief_tracked_source_v1`、`projection_no_clobber_v1` があることを
   必須確認する。古いgatewayが生成物を無視してdeploy成功を返すケースを防ぐ。
