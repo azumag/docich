@@ -22,6 +22,7 @@ ALLOWED = {
     'src/docich/hanjuku/flows/battle_menus.py',
     'src/docich/hanjuku/version.py',
     'tests/test_hanjuku_chart_bot.py',
+    'tests/test_hanjuku_combat_strength.py',
 }
 OLD_VERSION = 'hanjuku-chart-v222-hero-losing-melee-rescue'
 NEW_VERSION = 'hanjuku-chart-v223-value-aware-retreat'
@@ -50,6 +51,31 @@ def once(text, before, after):
     if text.count(before) != 1:
         raise ValueError('reviewed source anchor no longer matches')
     return text.replace(before, after, 1)
+
+
+def update_expectations():
+    path = 'tests/test_hanjuku_combat_strength.py'
+    old_name = 'test_hp_double_alone_cannot_release_retreat_protection_for_weak_attack'
+    new_name = 'test_hp_double_is_not_advantage_but_weak_general_can_accept_risk'
+    if 'def ' + old_name in Path(path).read_text():
+        function_edit(path, old_name, lambda old:
+            old.replace(old_name, new_name, 1)
+            .replace('assert p._hero_retreat_needed(cur) is True',
+                     'assert p._hero_retreat_needed(cur) is False', 1)
+            .replace("assert p._hero_retreat_open({'battle': cur}, cur) == [p.pad('b')]",
+                     "assert p._hero_retreat_open({'battle': cur}, cur) is None\n"
+                     "    assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'\n"
+                     "    cur['survival']['exhausted'] = False\n"
+                     "    assert p._hero_retreat_needed(cur) is True", 1))
+    function_edit(path, 'test_observed_zero_is_not_a_conserved_rescue_resource', lambda old: once(old,
+        '        assert p._hero_retreat_needed(cur)\n',
+        '        assert not p._hero_retreat_needed(cur)\n'
+        "        assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'\n"))
+    function_edit(path, 'test_hotloaded_conservation_rechecks_a_new_named_zero_before_continuing', lambda old: once(old,
+        "    assert cur['survival']['exhausted'] is True and p._hero_retreat_needed(cur)\n",
+        "    assert cur['survival']['exhausted'] is True and not p._hero_retreat_needed(cur)\n"
+        "    assert cur['retreat_assessment']['reason'] == 'accept_risk_after_resources_exhausted'\n"
+        "    assert mem['egg_uses']['チコリ'] == 0\n"))
 
 
 def apply():
@@ -83,6 +109,7 @@ def apply():
         if OLD_VERSION not in text and NEW_VERSION not in text:
             raise ValueError('bot version changed concurrently')
         path.write_text(text.replace(OLD_VERSION, NEW_VERSION))
+    update_expectations()
     subprocess.run(['git', 'diff', '--check'], check=True)
     report = Path('retreat-development-report')
     report.mkdir(exist_ok=True)
@@ -97,7 +124,6 @@ def api(endpoint, payload=None):
     result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
                             text=True, capture_output=True, check=False)
     if result.returncode:
-        # Do not dump headers or environment on failure.
         raise RuntimeError(f'GitHub request failed for reviewed endpoint ({result.returncode})')
     return json.loads(result.stdout)
 
