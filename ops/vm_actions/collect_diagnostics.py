@@ -1535,6 +1535,17 @@ def _collect_workers(soren, now):
         "required_down": sorted(n for n in stopped if n in required),
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
+        # Deliberately outside ``details``: the size budget clears that whole
+        # block (see _diagnostics_budget), but the registered chat worker's
+        # identity is exactly what an owner switching the classifier's provider
+        # (#2301) must be able to compare before and after the replacement. A
+        # PID and liveness are not secrets and are already published elsewhere
+        # in this projection (e.g. webui.main_pid).
+        "chat_worker": {
+            "pid": (details.get("chat_worker") or {}).get("pid"),
+            "alive": bool((details.get("chat_worker") or {}).get("alive")),
+            "stale_pid_file": bool((details.get("chat_worker") or {}).get("stale_pid_file")),
+        },
     }
 
 

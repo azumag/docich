@@ -906,6 +906,33 @@ def test_semantic_decision_retained_block_preflights_both_switch_directions():
     assert result['retained']['direct']['credential'] == 'present'
 
 
+def test_workers_projection_publishes_the_registered_chat_worker_identity_outside_details(tmp_path):
+    # #2301: an owner switching the classifier's provider must be able to
+    # compare the chat worker before and after the replacement. ``details`` is
+    # cleared by the size budget on a full production envelope, so the
+    # registered chat worker's identity is published as its sibling.
+    module = load_collector()
+    soren = tmp_path / "soren"
+    state = soren / "tmp" / "state"
+    state.mkdir(parents=True)
+    (state / "chat_worker.pid").write_text(f"{os.getpid()}\n", encoding="ascii")
+    workers = module._collect_workers(soren, 1)
+    identity = {"pid": os.getpid(), "alive": True, "stale_pid_file": False}
+    assert workers["chat_worker"] == identity
+    assert workers["details"]["chat_worker"]["pid"] == os.getpid()
+
+    payload = {
+        "ai": {"recent_events": [{"detail": "x" * 4000} for _ in range(20)]},
+        "nethack_history": {"daily": {"records": []}, "completed_runs": {"records": []}},
+        "corners": {},
+        "workers": workers,
+    }
+    module._diagnostics_budget(payload)
+    assert payload["workers"]["details"] == {}
+    assert payload["workers"]["chat_worker"] == identity
+    assert json.dumps(payload["workers"]["chat_worker"])
+
+
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
     # The docich classifier calls Jev only when this is exactly "jev"; its
     # plain value is kept alongside the derived "backend".
