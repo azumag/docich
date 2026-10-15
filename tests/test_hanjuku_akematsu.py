@@ -56,14 +56,31 @@ def test_first_greeting_then_hospitality_even_when_hp_unchanged(events):
         assert state['monster_menu_choice'] == 'skill2'
 
 
-def test_repeated_predicted_cursor_does_not_count_greeting_as_sent(events):
+def test_unreadable_cursor_bounds_greeting_to_one_unverified_attempt(events):
     state = mem()
+    assert menus.monster_menu_step(view(cursor=None), state) == [menus.pad('a')]
+    proof = state['battle']['akematsu_exchange']
+    assert proof['greeting_submitted'] is False
+    assert proof['greeting_unverified_attempt'] is True
+    # The controller must not emit endless greetings when OCR cannot read
+    # the cursor. It changes the next action without pretending a swap happened.
+    assert menus.monster_menu_step(view(cursor=None), state) == [menus.pad('down')]
+    assert state['monster_menu_choice'] == 'skill2'
+    assert events[-1][1]['observed_metric']['akematsu_exchange']['rule'] == (
+        'hospitality_after_unverified_attempt')
     for _ in range(3):
         assert menus.monster_menu_step(view(cursor=None), state) == [menus.pad('a')]
         assert state['battle']['akematsu_exchange']['greeting_submitted'] is False
-    assert menus.monster_menu_step(view(cursor=160), state) == [menus.pad('a')]
-    assert state['battle']['akematsu_exchange']['greeting_submitted'] is True
-    assert menus.monster_menu_step(view(cursor=160), state) == [menus.pad('down')]
+
+
+def test_unverified_greeting_attempt_is_not_confused_with_confirmed_input():
+    state = mem()
+    akematsu_command_selected(
+        state, panel(), panel('ハデス', 500), 'skill1', cursor_confirmed=False)
+    assessment = akematsu_assessment(state, panel(), panel('ハデス', 500))
+    assert assessment['rule'] == 'hospitality_after_unverified_attempt'
+    assert assessment['greeting_submitted'] is False
+    assert assessment['greeting_unverified_attempt'] is True
 
 
 def test_cached_predeploy_greeting_is_replaced_after_first_new_policy_tick(events):
