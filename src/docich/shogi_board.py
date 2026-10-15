@@ -95,7 +95,7 @@ def parse_sfen(sfen: str):
             if char.isdigit():
                 count = count * 10 + int(char)
                 continue
-            if char.upper() not in PROMOTED:
+            if char.upper() not in "RBGSNLP":
                 raise BoardError("invalid sfen hand")
             side = "sente" if char.isupper() else "gote"
             hands[side][char.upper()] = hands[side].get(char.upper(), 0) + (count or 1)
