@@ -9,6 +9,7 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
+from ..strategy.bargains import merchant_card_spendable, plan_bargains
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough)
@@ -41,7 +42,7 @@ def shop_step(screen: Screen, mem):
         return quantity_step(screen, mem)
     # shop_list
     gold = (screen.header or {}).get('gold')
-    if not shop or shop.get('key') != _month_key(screen.header) or not shop['items']:
+    if not shop or shop.get('key') != _month_key(screen.header):
         return [pad('b')]
     spendable = _merchant_spendable(mem, shop, screen.header)
     if spendable is None:
@@ -52,17 +53,20 @@ def shop_step(screen: Screen, mem):
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m:
             listed[m.group(1)] = int(m.group(2))
+    plan_bargains(mem, shop, screen.header, listed=listed)
     while shop['items']:
         name, qty = shop['items'][0]
         price = listed.get(name)
-        if type(qty) is not int or qty <= 0 or price is None or price <= 0 or price > spendable:
+        available = merchant_card_spendable(mem, shop, screen.header, name, price)
+        if (type(qty) is not int or qty <= 0 or price is None or price <= 0
+                or available is None or price > available):
             _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
                     deviation_reason='invalid_quantity' if type(qty) is not int or qty <= 0
                                      else 'not_listed' if price is None else 'reserved_funds',
                     reason='商人の品揃えまたは全賃金・未払回復等を保持した購入予算の制約')
             shop['items'].pop(0)
             continue
-        n = min(qty, spendable // price)
+        n = min(qty, available // price)
         shop['items'][0] = [name, n]
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
@@ -239,7 +243,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         if screen.hand and 'うむッ' in screen.text and screen.selected in ('うむッ!', 'いかんッ!'):
             if value == target and target:
                 quotes = re.findall(r'(\d+)こで(\d+)Gになりまんな', ''.join(screen.text.split()))
-                spendable = _merchant_spendable(mem, shop, screen.header)
+                spendable = merchant_card_spendable(mem, shop, screen.header, want[0], want[2])
                 if (type(target) is not int or target <= 0
                         or type(want[2]) is not int or want[2] <= 0
                         or len(quotes) != 1 or int(quotes[0][0]) != value
@@ -250,9 +254,12 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if move == 'here':
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
+                    extra = want[0] in (shop.get('bargain_cards') or [])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
-                            chart_step=month_chart_step(mem), strategy_variant=shop.get('variant', 'chart'),
-                            reason='チャート/予算計画どおりの個数を確認して購入')
+                            chart_step=month_chart_step(mem),
+                            strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
+                            reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
+                                    if extra else 'チャート/予算計画どおりの個数を確認して購入'))
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
                     shop['want'] = None
