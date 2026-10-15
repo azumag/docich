@@ -1,0 +1,28 @@
+name: Hanjuku conservation development
+on:
+  push:
+    branches: [fix/hanjuku-safe-egg-conservation-20261016]
+    paths: [.github/workflows/hanjuku-conservation-dev.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    if: github.repository == 'azumag/docich' && github.ref == 'refs/heads/fix/hanjuku-safe-egg-conservation-20261016'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Archive tracked development sources only
+        run: |
+          git archive --format=zip HEAD -o "$RUNNER_TEMP/hanjuku-development.zip"
+          git rev-parse HEAD > "$RUNNER_TEMP/hanjuku-development-sha.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hanjuku-development-source
+          path: |
+            ${{ runner.temp }}/hanjuku-development.zip
+            ${{ runner.temp }}/hanjuku-development-sha.txt
+          retention-days: 1
