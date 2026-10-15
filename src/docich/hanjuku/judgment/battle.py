@@ -1227,6 +1227,11 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     Exhausted/failed attempts and summons keep the existing retreat route.
     """
     rescue = cur.get('survival') or {}
+    # A real conservation menu already inspected the egg. Recheck current
+    # strength before reopening it; danger cancels this permission.
+    if (rescue.get('conserving_melee') is True
+            and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
+        return False
     return (not cur.get('egg_battle') and _survival_needed(cur)
             and (_critical_survival_needed(cur) or not cur.get('planned_cards'))
             and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur)

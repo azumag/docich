@@ -134,3 +134,31 @@ def test_critical_hp_still_selects_an_available_egg_after_conservation():
     assert mem['battle']['survival']['egg_attempted'] is True
     # Selection is not a consumption receipt.
     assert mem['egg_uses']['ゼウス'] == 1
+
+
+def test_positive_egg_does_not_reopen_after_current_conservation():
+    from test_hanjuku_card_damage_gate import panel
+    mem = memory()
+    cur = mem['battle']
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    opens = cur['survival']['opens']
+    for _ in range(3):
+        p.battle_step(panel(mem, soldiers=(5, 0)), mem)
+    assert cur['survival']['opens'] == opens
+    assert not any(r.get('decision') == 'battle_egg_before_retreat' for r in mem['_records'])
+    assert cur['survival']['egg_attempted'] is False
+    cur['ally_hp'] = 12
+    assert p._egg_before_retreat(mem, cur) is True
+
+
+def test_diagnostics_accepts_exact_new_version_without_allowing_unknown_text():
+    import importlib.util
+    from pathlib import Path
+    from docich.hanjuku.version import BOT_VERSION
+    path = Path(__file__).resolve().parents[1] / 'ops/vm_actions/collect_diagnostics.py'
+    spec = importlib.util.spec_from_file_location('egg_conservation_diagnostics', str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module._project_corner_state({'bot_version': BOT_VERSION})['bot_version'] == BOT_VERSION
+    for value in ('not-allowlisted-token', BOT_VERSION + '-extra', None):
+        assert module._project_corner_state({'bot_version': value})['bot_version'] is None
