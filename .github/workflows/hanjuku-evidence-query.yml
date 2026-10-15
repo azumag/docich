@@ -8,7 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: vm-storage-monitor-${{ github.repository }}
+  # Issue #1922: sharing `vm-storage-monitor-*` with the scheduled storage
+  # monitor lets a queued run that never starts cancel every later
+  # owner-triggered evidence request. VM operations are already serialized by
+  # the gateway's fixed `vm-operations.lock`, so this workflow owns its own
+  # group instead of sharing the monitor's queue.
+  group: hanjuku-evidence-query-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
