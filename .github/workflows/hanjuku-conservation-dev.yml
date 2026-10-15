@@ -4,25 +4,130 @@ on:
     branches: [fix/hanjuku-safe-egg-conservation-20261016]
     paths: [.github/workflows/hanjuku-conservation-dev.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  snapshot:
-    if: github.repository == 'azumag/docich' && github.ref == 'refs/heads/fix/hanjuku-safe-egg-conservation-20261016'
+  implement:
+    if: github.repository == 'azumag/docich' && github.ref == 'refs/heads/fix/hanjuku-safe-egg-conservation-20261016' && github.actor == 'azumag'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          persist-credentials: false
           submodules: false
-      - name: Archive tracked development sources only
-        run: |
-          git archive --format=zip HEAD -o "$RUNNER_TEMP/hanjuku-development.zip"
-          git rev-parse HEAD > "$RUNNER_TEMP/hanjuku-development-sha.txt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          name: hanjuku-development-source
-          path: |
-            ${{ runner.temp }}/hanjuku-development.zip
-            ${{ runner.temp }}/hanjuku-development-sha.txt
-          retention-days: 1
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: 'requirements*.txt'
+      - name: Apply exact scoped implementation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('src/docich/hanjuku/judgment/battle.py')
+          s=p.read_text()
+          needle='def _hold_melee_egg(mem, cur, labels):\n'
+          assert s.count(needle)==1
+          helper='''def _healthy_melee_margin_evidence(mem, cur):
+              """A scoped, healthy advantage even under pessimistic unread troop bounds.
+
+              A resource inspection is not evidence that an egg must be spent. Unknown
+              CURRENT troops range from zero to six: credit us with the lower bound
+              and the enemy with the upper bound, never store either as an observation.
+              Require a 3:2 combat-weighted margin, healthy HP and no losing HP trade.
+              These are conservative policy thresholds, not a damage/win prediction.
+              """
+              from ..os_layer.roster import run_identity
+              identity = run_identity(mem.get('_run_identity'))
+              ally, enemy_name = cur.get('ally'), cur.get('enemy')
+              if identity is None or not all(isinstance(n, str) for n in (ally, enemy_name)):
+                  return None
+              hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                              ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+              maximum = general_max_hp('しゅじんこう' if ally == NAME else ally)
+              enemy_maximum = general_max_hp(enemy_name)
+              if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
+                      or cur.get('card_soldiers_current') is not True
+                      or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+                      or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+                      or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
+                      or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
+                      or _own_egg_empty(mem, cur)
+                      or any(type(n) is not int or n <= 0 for n in
+                             (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+                      or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
+                      or not enemy <= enemy_start <= enemy_maximum
+                      or hp <= enemy or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS):
+                  return None
+              # A high starting score must not excuse a one-sided or losing live trade.
+              if hp < start and (enemy >= enemy_start
+                                 or (start - hp) * enemy_start > (enemy_start - enemy) * start):
+                  return None
+              ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+              if any(n is not None and (type(n) is not int or not 0 <= n <= 6)
+                     for n in (ours, theirs)):
+                  return None
+              balance = _melee_balance(cur)
+              ac, ec = balance['ally_combat'], balance['enemy_combat']
+              if any(type(n) is not int or not 1 <= n <= 15 for n in (ac, ec)):
+                  return None
+              own_min, enemy_max = (ours if ours is not None else 0), (theirs if theirs is not None else 6)
+              own_force, enemy_force = hp + 10 * own_min, enemy + 10 * enemy_max
+              own_score, enemy_score = own_force * ac, enemy_force * ec
+              if (own_force * 10 <= enemy_force * BEHIND_EGG_RATIO_TENTHS
+                      or own_score * 2 <= enemy_score * 3):
+                  return None
+              return {'rule': 'healthy_melee_margin', 'ally_hp': hp, 'enemy_hp': enemy,
+                      'ally_max_hp': maximum, 'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+                      'soldiers_observed': [ours, theirs], 'ally_soldiers_min': own_min,
+                      'enemy_soldiers_max': enemy_max, 'ally_force_min': own_force,
+                      'enemy_force_max': enemy_force, 'ally_melee_score_min': own_score,
+                      'enemy_melee_score_max': enemy_score, 'score_margin': [3, 2],
+                      'army_basis': 'observed' if ours is not None and theirs is not None else 'pessimistic_bounds'}
+
+
+          '''
+          s=s.replace(needle,helper+needle)
+          needle="    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')\n    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')\n    maximum = max("
+          assert s.count(needle)==1
+          s=s.replace(needle,"    if _healthy_melee_margin_evidence(mem, cur) is not None:\n        return True\n"+needle)
+          p.write_text(s)
+          p=Path('src/docich/hanjuku/flows/battle_menus.py');s=p.read_text()
+          s=s.replace('                               _melee_continuation_evidence,','                               _healthy_melee_margin_evidence, _melee_continuation_evidence,')
+          s=s.replace("'conservation': (_melee_continuation_evidence(mem, cur)\n", "'conservation': (_healthy_melee_margin_evidence(mem, cur)\n                                                  or _melee_continuation_evidence(mem, cur)\n")
+          s=s.replace("reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る'", "reason='実HP・戦闘力と観測兵数または未読兵数の不利側境界で白兵優位のため卵を温存して戻る'")
+          p.write_text(s)
+          old='hanjuku-chart-v226-general-egg-recheck';new='hanjuku-chart-v227-healthy-egg-margin'
+          for name in ('src/docich/hanjuku/version.py','tests/test_hanjuku_chart_bot.py'):
+              p=Path(name);s=p.read_text();assert old in s;p.write_text(s.replace(old,new))
+          p=Path('ops/vm_actions/collect_diagnostics.py');s=p.read_text();needle='            "'+old+'",';assert s.count(needle)==1;p.write_text(s.replace(needle,needle+'\n            "'+new+'",'))
+          p=Path('tests/test_hanjuku_overwhelming_egg_conservation.py');s=p.read_text();assert "{'enemy': 'クイーン'}, {'enemy_soldiers': None}," in s
+          p.write_text(s.replace("{'enemy': 'クイーン'}, {'enemy_soldiers': None},", "{'enemy': 'クイーン'}, {'enemy_soldiers': -1},"))
+          expected={
+              'docs/operations/hanjuku-healthy-egg-margin-20261016.md': 'ad45b45f6555bcbc3adc99639cda8257169677168327ba5b1e169eefe5702649',
+              'ops/vm_actions/collect_diagnostics.py': '8468c0749f36ccd9c423e5f5e6e1dd5f7c22afbe4fd8741601272d9cc5504b14',
+              'src/docich/hanjuku/flows/battle_menus.py': '5dc42bffd34b6945b0410b5bc090d16a15cf21bff196ddfd438ffdfa3e814ff1',
+              'src/docich/hanjuku/judgment/battle.py': 'bf7bbab38f8b4d37835fdccfa5541b9c8c5ae40d2eadc101710e568eb519b77d',
+              'src/docich/hanjuku/version.py': '84204827516a0c9b52feae1bad9830b443a4e1cbc64b2663ef47b3851d5239b1',
+              'tests/test_hanjuku_chart_bot.py': '9190cdb90c2cc3b77d33ba43ffc4a81d7990d8c3cb6674e932fc345d674d785e',
+              'tests/test_hanjuku_healthy_egg_margin.py': '4d5f0e1de3d0be14f6dd9b2f568385afd6941d50f6b04320181fd33dced62e52',
+              'tests/test_hanjuku_overwhelming_egg_conservation.py': '20ccc84ed300be9c295e6a85dd54abe524c61a802f19fc8d1352d9f60ec22bf3',
+          }
+          for name, digest in expected.items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==digest, name
+          print('All eight modified files match the locally validated bytes.')
+          PY
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Validate conservation and emergency contracts
+        run: |
+          python3 -m compileall -q src/docich/hanjuku
+          python3 -m pytest -q tests/test_hanjuku_healthy_egg_margin.py tests/test_hanjuku_egg_timing.py tests/test_hanjuku_general_egg_recheck.py tests/test_hanjuku_overwhelming_egg_conservation.py tests/test_hanjuku_conserved_army_reobserve.py tests/test_hanjuku_survival.py tests/test_hanjuku_combat_strength.py tests/test_hanjuku_melee_hp_continuation.py tests/test_hanjuku_unread_battle_force.py
+          git diff --check
+      - name: Commit only the reviewed implementation to this branch
+        run: |
+          test "$(git ls-remote origin refs/heads/fix/hanjuku-safe-egg-conservation-20261016 | cut -f1)" = "$GITHUB_SHA"
+          git add ops/vm_actions/collect_diagnostics.py src/docich/hanjuku/flows/battle_menus.py src/docich/hanjuku/judgment/battle.py src/docich/hanjuku/version.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_overwhelming_egg_conservation.py
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(hanjuku): conserve healthy advantage with pessimistic troop bounds'
+          git push origin HEAD:refs/heads/fix/hanjuku-safe-egg-conservation-20261016
