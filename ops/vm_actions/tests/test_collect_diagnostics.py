@@ -80,6 +80,12 @@ def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path)
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_excluded_map_collapses_non_string_reasons():
+    module = load_collector()
+    for reason in ([], {}, [{}], {"unexpected": "DO-NOT-PUBLISH"}, None, True, 7, 3.5):
+        assert module._rotation_excluded_projection({"yosou-oh": reason}) == {"yosou-oh": "unknown"}
+
+
 def test_rotation_excluded_map_is_absent_and_bounded(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
@@ -336,7 +342,7 @@ def test_yosou_end_reason_survives_diagnostics():
     # only place an operator can read why a bounded run ended. An unknown value
     # still collapses to None.
     module=load_collector()
-    for reason in ('duration','manual','operator-moved-during-yosou',
+    for reason in ('duration','audio-complete','manual','operator-moved-during-yosou',
                    'operator-moved-after-start','operator-moved-before-restore',
                    'operator-stopped-before-start'):
         output=module._project_corner_state(
@@ -403,6 +409,54 @@ def test_yosou_announcement_counters_are_projected_and_bounded():
     assert module._project_corner_state(
         {'status':'completed','overlay_announcements':'SECRET'})['overlay_announcements'] is None
     assert module._project_corner_state({'status':'idle'})['overlay_announcements'] is None
+
+
+def test_doushi_end_reason_and_counters_survive_diagnostics():
+    # 同志カード is manual-only and default-disabled, so diagnostics is the only
+    # place an operator can read why a bounded run ended or which sink took the
+    # announcement. Unknown values still collapse to None.
+    module=load_collector()
+    for reason in ('duration','manual','operator-moved-during-doushi',
+                   'operator-moved-after-start','operator-moved-before-restore',
+                   'operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'doushi-view','end_reason':reason})
+        assert output['end_reason']==reason
+        assert output['game']=='doushi-view'
+    assert module._project_corner_state(
+        {'status':'completed','game':'doushi-view','end_reason':'SECRET-END-REASON'})['end_reason'] is None
+
+    counters=module._project_corner_state({
+        'status':'completed','game':'doushi-view',
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0,'secret':'DO-NOT-PUBLISH'},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert counters['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    assert counters['narration']=={'enqueued':1,'delivery_failed':0,'skipped':0}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(counters)
+
+
+def test_doushi_corner_state_is_collected_without_the_ranking_or_lease(tmp_path):
+    # The transient ranking payload and the runtime identity stay out of
+    # diagnostics: only statuses, timestamps and counters may leave state_dir.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    (state_dir/'runtimes'/'g4-a1b2c3d4').mkdir(parents=True)
+    (state_dir/'doushi_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'doushi-view',
+        'end_reason':'operator-moved-during-doushi','completed_at':1.0,
+        'doushi_runtime_identity':{'game':'doushi-view','runtime_id':'g4-a1b2c3d4',
+                                   'generation':4,'lease_id':'SECRET-LEASE'},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0}}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['doushi_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['game']=='doushi-view'
+    assert entry['end_reason']=='operator-moved-during-doushi'
+    assert entry['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
 
 
 PULSE_SINK_INPUTS = (
@@ -1292,6 +1346,55 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(boundary["improvement"]["age_sec"], 300)
         self.assertEqual(boundary["prediction"]["present"], False)
         self.assertEqual(boundary["prediction"]["age_sec"], -1)
+
+    def test_boundary_reports_the_shared_audio_queue(self):
+        module = load_collector()
+        queue = self.soren / "tmp" / ".comment_queue"
+        queue.mkdir(parents=True)
+        queued = queue / "comment_announce_1_2_3_chat.txt"
+        queued.write_text("DO-NOT-PUBLISH-TEXT")
+        playing = queue / "comment_announce_4_5_6_yosou-intro.playing"
+        playing.write_text("DO-NOT-PUBLISH-TEXT-2")
+        os.utime(queued, (self.now - 120, self.now - 120))
+        os.utime(playing, (self.now - 30, self.now - 30))
+        (queue / "processed_batch_hashes.log").write_text("DO-NOT-PUBLISH-LOG")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        self.assertEqual(result["boundary"]["audio"], {
+            "present": True,
+            "readable": True,
+            "queued": 1,
+            "playing": 1,
+            "oldest_age_sec": 120,
+            "quiet": False,
+            "reason": "queued+playing",
+        })
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
+
+    def test_boundary_audio_queue_absent_or_unreadable_never_blocks(self):
+        module = load_collector()
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], True)
+        self.assertEqual(audio["queued"], 0)
+        self.assertEqual(audio["playing"], 0)
+        self.assertEqual(audio["oldest_age_sec"], -1)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "quiet")
+        # A path that cannot be listed is reported, but the corners still run.
+        (self.soren / "tmp" / ".comment_queue").write_text("not a directory")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], False)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "unreadable")
 
     def test_ab_state_is_reported_without_hashes_or_env(self):
         module = load_collector()
@@ -2331,6 +2434,33 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
             == corner_rotation.AUTO_RESTORE_ATTEMPT_LIMIT)
 
 
+def test_audio_queue_projection_matches_the_corner_boundary_contract(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich import comment_queue
+
+    module = load_collector()
+    (tmp_path / "tmp" / "state").mkdir(parents=True)
+    queue = tmp_path / "tmp" / ".comment_queue"
+    queue.mkdir()
+    (queue / "comment_announce_1_2_3_chat.txt").write_text("x")
+    (queue / "comment_announce_4_5_6_chat.playing").write_text("y")
+    (queue / "processed_batch_hashes.log").write_text("z")
+    (queue / "radio_1_2_news_3.txt").write_text("w")
+    (queue / "comment_announce_7_8_9_chat.txt.speaker").write_text("speaker")
+    with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": str(queue)}):
+        audio = module._collect_audio_queue(tmp_path, int(time.time()))
+        counts = comment_queue.backlog_counts(queue)
+        assert comment_queue.is_quiet(queue) is False
+    assert counts == (audio["queued"], audio["playing"]) == (1, 1)
+    assert audio["quiet"] is False
+    # The collector's read-only projection and the boundary resolver must agree
+    # about which files are queue items, or diagnostics would explain the wrong
+    # reason a corner is waiting.
+    assert comment_queue.comment_queue_dir(tmp_path) == queue
+
+
 def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):
     module = load_collector()
     (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
@@ -3367,3 +3497,271 @@ def test_prediction_ownership_rejects_a_symlinked_runtime_parent():
         "/memory", {"next_poll_at": 1300}, dict(_HANJUKU_ROUND_IDENTITY))
     assert result["blocker"] == "runtime-missing" and result["runtime_present"] is False
     assert memory.reads == [] and memory.handles == {}
+
+
+def _presentation_memory_module(source):
+    """Reuse the dictionary-backed FD harness; never create state fixtures."""
+    import ast
+    import io
+    import posixpath
+    from types import SimpleNamespace
+
+    memory = _prediction_memory_module(source)
+    nodes, handles, reads = memory.nodes, memory.handles, memory.reads
+    stats = []
+
+    def resolve(path):
+        path = posixpath.normpath(str(path))
+        for prefix, node in sorted(nodes.items(), key=lambda item: len(item[0])):
+            if node["kind"] == "symlink" and (path == prefix or path.startswith(prefix + "/")):
+                path = posixpath.normpath(node["target"] + path[len(prefix):])
+                break
+        node = nodes.get(path)
+        if node is None:
+            raise FileNotFoundError
+        return path, node
+
+    class MemoryPath(memory.path):
+        def __truediv__(self, name):
+            return MemoryPath(self.path / name)
+
+        def is_file(self):
+            try:
+                return resolve(self)[1]["kind"] == "file"
+            except FileNotFoundError:
+                return False
+
+        def read_text(self, encoding="utf-8"):
+            path, node = resolve(self)
+            if node["kind"] != "file":
+                raise OSError("synthetic nonregular text source")
+            raw = node["raw"]
+            reads.append({"path": path, "limit": None, "bytes": len(raw)})
+            return raw.decode(encoding)
+
+        def stat(self):
+            path, node = resolve(self)
+            stats.append({"kind": "path_stat", "path": path})
+            return SimpleNamespace(st_mtime=node.get("path_mtime", 1))
+
+    class MemoryReader(io.StringIO):
+        """Latin-1 backing preserves every byte for a fake binary FD read."""
+        def __init__(self, path, node, binary=False):
+            self.path, self.binary = path, binary
+            raw = node.get("raw", b"")
+            super().__init__(raw.decode("latin-1" if binary else "utf-8", errors="replace"))
+            self.read_error = node.get("read_error")
+
+        def read(self, limit=-1):
+            if self.read_error:
+                raise OSError("synthetic read error")
+            value = super().read(limit)
+            if self.binary:
+                value = value.encode("latin-1")
+            reads.append({"path": self.path, "limit": limit,
+                          "bytes": len(value) if self.binary else len(value.encode())})
+            return value
+
+    def fstat(fd):
+        path, node = handles[fd]
+        stats.append({"kind": "fstat", "path": path, "fd": fd})
+        if node.get("fstat_error"):
+            raise OSError("synthetic stat error")
+        return SimpleNamespace(
+            st_mode={"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                     "fifo": stat.S_IFIFO}.get(node["kind"], 0),
+            st_size=node.get("reported_size", len(node.get("raw", b""))),
+            st_mtime=node.get("fd_mtime", 999))
+
+    def fdopen(fd, mode, closefd=False):
+        path, node = handles[fd]
+        return MemoryReader(path, node, binary=True)
+
+    def text_open(path, mode, encoding=None, errors=None):
+        path, node = resolve(path)
+        return MemoryReader(path, node)
+
+    memory.module.update(Path=MemoryPath, open=text_open, re=__import__("re"))
+    memory.module["os"].fstat = fstat
+    memory.module["os"].fdopen = fdopen
+    names = {"_presentation_record_nofollow", "_collect_runtime_presentation",
+             "_read_text_capped", "_load_state_file"}
+    constants = {"_PRESENTATION_STATUSES", "_RUNTIME_ID_RE"}
+    selected = [node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name in names
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    exec(compile(ast.Module(body=selected, type_ignores=[]),
+                 "<memory-presentation-projection>", "exec"), memory.module)
+    memory.stats, memory.path = stats, MemoryPath
+    return memory
+
+
+def _presentation_memory_fixture(source, runtime_id="g7-abcdef12"):
+    memory = _presentation_memory_module(source)
+    record = "/memory/runtimes/" + runtime_id + "/presentation.json"
+    memory.nodes["/memory/runtimes/" + runtime_id] = {"kind": "dir"}
+    memory.nodes["/memory/game_switch.json"] = {
+        "kind": "file", "raw": json.dumps({"active": {"runtime_id": runtime_id}}).encode()}
+    memory.nodes[record] = {"kind": "file", "raw": json.dumps({
+        "status": "ready", "display": ":99", "window": "123456789012",
+        "width": 640, "height": 480, "pid": 1234,
+        "argv": ["DO-NOT-PUBLISH"], "private": "DO-NOT-PUBLISH"}).encode(),
+        "fd_mtime": 999, "path_mtime": 1}
+    return memory, record
+
+
+def _presentation_memory_collect(memory):
+    result = memory.module["_collect_runtime_presentation"]("/memory", 1000)
+    assert memory.handles == {}
+    assert "DO-NOT-PUBLISH" not in json.dumps(result)
+    # The shared fake rejects link/nonregular nodes on other grounds too.
+    # Check flags explicitly so removing a safety flag cannot stay green.
+    for call in memory.opens:
+        assert call["flags"] & os.O_NOFOLLOW
+        if not call["flags"] & os.O_DIRECTORY:
+            assert call["flags"] & os.O_NONBLOCK
+    return result
+
+
+def test_presentation_memory_retains_status_geometry_and_same_fd_mtime():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for status in ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped"):
+        memory, record = _presentation_memory_fixture(source)
+        value = json.loads(memory.nodes[record]["raw"])
+        value["status"] = status
+        memory.nodes[record]["raw"] = json.dumps(value).encode()
+        assert _presentation_memory_collect(memory) == {
+            "present": True, "readable": True, "active_runtime": True,
+            "status": status, "display": ":99", "window": "123456789012",
+            "width": 640, "height": 480, "age_sec": 1}
+        assert all(call["kind"] == "fstat" for call in memory.stats)
+        assert all(call["limit"] == 65537 for call in memory.reads)
+
+
+def test_presentation_memory_rejects_dot_components_before_record_lookup():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for runtime_id, outside in ((".", "/memory/runtimes/presentation.json"),
+                                ("..", "/memory/presentation.json")):
+        memory, record = _presentation_memory_fixture(source, runtime_id)
+        memory.nodes[outside] = memory.nodes[record]
+        result = _presentation_memory_collect(memory)
+        assert result["active_runtime"] is False and result["readable"] is False
+        assert [call["path"] for call in memory.reads] == ["/memory/game_switch.json"]
+        assert all(call["path"] != outside for call in memory.opens)
+
+
+def test_presentation_memory_rejects_each_parent_and_leaf_symlink():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    record = "/memory/runtimes/g7-abcdef12/presentation.json"
+    for link in ("/memory", "/memory/game_switch.json", "/memory/runtimes",
+                 "/memory/runtimes/g7-abcdef12", record):
+        memory, _ = _presentation_memory_fixture(source)
+        memory.nodes["/outside"] = dict(memory.nodes[link])
+        for name, node in tuple(memory.nodes.items()):
+            if name.startswith(link + "/"):
+                memory.nodes["/outside" + name[len(link):]] = dict(node)
+        memory.nodes[link] = {"kind": "symlink", "target": "/outside"}
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False and result["status"] is None
+        assert all(not call["path"].startswith("/outside") for call in memory.reads)
+        assert len(memory.reads) == (0 if link in ("/memory", "/memory/game_switch.json") else 1)
+
+
+def test_presentation_memory_caps_actual_canonical_and_record_reads():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        memory, record = _presentation_memory_fixture(source)
+        path = "/memory/game_switch.json" if target == "canonical" else record
+        node = memory.nodes[path]
+        node.update(raw=node["raw"] + b" " * (1024 * 1024), reported_size=1)
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False
+        assert result["active_runtime"] is (target == "presentation")
+        assert memory.reads[-1] == {"path": path, "limit": 65537, "bytes": 65537}
+
+
+def test_presentation_memory_accepts_exact_byte_limit_and_rejects_one_more():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for size in (65536, 65537):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            raw = memory.nodes[path]["raw"]
+            memory.nodes[path]["raw"] = raw + b" " * (size - len(raw))
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is (size == 65536)
+            assert all(call["limit"] == 65537 and call["bytes"] <= 65537 for call in memory.reads)
+
+
+def test_presentation_memory_fails_closed_for_bad_or_nonregular_records():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for replacement in (None, {"kind": "dir"}, {"kind": "fifo"},
+                            {"kind": "file", "raw": b"not-json"},
+                            {"kind": "file", "raw": b"[]"},
+                            {"kind": "file", "raw": b"\xff"},
+                            {"kind": "file", "raw": b"{}", "read_error": True},
+                            {"kind": "file", "raw": b"{}", "fstat_error": True},
+                            {"kind": "file", "raw": b"[" * 2000 + b"]" * 2000}):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            if replacement is None:
+                del memory.nodes[path]
+            else:
+                memory.nodes[path] = dict(replacement)
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is False and result["status"] is None
+            if replacement is None and target == "presentation":
+                assert result["present"] is False
+            if replacement and replacement["kind"] in ("dir", "fifo"):
+                assert all(call["path"] != path for call in memory.reads)
+
+
+def test_presentation_memory_preserves_field_bounds_and_public_shape():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for state in ({"status": [], "display": ":1234", "window": "a",
+                   "width": True, "height": 4097, "secret": "DO-NOT-PUBLISH"},
+                  {"status": "DO-NOT-PUBLISH", "display": ":-1", "window": "1" * 13,
+                   "width": 0, "height": -1}):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["raw"] = json.dumps(state).encode()
+        result = _presentation_memory_collect(memory)
+        assert result == {"present": True, "readable": True, "active_runtime": True,
+                          "status": None, "display": None, "window": None,
+                          "width": None, "height": None, "age_sec": 1}
+
+
+def test_presentation_memory_preserves_age_bounds():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for mtime, expected in ((-1, None), (0, 1000), (999, 1), (1001, 0),
+                             (1000 + 86400, 0), (1001 + 86400, None)):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["fd_mtime"] = mtime
+        assert _presentation_memory_collect(memory)["age_sec"] == expected
+
+
+def test_tsuitate_review_projection_is_bounded():
+    # The 衝立将棋 感想戦 projects where its facts came from, whether the model
+    # spoke, and the move count. The narration text, the opponent's name, the
+    # move list and the board must never be published.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'completed','game':'tsuitate-view',
+        'review':{'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet',
+                  'model_failure':'gate','moves':50,'text':'DO-NOT-PUBLISH',
+                  'opponent':'someone','moves_list':['5g5h']},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed',
+                             'boundary':'quiet','model_failure':'gate','moves':50}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+    assert 'someone' not in json.dumps(output)
+    assert '5g5h' not in json.dumps(output)
+
+    assert module._project_corner_state({'status':'idle'})['review'] is None
+    assert module._project_corner_state(
+        {'status':'completed','review':{'source':'SECRET','kind':'x','failure':'boom',
+                                       'boundary':'later','model_failure':'boom','moves':'many'}}
+    )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,
+                  'model_failure':None,'moves':None}

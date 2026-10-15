@@ -83,6 +83,14 @@ def parse_sink_inputs(text: str) -> list[dict]:
             if m:
                 cur['application'] = m.group(1)
                 continue
+            # Only exact reviewed identifiers become booleans. Never retain
+            # arbitrary application IDs or stream-restore property strings.
+            if s == 'application.id = "docich.corner-bgm"':
+                cur['corner_bgm_id'] = True
+                continue
+            if s == 'module-stream-restore.id = "docich-corner-bgm"':
+                cur['corner_bgm_restore'] = True
+                continue
             # A fixed role set is what separates BGM/SE playback from speech or
             # monitor capture; an unknown role is left unset rather than
             # reported as a free-form string (#968).

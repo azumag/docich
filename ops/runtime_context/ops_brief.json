@@ -1,11 +1,11 @@
 {
-  "output_sha256": "15f7efa3a0f98d83578fecc190803f70842e1cc3df809160c404455eea4aef57",
+  "output_sha256": "871dc3e5d3bbacdcbc48ba738151c4c724c896234b1c67130ab67bc67c7032a5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "64cb6ebadb7123c19c1a53223bc8b921bc21ec5f9c136e374ae2ed66377da9e0",
+  "source_sha256": "50d9e674de871838c3ee2af846f9594aa3b58b579888364919880a2b584afbda",
   "topics": [
-    "#2152 の切替前提を整備し、#2180 の hot-load 境界 必須所見3件を修正",
-    "コーナーローテーションの tsuitate ラッチ診断と恒久修正 PR（#2187 / #2188）",
-    "未マージPRの精査・マージと本番反映"
+    "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中",
+    "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認",
+    "同志カードのTwiCa本番受入完了・docich最終CI待ち"
   ]
 }

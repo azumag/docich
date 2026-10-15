@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import time
 
+from .comment_queue import comment_queue_dir, is_quiet
 from .trading.soren_output import resolve_soren_root
 
 QUEUE_DIR = 'docich_program_queue'
@@ -80,20 +81,36 @@ def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float)
     return requested_at <= stamp <= now
 
 
-def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
-    """Confirmed prediction boundary while a prediction is actually in flight.
+def _audio_queue_quiet(state_dir: Path) -> bool:
+    """True while the shared comment/audio queue is completely quiet.
 
-    Only an in-flight prediction holds the corner back (so the prediction is
-    not paused mid-count). Improvement cycles and interleaved A/B are not
-    gated: the match/round boundary that keeps a game from being cut is owned
-    by the game-switch coordinator, and A/B simply pauses and resumes. A
-    stopped or paused prediction worker never blocks, and when no prediction
-    is in flight the corner may proceed immediately.
+    ``state_dir`` is ``<soren>/tmp/state`` (see ``program_slot``), so the Soren
+    root the shell sink runs in is two levels up. Both the queued ``.txt`` and
+    the playing ``.playing`` marker hold the corner back: an intro must not cut
+    into a comment that is already being read out. A missing or unreadable queue
+    is quiet, so a broken queue never blocks every corner.
+    """
+    return is_quiet(comment_queue_dir(Path(state_dir).parent.parent))
+
+
+def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
+    """Confirmed prediction and audio boundary before a corner may start.
+
+    Two conditions hold a corner back:
+
+    - an in-flight prediction (only while the prediction worker actually runs,
+      so a stopped worker never blocks the corners forever), and
+    - a non-empty shared comment/audio queue (queued or playing item).
+
+    Improvement cycles and interleaved A/B are not gated: the match/round
+    boundary that keeps a game from being cut is owned by the game-switch
+    coordinator, and A/B simply pauses and resumes. When no prediction is in
+    flight and the audio queue is quiet the corner may proceed immediately.
     """
     now = time.time() if now is None else now
     if _prediction_in_flight(state_dir) and not _fresh_boundary(state_dir, 'prediction', requested_at, now):
         return False
-    return True
+    return _audio_queue_quiet(state_dir)
 
 
 @contextmanager
@@ -264,7 +281,7 @@ def _earlier_waiter_exists(root, key, requested_at):
 
 @contextmanager
 def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll_s=5.0,
-                  requested_at=None, queue_status='waiting'):
+                  requested_at=None, queue_status='waiting', wait_boundary=False, now=time.time):
     """キュー待ち付き program 占有。順番が来たら所有権を取って yield する。
 
     待ち行列はキー別ファイル (FIFO: 先に待ち始めた他コーナーを追い越さない)。
@@ -287,9 +304,9 @@ def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll
                 except BlockingIOError:
                     pass
                 else:
-                    if _owner_free(root, owner_state) and not _earlier_waiter_exists(
+                    if (_owner_free(root, owner_state) and not _earlier_waiter_exists(
                         root, key, requested_at
-                    ):
+                    ) and (not wait_boundary or boundary_ready(root, requested_at, now=now()))):
                         from .game_switch import atomic_write_json
                         atomic_write_json(root / REGISTRY_FILE, {'owner_state': str(owner_state)})
                         _queue_write(root, key, status='running')
@@ -342,7 +359,8 @@ def program_slot(g, owner_state, *, requested_at, wait_deadline_ts, wait_boundar
             _queue_write(root, key, status='error' if isinstance(exc, ProgramRegistryError) else 'cancelled')
             raise
     with _program_slot(root, owner_state, wait_deadline_ts, sleep=sleep, poll_s=poll_s,
-                       requested_at=requested_at, queue_status='waiting_turn') as slot_root:
+                       requested_at=requested_at, queue_status='waiting_turn',
+                       wait_boundary=wait_boundary, now=now) as slot_root:
         yield slot_root
 
 

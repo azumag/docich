@@ -325,22 +325,52 @@ function renderLive(data) {
   }
 }
 
+// Visibility-aware presentation polling. Trading decision/risk/fill paths are
+// untouched: this only gates browser-side read-only refreshes and pauses them
+// while the tab is hidden, matching the #970 Web UI polling guidance. In-flight
+// requests are deduplicated so a slow response never stacks fetches.
+let dashboardPollInFlight = false;
+let livePollInFlight = false;
+
 async function poll() {
+  if (document.hidden) return;
+  if (dashboardPollInFlight) return;
+  dashboardPollInFlight = true;
   try {
     const res = await fetch("/api/trading/dashboard", { cache: "no-store" });
     if (res.ok) render(await res.json());
-  } catch (e) { /* keep the last frame; the server is local and read-only */ }
+  } catch (e) { /* keep the last frame; the server is local and read-only */ } finally {
+    dashboardPollInFlight = false;
+  }
 }
 
 async function pollLive() {
+  if (document.hidden) return;
+  if (livePollInFlight) return;
+  livePollInFlight = true;
   try {
     const res = await fetch("/api/trading/live", { cache: "no-store" });
     if (res.ok) renderLive(await res.json());
-  } catch (e) { /* preserve last live frame */ }
+  } catch (e) { /* preserve last live frame */ } finally {
+    livePollInFlight = false;
+  }
 }
 
-poll();
-pollLive();
-setInterval(poll, 2000);
-setInterval(pollLive, 1000);
+let dashboardTimer = null;
+let liveTimer = null;
+function startPolling() {
+  if (dashboardTimer) return;
+  if (!document.hidden) { poll(); pollLive(); }
+  dashboardTimer = setInterval(poll, 2000);
+  liveTimer = setInterval(pollLive, 1000);
+}
+function stopPolling() {
+  if (dashboardTimer) { clearInterval(dashboardTimer); dashboardTimer = null; }
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else startPolling();
+});
+startPolling();
 window.addEventListener("resize", () => render.lastData && render(render.lastData));

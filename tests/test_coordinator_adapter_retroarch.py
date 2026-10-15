@@ -182,6 +182,15 @@ class TestReadiness(RetroArchCoordinatorTestBase):
     def _ready_window(self):
         self.tmux.windows["docich:game-g1"] = ("g1-abcdef", 1, "game")
 
+    def test_presentation_command_opts_into_bounded_reprojection(self):
+        from dataclasses import replace
+        self.adapter.g = replace(self.g,
+            display=replace(self.g.display, viewport_width=960, viewport_height=540))
+        command = self.adapter._game_command()
+        self.assertIn("--runtime-state", command)
+        # #2097: a shared display restart must not leave the game area black.
+        self.assertIn("--reproject-on-player-loss", command)
+
     def test_readiness_ok_when_window_pane_and_port_ok(self):
         self._ready_window()
         with mock.patch("docich.adapters.retroarch.send_ra_cmd", return_value="GET_STATUS OK"):

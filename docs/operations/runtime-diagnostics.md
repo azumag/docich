@@ -88,6 +88,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
                      "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
+  "runtime_presentation": {"present": true, "readable": true, "active_runtime": true,
+                           "status": "ready", "display": ":1", "window": "2097160",
+                           "width": 299, "height": 224, "age_sec": 12},
   "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
             "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
             "served_reachable": true, "served_matches_deployed": true,
@@ -116,6 +119,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `runtime_presentation` は **canonical が active とする runtime** の投影状態
+  （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
+  `status` は `starting` / `ready` / `presentation_failed` / `cleanup_failed` / `stopped` の
+  固定enumに限定し、`display` / `window` / `width` / `height` は形式検証済みの値、
+  `age_sec` は記録ファイルのmtimeからの経過秒。`groups`（pid）・argv・path・自由文は出さない。
+  共有display再起動後に投影が復帰したことは、`status` が `presentation_failed` から
+  `ready` へ戻り `age_sec` が更新されることで確認する（#2097）。
 - `corners.<id>.end_reason` は固定enumのみを出す。`interrupted` で
   `switch-terminal-before-corner-active` の場合、その枠は**ゲーム切替が起動前に
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
@@ -445,6 +455,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
+- boundary.audio: 共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定
+  `<soren>/tmp/.comment_queue`）の `comment_*.txt` / `comment_*.playing` の
+  件数、最古itemのage、固定enum `reason`（`quiet` / `queued` / `playing` /
+  `queued+playing` / `unreadable`）、`present` / `readable`。item名・本文・
+  queue内のログは読まない・出さない。Soren `.env` は読まない（secretを含むため。
+  本番は既定値）。キューが無い・読めない場合は `quiet=true`（#2236の境界は
+  塞がない）。**どのコーナーが何で待っているか**は、この `reason` と
+  `corner_boundary_prediction.json` の age、worker健全性の組み合わせで読む。
 - A/B: Soren `tmp/state/ab_state.json`（pattern / started_at / 件数 / mtime）、
   `ab_games.jsonl`（行数・tainted 数・最終 arm）、`ab_candidate/`（有無）。
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
@@ -666,12 +684,16 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 
-owner起動の Soren91 evidence export（`.github/workflows/soren91-evidence-export.yml`）は
-専用の concurrency group `soren91-evidence-export-<repo>` を持つ。#1922 のとおり、
-scheduled `vm-storage-monitor` と同一 group を共有すると、開始しない queued run が
-group を占有して以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなる。
-VM 操作の直列化は gateway の固定 `vm-operations.lock` が担うため、group は二重の
-防御であり、失敗時に owner の read-only 証跡取得まで止める必要はない。
+owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.yml`、
+`.github/workflows/hanjuku-evidence-query.yml`、
+`.github/workflows/hanjuku-evidence-export.yml`）はそれぞれ専用の concurrency group
+（`soren91-evidence-export-<repo>` / `hanjuku-evidence-query-<repo>` /
+`hanjuku-evidence-export-<repo>`）を持ち、scheduled `vm-storage-monitor` と同一 group
+を共有しない。#1922 のとおり、開始しない queued run が shared group を占有して
+以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなるからである。
+monitor 側は引き続き `vm-storage-monitor-<repo>` を維持し、VM 操作の直列化は
+gateway の固定 `vm-operations.lock` が担うため、group は二重の防御であり、失敗時に
+owner の read-only 証跡取得まで止める必要はない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
@@ -699,6 +721,14 @@ diagnostics は active runtime と manifest のgeneration/ownership一致、固�
 更新からの経過秒、cleanup完了だけを投影する。PID、argv、profile path、例外本文は公開しない。
 
 ## Runtime 変更 checklist
+
+通常コーナーの共通BGMは、独立した `corner_bgm` 要約で確認する。
+`soren-bgm.service` の状態、workerの30秒heartbeatとMainPIDの一致、開始判定の固定reason、
+所有ffplayの生存・終了コード・終了回数、専用Pulse識別子と親子関係で確認したstreamの
+mute/corked/音量/`soren_null`への接続を投影する。古いworkerのsnapshotは `stale` とし、
+その判定を現在の状態に流用しない。一般の `pulse_sink_inputs.streams` が出力予算で省略されても
+この要約は保持する。`running` や `mute=false` は信号・配信音声の確認を意味しない。
+読み取り不能は不明として扱い、raw環境変数・argv・音源パス・playerのstderrは出力しない。
 
 worker / queue / model / provider / fallback / runtime component を変えたら：
 

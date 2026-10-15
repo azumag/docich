@@ -51,6 +51,12 @@ docich側HMAC bridgeでも同じshapeを再検証します。PlayerViewは表示
 終局前に公開されません。`status` 以外の応答（start / stop / reconcile）と保存済みrun receiptは
 `snapshot()` の形のままなので、receipt replayの応答形は変わりません。
 
+この契約は変わりません。コーナー終了後の**感想戦**（読み上げ）は、終局時にサイトが公開する
+公開リプレイ（`/games/<gameId>/__data.json`）を docich 側が終局後に1回だけ読んで組み立てます
+（`src/docich/tsuitate_review.py`、固定host・redirect禁止・上限つき・fail-closed）。着手列と盤面は
+その場で読み捨て、corner state に残すのは読み上げ文と有界カウンタだけです。配信 view へ盤面・
+持ち駒・棋譜を出すことはなく、Worker の保存記録にも棋譜を追加しません。
+
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
 queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。停止にはこのstop操作を使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。
@@ -73,6 +79,12 @@ Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで
 `DOCICH_BETA_CONTROL_URL` の2項目だけを適格性確認・1局実行のスコープへ渡します。
 `DOCICH_WEBUI_TOKEN` / `DOCICH_WEBUI_READONLY_TOKEN` その他の値は子コーナー環境へ
 exportせず、control secretとの再利用を検出した場合はfail-closedにします。
+
+同じ2項目は、`tsuitate-view` 自身の世代session（tmux）にも `_game_session_env()` で渡します。
+tmux は session の環境を server から作るため、渡さないと view の `POST /beta-control status` が
+`control_not_configured` になり、`/api/tsuitate` は `ok:false`（「制御接続を確認できません」）を
+返し続けて readiness が成立せず、switch は deadline 超過で rollback します。渡すのはこの2項目だけで、
+WebUI の operator/viewer token は view の session へも出しません。
 
 ローカル検証は `npm test` と `npm run test:beta-workerd`、repo rootから `python3 -m pytest -q tests/test_tsuitate_beta_control.py` です。一時SQLite・localhostのWebUI/Engine.IO/Socket.IO・明示fixture値だけでoperator→HMAC→DO、viewer/CSRF拒否、並行再送、手動2回目開始、旧run停止無効、rollback、sync-only復元、終局保存・再起動を確認します。Miniflare v5はinline bundleと `resourcePersistencePath` を使い、再起動前後のDO IDと未確認着手を照合します。
 

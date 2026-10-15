@@ -86,6 +86,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "yosou-view":
         from .yoso_program import make_yoso_view_adapter
         return make_yoso_view_adapter(g, spec)
+    if spec.game == "doushi-view":
+        from .doushi_program import make_doushi_view_adapter
+        return make_doushi_view_adapter(g, spec)
     game = load_game(g, spec.game)
     # NetHack remains a normal CLI game for legacy obs/send and for existing
     # installations.  The save-safe coordinator lifecycle is an explicit

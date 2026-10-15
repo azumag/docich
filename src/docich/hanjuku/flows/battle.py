@@ -25,10 +25,11 @@ from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, 
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
-                               _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
+                               _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
                                _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
-                               _survival_state, _tactic_enemy_ok, reset_battle_controls)
+                               _survival_state, _tactic_enemy_ok, reset_battle_controls,
+                               HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME
@@ -641,6 +642,29 @@ def _melee_step(mem, cur):
     cur['melee_holds'] = 0 if safe else holds + 1
     if probe:
         cur['card_damage_probe_ticks'] = probe_ticks + 1
+    if safe and not probe and _hero_losing_melee(cur):
+        # Mashing a hero trade we are measurably losing ends the run: after
+        # the hold budget the melee would push to HP 0 (g749 hero/Athena).
+        # The command menu is the only way out of a defense, so reopen it
+        # while its result is still unobserved, bounded per fight.
+        rescue = _survival_state(mem, cur)
+        reopens = int(rescue.get('hero_reopens') or 0)
+        if (rescue.get('menu_ticks', 0) == 0 and not rescue.get('egg_attempted')
+                and reopens < HERO_SURVIVAL_REOPEN_LIMIT):
+            rescue.update(hero_reopens=reopens + 1, exhausted=False,
+                          pending_opens=0, menu_ticks=0)
+            _record(mem, 'battle_hero_survival_recheck', **_battle_labels(cur),
+                    enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'),
+                    ally_hp=cur.get('ally_hp'),
+                    observed_metric={'melee_balance': _melee_balance(cur),
+                                     'episode': reopens + 1, 'limit': HERO_SURVIVAL_REOPEN_LIMIT,
+                                     'ally_hp_bled': ((start_hp - hp)
+                                                      if type(start_hp) is int and type(hp) is int
+                                                      else None),
+                                     'enemy_hp': cur.get('enemy_hp'),
+                                     'enemy_opening_hp': cur.get('start_enemy_hp')},
+                    reason='主人公だけが押し負けている白兵のため、未確認の戦闘メニューを再び開いて卵・切り札を探す')
+            return _human_menu_open(cur, 'survival')
     mode = 'card_damage_probe' if probe else 'power_mash' if safe else 'egg_safe_hold'
     egg_window = _defender_egg_window(mem, cur)
     taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS

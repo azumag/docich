@@ -35,6 +35,106 @@ allowlist から組み立てます。`outcome`（Bot視点）/ `reason` / `ended
 - `tsuitate_corner` は自身の runId が一致し `finished` のときだけ結果をコーナー状態へ保存します。
   別 run の結果は混入しません。
 
+## broadcast view の制御capability
+
+`tsuitate-view` は GameSwitch の世代session（tmux）で `python -m docich.tsuitate_view` として
+動き、`/api/tsuitate` の応答を自分で `POST /beta-control status` から組み立てます。view が
+制御APIへ到達できないと状態ラベルではなく「制御接続を確認できません」を返します。
+
+tmux は session の環境を server から作るため、`TsuitateProgramViewAdapter._game_session_env()`
+が `DOCICH_BETA_CONTROL_SECRET` / `DOCICH_BETA_CONTROL_URL`（`CAPABILITY_ENV_KEYS`）を
+session へ明示的に渡します。`TsuitateCornerAdapter.run()` も同じ2 keyだけを
+`runtime_environment()` で1局のスコープへ出し、WebUI の operator/viewer token は渡しません。
+
+この2 keyが欠けると `/api/tsuitate` は `ok:false` を返し続け、adapter の readiness が成立せず、
+switch は deadline 超過で rollback してコーナーは一度も active になれません。
+
+配信ページ自体もブラウザ翻訳の対象外にします（`<html lang="ja" translate="no">` と
+`<meta name="google" content="notranslate">`）。翻訳ツールバーは右上の枠に重なるため、
+view 側の標準は [`broadcast-html-view-standard.md`](broadcast-html-view-standard.md) に従います。
+
+## 読み上げ: コーナー紹介と感想戦
+
+コーナーは view が表示を取った時点で**紹介**を1回、終局結果が確定した時点で**感想戦**を1回、
+共通の overlay と音声queueへ出します（`tsuitate_narration`）。音声は catalog 行の
+`audio_enabled`（本番は有効）、感想戦の生成は `[tsuitate_corner] review_agents` の明示opt-inです。
+どちらも at-most-once（副作用の前に request id を保存）で、sink の失敗は件数カウンタに残し、
+コーナーや GameSwitch を失敗させません。
+
+紹介は固定文です。衝立将棋が「相手の駒が見えない状態で指す将棋」で、見えない駒の合法性を判定
+できるのはサーバーだけ＝合法だと思った手が反則になるのが正常な流れであること、反則10回で
+反則負け、持ち時間300秒＋1手3秒、終局後に公開棋譜から感想戦をすること、を読み上げます。
+
+感想戦の入力は、終局時に**公開される**事実だけです。サイトは対局中の相手情報を通知せず、
+`game:end` で公開棋譜・終局図・レート変動・相手の身元を初めて公開します。docich はその公開
+リプレイ（`/games/<gameId>/__data.json`）を**終局後に1回だけ**読み（`tsuitate_review`）、
+固定host・https・redirect禁止・本文/表/手数の上限つき・fail-closed で、次だけを取り出します。
+
+- 勝敗・終局理由・手数・両者の考慮時間・反則数・レート変動・公開された相手名・成り/打ちの回数。
+
+`verify()` が gameId・終局時刻・終局理由（分かる場合は勝敗も）を確定済み結果と照合し、一致
+しなければ感想戦には使いません。**着手列・盤面は保存しません**: リプレイはその場で読み捨て、
+corner state に残るのは生成した読み上げ文と `review`（`source` / `kind` / 手数）の有界カウンタ
+だけです。配信 view には従来どおり盤面・持ち駒・棋譜を出しません。
+
+`review_agents` が非空なら、検証済みの事実だけを入力に共通LLMで2〜3文を生成し、失敗・timeout・
+安全でない出力（長さ・記号・URL・英語比率）は定型文へ fallback します。モデルには盤面を渡さず、
+駒種・捕獲・隠し情報を推測しないよう指示します。**なぜ定型文へ落ちたか**は `review.model_failure`
+（`none` / `unsafe` / `gate` / `timeout` / `rate_limit` / `provider` / `exception`）として state と
+診断に残し、無言の fallback を追えるようにします。
+
+### 感想戦の棋譜ショー（盤面＋棋譜＋一手ごとの表示）
+
+感想戦は結果の読み上げではなく、**公開棋譜を追いながら一手ずつ盤面と棋譜を出して解説する**
+ショーです。実装は `tsuitate_show`（payloadと進行）と `tsuitate_view`（表示）。
+
+- **盤面の再構成**: 公開リプレイは指し手（USI）と終局SFENしか持たないため、標準初期局面へ
+  指し手を適用して盤面を作ります（`shogi_board`）。ルールエンジンではなく**適用器**で、
+  合法性・王手・詰みは判定しません。`reconstruct` が**サイトの `finalSfen` と一致しなければ
+  棋譜ショーを行わず**、検証済みの終局結果へ戻ります（fail-closed）。
+- **payload**: corner が `<state_dir>/tsuitate_review.json` に1つだけ書きます（atomic・
+  0600・上限256KiB・最大512手）。view の runtime identity（`runtime_id` / `generation`）で
+  固定し、別世代の payload は表示しません。着手列・盤面はこのショーのためだけの一時データで、
+  コーナー終了（世代終了）とともに消えます。
+- **表示**: `tsuitate-view` はショーが有効なとき盤面（漢字の駒、後手は反転）と現在の手を
+  中心にした棋譜リスト、その区間の解説文を出します。`/api/tsuitate` が現在の手数、
+  `/api/tsuitate/kifu` が棋譜本体を返します。**対局中は従来どおり**盤面・持ち駒・棋譜を
+  出しません（終局後にサイトが公開したものだけを、終局後のショーとして表示します）。
+- **進行**: ゲームを最大6区間に分け、区間ごとに根拠付きの局面解説を1本話し、
+  その間 display は一手ずつ進みます。全体は
+  `MAX_SHOW_SECONDS`（420秒）で有界。区間の切れ目では共有オーディオqueueの境界を待ちます。
+- **解説内容**: `tsuitate_analysis` が区間内の焦点を最大3件作ります。角道・飛車道、成り、
+  持ち駒への変換、実際の次手での取り返し（区間の境界を越えた応手も含む）、直後に
+  取られる危険を説明し、利点・代償と具体的な比較候補を添えます。全着手を読み上げません。
+- **候補の範囲**: 公開後の盤面で、盤上の駒の移動・遮り・成り・自玉の安全を確認します。
+  持ち駒の打ち手、千日手、連続王手、深い読み、評価値は扱いません。局所的な候補選別は
+  形勢評価や最善手探索ではありません。当時見えなかった情報から意図や悪手を断定せず、
+  各解説に公開後の比較であることと限界を明記します。盤面不一致では解説を捏造しません。
+- **LLMの役割**: 設定済みの経路・呼出上限を維持し、検証済み候補の `focus` をJSONで
+  選択させます。任意の生成文は放送せず、選ばれた候補の根拠・比較・限界をそのまま
+  読み上げます。選択不正・障害・LLM無効時も同じ局面分析を決定的に選ぶため、棋譜の
+  列挙へ戻りません。`commentary_ai` はLLMによる焦点選択が成功した区間数です。
+- ショーの成否は `review.show`（`moves` / `board` / `commentary_ai` / `commentary_fallback` /
+  `seconds`）に残し、コーナーや GameSwitch を失敗させません。
+
+### 感想戦前のオーディオ境界待ち
+
+感想戦は、共有オーディオqueue（`comment_queue` が解決する `comment_*.txt` /
+`comment_*.playing`）が**完全に静かになるまで待ってから**読み上げます。再生中のコメントや
+コーナー告知の途中に感想戦が割り込まないためで、コーナー入りの境界（#2236）と同じ判定を
+出口側でも使います。
+
+- 待ちは `REVIEW_BOUNDARY_WAIT_S`（既定180秒）で有界。**期限切れでも感想戦は読みます**
+  （fail-open）。queue が無い・読めない場合も「静か」として即座に進み、コーナーや
+  GameSwitch を塞ぎません。
+- 待っている間は結果カードが画面に出たままです（コーナーが共有program枠を保持）。
+- 音声が無効（catalog の `audio_enabled` が false）のときは待ちません（読み上げないため）。
+- 結果は `review.boundary`（`quiet` / `timeout` / `unavailable` / `skipped`）として state と
+  診断に残します。
+- コーナー**入り**の境界（予想in-flight + audio queue 静穏、`rotation_wait_minutes` で有界）は
+  既存の `corner_boundary` が担い、view系コーナーはそれを待ってから開始します。この節は
+  その**出口**側の待ちです。
+
 ## コーナーの有界終了
 
 `TsuitateCornerManager` は beta が active になってから `max_match_seconds`（既定1800秒）を超えると、

@@ -1,11 +1,12 @@
 # 予想王コーナー — チャネルポイント予想の的中率ランキング（設計案）
 
 - Status: **PR-1（オフライン中核）／PR-2a（半熟英雄の記録フック）／PR-2b（Soren の記録フック）／
-  PR-3（`yoso` adapter・view・catalog登録）／PR-4 の実装部分（読み上げ・eventOverlay）実装済み**。
-  production catalog は **2026-10-14 オーナー承認で `enabled = true`・`manual_only = true`**
-  （手動予約のみ。自動抽選には入らない）。有効化は
-  `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行い、
-  読み上げも行う場合は `audio_enabled = true` を足す（§4参照）。TwiCa 前景への表示は
+  PR-3（`yoso` adapter・view・catalog登録）／PR-4（読み上げ・eventOverlay・コーナー紹介）実装済み**。
+  production catalog は **2026-10-14 オーナー承認で `enabled = true`**、**2026-10-15 オーナー判断で
+  `manual_only` を解除して24時間 rolling rotation の自動抽選に組み入れ**（手動予約も従来どおり可能）、
+  **2026-10-15 オーナー判断で `audio_enabled = true`**
+  （コーナー紹介と上位3名の読み上げ）。有効化・自動抽選・読み上げは
+  `config/docich.soren-live.toml` の当該行の変更で行う（§4参照）。TwiCa 前景への表示は
   **2026-10-15 のオーナー判断で対象外**（§4.1。docich 側は共通 eventOverlay までを担当する）。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
@@ -26,7 +27,9 @@
 - 「予想王」= 対象期間で最も的中率が高い視聴者。
 - 半熟英雄（`どこまで到達できるか`）と Soren（`12ゲーム中に建国できる？`）の結果を
   共通の台帳形式で蓄積し、1枚のランキングへ集約する。
-- 表示は 960×540 の読み取り専用ビュー（既存 weather / paper と同じ合成 view 方式）＋読み上げ。
+- 表示は 960×540 を基準にした読み取り専用ビュー（既存 weather / paper と同じ合成 view 方式）＋読み上げ。
+  配信では weather と同じく**ディスプレイ全画面**（本番 1280×720）に提示し、960×540 のステージを
+  縦横比維持で拡大する（§3「全画面表示」、#2237）。
 
 本ドキュメントは #933 の「統計の記録仕様とランキング表示の仕様を定義し、コーナー追加案として起案」に答える。
 
@@ -67,6 +70,14 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 追記単位: `rounds[<prediction_id>]` に、**`RESOLVED` になった予想を1回だけ**記録する。
   - `prediction id` をキーにした冪等追記。再送・再精算の tick が二重計上しない。
   - `ACTIVE` / `LOCKED` / `CANCELED` は記録しない（未確定・返還のため）。
+- **賭けが成立していない予想は `CANCELED` にして全額返却する**（2026-10-15 オーナー判断）:
+  精算の直前（半熟英雄は `LOCKED` 後、Soren は `resolve` の直前）に `GET /helix/predictions` の
+  `outcomes[].users` / `channel_points` を見て、賭けが入った選択肢が1つ以下（0件を含む）なら
+  勝者を出さず `CANCELED` にして投票済みポイントを全額返却する。1択しか賭けが無い予想は
+  賭けが成立しておらず、その1択が外れた場合に視聴者のポイントだけが失われるため。
+  件数が読めないとき（フィールド欠落・取得失敗・応答不正）は**現行どおり `RESOLVED` へ進む**
+  （settle を新しい理由で止めない）。半熟英雄は `hanjuku_predictions._no_contest`、
+  Soren は `twitch_predictions.sh` の `_contested_outcome_count` が同じ規則を実装する。
 - 1 round の内容:
   `{ corner, title, ended_at, winning_outcome_id, outcomes[{id,title,users,points}], predictors[] }`
 - 1 predictor の内容:
@@ -102,44 +113,80 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 表示: 上位 `limit`（既定 10）件。`順位 / 表示名 / 的中率(%) / 参加数 / 獲得ポイント`。
 - 集計期間: 台帳全体（全期間）。将来「直近 N 日」窓を追加できる。
 - 更新: 新しい予想が `RESOLVED` になるたび再計算。進行中の予想があるときは前回確定分を表示する。
-- 読み上げ: 上位 3 件程度を実況。視聴者の呼称は既存契約に合わせ「同志◯◯」。
-  実装は `yoso_narration.narration_text`（上限300字・1発話）で、`audio_enabled` の
-  opt-in があるときだけ共有 audio worker へ enqueue する。
-- overlay: corner 開始直後に `prediction` category の event を1件だけ積む
-  （`yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
+- コーナー紹介: corner 開始直後に、固定の紹介文を overlay と読み上げの両方へ1件ずつ出す
+  （`yoso_narration.INTRO_TEXT` / `INTRO_OVERLAY_BODY`。他コーナーの `ANNOUNCE_TEXT` と同じ役割）。
+  内容は「チャンネルポイント予想の的中率ランキングのコーナーである」ことと、
+  上位予想者だけを集計しているという但し書き。
+- 読み上げ: 上の紹介文と、上位 3 件の実況の**2発話**。視聴者の呼称は既存契約に合わせ「同志◯◯」。
+  実装は `yoso_narration.narration_text` / `INTRO_TEXT`（各 上限300字・1発話）で、
+  `audio_enabled` の opt-in があるときだけ共有 audio worker へ enqueue する
+  （context は `yosou:intro` / `yosou:ranking`、speaker は既定）。audio worker 側は
+  120秒以内の同一文面を重複として落とすため、同じ紹介文の連続発話は保証しない。
+- overlay: corner 開始直後に `prediction` category の event を**2件**積む
+  （紹介 `yosou:intro:<request>` と ranking `yosou:ranking:<request>`。
+  `yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
+  共有キューは `source_id` ごとに最新1件だけを残すため、紹介と ranking は
+  `source_id` を分ける（同じだと ranking が紹介を上書きする）。
+- 終了条件: `duration_minutes`（既定2分・1〜14分）は**上限**で、読み上げを入れた run は
+  自分の発話が共有 audio queue から消えた時点で `end_reason = "audio-complete"` として早期終了する
+  （天気予報 corner の音声完了と同じ考え方。2026-10-15 オーナー判断）。
+  queue が混んで発話が上限まで残る run は `end_reason = "duration"` で終わる。
+  判定は `yoso_narration.voice_items_in_flight()`（自分の `yosou:intro` / `yosou:ranking` の
+  `.txt` / `.playing` マーカーだけを数える）で、他 source のコメントや他 corner は数えない。
+- 開始境界（#2236）: 共有 audio queue が完全に静か（`comment_*.txt` / `comment_*.playing` が
+  0件）で、Soren の予想が in-flight なら確定境界が来るまで開始しない。待ちは
+  `rotation_wait_minutes`（既定10分）で有界で、超えるとその回は `expired` で飛ぶ。
+  再生中のコメントの後ろにイントロが割り込まないようにするための、**入り**の条件
+  （終了条件の `audio-complete` とは別）。詳細は `docs/corner-rotation.md` の
+  「コーナー入りの境界」。
+- 翻訳対象外: view は常に日本語表示で、翻訳すると集計の意味が変わる。
+  `yoso_view.HTML` は `<html lang="ja" translate="no">` と
+  `<meta name="google" content="notranslate">` を持ち、日本語UIのブラウザが出す
+  翻訳コントロール（日本語 / English）を出さない（2026-10-15 オーナー判断）。
+- 全画面表示（#2237、2026-10-15 オーナー判断）: 天気予報と同じ**配信ネイティブの情報画面**として扱い、
+  `display.width/height` が既知なら `(0, 0, width, height)`（本番 1280×720）の全画面で提示する
+  （`yoso_program.YosoProgramViewAdapter._viewer_command`。weather の前例 = PR #1874）。
+  `--window-size` も同寸法にし、960×540 のステージは view 自身の `fit()` が縦横比維持で拡大する。
+  ステータス枠・通知枠の位置・サイズは変更せず、コーナー終了時は既存 GameSwitch の復帰経路
+  （`audio-complete` 早期終了でも同じ）で元画面へ戻る。**枠を隠す/戻す専用の経路は追加しない**
+  （復帰の二重化を作らない）。`display.width/height` が無い環境では従来の `viewport` へ
+  fallback する。
 
 ## 4. コーナー追加案（番組ローテーションへの接続）
 
 - 新 adapter **`yoso`**（game id `yosou-view`）。`WeatherCornerAdapter` / `TsuitateCornerAdapter` と
   同列の**合成 view**（GameSwitch の program slot に乗る読み取り専用ビュー）。
-- ビューは台帳を **read-only** で読み、`予想王` ランキング表を 960×540 へ描画する。
+- ビューは台帳を **read-only** で読み、`予想王` ランキング表を 960×540 のステージへ描画する。
+  配信では `display.width/height` の全画面 `(0, 0)` に提示し、コーナー中だけステータス枠・通知枠を
+  覆う（枠自体の位置・サイズは動かさない。#2237）。
   既存ゲーム本体・配信 encoder・Soren の予想 worker は変更しない。
-- catalog 例（**手動予約のみ**で提案）:
+- catalog（起案時は**手動予約のみ**で提案していたが、2026-10-15 のオーナー判断で自動抽選にも入る）:
 
   ```toml
-  # 予想王: 予想的中率ランキング。手動予約のみ。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true }
+  # 予想王: 予想的中率ランキング。自動抽選＋手動予約。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true }
   ```
 
 - 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（既定 2 分、
   catalog の `duration_minutes` で 1〜14 分）で自動終了し、既存の GameSwitch 復帰経路へ戻す。
   手動 stop は開始前・表示中・復帰中のどこでも同じ bounded な restore 経路を通る。
-- 配備済みの catalog 登録（**2026-10-14 オーナー承認で有効化**）:
+- 配備済みの catalog 登録（**2026-10-14 有効化 / 2026-10-15 自動抽選へ追加・読み上げ有効化**）:
 
   ```toml
   # 予想王: チャネルポイント予想の的中率ランキング（上位予想者のみ集計）。
-  # 2026-10-14 オーナー承認で手動予約を有効化（enabled = true）。manual_only を
-  # 維持するため自動抽選には入らない。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, manual_only = true }
+  # 2026-10-14 オーナー承認で有効化（enabled = true）。
+  # 2026-10-15 オーナー判断で manual_only を解除し、24時間 rolling rotation の
+  # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
+  # 2026-10-15 オーナー判断で読み上げを有効化（audio_enabled = true）。
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true }
   ```
 
-- **有効化の契約**: `enabled = false` の行は rotation の適格判定で
+- **有効化・抽選の契約**: `enabled = false` の行は rotation の適格判定で
   `disabled-or-paused` になるため、WebUI の手動予約も `hanjuku_not_eligible` で拒否される。
-  手動予約を受け付けるには、同じ行を `enabled = true` にする（`manual_only = true` を維持する限り
-  自動抽選には入らず、適格判定では `manual-only` として除外される）。
+  自動抽選に入れるには `enabled = true` かつ `manual_only` を付けない（`manual_only = true` の行は
+  適格判定で `manual-only` として除外され、手動予約だけを受け付ける）。
   視聴者の表示名を配信へ出す扱いはオーナー判断（§5）。
-- 有効化後も自動抽選へ入れない（`manual_only = true` のまま）。本番反映は
-  `branch → PR → protected main → owner-only gateway` の正規フローで行う。
+- 本番反映は `branch → PR → protected main → owner-only gateway` の正規フローで行う。
 
 ### 4.1 TwiCa 前景への表示は対象外（2026-10-15 オーナー判断）
 
@@ -179,7 +226,7 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
 - [x] 予想精算時の記録フック（半熟英雄 `hanjuku_predictions.py`、PR-2a）
 - [x] 予想精算時の記録フック（Soren `twitch_predictions.sh` ＋ `soren_predictions.py`、PR-2b）
 - [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
-- [x] corner catalog 登録（`manual_only`。2026-10-14 オーナー承認で `enabled = true`、PR-3＋有効化PR）
+- [x] corner catalog 登録（2026-10-14 オーナー承認で `enabled = true`、2026-10-15 オーナー判断で `manual_only` を解除して自動抽選へ。PR-3＋有効化PR＋自動抽選PR）
 - [x] 読み上げ原稿（`yoso_narration.py`、`audio_enabled` opt-in、PR-4）
 - [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）
 - [x] TwiCa 前景への表示: 2026-10-15 オーナー判断で**対象外**（§4.1）
@@ -227,25 +274,26 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
    - `src/docich/webui.py`: 既存の durable manual queue 経由で予約・停止（専用 runner は追加しない）。
      `ops/vm_actions/collect_diagnostics.py` は `yoso_corner.json` の状態のみを投影する。
    - 回帰: `tests/test_yoso_view.py` / `tests/test_yoso_corner.py` / `tests/test_webui.py`（`yosou`）。
-4. **PR-4（実装部分は実装済み）**: 読み上げ・overlay、オーナー承認後の有効化と VM 反映。
-   - `src/docich/yoso_narration.py`: 台帳のサニタイズ済み board から読み上げ原稿と
-     overlay 本文を組み立てる。読み上げは上位3件を「第n位、同志◯◯、的中率◯◯パーセント、
-     ◯回中◯回的中、純増◯ポイント」の形で1発話（上限300字）。overlay は
-     `overlay_queue.append_event` の既存 `prediction` category へ「予想王」+ 上位5件 +
-     件数を bounded に出す（`source_id = yosou:<request_id>` で同一runの重複を防ぐ）。
-   - 発話は catalog の `audio_enabled` を明示したときだけ（既定 false）。共有 audio worker の
-     既定音声（`speaker=""`）へ `context="yosou:ranking"` で1件 enqueue する。独自の再生・
-     再試行・バックログは持たない。
+4. **PR-4（読み上げ・コーナー紹介まで実装済み）**: 読み上げ・overlay、有効化と VM 反映。
+   - `src/docich/yoso_narration.py`: 台帳のサニタイズ済み board から、固定のコーナー紹介
+     （`INTRO_TEXT` / `INTRO_OVERLAY_BODY`）と ranking 原稿を組み立てる。ranking の読み上げは
+     上位3件を「第n位、同志◯◯、的中率◯◯パーセント、◯回中◯回的中、純増◯ポイント」の形で
+     1発話（上限300字）。overlay は `overlay_queue.append_event` の既存 `prediction` category へ
+     紹介と ranking の2件を bounded に出す（`source_id = yosou:{intro,ranking}:<request_id>`。
+     共有キューは `source_id` ごとに最新1件だけを残すため分ける）。
+   - 発話は catalog の `audio_enabled` を明示したときだけ。共有 audio worker の既定音声
+     （`speaker=""`）へ `context="yosou:intro"` の紹介 → `context="yosou:ranking"` の ranking の
+     順で enqueue する（各1件、合計2件）。独自の再生・再試行・バックログは持たない。
    - 呼び出しは corner が active になった直後の1回だけ。`announce_request_id` を副作用の前に
-     保存するため、crash / resume で同じランキングを二度読むことはない（at-most-once）。
-     sink 失敗は `overlay_announcements` / `narration` の件数カウンタに残し、corner は
+     保存するため、crash / resume で同じコーナーを二度読むことはない（at-most-once）。
+     sink 失敗は `overlay_announcements` / `narration` の件数カウンタに残し（overlay は最大2件、
+     narration は `enqueued`/`delivery_failed`/`skipped` の合計が最大2件）、corner は
      失敗させない（診断は件数のみで、例外本文・視聴者名は出さない）。
    - **TwiCa 前景への表示は docich 単独では実装せず、2026-10-15 のオーナー判断で対象外**
      （§4.1。TwiCa 側の正本・配信フィードが必要で、予想と TwiCa にデータ接点が無い）。
      docich 側は共通 eventOverlay までを担当する。
-   - 有効化と VM 反映はオーナー承認後（`enabled = true`、発話するなら `audio_enabled = true`）。
-     2026-10-14 に `enabled = true` で配備済み。読み上げは 2026-10-15 のオーナー判断で
-     **入れない**（`audio_enabled` は未設定のまま＝ eventOverlay 告知のみ）。
+   - 有効化と VM 反映はオーナー承認後。2026-10-14 に `enabled = true`、2026-10-15 に
+     `audio_enabled = true`（コーナー紹介と上位3名の読み上げ）で配備済み。
 
 ## 8. 未確定・オーナー判断が要る点
 

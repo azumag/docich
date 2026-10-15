@@ -29,7 +29,7 @@ Observed sources (all read-only):
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
-    yoso_corner.json, retro_corner.json, paper_corner.json,
+    yoso_corner.json, doushi_corner.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
     trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
@@ -70,6 +70,10 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the shared comment/audio queue the corners also gate on
+    (${COMMENT_QUEUE_DIR:-tmp/.comment_queue}): only comment_*.txt /
+    comment_*.playing counts, a fixed reason enum and the oldest item's age.
+    Item names, texts and the Soren .env are never read out.
   - Soren game-lifecycle pause provenance (tmp/state/game_lifecycle/
     request.json, ack.json and the four fixed pause-ownership records):
     only the fixed request/ack status enums, whether a handover is active,
@@ -2901,6 +2905,7 @@ CORNER_STATE_FILES = {
     "weather_corner": "weather_corner.json",
     "tsuitate_corner": "tsuitate_corner.json",
     "yoso_corner": "yoso_corner.json",
+    "doushi_corner": "doushi_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -2919,6 +2924,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
+    "doushi_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -3554,6 +3560,82 @@ def _file_age_sec(path, now):
         return -1
 
 
+AUDIO_QUEUE_DEFAULT = "tmp/.comment_queue"
+AUDIO_ITEM_PREFIX = "comment_"
+AUDIO_QUEUED_SUFFIX = ".txt"
+AUDIO_PLAYING_SUFFIX = ".playing"
+
+
+def _comment_queue_dir(soren):
+    """The queue the audio worker consumes, as far as diagnostics may resolve it.
+
+    ``COMMENT_QUEUE_DIR`` from the collector's own environment wins; otherwise
+    the shell default ``tmp/.comment_queue`` below the Soren root. The Soren
+    ``.env`` is deliberately not read here: it holds secrets, and production
+    uses the default.
+    """
+    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
+    path = Path(raw) if raw else Path(AUDIO_QUEUE_DEFAULT)
+    return path if path.is_absolute() else soren / path
+
+
+def _collect_audio_queue(soren, now):
+    """Backlog of the shared comment/audio queue the corners gate on.
+
+    Only counts, fixed enums and ages are surfaced; item names, texts, the
+    queue's own logs and the Soren ``.env`` are never read. A missing or
+    unreadable queue is "quiet" because the corner boundary does not block on
+    it.
+    """
+    directory = _comment_queue_dir(Path(soren))
+    queued = playing = 0
+    readable = True
+    oldest_age = -1
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.startswith(AUDIO_ITEM_PREFIX):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                if name.endswith(AUDIO_QUEUED_SUFFIX):
+                    queued += 1
+                elif name.endswith(AUDIO_PLAYING_SUFFIX):
+                    playing += 1
+                else:
+                    continue
+                age = _file_age_sec(Path(entry.path), now)
+                if age >= 0 and (oldest_age < 0 or age > oldest_age):
+                    oldest_age = age
+    except FileNotFoundError:
+        pass  # No queue yet: nothing is queued, and that is not an error.
+    except OSError:
+        readable = False
+    if not readable:
+        reason = "unreadable"
+    elif queued and playing:
+        reason = "queued+playing"
+    elif queued:
+        reason = "queued"
+    elif playing:
+        reason = "playing"
+    else:
+        reason = "quiet"
+    return {
+        "present": directory.is_dir(),
+        "readable": readable,
+        "queued": queued,
+        "playing": playing,
+        "oldest_age_sec": oldest_age,
+        "quiet": reason in ("quiet", "unreadable"),
+        "reason": reason,
+    }
+
+
 def _collect_boundary(root, now):
     """Freshness of the confirmed cycle boundaries the corners gate on.
 
@@ -3571,6 +3653,8 @@ def _collect_boundary(root, now):
             "completed_at": completed,
             "age_sec": int(now - completed) if completed is not None else -1,
         }
+    # root is <soren>/tmp/state, so the Soren root is two levels up.
+    result["audio"] = _collect_audio_queue(root.parent.parent, now)
     return result
 
 
@@ -3714,7 +3798,9 @@ def _project_corner_state(data):
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
+                           "operator-moved-during-doushi",
                            "duration",
+                           "audio-complete",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
                            "operator-stopped-before-start"} else None),
@@ -3762,8 +3848,41 @@ def _project_corner_state(data):
                                      ("enqueued", "delivery_failed", "skipped")),
         "overlay_announcements": _project_counts(data.get("overlay_announcements"),
                                                  ("sent", "failed", "skipped")),
+        "review": _project_review(data.get("review")),
         "game_audio": _project_game_audio(data.get("game_audio")),
         "hotload": _project_hotload(data.get("hotload")),
+    }
+
+
+def _project_review(value):
+    """Bounded 衝立将棋 感想戦 counters: where the facts came from and the kind.
+
+    The narration text, the opponent's name, the move list and the board are
+    never projected; only the fixed vocabulary and the move count.
+    """
+    if not isinstance(value, dict):
+        return None
+    source = value.get("source")
+    kind = value.get("kind")
+    failure = value.get("failure")
+    boundary = value.get("boundary")
+    model_failure = value.get("model_failure")
+    moves = value.get("moves")
+    return {
+        "source": source if source in {"replay", "result-only"} else None,
+        "kind": kind if kind in {"ai", "fallback"} else None,
+        # Why the public replay was unusable: a fixed code, never a message.
+        "failure": failure if failure in {"ok", "read-failed", "verify-failed",
+                                          "invalid-color", "invalid-game-id",
+                                          "unavailable"} else None,
+        # Whether the 感想戦 waited for the shared audio queue's boundary.
+        "boundary": boundary if boundary in {"quiet", "timeout", "unavailable",
+                                             "skipped"} else None,
+        # Why the model prose was not used, when it was not.
+        "model_failure": model_failure if model_failure in {
+            "none", "unsafe", "gate", "timeout", "rate_limit", "provider",
+            "exception"} else None,
+        "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 
 
@@ -4095,7 +4214,7 @@ def _rotation_excluded_projection(value):
             break
         if not isinstance(corner, str) or not corner or len(corner) > 64:
             continue
-        out[corner] = reason if reason in ROTATION_EXCLUDED_REASONS else "unknown"
+        out[corner] = reason if isinstance(reason, str) and reason in ROTATION_EXCLUDED_REASONS else "unknown"
     return out or None
 
 
@@ -4493,6 +4612,7 @@ def _collect_corner_files(state_dir, payload, now):
         "nethack_corner_manual",
         "tsuitate_corner",
         "yoso_corner",
+        "doushi_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -4862,6 +4982,7 @@ def _collect_programs(state_dir, soren, now):
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
+        "doushi_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
                               "handoff_oversized": False, "cursor_present": False},
@@ -6888,6 +7009,99 @@ def _collect_pulse_sink_inputs():
     }
 
 
+BGM_REASONS = frozenset({
+    'eligible', 'audio_missing', 'canonical_unreadable', 'request_unreadable',
+    'ack_unreadable', 'pause_unreadable', 'invalid_state', 'switch_not_ready',
+    'invalid_game', 'excluded_game', 'native_stop_unconfirmed', 'invalid_request',
+    'invalid_generation', 'invalid_deadline', 'ack_mismatch', 'handover_changed',
+    'policy_unavailable', 'worker_stopped',
+})
+
+
+def _bgm_owned_player(pid, worker_pid, proc_root=Path('/proc')):
+    """Require the tagged ffplay to be the systemd worker's direct child."""
+    if type(pid) is not int or pid <= 0 or not worker_pid:
+        return False
+    try:
+        root = proc_root / str(pid)
+        args = _supervisor_read(root / 'cmdline', 8192).split(b'\0')
+        fields = _supervisor_read(root / 'stat', 4096).rsplit(b')', 1)[1].split()
+        return (fields[0] != b'Z' and int(fields[1]) == worker_pid
+                and _supervisor_read(root / 'comm', 64).strip() == b'ffplay'
+                and any(args[i:i + 2] == [b'-window_title', b'soren-bgm-loop']
+                        for i in range(len(args) - 1)))
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _collect_corner_bgm(soren, now):
+    """Small independent BGM summary, retained when generic Pulse rows drop.
+
+    Live ownership and the worker heartbeat are distinct from audibility.
+    No environment, arbitrary command line, player stderr or audio is emitted.
+    """
+    result = dict(service='unknown', worker_present=None, telemetry='missing',
+                  state='unknown', reason='unknown', age_sec=None,
+                  player_present=None, player_exits=None, last_exit=None,
+                  pulse_readable=False, identified_streams=None,
+                  owned_streams=None, streams=[])
+    unit = _systemctl_system(['show', _REG.CORNER_BGM['unit'],
+                             '--property=ActiveState,MainPID'])
+    worker_pid = None
+    if unit and unit[0] == 0:
+        props = dict(line.split('=', 1) for line in unit[1].splitlines() if '=' in line)
+        if props.get('ActiveState') in {'active', 'inactive', 'failed', 'activating', 'deactivating'}:
+            result['service'] = props['ActiveState']
+        value = props.get('MainPID', '')
+        if value.isdigit() and len(value) <= 10:
+            worker_pid = int(value)
+            result['worker_present'] = worker_pid > 0
+    try:
+        data = json.loads(_supervisor_read(Path(soren) / _REG.CORNER_BGM['state_file'], 4096))
+        if not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1:
+            raise ValueError('invalid snapshot')
+        observed = data.get('observed_at')
+        if type(observed) not in (int, float) or not math.isfinite(observed) or observed > now:
+            raise ValueError('invalid timestamp')
+        result['age_sec'] = min(int(now - observed), 2**31 - 1)
+        fresh = result['age_sec'] <= _REG.CORNER_BGM['heartbeat_max_age_sec']
+        matches = type(data.get('worker_pid')) is int and data['worker_pid'] == worker_pid and bool(worker_pid)
+        result['telemetry'] = 'current' if fresh and matches else 'stale'
+        # Never present a previous worker's decision as the live worker's state.
+        if result['telemetry'] == 'current':
+            if data.get('state') in {'blocked', 'starting', 'running', 'restarting', 'stopped'}:
+                result['state'] = data['state']
+            if isinstance(data.get('reason'), str) and data['reason'] in BGM_REASONS:
+                result['reason'] = data['reason']
+            result['player_present'] = _bgm_owned_player(data.get('player_pid'), worker_pid)
+            for key, upper in (('player_exits', 2**31 - 1), ('last_exit', 255)):
+                value = data.get(key)
+                if type(value) is int and 0 <= value <= upper:
+                    result[key] = value
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError):
+        result['telemetry'] = 'unreadable'
+    from docich.pulse_volume import MEDIA_ROLES, parse_sink_inputs, sink_names
+    listing, failure = _pulse_listing('list', 'sink-inputs')
+    if failure is not None:
+        return result
+    items = parse_sink_inputs(listing)
+    if listing.strip() and not items:
+        return result
+    identified = [s for s in items if s.get('corner_bgm_id') and s.get('corner_bgm_restore')]
+    owned = [s for s in identified if _bgm_owned_player(s.get('pid'), worker_pid)]
+    result.update(pulse_readable=True, identified_streams=len(identified), owned_streams=len(owned))
+    short, _ = _pulse_listing('list', 'short', 'sinks')
+    names = sink_names(short or '')
+    # Only the fixed target name crosses this additional boundary.
+    for item in owned[:2]:
+        projected = _project_pulse_stream(item, names, MEDIA_ROLES)
+        result['streams'].append({key: projected[key] for key in ('mute', 'corked', 'volume_percent')} |
+                                 {'on_target_sink': projected['sink'] == 'soren_null' if projected['sink'] else None})
+    return result
+
+
 def _read_hanjuku_record(path):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     file_fd = None
@@ -7739,6 +7953,103 @@ def _collect_nethack_boundary(state_dir, now):
     return result
 
 
+_PRESENTATION_STATUSES = ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped")
+
+
+def _presentation_record_nofollow(path):
+    """Bounded JSON object and mtime from one pinned regular record."""
+    directory_fd = record_fd = None
+    try:
+        path = Path(path)
+        parent = path.parent
+        directory_fd = _supervisor_directory(parent.anchor or ".")
+        components = parent.parts[1:] if parent.anchor else parent.parts
+        for component in components:
+            previous_fd = directory_fd
+            directory_fd = _supervisor_directory(component, dir_fd=previous_fd)
+            os.close(previous_fd)
+        flags = (os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                 | getattr(os, "O_CLOEXEC", 0))
+        record_fd = os.open(path.name, flags, dir_fd=directory_fd)
+        info = os.fstat(record_fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("unsafe presentation record")
+        with os.fdopen(record_fd, "rb", closefd=False) as stream:
+            raw = stream.read(65536 + 1)
+        if len(raw) > 65536:
+            raise ValueError("oversized presentation record")
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("invalid presentation record")
+        return True, True, value, info.st_mtime
+    except FileNotFoundError:
+        return False, False, None, None
+    except (OSError, ValueError, RecursionError):
+        return True, False, None, None
+    finally:
+        if record_fd is not None:
+            os.close(record_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _collect_runtime_presentation(state_dir, now):
+    """Bounded view of the *active* runtime's projector state (#2097).
+
+    Reads only ``<state_dir>/runtimes/<runtime_id>/presentation.json`` for the
+    runtime that currently owns the slot, and projects fixed enums plus the
+    projection geometry and the record's mtime. A shared display restart must be
+    observable (``presentation_failed`` -> ``ready``) without ever exposing
+    pids, argv, paths or pane text.
+    """
+    result = {
+        "present": False,
+        "readable": False,
+        "active_runtime": False,
+        "status": None,
+        "display": None,
+        "window": None,
+        "width": None,
+        "height": None,
+        "age_sec": None,
+    }
+    _, readable, data, _ = _presentation_record_nofollow(
+        Path(state_dir) / "game_switch.json"
+    )
+    if not readable:
+        return result
+    active = data.get("active")
+    if not isinstance(active, dict):
+        return result
+    runtime_id = active.get("runtime_id")
+    if (not isinstance(runtime_id, str) or runtime_id in (".", "..")
+            or not _RUNTIME_ID_RE.fullmatch(runtime_id)):
+        return result
+    result["active_runtime"] = True
+    path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
+    present, readable, state, modified = _presentation_record_nofollow(path)
+    result["present"] = present
+    result["readable"] = readable
+    if not readable or not isinstance(state, dict):
+        return result
+    status = state.get("status")
+    if isinstance(status, str) and status in _PRESENTATION_STATUSES:
+        result["status"] = status
+    display = state.get("display")
+    if isinstance(display, str) and re.fullmatch(r":[0-9]{1,3}", display):
+        result["display"] = display
+    window = state.get("window")
+    if isinstance(window, str) and window.isdigit() and len(window) <= 12:
+        result["window"] = window
+    for key in ("width", "height"):
+        value = state.get(key)
+        if type(value) is int and 0 < value <= 4096:
+            result[key] = value
+    if 0 <= modified <= now + 86400:
+        result["age_sec"] = max(0, int(now - modified))
+    return result
+
+
 def _collect_nethack_panes(state_dir, now):
     """Bounded read-only view of the committed NetHack runtime's tmux windows.
 
@@ -8211,10 +8522,12 @@ def main(argv):
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
+        "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),

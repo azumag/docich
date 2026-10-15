@@ -94,6 +94,15 @@ Phase 0は敵の卵使用や敗北を完全に防ぐ保証ではない。自然�
 - `Screen.disabled_item_box` を追加。`parse()` の灰色読み取りで2行ペア（192=たまごをつかう / 208=きりふだ、196/212も許容）を検出し、**騎士カーソルを要求する**（灰色だけではメニューと推定しない既存契約を維持）。`classify_text` はこれを `battle_menu` として扱う。`hidden_battle_commands` は再利用しない（`okunote_step` へルーティングされ `down` を送り続けるため。`OKUNOTE_CHOICES` にたまご・きりふだはなく競合しない）。
 - 効果: 観測1回で `_survival_menu` → labels空 → `battle_survival_unavailable` + `exhausted` + `pad('b')` が完結し、メニューオープン中の盲別のAと再オープンを止める。救済が実際にある（白い行）場合はもともと `battle_menu` なので変化しない。
 
+## 主人公の押し負けからの救済メニュー再確認（g749 08:37、v222）
+
+g749-d8571de0（2章 5-4 防衛戦 どうし90 vs アテナ66、携行札なし・卵1）では、開幕の救済B×3が敵の戦闘会話文中に着弾し、人間用メニューは一度も表示されなかった（decision-082.png で会話文表示を目視確認）。保持予算の打ち切り後は `power_mash` に固定され、どうしは 54→6 まで押し込まれ戦死してゲームオーバー（terminal_reason=game_over、evidence=title_return_after_gameplay）。直前で他将軍を出撃させ、自城の守備がどうしだけだった（sortie_held_source_defender: available ["どうし"]）。静的スコア（combat×HP池）では 896 vs 1276 で「互角」に見えるため、既存の `_survival_needed` / `_critical_survival_needed` は発火せず、白兵の実測交換レートだけが敗北を示していた。
+
+- 主人公（どうし）だけが押し負けている白兵で、救済メニューが一度も開いていない時（`menu_ticks == 0` かつ `egg_attempted` でない）に限り、`_hero_losing_melee` が白兵の実測トレードを判定し、コマンドメニューを再び開く（B）。判定は「敵パネルが初期値から減っていない（`enemy_hp >= start_enemy_hp`）」かつ「味方HPが初期の2/3以下（`hp*3 <= start*2`）」かつ「味方HP < 敵HP」の三条件。静的戦闘力スコアは使わない。
+- 再確認は戦闘ごとに `HERO_SURVIVAL_REOPEN_LIMIT = 2` 回まで。2回失败したら既存の `power_mash` に復帰する。メニューが一度でも開いた戦闘、チャート戦術（planned_cards）、召喚・イベント戦（egg_battle、card_flow）、一般将軍は対象外で、既存の保持/押し込み契約（#1180）を変更しない。
+- どうしの戦死は run 全体の喪失であり防衛戦には退却がないため、卵落の激突リスクより死亡を優先する。`battle_hero_survival_recheck` decision に episode/limit/実測HPを記録する。
+- `tests/test_hanjuku_hero_losing_melee.py` で g749 の経過（会話文中のB失敗→保持→mashing→再確認→限界→mash復帰）を合成パネルで再現する。実戦での効果（メニュー到達、卵または切り札による反転、勝利）は**未検証**で、次の自然発火で確認する。
+
 ## Phase 1とrollback
 
 実画面で接触帯を追跡し、左右・中央の校正とconfidence検証を終えるまで `front_x` や推測したpixel閾値、ASSIST_PULSEを追加しない。解析資料のゲーム内部座標式を画面座標として使用しない。未校正ではPhase 0のholdを維持する。

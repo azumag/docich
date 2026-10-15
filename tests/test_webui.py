@@ -1511,6 +1511,19 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_doushi_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "doushi-card", adapter = "doushi", game = "doushi-view", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}, '
+            'manual_only = true}]\n',
+            encoding="utf-8",
+        )
+
     def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
         self._write_weather_catalog_config()
         pending = {"corner": "nsnake", "phase": "dispatched",
@@ -1598,6 +1611,37 @@ class TestHttpHandlers(unittest.TestCase):
             "action": "stop", "corner": "yosou-oh", "confirm": True})
         self.assertEqual(status, 409, data)
         self.assertEqual(data["error"], "yoso_not_active")
+
+    def test_doushi_manual_start_uses_common_queue_and_stays_manual_only(self):
+        self._write_doushi_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        with mock.patch("docich.doushi_corner.DoushiCornerManager.run_rotation") as run, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "doushi-card", "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["status"], "queued")
+        self.assertIsNone(data["duration_minutes"])
+        self.assertEqual(data["corner"], {
+            "id": "doushi-card", "adapter": "doushi",
+            "game": "doushi-view", "target": "rotation",
+        })
+        run.assert_not_called()
+        popen.assert_not_called()
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "doushi-card")
+        self.assertTrue(view["catalog"][0]["manual_only"])
+        self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
+        self.assertEqual(view["catalog"][0]["state_file"], "doushi_corner")
+        self.assertFalse(view["catalog"][0]["eligible"])
+
+    def test_doushi_manual_stop_before_start_uses_specific_error(self):
+        self._write_doushi_catalog_config()
+        status, data = self._request("POST", "/api/corners", {
+            "action": "stop", "corner": "doushi-card", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "doushi_not_active")
 
     def test_tsuitate_corner_view_reports_end_reason_and_settled_result(self):
         self._write_tsuitate_catalog_config()

@@ -21,7 +21,7 @@ REQ = "11111111-1111-4111-8111-111111111111"
 
 def _global(tmp_path):
     state = tmp_path / "run"
-    state.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(state_dir=state, config_path=None)
 
 
@@ -402,6 +402,57 @@ def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):
     assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
 
 
+def test_rotation_run_scope_carries_only_beta_control_env(tmp_path, monkeypatch):
+    """The match — not just eligibility — runs with the control capability.
+
+    ``TsuitateCornerManager`` calls status/start/stop from this process, and
+    ``TsuitateProgramViewAdapter._game_session_env`` reads this same process
+    environment while the switch materializes the view's tmux session.
+    """
+    home = tmp_path / "home"
+    env_file = home / ".config" / "docich" / "webui.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "DOCICH_BETA_CONTROL_SECRET=fixture-control-secret-12345678901234567890\n"
+        "DOCICH_BETA_CONTROL_URL=https://docich-tsuitate-bot.fixture.workers.dev\n"
+        "DOCICH_WEBUI_TOKEN=operator-secret-never-export\n"
+        "OTHER_PRIVATE_VALUE=never-read\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("DOCICH_WEBUI_TOKEN", "operator-secret-never-export")
+    for key in ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL",
+                "DOCICH_WEBUI_READONLY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    captured = {}
+
+    def run_rotation(request_id):
+        import os
+        captured["request_id"] = request_id
+        captured["secret"] = os.environ.get("DOCICH_BETA_CONTROL_SECRET")
+        captured["url"] = os.environ.get("DOCICH_BETA_CONTROL_URL")
+        captured["webui"] = os.environ.get("DOCICH_WEBUI_TOKEN")
+        captured["other"] = os.environ.get("OTHER_PRIVATE_VALUE")
+        return "completed"
+
+    adapter.manager.run_rotation = run_rotation
+    assert adapter.run({"request_id": REQ}) == "completed"
+    assert captured == {
+        "request_id": REQ,
+        "secret": "fixture-control-secret-12345678901234567890",
+        "url": "https://docich-tsuitate-bot.fixture.workers.dev",
+        "webui": "operator-secret-never-export",
+        "other": None,
+    }
+    import os
+    assert os.environ.get("DOCICH_BETA_CONTROL_SECRET") is None
+    assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
+
+
 def _failed_rollback_setup(tmp_path):
     """Craft the prod latch shape on disk: a start that failed *and* whose
     rollback failed (``rollback_failed``), since recovered by a later
@@ -718,3 +769,512 @@ def test_tsuitate_restore_replay_waits_for_an_in_flight_switch(tmp_path):
     manager._canonical = lambda: {"phase": "starting"}
 
     assert manager.recover_failed_restore() == "queued"
+
+
+def _review_fixture():
+    """A synthetic public replay in the site's flat ``__data.json`` shape."""
+    table = [{"game": 1, "senteName": None, "goteName": None}, None]
+
+    def add(value):
+        table.append(value)
+        return len(table) - 1
+
+    move_refs = []
+    for index in range(50):
+        move_refs.append(add({"usi": add("7g7f"), "byColor": add("sente"),
+                              "ms": add(300), "foulsBefore": add(0)}))
+    game = {
+        "id": add("fixtureGame01"), "result": add("gote_win"), "reason": add("foul_limit"),
+        "moves": add(move_refs), "foulAttempts": add([]), "senteFouls": add(10),
+        "goteFouls": add(0), "senteRatingBefore": add(1005), "senteRatingAfter": add(1003),
+        "goteRatingBefore": add(1471), "goteRatingAfter": add(1473),
+        "startedAt": add(["Date", "2026-10-14T20:36:48.743Z"]),
+        "endedAt": add(["Date", "2026-10-14T20:38:05.153Z"]),
+    }
+    table[1] = game
+    table[0]["senteName"] = add("DoCiAI")
+    table[0]["goteName"] = add("kakuren_bot")
+    return {"type": "data", "nodes": [{"type": "data", "data": [{"user": 1}, None]},
+                                      {"type": "data", "data": table}]}
+
+
+
+# --- narration: the corner introduction and the 感想戦 ----------------------
+
+_COUNTS = {"overlay": {"sent": 1, "failed": 0, "skipped": 0},
+           "speech": {"sent": 1, "failed": 0, "skipped": 0}}
+
+
+def test_corner_introduction_is_announced_once_at_activation(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    calls = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda g, *, request_id, audio_enabled: (
+            calls.append((request_id, audio_enabled)) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+    manager._announce_intro_once(state)
+
+    assert calls == [(REQ, True)]
+    saved = json.loads(manager.path.read_text())
+    assert saved["intro_request_id"] == REQ
+    assert saved["overlay_announcements"] == {"sent": 1, "failed": 0, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 1, "delivery_failed": 0, "skipped": 0}
+
+
+def test_corner_introduction_is_silent_when_audio_is_off(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        announce_intro=lambda g, *, request_id, audio_enabled: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert "narration" not in saved
+    assert saved["overlay_announcements"]["sent"] == 1
+
+
+def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(
+        beta_result=_settled_result(outcome="loss", reason="foul_limit", moveNumber=50),
+        beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0,
+    )
+    summary = {"gameId": "fixtureGame01", "color": "sente", "outcome": "loss",
+               "reason": "foul_limit", "moveCount": 50, "ownMoves": 25,
+               "opponentMoves": 25, "fouls": 10, "opponentFouls": 0, "foulAttempts": 10,
+               "ratingBefore": 1005, "ratingAfter": 1003, "opponentName": "kakuren_bot",
+               "own": {"totalMs": 9169, "maxMs": 1561}, "opponent": {"totalMs": 65641, "maxMs": 3418},
+               "promotions": 8, "drops": 13, "lastMove": {"usi": "5g5h", "by": "gote", "ms": 3059}}
+    reads, generated, published = [], [], []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        wait_boundary=lambda g: "quiet",
+        read_review=lambda game_id, terminal, *, color: (
+            reads.append((game_id, color, terminal.get("durationMs"))) or summary),
+        review_text=lambda g, summary, terminal, *, agents: (
+            generated.append((summary is not None, terminal.get("durationMs")))
+            or ("AIは反則を重ねてしまいましたが、持ち時間の使い方は落ち着いていました。次は反則を減らして勝ちを狙います。", "ai")),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append((request_id, text, body, audio_enabled)) or dict(_COUNTS)),
+    )
+    manager.clock = lambda: 1076.41
+    manager._save(state)
+
+    manager._announce_review_once(state)
+    manager._announce_review_once(state)
+
+    assert reads == [("fixtureGame01", "sente", 76410)]
+    assert generated == [(True, 76410)]
+    assert len(published) == 1 and published[0][0] == REQ
+    assert published[0][1].startswith("AIは反則を重ねて")
+    assert published[0][2].startswith("AIの負け / 反則負け / 50手")
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok",
+                               "boundary": "quiet", "model_failure": "none",
+                               "show": None, "moves": 50}
+    assert saved["review_request_id"] == REQ
+    # The raw move list, the board and the model prompt never reach the state.
+    raw = manager.path.read_text()
+    for forbidden in ("5g5h", "usi", "sfen", "prompt", "kakuren_bot"):
+        assert forbidden not in raw
+
+
+def test_review_falls_back_to_the_settled_result_without_a_replay(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(outcome="win", reason="checkmate"),
+                 beta_game_id="fixtureGame01", beta_color="gote", beta_active_since=1000.0)
+    published = []
+
+    def broken_reader(*_args, **_kwargs):
+        raise RuntimeError("site down")
+
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        read_review=broken_reader,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "公開棋譜を確認できなかったため、結果だけをお伝えします。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append(text) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    assert published and published[0].startswith("感想戦です。")
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["source"] == "result-only"
+    assert saved["review"]["kind"] == "fallback"
+
+
+def test_review_waits_for_a_settled_owned_result(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        read_review=lambda *a, **k: {},
+        announce_review=lambda *a, **k: published.append(1) or dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    assert published == []
+    saved = json.loads(manager.path.read_text())
+    assert "review_request_id" not in saved and "review" not in saved
+
+
+def test_narration_options_are_validated(tmp_path):
+    g = _global(tmp_path)
+    for kwargs, message in [
+        ({"audio_enabled": "yes"}, "audio_enabled"),
+        ({"review_agents": 7}, "review_agents"),
+        ({"announce_intro": "nope"}, "announce_intro"),
+        ({"announce_review": 1}, "announce_review"),
+        ({"read_review": object()}, "read_review"),
+        ({"review_text": []}, "review_text"),
+    ]:
+        with pytest.raises(TsuitateCornerError, match=message):
+            TsuitateCornerManager(g, coordinator=object(), control=lambda *_: _status(), **kwargs)
+
+
+def test_announcement_counters_accumulate_over_the_run(tmp_path):
+    """A delivered run shows two overlay events and two utterances."""
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda g, *, request_id, audio_enabled: dict(_COUNTS),
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "持ち時間の使い方も落ち着いていました。次もお付き合いください。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["overlay_announcements"] == {"sent": 2, "failed": 0, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 2, "delivery_failed": 0, "skipped": 0}
+
+
+def test_announcement_counters_survive_a_failed_sink(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        announce_intro=lambda *a, **k: {"overlay": {"sent": 0, "failed": 1, "skipped": 0},
+                                        "speech": {"sent": 0, "failed": 1, "skipped": 0}},
+    )
+    manager._save(state)
+
+    manager._announce_intro_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
+    assert saved["narration"] == {"enqueued": 0, "delivery_failed": 1, "skipped": 0}
+
+
+def test_review_reads_the_public_replay_end_to_end(tmp_path, monkeypatch):
+    """Regression: the corner must hand the game id to the identity check.
+
+    The settled-result projection has no `gameId`, so passing it alone made every
+    real 感想戦 fall back to the result-only text.  This test runs the real
+    reader (only the HTTP fetch is stubbed) so the whole path is exercised.
+    """
+    from docich import tsuitate_review as review_module
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(
+        beta_result={"outcome": "loss", "reason": "foul_limit",
+                     "endedAt": "2026-10-14T20:38:05.153Z", "moveNumber": 50,
+                     "resultConfidence": "verified"},
+        beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0,
+    )
+    payload = review_module.parse_review(_review_fixture(), "fixtureGame01")
+    monkeypatch.setattr(review_module, "read_replay", lambda game_id, **kwargs: payload)
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回は50手、反則10回で反則負けでした。"
+            "持ち時間の使い方を見直して次につなげます。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append((text, body)) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"] == {"source": "replay", "kind": "fallback",
+                               "failure": "ok", "boundary": "skipped",
+                               "model_failure": "none", "show": None, "moves": 50}
+    assert published and published[0][1].startswith("AIの負け / 反則負け / 50手")
+
+
+def test_review_records_why_the_public_replay_was_unusable(tmp_path, monkeypatch):
+    from docich import tsuitate_review as review_module
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result={"outcome": "loss", "reason": "foul_limit",
+                              "endedAt": "2026-10-14T20:38:05.153Z", "moveNumber": 50},
+                 beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0)
+    monkeypatch.setattr(review_module, "read_replay",
+                        lambda game_id, **kwargs: (_ for _ in ()).throw(
+                            review_module.ReviewError("site down")))
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        review_text=lambda g, summary, terminal, *, agents: ("定型の感想戦です。" * 5, "fallback"),
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["source"] == "result-only"
+    assert saved["review"]["failure"] == "read-failed"
+
+    # Without a game id there is nothing to read at all.
+    state.pop("review_request_id", None)
+    state["beta_game_id"] = None
+    manager._save(state)
+    manager._announce_review_once(state)
+    assert json.loads(manager.path.read_text())["review"]["failure"] == "invalid-game-id"
+
+
+def _boundary_manager(tmp_path, *, audio_enabled, wait_boundary):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=audio_enabled,
+        wait_boundary=wait_boundary,
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "持ち時間の使い方も落ち着いていました。次もお付き合いください。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append(request_id) or dict(_COUNTS)),
+    )
+    manager._save(state)
+    return manager, published
+
+
+def test_review_waits_for_the_audio_boundary_before_speaking(tmp_path):
+    calls = []
+
+    def wait(g):
+        calls.append(1)
+        return "quiet"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=wait)
+    manager._announce_review_once(manager._read_state())
+
+    assert calls == [1]
+    assert published
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "quiet"
+
+
+def test_review_skips_the_boundary_wait_when_speech_is_off(tmp_path):
+    calls = []
+
+    def wait(g):
+        calls.append(1)
+        return "quiet"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=False, wait_boundary=wait)
+    manager._announce_review_once(manager._read_state())
+
+    assert calls == []
+    assert published
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "skipped"
+
+
+def test_review_speaks_even_when_the_boundary_wait_fails(tmp_path):
+    def broken(g):
+        raise RuntimeError("queue unreadable")
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=broken)
+    manager._announce_review_once(manager._read_state())
+
+    assert published  # fail-open: the 感想戦 is never lost to a queue problem
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "unavailable"
+
+    def unexpected(g):
+        return "later"
+
+    manager, published = _boundary_manager(tmp_path, audio_enabled=True, wait_boundary=unexpected)
+    manager._announce_review_once(manager._read_state())
+    assert json.loads(manager.path.read_text())["review"]["boundary"] == "unavailable"
+
+
+def test_boundary_outcome_vocabulary_matches_the_narration_module():
+    from docich import tsuitate_narration as narration
+
+    assert TsuitateCornerManager.BOUNDARY_OUTCOMES == narration.BOUNDARY_OUTCOMES
+
+
+def test_review_records_why_the_model_prose_was_not_used(tmp_path):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=False,
+        read_review=lambda *a, **k: None,
+        review_text=lambda g, summary, terminal, *, agents: (
+            "定型の感想戦です。今回の対局は9手、AIの勝ち、終局理由は詰みでした。"
+            "次もお付き合いください。", "fallback", "gate"),
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["model_failure"] == "gate"
+    assert saved["review"]["kind"] == "fallback"
+
+
+def test_model_failure_vocabulary_matches_the_narration_module():
+    from docich import tsuitate_narration as narration
+
+    assert TsuitateCornerManager.MODEL_FAILURES == narration.MODEL_FAILURES
+
+
+# --- 感想戦の棋譜ショー -----------------------------------------------------
+
+def _show_kifu(move_count=5):
+    from docich import shogi_board as sb
+
+    sequence = [{"usi": "7g7f", "by": "sente", "ms": 120},
+                {"usi": "3c3d", "by": "gote", "ms": 300},
+                {"usi": "8h2b+", "by": "sente", "ms": 900},
+                {"usi": "3a2b", "by": "gote", "ms": 1500},
+                {"usi": "B*5b", "by": "sente", "ms": 4200}][:move_count]
+    return {"kifu": {"moves": sb.annotate(sequence)}, "color": "sente"}
+
+
+def test_review_show_steps_the_kifu_and_speaks_each_stretch(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0,
+                 view_runtime_identity={"game": VIEW_NAME, "runtime_id": "g4-a1b2c3d4",
+                                        "generation": 4, "lease_id": "lease"})
+    spoken = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        sleep=lambda *_: None,
+        read_kifu=lambda game_id, terminal, *, color: _show_kifu(),
+        chunk_text=lambda g, moves, start, end: (f"{start}手目から{end}手目の解説です。", "fallback"),
+        speak_chunk=lambda g, text, request_id: spoken.append(text),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager.clock = lambda: 1000.0
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    payload = show.read_show(g.state_dir, runtime_id="g4-a1b2c3d4", generation=4)
+    assert payload is not None
+    assert payload["done"] is True
+    assert payload["index"] == payload["move_count"] == 5
+    assert payload["commentary"] == {"1": "1手目から5手目の解説です。"}
+    assert spoken == ["1手目から5手目の解説です。"]
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["show"] == {"moves": 5, "board": True, "commentary_ai": 0,
+                                       "commentary_fallback": 1, "seconds": 0}
+
+
+def test_review_show_is_bounded_and_never_fails_the_corner(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    clock = {"now": 1000.0}
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=False,
+        sleep=sleep, clock=lambda: clock["now"],
+        read_kifu=lambda game_id, terminal, *, color: _show_kifu(),
+        chunk_text=lambda g, moves, start, end: ("区間の解説です。", "fallback"),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    payload = show.read_show(g.state_dir)
+    assert payload["done"] is True and payload["index"] == 5
+    # The whole show is bounded by its own clock.
+    assert clock["now"] - 1000.0 <= show.MAX_SHOW_SECONDS + show.STEP_SECONDS * 10
+
+    # A kifu reader that raises leaves the show absent but still speaks.
+    state.pop("review_request_id", None)
+    broken = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        sleep=lambda *_: None,
+        read_kifu=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("site down")),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    broken._save(state)
+    broken._announce_review_once(broken._read_state())
+    assert json.loads(broken.path.read_text())["review"]["show"] is None
+
+
+def test_review_show_publishes_and_speaks_analysis_without_a_model(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_game_id="fixtureGame01", beta_color="sente")
+    spoken = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), audio_enabled=True, clock=lambda: 1000.0,
+        sleep=lambda *_: None, read_kifu=lambda *a, **k: _show_kifu(),
+        speak_chunk=lambda g, text, request_id: spoken.append(text),
+        wait_boundary=lambda g: "quiet",
+    )
+    manager._save(state)
+    result = manager._run_review_show(state, _settled_result(), None, "req-analysis")
+    payload = show.read_show(g.state_dir)
+    assert result["commentary_fallback"] == 1 and result["commentary_ai"] == 0
+    assert payload["done"] and payload["index"] == 5
+    assert spoken == [payload["commentary"]["1"]]
+    assert "交換の代償" in spoken[0] and "比較候補" in spoken[0]
+    assert "最善手は判定していません" in spoken[0]

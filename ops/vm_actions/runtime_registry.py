@@ -59,6 +59,16 @@ LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d", ".pending")
 # Never reported as unregistered; liveness is still recorded in details.
 KNOWN_INFRA_PIDFILES = ("tmp/state/start_all.pid",)
 
+# Separately supervised common-corner music; it is not a start_all worker and
+# shares no AI queue. Missing playback is normal outside eligible corners.
+CORNER_BGM = {
+    "unit": "soren-bgm.service",
+    "state_file": "tmp/state/bgm_worker.json",
+    "diagnostics_key": "corner_bgm",
+    "heartbeat_max_age_sec": 90,
+    "queue_lane": None,
+}
+
 # Explicit bounded operator operation; absence is normal, no AI queue or
 # automatic scheduling. The presenter uses the ordinary generation tmux tags.
 EXTERNAL_VIDEO = {

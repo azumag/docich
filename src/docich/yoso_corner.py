@@ -6,9 +6,9 @@ restoration; this module only persists the corner's request, the full runtime
 identity and a fixed end time. It never writes the prediction ledger, never
 talks to Twitch and never generates speech.
 
-The catalog entry is default-disabled and manual-only (docs/features/yosou-oh-corner.md):
-the owner starts it from the WebUI/manual queue, and it always ends on the
-reviewed duration bound or an explicit stop.
+The catalog entry runs from the 24h rolling rotation and can still be reserved
+from the WebUI/manual queue (docs/features/yosou-oh-corner.md). It always ends on
+the reviewed duration bound (or the audio-complete receipt) or an explicit stop.
 """
 from __future__ import annotations
 
@@ -70,6 +70,24 @@ def _identity(runtime, *, expected_game=None):
             or (expected_game is not None and identity["game"] != expected_game)):
         raise YosoCornerError("game-switch runtime identity is incomplete")
     return identity
+
+
+def _sink_counts(value, total):
+    """Bounded `sent`/`failed`/`skipped` counters for one announcement sink.
+
+    The announcer reports how many of its items reached the sink, so the corner
+    records counts rather than a single status. A missing or malformed payload
+    is treated as "every item failed", which is what an injected announcer that
+    raised looks like.
+    """
+    fallback = {"sent": 0, "failed": total, "skipped": 0}
+    if not isinstance(value, dict):
+        return fallback
+    out = {}
+    for key in ("sent", "failed", "skipped"):
+        raw = value.get(key)
+        out[key] = raw if type(raw) is int and 0 <= raw <= total else 0
+    return out if sum(out.values()) <= total else fallback
 
 
 def _stable(canonical):
@@ -315,12 +333,15 @@ class YosoCornerManager:
         return "queued" if canonical.get("phase") == "draining" else None
 
     def _announce_once(self, state):
-        """Publish the ranking once per corner request (best-effort, at-most-once).
+        """Publish the introduction and the ranking once per corner request.
 
-        The attempt is recorded before the side effect so a crash or a resumed
-        owner can never speak the same ranking twice. A sink failure is stored as
-        a fixed status for diagnostics and never fails the corner.
+        Best-effort and at-most-once: the attempt is recorded before the side
+        effect so a crash or a resumed owner can never speak the same corner
+        twice. Sink outcomes are stored as bounded counters for diagnostics and
+        never fail the corner.
         """
+        from .yoso_narration import OVERLAY_KINDS, SPEECH_ITEMS
+
         request_id = state.get("rotation_request_id")
         if not isinstance(request_id, str) or state.get("announce_request_id") == request_id:
             return
@@ -336,22 +357,23 @@ class YosoCornerManager:
                 result = self.announce(self.g, request_id=request_id,
                                        audio_enabled=self.audio_enabled)
         except Exception:
-            result = {"overlay": "failed", "speech": "failed"}
-        overlay = result.get("overlay") if isinstance(result, dict) else None
-        speech = result.get("speech") if isinstance(result, dict) else None
-        # Counters only: diagnostics already projects `narration`, and the
-        # overlay status gets the same bounded shape.
-        state["overlay_announcements"] = {
-            "sent": 1 if overlay == "sent" else 0,
-            "failed": 1 if overlay == "failed" else 0,
-            "skipped": 1 if overlay == "skipped" else 0,
-        }
+            result = None
+        result = result if isinstance(result, dict) else {}
+        # Counters only: diagnostics projects `narration` and
+        # `overlay_announcements` as bounded ints.
+        state["overlay_announcements"] = _sink_counts(
+            result.get("overlay"), len(OVERLAY_KINDS))
         if self.audio_enabled:
-            state["narration"] = {
-                "enqueued": 1 if speech == "sent" else 0,
-                "delivery_failed": 1 if speech == "failed" else 0,
-                "skipped": 1 if speech == "skipped" else 0,
-            }
+            speech = _sink_counts(result.get("speech"), len(SPEECH_ITEMS))
+            state["narration"] = {"enqueued": speech["sent"],
+                                  "delivery_failed": speech["failed"],
+                                  "skipped": speech["skipped"]}
+            # Speech items this run has to wait for; the run may end as soon as
+            # every one of them has left the shared queue.
+            if speech["sent"] > 0:
+                state["voice_pending"] = speech["sent"]
+            else:
+                state.pop("voice_pending", None)
         self._save(state)
 
     @staticmethod
@@ -363,6 +385,23 @@ class YosoCornerManager:
         except YosoCornerError:
             return False
         return actual == identity
+
+    def _voice_finished(self, state):
+        """True when every spoken item of this run has left the audio queue.
+
+        The catalog duration stays the hard cap: a comment backlog can keep the
+        items queued past it, and then the corner ends with `duration` exactly as
+        before. Only a run that actually enqueued speech can end early.
+        """
+        pending = state.get("voice_pending")
+        if type(pending) is not int or pending <= 0:
+            return False
+        from .yoso_narration import voice_items_in_flight
+
+        try:
+            return voice_items_in_flight(self.g) == 0
+        except Exception:
+            return False
 
     def _wait_and_restore(self, state):
         identity = state.get("yoso_runtime_identity")
@@ -399,6 +438,11 @@ class YosoCornerManager:
                 raise YosoCornerError("yosou runtime ownership is in an unsafe switch phase")
             if not self._matches_active(canonical, identity):
                 return self._mark_interrupted(state, "operator-moved-during-yosou")
+            if self._voice_finished(state):
+                # The read-aloud ended: end the corner now instead of holding the
+                # display until the catalog duration cap (weather forecast does
+                # the same with its own audio receipts).
+                return self._restore(state, end_reason="audio-complete")
             ends_at = state.get("ends_at")
             if type(ends_at) not in (int, float) or isinstance(ends_at, bool) or ends_at < 0:
                 raise YosoCornerError("yosou end time is invalid")

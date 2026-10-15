@@ -70,7 +70,7 @@ def test_flat_live_catalog_and_financial_boundary():
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
                                      "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
-                                     "yosou-oh"}
+                                     "yosou-oh", "doushi-card"}
     assert all(c.live_eligible is False for c in catalog)
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
@@ -85,7 +85,7 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    assert len(catalog) == 12
+    assert len(catalog) == 13
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -96,11 +96,21 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
     yosou = next(c for c in catalog if c.id == "yosou-oh")
-    assert yosou.enabled is True and yosou.manual_only is True
+    # 2026-10-15 オーナー判断: 自動抽選に組み入れる（manual_only を解除）。
+    assert yosou.enabled is True and yosou.manual_only is False
+    assert yosou.audio_enabled is True
     assert (yosou.adapter, yosou.game) == ("yoso", "yosou-view")
+    doushi = next(c for c in catalog if c.id == "doushi-card")
+    # 2026-10-15 オーナー承認で有効化し、自動抽選の対象へ入れた（manual_only なし）。
+    assert doushi.enabled is True and doushi.manual_only is False
+    assert (doushi.adapter, doushi.game) == ("doushi", "doushi-view")
+    assert doushi.live_eligible is False and doushi.audio_enabled is False
+    # duration_minutes 未指定は doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
+    assert doushi.duration_minutes is None
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
         "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate", "yosou-oh",
+        "doushi-card",
     }
 
 
@@ -222,15 +232,16 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "finished", "readyForNextRun": True,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 11
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
-    assert excluded == {"yosou-oh": "manual-only"}
+    assert len(eligible) == 13
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
+            "yosou-oh", "doushi-card"} <= set(eligible)
+    assert excluded == {}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 10 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable", "yosou-oh": "manual-only"}
+    assert len(eligible) == 12 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

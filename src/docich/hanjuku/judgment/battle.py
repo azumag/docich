@@ -977,6 +977,32 @@ def _critical_survival_needed(cur):
             and type(enemy) is int and enemy > 0)
 
 
+HERO_SURVIVAL_REOPEN_LIMIT = 2    # extra unopened-menu episodes for a losing hero
+
+
+def _hero_losing_melee(cur):
+    """A hero melee the white trade itself proves we are losing.
+
+    どうしの戦死はゲームオーバー（run全体の喪失）で、防衛戦には退却が無い。
+    g749 08:37 どうし90 vs アテナ66（防衛戦・携行札なし・卵1）: the three
+    opening B presses landed on the enemy's battle dialogue, so the resource
+    menu never appeared; the hold budget then cut to ``power_mash`` and the
+    hero died 54 -> 6 while アテナ's panel never left 66. The static
+    combat×HP score still called the fight even (a measured 896 vs 1276 needs
+    the soldiers), so the usable evidence is the measured trade: our HP pool
+    has lost a third of its opening while the enemy's opening panel has not
+    moved at all. 卵落・激突のリスクより、主人公の死亡のほうが重い。
+    """
+    if (cur.get('ally') != NAME or cur.get('egg_battle') or cur.get('card_flow')
+            or cur.get('planned_cards')):
+        return False
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                     ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    if any(type(n) is not int or n <= 0 for n in (hp, enemy, start, enemy_start)):
+        return False
+    return hp < enemy and enemy >= enemy_start and hp * 3 <= start * 2
+
+
 def _melee_continuation_evidence(mem, cur):
     """A wounded ordinary general can finish a measured, one-sided melee.
 

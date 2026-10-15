@@ -21,6 +21,7 @@ from .game_switch import (
     atomic_write_json,
 )
 from .tsuitate_beta_control import ControlError, call_beta_control
+from .tsuitate_review import REVIEW_FAILURES
 from .tsuitate_view import VIEW_NAME
 
 STATE_FILENAME = "tsuitate_corner.json"
@@ -80,16 +81,71 @@ def _stable(canonical):
     )
 
 
+def _sink_counts(value, total):
+    """Bounded `sent`/`failed`/`skipped` counters for one announcement sink.
+
+    A missing or malformed payload counts as "every item failed", which is what
+    an injected announcer that raised looks like.
+    """
+    fallback = {"sent": 0, "failed": total, "skipped": 0}
+    if not isinstance(value, dict):
+        return fallback
+    out = {}
+    for key in ("sent", "failed", "skipped"):
+        raw = value.get(key)
+        out[key] = raw if type(raw) is int and 0 <= raw <= total else 0
+    return out if sum(out.values()) <= total else fallback
+
+
 class TsuitateCornerManager:
+    #: Fixed 感想戦 boundary outcomes; `tsuitate_narration.BOUNDARY_OUTCOMES`
+    #: is the source of truth and a regression test pins the parity.
+    BOUNDARY_OUTCOMES = ("quiet", "timeout", "unavailable", "skipped")
+    #: Fixed 感想戦 model outcomes; `tsuitate_narration.MODEL_FAILURES` is the
+    #: source of truth and a regression test pins the parity.
+    MODEL_FAILURES = ("none", "unsafe", "gate", "timeout", "rate_limit", "provider", "exception")
+
     def __init__(self, g, *, coordinator=None, control=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0,
-                 max_match_seconds=DEFAULT_MAX_MATCH_SECONDS):
+                 max_match_seconds=DEFAULT_MAX_MATCH_SECONDS,
+                 audio_enabled=False, review_agents="",
+                 announce_intro=None, announce_review=None,
+                 read_review=None, review_text=None, wait_boundary=None,
+                 read_kifu=None, chunk_text=None, run_show=None, speak_chunk=None):
         self.g = g
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         if (type(max_match_seconds) not in (int, float)
                 or not 0 < float(max_match_seconds) <= MAX_MATCH_SECONDS_LIMIT):
             raise TsuitateCornerError("tsuitate max match seconds is out of range")
+        if type(audio_enabled) is not bool:
+            raise TsuitateCornerError("tsuitate audio_enabled must be boolean")
+        if not isinstance(review_agents, str):
+            raise TsuitateCornerError("tsuitate review_agents must be a string")
+        for name, hook in (("announce_intro", announce_intro), ("announce_review", announce_review),
+                           ("read_review", read_review), ("review_text", review_text),
+                           ("wait_boundary", wait_boundary), ("read_kifu", read_kifu),
+                           ("chunk_text", chunk_text), ("run_show", run_show),
+                           ("speak_chunk", speak_chunk)):
+            if hook is not None and not callable(hook):
+                raise TsuitateCornerError(f"tsuitate {name} must be callable")
         self.max_match_seconds = float(max_match_seconds)
+        # Speech is an explicit opt-in (`audio_enabled` in the catalog) and the
+        # 感想戦 model chain is a separate opt-in (billed-run consent), exactly
+        # like the other corner closings.
+        self.audio_enabled = audio_enabled
+        self.review_agents = review_agents
+        self.announce_intro = announce_intro
+        self.announce_review = announce_review
+        self.read_review = read_review
+        self.review_text = review_text
+        # The 感想戦 waits for the shared audio queue's boundary (bounded,
+        # fail-open) so it does not start inside a comment or announcement.
+        self.wait_boundary = wait_boundary
+        # The 感想戦 show: read the kifu, write it for the view, step it on air.
+        self.read_kifu = read_kifu
+        self.chunk_text = chunk_text
+        self.run_show = run_show
+        self.speak_chunk = speak_chunk
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
         self.store = GameSwitchStore(g.state_dir)
@@ -298,6 +354,9 @@ class TsuitateCornerManager:
             beta_started=False,
         )
         self._save(state)
+        # The view now owns the display: introduce the corner before the match
+        # is found, exactly like the other narrated corners.
+        self._announce_intro_once(state)
         return self._ensure_beta_started(state)
 
     def _control_status(self, state):
@@ -311,6 +370,15 @@ class TsuitateCornerManager:
                     "stopRequested", "readyForNextRun"):
             state["beta_" + key] = status.get(key)
         state["beta_run_matches"] = status.get("runId") == state.get("rotation_request_id")
+        # The public game id and the bot's colour are needed to read the public
+        # replay for the 感想戦. Both are already public facts (the view shows
+        # the colour) and the bridge validated their shape.
+        game_id = status.get("gameId")
+        if isinstance(game_id, str) and game_id:
+            state["beta_game_id"] = game_id
+        player_view = status.get("playerView")
+        if isinstance(player_view, dict) and player_view.get("yourColor") in {"sente", "gote"}:
+            state["beta_color"] = player_view["yourColor"]
         # Keep only the settled post-game summary, and only for the run this
         # corner owns. A result belonging to another run never reaches state.
         if state["beta_run_matches"] is True and status.get("state") == "finished":
@@ -324,6 +392,299 @@ class TsuitateCornerManager:
         state.pop("last_error_code", None)
         self._save(state)
         return status
+
+    # --- narration ---------------------------------------------------------
+
+    @staticmethod
+    def _added(previous, key, value):
+        current = previous.get(key) if isinstance(previous, dict) else None
+        return (current if type(current) is int else 0) + value
+
+    def _record_announcements(self, state, result, *, overlay_total, speech_total):
+        """Add this announcement to the run's bounded sink counters.
+
+        The introduction and the 感想戦 are two announcements, so the counters
+        are per-run totals: with speech on, a fully delivered run shows
+        ``overlay_announcements.sent=2`` and ``narration.enqueued=2``.
+        """
+        overlay = _sink_counts((result or {}).get("overlay"), overlay_total)
+        previous_overlay = state.get("overlay_announcements")
+        state["overlay_announcements"] = {
+            key: self._added(previous_overlay, key, overlay[key])
+            for key in ("sent", "failed", "skipped")
+        }
+        if self.audio_enabled:
+            speech = _sink_counts((result or {}).get("speech"), speech_total)
+            previous = state.get("narration")
+            state["narration"] = {
+                "enqueued": self._added(previous, "enqueued", speech["sent"]),
+                "delivery_failed": self._added(previous, "delivery_failed", speech["failed"]),
+                "skipped": self._added(previous, "skipped", speech["skipped"]),
+            }
+        self._save(state)
+
+    def _announce_intro_once(self, state):
+        """Publish the corner introduction once per corner request.
+
+        Best-effort and at-most-once: the attempt is recorded before the side
+        effect so a crash or a resumed owner can never speak it twice.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or state.get("intro_request_id") == request_id:
+            return
+        state["intro_request_id"] = request_id
+        self._save(state)
+        try:
+            if self.announce_intro is None:
+                from .tsuitate_narration import announce_intro
+
+                result = announce_intro(self.g, request_id=request_id,
+                                        audio_enabled=self.audio_enabled)
+            else:
+                result = self.announce_intro(self.g, request_id=request_id,
+                                             audio_enabled=self.audio_enabled)
+        except Exception:
+            result = None
+        self._record_announcements(state, result, overlay_total=1, speech_total=1)
+
+    def _review_summary(self, state, terminal):
+        """Read the verified public replay of this match.
+
+        Returns ``(summary, failure)``.  The game id is the identity of the
+        replay and is never read from the settled-result projection; the bot's
+        colour is only a cross-check and may be recovered from the replay itself.
+        """
+        game_id = state.get("beta_game_id")
+        color = state.get("beta_color")
+        if not isinstance(game_id, str) or not game_id:
+            return None, "invalid-game-id"
+        try:
+            reader = self.read_review
+            if reader is None:
+                from .tsuitate_review import read_summary_detail
+
+                summary, failure = read_summary_detail(
+                    game_id, terminal, color=color if color in {"sente", "gote"} else None)
+            else:
+                summary = reader(game_id, terminal, color=color)
+                failure = "ok" if isinstance(summary, dict) else "unavailable"
+        except Exception:
+            summary, failure = None, "read-failed"
+        if not isinstance(summary, dict):
+            return None, failure if failure in REVIEW_FAILURES else "unavailable"
+        return summary, "ok"
+
+    def _wait_for_review_boundary(self):
+        """Bounded wait for the shared audio queue's boundary before the 感想戦.
+
+        Returns a fixed outcome for the state/diagnostics. Speech off means
+        nothing is enqueued, so there is nothing to align with.
+        """
+        if not self.audio_enabled:
+            return "skipped"
+        try:
+            if self.wait_boundary is None:
+                from .tsuitate_narration import wait_for_audio_boundary
+
+                outcome = wait_for_audio_boundary(self.g)
+            else:
+                outcome = self.wait_boundary(self.g)
+        except Exception:
+            return "unavailable"
+        return outcome if outcome in self.BOUNDARY_OUTCOMES else "unavailable"
+
+    def _review_kifu(self, state, terminal):
+        """The verified kifu of this match, or ``None``.
+
+        ``shogi_board.reconstruct`` only returns a board when it reproduced the
+        site's own final position, so an unverified move list shows no board.
+        """
+        game_id = state.get("beta_game_id")
+        color = state.get("beta_color")
+        if not isinstance(game_id, str) or not game_id:
+            return None
+        try:
+            reader = self.read_kifu
+            if reader is None:
+                from .tsuitate_review import read_kifu_detail
+
+                detail, failure = read_kifu_detail(
+                    game_id, terminal, color=color if color in {"sente", "gote"} else None)
+            else:
+                detail = reader(game_id, terminal, color=color)
+                failure = "ok" if isinstance(detail, dict) else "unavailable"
+        except Exception:
+            return None
+        return detail if isinstance(detail, dict) else None
+
+    def _chunk_line(self, moves, start, end):
+        """One commentary line for a stretch of the kifu (model, else fixed)."""
+        try:
+            if self.chunk_text is not None:
+                outcome = self.chunk_text(self.g, moves, start, end)
+                return outcome[0], outcome[1] if len(outcome) > 1 else "fallback"
+            from .tsuitate_narration import chunk_commentary, review_agents
+
+            agents = self.review_agents or review_agents(self.g)
+            return chunk_commentary(self.g, agents, moves, start, end)
+        except Exception:
+            from .tsuitate_show import fallback_chunk_text
+
+            return fallback_chunk_text(moves, start, end), "fallback"
+
+    def _run_review_show(self, state, terminal, summary, request_id):
+        """Step the kifu on screen with per-stretch commentary.
+
+        Best effort and bounded: the view renders whatever was published, the
+        corner never fails on it, and the whole show is capped by
+        ``tsuitate_show.MAX_SHOW_SECONDS``.
+        """
+        from .tsuitate_show import (
+            MAX_SHOW_SECONDS, STEP_SECONDS, build_show, chunk_ranges, step_plan,
+            write_show,
+        )
+
+        detail = self._review_kifu(state, terminal)
+        if detail is None:
+            return None
+        moves = detail["kifu"]["moves"]
+        result = {
+            "outcome": terminal.get("outcome"),
+            "reason": terminal.get("reason"),
+            "moveNumber": terminal.get("moveNumber"),
+            "resultConfidence": terminal.get("resultConfidence"),
+        }
+        identity = state.get("view_runtime_identity") or {}
+        payload = build_show(moves, color=detail["color"],
+                             opponent=(summary or {}).get("opponentName"),
+                             result=result, request_id=request_id,
+                             runtime_id=identity.get("runtime_id"),
+                             generation=identity.get("generation"))
+        commentary = {"ai": 0, "fallback": 0}
+        for start, end in chunk_ranges(payload["move_count"]):
+            text, kind = self._chunk_line(moves, start, end)
+            payload["commentary"][str(start)] = text
+            commentary[kind if kind in commentary else "fallback"] += 1
+        write_show(self.g.state_dir, payload)
+        started = self.clock()
+        plan = step_plan(payload, step_seconds=STEP_SECONDS)
+        for chunk in plan:
+            if self.clock() - started > MAX_SHOW_SECONDS:
+                break
+            write_show(self.g.state_dir, payload, index=chunk["start"])
+            self._speak_chunk(chunk["text"], request_id)
+            for number in range(chunk["start"], chunk["end"] + 1):
+                write_show(self.g.state_dir, payload, index=number)
+                self.sleep(STEP_SECONDS)
+                if self.clock() - started > MAX_SHOW_SECONDS:
+                    break
+            # Let the spoken stretch finish before the next one starts.
+            self._wait_for_review_boundary()
+        write_show(self.g.state_dir, payload, index=payload["move_count"], done=True)
+        return {
+            "moves": payload["move_count"],
+            "board": any(move.get("board") for move in moves),
+            "commentary_ai": commentary["ai"],
+            "commentary_fallback": commentary["fallback"],
+            "seconds": max(0, int(self.clock() - started)),
+        }
+
+    def _speak_chunk(self, text, request_id):
+        """Enqueue one commentary line; never raises."""
+        if not self.audio_enabled or not isinstance(text, str) or not text:
+            return False
+        try:
+            if self.speak_chunk is not None:
+                self.speak_chunk(self.g, text, request_id)
+                return True
+            from .tsuitate_narration import REVIEW_CONTEXT
+            from .trading.soren_output import enqueue_audio_text
+
+            enqueue_audio_text(self.g, text, context=REVIEW_CONTEXT, speaker="")
+            return True
+        except Exception:
+            return False
+
+    def _announce_review_once(self, state):
+        """Publish the 感想戦 once per corner request, after the result settled.
+
+        The attempt is recorded before the side effect. The public replay is read
+        transiently for the narration only: the raw move list is never stored,
+        and only bounded counters and the spoken text survive in the state.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or state.get("review_request_id") == request_id:
+            return
+        terminal = state.get("beta_result")
+        if not isinstance(terminal, dict) or not terminal:
+            return
+        state["review_request_id"] = request_id
+        self._save(state)
+        terminal = dict(terminal)
+        since = state.get("beta_active_since")
+        if isinstance(since, (int, float)) and not isinstance(since, bool):
+            terminal["durationMs"] = max(0, int((self.clock() - since) * 1000))
+        summary, review_failure = self._review_summary(state, terminal)
+        try:
+            if self.review_text is None:
+                from .tsuitate_narration import review_agents, review_text
+
+                agents = self.review_agents or review_agents(self.g)
+                text, kind, model_failure = review_text(self.g, summary, terminal, agents=agents)
+            else:
+                outcome = self.review_text(self.g, summary, terminal,
+                                           agents=self.review_agents)
+                # Injected hooks keep the older two-tuple contract.
+                text, kind = outcome[0], outcome[1]
+                model_failure = outcome[2] if len(outcome) > 2 else "none"
+        except Exception:
+            from .tsuitate_narration import fallback_text
+
+            text, kind, model_failure = fallback_text(summary, terminal), "fallback", "exception"
+        if not isinstance(text, str) or not text:
+            return
+        if kind not in {"ai", "fallback"}:
+            kind = "fallback"
+        if model_failure not in self.MODEL_FAILURES:
+            model_failure = "provider" if model_failure else "none"
+        from .tsuitate_narration import announce_review, overlay_body
+
+        # Wait for the shared audio queue's boundary before the 感想戦 starts, so
+        # it does not cut into a comment or announcement that is playing. The
+        # wait is bounded and fails open: a busy queue never holds the shared
+        # program slot and never loses the 感想戦. Only the spoken half needs it.
+        boundary = self._wait_for_review_boundary()
+        # Step the kifu on screen with its per-stretch commentary first, then
+        # close with the spoken summary. Both are bounded and best-effort.
+        try:
+            show = (self.run_show(state, terminal, summary, request_id)
+                    if self.run_show is not None
+                    else self._run_review_show(state, terminal, summary, request_id))
+        except Exception:
+            show = None
+        body = overlay_body(text, terminal)
+        try:
+            if self.announce_review is None:
+                result = announce_review(self.g, text, request_id=request_id, body=body,
+                                         audio_enabled=self.audio_enabled)
+            else:
+                result = self.announce_review(self.g, text, request_id=request_id, body=body,
+                                              audio_enabled=self.audio_enabled)
+        except Exception:
+            result = None
+        self._record_announcements(state, result, overlay_total=1, speech_total=1)
+        # Bounded counters only: the move list, the board and the model prompt
+        # never reach the state file.
+        state["review"] = {
+            "source": "replay" if summary is not None else "result-only",
+            "kind": kind,
+            "failure": review_failure,
+            "boundary": boundary,
+            "model_failure": model_failure,
+            "show": show if isinstance(show, dict) else None,
+            "moves": terminal.get("moveNumber") if type(terminal.get("moveNumber")) is int else None,
+        }
+        self._save(state)
 
     def _ensure_beta_started(self, state):
         request_id = state.get("rotation_request_id")
@@ -486,6 +847,11 @@ class TsuitateCornerManager:
             }[beta_state]
             if state.get("view_lost") is True:
                 return self._mark_interrupted(state, state.get("end_reason", "operator-moved"))
+            # The settled result is known while the result card is still on
+            # screen: read the public replay once and speak the 感想戦 before the
+            # display returns to the base game. Both are best-effort and bounded;
+            # the restore below is never failed by a missing public page.
+            self._announce_review_once(state)
             return self._restore(state, end_reason=reason)
 
     def _restored_owner_matches(self, state, canonical, result):

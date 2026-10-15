@@ -231,7 +231,7 @@ class MarketCorner:
                 raise
 
 
-HTML = '''<!doctype html><html lang="ja"><meta charset="utf-8"><title>docich market</title>
+HTML = '''<!doctype html><html lang="ja" translate="no"><meta charset="utf-8"><meta name="google" content="notranslate"><title>docich market</title>
 <style>body{margin:18px;background:#102132;color:#edf2f7;font:20px sans-serif}h1{font-size:30px;margin:8px 0}
 small{color:#9fb4c8}#metrics{white-space:pre-wrap;font-size:23px}canvas{width:900px;height:140px}#fills{font-size:17px;white-space:pre-wrap}</style>
 <h1 id="title">取引データ確認中</h1><small>実資金を使わないシミュレーション / 費用・スリッページ込み</small>

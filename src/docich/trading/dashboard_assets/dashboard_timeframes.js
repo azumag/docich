@@ -248,6 +248,7 @@
   let inFlight = false;
 
   async function pollTimeframes() {
+    if (document.hidden) return;
     if (inFlight) return;
     inFlight = true;
     try {
@@ -261,5 +262,9 @@
   }
 
   pollTimeframes();
-  setInterval(pollTimeframes, POLL_MS);
+  let timeframeTimer = setInterval(pollTimeframes, POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (timeframeTimer) { clearInterval(timeframeTimer); timeframeTimer = null; } }
+    else { if (!timeframeTimer) { pollTimeframes(); timeframeTimer = setInterval(pollTimeframes, POLL_MS); } }
+  });
 })();

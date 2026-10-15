@@ -97,6 +97,42 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
+## コーナー入りの境界（`boundary_ready`: Soren予想 + オーディオキュー、#2236）
+
+実行枠を取る前に、`program_slot(wait_boundary=True)`が共有境界（`src/docich/corner_boundary.py`）を
+待つ。待ちは既存の`rotation_wait_minutes`（既定10分）で有界で、期限切れは`CornerWaitExpired`として
+**実行せず**`queued`/`expired`でその回を飛ばす（latchは残さない）。境界は次の2つ。
+
+1. **Sorenの予想がin-flightのとき**だけ、`tmp/state/corner_boundary_prediction.json`の
+   `completed_at`が要求時刻以降になるまで待つ。`prediction_worker`が停止・休止中は
+   `ACTIVE`/`LOCKED`が残っていても待たない（停止したworkerが全コーナーを永久に塞がない）。
+2. **共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定`<soren>/tmp/.comment_queue`）が
+   完全に静かになるまで待つ**。対象は`comment_*.txt`（キュー待ち）と`comment_*.playing`
+   （再生中）の両方で、どちらかが1件でもあれば開始しない（視聴者コメントや他コーナーの
+   告知の後ろにイントロが割り込まないため）。キューが無い・読めない場合は「静か」とみなし、
+   壊れたキューで全コーナーを塞がない。
+
+- ディレクトリ解決は`src/docich/comment_queue.py`の1箇所で、soviet_nowのshell sink
+  （`lib/outbound_queue.sh` → `broadcast/comment.sh`の`get_comment_backlog_counts`）と同じ規則:
+  プロセス環境の`COMMENT_QUEUE_DIR` → `<soren>/.env`の`COMMENT_QUEUE_DIR` → `tmp/.comment_queue`。
+  相対値はSoren root基準（shellはcwd=Soren rootで動く）。
+- **改善サイクルとA/Bは意図的にゲートしない**（試合/ラウンド境界はgame-switch coordinatorが
+  所有し、A/Bは一時停止して再開する）。
+- 境界待ちをするのは`wait_boundary=True`のコーナー（view系=weather/tsuitate/yoso、
+  external video、paper/retroの通常経路）。**NetHackとSoren91（Meriken）は既存設計で
+  `wait_boundary=False`**であり、この境界を待たない（Soren91はoverlay-only linkage、
+  NetHackは自前のround boundaryが正本）。この除外は#2236でも変更していない。
+- 無線の背景ラジオは専用の`RADIO_DEFERRED_QUEUE_DIR`（`tmp/.radio_deferred_queue`）で流れるため
+  この境界では待たない。コーナー告知は共有キューへ`comment_announce_*`として入るので待つ。
+- **出口側の待ち**: 衝立将棋の感想戦（`tsuitate_narration.wait_for_audio_boundary`）も
+  同じ「audio queue が完全に静か」を待ってから読み上げる。入りと違い**有界（既定180秒）で
+  fail-open**: 期限切れでも感想戦は読み、queue が読めない場合も即座に進む（コーナーの復帰を
+  遅らせない）。結果は `review.boundary`（`quiet` / `timeout` / `unavailable` / `skipped`）に残す。
+- 残る注意: `audio_worker`自体が停止していると`.txt`/`.playing`が残り続け、全コーナーが
+  期限切れを繰り返す（開始しないだけで、枠・latch・他workerは壊さない）。診断の
+  `corners.boundary.audio`（`queued`/`playing`/`oldest_age_sec`/`reason`）とworker健全性で
+  切り分ける。
+
 ### 失敗したcornerの隔離とlatch（`failed_corners` / `status=recovery_required`、#2187）
 
 **1つのcornerの失敗で他のcornerのローテーションを止めない。** 予約後の実行が例外で終了した
@@ -608,20 +644,26 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
-### 予想王コーナー（`yoso` adapter、既定無効・手動予約のみ）
+### 予想王コーナー（`yoso` adapter、自動抽選＋手動予約）
 
 `config/docich.soren-live.toml` の catalog に `{ id = "yosou-oh", adapter = "yoso",
-game = "yosou-view", enabled = false, manual_only = true }` を登録した。チャネルポイント予想の
+game = "yosou-view", enabled = true, audio_enabled = true }` を登録している
+（2026-10-14 に有効化、2026-10-15 に `manual_only` を解除して自動抽選へ追加・読み上げを有効化）。
+チャネルポイント予想の
 的中率ランキング（上位予想者のみ集計）を 960×540 の読み取り専用 view で表示する。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
 view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（catalog の `duration_minutes` で
-1〜14 分）で自動終了し、common slot の停止・復帰は既存 GameSwitch 経路を通る。
+1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
+`end_reason = "audio-complete"` として早期に終了する（天気予報 corner の音声完了と同じ考え方）。
+queue が混んで発話が上限まで残る場合は従来どおり `end_reason = "duration"` で終わる。
+common slot の停止・復帰は既存 GameSwitch 経路を通る。
 
-`manual_only = true` のため自動抽選には入らない。`enabled = false` の行は rotation の
-適格判定で `disabled-or-paused` になるので、WebUI の手動予約も拒否される。有効化は
-オーナー承認後に `enabled = true` へ変える1行で、その時点で `queue_manual` が通り、
-`manual_only` の自動除外は維持される。diagnostics は `yoso_corner.json` の
+`manual_only` を付けないため24時間 rolling rotation の自動抽選に入り、WebUI の手動予約
+（`queue_manual`）も従来どおり使える。`enabled = false` の行は rotation の適格判定で
+`disabled-or-paused` になるので、WebUI の手動予約も拒否される。`manual_only = true` に戻せば
+適格判定で `manual-only` として自動抽選から外れ、手動予約だけを受け付ける。
+diagnostics は `yoso_corner.json` の
 status / timestamps / counts だけを投影し、視聴者名やランキング内容は出さない。
 
 ### Soren 予想の台帳記録（`soren_predictions.tick`、#933 PR-2b）
@@ -641,10 +683,20 @@ Soren の `twitch_predictions.sh` が resolve 成功時に追記する
 
 予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
 `yoso_narration.announcement()` を呼ぶ。共通 eventOverlay の既存 `prediction` category へ
-「予想王」+ 上位5件 + 件数を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
-yosou:<request_id>` で同一 run の重複を抑止）に積む。catalog の `audio_enabled = true` を
-明示したときだけ、上位3件を1発話（上限300字、`context="yosou:ranking"`、共有 audio worker の
-既定音声）として enqueue する。
+**コーナー紹介と ranking の2件**を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
+yosou:intro:<request_id>` / `yosou:ranking:<request_id>`。共有 queue は `source_id` ごとに
+最新1件だけを残すため分ける）に積む。catalog の `audio_enabled = true` を明示したときだけ、
+同じ2件を発話として enqueue する（紹介 `context="yosou:intro"` → ranking
+`context="yosou:ranking"` の順、各上限300字、共有 audio worker の既定音声）。
+
+読み上げを入れた run は、`yoso_narration.voice_items_in_flight()` が自分の
+`yosou:intro` / `yosou:ranking` の queue マーカー（`.txt` / `.playing`）を数え、
+0 になった時点で `audio-complete` として早期終了する。共有 audio worker は再生前に
+`.playing` へ rename し、再生試行が終わってから削除するため、マーカーの不在が
+この queue で得られる唯一の完了証拠である（他 source のコメントや他 corner は数えない）。
+内容重複で sink が落とした発話はファイルを作らないため、その場合も「待つものが無い」として
+同じ扱いになる。`duration_minutes` は上限として残り、queue が混んで発話が残る run は
+`duration` で終わる。
 
 呼び出しは `announce_request_id` を副作用の前に state へ保存する at-most-once で、
 crash / resume で同じランキングを二度読まない。sink 失敗は `overlay_announcements`

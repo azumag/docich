@@ -137,15 +137,16 @@ def _yoso_adapter(g, corner, switch, now, sleep):
     return adapter
 
 
-def test_production_catalog_enables_yosou_oh_manual_reservation_only():
+def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
-    assert len(catalog) == 12
+    assert len(catalog) == 13
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
-    assert row.enabled is True and row.manual_only is True
+    # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。
+    assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
-    assert row.duration_minutes is None and row.audio_enabled is False
+    assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 
@@ -358,7 +359,9 @@ def test_yoso_corner_announces_once_per_request_and_records_counters(tmp_path):
 
     adapter = _yoso_adapter(g, _corner(), switch, now, sleep)
     adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
-        (request_id, audio_enabled)) or {"overlay": "sent", "speech": "skipped"}
+        (request_id, audio_enabled)
+    ) or {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+         "speech": {"sent": 0, "failed": 0, "skipped": 2}}
     request_id = str(uuid.uuid4())
     state = adapter.manager._new_state(request_id)
     adapter.manager._save(state)
@@ -367,7 +370,8 @@ def test_yoso_corner_announces_once_per_request_and_records_counters(tmp_path):
 
     assert calls == [(request_id, False)]
     assert state["announce_request_id"] == request_id
-    assert state["overlay_announcements"] == {"sent": 1, "failed": 0, "skipped": 0}
+    # The introduction and the ranking are two overlay events.
+    assert state["overlay_announcements"] == {"sent": 2, "failed": 0, "skipped": 0}
     assert "narration" not in state  # speech stays off without the opt-in
 
     # A resumed owner never publishes the same ranking twice.
@@ -384,7 +388,9 @@ def test_yoso_corner_speaks_only_when_the_audio_opt_in_is_set(tmp_path):
 
     adapter = _yoso_adapter(g, _corner(audio_enabled=True), switch, now, sleep)
     adapter.manager.announce = lambda g, *, request_id, audio_enabled: calls.append(
-        audio_enabled) or {"overlay": "sent", "speech": "sent"}
+        audio_enabled
+    ) or {"overlay": {"sent": 2, "failed": 0, "skipped": 0},
+         "speech": {"sent": 2, "failed": 0, "skipped": 0}}
     request_id = str(uuid.uuid4())
     state = adapter.manager._new_state(request_id)
     adapter.manager._save(state)
@@ -392,7 +398,8 @@ def test_yoso_corner_speaks_only_when_the_audio_opt_in_is_set(tmp_path):
     assert adapter.manager._dispatch_start(state) is None
 
     assert calls == [True]
-    assert state["narration"] == {"enqueued": 1, "delivery_failed": 0, "skipped": 0}
+    # The introduction and the ranking are two speech items.
+    assert state["narration"] == {"enqueued": 2, "delivery_failed": 0, "skipped": 0}
 
 
 def test_a_failing_announcer_never_fails_the_corner(tmp_path):
@@ -418,7 +425,7 @@ def test_a_failing_announcer_never_fails_the_corner(tmp_path):
 
     state = json.loads((Path(g.state_dir) / "yoso_corner.json").read_text())
     assert state["status"] == "completed"
-    assert state["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
+    assert state["overlay_announcements"] == {"sent": 0, "failed": 2, "skipped": 0}
     assert "SECRET-ANNOUNCER-BODY" not in json.dumps(state)
     canonical, _ = store.canonical.load()
     assert canonical["active"]["game"] == "robots"
@@ -606,3 +613,63 @@ def test_yoso_restore_replay_reuses_one_fresh_request_when_it_fails(tmp_path):
     second = json.loads(adapter.state_path.read_text())["restore_recovery"]["request_id"]
     assert second == first
     assert [call[1]["request_id"] for call in calls if isinstance(call, tuple)] == [first, first]
+
+
+def _voice_manager(monkeypatch, *, in_flight, now, sleep):
+    """A manager whose audio wait is driven by a stubbed queue observation."""
+    request_id = "22222222-2222-4222-8222-222222222222"
+    identity = {"game": VIEW_NAME, "runtime_id": "memory-yoso",
+                "generation": 3, "lease_id": request_id}
+    state = {"yoso_runtime_identity": identity, "status": "active",
+             "voice_pending": 2, "ends_at": now[0] + 3.0}
+    restores = []
+    manager = object.__new__(YosoCornerManager)
+    manager.g = SimpleNamespace()
+    manager.clock = lambda: now[0]
+    manager.sleep = sleep
+    manager.poll_s = 1.0
+    manager._stop_requested = lambda: False
+    manager._canonical = lambda: {"phase": "ready", "active": identity, "candidate": None,
+                                  "previous": None, "retiring": []}
+
+    def restore(_state, *, end_reason):
+        restores.append(end_reason)
+        _state.update(status="completed", end_reason=end_reason)
+        return "completed"
+
+    manager._restore = restore
+    monkeypatch.setattr("docich.yoso_narration.voice_items_in_flight",
+                        lambda _g: in_flight)
+    return manager, state, restores
+
+
+@pytest.mark.parametrize("in_flight, expected", [(0, "audio-complete"), (1, "duration")])
+def test_yoso_ends_with_the_read_aloud_not_with_the_duration(
+        monkeypatch, in_flight, expected):
+    """A finished read-aloud ends the corner; a queued item falls back to the cap."""
+    now = [1000.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager, state, restores = _voice_manager(
+        monkeypatch, in_flight=in_flight, now=now, sleep=sleep)
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert restores == [expected]
+    assert state["end_reason"] == expected
+
+
+def test_yoso_never_ends_early_without_queued_speech(monkeypatch):
+    """With no speech item enqueued there is nothing to wait for or to shorten."""
+    now = [1000.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager, state, restores = _voice_manager(
+        monkeypatch, in_flight=0, now=now, sleep=sleep)
+    state.pop("voice_pending")
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert restores == ["duration"]

@@ -127,16 +127,21 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     "weather requires id=weather, game=weather-view, boolean audio_enabled/fetch_on_start, and duration_minutes 1-14 when enabled"
                 )
         elif item.adapter == "tsuitate":
+            # One remote beta match. The corner is bounded by the Worker's own
+            # match bound, so there is no display duration; speech (the corner
+            # introduction and the 感想戦) is the only optional setting.
             if item.id != "tsuitate" or item.game != "tsuitate-view":
                 raise CornerCatalogError(
                     "tsuitate requires id=tsuitate and game=tsuitate-view"
                 )
-            if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
+            if type(item.audio_enabled) is not bool:
+                raise CornerCatalogError("tsuitate accepts only a boolean audio_enabled")
+            if item.duration_minutes is not None or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")
         elif item.adapter == "yoso":
-            # Default-disabled, manual-only leaderboard view. The duration is an
-            # optional upper bound (1-14 minutes, same ceiling as weather); the
-            # entry runs only when the owner reserves it. Speech is a separate
+            # Read-only leaderboard view. The duration is an optional upper bound
+            # (1-14 minutes, same ceiling as weather); the catalog row decides
+            # whether it is auto-selected or manual-only. Speech is a separate
             # opt-in because it reads viewer display names aloud.
             if item.id != "yosou-oh" or item.game != "yosou-view":
                 raise CornerCatalogError("yoso requires id=yosou-oh and game=yosou-view")
@@ -148,6 +153,20 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("yosou duration_minutes must be an integer 1-14")
+        elif item.adapter == "doushi":
+            # Auto-rotation-enabled 同志カード大賞 view (design §5).
+            # Same shape as yoso: an optional 1-14 minute ceiling, a boolean
+            # speech opt-in, and no weather-only settings.
+            if item.id != "doushi-card" or item.game != "doushi-view":
+                raise CornerCatalogError("doushi requires id=doushi-card and game=doushi-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "doushi accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("doushi duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (
