@@ -14,8 +14,8 @@ jobs:
           persist-credentials: false
           submodules: false
       - name: Archive tracked development sources only
-        run: git archive --format=tar.gz --output=source.tar.gz HEAD src tests docs .github AGENTS.md README.md conftest.py requirements-test.txt requirements.txt
-      - uses: actions/upload-artifact@v4
+        run: git archive --format=tar.gz --output=source.tar.gz HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: merchant-development-source
           path: source.tar.gz
