@@ -181,18 +181,23 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999})
-    assert refill['items'] == [] and refill['soldiers'] == 99
+    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 1]]
+    assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
 
-def test_uncovered_month_opens_refill_instead_of_leaving_the_menu():
+def test_uncovered_month_refills_soldiers_and_plans_spare_cash_cards():
     mem = {'chapter': 1}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
-    assert shop['items'] == [] and shop['soldiers'] == 50 and shop['soldiers_done'] is False
-    rec = mem['_records'][-1]
+    assert shop['items'] == [['ノリウツール', 1]]
+    assert shop['soldiers'] == 50 and shop['soldiers_done'] is False
+    rec = next(r for r in mem['_records'] if r['decision'] == 'month_plan')
     assert rec['strategy_variant'] == 'soldier_refill_only'
     assert rec['deviation_reason'] == 'chart_month_uncovered'
     assert rec['plan'] == {'cards': [], 'soldiers': 50}
+    extra = mem['_records'][-1]
+    assert extra['strategy_variant'] == 'spare_cash_strong_cards'
+    assert extra['plan'] == {'cards': [['ノリウツール', 1]]}
     # No gold left: the month closes without opening the refill.
     assert policy._plan({'chapter': 1}, {'year': 1, 'month': 8, 'gold': 0})['soldiers_done'] is True
     c = Canvas()
@@ -201,7 +206,11 @@ def test_uncovered_month_opens_refill_instead_of_leaving_the_menu():
     c.text(48, 63, 'へいしほじゅう')
     c.text(128, 95, 'も〜おしまい!')
     c.hand(26, 41)
-    assert policy.month_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    refill_mem = json.loads(json.dumps(mem))
+    assert policy.month_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    # A separately prepared post-merchant state still opens the refill.
+    refill_mem['shop'].update(items=[], merchant_done=True)
+    assert policy.month_step(parse(c.frame()), refill_mem)[0]['buttons'] == ['down']
 
 
 def test_a_charted_purchase_still_ahead_keeps_its_own_soldier_budget():
@@ -739,13 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v223-value-aware-retreat'
+    assert state['bot_version'] == 'hanjuku-chart-v224-merchant-bargains'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_finishing_resource_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v223-value-aware-retreat'
+    assert BOT_VERSION == 'hanjuku-chart-v224-merchant-bargains'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():

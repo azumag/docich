@@ -176,3 +176,13 @@ def test_spent_optional_gold_is_not_reissued_on_another_card(ready):
     ready['shop'].update(bargain_cards=['ノリウツール', 'クースカン'],
                         bought=[['ノリウツール', 3, 18]], items=[['クースカン', 3]])
     assert b.bargain_spendable(ready, ready['shop'], listing(999).header) == 46
+
+
+@pytest.mark.parametrize('gold', [100, 200, 300, 400, 500, 1000, 2000])
+def test_round_cash_header_never_poisoned_as_zero_price_stock(ready, gold):
+    actions = p.shop_step(listing(gold), ready)
+    quantity = min(3, max(0, gold - 8 - 50 - 30) // 18)
+    assert actions == [p.pad('a' if quantity else 'b')]
+    assert ready['shop']['bargain_listing_planned'] is True
+    assert (ready['shop'].get('want') or [None, 0])[1] == quantity
+    assert not ready['shop'].get('bought')

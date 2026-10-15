@@ -50,7 +50,8 @@ def shop_step(screen: Screen, mem):
     listed = {}
     for line in screen.lines:
         joined = ''.join(line.words(120, 256))
-        m = re.match(r'^(\S+?)(\d+)G$', joined)
+        # Numeric cash headers (for example 300G) are not product names.
+        m = re.match(r'^([^\d\s]+)(\d+)G$', joined)
         if m:
             listed[m.group(1)] = int(m.group(2))
     plan_bargains(mem, shop, screen.header, listed=listed)
