@@ -7,7 +7,8 @@ and recheck the actual listing and final quote before confirming anything.
 from __future__ import annotations
 
 from ..decision_log import _record
-from .economy import KNOWN_PRICES, _charted_purchase_ahead, _merchant_spendable
+from .economy import (KNOWN_PRICES, _charted_purchase_ahead,
+                      _egg_recovery_targets, _merchant_spendable)
 
 
 # Owner 2026-10-15: buy useful cheap cards from merchants/carts when cash is
@@ -16,6 +17,17 @@ BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイ�
 BARGAIN_CASH_BUFFER = 30
 BARGAIN_MONTHLY_GOLD = 100
 BARGAIN_MONTHLY_COPIES = 6
+
+
+def _necessities_pending(mem, shop):
+    # A spare-cash purchase must not take the menu away from recovery or
+    # necessary recruitment. Defer planning; do not mark the visit spent.
+    egg = (shop.get('egg') not in ('done', 'not_needed')
+           and (shop.get('egg_priority') or shop.get('egg_before_recruit')
+                or _egg_recovery_targets(mem)))
+    recruit = (shop.get('recruit_priority')
+               and shop.get('recruit') not in ('done', 'not_needed'))
+    return bool(egg or recruit)
 
 
 def bargain_spendable(mem, shop, header):
@@ -67,7 +79,7 @@ def merchant_card_spendable(mem, shop, header, name, price):
     if name not in extras:
         return _merchant_spendable(mem, shop, header)
     if (type(price) is not int or price <= 0 or name not in BARGAIN_TARGETS
-            or price > KNOWN_PRICES[name]):
+            or price > KNOWN_PRICES[name] or _necessities_pending(mem, shop)):
         return None
     cash = bargain_spendable(mem, shop, header)
     if cash is None or _charted_purchase_ahead(mem, header):
@@ -90,11 +102,16 @@ def plan_bargains(mem, shop, header, *, listed=None):
     after a rejected quote, a purchase, or JSON save/hotload.
     """
     if (not isinstance(shop, dict) or shop.get('merchant_done') or shop.get('closed')
-            or shop.get('want') or mem.get('month_sub') or shop.get('soldier_receipt')
+            or shop.get('want') or mem.get('month_sub')
             or not isinstance(header, dict)
             or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
             or (listed is None and shop.get('bargain_planned'))
             or (listed is not None and shop.get('bargain_listing_planned'))):
+        return shop
+    receipt = shop.get('soldier_receipt')
+    if (receipt and (not isinstance(receipt, dict) or receipt.get('status') != 'paid')):
+        return shop
+    if _necessities_pending(mem, shop):
         return shop
     budget = bargain_spendable(mem, shop, header)
     if budget is None or _charted_purchase_ahead(mem, header):
