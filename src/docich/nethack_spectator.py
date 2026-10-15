@@ -243,9 +243,10 @@ def render_html(
   <div class="status">{status_html or '<div>&nbsp;</div>'}</div>
 </div>"""
     return f"""<!doctype html>
-<html lang="ja">
+<html lang="ja" translate="no">
 <head>
 <meta charset="utf-8">
+<meta name="google" content="notranslate">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 {tileset_meta}
 <title>{html.escape(title)}</title>
@@ -470,7 +471,8 @@ def render_live_shell(
     script = script.replace("__STALE__", str(stale_after_ms))
     script = script.replace("__POLL__", str(poll_interval_ms))
     return f"""<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
+<html lang="ja" translate="no"><head><meta charset="utf-8">
+<meta name="google" content="notranslate">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="docich-tileset" content="{html.escape(TILESET_NAME, quote=True)}">
 <title>{html.escape(window_title)}</title><style>
