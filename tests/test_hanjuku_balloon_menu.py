@@ -123,6 +123,22 @@ def test_unmeasured_high_hp_can_shout_without_fake_cursor_damage(records):
     assert mem['battle']['balloon_finch_survival']['pending']['action'] == 'skill2'
 
 
+def test_old_cached_full_hp_only_choice_is_invalidated_on_hotloaded_policy(records):
+    # Before the new deploy the bot might have cached skill1 at HP6144.
+    # The HP panel need not change to switch to the new skill2 decision.
+    mem = memory()
+    mem.update(
+        monster_menu_choice='skill1',
+        monster_menu_choice_hp=(6144, 1000),
+        monster_menu_key=['ふくらむ', 'シャウト', 'たまごにもどれ'],
+        monster_menu_choice_scope=['ally', 'バルーンフィンチ', 'ヒュドラ'],
+    )
+    assert menus.monster_menu_step(screen(6144), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert mem['monster_menu_choice_policy_epoch'] == '20261016-balloon-akematsu-v2'
+    assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
+
+
 def test_ascii_spaces_in_skill_labels_preserve_balloon_recognition(records):
     mem = memory()
     spaced = ['ふく らむ', 'シャ ウト']
