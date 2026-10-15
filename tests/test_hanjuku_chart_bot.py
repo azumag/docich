@@ -815,16 +815,17 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
 @pytest.mark.parametrize(
     ('ally_hp', 'enemy_hp', 'choice'),
     [
-        (192, 1000, 'skill1'),    # even badly behind, inflate instead of retreating
-        (6144, 40, 'skill1'),     # an intermediate observed high is not "full"
-        (9998, 40, 'skill1'),     # one point below the cap still inflates
-        (9999, 40, 'skill2'),     # only full HP may shout
-        (4999, 40, 'skill1'),     # after shout/damage, inflate back to full
+        (192, 1000, 'skill1'),    # badly wounded: recover before shouting
+        (4096, 40, 'skill1'),     # no damage readings: larger cautious reserve
+        (6144, 40, 'skill2'),     # do not wait for 9999 when reserve exists
+        (9998, 40, 'skill2'),     # a point below cap still permits a shout
+        (9999, 40, 'skill2'),     # original cap fallback remains
+        (4999, 40, 'skill1'),     # without a sample, cannot use smaller reserve
     ],
 )
-def test_balloon_finch_inflates_to_real_cap_then_shouts(ally_hp, enemy_hp, choice):
-    # Owner 2026-10-06: ふくらむ until HP is actually maxed, then シャウト.
-    # The policy is fixed for this monster and must beat generic retreat/experience.
+def test_balloon_finch_uses_early_cautious_reserve_without_measured_damage(ally_hp, enemy_hp, choice):
+    # Owner 2026-10-16: even unmeasured fights may shout at the cautious
+    # reserve; the full-HP-only behavior created a slow repeat loop.
     frame = monster_menu_frame(
         ['ふくらむ', 'シャウト'],
         ally=('バルーンフィンチ', ally_hp), enemy=('クミン', enemy_hp), cursor=0)
