@@ -1,0 +1,22 @@
+name: Hanjuku merchant development validation
+on:
+  push:
+    branches: ['fix/hanjuku-surplus-merchant-cards-20261015']
+permissions:
+  contents: read
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Archive tracked development sources only
+        run: git archive --format=tar.gz --output=source.tar.gz HEAD src tests docs .github AGENTS.md README.md conftest.py requirements-test.txt requirements.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merchant-development-source
+          path: source.tar.gz
+          retention-days: 1
