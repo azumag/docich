@@ -977,6 +977,67 @@ def _critical_survival_needed(cur):
             and type(enemy) is int and enemy > 0)
 
 
+GENERAL_EGG_REOPEN_LIMIT = 2
+
+
+def _general_egg_rescue_recheck(mem, cur):
+    """Reopen an unobserved rescue menu before a known egg holder collapses.
+
+    Three B attempts landing in dialogue are not evidence of an empty egg.
+    Only a bound, worsening HP trade grants two extra finite episodes; each
+    needs further HP loss. The visible menu still owns resource selection.
+    """
+    from ..os_layer.roster import run_identity
+    rescue = cur.get('survival')
+    if (not isinstance(rescue, dict)
+            or cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('card_flow') or cur.get('planned_cards')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('resource_menu_observed') or cur.get('okunote_only_observed')
+            or cur.get('independent') or cur.get('cards_selected')
+            or rescue.get('egg_attempted') or rescue.get('egg_pending')
+            or rescue.get('cards_checked') or rescue.get('cards_attempted')
+            or rescue.get('conserving_melee')
+            or (cur.get('hero_retreat') or {}).get('selected')
+            or not _own_egg_positive(mem, cur) or _own_egg_empty(mem, cur)):
+        return False
+    identity = run_identity(mem.get('_run_identity'))
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum, enemy_maximum = general_max_hp(cur.get('ally')), general_max_hp(cur.get('enemy'))
+    scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
+    if (identity is None or cur.get('melee_opening_scope') != scope
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not hp < start <= maximum or not enemy <= enemy_start <= enemy_maximum
+            or hp >= enemy or hp * 3 > start * 2
+            or hp * enemy_start >= enemy * start):
+        return False
+    opens, pending, ticks, episodes = (rescue.get(k, 0) for k in
+        ('opens', 'pending_opens', 'menu_ticks', 'general_egg_rechecks'))
+    last_hp = rescue.get('general_egg_recheck_hp')
+    if (any(type(n) is not int for n in (opens, pending, ticks, episodes))
+            or not 3 <= opens < 12 or pending != 3 or ticks != 0
+            or not 0 <= episodes < GENERAL_EGG_REOPEN_LIMIT
+            or (episodes > 0 and (type(last_hp) is not int or not hp < last_hp <= start))):
+        return False
+    rescue.update(general_egg_rechecks=episodes + 1, general_egg_recheck_hp=hp,
+                  exhausted=False, egg_priority=True, opens=opens + 1,
+                  pending_opens=1, menu_ticks=0)
+    _record(mem, 'battle_general_egg_recheck', **_battle_labels(cur),
+            general=cur.get('ally'), enemy=cur.get('enemy'),
+            observed_metric={'ally_hp': hp, 'enemy_hp': enemy,
+                             'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             'episode': episodes + 1, 'limit': GENERAL_EGG_REOPEN_LIMIT,
+                             'opens': opens + 1, 'menu_observed': False},
+            reason='卵残数が正数の一般将軍が押し負けているため、開けなかった実メニューを有限回だけ再確認する')
+    return True
+
+
 HERO_SURVIVAL_REOPEN_LIMIT = 2    # extra unopened-menu episodes for a losing hero
 
 

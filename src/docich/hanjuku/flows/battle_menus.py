@@ -431,6 +431,7 @@ def battle_menu_step(screen: Screen, mem):
         _record(mem, 'battle_egg_actor_unconfirmed',
                 reason='実画面の本人は残数0のため、旧戦闘文脈で卵を選ばず戻る')
         return [pad('b')]
+    cur['resource_menu_observed'] = True  # a B attempt alone never proves this
     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)

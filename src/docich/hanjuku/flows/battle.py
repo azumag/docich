@@ -10,6 +10,7 @@ import re
 import time
 from dataclasses import asdict
 
+from ..judgment.battle import _general_egg_rescue_recheck
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
@@ -409,6 +410,8 @@ def battle_step(screen: Screen, mem):
         return opening_wait
     if _egg_rescue_pending(cur):
         return [{'type': 'wait', 'ms': 50}]
+    if not melee_followup and _general_egg_rescue_recheck(mem, cur):
+        return _human_menu_open(cur, 'survival')
     if not melee_followup and _egg_before_retreat(mem, cur):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
