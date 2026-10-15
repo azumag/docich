@@ -1248,7 +1248,7 @@ def _egg_rescue_pending(cur):
     return False
 
 
-def _hero_retreat_needed(cur):
+def _default_retreat_needed(cur):
     """Any general's retreat threshold in an attack battle.
 
     The hero keeps his remembered full-strength reference; another general
@@ -1280,6 +1280,12 @@ def _hero_retreat_needed(cur):
         # her while the bot chose こうげき and the retreat came too late).
         return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
+
+
+def _hero_retreat_needed(cur):
+    """Value-aware ordinary retreat with the existing special-case guards."""
+    from .retreat import retreat_needed
+    return retreat_needed(cur)
 
 
 def _healthy_melee_advantage(cur):
