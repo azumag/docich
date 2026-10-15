@@ -110,7 +110,8 @@ class TsuitateCornerManager:
                  max_match_seconds=DEFAULT_MAX_MATCH_SECONDS,
                  audio_enabled=False, review_agents="",
                  announce_intro=None, announce_review=None,
-                 read_review=None, review_text=None, wait_boundary=None):
+                 read_review=None, review_text=None, wait_boundary=None,
+                 read_kifu=None, chunk_text=None, run_show=None, speak_chunk=None):
         self.g = g
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         if (type(max_match_seconds) not in (int, float)
@@ -122,7 +123,9 @@ class TsuitateCornerManager:
             raise TsuitateCornerError("tsuitate review_agents must be a string")
         for name, hook in (("announce_intro", announce_intro), ("announce_review", announce_review),
                            ("read_review", read_review), ("review_text", review_text),
-                           ("wait_boundary", wait_boundary)):
+                           ("wait_boundary", wait_boundary), ("read_kifu", read_kifu),
+                           ("chunk_text", chunk_text), ("run_show", run_show),
+                           ("speak_chunk", speak_chunk)):
             if hook is not None and not callable(hook):
                 raise TsuitateCornerError(f"tsuitate {name} must be callable")
         self.max_match_seconds = float(max_match_seconds)
@@ -138,6 +141,11 @@ class TsuitateCornerManager:
         # The 感想戦 waits for the shared audio queue's boundary (bounded,
         # fail-open) so it does not start inside a comment or announcement.
         self.wait_boundary = wait_boundary
+        # The 感想戦 show: read the kifu, write it for the view, step it on air.
+        self.read_kifu = read_kifu
+        self.chunk_text = chunk_text
+        self.run_show = run_show
+        self.speak_chunk = speak_chunk
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
         self.store = GameSwitchStore(g.state_dir)
@@ -485,6 +493,118 @@ class TsuitateCornerManager:
             return "unavailable"
         return outcome if outcome in self.BOUNDARY_OUTCOMES else "unavailable"
 
+    def _review_kifu(self, state, terminal):
+        """The verified kifu of this match, or ``None``.
+
+        ``shogi_board.reconstruct`` only returns a board when it reproduced the
+        site's own final position, so an unverified move list shows no board.
+        """
+        game_id = state.get("beta_game_id")
+        color = state.get("beta_color")
+        if not isinstance(game_id, str) or not game_id:
+            return None
+        try:
+            reader = self.read_kifu
+            if reader is None:
+                from .tsuitate_review import read_kifu_detail
+
+                detail, failure = read_kifu_detail(
+                    game_id, terminal, color=color if color in {"sente", "gote"} else None)
+            else:
+                detail = reader(game_id, terminal, color=color)
+                failure = "ok" if isinstance(detail, dict) else "unavailable"
+        except Exception:
+            return None
+        return detail if isinstance(detail, dict) else None
+
+    def _chunk_line(self, moves, start, end):
+        """One commentary line for a stretch of the kifu (model, else fixed)."""
+        try:
+            if self.chunk_text is not None:
+                outcome = self.chunk_text(self.g, moves, start, end)
+                return outcome[0], outcome[1] if len(outcome) > 1 else "fallback"
+            from .tsuitate_narration import chunk_commentary, review_agents
+
+            agents = self.review_agents or review_agents(self.g)
+            return chunk_commentary(self.g, agents, moves, start, end)
+        except Exception:
+            from .tsuitate_show import fallback_chunk_text
+
+            return fallback_chunk_text(moves, start, end), "fallback"
+
+    def _run_review_show(self, state, terminal, summary, request_id):
+        """Step the kifu on screen with per-stretch commentary.
+
+        Best effort and bounded: the view renders whatever was published, the
+        corner never fails on it, and the whole show is capped by
+        ``tsuitate_show.MAX_SHOW_SECONDS``.
+        """
+        from .tsuitate_show import (
+            MAX_SHOW_SECONDS, STEP_SECONDS, build_show, chunk_ranges, step_plan,
+            write_show,
+        )
+
+        detail = self._review_kifu(state, terminal)
+        if detail is None:
+            return None
+        moves = detail["kifu"]["moves"]
+        result = {
+            "outcome": terminal.get("outcome"),
+            "reason": terminal.get("reason"),
+            "moveNumber": terminal.get("moveNumber"),
+            "resultConfidence": terminal.get("resultConfidence"),
+        }
+        identity = state.get("view_runtime_identity") or {}
+        payload = build_show(moves, color=detail["color"],
+                             opponent=(summary or {}).get("opponentName"),
+                             result=result, request_id=request_id,
+                             runtime_id=identity.get("runtime_id"),
+                             generation=identity.get("generation"))
+        commentary = {"ai": 0, "fallback": 0}
+        for start, end in chunk_ranges(payload["move_count"]):
+            text, kind = self._chunk_line(moves, start, end)
+            payload["commentary"][str(start)] = text
+            commentary[kind if kind in commentary else "fallback"] += 1
+        write_show(self.g.state_dir, payload)
+        started = self.clock()
+        plan = step_plan(payload, step_seconds=STEP_SECONDS)
+        for chunk in plan:
+            if self.clock() - started > MAX_SHOW_SECONDS:
+                break
+            write_show(self.g.state_dir, payload, index=chunk["start"])
+            self._speak_chunk(chunk["text"], request_id)
+            for number in range(chunk["start"], chunk["end"] + 1):
+                write_show(self.g.state_dir, payload, index=number)
+                self.sleep(STEP_SECONDS)
+                if self.clock() - started > MAX_SHOW_SECONDS:
+                    break
+            # Let the spoken stretch finish before the next one starts.
+            self._wait_for_review_boundary()
+        write_show(self.g.state_dir, payload, index=payload["move_count"], done=True)
+        return {
+            "moves": payload["move_count"],
+            "board": any(move.get("board") for move in moves),
+            "commentary_ai": commentary["ai"],
+            "commentary_fallback": commentary["fallback"],
+            "seconds": max(0, int(self.clock() - started)),
+        }
+
+    def _speak_chunk(self, text, request_id):
+        """Enqueue one commentary line; never raises."""
+        if not self.audio_enabled or not isinstance(text, str) or not text:
+            return False
+        try:
+            if self.speak_chunk is not None:
+                self.speak_chunk(self.g, text, request_id)
+                return True
+            from .tsuitate_narration import REVIEW_CONTEXT
+            from .trading.soren_output import enqueue_audio_text
+
+            enqueue_audio_text(self.g, text, context=REVIEW_CONTEXT, speaker="")
+            return True
+        except Exception:
+            return False
+
     def _announce_review_once(self, state):
         """Publish the 感想戦 once per corner request, after the result settled.
 
@@ -534,6 +654,14 @@ class TsuitateCornerManager:
         # wait is bounded and fails open: a busy queue never holds the shared
         # program slot and never loses the 感想戦. Only the spoken half needs it.
         boundary = self._wait_for_review_boundary()
+        # Step the kifu on screen with its per-stretch commentary first, then
+        # close with the spoken summary. Both are bounded and best-effort.
+        try:
+            show = (self.run_show(state, terminal, summary, request_id)
+                    if self.run_show is not None
+                    else self._run_review_show(state, terminal, summary, request_id))
+        except Exception:
+            show = None
         body = overlay_body(text, terminal)
         try:
             if self.announce_review is None:
@@ -553,6 +681,7 @@ class TsuitateCornerManager:
             "failure": review_failure,
             "boundary": boundary,
             "model_failure": model_failure,
+            "show": show if isinstance(show, dict) else None,
             "moves": terminal.get("moveNumber") if type(terminal.get("moveNumber")) is int else None,
         }
         self._save(state)

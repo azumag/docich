@@ -880,7 +880,8 @@ def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
     assert published[0][2].startswith("AIの負け / 反則負け / 50手")
     saved = json.loads(manager.path.read_text())
     assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok",
-                               "boundary": "quiet", "model_failure": "none", "moves": 50}
+                               "boundary": "quiet", "model_failure": "none",
+                               "show": None, "moves": 50}
     assert saved["review_request_id"] == REQ
     # The raw move list, the board and the model prompt never reach the state.
     raw = manager.path.read_text()
@@ -1026,7 +1027,7 @@ def test_review_reads_the_public_replay_end_to_end(tmp_path, monkeypatch):
     saved = json.loads(manager.path.read_text())
     assert saved["review"] == {"source": "replay", "kind": "fallback",
                                "failure": "ok", "boundary": "skipped",
-                               "model_failure": "none", "moves": 50}
+                               "model_failure": "none", "show": None, "moves": 50}
     assert published and published[0][1].startswith("AIの負け / 反則負け / 50手")
 
 
@@ -1162,3 +1163,95 @@ def test_model_failure_vocabulary_matches_the_narration_module():
     from docich import tsuitate_narration as narration
 
     assert TsuitateCornerManager.MODEL_FAILURES == narration.MODEL_FAILURES
+
+
+# --- 感想戦の棋譜ショー -----------------------------------------------------
+
+def _show_kifu(move_count=5):
+    from docich import shogi_board as sb
+
+    sequence = [{"usi": "7g7f", "by": "sente", "ms": 120},
+                {"usi": "3c3d", "by": "gote", "ms": 300},
+                {"usi": "8h2b+", "by": "sente", "ms": 900},
+                {"usi": "3a2b", "by": "gote", "ms": 1500},
+                {"usi": "B*5b", "by": "sente", "ms": 4200}][:move_count]
+    return {"kifu": {"moves": sb.annotate(sequence)}, "color": "sente"}
+
+
+def test_review_show_steps_the_kifu_and_speaks_each_stretch(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0,
+                 view_runtime_identity={"game": VIEW_NAME, "runtime_id": "g4-a1b2c3d4",
+                                        "generation": 4, "lease_id": "lease"})
+    spoken = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        sleep=lambda *_: None,
+        read_kifu=lambda game_id, terminal, *, color: _show_kifu(),
+        chunk_text=lambda g, moves, start, end: (f"{start}手目から{end}手目の解説です。", "fallback"),
+        speak_chunk=lambda g, text, request_id: spoken.append(text),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager.clock = lambda: 1000.0
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    payload = show.read_show(g.state_dir, runtime_id="g4-a1b2c3d4", generation=4)
+    assert payload is not None
+    assert payload["done"] is True
+    assert payload["index"] == payload["move_count"] == 5
+    assert payload["commentary"] == {"1": "1手目から5手目の解説です。"}
+    assert spoken == ["1手目から5手目の解説です。"]
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["show"] == {"moves": 5, "board": True, "commentary_ai": 0,
+                                       "commentary_fallback": 1, "seconds": 0}
+
+
+def test_review_show_is_bounded_and_never_fails_the_corner(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0)
+    clock = {"now": 1000.0}
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=False,
+        sleep=sleep, clock=lambda: clock["now"],
+        read_kifu=lambda game_id, terminal, *, color: _show_kifu(),
+        chunk_text=lambda g, moves, start, end: ("区間の解説です。", "fallback"),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    payload = show.read_show(g.state_dir)
+    assert payload["done"] is True and payload["index"] == 5
+    # The whole show is bounded by its own clock.
+    assert clock["now"] - 1000.0 <= show.MAX_SHOW_SECONDS + show.STEP_SECONDS * 10
+
+    # A kifu reader that raises leaves the show absent but still speaks.
+    state.pop("review_request_id", None)
+    broken = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        sleep=lambda *_: None,
+        read_kifu=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("site down")),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    broken._save(state)
+    broken._announce_review_once(broken._read_state())
+    assert json.loads(broken.path.read_text())["review"]["show"] is None
