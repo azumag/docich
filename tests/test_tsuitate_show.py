@@ -179,3 +179,27 @@ def test_view_page_renders_the_board_and_the_kifu():
     assert 'show&&show.active' in html
     # The live board is still never sent to the browser outside the show.
     assert "yourPieces" not in html and "yourHand" not in html
+
+
+def test_view_script_is_valid_javascript(tmp_path):
+    """Regression: the served page must parse, or it never calls refresh().
+
+    A quoting mistake in the view's script left the broadcast stuck on
+    「接続確認中…」 because the whole script failed to parse.  The check runs the
+    real interpreter when node is available.
+    """
+    import re
+    import shutil
+    import subprocess
+
+    script = re.search(r"<script>(.*?)</script>", view.HTML, re.S)
+    assert script is not None
+    body = script.group(1)
+    assert "refresh()" in body and "/api/tsuitate" in body
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    path = tmp_path / "view.js"
+    path.write_text(body, encoding="utf-8")
+    check = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+    assert check.returncode == 0, check.stderr
