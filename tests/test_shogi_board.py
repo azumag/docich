@@ -50,6 +50,27 @@ def test_parse_sfen_rejects_drift():
             sb.parse_sfen(bad)
 
 
+def test_parse_sfen_gold_hands_round_trip():
+    squares, turn, _hands = sb.parse_sfen(sb.STANDARD_START)
+    for hand_part, sente_count, gote_count in [
+        ("G", 1, 0), ("g", 0, 1), ("2G", 2, 0), ("2g", 0, 2), ("2G2g", 2, 2),
+    ]:
+        hands = {
+            "sente": {"G": sente_count} if sente_count else {},
+            "gote": {"G": gote_count} if gote_count else {},
+        }
+        sfen = sb.to_sfen(squares, hands, turn)
+        assert sfen == sb.STANDARD_START.replace(" b - 1", f" b {hand_part} 1")
+        assert sb.parse_sfen(sfen) == (squares, turn, hands)
+
+
+def test_parse_sfen_rejects_non_hand_pieces():
+    for hand_part in ["K", "k", "Z", "z", "+P", "+p", "+G", "+g"]:
+        sfen = sb.STANDARD_START.replace(" b - 1", f" b {hand_part} 1")
+        with pytest.raises(sb.BoardError):
+            sb.parse_sfen(sfen)
+
+
 def test_apply_move_moves_a_piece_and_empties_the_from_square():
     squares, _turn, hands = sb.parse_sfen(sb.STANDARD_START)
     facts = sb.apply_move(squares, hands, "7g7f", "sente")
