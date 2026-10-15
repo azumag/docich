@@ -155,7 +155,7 @@ jobs:
                       or item["generation"] != int(item["runtime_id"].split("-")[0][1:])
                       or any(item[k] is not None and (type(item[k]) is not int or item[k] < 0)
                              for k in ("observations", "actions_sent"))
-                      or item.get("terminal_reason") not in {"game_over", "screen_stalled"}):
+                      or item.get("terminal_reason") not in {"game_over", "screen_stalled", "input_stalled"}):
                   raise SystemExit("invalid Hanjuku candidate")
           PY
           rm -f "$work/transport.stderr"
