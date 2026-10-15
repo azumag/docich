@@ -291,3 +291,22 @@ class WorkflowContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HanjukuEvidenceConcurrencyGroupTests(unittest.TestCase):
+    EXPORT_WORKFLOW = ROOT / ".github" / "workflows" / "hanjuku-evidence-export.yml"
+    MONITOR_WORKFLOW = ROOT / ".github" / "workflows" / "vm-storage-monitor.yml"
+
+    def test_query_and_export_own_concurrency_groups(self):
+        query = WORKFLOW.read_text(encoding="utf-8")
+        export = self.EXPORT_WORKFLOW.read_text(encoding="utf-8")
+        monitor = self.MONITOR_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("group: hanjuku-evidence-query-${{ github.repository }}", query)
+        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", query)
+        self.assertIn("group: hanjuku-evidence-export-${{ github.repository }}", export)
+        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", export)
+        self.assertIn("group: vm-storage-monitor-${{ github.repository }}", monitor)
+        self.assertIn("cancel-in-progress: false", query)
+        self.assertIn("cancel-in-progress: false", export)
+        self.assertIn("cancel-in-progress: false", monitor)

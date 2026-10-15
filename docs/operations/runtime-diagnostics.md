@@ -684,12 +684,16 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 
-owner起動の Soren91 evidence export（`.github/workflows/soren91-evidence-export.yml`）は
-専用の concurrency group `soren91-evidence-export-<repo>` を持つ。#1922 のとおり、
-scheduled `vm-storage-monitor` と同一 group を共有すると、開始しない queued run が
-group を占有して以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなる。
-VM 操作の直列化は gateway の固定 `vm-operations.lock` が担うため、group は二重の
-防御であり、失敗時に owner の read-only 証跡取得まで止める必要はない。
+owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.yml`、
+`.github/workflows/hanjuku-evidence-query.yml`、
+`.github/workflows/hanjuku-evidence-export.yml`）はそれぞれ専用の concurrency group
+（`soren91-evidence-export-<repo>` / `hanjuku-evidence-query-<repo>` /
+`hanjuku-evidence-export-<repo>`）を持ち、scheduled `vm-storage-monitor` と同一 group
+を共有しない。#1922 のとおり、開始しない queued run が shared group を占有して
+以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなるからである。
+monitor 側は引き続き `vm-storage-monitor-<repo>` を維持し、VM 操作の直列化は
+gateway の固定 `vm-operations.lock` が担うため、group は二重の防御であり、失敗時に
+owner の read-only 証跡取得まで止める必要はない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
