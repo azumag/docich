@@ -324,8 +324,13 @@ canonicalが読めない、遷移中、元ゲームが
 PAPERの専用stateは`game=null`の旧手動記録も観測する。canonical欠落や`previous_game`キー欠落は
 復帰の証拠としない。明示された`previous_game=null`だけは、実在するcanonicalのidle/activeなしを要求する。
 この例外は現行catalogと削除済みPAPERの双方に適用し、retroなど他cornerのfailed判定は変えない。
-共有program slotのowner記録にも同じ観測判定を使い、復帰済みPAPERのraw failedで再び待たせない。
-対象は同じcanonical stateディレクトリ内のPAPER専用stateだけで、読み取り専用のslot観測はstateを変更しない。
+自動実行の同志カード大賞（`doushi-view`）が開始失敗を`doushi_corner.json`へ記録した場合も、
+同じ証明（完了時刻があり、`recovery_required`でなく、canonicalが`ready`で記録済みの元ゲームへ
+戻っている）がある場合だけterminalとして観測する。recordと失敗理由は診断用に残し、書き換えない。
+証明できない場合は従来どおりfail-closedで次の開始を阻止する（#2278）。
+共有program slotのowner記録にも同じ観測判定を使い、復帰済みPAPER/同志のraw failedで再び待たせない。
+対象は同じcanonical stateディレクトリ内のPAPER専用stateと`doushi_corner.json`だけで、
+読み取り専用のslot観測はstateを変更しない。
 完了時刻は有限非負数またはtimezone付きISOを要求し、`recovery_required`がある場合はboolean falseのみ許可する。
 共通encoder/audio/通知/statusの停止・再起動経路は追加しない。
 
