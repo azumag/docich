@@ -678,6 +678,23 @@ gh workflow run "VM operations" --repo azumag/docich --ref main \
   -f operation=diagnostics -f target=production -f ref=main
 ```
 
+固定 run id は public repo の retention で消えるため（#1881）、正規参照としては
+pin しない。次の helper が、完了した `workflow_dispatch` run のうち最新の
+read-only diagnostics run を解決する。
+
+```console
+python3 ops/vm_actions/resolve_canonical_diagnostics_run.py
+python3 ops/vm_actions/resolve_canonical_diagnostics_run.py --dump-json <databaseId>
+```
+
+解決条件は run 成功・`main`・latest attempt の全 job 成功、
+`Query read-only runtime diagnostics` 成功、`Deploy staged code` /
+`Execute owner command on VM` が skipped、authorization log が
+`diagnostics / production / main` かつ `INPUT_CONFIRM` が空であること。
+sanitized structured output が無い候補は採用しない。`--dump-json` は log の
+JSON をそのまま出し、`***` マスクを復元しない。deploy / exec / 別 operation の
+job を診断代替にしない。
+
 結果 JSON は Actions ログに出る（sanitized・bounded のため安全）。
 GitHub 側の secret masking により、PID や commit SHA の一部が `***` 表示に
 なる場合がある（secret 断片との偶然一致。漏洩ではない）。

@@ -270,6 +270,7 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 3. **PR-3（docich 本ブランチ）**: API クライアントのオフライン中核（HTTP は注入・ネットワーク無し）＋テスト。
    **実装済み** `src/docich/doushi_ranking.py`。
    JSON 検証は fail-closed。URL は既存 `SOREN_DIRECT_TWICA_OVERLAY_URL` の origin から導出し、ログ・argv・state に出さない。
+   timerはSorenの環境を継承しないため、プロセス環境に同キーがない場合だけ `[webui].soren_root/.env` の当該値を既存dotenv readerで読む。shellは実行せず、環境全体をexportしない。明示された空値・不正値は別チャンネルへfallbackせず開始失敗にする。
 4. **PR-4（同 PR）**: `doushi` adapter ＋ view ＋ catalog 登録（**2026-10-15 オーナー承認で
    `enabled = true`（manual_only なし = 自動抽選の対象）**）。
    **実装済み** `adapters/doushi_program.py` / `doushi_view.py` / `doushi_corner.py`、

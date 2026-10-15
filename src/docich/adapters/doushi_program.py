@@ -21,6 +21,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
+from ..comment_queue import _dotenv_value
 from ..doushi_ranking import (
     DEFAULT_LIMIT,
     DEFAULT_PERIOD,
@@ -43,6 +44,21 @@ PAYLOAD_FILENAME = "doushi_ranking.json"
 #: design §6/§4: 開始時に 1 回だけ取得する（表示中の再取得はしない）。
 HTTP_TIMEOUT_SECONDS = 10.0
 MAX_PAYLOAD_BYTES = 512 * 1024
+OVERLAY_URL_KEY = "SOREN_DIRECT_TWICA_OVERLAY_URL"
+
+
+def ranking_overlay_url(g) -> str:
+    """Resolve the existing TwiCa setting without exporting Soren's secrets.
+
+    The timer does not source Soren's .env, unlike docich-twica-common. Read
+    only the same setting from the configured Soren root when the process has
+    no override. An explicit empty/invalid override must still fail closed.
+    The dotenv reader never evaluates shell text or modifies os.environ.
+    """
+    if OVERLAY_URL_KEY in os.environ:
+        return os.environ[OVERLAY_URL_KEY]
+    root = getattr(getattr(g, "webui", None), "soren_root", "")
+    return _dotenv_value(Path(root), OVERLAY_URL_KEY) if root else ""
 
 
 def doushi_view_game_config() -> GameConfig:
@@ -135,10 +151,7 @@ class DoushiProgramViewAdapter(ProgramViewAdapter):
     def fetch_ranking_payload(self) -> dict:
         """Fetch + validate once and persist it for the view process."""
         try:
-            endpoint = derive_endpoint(
-                # Environment-only, like twica_renderer: never argv / logs.
-                os.environ.get("SOREN_DIRECT_TWICA_OVERLAY_URL", "")
-            )
+            endpoint = derive_endpoint(ranking_overlay_url(self.g))
             payload = fetch_ranking(
                 endpoint,
                 period=DEFAULT_PERIOD,
