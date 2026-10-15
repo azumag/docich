@@ -23,6 +23,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
+from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -1307,7 +1308,18 @@ def monster_menu_step(screen: Screen, mem):
                      and ally.name == 'バルーンフィンチ' and len(skill_lines) >= 2
                      and _fold_skill(skill_lines[0].known) == _fold_skill('ふくらむ')
                      and _fold_skill(skill_lines[1].known) == _fold_skill('シャウト'))
+    akematsu_cycle = (owner == 'ally' and ally is not None
+                      and ally.name == 'あけまつ' and len(skill_lines) == 2
+                      and _fold_skill(skill_lines[0].known) == _fold_skill('ごあいさつ')
+                      and _fold_skill(skill_lines[1].known) == _fold_skill('おもてなし'))
+    akematsu = akematsu_assessment(mem, ally, enemy) if akematsu_cycle else None
+    special_cycle = balloon_cycle or akematsu_cycle
+    # A live deployment can change a rule while the menu HP stays unchanged.
+    # Re-evaluate old cached choices on the first new-policy observation.
+    special_epoch = '20261016-balloon-akematsu-v2'
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
+            or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
+            or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
             or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
             or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))):
@@ -1333,6 +1345,10 @@ def monster_menu_step(screen: Screen, mem):
             # a conservative explicitly-unproven reserve prevents 9999 loops.
             balloon = balloon_assessment(mem, ally, enemy, BALLOON_FINCH_MAX_HP)
             default = balloon['action']
+        elif akematsu_cycle:
+            # Switching abilities a second time undoes the first exchange.
+            # After issuing one observed ごあいさつ, summon with おもてなし.
+            default = akematsu['action']
         elif heal_first:
             # Generic heal-first monsters still use the best HP observed in
             # this menu session as their recovery target.
@@ -1349,10 +1365,9 @@ def monster_menu_step(screen: Screen, mem):
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
-        # Balloon Finch is an explicit owner tactic, not an exploratory choice:
-        # do not let generic retreat heuristics or learned experience replace
-        # the measured recovery/shout cycle (cap fallback if damage is unknown).
-        action = (default if balloon_cycle else
+        # Special monster owner tactics must not be overridden by generic
+        # retreat/experience: Balloon Finch survival and Akematsu one-shot swap.
+        action = (default if special_cycle else
                   'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
         # HP pools alone do not establish that this monster cannot win: a
@@ -1368,6 +1383,7 @@ def monster_menu_step(screen: Screen, mem):
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
         mem['monster_menu_choice_hp'] = hp_state
+        mem['monster_menu_choice_policy_epoch'] = special_epoch if special_cycle else None
         battle = mem.get('battle')
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
@@ -1397,6 +1413,14 @@ def monster_menu_step(screen: Screen, mem):
                 why = (f"敵ダメージ未推定のため、HP{ally_hp}を暫定目標"
                        f"{balloon['target_hp']}まで「ふくらむ」で確保する"
                        f"（無被弾の確定観測{balloon['zero_loss_samples']}回）")
+        elif akematsu_cycle:
+            label = second if action == 'skill2' else first
+            if action == 'skill1':
+                why = '能力交換の「ごあいさつ」はこの戦闘で1回だけ送信し、その後は召喚技へ移る'
+            elif akematsu['rule'] == 'unscoped_hospitality':
+                why = '戦闘の同一性が読めないため能力交換を繰り返さず「おもてなし」で交代する'
+            else:
+                why = '「ごあいさつ」を1回送信済みのため、以降は「おもてなし」で別の召喚獣を呼ぶ'
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -1407,7 +1431,7 @@ def monster_menu_step(screen: Screen, mem):
         else:
             label, why = first, ('敵召喚獣には混乱技の反復より実ダメージの1技目を優先する'
                                  if damage_first else '先手を取れる1技目を続ける')
-        if not balloon_cycle and action != default and action != 'retreat':
+        if not special_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
@@ -1417,6 +1441,7 @@ def monster_menu_step(screen: Screen, mem):
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
                                  'target_hp': balloon['target_hp'] if balloon_cycle else None,
                                  'balloon_survival': balloon if balloon_cycle else None,
+                                 'akematsu_exchange': akematsu if akematsu_cycle else None,
                                  'damage_first': damage_first,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
@@ -1445,6 +1470,9 @@ def monster_menu_step(screen: Screen, mem):
     if target < cur - 4:
         mem['monster_menu_cursor'] = cur - 16
         return [pad('up')]
-    if balloon_cycle and screen.menu_cursor == target:
-        balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
+    if screen.menu_cursor == target:
+        if balloon_cycle:
+            balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
+        if akematsu_cycle:
+            akematsu_command_selected(mem, ally, enemy, action)
     return [pad('a')]
