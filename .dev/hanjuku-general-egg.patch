@@ -1,0 +1,147 @@
+diff --git a/ops/vm_actions/collect_diagnostics.py b/ops/vm_actions/collect_diagnostics.py
+index 4d5ae74..84bb901 100644
+--- a/ops/vm_actions/collect_diagnostics.py
++++ b/ops/vm_actions/collect_diagnostics.py
+@@ -3816,6 +3816,7 @@ def _project_corner_state(data):
+             "hanjuku-script-v1", "hanjuku-chart-v2",
+             "hanjuku-chart-v224-overwhelming-melee-egg-save",
+             "hanjuku-chart-v225-merchant-bargains",
++            "hanjuku-chart-v226-general-egg-recheck",
+             "hanjuku-chart-v129-battle-card-progress",
+             "hanjuku-chart-v130-summer-cursor-evidence",
+             "hanjuku-chart-v131-defense-month-economy",
+diff --git a/src/docich/hanjuku/flows/battle.py b/src/docich/hanjuku/flows/battle.py
+index 3c113ec..298c5da 100644
+--- a/src/docich/hanjuku/flows/battle.py
++++ b/src/docich/hanjuku/flows/battle.py
+@@ -10,6 +10,7 @@ import re
+ import time
+ from dataclasses import asdict
+ 
++from ..judgment.battle import _general_egg_rescue_recheck
+ from ..os_layer.screen import Screen
+ from ..os_layer.font import UNKNOWN
+ from ... import hanjuku_chart as chart, hanjuku_experience as experience
+@@ -409,6 +410,8 @@ def battle_step(screen: Screen, mem):
+         return opening_wait
+     if _egg_rescue_pending(cur):
+         return [{'type': 'wait', 'ms': 50}]
++    if not melee_followup and _general_egg_rescue_recheck(mem, cur):
++        return _human_menu_open(cur, 'survival')
+     if not melee_followup and _egg_before_retreat(mem, cur):
+         if (cur.get('card_flow') or {}).get('stage') == 'announce':
+             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
+diff --git a/src/docich/hanjuku/flows/battle_menus.py b/src/docich/hanjuku/flows/battle_menus.py
+index 0c4308d..49d028a 100644
+--- a/src/docich/hanjuku/flows/battle_menus.py
++++ b/src/docich/hanjuku/flows/battle_menus.py
+@@ -431,6 +431,7 @@ def battle_menu_step(screen: Screen, mem):
+         _record(mem, 'battle_egg_actor_unconfirmed',
+                 reason='実画面の本人は残数0のため、旧戦闘文脈で卵を選ばず戻る')
+         return [pad('b')]
++    cur['resource_menu_observed'] = True  # a B attempt alone never proves this
+     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
+     _card_battle_reading(screen, cur, mem)
+     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
+diff --git a/src/docich/hanjuku/judgment/battle.py b/src/docich/hanjuku/judgment/battle.py
+index f54fbab..853ce73 100644
+--- a/src/docich/hanjuku/judgment/battle.py
++++ b/src/docich/hanjuku/judgment/battle.py
+@@ -977,6 +977,67 @@ def _critical_survival_needed(cur):
+             and type(enemy) is int and enemy > 0)
+ 
+ 
++GENERAL_EGG_REOPEN_LIMIT = 2
++
++
++def _general_egg_rescue_recheck(mem, cur):
++    """Reopen an unobserved rescue menu before a known egg holder collapses.
++
++    Three B attempts landing in dialogue are not evidence of an empty egg.
++    Only a bound, worsening HP trade grants two extra finite episodes; each
++    needs further HP loss. The visible menu still owns resource selection.
++    """
++    from ..os_layer.roster import run_identity
++    rescue = cur.get('survival')
++    if (not isinstance(rescue, dict)
++            or cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
++            or cur.get('enemy') in chart.BOSSES.values()
++            or cur.get('enemy') in reference.BOSS_GENERALS
++            or cur.get('egg_battle') or mem.get('egg_battle')
++            or cur.get('card_summon_observed') or cur.get('card_flow') or cur.get('planned_cards')
++            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
++            or cur.get('resource_menu_observed') or cur.get('okunote_only_observed')
++            or cur.get('independent') or cur.get('cards_selected')
++            or rescue.get('egg_attempted') or rescue.get('egg_pending')
++            or rescue.get('cards_checked') or rescue.get('cards_attempted')
++            or rescue.get('conserving_melee')
++            or (cur.get('hero_retreat') or {}).get('selected')
++            or not _own_egg_positive(mem, cur) or _own_egg_empty(mem, cur)):
++        return False
++    identity = run_identity(mem.get('_run_identity'))
++    hp, enemy, start, enemy_start = (cur.get(k) for k in
++                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
++    maximum, enemy_maximum = general_max_hp(cur.get('ally')), general_max_hp(cur.get('enemy'))
++    scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
++    if (identity is None or cur.get('melee_opening_scope') != scope
++            or any(type(n) is not int or n <= 0 for n in
++                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
++            or not hp < start <= maximum or not enemy <= enemy_start <= enemy_maximum
++            or hp >= enemy or hp * 3 > start * 2
++            or hp * enemy_start >= enemy * start):
++        return False
++    opens, pending, ticks, episodes = (rescue.get(k, 0) for k in
++        ('opens', 'pending_opens', 'menu_ticks', 'general_egg_rechecks'))
++    last_hp = rescue.get('general_egg_recheck_hp')
++    if (any(type(n) is not int for n in (opens, pending, ticks, episodes))
++            or not 3 <= opens < 12 or pending != 3 or ticks != 0
++            or not 0 <= episodes < GENERAL_EGG_REOPEN_LIMIT
++            or (episodes > 0 and (type(last_hp) is not int or not hp < last_hp <= start))):
++        return False
++    rescue.update(general_egg_rechecks=episodes + 1, general_egg_recheck_hp=hp,
++                  exhausted=False, egg_priority=True, opens=opens + 1,
++                  pending_opens=1, menu_ticks=0)
++    _record(mem, 'battle_general_egg_recheck', **_battle_labels(cur),
++            general=cur.get('ally'), enemy=cur.get('enemy'),
++            observed_metric={'ally_hp': hp, 'enemy_hp': enemy,
++                             'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
++                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
++                             'episode': episodes + 1, 'limit': GENERAL_EGG_REOPEN_LIMIT,
++                             'opens': opens + 1, 'menu_observed': False},
++            reason='卵残数が正数の一般将軍が押し負けているため、開けなかった実メニューを有限回だけ再確認する')
++    return True
++
++
+ HERO_SURVIVAL_REOPEN_LIMIT = 2    # extra unopened-menu episodes for a losing hero
+ 
+ 
+ diff --git a/src/docich/hanjuku/version.py b/src/docich/hanjuku/version.py
+index 1661938..2a33510 100644
+--- a/src/docich/hanjuku/version.py
++++ b/src/docich/hanjuku/version.py
+@@ -3,4 +3,4 @@
+ Bump it with every behaviour change so production logs show which policy
+ produced a decision (the bot is hot-loaded per observation).
+ """
+-BOT_VERSION = 'hanjuku-chart-v225-merchant-bargains'
++BOT_VERSION = 'hanjuku-chart-v226-general-egg-recheck'
+diff --git a/tests/test_hanjuku_chart_bot.py b/tests/test_hanjuku_chart_bot.py
+index 4f0831a..162cef4 100644
+--- a/tests/test_hanjuku_chart_bot.py
++++ b/tests/test_hanjuku_chart_bot.py
+@@ -748,13 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
+     actions, state = decide(name_screen(cell='ど'), {})
+     assert actions[0]['buttons'] == ['a']
+     assert state['_records'][0]['decision'] == 'name_type'
+-    assert state['bot_version'] == 'hanjuku-chart-v225-merchant-bargains'
++    assert state['bot_version'] == 'hanjuku-chart-v226-general-egg-recheck'
+     assert '_records' not in state['policy']
+ 
+ 
+ def test_bot_version_marks_the_finishing_resource_policy():
+     from docich.hanjuku_bot import BOT_VERSION
+-    assert BOT_VERSION == 'hanjuku-chart-v225-merchant-bargains'
++    assert BOT_VERSION == 'hanjuku-chart-v226-general-egg-recheck'
+ 
+ 
+ def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
