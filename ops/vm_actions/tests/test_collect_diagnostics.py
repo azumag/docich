@@ -832,6 +832,25 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
                       'fallback_route': None, 'fallback_credential': 'not_applicable'}
 
 
+def test_semantic_decision_clef_route_credential_presence_is_allowlisted():
+    # #2301: the clef credential NAME must be on the fixed name allowlist so
+    # its presence (never its value) is observable; the retired switch is not.
+    module = load_collector()
+    assert 'DOCICH_JEV_CLOUDFLARE_API_TOKEN' in module.SEMANTIC_DECISION_ENV_ALLOWLIST
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({
+                               'COMMENT_CLASSIFIER_BACKEND': 'jev',
+                               'DOCICH_JEV_ROUTE': 'clef',
+                               'DOCICH_JEV_CLOUDFLARE_API_TOKEN': 'SYNTHETIC_CLEF_SECRET'})):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
+                      'backend': 'jev', 'route': 'clef', 'requested_model': 'clef',
+                      'credential': 'present',
+                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
+    assert 'SYNTHETIC_CLEF_SECRET' not in json.dumps(result)
+
+
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
     # The docich classifier calls Jev only when this is exactly "jev"; its
     # plain value is kept alongside the derived "backend".

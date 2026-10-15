@@ -102,6 +102,19 @@ def test_gate_and_route_match_what_the_classifier_reads():
         assert diagnostics.describe(env)["route"] == jev.Config.from_env(env).route
 
 
+def test_clef_route_reports_model_and_credential_presence_only():
+    # #2301: the projection stays the fixed six-key, secret-free shape; the
+    # clef credential's presence is observable, its value never is.
+    result = diagnostics.describe({"COMMENT_CLASSIFIER_BACKEND": "jev", "DOCICH_JEV_ROUTE": "clef",
+                                   "DOCICH_JEV_CLOUDFLARE_API_TOKEN": "SYNTHETIC_CLEF_SECRET"})
+    assert result == {"backend": "jev", "route": "clef", "requested_model": "clef",
+                      "credential": "present",
+                      "fallback_route": None, "fallback_credential": "not_applicable"}
+    assert "SYNTHETIC_CLEF_SECRET" not in str(result)
+    result = diagnostics.describe({"COMMENT_CLASSIFIER_BACKEND": "jev", "DOCICH_JEV_ROUTE": "clef"})
+    assert result["credential"] == "absent"
+
+
 def test_route_chain_reports_primary_and_fallback_presence_separately():
     result = diagnostics.describe({"COMMENT_CLASSIFIER_BACKEND": "jev", "DOCICH_JEV_ROUTE": "direct,vercel",
                                    "TYPESAFE_API_KEY": "SYNTHETIC_DIRECT_KEY"})

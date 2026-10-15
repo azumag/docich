@@ -40,6 +40,103 @@ class GatewayStdinExecutionTests(unittest.TestCase):
         self.assertIn(b"--disable", result.stdout)
 
 
+class ConfigureClefEnvTests(unittest.TestCase):
+    # #2301: the Clef route's dedicated account/token pair, written only by
+    # the owner-only gateway operation, must survive a switch back to direct
+    # so the reversible Clef -> JEV -> Clef round trip never re-enters a key.
+    ACCOUNT = "0123456789abcdef0123456789abcdef"
+    TOKEN = "SYNTHETIC_CLEF_TOKEN;$(true)'quoted'"
+
+    def test_clef_op_selects_clef_and_writes_the_pair_without_touching_678_keys(self):
+        with tempfile.TemporaryDirectory(prefix="jev-route-") as raw:
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                "KEEP=value\n"
+                "COMMENT_CLASSIFIER_BACKEND=jev\n"
+                "TYPESAFE_API_KEY=already-configured\n",
+                encoding="utf-8",
+            )
+            env_file.chmod(0o600)
+            backup = route.configure_clef_env(env_file, self.ACCOUNT, self.TOKEN)
+
+            current = env_file.read_text(encoding="utf-8")
+            self.assertIn("KEEP=value\n", current)
+            self.assertIn("COMMENT_CLASSIFIER_BACKEND=jev\n", current)
+            self.assertIn("TYPESAFE_API_KEY=already-configured\n", current)
+            self.assertIn("DOCICH_JEV_ROUTE=clef\n", current)
+            self.assertIn(
+                f"{route.CLEF_KEYS[0]}={self.ACCOUNT}\n".replace("=", "="), current)
+            self.assertNotIn(self.TOKEN, current)  # shell-quoted, never verbatim
+            self.assertNotIn("DOCICH_JEV_VERCEL_API_KEY", current)
+            self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+            result = subprocess.run(
+                ["bash", "-c",
+                 'set -a; . "$1"; printf %s "$DOCICH_JEV_ROUTE|$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID|$'
+                 'DOCICH_JEV_CLOUDFLARE_API_TOKEN|${TYPESAFE_API_KEY-unset}"',
+                 "bash", str(env_file)],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(
+                result.stdout,
+                f"clef|{self.ACCOUNT}|{self.TOKEN}|already-configured",
+            )
+
+    def test_clef_rejects_invalid_account_or_token_without_touching_env(self):
+        for account, token in (
+            ("not-hex-32", self.TOKEN),
+            ("0123456789ABCDEF0123456789abcdef", self.TOKEN),  # uppercase hex
+            ("0123456789abcdef0123456789abcde", self.TOKEN),   # short account
+            (self.ACCOUNT, ""),
+            (self.ACCOUNT, self.TOKEN + "\n"),
+            (self.ACCOUNT, "tab\there"),
+        ):
+            with self.subTest(account=account, token=token):
+                with tempfile.TemporaryDirectory(prefix="jev-route-") as raw:
+                    env_file = Path(raw) / ".env"
+                    env_file.write_text("KEEP=value\n", encoding="utf-8")
+                    with self.assertRaises(route.ConfigureError):
+                        route.configure_clef_env(env_file, account, token)
+                    self.assertEqual(env_file.read_text(encoding="utf-8"), "KEEP=value\n")
+
+    def test_switch_back_to_direct_keeps_the_pair_for_the_reversible_return(self):
+        with tempfile.TemporaryDirectory(prefix="jev-route-") as raw:
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                "KEEP=value\n"
+                "DOCICH_JEV_ROUTE=clef\n"
+                f"{route.CLEF_KEYS[0]}={self.ACCOUNT}\n"
+                f"{route.CLEF_KEYS[1]}={self.TOKEN}\n",
+                encoding="utf-8",
+            )
+            route.configure_direct_env(env_file)
+            current = env_file.read_text(encoding="utf-8")
+            # The return path keeps the dedicated pair so the next Clef switch
+            # needs no secret re-entry (the issue's rollback requirement);
+            # direct only rewrites its own managed keys.
+            self.assertIn("DOCICH_JEV_ROUTE=direct\n", current)
+            self.assertIn(f"{route.CLEF_KEYS[0]}={self.ACCOUNT}\n", current)
+            self.assertIn(f"{route.CLEF_KEYS[1]}={self.TOKEN}\n", current)
+
+    def test_clef_route_verification_checks_the_live_pair(self):
+        verify = route.verify_jev_route(
+            "clef", retained_credentials={route.CLEF_KEYS[0]: self.ACCOUNT,
+                                          route.CLEF_KEYS[1]: self.TOKEN})
+        verify({"DOCICH_JEV_ROUTE": "clef",
+                route.CLEF_KEYS[0]: self.ACCOUNT, route.CLEF_KEYS[1]: self.TOKEN})
+        for runtime_env in (
+            {"DOCICH_JEV_ROUTE": "clef", route.CLEF_KEYS[0]: self.ACCOUNT},  # token gone
+            {"DOCICH_JEV_ROUTE": "clef", route.CLEF_KEYS[1]: self.TOKEN},    # account gone
+            {"DOCICH_JEV_ROUTE": "direct", route.CLEF_KEYS[0]: self.ACCOUNT,
+             route.CLEF_KEYS[1]: self.TOKEN},                                 # route mismatch
+            {route.CLEF_KEYS[0]: "0" * 32, route.CLEF_KEYS[1]: self.TOKEN,
+             "DOCICH_JEV_ROUTE": "clef"},                                     # swapped account
+        ):
+            with self.subTest(runtime_env=runtime_env):
+                with self.assertRaises(route.ConfigureError):
+                    verify(runtime_env)
+
+
 class OwnershipBoundaryTests(unittest.TestCase):
     def test_managed_keys_never_overlap_with_678s_own_script(self):
         # The two owner-only scripts must never fight over the same key.

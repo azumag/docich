@@ -7,7 +7,7 @@ REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
-     'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
+     'configure_jev_route_clef','disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
      'restart_chat_kick_workers','restart_webui',
      'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection'}
 TARGETS={'preview','production'}
@@ -81,11 +81,11 @@ def main():
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
         if op=='disable_jev' and ref!='main': fail('disable_jev must run from main')
-        if op in {'configure_jev_route_direct','configure_jev_route_vercel','disable_jev_route'}:
+        if op in {'configure_jev_route_direct','configure_jev_route_vercel','configure_jev_route_clef','disable_jev_route'}:
             if target!='production': fail(f'{op} is production-only')
             if ref!='main': fail(f'{op} must run from main')
         if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
-                                            'configure_jev_route_vercel','disable_jev_route','bootstrap',
+                                            'configure_jev_route_vercel','configure_jev_route_clef','disable_jev_route','bootstrap',
                                             'reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable','restart_webui',
                                             'restart_chat_kick_workers',
                                             'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection'} and confirm!='production':

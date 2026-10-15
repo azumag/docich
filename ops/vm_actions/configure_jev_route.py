@@ -12,8 +12,10 @@ and direct-route credential, stay owned by ``configure_comment_classifier_jev.py
 ``--route clef`` selects Clef only (not an automatic fallback chain). Initial
 account/token provisioning uses this process's dedicated environment pair;
 subsequent switches reuse the existing chat worker's pair. Both Jev and Clef
-credentials are preserved and checked on the replacement chat worker. This
-CLI option is not yet exposed as a new fixed VM gateway operation.
+credentials are preserved and checked on the replacement chat worker. The
+fixed ``configure_jev_route_clef`` gateway operation runs this route; its
+stdin carries the account id line and the API token line, which the gateway
+passes through as this process's dedicated environment pair.
 
 The existing fixed gateway operations map to fixed values:
 

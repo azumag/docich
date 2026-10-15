@@ -14,7 +14,7 @@ _projection_spec.loader.exec_module(projection_io)
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
-     'configure_jev_route_vercel','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
+     'configure_jev_route_vercel','configure_jev_route_clef','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
                    'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
@@ -116,6 +116,7 @@ REASON_CODES={
  'production checkout is not the requested commit':'configure_jev_stale_checkout',
  'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
  'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_clef is production-only':'configure_jev_route_production_only',
  'disable_jev_route is production-only':'disable_jev_route_production_only',
  'github auth diagnostics preflight timeout':'github_auth_preflight_timeout',
  'github auth diagnostics checkout unavailable':'github_auth_checkout_unavailable',
@@ -1150,6 +1151,27 @@ def configure_jev(cfg,repo,target,sha,*,disable=False):
         result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
     return result
 
+def _clef_payload(raw: bytes) -> tuple[str, str]:
+    """Exactly two printable-ASCII stdin lines: account id, then API token.
+
+    The review of the Cloudflare account format itself is the reviewed
+    configurator's own (32 hex digits); this gateway only enforces the fixed
+    two-line shape so no other control bytes can ride along.
+    """
+    invalid = ValueError('invalid Jev route key payload')
+    if not raw or len(raw) > 8192 or b'\0' in raw or b'\r' in raw:
+        raise invalid
+    try:
+        lines = raw.decode('ascii').split('\n')
+    except UnicodeDecodeError as exc:
+        raise invalid from exc
+    if len(lines) != 2 or not all(1 <= len(line) <= 4096
+                                  and all(33 <= ord(char) <= 126 for char in line)
+                                  for line in lines):
+        raise invalid
+    return lines[0], lines[1]
+
+
 def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     """Run the fixed docich semantic-decision route configurator (#882), owner-only.
 
@@ -1161,6 +1183,10 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     requires empty stdin, since neither writes a new secret -- route='direct'
     only requires TYPESAFE_API_KEY (#678's own key) to already be live on the
     running worker, which the script itself verifies, not this gateway.
+
+    route='clef' (#2301) receives exactly two stdin lines, the dedicated
+    Cloudflare account id and API token; nothing is printed and both values
+    reach the configurator only through its process environment.
     """
     label='disable_jev_route' if disable else f'configure_jev_route_{route}'
     if target != 'production':
@@ -1168,11 +1194,14 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
     root=Path(cfg['repos'][repo]['production'])
     if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
         raise ValueError('production checkout is not the requested commit')
-    raw=sys.stdin.buffer.read(4097)
+    raw=sys.stdin.buffer.read(8193)
     key=''
+    account=token=''
     if disable or route=='direct':
         if raw:
             raise ValueError('invalid Jev route key payload')
+    elif route=='clef':
+        account, token = _clef_payload(raw)
     else:
         if not raw or len(raw)>4096 or b'\0' in raw or b'\r' in raw or b'\n' in raw:
             raise ValueError('invalid Jev route key payload')
@@ -1202,6 +1231,11 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
          'SOREN_ROOT':soren_root}
     if route=='vercel':
         env['DOCICH_JEV_VERCEL_API_KEY']=key
+    if route=='clef':
+        # The dedicated account/token pair reaches the reviewed configurator
+        # only through its process environment, never through argv or logs.
+        env['DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID']=account
+        env['DOCICH_JEV_CLOUDFLARE_API_TOKEN']=token
     argv=[sys.executable,'-','--soren-root',soren_root]
     argv += ['--disable'] if disable else ['--route',route]
     with os.fdopen(fd,'wb') as out:
@@ -1620,6 +1654,7 @@ def main():
             elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
             elif op=='configure_jev_route_direct': result=configure_jev_route(cfg,repo,target,sha,route='direct')
             elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
+            elif op=='configure_jev_route_clef': result=configure_jev_route(cfg,repo,target,sha,route='clef')
             elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)
