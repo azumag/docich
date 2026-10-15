@@ -171,6 +171,8 @@ class CpuProfileBudgetTests(unittest.TestCase):
     def payload(self, components, spawns):
         return {
             "cpu_profile": {"status": "stale", "components_truncated": 0,
+                            "meta": {"samples": 48},
+                            "host": {"cpu_busy_pct": 63.5},
                             "components": components, "spawns": spawns},
             "corners": {"retro_corner": {"decision_plans": {"status": "available"},
                                          "scene_narration": {"status": "available"}}},
@@ -202,7 +204,15 @@ class CpuProfileBudgetTests(unittest.TestCase):
 
     def test_a_full_envelope_keeps_the_busiest_rows_and_counts_the_rest(self):
         payload = self.payload(self.rows(30), self.spawn_rows(30))
-        with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
+        expected = json.loads(json.dumps(payload))
+        expected["ai"]["recent_events_omitted"] = True
+        profile = expected["cpu_profile"]
+        profile["components"] = profile["components"][:collector.CPU_PROFILE_BUDGET_COMPONENTS]
+        profile["components_omitted"] = 30 - collector.CPU_PROFILE_BUDGET_COMPONENTS
+        profile["spawns"] = profile["spawns"][:collector.CPU_PROFILE_BUDGET_SPAWNS]
+        profile["spawns_omitted"] = 30 - collector.CPU_PROFILE_BUDGET_SPAWNS
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+        with mock.patch.object(collector, "MAX_JSON_BYTES", budget):
             text = collector._diagnostics_budget(payload)
         profile = payload["cpu_profile"]
         self.assertEqual(len(profile["components"]), collector.CPU_PROFILE_BUDGET_COMPONENTS)
@@ -214,14 +224,20 @@ class CpuProfileBudgetTests(unittest.TestCase):
         self.assertEqual(profile["spawns"][0]["count"], 30)
         # The existing contract's truncation counter is not overwritten.
         self.assertEqual(profile["components_truncated"], 0)
+        self.assertEqual(profile["meta"], {"samples": 48})
+        self.assertEqual(profile["host"], {"cpu_busy_pct": 63.5})
         self.assertIn("decision_plans", text)
 
-    def test_a_missing_or_short_profile_is_left_alone(self):
+    def test_short_profile_detail_is_counted_when_removed(self):
         payload = self.payload(self.rows(3), self.spawn_rows(3))
         with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
             collector._diagnostics_budget(payload)
-        self.assertNotIn("components_omitted", payload["cpu_profile"])
-        self.assertNotIn("spawns_omitted", payload["cpu_profile"])
+        self.assertEqual(payload["cpu_profile"]["components"], [])
+        self.assertEqual(payload["cpu_profile"]["components_omitted"], 3)
+        self.assertEqual(payload["cpu_profile"]["spawns"], [])
+        self.assertEqual(payload["cpu_profile"]["spawns_omitted"], 3)
+        self.assertEqual(payload["cpu_profile"]["meta"], {"samples": 48})
+        self.assertEqual(payload["cpu_profile"]["host"], {"cpu_busy_pct": 63.5})
         payload = self.payload("PRIVATE_ROWS", {"PRIVATE_ROWS": 1})
         with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
             collector._diagnostics_budget(payload)

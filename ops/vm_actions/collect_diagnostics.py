@@ -8339,6 +8339,24 @@ def _cpu_profile_budget(payload):
     return payload
 
 
+def _cpu_profile_detail_budget(payload):
+    """Omit per-component rows under pressure while retaining CPU totals."""
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key in ("components", "spawns"):
+        rows = profile.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        omitted_key = f"{key}_omitted"
+        previous = profile.get(omitted_key, 0)
+        if type(previous) is not int or previous < 0:
+            previous = 0
+        profile[omitted_key] = previous + len(rows)
+        profile[key] = []
+    return payload
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -8377,15 +8395,25 @@ def _diagnostics_budget(payload):
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
-    # The pulse stream list is the last detail to go: an omitted list must
-    # still report its own mute count, so a muted BGM never disappears behind
-    # the size budget (#968).
-    text = _nethack_history_budget(payload)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "pulse_sink_inputs" in payload:
-        pulse = payload["pulse_sink_inputs"]
+    # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
+    # their per-component/per-stream details and the latest NetHack result.
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    pulse = payload.get("pulse_sink_inputs")
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse, dict)
+            and isinstance(pulse.get("streams"), list) and pulse["streams"]):
         payload["pulse_sink_inputs"] = {
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_detail_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Old history is still the first part of the NetHack projection to go. The
+    # latest result is allowed to go only after optional CPU/audio detail.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        text = _nethack_history_budget(payload, keep_latest=True)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        text = _nethack_history_budget(payload)
     # The repeated-operation projection deliberately survives the soft budget.
     # It is bounded well under 1 KiB and is the only evidence that separates
     # "corner alive and looping" from "corner progressing" -- the chart
