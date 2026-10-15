@@ -51,7 +51,7 @@ enabled = true
 # "queue": 間隔アンカーを使わず、共有スロットが空き次第、cooldown外の候補から
 #          一様ランダム（seed再現・slotごとに再抽選）で連続発火する。
 schedule_mode = "interval"
-# 目標間隔（分）。60 = 1時間ごとに1本。未設定なら 24h/N（N=11 なら約2時間11分）。
+# 目標間隔（分）。60 = 1時間ごとに1本。未設定なら 24h/N（N=13 なら約1時間51分）。
 interval_minutes = 60
 # 同一cornerの再選択を許すまでのrolling窓。予約・実開始・終了・手動使用を数える。
 cooldown_hours = 24.0
@@ -83,6 +83,15 @@ corners = [
   # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
   # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
   { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true },
+  # 同志カード大賞: TwiCaの opt-in 済みランキングから集計済みの4部門を表示する。
+  # 公開は配信者単位の opt-in（既定OFF・設定UI無し）で、未 opt-in は 404 になり
+  # 当該コーナーは開始しない。privacy 方針（周知・非表示申請は行わない。不適切名は
+  # Twitch 側の処理）は 2026-10-15 に決着済み。
+  # 2026-10-15 オーナー承認で有効化し、24時間ローテーションの抽選対象へ入れる
+  # （docs/features/doushi-card-corner.md §5）。表示は 15 秒 × 4 ページ、上限は
+  # doushi_corner.DEFAULT_DURATION_MINUTES（2分。duration_minutes 未指定時）。
+  # 読み上げ・overlay は出さない（doushi_narration.ANNOUNCEMENT_ENABLED）。
+  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true },
 ]
 
 [nethack_corner]
