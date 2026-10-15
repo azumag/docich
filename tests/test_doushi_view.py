@@ -38,20 +38,6 @@ from doushi_payload_fixtures import api_body, make_payload, stored_body  # noqa:
 STREAMER = "11111111-2222-4b33-8444-555555555555"
 OVERLAY_URL = f"https://twica.example/overlay/{STREAMER}?token=SECRET-QUERY"
 
-#: Static tampered files so pytest's parametrize ids stay constant across
-#: xdist workers (a payload built at import time embeds a clock reading).
-_TAMPERED_PERIOD_BODY = (
-    b'{"period": "all", "limit": 10, "payload": {"generated_at": '
-    b'"2026-01-01T00:00:00Z", "period": "30d", "metric_labels": {}, "note": "n", '
-    b'"card_type_total": 0, "by_count": [], "by_points": [], "by_unique": [], '
-    b'"popular_cards": []}}'
-)
-_TAMPERED_LIMIT_BODY = (
-    b'{"period": "all", "limit": 0, "payload": {"generated_at": '
-    b'"2026-01-01T00:00:00Z", "period": "all", "metric_labels": {}, "note": "n", '
-    b'"card_type_total": 0, "by_count": [], "by_points": [], "by_unique": [], '
-    b'"popular_cards": []}}'
-)
 
 
 def _global(tmp_path):
@@ -147,16 +133,27 @@ def test_load_payload_revalidates_the_adapter_written_file(tmp_path):
     b"[]",
     b'{"period": "all", "limit": 10}',
     b'{"period": "all", "limit": "10", "payload": {}}',
-    # Same shape as a valid file, but the stored period and the payload period
-    # disagree (and the limit is out of band): both must be rejected.
-    _TAMPERED_PERIOD_BODY,
-    _TAMPERED_LIMIT_BODY,
 ])
 def test_load_payload_fails_closed_on_missing_unreadable_or_tampered_files(tmp_path, body):
     path = tmp_path / "doushi_ranking.json"
     path.write_bytes(body)
 
     with pytest.raises(DoushiRankingError):
+        load_payload(path)
+
+
+@pytest.mark.parametrize("field, value, reason", [
+    ("period", "30d", "schema"),
+    ("limit", 0, "invalid-limit"),
+], ids=["period-mismatch", "zero-limit"])
+def test_load_payload_rejects_tampered_contract_with_fresh_payload(tmp_path, field, value, reason):
+    # Build the valid, fresh payload during the test; stable IDs keep xdist
+    # collection deterministic and each case changes only its intended field.
+    stored = json.loads(stored_body())
+    stored[field] = value
+    path = tmp_path / "doushi_ranking.json"
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    with pytest.raises(DoushiRankingError, match=reason):
         load_payload(path)
 
 

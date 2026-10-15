@@ -154,7 +154,7 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("yosou duration_minutes must be an integer 1-14")
         elif item.adapter == "doushi":
-            # Default-disabled, manual-only 同志カード大賞 view (design §5).
+            # Auto-rotation-enabled 同志カード大賞 view (design §5).
             # Same shape as yoso: an optional 1-14 minute ceiling, a boolean
             # speech opt-in, and no weather-only settings.
             if item.id != "doushi-card" or item.game != "doushi-view":
