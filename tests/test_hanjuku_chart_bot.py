@@ -748,21 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-<<<<<<< HEAD
-    assert state['bot_version'] == 'hanjuku-chart-v227-healthy-egg-margin'
-=======
-    assert state['bot_version'] == 'hanjuku-chart-v227-bijin-request-decline'
->>>>>>> 5fd38819 (fix(hanjuku): 美女の依頼は所持金1000G以下・読取不明では必ず断る)
+    assert state['bot_version'] == 'hanjuku-chart-v228-bijin-request-decline'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_finishing_resource_policy():
     from docich.hanjuku_bot import BOT_VERSION
-<<<<<<< HEAD
-    assert BOT_VERSION == 'hanjuku-chart-v227-healthy-egg-margin'
-=======
-    assert BOT_VERSION == 'hanjuku-chart-v227-bijin-request-decline'
->>>>>>> 5fd38819 (fix(hanjuku): 美女の依頼は所持金1000G以下・読取不明では必ず断る)
+    assert BOT_VERSION == 'hanjuku-chart-v228-bijin-request-decline'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():

@@ -127,6 +127,30 @@ def test_an_expired_lead_in_without_any_seen_choice_releases_normally():
     assert 'bijin_guard' not in state['policy']
 
 
+def test_unread_question_after_a_seen_choice_keeps_the_request_pending():
+    # Owner review (2026-10-15, PR #2286): once the choices of a pending
+    # request have been seen, a partly unread question is not end evidence --
+    # the episode must not slide back to the generic A while the accept line
+    # may still be selected with the hand blinking over it.
+    state = bijin_state()
+    # 1. question and both choices readable, no hand -> choice_seen / held.
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['choice_seen'] is True
+    assert state['policy']['bijin_guard']['held'] is True
+    # 2. only the question is missing; the dialogue frame and both choices stay.
+    actions, state = decide_bijin(bijin_pixels(question=False, hand=False), state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['held'] is True
+    assert state['policy']['bijin_guard']['choice_seen'] is True
+    assert state['policy']['bijin_guard']['chosen'] is False
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+    # 3. an explicit end condition still releases the pending request.
+    actions, state = decide_bijin(bijin_pixels(selected=1), state)
+    assert actions == [policy.pad('a')]
+    assert state['policy']['bijin_guard']['chosen'] is True
+
+
 def test_a_completed_bijin_request_releases_its_guard():
     actions, state = decide_bijin(bijin_pixels(selected=1))
     assert state['policy']['bijin_guard']['chosen'] is True

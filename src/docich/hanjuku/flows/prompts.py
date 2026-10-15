@@ -205,6 +205,23 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         mem.pop('bijin_guard', None)  # 1000G超は従来どおり（承諾側。購入品の改善は別課題）
         return None
     if not _is_bijin_request(screen.text):
+        if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
+            # Owner review (2026-10-15, PR #2286): the choices of this request
+            # have already been seen, so a partly unread question is not end
+            # evidence. The hand may still blink over the accept line (a 500G
+            # request could be confirmed), so keep the pending episode held
+            # instead of returning None and letting the generic A through.
+            # Release only happens on an explicit end condition: a read
+            # decline/accept row, a gold reading over the floor, a new monthly
+            # owner or a non-dialogue/battle/map screen.
+            guard['held'] = True
+            if not guard.get('unread_question_recorded'):
+                guard['unread_question_recorded'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        observed_metric={'bijin_guard': True, 'gold': gold,
+                                         'text': screen.text[-80:]},
+                        reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
+            return []
         return None
     band = [word for _, y, word in _options(screen) if 176 <= y <= 207 and word]
     if screen.hand is None and not band:
