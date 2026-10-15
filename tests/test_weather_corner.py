@@ -99,6 +99,25 @@ class FakeFactory:
         return self.adapters[key]
 
 
+def _wait_for_boundary(adapter, *, timeout=30.0):
+    """adapter が境界待ちへ到達するまで明示的に同期する。
+
+    ``boundary_entered.wait(2.0)`` のような固定タイムアウトは、CI の高負荷で
+    worker が境界へ到達する前に落ちてフレークする（#2264）。小ステップで
+    ポーリングし、未到達のままタイムアウトしたら worker がどこまで進んだか
+    （``adapter.events``）を添えて失敗させる。
+    """
+    deadline = time.monotonic() + timeout
+    while not adapter.boundary_entered.is_set():
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                "round boundary not entered within %.1fs (worker events so far: %r)"
+                % (timeout, adapter.events)
+            )
+        adapter.boundary_entered.wait(0.05)
+    return True
+
+
 def _setup(tmp_path, *, fail_weather=False, duration=1, clock=None, boundary_generation=1):
     state = tmp_path / "run"
     soren = tmp_path / "soren"
@@ -675,20 +694,25 @@ def test_weather_corner_waits_for_game_boundary_then_restores_under_program_slot
         except Exception as exc:  # surfaced in the main test thread
             errors.append(exc)
 
-    worker = threading.Thread(target=run)
+    worker = threading.Thread(target=run, daemon=True)
     worker.start()
     old = factory.adapters[next(key for key in factory.adapters if "g1-" in key)]
-    assert old.boundary_entered.wait(2.0)
-    canonical, _ = store.canonical.load()
-    assert canonical["phase"] == "draining"
-    assert old.live is True
-    assert "cleanup" not in old.events
-    assert not any(a.spec.game == "weather-view" and a.live for a in factory.adapters.values())
+    try:
+        assert _wait_for_boundary(old)
+        canonical, _ = store.canonical.load()
+        assert canonical["phase"] == "draining"
+        assert old.live is True
+        assert "cleanup" not in old.events
+        assert not any(a.spec.game == "weather-view" and a.live for a in factory.adapters.values())
 
-    registry = Path(g.webui.soren_root) / "tmp/state/docich_program_active.json"
-    assert json.loads(registry.read_text())["owner_state"].endswith("weather_corner.json")
-    old.boundary_release.set()
-    worker.join(5.0)
+        registry = Path(g.webui.soren_root) / "tmp/state/docich_program_active.json"
+        assert json.loads(registry.read_text())["owner_state"].endswith("weather_corner.json")
+        old.boundary_release.set()
+        worker.join(30.0)
+    finally:
+        # アサーション失敗時も worker を解放して join する（スレッドをリークさせない）
+        old.boundary_release.set()
+        worker.join(30.0)
     assert not worker.is_alive()
     assert errors == [], (
         errors,
@@ -1148,31 +1172,36 @@ def test_stop_keeps_queued_start_owner_until_game_switch_terminally_fences_it(tm
         except Exception as exc:
             operator_errors.append(exc)
 
-    operator = threading.Thread(target=move_operator_runtime)
+    operator = threading.Thread(target=move_operator_runtime, daemon=True)
     operator.start()
     old = factory.adapters[next(key for key in factory.adapters if "g1-" in key)]
-    assert old.boundary_entered.wait(2.0)
+    try:
+        assert _wait_for_boundary(old)
 
-    manager = WeatherCornerManager(g, duration_minutes=1, coordinator=switch,
-                                   clock=lambda: now[0])
-    request_id = str(uuid.uuid4())
-    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
-    manager._save(state)
-    assert manager._dispatch_start(state) == "queued"
-    assert store.receipts.load(request_id)["status"] == "queued"
+        manager = WeatherCornerManager(g, duration_minutes=1, coordinator=switch,
+                                       clock=lambda: now[0])
+        request_id = str(uuid.uuid4())
+        state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+        manager._save(state)
+        assert manager._dispatch_start(state) == "queued"
+        assert store.receipts.load(request_id)["status"] == "queued"
 
-    assert manager.stop() == "queued"
-    stop_path = Path(g.state_dir) / "corner-stop-requests" / manager.path.name
-    assert stop_path.exists()
-    assert manager.run_rotation(request_id) == "queued"
-    state = json.loads(manager.state_path.read_text())
-    assert state["status"] == "starting"
-    assert state["switch_request_id"] == request_id
-    assert store.receipts.load(request_id)["status"] == "queued"
-    assert stop_path.exists()
+        assert manager.stop() == "queued"
+        stop_path = Path(g.state_dir) / "corner-stop-requests" / manager.path.name
+        assert stop_path.exists()
+        assert manager.run_rotation(request_id) == "queued"
+        state = json.loads(manager.state_path.read_text())
+        assert state["status"] == "starting"
+        assert state["switch_request_id"] == request_id
+        assert store.receipts.load(request_id)["status"] == "queued"
+        assert stop_path.exists()
 
-    old.boundary_release.set()
-    operator.join(5.0)
+        old.boundary_release.set()
+        operator.join(30.0)
+    finally:
+        # アサーション失敗時も worker を解放して join する（スレッドをリークさせない）
+        old.boundary_release.set()
+        operator.join(30.0)
     assert not operator.is_alive()
     assert operator_errors == []
     assert operator_results[0].status == "succeeded"
