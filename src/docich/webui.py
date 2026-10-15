@@ -4723,16 +4723,23 @@ class _Handler(BaseHTTPRequestHandler):
         if not lock.acquire(blocking=False):
             self._send_error_json(429, "search_busy", "別のカテゴリ検索を実行中です")
             return 429
+        # 検索の排他は search_categories の実行区間だけに閉じる。エラー時も
+        # lock を解放してから応答を書く。そうしないと応答受信直後に次を送る
+        # クライアントが解放前に到着して 429 search_busy を観測し得る (#2267)。
+        error: tuple[int, str, str, str] | None = None
+        candidates: list[dict] = []
         try:
             candidates = search_categories(self.g, data.get("query"))
         except SpecialCornerSettingsError as exc:
-            self._send_error_json(400, "validation_error", str(exc)[:200], exc.field)
-            return 400
+            error = (400, "validation_error", str(exc)[:200], exc.field)
         except CategorySearchError as exc:
-            self._send_error_json(502, "category_search_failed", str(exc)[:200])
-            return 502
+            error = (502, "category_search_failed", str(exc)[:200], "")
         finally:
             lock.release()
+        if error is not None:
+            code, name, detail, field = error
+            self._send_error_json(code, name, detail, field)
+            return code
         self._send_json(200, {"candidates": candidates})
         return 200
 
