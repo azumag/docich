@@ -139,6 +139,17 @@ def test_old_cached_full_hp_only_choice_is_invalidated_on_hotloaded_policy(recor
     assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
 
 
+@pytest.mark.parametrize('skills', [
+    ['ふくらむ', 'シヤウト?'],
+    ['ふく?む', 'シャウト'],
+])
+def test_one_recognized_skill_keeps_balloon_policy_when_other_ocr_is_unreadable(records, skills):
+    mem = memory()
+    assert menus.monster_menu_step(screen(6144, skills=skills), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
+
+
 def test_ascii_spaces_in_skill_labels_preserve_balloon_recognition(records):
     mem = memory()
     spaced = ['ふく らむ', 'シャ ウト']
