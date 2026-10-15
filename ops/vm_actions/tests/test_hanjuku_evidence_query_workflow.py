@@ -254,6 +254,69 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("path: $" + "{{ runner.temp }}/hanjuku-query/output", upload)
         self.assertNotIn("/ssh", upload)
 
+    # --- #2290: the list validator must name the failing field so a rejected
+    # run is diagnosable, without echoing any candidate value. The accepted
+    # terminal-reason set is covered by
+    # ops/vm_actions/tests/test_hanjuku_evidence_candidate_terminals.py.
+
+    def list_validator_source(self):
+        section = self.workflow.split("- name: List completed Hanjuku runtimes", 1)[1]
+        heredoc = section.split("<<'PY'\n", 1)[1]
+        return textwrap.dedent(heredoc.split("\n          PY\n", 1)[0])
+
+    def run_list_validator(self, payload):
+        with real_tempdir() as directory:
+            path = Path(directory) / "candidates.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, "-", str(path)], input=self.list_validator_source(),
+                text=True, capture_output=True)
+
+    @staticmethod
+    def candidate(**kw):
+        return {"runtime_id": RID, "generation": 7, "terminal_reason": "game_over",
+                "observations": 10, "actions_sent": 200, **kw}
+
+    @staticmethod
+    def candidate_list(*items):
+        return {"schema": 1, "status": "ok", "runtimes": list(items), "truncated": False}
+
+    def test_list_validator_accepts_a_well_formed_candidate(self):
+        result = self.run_list_validator(self.candidate_list(self.candidate()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_list_validator_rejects_with_finite_field_classification(self):
+        cases = {
+            "field=terminal_reason": self.candidate(terminal_reason="manual_stop"),
+            "field=runtimes.keys": self.candidate(unexpected="x"),
+            "field=runtimes.item": "not-a-dict",
+            "field=runtime_id": self.candidate(runtime_id="h7-1234abcd"),
+            "field=generation": self.candidate(generation=8),
+            "field=observations": self.candidate(observations=-1),
+            "field=actions_sent": self.candidate(actions_sent=True),
+        }
+        for expected, item in cases.items():
+            with self.subTest(item=item):
+                result = self.run_list_validator(self.candidate_list(item))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                # Only the fixed field name is published, never a dump.
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertNotIn("manual_stop", result.stderr)
+
+    def test_list_validator_still_rejects_broken_envelope(self):
+        for payload in (
+            {"schema": 2, "status": "ok", "runtimes": [], "truncated": False},
+            {"schema": 1, "status": "error", "runtimes": [], "truncated": False},
+            {"schema": 1, "status": "ok", "runtimes": [self.candidate()] * 21,
+             "truncated": False},
+        ):
+            with self.subTest(payload=payload):
+                result = self.run_list_validator(payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid Hanjuku candidate list", result.stderr)
+
     def test_shell_blocks_parse(self):
         blocks = re.findall(r"        run: \|\n((?:          [^\n]*\n|\n)+)", self.workflow)
         self.assertGreaterEqual(len(blocks), 5)

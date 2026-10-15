@@ -147,16 +147,35 @@ jobs:
           if not isinstance(items, list) or len(items) > 20:
               raise SystemExit("invalid Hanjuku candidate list")
           pat = re.compile(r"g[1-9][0-9]{0,17}-[0-9a-f]{8}\Z")
+          # Keep in sync with the producer (src/docich/hanjuku_run.py
+          # TERMINAL_REASONS) and the export verifier (ops/vm_actions/
+          # hanjuku_evidence.py terminal_identity). #2290: input_stalled
+          # (#1369) was missing here, so one legitimately completed run made
+          # the whole list fail with no artifact.
+          terminal_reasons = {"game_over", "screen_stalled", "input_stalled"}
+          keys = {"runtime_id", "generation", "terminal_reason", "observations", "actions_sent"}
           for item in items:
-              if (not isinstance(item, dict)
-                      or set(item) != {"runtime_id", "generation", "terminal_reason", "observations", "actions_sent"}
-                      or not pat.fullmatch(str(item.get("runtime_id", "")))
-                      or type(item.get("generation")) is not int
-                      or item["generation"] != int(item["runtime_id"].split("-")[0][1:])
-                      or any(item[k] is not None and (type(item[k]) is not int or item[k] < 0)
-                             for k in ("observations", "actions_sent"))
-                      or item.get("terminal_reason") not in {"game_over", "screen_stalled", "input_stalled"}):
-                  raise SystemExit("invalid Hanjuku candidate")
+              # Fixed, finite field classification only: never echo the value.
+              if not isinstance(item, dict):
+                  raise SystemExit("invalid Hanjuku candidate field=runtimes.item")
+              missing = sorted(keys - set(item))
+              unknown = sorted(set(item) - keys)
+              if missing or unknown:
+                  raise SystemExit(
+                      "invalid Hanjuku candidate field=runtimes.keys"
+                      f" missing={missing} unknown={unknown}")
+              runtime_id = item["runtime_id"]
+              if not isinstance(runtime_id, str) or not pat.fullmatch(runtime_id):
+                  raise SystemExit("invalid Hanjuku candidate field=runtime_id")
+              generation = item["generation"]
+              if type(generation) is not int or generation != int(runtime_id.split("-")[0][1:]):
+                  raise SystemExit("invalid Hanjuku candidate field=generation")
+              for key in ("observations", "actions_sent"):
+                  value = item[key]
+                  if value is not None and (type(value) is not int or value < 0):
+                      raise SystemExit(f"invalid Hanjuku candidate field={key}")
+              if item["terminal_reason"] not in terminal_reasons:
+                  raise SystemExit("invalid Hanjuku candidate field=terminal_reason")
           PY
           rm -f "$work/transport.stderr"
 
