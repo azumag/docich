@@ -836,6 +836,30 @@ def test_balloon_finch_uses_early_cautious_reserve_without_measured_damage(ally_
     assert state['policy']['monster_menu_choice'] == choice
 
 
+def test_akematsu_greets_once_then_offers_hospitality_on_real_parsed_menu():
+    # An unchanged HP panel does not mean exchanging abilities again helps.
+    frame = monster_menu_frame(
+        ['ごあいさつ', 'おもてなし'],
+        ally=('あけまつ', 256), enemy=('ハデス', 500), cursor=0)
+    initial = {'policy': {'chapter': 1, 'battle': {
+        'enemy': 'クイーン', 'ally': 'ヴィーナス', 'enemy_hp': 60,
+        'ally_hp': 70, 'step': '1-B2'}}}
+    actions, state = decide(frame, initial)
+    assert state['screen_kind'] == 'monster_menu'
+    assert actions[0]['buttons'] == ['a']
+    assert state['policy']['battle']['akematsu_exchange']['greeting_submitted'] is True
+    actions, state = decide(frame, state)
+    assert actions[0]['buttons'] == ['down']
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['observed_metric']['akematsu_exchange']['rule'] == 'hospitality_after_greeting'
+    second = monster_menu_frame(
+        ['ごあいさつ', 'おもてなし'],
+        ally=('あけまつ', 256), enemy=('ハデス', 500), cursor=1)
+    actions, state = decide(second, state)
+    assert actions[0]['buttons'] == ['a']
+
+
 def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     # 2026-09-28 live incident: a general whose egg is already spent draws
     # たまごをつかう greyed out (dropped from OCR) on the enemy-summon menu.
