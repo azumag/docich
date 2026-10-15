@@ -36,8 +36,8 @@ def learned():
     return mem
 
 
-@pytest.mark.parametrize('hp', [None, True, -1, 0, 192, 384, 768, 9000, 9998, 10000])
-def test_unknown_or_invalid_hp_does_not_enable_early_shout(hp):
+@pytest.mark.parametrize('hp', [None, True, -1, 0, 192, 384, 768, 10000])
+def test_invalid_or_low_hp_never_enables_early_shout(hp):
     assert assess(state(), hp)['action'] == 'skill1'
 
 
@@ -45,6 +45,52 @@ def test_full_cap_retains_existing_unknown_damage_fallback():
     proof = assess(state(), CAP)
     assert proof['action'] == 'skill2'
     assert proof['rule'] == 'hp_cap'
+    assert proof['target_hp'] == CAP
+
+
+@pytest.mark.parametrize('hp, action', [
+    (4096, 'skill1'), (6143, 'skill1'),
+    (6144, 'skill2'), (9998, 'skill2'),
+])
+def test_unmeasured_but_well_resourced_monster_shouts_before_cap(hp, action):
+    proof = assess(state(), hp)
+    assert proof['action'] == action
+    assert proof['target_hp'] == 6144
+    assert proof['rule'] == ('unmeasured_reserve' if action == 'skill2'
+                             else 'recover_unmeasured')
+    # No fabricated sample or claim that three enemy hits were measured.
+    assert proof['incoming_damage'] is None
+    assert proof['damage_samples'] == proof['zero_loss_samples'] == 0
+
+
+def test_two_confirmed_zero_loss_inflations_lower_unmeasured_reserve():
+    mem = state()
+    selected(mem, 1024)
+    one = assess(mem, 2048)
+    assert one['zero_loss_samples'] == 1
+    assert one['target_hp'] == 6144
+    selected(mem, 2048)
+    two = assess(mem, 4096)
+    assert two['zero_loss_samples'] == 2
+    assert two['action'] == 'skill2'
+    assert two['rule'] == 'observed_zero_reserve'
+    assert two['target_hp'] == 4096
+    assert two['incoming_damage'] is None
+
+
+def test_scope_change_invalidates_old_zero_loss_evidence():
+    mem = state()
+    selected(mem, 1024)
+    assess(mem, 2048)
+    selected(mem, 2048)
+    assert assess(mem, 4096)['action'] == 'skill2'
+    assert assess(mem, 4096, enemy='ダークエルフ')['action'] == 'skill1'
+    assert mem['battle']['balloon_finch_survival']['zero_samples'] == 0
+
+
+def test_unscoped_unknown_damage_never_uses_cautious_early_shout():
+    assert assess({}, 9000)['action'] == 'skill1'
+
 
 
 def test_confirmed_inflation_enables_shout_well_before_cap():
@@ -62,13 +108,31 @@ def test_three_hits_must_leave_positive_hp_after_shout(hp, action):
     assert assess(learned(), hp)['action'] == action
 
 
-def test_shout_self_halving_is_not_an_enemy_damage_sample():
+def test_shout_residual_conservatively_estimates_enemy_hit_not_self_halving():
     mem = learned()
     selected(mem, 1800, 'skill2')
-    proof = assess(mem, 700)  # 1800/2 - 200
-    assert proof['incoming_damage'] == 200
-    assert proof['damage_samples'] == 1
+    proof = assess(mem, 700)  # 900 after own half, minus 200 hit
+    assert proof['incoming_damage'] == 400  # double residual covers attack-before-shout
+    assert proof['damage_samples'] == 2
+    assert proof['target_hp'] == 3002
     assert proof['action'] == 'skill1'
+
+
+def test_shout_exact_half_is_zero_loss_not_a_false_large_hit():
+    mem = state()
+    selected(mem, 4096, 'skill2')
+    proof = assess(mem, 2048)
+    assert proof['incoming_damage'] is None
+    assert proof['zero_loss_samples'] == 1
+    assert proof['damage_samples'] == 0
+
+
+def test_unobserved_shout_does_not_invent_a_residual_hit():
+    mem = state()
+    selected(mem, 4096, 'skill2')
+    proof = assess(mem, 3000)  # above the own-HP half: shout unconfirmed
+    assert proof['incoming_damage'] is None
+    assert proof['zero_loss_samples'] == 0
 
 
 def test_repeated_frames_and_selection_do_not_invent_samples():
@@ -125,13 +189,31 @@ def test_larger_hit_immediately_raises_recovery_threshold():
     assert proof['action'] == 'skill1'
 
 
-def test_capped_inflation_and_zero_loss_are_not_safe_damage_evidence():
+def test_capped_inflation_is_not_a_zero_loss_sample():
     mem = state()
     selected(mem, 6000)
-    assert assess(mem, 9900)['incoming_damage'] is None
+    proof = assess(mem, 9900)
+    assert proof['incoming_damage'] is None
+    assert proof['zero_loss_samples'] == 0
+
+
+def test_zero_loss_is_observed_but_not_reported_as_known_positive_damage():
     mem = state()
     selected(mem, 1000)
-    assert assess(mem, 2000)['incoming_damage'] is None
+    proof = assess(mem, 2000)
+    assert proof['incoming_damage'] is None
+    assert proof['zero_loss_samples'] == 1
+
+
+def test_tiny_measured_damage_keeps_a_minimum_post_shout_reserve():
+    mem = state()
+    selected(mem, 1000)
+    proof = assess(mem, 1999)
+    assert proof['incoming_damage'] == 1
+    assert proof['buffered_damage'] == 2
+    assert proof['target_hp'] == 1026
+    assert assess(mem, 1025)['action'] == 'skill1'
+    assert assess(mem, 1026)['action'] == 'skill2'
 
 
 def test_unconfirmed_heal_or_large_loss_invalidates_small_old_estimate():
