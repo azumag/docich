@@ -1478,6 +1478,54 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])
 
+    def test_settle_released_failure_refuses_when_the_stop_request_cannot_be_removed(self):
+        # #2354 review: a failed removal must never be reported as a settled
+        # owner. A real deletion failure (the marker path is a directory) keeps
+        # the slot `failed`, so the next game corner is still refused.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._stop_request_path(mgr)
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.mkdir()
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertTrue(marker.is_dir())
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        # The un-retired owner keeps refusing the next start.
+        with self.assertRaises(RetroCornerError) as caught:
+            mgr.run_rotation(str(uuid.uuid4()), "robots")
+        self.assertIn("owner mismatch", str(caught.exception))
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_retries_after_a_failed_stop_request_removal(self):
+        # First removal fails, the retry (what the next tick's released
+        # observation does) must complete and only then retire the owner.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+        original = Path.unlink
+
+        def fail_once(path, *args, **kwargs):
+            if path == marker:
+                raise OSError("stop request removal failed")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_once):
+            self.assertIs(
+                mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertTrue(marker.exists())
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        self.assertFalse(marker.exists())
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
 
 class _RestoreSettlingCoordinator(FakeCoordinator):
     """Replay double that commits the canonical + receipt shape of a real

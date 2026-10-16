@@ -1003,7 +1003,11 @@ class RetroCornerManager:
         return isinstance(active, dict) and active.get("game") != target
 
     def _terminalize_prelaunch_quiesce_failure(
-        self, state: dict[str, object], *, expected_request_id: str | None = None
+        self,
+        state: dict[str, object],
+        *,
+        expected_request_id: str | None = None,
+        precommit=None,
     ) -> CornerResult | None:
         """Settle a slot whose switch failed before launch, else ``None``.
 
@@ -1012,6 +1016,13 @@ class RetroCornerManager:
         coordinator writer therefore cannot begin after canonical verification
         and before the corner is terminalized.  Lock contention leaves the
         failed slot untouched and asks the operator to retry later.
+
+        ``precommit`` is an optional zero-argument check that runs after every
+        proof and before the corner write.  Returning falsy from it leaves the
+        slot ``failed`` and reports ``queued`` so the caller retries the same
+        settle on the next tick.  The rotation's released-owner retry uses it
+        for the durable stop request: the owner is not retired until that
+        request is gone (#2352 review).
 
         On success the corner is recorded as ``interrupted`` with the same
         terminal vocabulary as ``reconcile_failed_rotation_start`` so the
@@ -1072,6 +1083,13 @@ class RetroCornerManager:
                         "failed", game=target, previous_game=previous,
                         detail="canonical がtargetを所有中のため確定しません",
                     )
+                if precommit is not None and not precommit():
+                    # The caller may not retire the owner yet; nothing is
+                    # written, so the same settle is retried on the next tick.
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail="released stop request removal failed",
+                    )
                 state.update(
                     status="interrupted",
                     end_reason="switch-terminal-before-corner-active",
@@ -1120,6 +1138,12 @@ class RetroCornerManager:
         ``started_at`` is not an activation proof: a retro start writes it when
         the reservation is made, before the switch runs. Nothing is replayed
         and no new owner is selected.
+
+        ``stop_manual()`` writes a durable stop request while the owner is
+        still ``starting``. It is removed as a *precommit* step of the
+        terminalization: when the removal fails, the owner stays ``failed`` and
+        the next start is still refused, so the same settle is retried on the
+        next tick instead of letting the old stop carry over (#2352 review).
         """
 
         if not isinstance(request_id, str) or not request_id:
@@ -1138,21 +1162,12 @@ class RetroCornerManager:
                 ):
                     return False
                 result = self._terminalize_prelaunch_quiesce_failure(
-                    state, expected_request_id=request_id
+                    state, expected_request_id=request_id,
+                    precommit=self._clear_released_stop_request,
                 )
-                if getattr(result, "status", None) != "succeeded":
-                    return False
-                # ``stop_manual()`` writes a durable stop-request marker while
-                # the owner is still ``starting``. Only the same proofs that
-                # retired that owner may clear it: leaving it behind would make
-                # the NEXT request stop right after it starts (the old stop
-                # carries over). A marker that does not name this state file is
-                # left untouched. A slot whose proofs fail returns above, so an
-                # unproven stop request is always preserved.
-                self._clear_released_stop_request()
         except (RetroCornerError, GameSwitchBusyError):
             return False
-        return True
+        return getattr(result, "status", None) == "succeeded"
 
     def _clear_released_stop_request(self) -> bool:
         """Clear the retired owner's durable stop request for this state file."""
