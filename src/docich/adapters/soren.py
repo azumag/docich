@@ -17,7 +17,6 @@ from ..game_switch import (
     committed_retirement_result,
 )
 from .base import AdapterError
-from .soren_terminal import soren_round_terminal
 
 
 class SorenCoordinatorAdapter:
@@ -339,47 +338,6 @@ class SorenCoordinatorAdapter:
             [str(self.control), "cancel", request_id], deadline, cancel
         )
         return rc == 0 and self._ack(payload).get("status") == "cancelled"
-
-    # A stored snapshot older than this is not evidence for cancelling a live
-    # drain: the boundary poll refreshes it every second while a driver waits.
-    ROUND_TERMINAL_MAX_AGE_S = 60.0
-
-    def round_terminal(self, deadline: float, cancel) -> bool:
-        """True only when the current switch's Soren evidence proves the end.
-
-        ``status`` returns the *stored* request/ack pair, so the ack must
-        belong to that stored request and its snapshot must be fresh -- a
-        foreign or stale snapshot must never cancel a live drain.  The gate
-        then mirrors Soren's own boundary acceptance (runner alive -> founding
-        witness only; runner gone -> Soren's terminal predicate).
-        """
-
-        payload = self._status(deadline, cancel)
-        if not isinstance(payload, dict):
-            return False
-        request = payload.get("request")
-        ack = self._ack(payload)
-        if not isinstance(request, dict) or ack.get("request_id") != request.get("request_id"):
-            return False
-        for key in ("snapshot", "boundary_snapshot"):
-            snapshot = ack.get(key)
-            if soren_round_terminal(snapshot) and self._snapshot_is_fresh(snapshot):
-                return True
-        return False
-
-    def _snapshot_is_fresh(self, snapshot: object) -> bool:
-        observed = snapshot.get("observed_at") if isinstance(snapshot, dict) else None
-        if not isinstance(observed, str) or not observed:
-            return False
-        try:
-            at = dt.datetime.fromisoformat(observed.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if at.tzinfo is None:
-            return False
-        age = (dt.datetime.now(dt.timezone.utc) - at).total_seconds()
-        # A small negative age tolerates clock jitter between the two reads.
-        return -5.0 <= age <= self.ROUND_TERMINAL_MAX_AGE_S
 
     def _diagnostic_log_path(self) -> Path | None:
         """State-dir log file for lifecycle controller output (failures only)."""
