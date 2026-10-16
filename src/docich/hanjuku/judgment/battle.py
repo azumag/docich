@@ -1527,9 +1527,16 @@ def _defender_egg_window(mem, cur):
     opening_drop = enemy_max - enemy_start
     opening_drop = opening_drop if type(opening_drop) is int and opening_drop > 0 else 0
     measured_burst = max(observed_drop, opening_drop)
+    # Egg-less solo defenders (issue #2040): HP alone cannot guarantee pre-summon
+    # timing because the enemy can summon based on X position, not just HP. Use a
+    # more conservative (bounded) margin so the rescue opens earlier.
+    if _own_egg_empty(mem, cur):
+        min_drop = 3 * EGG_WALL_DAMAGE
+    else:
+        min_drop = EGG_WALL_DAMAGE
     # Leave one wall hit in addition to the largest measured loss for
     # capture/input/menu latency. This cannot bound an unseen X trigger.
-    margin = EGG_WALL_DAMAGE + max(EGG_WALL_DAMAGE, measured_burst)
+    margin = EGG_WALL_DAMAGE + max(min_drop, measured_burst)
     critical_hp = chapter + 2
     holds = int(cur.get('melee_holds') or 0)
     hp_budget = max(MELEE_HP_HOLD_FLOOR, start // MELEE_HP_HOLD_DIVISOR)
