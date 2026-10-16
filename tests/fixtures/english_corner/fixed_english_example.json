@@ -51,7 +51,7 @@
     "todayExample": "Today's real example: \"We shipped the fix in under an hour, but the trade-off is that we skipped the soak test.\"",
     "thirtySecondSummary": "A 30-second summary of one English expression from a real technical document.",
     "oneLineSummary": "Prioritize speed, but name the cost explicitly.",
-    "sourceMaterialBrief": "The source is a short changelog entry explaining why a quick fix was chosen and what test was deferred.",
+    "sourceMaterialBrief": "The source is a short changelog entry explaining why a quick fix was chosen and what test was deferred. 合成fixture内の改良履歴: 旧案は短い引用と短い要約だけを比較対象にしていた。改良案は意味・文法・ニュアンス・類似表現との差・出典保持も比較対象へ追加し、一文解説だけで終わらせず根拠と制約も並べて検討する。これは入力契約確認のために設定した架空の教材履歴であり、実英語教材や英語表現解釈の改善を示さない。",
     "keyPhrases": [
       {
         "phrase": "shipped the fix",

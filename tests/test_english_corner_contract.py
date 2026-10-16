@@ -133,3 +133,19 @@ def test_non_production_acceptance_boundary():
     assert acceptance["overlayAndProgressSplitAfterInputContract"] is True
     assert acceptance["partialCompletionAllowed"] is True
     assert acceptance["independentYouTubeDraftRequired"] is True
+
+
+def test_synthetic_fixture_contains_historical_improvement_input():
+    """Check this fixed fixture's fictional input, not real-history validation."""
+    data = load_fixture()
+    assert data["isSyntheticFixture"] is True
+    narrative = data["topic"]["sourceMaterialBrief"]
+    assert "deferred." in narrative
+    for required in (
+        "合成fixture内の改良履歴",
+        "旧案",
+        "改良案",
+        "架空の教材履歴",
+        "実英語教材や英語表現解釈の改善を示さない",
+    ):
+        assert required in narrative, required
