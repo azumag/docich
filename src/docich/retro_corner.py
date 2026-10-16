@@ -1097,6 +1097,9 @@ class RetroCornerManager:
                     last_error_code=None,
                 )
                 state.pop("switch_status", None)
+                # The owner is retired: the pinned release record has done its
+                # job and must not outlive the slot it described.
+                state.pop("released_settle_pending", None)
                 self._write_state(state)
         except GameSwitchBusyError:
             return CornerResult(
@@ -1162,14 +1165,20 @@ class RetroCornerManager:
                         or state.get("rotation_request_id") != request_id
                         or state.get("switch_request_id") != request_id):
                     return False
-                if not self._released_record_proved(
-                    corner_id, request_id, state.get("game")
-                ):
+                if not self._released_record_proved(state, corner_id, request_id):
                     return False
                 result = self._terminalize_prelaunch_quiesce_failure(
                     state, expected_request_id=request_id,
                     precommit=self._clear_released_stop_request,
                 )
+                status = getattr(result, "status", None)
+                if status == "queued":
+                    # Pin the verified release record before answering "retry".
+                    # Other corners keep failing while this owner waits, and the
+                    # bounded audit can evict this request's last row; the pin
+                    # lives in the state being retired, so the retry stays
+                    # provable once the blocking cause is fixed (#2354 review).
+                    self._record_released_settle_pending(state, corner_id, request_id)
         except (RetroCornerError, GameSwitchBusyError):
             return False
         status = getattr(result, "status", None)
@@ -1183,6 +1192,17 @@ class RetroCornerManager:
             return None
         return False
 
+    def _record_released_settle_pending(self, state, corner_id, request_id) -> None:
+        """Pin the verified release record until this owner is retired."""
+
+        state["released_settle_pending"] = {
+            "request_id": request_id,
+            "corner_id": corner_id,
+            "game": state.get("game"),
+            "at": self._local_now().isoformat(),
+        }
+        self._write_state(state)
+
     def _clear_released_stop_request(self) -> bool:
         """Clear the retired owner's durable stop request for this state file."""
 
@@ -1195,7 +1215,7 @@ class RetroCornerManager:
             return True
         return clear_rotation_stop_request(self.g, self.state_path)
 
-    def _released_record_proved(self, corner_id, request_id, game) -> bool:
+    def _released_record_proved(self, state, corner_id, request_id) -> bool:
         """Require the durable rotation record that names THIS request (#2352).
 
         The rotation's release decision and this corner write are separate
@@ -1204,10 +1224,22 @@ class RetroCornerManager:
         later request; the bounded audit row is what keeps the original
         request's release provable (#2282). Anything unreadable, a different
         corner, a different game, or a non-``game`` adapter refuses.
+
+        ``released_settle_pending`` is accepted as well: it is written into this
+        corner state (never the evictable bounded audit) at the moment the
+        ledger proof above held, so a deferred retirement stays provable while
+        other corners keep filling the audit (#2354 review).
         """
 
+        game = state.get("game")
         if not isinstance(game, str) or not game:
             return False
+        pin = state.get("released_settle_pending")
+        if (isinstance(pin, dict)
+                and pin.get("request_id") == request_id
+                and pin.get("corner_id") == corner_id
+                and pin.get("game") == game):
+            return True
         from .corner_rotation import LEDGER_FILE
 
         try:

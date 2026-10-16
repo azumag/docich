@@ -357,6 +357,49 @@ def test_the_family_returns_to_selection_once_the_owner_is_retired(tmp_path):
     assert ledger(manager)["excluded"].get(corner) != "released-owner-unretired"
 
 
+def test_the_pinned_release_record_survives_the_bounded_audit(tmp_path):
+    """#2354 review: a deferred request keeps its release proof through the pin.
+
+    The per-corner pointer has moved to a newer request and the original
+    request's audit row was evicted, so only ``released_settle_pending`` in the
+    corner state still proves that this exact owner was released. The settle
+    must still be reached instead of the whole rotation losing the evidence.
+    """
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.state_path = tmp_path / "shared_corner.json"
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    state["failed_corners"] = [
+        row for row in state["failed_corners"]
+        if not (row["corner"] == corner and row["request_id"] == old_request)
+    ]
+    manager.save(state)
+    adapter.states = [{
+        "status": "failed",
+        "rotation_request_id": old_request,
+        "released_settle_pending": {"request_id": old_request, "corner_id": corner},
+    }]
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert settled == [old_request]
+    assert result["status"] == "ready"
+
+
 def test_a_newer_release_record_never_settles_the_older_failed_owner(tmp_path):
     """#2352 review: only the original request's own release record counts.
 
