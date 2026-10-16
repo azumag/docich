@@ -83,6 +83,21 @@ def test_source_priority_and_seismic_equipment_are_explicit():
     assert acceptance["mustNotPresentSyntheticAsReal"] is True
 
 
+def test_synthetic_fixture_contains_historical_improvement_input():
+    """Check this fixed fixture's fictional input, not real-history validation."""
+    data = load_fixture()
+    assert data["isSyntheticFixture"] is True
+    narrative = data["topic"]["designRationale"]
+    for required in (
+        "合成fixture内の改良履歴",
+        "旧案",
+        "改良案",
+        "架空の設計履歴",
+        "実建築の開発史や性能改善を示さない",
+    ):
+        assert required in narrative, required
+
+
 def test_verified_material_hashes_are_well_formed():
     import hashlib
 
