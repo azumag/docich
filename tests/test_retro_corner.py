@@ -1382,14 +1382,15 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
     def test_settle_released_failure_defers_on_a_busy_store_lock(self):
         mgr, coordinator, request_id = self._setup_quiesce_failed()
         self._released_ledger(mgr, request_id)
-        before = mgr._read_state()
 
         with mgr.store.lock(exclusive=True):
             settled = mgr.settle_released_failure(request_id, corner_id="robots")
 
         # A busy writer is transient: wait and retry instead of giving up.
         self.assertIsNone(settled)
-        self.assertEqual(mgr._read_state(), before)
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
         self.assertEqual(coordinator.calls, [])
 
     def _stop_request_path(self, mgr):
@@ -1493,14 +1494,15 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         marker = self._stop_request_path(mgr)
         marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker.mkdir()
-        before = mgr._read_state()
 
         self.assertIsNone(
             mgr.settle_released_failure(request_id, corner_id="robots"))
 
         self.assertTrue(marker.is_dir())
-        self.assertEqual(mgr._read_state(), before)
-        self.assertEqual(mgr._read_state()["status"], "failed")
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        # The deferral pins the verified release record for the retry.
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
         # The un-retired owner keeps refusing the next start.
         with self.assertRaises(RetroCornerError) as caught:
             mgr.run_rotation(str(uuid.uuid4()), "robots")
@@ -1531,6 +1533,68 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
 
         self.assertFalse(marker.exists())
         self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_a_deferred_release_is_pinned_and_survives_audit_eviction(self):
+        # #2354 review: the release record of a deferred request can be evicted
+        # from the bounded audit while other corners keep failing. The pin in
+        # the corner state keeps the retry provable until the owner is retired.
+        from docich.corner_rotation import LEDGER_FILE
+
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+        original = Path.unlink
+
+        def fail_once(path, *args, **kwargs):
+            if path == marker:
+                raise OSError("stop request removal failed")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_once):
+            self.assertIsNone(
+                mgr.settle_released_failure(request_id, corner_id="robots"))
+
+        pinned = mgr._read_state()["released_settle_pending"]
+        self.assertEqual(pinned["request_id"], request_id)
+        self.assertEqual(pinned["corner_id"], "robots")
+        self.assertEqual(pinned["game"], "robots")
+
+        # The bounded audit rolls over: the per-corner pointer names a newer
+        # request and the original request's audit row is gone.
+        (Path(mgr.g.state_dir) / LEDGER_FILE).write_text(json.dumps({
+            "known_corners": {"robots": {"id": "robots", "adapter": "game",
+                                         "game": "robots"}},
+            "released_requests": {"robots": {"request_id": str(uuid.uuid4()),
+                                             "at": 2.0}},
+            "failed_corners": [],
+        }), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertNotIn("released_settle_pending", state)
+        self.assertFalse(marker.exists())
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_ignores_a_pin_for_another_request(self):
+        # A pin is evidence for exactly one request; a foreign one must not
+        # grant the retirement on its own.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id, write=False)
+        state = mgr._read_state()
+        state["released_settle_pending"] = {
+            "request_id": str(uuid.uuid4()), "corner_id": "robots",
+            "game": "robots", "at": "2026-09-06T20:00:00+09:00",
+        }
+        mgr._write_state(state)
+        before = mgr._read_state()
+
+        self.assertIs(
+            mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])
 
 

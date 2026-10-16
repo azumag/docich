@@ -612,10 +612,18 @@ class CornerRotationManager:
                         and row.get("resolution") == "released-unverified"
                         for row in (state.get("failed_corners") or [])
                     )
+                    # A deferred retirement pins its verified release record in
+                    # the corner state, which the bounded audit cannot evict.
+                    # Without it the last proof for a deferred request would be
+                    # lost while other corners keep failing (#2354 review).
+                    pinned = raw.get("released_settle_pending")
+                    pinned_release = (isinstance(pinned, dict)
+                                      and pinned.get("request_id") == request_id
+                                      and pinned.get("corner_id") == corner_id)
                     released = (isinstance(request_id, str)
                                 and ((isinstance(entry, dict)
                                       and entry.get("request_id") == request_id)
-                                     or audited_release)
+                                     or audited_release or pinned_release)
                                 and self._slot_reusable(adapter, {"request_id": request_id,
                                                                   "corner": corner_id}))
                     if not released:
