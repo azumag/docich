@@ -3005,7 +3005,12 @@ ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
 # manual-only corner is `manual-only`; a disabled or paused one is
 # `disabled-or-paused`, so the map distinguishes "enabled for manual reservation"
 # from "not enabled at all" without needing a reservation.
-ROTATION_EXCLUDED_REASONS = frozenset({"disabled-or-paused", "manual-only", "adapter-unavailable"})
+ROTATION_EXCLUDED_REASONS = frozenset({
+    "disabled-or-paused", "manual-only", "adapter-unavailable",
+    # A released owner on this corner's shared state file could not be retired
+    # yet, so only that state file waits for the retry (#2354 review).
+    "released-owner-unretired",
+})
 ROTATION_EXCLUDED_LIMIT = 32
 # Fixed resolutions of the `failed_corners` ledger rows (#2187). `released`
 # means the scheduler settled the failed corner and kept rotating; the other

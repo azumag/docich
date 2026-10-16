@@ -1346,23 +1346,27 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 deadline_at="2026-09-06T21:00:00+09:00")
 
         cases = {
-            "receipt pruned": dict(keep_receipt=False),
-            "receipt error code differs": dict(receipt_error="start_failed"),
-            "receipt is not terminal failed": dict(receipt_status="rolled_back"),
-            "receipt from_game differs": dict(from_game="nethack"),
-            "start-side readiness code is not a prelaunch proof": dict(
-                error_code="readiness_timeout", receipt_error="readiness_timeout"),
-            "canonical still owns the target": dict(
-                canonical_patch=lambda canonical: canonical.update(
-                    active=self._runtime("robots", 1))),
-            "canonical keeps a retiring runtime": dict(
-                canonical_patch=lambda canonical: canonical.update(
-                    retiring=[self._runtime("robots", 2)])),
-            "canonical is still draining": dict(canonical_patch=in_flight("draining")),
-            "canonical still has an in-flight switch": dict(
-                canonical_patch=in_flight("quiescing")),
+            "receipt pruned": (dict(keep_receipt=False), False),
+            "receipt error code differs": (dict(receipt_error="start_failed"), False),
+            "receipt is not terminal failed": (dict(receipt_status="rolled_back"), False),
+            "receipt from_game differs": (dict(from_game="nethack"), False),
+            "start-side readiness code is not a prelaunch proof": (
+                dict(error_code="readiness_timeout", receipt_error="readiness_timeout"),
+                False),
+            "canonical still owns the target": (
+                dict(canonical_patch=lambda canonical: canonical.update(
+                    active=self._runtime("robots", 1))), False),
+            "canonical keeps a retiring runtime": (
+                dict(canonical_patch=lambda canonical: canonical.update(
+                    retiring=[self._runtime("robots", 2)])), False),
+            # A live switch is waited out and retried instead of a permanent
+            # refusal, so its family keeps waiting (#2354 review).
+            "canonical is still draining": (
+                dict(canonical_patch=in_flight("draining")), None),
+            "canonical still has an in-flight switch": (
+                dict(canonical_patch=in_flight("quiescing")), None),
         }
-        for name, kwargs in cases.items():
+        for name, (kwargs, expected) in cases.items():
             with self.subTest(case=name):
                 mgr, coordinator, request_id = self._setup_quiesce_failed(**kwargs)
                 # The release record is present, so each refusal below is the
@@ -1370,12 +1374,12 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 self._released_ledger(mgr, request_id)
 
                 self.assertIs(
-                    mgr.settle_released_failure(request_id, corner_id="robots"), False)
+                    mgr.settle_released_failure(request_id, corner_id="robots"), expected)
 
                 self.assertEqual(mgr._read_state()["status"], "failed")
                 self.assertEqual(coordinator.calls, [])
 
-    def test_settle_released_failure_leaves_the_slot_on_a_busy_store_lock(self):
+    def test_settle_released_failure_defers_on_a_busy_store_lock(self):
         mgr, coordinator, request_id = self._setup_quiesce_failed()
         self._released_ledger(mgr, request_id)
         before = mgr._read_state()
@@ -1383,7 +1387,8 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         with mgr.store.lock(exclusive=True):
             settled = mgr.settle_released_failure(request_id, corner_id="robots")
 
-        self.assertIs(settled, False)
+        # A busy writer is transient: wait and retry instead of giving up.
+        self.assertIsNone(settled)
         self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])
 
@@ -1478,10 +1483,11 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])
 
-    def test_settle_released_failure_refuses_when_the_stop_request_cannot_be_removed(self):
+    def test_settle_released_failure_defers_when_the_stop_request_cannot_be_removed(self):
         # #2354 review: a failed removal must never be reported as a settled
         # owner. A real deletion failure (the marker path is a directory) keeps
-        # the slot `failed`, so the next game corner is still refused.
+        # the slot `failed` and answers "retry later" (``None``), so the next
+        # game corner is still refused and the settle can be retried.
         mgr, coordinator, request_id = self._setup_quiesce_failed()
         self._released_ledger(mgr, request_id)
         marker = self._stop_request_path(mgr)
@@ -1489,7 +1495,8 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         marker.mkdir()
         before = mgr._read_state()
 
-        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+        self.assertIsNone(
+            mgr.settle_released_failure(request_id, corner_id="robots"))
 
         self.assertTrue(marker.is_dir())
         self.assertEqual(mgr._read_state(), before)
@@ -1514,8 +1521,8 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
             return original(path, *args, **kwargs)
 
         with patch.object(Path, "unlink", fail_once):
-            self.assertIs(
-                mgr.settle_released_failure(request_id, corner_id="robots"), False)
+            self.assertIsNone(
+                mgr.settle_released_failure(request_id, corner_id="robots"))
 
         self.assertTrue(marker.exists())
         self.assertEqual(mgr._read_state()["status"], "failed")

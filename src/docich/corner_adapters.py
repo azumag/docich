@@ -212,6 +212,10 @@ class GameCornerAdapter:
         and re-proves the terminal receipt and the stable canonical owner under
         the shared store lock, so ``False`` leaves the current fail-closed
         state untouched.
+
+        The manager's answer is forwarded unchanged: ``True`` retired, ``None``
+        proved but not retired yet (the rotation keeps this shared state file
+        out of selection and retries), ``False`` not applicable.
         """
 
         if getattr(self.corner, "adapter", None) != "game":
@@ -219,7 +223,10 @@ class GameCornerAdapter:
         settle = getattr(self.manager, "settle_released_failure", None)
         if not callable(settle):
             return False
-        return settle(request_id, corner_id=self.corner.id) is True
+        outcome = settle(request_id, corner_id=self.corner.id)
+        if outcome is True or outcome is False or outcome is None:
+            return outcome
+        return False
 
     def recover_failed_restore(self):
         """Timer-safe restore recovery for a failed corner *end* (#2187).

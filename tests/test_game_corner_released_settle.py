@@ -57,9 +57,16 @@ class GameCornerReleasedSettleTests(unittest.TestCase):
         self.assertIs(_adapter("game", manager).settle_released_failure("r-1"), False)
         self.assertEqual(manager.calls, [("r-1", "robots")])
 
+    def test_settle_forwards_the_deferred_answer_unchanged(self):
+        # ``None`` means "proved but not retired yet": the rotation must keep
+        # this shared state file out of selection and retry (#2354 review).
+        manager = _Manager(None)
+
+        self.assertIsNone(_adapter("game", manager).settle_released_failure("r-1"))
+        self.assertEqual(manager.calls, [("r-1", "robots")])
+
     def test_settle_requires_a_boolean_true_from_the_manager(self):
-        # ``_settle_released_failure`` accepts only an exact ``True``; a truthy
-        # placeholder must not be reported as a settled owner.
+        # A truthy placeholder must not be reported as a settled owner.
         manager = _Manager("succeeded")
 
         self.assertIs(_adapter("game", manager).settle_released_failure("r-1"), False)

@@ -1110,7 +1110,7 @@ class RetroCornerManager:
             detail="起動前に失敗した手動起動をinterruptedとして確定",
         )
 
-    def settle_released_failure(self, request_id: str, *, corner_id: str) -> bool:
+    def settle_released_failure(self, request_id: str, *, corner_id: str) -> bool | None:
         """Retire this corner's exact released pre-start failure (#2352).
 
         The common rotation releases an unproven automatic failure only after
@@ -1144,6 +1144,11 @@ class RetroCornerManager:
         terminalization: when the removal fails, the owner stays ``failed`` and
         the next start is still refused, so the same settle is retried on the
         next tick instead of letting the old stop carry over (#2352 review).
+
+        Returns ``True`` when the owner was retired, ``None`` when it is proved
+        but not retired yet and the caller must keep this shared state file out
+        of selection and retry, and ``False`` when this hook does not apply or
+        can never retire the owner.
         """
 
         if not isinstance(request_id, str) or not request_id:
@@ -1167,7 +1172,16 @@ class RetroCornerManager:
                 )
         except (RetroCornerError, GameSwitchBusyError):
             return False
-        return getattr(result, "status", None) == "succeeded"
+        status = getattr(result, "status", None)
+        if status == "succeeded":
+            return True
+        if status == "queued":
+            # The owner is proved but not retired yet (the stop request could
+            # not be removed, or the store lock is held). ``None`` tells the
+            # rotation to keep this shared state file out of selection and
+            # retry, so the release evidence cannot be evicted before it works.
+            return None
+        return False
 
     def _clear_released_stop_request(self) -> bool:
         """Clear the retired owner's durable stop request for this state file."""

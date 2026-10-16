@@ -69,13 +69,16 @@ def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path)
         "status": "waiting", "reason": "all-corners-cooling-down", "slot": 236,
         "seed": "DO-NOT-PUBLISH-SEED", "last_seen_at": 100, "eligible": [],
         "excluded": {"yosou-oh": "manual-only", "nethack": "disabled-or-paused",
-                     "tsuitate": "adapter-unavailable", "weird": "DO-NOT-PUBLISH-REASON"},
+                     "tsuitate": "adapter-unavailable",
+                     "moon-buggy": "released-owner-unretired",
+                     "weird": "DO-NOT-PUBLISH-REASON"},
     }))
     output = {}
     module._collect_corner_files(tmp_path, output, 100)
     projection = output["corner_rotation"]
     assert projection["excluded"] == {"nethack": "disabled-or-paused",
                                       "tsuitate": "adapter-unavailable",
+                                      "moon-buggy": "released-owner-unretired",
                                       "weird": "unknown", "yosou-oh": "manual-only"}
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
