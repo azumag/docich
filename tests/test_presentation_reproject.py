@@ -151,40 +151,56 @@ class PresentationReprojectScript(unittest.TestCase):
 
     def _wait_settled_spawns(self, spawns: Path, timeout: float,
                              stable_for: float = 1.5) -> int:
-        """Return the spawn count once it has stopped growing."""
+        """Return the spawn count once it has stopped growing.
+
+        Both the poll sleep and the reader's retry budget are clamped to the
+        caller's ``timeout``: a fixed sleep or a fixed retry budget must never
+        stretch a short deadline (PR #2326 review).
+        """
         limit = time.monotonic() + timeout
-        last = self._read_spawn_count(spawns)
+        last = self._read_spawn_count(spawns, deadline=limit)
         unchanged_since = time.monotonic()
-        while time.monotonic() < limit:
-            time.sleep(0.1)
-            current = self._read_spawn_count(spawns)
+        while True:
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
+                return last
+            time.sleep(min(0.1, remaining))
+            current = self._read_spawn_count(spawns, deadline=limit)
             if current != last:
                 last = current
                 unchanged_since = time.monotonic()
             elif time.monotonic() - unchanged_since >= stable_for:
                 return last
-        return last
 
     @staticmethod
     def _read_spawn_count(spawns: Path, attempts: int = 50,
-                          delay: float = 0.005) -> int:
+                          delay: float = 0.005,
+                          deadline: float | None = None) -> int:
         """Read the spawn counter, tolerating the not-yet-published file.
 
         The counter is written by a separate process, so an early poll can
         still find no file at all before the first publish. Retrying a bounded
-        number of times -- without extending the caller's deadline -- keeps
-        that start-up window from failing the poll loop (#2305). The publish
-        itself is atomic (`os.replace`, see _ffplay_stub), so a reader never
-        observes a truncated slice while a write is in flight; a counter that
-        never becomes readable still raises after the attempts instead of
-        hiding a real stall
+        number of times keeps that start-up window from failing the poll loop
+        (#2305). ``deadline`` (an absolute ``time.monotonic()`` stamp) clamps
+        that budget to the caller's remaining time -- the reader never sleeps
+        past it, so the retry budget cannot stretch a short deadline (PR #2326
+        review). The publish itself is atomic (`os.replace`, see _ffplay_stub),
+        so a reader never observes a truncated slice while a write is in
+        flight; a counter that never becomes readable still raises after the
+        attempts instead of hiding a real stall
         (test_read_spawn_count_gives_up_bounded_when_the_file_never_heals).
         """
         for _ in range(attempts):
             try:
                 return int(spawns.read_text())
             except (ValueError, OSError):
-                time.sleep(delay)
+                if deadline is None:
+                    time.sleep(delay)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
         if not spawns.exists():
             return 0
         return int(spawns.read_text())
@@ -300,6 +316,95 @@ class SpawnCounterGuardTests(unittest.TestCase):
         self.assertIn('tmp.write_text(str(count))', stub)
         self.assertNotIn('counter.write_text', stub)
         self.assertNotIn('counter.open(', stub)
+
+
+class _FakeClock:
+    """Deterministic ``monotonic``/``sleep`` pair for the deadline regressions.
+
+    Times are rounded to nanoseconds so a sum of fake sleeps compares exactly
+    against the deadline instead of drifting on binary rounding.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, delay: float) -> None:
+        if delay < 0:
+            raise AssertionError(f'negative sleep would move the clock back: {delay}')
+        self.sleeps.append(delay)
+        self.now = round(self.now + delay, 9)
+
+
+class _UnpublishedCounter:
+    """A counter that stays missing for its first ``missing_reads`` reads."""
+
+    def __init__(self, missing_reads: int, value: str = '7') -> None:
+        self.missing_reads = missing_reads
+        self.value = value
+        self.reads = 0
+
+    def read_text(self) -> str:
+        self.reads += 1
+        if self.reads <= self.missing_reads:
+            raise FileNotFoundError('the counter is not published yet')
+        return self.value
+
+    def exists(self) -> bool:
+        return self.reads > self.missing_reads
+
+
+class CallerDeadlineTests(unittest.TestCase):
+    """A fixed sleep or retry budget must not stretch the caller's deadline.
+
+    #2326 review: ``_wait_settled_spawns`` built ``limit`` and then called
+    ``_read_spawn_count`` without it, so the fixed 50 x 5ms retry budget could
+    overrun a short timeout by 20x; the fixed ``sleep(0.1)`` poll overran it on
+    its own. Both are clamped to the deadline now. The fake clock keeps this
+    deterministic instead of depending on real scheduling.
+    """
+
+    def setUp(self):
+        # The script helpers only touch ``self._read_spawn_count``, so a bare
+        # receiver exercises them without starting a presenter process.
+        self.script = PresentationReprojectScript.__new__(PresentationReprojectScript)
+
+    def _patch_clock(self, clock):
+        module = sys.modules[__name__]
+        original = module.time
+        module.time = clock
+        self.addCleanup(setattr, module, 'time', original)
+
+    def test_poll_sleep_does_not_stretch_a_short_deadline(self):
+        clock = _FakeClock()
+        self._patch_clock(clock)
+        counter = _UnpublishedCounter(missing_reads=0)
+        settled = self.script._wait_settled_spawns(counter, timeout=0.01)
+        self.assertEqual(settled, 7)
+        self.assertLessEqual(clock.now, 0.01,
+                             f'the poll sleep overran the deadline: {clock.sleeps}')
+
+    def test_reader_budget_is_clamped_to_the_callers_deadline(self):
+        clock = _FakeClock()
+        self._patch_clock(clock)
+        counter = _UnpublishedCounter(missing_reads=40)
+        value = self.script._read_spawn_count(
+            counter, deadline=clock.monotonic() + 0.01)
+        self.assertEqual(value, 0, 'an unpublished counter is not a spawn count')
+        self.assertLessEqual(clock.now, 0.01,
+                             f'the retry budget overran the deadline: {clock.sleeps}')
+        self.assertTrue(all(delay <= 0.01 for delay in clock.sleeps), clock.sleeps)
+
+    def test_settled_wait_is_clamped_to_the_callers_deadline(self):
+        clock = _FakeClock()
+        self._patch_clock(clock)
+        counter = _UnpublishedCounter(missing_reads=40)
+        self.script._wait_settled_spawns(counter, timeout=0.01)
+        self.assertLessEqual(clock.now, 0.01,
+                             f'the wait overran the deadline: {clock.sleeps}')
 
 
 if __name__ == '__main__':
