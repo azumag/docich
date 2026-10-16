@@ -7551,9 +7551,10 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
     """
     SCAN_LIMIT = 128
 
-    def __init__(self, root):
+    def __init__(self, root, *, audio_only=False):
         super().__init__(root)
         self.samples = {}
+        self.audio_only = audio_only is True
 
     @staticmethod
     def fingerprint(info):
@@ -7618,6 +7619,14 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
                     for index, entry in enumerate(entries):
                         if index >= self.SCAN_LIMIT:
                             raise _ProgramAdmissionFailure('scan_limit')
+                        name = entry.name
+                        if self.audio_only and not (
+                                name.startswith(AUDIO_ITEM_PREFIX) and
+                                name.endswith((AUDIO_QUEUED_SUFFIX, AUDIO_PLAYING_SUFFIX))):
+                            # Keep every name in the bounded/rechecked listing,
+                            # but never stat, follow or descend into non-audio.
+                            rows.append((name, None))
+                            continue
                         info = entry.stat(follow_symlinks=False)
                         if not stat.S_ISREG(info.st_mode):
                             raise _ProgramAdmissionFailure(
@@ -7794,7 +7803,7 @@ def _collect_program_admission_evidence(state_dir, soren, now):
         # in this projection is bounded and no-follow. No bodies or .env reads.
         stage = 'audio'
         audio_path = _comment_queue_dir(Path(soren))
-        audio_reader = _ProgramAdmissionReader(audio_path)
+        audio_reader = _ProgramAdmissionReader(audio_path, audio_only=True)
         audio_rows = audio_reader.listing(())
         counts = [0, 0]
         for name, _ in audio_rows or ():

@@ -344,9 +344,11 @@ request UUID がないため、一致は同一リクエストの所有証明で�
 例外本文、filename/path、request値を返さず、失敗時の依存値は従来どおりnullです。
 これらはcollectorの読取失敗分類であり、runtimeの待機理由や復旧許可を表しません。
 
-正常なaudio writerもqueue直下に `audio_dedup` / `.weather_audio_receipts` などの
-metadata directoryを作ります。現行のstrict regular-only scanはこれらも拒否するため、
-synthetic回帰では `failure_stage:audio` / `failure_code:non_regular` として観測します。
-このprovenance追加ではreaderの安全条件・読取対象を変えず、directoryを無視する等の
-挙動変更は行いません。current_predictionの公開writerにstatusがない形式も、
-local_active/ waitingを推測せずnullに保つ回帰で扱います。
+audio scanの対象は固定名 `comment_*.txt` / `comment_*.playing` のみです。
+通常writerが作る `audio_dedup` / `.weather_audio_receipts` など対象外のentryは、
+名前一覧には保持しますがstat・内容読取・symlink追跡・子directoryへの降下はしません。
+全entryの128件上限、親dirの前後fingerprint、名前一覧再照合は維持します。
+対象音声はno-follow statとregular必須、metadata fingerprint再照合を維持し、
+symlink/非regularはnullへ倒します。FIFOのscanは全entry regular-onlyのままです。
+current_predictionの公開writerにstatusがない形式も、local_active/waitingを
+推測せずnullに保つ回帰で扱います。
