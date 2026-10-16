@@ -15,8 +15,9 @@ from ..judgment.battle import _hold_general_loss_metric, _migrate_card_evidence
 from ..judgment.events import trade_accept_weak
 from ..os_layer.font import UNKNOWN
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row, _is_general_trade_prompt,
-                                _is_goninja_prompt, _options, _summer_bonus_rows, _trade_named_general)
+from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row, _is_bijin_request,
+                                _is_general_trade_prompt, _is_goninja_prompt, _options,
+                                _summer_bonus_rows, _trade_named_general)
 from ..os_layer.world import _owned
 from ..strategy.campaign import (_enter_chapter, _repair_home_alias_failures, _repair_home_name_chapter,
                                  observe_chapter_castle)
@@ -29,6 +30,13 @@ TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', '
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
+
+
+BIJIN_MIN_GOLD = 1000   # 美女の依頼を断る所持金のしきい値（オーナー指示 2026-10-15）
+BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
+# 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
+# うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
+BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
 
 
 def _trade_choice_pair(options):
@@ -141,6 +149,107 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
             reason=('指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
                     if accept else
                     '花いちもんめで強い将軍・主人公・チャートの将軍・判定不能の将軍が指定されたため断る'))
+    return [pad('a')]
+
+
+def _bijin_gold(screen: Screen):
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int or gold < 0:
+        return None
+    return gold
+
+
+def bijin_guard_step(screen: Screen, mem, *, phase=None):
+    """美女の依頼: 所持金1000G以下・読取不明では必ず断る。
+
+    Owner (2026-10-15): 美女イベントでお金に余裕がないとき（少なくとも
+    1000G以下）は必ず「いかん」で断る。依頼文は「〜お願いがあって来たの……
+    聞いてくれる?」（倒転王国 monthlyevent.html）。承諾側 うんデヘヘ！ を選ぶと
+    どれか ほしいなー → 香水100G/車200G/家500G の購入メニューへ進み、
+    半熟値が上がるのは家500Gだけで他は何も起きない。実機のかな書きに合わせ、
+    断り行は いかんッ/けえんな/けーんな を探す。
+
+    1000G超の裏付けが読めたときだけ従来の経路（承諾して最安品）へ返し、
+    それ以外は断り行を読んで選ぶ。断り行・現在行を確定できないときは
+    ブラインドAを押さず保留する（ゴニンジャーと同じフェイルセーフ）。
+    依頼文の読み上げ頁（選択肢がまだ見えない）は既存の進行に任せる。
+    """
+    guard = mem.get('bijin_guard')
+    if isinstance(guard, dict):
+        guard.pop('held', None)  # ownership is recomputed for this observation
+    if mem.get('month_sub') or phase not in (None, 'dialogue'):
+        mem.pop('bijin_guard', None)
+        return None   # 月イチの購入額確定などの所有者を邪魔しない
+    tick = int(mem.get('tick') or 0)
+    if _is_bijin_request(screen.text) and screen.kind in ('text', 'unknown', 'yes_no'):
+        if not isinstance(guard, dict):
+            guard = mem['bijin_guard'] = {'tick': tick, 'chosen': False}
+            _record(mem, 'bijin_request_seen', screen=screen.kind,
+                    observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
+                                     'gold': _bijin_gold(screen)},
+                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以下・読取不明なら必ず断る')
+        guard['tick'] = tick
+    if not isinstance(guard, dict):
+        return None
+    if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('bijin_guard', None)
+        return None
+    # The lead-in lease expires as before. Once a choice is seen, time alone is
+    # not evidence that it ended: a blinking hand or partial OCR must not
+    # release the same pending request to the generic A.
+    if tick - int(guard.get('tick') or 0) > BIJIN_GUARD_OBSERVATIONS and not guard.get('choice_seen'):
+        mem.pop('bijin_guard', None)
+        return None
+    gold = _bijin_gold(screen)
+    if gold is not None and gold > BIJIN_MIN_GOLD:
+        mem.pop('bijin_guard', None)  # 1000G超は従来どおり（承諾側。購入品の改善は別課題）
+        return None
+    if not _is_bijin_request(screen.text):
+        if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
+            # Owner review (2026-10-15, PR #2286): the choices of this request
+            # have already been seen, so a partly unread question is not end
+            # evidence. The hand may still blink over the accept line (a 500G
+            # request could be confirmed), so keep the pending episode held
+            # instead of returning None and letting the generic A through.
+            # Release only happens on an explicit end condition: a read
+            # decline/accept row, a gold reading over the floor, a new monthly
+            # owner or a non-dialogue/battle/map screen.
+            guard['held'] = True
+            if not guard.get('unread_question_recorded'):
+                guard['unread_question_recorded'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        observed_metric={'bijin_guard': True, 'gold': gold,
+                                         'text': screen.text[-80:]},
+                        reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
+            return []
+        return None
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 207 and word]
+    if screen.hand is None and not band:
+        return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
+    guard['choice_seen'] = True
+    move = None
+    for label in BIJIN_DECLINE_TOKENS:
+        move = menu_to(screen, label, exact=False)
+        if move is not None:
+            break
+    if move is None:
+        guard['held'] = True
+        if not guard.get('unread_choice_recorded'):
+            guard['unread_choice_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'bijin_guard': True, 'gold': gold, 'text': screen.text[-80:]},
+                    reason='美女の依頼の断り行（いかんッ/けえんな）と現在行を確定できないため決定せず再観測')
+        return []
+    if move != 'here':
+        return [move]
+    guard['chosen'] = True
+    cur = _current(screen)
+    _record(mem, 'prompt', choice=(cur[2] if cur else label), prompt=screen.text[-60:],
+            strategy_variant=('decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
+            observed_metric={'gold': gold},
+            reason=('所持金{}Gが1000G以下と読めたため美女の購入依頼を断る（いかん）'.format(gold)
+                    if gold is not None else
+                    '所持金を読めないため美女の購入依頼を見送る（1000G超を確認できるまでは買わない）'))
     return [pad('a')]
 
 

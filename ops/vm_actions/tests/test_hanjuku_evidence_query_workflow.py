@@ -1,6 +1,7 @@
 """Hanjuku Actions evidence query contracts; synthetic, no production access."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -23,6 +24,33 @@ from temp_roots import real_tempdir
 
 AUTH_PATH = HERE / "authorize_hanjuku_evidence_query.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "hanjuku-evidence-query.yml"
+
+
+def list_validator_source():
+    """The exact python block the workflow runs on the candidate list."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    section = workflow.split("- name: List completed Hanjuku runtimes", 1)[1]
+    heredoc = section.split("<<'PY'\n", 1)[1]
+    return textwrap.dedent(heredoc.split("\n          PY\n", 1)[0])
+
+
+def run_list_validator(payload):
+    with real_tempdir() as directory:
+        path = Path(directory) / "candidates.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-", str(path)], input=list_validator_source(),
+            text=True, capture_output=True)
+
+
+def native_terminal_reasons():
+    """Terminal reasons the producer (src/docich/hanjuku_run.py) can emit."""
+    source = (ROOT / "src/docich/hanjuku_run.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignment = next(n for n in tree.body if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "TERMINAL_REASONS"
+                              for t in n.targets))
+    return set(ast.literal_eval(assignment.value.args[0]))
 
 
 def load(path: Path, name: str):
@@ -183,6 +211,28 @@ class QueryGatewayTests(EvidenceFixture, unittest.TestCase):
         payload = json.loads(gateway._completed_candidates(self.state))
         self.assertEqual(payload["runtimes"], [])
 
+    def test_every_native_terminal_candidate_passes_the_workflow_validator(self):
+        # #2290: the run at dad97e6e failed with the generic "invalid Hanjuku
+        # candidate" and no artifact because the validator's accepted
+        # terminal_reason set lagged the producer (input_stalled was missing).
+        # Bind the gateway's own candidate payload to the workflow validator
+        # for every native terminal reason so the schemas cannot drift again.
+        for reason in sorted(native_terminal_reasons()):
+            with self.subTest(reason=reason):
+                fields = {}
+                if reason == "screen_stalled":
+                    fields["unchanged_seconds"] = 300
+                elif reason == "input_stalled":
+                    fields.update(observed_monotonic=612, last_input_monotonic=10,
+                                  observations=130, last_input_observations=5)
+                (self.run / "hanjuku_run.json").write_bytes(
+                    gateway.evidence._dump(run_state(terminal_reason=reason, **fields)))
+                payload = json.loads(gateway._completed_candidates(self.state))
+                self.assertEqual(
+                    [item["terminal_reason"] for item in payload["runtimes"]], [reason])
+                result = run_list_validator(payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_runtime_scan_has_independent_bound(self):
         with patch.object(gateway, "MAX_RUNTIME_ENTRIES", 0), self.assertRaisesRegex(
             Exception, "runtime_scan_limit"
@@ -260,17 +310,10 @@ class WorkflowContractTests(unittest.TestCase):
     # ops/vm_actions/tests/test_hanjuku_evidence_candidate_terminals.py.
 
     def list_validator_source(self):
-        section = self.workflow.split("- name: List completed Hanjuku runtimes", 1)[1]
-        heredoc = section.split("<<'PY'\n", 1)[1]
-        return textwrap.dedent(heredoc.split("\n          PY\n", 1)[0])
+        return list_validator_source()
 
     def run_list_validator(self, payload):
-        with real_tempdir() as directory:
-            path = Path(directory) / "candidates.json"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            return subprocess.run(
-                [sys.executable, "-", str(path)], input=self.list_validator_source(),
-                text=True, capture_output=True)
+        return run_list_validator(payload)
 
     @staticmethod
     def candidate(**kw):
