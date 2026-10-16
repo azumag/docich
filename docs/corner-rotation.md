@@ -155,10 +155,21 @@ last_seen、pending、request UUID、結果をatomic writeする。
      有界な写像）へも記録する、
    - 失敗した使用を`history`へ`source=failure`で記録する（rolling cooldownは通常どおり効くので、
      同じcornerは既定24時間後にまた抽選されうる）、
+   - 共有program slotのowner記録（`docich_program_active.json`）が**当該cornerのstate fileだけを
+     指名している**ときは、そのrowも解放する（`release_program_owner()`）。削除はprogram flockを
+     保持した状態でのみ行い、flockが取れない場合（他cornerが実行中）・別cornerの所有・rowの不在/
+     破損はfail-closedでrowを残す。`_observe()`も同じ解放を毎tick再実行するため、修正前に書かれた
+     rowも次tickで消え、SSHによる手作業の復旧を要さない（#2282）、
    - `status`は`waiting`/`ready`のままで、`tick()`は止まらない。
    解放済みの失敗はadapter観測が`failed`等のBUSYのまま残り得る。`_observe()`は
    `released_requests`が指すrequestに限り、**その時点で`_slot_reusable()`が
    再び真のときだけ**BUSY観測を枠占有として数えない（後で別ownerが所有すれば即座に待機へ戻る）。
+   ただし解放前に書かれたrowが残っている間は、次のcornerはまず共有slotの待ちに落ちる。slot待ちの
+   tickは`corner-rotation.lock`を保持し続けるため他のtickは`already-running`を返し、rowの解放は
+   そのtickが待ち窓（`CornerExecutionCoordinator`の`wait_seconds`、既定600秒）を使い切った後の
+   最初のtickで行われる。この形は`status=recovery_required`のlatchを作らないので
+   `recover_corner_rotation.sh`の対象外であり、復旧は**「最大で待ち窓＋1tick」に有界だが即時ではない**
+   （#2282 の残件。正規の復旧操作の追加は別途）。
 3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
    `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
    自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
