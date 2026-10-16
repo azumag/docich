@@ -422,7 +422,7 @@ def test_failure_provenance_distinguishes_safe_fixed_stages(admission, case, sta
         (runtime / 'current_prediction.json').unlink()
         (runtime / 'current_prediction.json').symlink_to(owners / 'corner_rotation.json')
     else:
-        (soren / 'tmp' / '.comment_queue' / 'SECRET').mkdir(parents=True)
+        (soren / 'tmp' / '.comment_queue' / 'comment_SECRET.txt').mkdir(parents=True)
     result = collect()
     assert result['status'] == 'unknown'
     assert result['failure_stage'] == stage
@@ -435,16 +435,17 @@ def test_failure_provenance_distinguishes_safe_fixed_stages(admission, case, sta
 
 
 @pytest.mark.parametrize('directory', ['audio_dedup', '.weather_audio_receipts'])
-def test_public_audio_writer_metadata_directory_has_explicit_failure(admission, directory):
+def test_public_audio_writer_metadata_directory_is_not_an_audio_item(admission, directory):
     # Public fixed Soren gitlink68f02445 writes these normal queue directories:
     # lib/outbound_queue.sh:324 and lib/weather_audio_consumer.py:242.
-    # Keep the existing strict reader unchanged, but stop hiding its refusal.
+    # Audio ignores non-item names without stat or descent; FIFO stays strict.
     _, soren, _, collect = admission
     (soren / 'tmp' / '.comment_queue' / directory).mkdir(parents=True)
     result = collect()
-    assert (result['failure_stage'], result['failure_code']) == ('audio', 'non_regular')
-    assert result['audio']['quiet'] is None
-    assert result['recheck_completed'] is False
+    assert result['status'] == 'observed'
+    assert result['audio']['quiet'] is True
+    assert (result['audio']['queued'], result['audio']['playing']) == (0, 0)
+    assert result['recheck_completed'] is True
     assert directory not in json.dumps(result)
 
 
@@ -504,3 +505,156 @@ def test_failure_vocabularies_are_closed_and_do_not_echo_input():
     assert result['failure_stage'] in diag.PROGRAM_ADMISSION_FAILURE_STAGES
     assert result['failure_code'] in diag.PROGRAM_ADMISSION_FAILURE_CODES
     assert 'SECRET' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('name', ['audio_dedup', '.weather_audio_receipts',
+                                  'comment_SECRET.tmp', 'other_SECRET.txt'])
+def test_non_audio_entries_are_not_statted_followed_or_opened(admission, monkeypatch, name):
+    _, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    queue.mkdir()
+    outside = soren.parent / 'SECRET_private_directory'
+    outside.mkdir()
+    (outside / 'comment_SECRET.txt').write_text('SECRET body')
+    (queue / name).symlink_to(outside, target_is_directory=True)
+    inode = queue.stat().st_ino
+    original = diag.os.scandir
+    class GuardedEntries:
+        def __init__(self, context):
+            self.context = context
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.context.close()
+        def __iter__(self):
+            for entry in self.context:
+                assert entry.name == name
+                class NoStat:
+                    def __init__(self, name):
+                        self.name = name
+                    def stat(self, *args, **kwargs):
+                        pytest.fail('non-audio entry must not be statted')
+                yield NoStat(entry.name)
+    def guarded(directory):
+        context = original(directory)
+        if isinstance(directory, int) and os.fstat(directory).st_ino == inode:
+            return GuardedEntries(context)
+        return context
+    monkeypatch.setattr(diag.os, 'scandir', guarded)
+    result = collect()
+    assert result['status'] == 'observed'
+    assert result['recheck_completed'] is True
+    assert result['audio']['quiet'] is True
+    assert 'SECRET' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('suffix', ['.txt', '.playing'])
+@pytest.mark.parametrize('kind,code', [('symlink', 'unsafe_path'), ('directory', 'non_regular'),
+                                     ('fifo', 'non_regular')])
+def test_target_audio_nonregular_is_always_rejected(admission, suffix, kind, code):
+    owners, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    queue.mkdir()
+    target = queue / ('comment_SECRET' + suffix)
+    if kind == 'symlink':
+        target.symlink_to(owners / 'corner_rotation.json')
+    elif kind == 'directory':
+        target.mkdir()
+    else:
+        os.mkfifo(target)
+    result = collect()
+    assert (result['failure_stage'], result['failure_code']) == ('audio', code)
+    assert result['audio']['quiet'] is None
+    assert result['recheck_completed'] is False
+    assert 'SECRET' not in json.dumps(result)
+
+
+def test_non_audio_metadata_does_not_change_real_audio_counts(admission):
+    _, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    (queue / 'audio_dedup').mkdir(parents=True)
+    (queue / '.weather_audio_receipts').mkdir()
+    (queue / 'comment_not_audio.tmp').mkdir()
+    (queue / 'other.txt').mkdir()
+    (queue / 'comment_queued.txt').touch()
+    (queue / 'comment_active.playing').touch()
+    result = collect()
+    assert result['status'] == 'observed'
+    assert (result['audio']['queued'], result['audio']['playing']) == (1, 1)
+    assert result['audio']['quiet'] is False
+
+
+@pytest.mark.parametrize('count,accepted', [(128, True), (129, False)])
+def test_non_audio_entries_still_count_toward_scan_limit(admission, count, accepted):
+    _, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    queue.mkdir()
+    for index in range(count):
+        (queue / f'metadata{index}').mkdir()
+    result = collect()
+    if accepted:
+        assert result['status'] == 'observed'
+        assert result['recheck_completed'] is True
+    else:
+        assert (result['failure_stage'], result['failure_code']) == ('audio', 'scan_limit')
+        assert result['recheck_completed'] is False
+
+
+@pytest.mark.parametrize('change', ['ignored_add', 'ignored_rename', 'audio_metadata'])
+def test_audio_listing_namespace_and_target_metadata_are_rechecked(admission, monkeypatch, change):
+    _, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    (queue / 'audio_dedup').mkdir(parents=True)
+    (queue / 'comment_item.txt').write_text('first')
+    original = diag._ProgramAdmissionReader.recheck
+    def changed(reader):
+        if reader.root == queue:
+            if change == 'ignored_add':
+                (queue / 'new_metadata').mkdir()
+            elif change == 'ignored_rename':
+                (queue / 'audio_dedup').rename(queue / 'moved_metadata')
+            else:
+                (queue / 'comment_item.txt').write_text('same count, changed metadata')
+        return original(reader)
+    monkeypatch.setattr(diag._ProgramAdmissionReader, 'recheck', changed)
+    result = collect()
+    assert (result['failure_stage'], result['failure_code']) == ('recheck_audio', 'evidence_changed')
+    assert result['pending_queue_matches'] is None
+    assert result['audio']['quiet'] is None
+    assert result['recheck_completed'] is False
+
+
+def test_audio_metadata_children_are_not_descended_or_rechecked(admission, monkeypatch):
+    _, soren, _, collect = admission
+    queue = soren / 'tmp' / '.comment_queue'
+    metadata = queue / 'audio_dedup'
+    metadata.mkdir(parents=True)
+    original = diag._ProgramAdmissionReader.recheck
+    def metadata_activity(reader):
+        if reader.root == queue:
+            (metadata / 'SECRET_child').write_text('SECRET body')
+        return original(reader)
+    monkeypatch.setattr(diag._ProgramAdmissionReader, 'recheck', metadata_activity)
+    result = collect()
+    assert result['status'] == 'observed'
+    assert result['audio']['quiet'] is True
+    assert result['recheck_completed'] is True
+    assert 'SECRET' not in json.dumps(result)
+
+
+def test_audio_root_symlink_is_still_unsafe(admission):
+    _, soren, _, collect = admission
+    outside = soren.parent / 'outside'
+    outside.mkdir()
+    (soren / 'tmp' / '.comment_queue').symlink_to(outside, target_is_directory=True)
+    result = collect()
+    assert (result['failure_stage'], result['failure_code']) == ('audio', 'unsafe_path')
+    assert result['recheck_completed'] is False
+
+
+def test_default_fifo_listing_does_not_use_audio_filter(admission):
+    _, _, runtime, collect = admission
+    (runtime / 'docich_program_queue' / 'audio_dedup').mkdir()
+    result = collect()
+    assert (result['failure_stage'], result['failure_code']) == ('fifo', 'non_regular')
+    assert result['earlier_waiter'] is None
