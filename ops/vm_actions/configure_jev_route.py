@@ -12,10 +12,12 @@ and direct-route credential, stay owned by ``configure_comment_classifier_jev.py
 ``--route clef`` selects Clef only (not an automatic fallback chain). Initial
 account/token provisioning takes the pair from this process's dedicated
 environment pair, or -- with ``--reuse-existing-cloudflare-credentials`` -- from
-this VM's own reviewed Cloudflare pair (see ``CLEF_REUSE_SOURCES``), which keeps
-the secret off the wire entirely. Subsequent switches reuse the existing chat
-worker's pair. Both Jev and Clef credentials are preserved and checked on the
-replacement chat worker.
+this VM's own reviewed Cloudflare pair (see ``CLEF_REUSE_SOURCES``): soren's
+``.env`` first, then the live worker's environ. That keeps the secret entirely
+on the VM: the owner can install the pair in ``.env`` and no value ever reaches
+GitHub or a command line. Subsequent switches reuse the existing chat worker's
+pair. Both Jev and Clef credentials are preserved and checked on the replacement
+chat worker.
 
 The fixed gateway operations are:
 
@@ -103,13 +105,21 @@ ROUTES = ("direct", "vercel", "clef")
 ROUTE_VALUES = {"direct": "direct", "vercel": "direct,vercel", "clef": "clef"}
 # Reviewed sources for reusing this VM's own, already-issued Cloudflare pair as
 # the Clef pair (#2301). Each entry is ONE provider's account/token pair, so a
-# token is never combined with another source's account. Both are Workers AI
-# capable: the first is the direct Workers AI chat provider's own pair, the
-# second the reviewed Web Search pair. Adding a source is a reviewed change.
+# token is never combined with another source's account. All three are Workers
+# AI capable: the first is an already-provisioned Clef pair, the second the
+# direct Workers AI chat provider's own pair, the third the reviewed Web Search
+# pair. Adding a source is a reviewed change.
 CLEF_REUSE_SOURCES = (
+    CLEF_KEYS,
     ("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"),
     ("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID", "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"),
 )
+# Every name (and its _FILE indirection) this script is willing to read from
+# soren's .env. Nothing outside this fixed set is ever inspected.
+CLEF_REUSE_NAMES = tuple(
+    name + suffix for pair in CLEF_REUSE_SOURCES for name in pair for suffix in ("", "_FILE")
+)
+DOTENV_MAX_BYTES = 1024 * 1024
 CLEF_ACCOUNT_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 
@@ -153,26 +163,80 @@ def _read_existing_secret(env, name: str) -> str:
     return text
 
 
-def clef_credentials_from_existing(env) -> tuple[str, str]:
-    """Return the first usable reviewed Cloudflare pair from this VM's env.
+def _read_dotenv_values(env_file: Path) -> dict[str, str]:
+    """Read only CLEF_REUSE_NAMES from soren's .env, with the shell's semantics.
 
-    Only the pair that is actually configured is returned, and only to the
-    caller; neither half is ever printed or written anywhere but soren's .env
-    and its protected rollback backup. Nothing is inferred: an account that is
-    absent or not the reviewed 32-lowercase-hex shape, or a token that is
-    missing or unusable, makes that source ineligible rather than guessed.
+    ``.env`` is sourced by the workers, so a value is unquoted the way the shell
+    would unquote it: ``shlex`` handles quotes and ``#`` comments. A value that
+    is unterminated or splits into more than one word is ambiguous, so it is
+    refused rather than guessed. Only the fixed reviewed names are returned, and
+    nothing read here is ever logged. A missing .env is simply "no values"; an
+    unreadable or oversized one is a fixed failure.
     """
-    for account_name, token_name in CLEF_REUSE_SOURCES:
-        account = env.get(account_name, "")
-        account = account.strip() if isinstance(account, str) else ""
-        if account and CLEF_ACCOUNT_RE.fullmatch(account) is None:
-            raise ConfigureError("clef_source_account_invalid")
-        if not account:
+    try:
+        info = env_file.lstat()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigureError("env_unreadable") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigureError("env_not_regular")
+    if info.st_size > DOTENV_MAX_BYTES:
+        raise ConfigureError("env_unreadable")
+    try:
+        text = env_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ConfigureError("env_unreadable") from exc
+    wanted = set(CLEF_REUSE_NAMES)
+    found = {}
+    for line in text.splitlines():
+        match = ASSIGNMENT.match(line)
+        if match is None or match.group(1) not in wanted:
             continue
-        token = _read_existing_secret(env, token_name)
-        if not token:
-            continue
-        return clef_settings(dict(zip(CLEF_KEYS, (account, token))))
+        try:
+            parts = shlex.split(line[match.end():], comments=True)
+        except ValueError as exc:
+            raise ConfigureError("env_unreadable") from exc
+        if len(parts) > 1:
+            raise ConfigureError("env_unreadable")
+        found[match.group(1)] = parts[0] if parts else ""
+    return found
+
+
+def _reviewed_pair(mapping, account_name: str, token_name: str):
+    """One reviewed pair from a single mapping, or None when it is not set.
+
+    Both halves always come from the same mapping, so a token is never combined
+    with another source's account: an account that is present but not the
+    reviewed 32-lowercase-hex shape fails closed instead of falling through.
+    """
+    account = _read_existing_secret(mapping, account_name)
+    if not account:
+        return None
+    if CLEF_ACCOUNT_RE.fullmatch(account) is None:
+        raise ConfigureError("clef_source_account_invalid")
+    token = _read_existing_secret(mapping, token_name)
+    if not token:
+        return None
+    return clef_settings(dict(zip(CLEF_KEYS, (account, token))))
+
+
+def clef_credentials_from_existing(environ_env, dotenv_values=None) -> tuple[str, str]:
+    """Return the first usable reviewed Cloudflare pair on this VM.
+
+    ``dotenv_values`` (soren's .env, read by ``_read_dotenv_values``) is tried
+    first because that is what the replacement worker will actually load; the
+    live worker's already-resolved environ is the fallback. Only the pair that
+    is really configured is returned, and only to the caller: neither half is
+    ever printed or written anywhere but soren's .env and its protected
+    rollback backup. Nothing is inferred -- a missing half makes that source
+    ineligible rather than guessed, and a malformed account fails closed.
+    """
+    for mapping in (dotenv_values or {}, environ_env or {}):
+        for account_name, token_name in CLEF_REUSE_SOURCES:
+            pair = _reviewed_pair(mapping, account_name, token_name)
+            if pair is not None:
+                return pair
     raise ConfigureError("clef_source_credentials_missing")
 
 
@@ -343,10 +407,12 @@ def main() -> int:
         if not current.get("TYPESAFE_API_KEY"):
             raise ConfigureError("clef_switch_requires_existing_typesafe_api_key")
         if args.reuse_existing_cloudflare_credentials:
-            # First-time provisioning from this VM's own, already-issued pair.
-            # The live worker's environ is the already-shell-resolved source, so
-            # no .env parsing and no secret on the wire or on a command line.
-            account, token = clef_credentials_from_existing(current)
+            # Provisioning from this VM's own, already-issued pair: soren's .env
+            # first (that is what the replacement worker will load, and it is
+            # also how the owner installs the pair without any secret leaving
+            # the VM), then the live worker's already-shell-resolved environ.
+            account, token = clef_credentials_from_existing(
+                current, _read_dotenv_values(env_file))
         else:
             # Never combine a token from one source with an account from another.
             source = os.environ if any(key in os.environ for key in CLEF_KEYS) else current
