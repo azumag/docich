@@ -70,6 +70,22 @@ def test_source_priority_and_circuit_power_are_explicit():
     assert acceptance["mustIncludeCircuitAndPower"] is True
     assert acceptance["mustNotPresentSyntheticAsReal"] is True
 
+def test_synthetic_fixture_contains_historical_improvement_input():
+    """Check this fixed fixture's fictional input, not real-history validation."""
+    data = load_fixture()
+    assert data["isSyntheticFixture"] is True
+    narrative = data["topic"]["designRationale"]
+    assert "保護回路を冗長化した。" in narrative
+    for required in (
+        "合成fixture内の改良履歴",
+        "旧案",
+        "改良案",
+        "架空の回路設計履歴",
+        "実デバイスの開発史や性能改善を示さない",
+    ):
+        assert required in narrative, required
+
+
 def test_source_urls_are_https():
     data = load_fixture()
     t = data["topic"]
