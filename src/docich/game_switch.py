@@ -1711,6 +1711,16 @@ class CoordinatorAdapter(Protocol):
     violation and its late side effects cannot be prevented by the
     coordinator.
 
+    Optional capabilities are discovered with ``getattr`` and are never
+    required of every adapter: ``request_round_boundary`` /
+    ``cancel_round_boundary`` for round-boundary games, ``boundary_timeout_s``
+    for their wait bound, and ``round_terminal(deadline, cancel)`` for
+    adapters that can prove the active round already ended.  A
+    ``round_terminal`` that returns False, raises, or times out leaves the
+    durable drain deadline as the only bound; only a positive report allows a
+    live drain to be cancelled early, and that cancellation still requires the
+    adapter to acknowledge ``cancel_round_boundary``.
+
     ``materialize_runtime`` must be idempotent per runtime: a retry or
     recovery may call it again for an already-created runtime.
     ``cleanup_runtime`` must tear down the whole runtime; the coordinator
@@ -2298,10 +2308,12 @@ class GameSwitchCoordinator:
         """Recover an expired drain and keep the FIFO moving.
 
         This is deliberately narrower than :meth:`recover`: a live
-        ``draining`` phase is read-only, and failed/recovery-required phases
-        are not guessed at.  Once an expired drain is cancelled with an exact
-        adapter acknowledgement, the first queued request is replayed outside
-        the recovery transaction.  A later invocation continues with the next
+        ``draining`` phase is read-only unless the runtime-bound adapter
+        proves the round already ended (``round_terminal``; the same strict
+        gate :meth:`recover` uses), and failed/recovery-required phases are
+        not guessed at.  Once a drain is cancelled with an exact adapter
+        acknowledgement, the first queued request is replayed outside the
+        recovery transaction.  A later invocation continues with the next
         request, so only the FIFO head can be claimed at a time.
         """
 
@@ -2314,25 +2326,32 @@ class GameSwitchCoordinator:
                 active = state.get("active")
                 from_game = active.get("game") if isinstance(active, dict) else None
                 if phase == "draining":
-                    if not _wall_deadline_expired(state.get("deadline_at")):
-                        return SwitchResult(
-                            request_id=str(state.get("request_id") or ""),
-                            operation=str(state.get("operation") or "maintain_fifo"),
-                            status="busy",
-                            target=None,
-                            from_game=from_game if isinstance(from_game, str) else None,
-                            to_game=None,
-                            generation=active.get("generation") if isinstance(active, dict) else None,
-                            error_code=ERROR_BUSY,
-                            detail="試合終了境界の待機中です。deadline前のdrainingには触れません",
-                            warnings=(),
-                            cleanup_pending=False,
-                            receipt=None,
-                        )
                     deadline = time.monotonic() + (
                         timeout_s if timeout_s is not None else self.default_timeout_s
                     )
-                    recovered = self._recover_draining_locked(tx, state, deadline)
+                    if not _wall_deadline_expired(state.get("deadline_at")):
+                        # The timer-driven path must offer the same
+                        # proven-terminal early cancel as ``recover``.  An
+                        # unproven report keeps the durable deadline and the
+                        # existing busy result unchanged.
+                        recovered = self._terminal_drain_result_locked(tx, state, deadline)
+                        if recovered is None:
+                            return SwitchResult(
+                                request_id=str(state.get("request_id") or ""),
+                                operation=str(state.get("operation") or "maintain_fifo"),
+                                status="busy",
+                                target=None,
+                                from_game=from_game if isinstance(from_game, str) else None,
+                                to_game=None,
+                                generation=active.get("generation") if isinstance(active, dict) else None,
+                                error_code=ERROR_BUSY,
+                                detail="試合終了境界の待機中です。deadline前のdrainingには触れません",
+                                warnings=(),
+                                cleanup_pending=False,
+                                receipt=None,
+                            )
+                    else:
+                        recovered = self._recover_draining_locked(tx, state, deadline)
                     current, _migrated = self.store.canonical.load()
                     if current.get("phase") != "ready":
                         return recovered
@@ -5061,12 +5080,20 @@ class GameSwitchCoordinator:
     ) -> SwitchResult:
         """Recover a crashed boundary driver without stopping the game.
 
-        While the durable deadline is still live, recovery is read-only: the
-        current game must keep accepting input and the original driver may
-        still be waiting.  Once it has expired, explicitly cancel the drain
-        and finish its receipt while retaining the same active runtime.  A
-        stale adapter returning later will fail its identity check and cannot
-        proceed to ``stop_agent``.
+        While the durable deadline is still live, recovery is read-only by
+        default: the current game must keep accepting input and the original
+        driver may still be waiting.  The single exception is a round the
+        runtime-bound adapter itself reports as already terminal through the
+        optional ``round_terminal`` capability: no boundary can arrive for it,
+        so the live drain cannot make progress and is cancelled through the
+        same acknowledged path as an expired one.  A missing, negative, failed
+        or timed-out terminal report keeps the durable deadline as the only
+        bound.
+
+        Once the deadline has expired, explicitly cancel the drain and finish
+        its receipt while retaining the same active runtime.  A stale adapter
+        returning later will fail its identity check and cannot proceed to
+        ``stop_agent``.
         """
 
         request_id = state.get("request_id")
@@ -5077,6 +5104,11 @@ class GameSwitchCoordinator:
         if receipt is None:
             raise StateCorruptError("draining requestに対応するreceiptがありません")
         if not _wall_deadline_expired(state.get("deadline_at")):
+            terminal = self._cancel_terminal_drain_locked(
+                tx, state, active, request_id, receipt, deadline
+            )
+            if terminal is not None:
+                return terminal
             return SwitchResult(
                 request_id=request_id,
                 operation=str(state.get("operation") or receipt.get("operation") or "switch"),
@@ -5096,17 +5128,137 @@ class GameSwitchCoordinator:
         # broker or a stale controller may still deliver a delayed boundary
         # acknowledgement.  Require the runtime-bound adapter to cancel the
         # exact request before making the old game stable again.
+        return self._cancel_drain_and_ready_locked(
+            tx,
+            state,
+            active,
+            request_id,
+            receipt,
+            deadline,
+            detail="試合終了境界のdeadlineが経過したため待機を取り消しました",
+            error_prefix="期限切れdrainingを安全に解除できません",
+            cancel_detail="adapterが期限切れdrainingのcancelをacknowledgeしませんでした",
+            log_event="drain_recovered_timeout",
+        )
+
+    def _terminal_drain_result_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        deadline: float,
+    ) -> SwitchResult | None:
+        """Early-cancel a live drain when the adapter proves the round ended.
+
+        ``None`` means "no change": the capability is absent or negative, the
+        probe failed, or the draining state lacks the identity this bounded
+        path needs.  Callers keep their own busy result, so the timer-driven
+        ``maintain_fifo`` and the explicit ``recover`` stay interchangeable.
+        """
+
+        request_id = state.get("request_id")
+        active = state.get("active")
+        if not isinstance(request_id, str) or not isinstance(active, dict):
+            return None
+        receipt = self.store.receipts.load(request_id)
+        if receipt is None:
+            return None
+        return self._cancel_terminal_drain_locked(
+            tx, state, active, request_id, receipt, deadline
+        )
+
+    def _cancel_terminal_drain_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        active: Mapping[str, object],
+        request_id: str,
+        receipt: Mapping[str, object],
+        deadline: float,
+    ) -> SwitchResult | None:
+        """Cancel a live drain only when the runtime proves the round is over.
+
+        Returns ``None`` to leave the drain durable: the adapter has no
+        ``round_terminal`` capability, reports a round that may still finish,
+        raises, times out, or answers with anything other than the literal
+        ``True``.  Only a positive terminal report reaches the
+        adapter-acknowledged cancellation below, so the durable deadline stays
+        the only bound for every runtime that cannot prove its round ended.
+        """
+
         try:
             adapter = self._make_adapter(
                 RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
             )
-            cancel_ok, cancel_detail = self._cancel_round_boundary_locked(
+            method = getattr(adapter, "round_terminal", None)
+            if not callable(method):
+                return None
+            reported = self._call_adapter(
+                lambda cancel: method(deadline, cancel),
+                deadline,
+                self.step_timeouts.probe_s,
+                "round_terminal",
+            )
+        except Exception:  # noqa: BLE001 - an unknown probe must not clear the drain
+            return None
+        # Strict identity, never truthiness: a buggy adapter answering "false",
+        # 1, or {"terminal": False} must not be able to cancel a live drain.
+        if type(reported) is not bool:
+            self._log(
+                "drain_round_terminal_invalid",
+                phase="draining",
+                detail=f"round_terminal はboolが必要です (got {type(reported).__name__})",
+            )
+            return None
+        if reported is not True:
+            return None
+        self._log("drain_round_terminal", phase="draining")
+        return self._cancel_drain_and_ready_locked(
+            tx,
+            state,
+            active,
+            request_id,
+            receipt,
+            deadline,
+            adapter=adapter,
+            detail="試合終了済みのroundを確認したため待機を取り消しました",
+            error_prefix="試合終了済みdrainingを安全に解除できません",
+            cancel_detail="adapterが終了済みroundのcancelをacknowledgeしませんでした",
+            log_event="drain_recovered_terminal",
+        )
+
+    def _cancel_drain_and_ready_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        active: Mapping[str, object],
+        request_id: str,
+        receipt: Mapping[str, object],
+        deadline: float,
+        *,
+        detail: str,
+        error_prefix: str,
+        cancel_detail: str,
+        log_event: str,
+        adapter: CoordinatorAdapter | None = None,
+    ) -> SwitchResult:
+        """Cancel the drain through its adapter and make the old game stable.
+
+        The active runtime is retained: cancelling tells the runtime-bound
+        driver to stop waiting for a boundary, it never stops the game.  A
+        refusal keeps canonical ``draining`` durable and reports
+        ``recovery-required`` instead of claiming the driver is gone.
+        """
+
+        try:
+            if adapter is None:
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+                )
+            cancel_ok, refused_detail = self._cancel_round_boundary_locked(
                 tx, adapter, request_id
             )
             if not cancel_ok:
-                raise RoundBoundaryError(
-                    cancel_detail or "adapterが期限切れdrainingのcancelをacknowledgeしませんでした"
-                )
+                raise RoundBoundaryError(refused_detail or cancel_detail)
         except Exception as exc:
             return SwitchResult(
                 request_id=request_id,
@@ -5117,7 +5269,7 @@ class GameSwitchCoordinator:
                 to_game=receipt.get("target"),
                 generation=receipt.get("generation"),
                 error_code=ERROR_RECOVERY_REQUIRED,
-                detail=f"期限切れdrainingを安全に解除できません: {_safe_detail(exc)}",
+                detail=f"{error_prefix}: {_safe_detail(exc)}",
                 warnings=(),
                 cleanup_pending=False,
                 receipt=copy.deepcopy(dict(receipt)),
@@ -5131,7 +5283,7 @@ class GameSwitchCoordinator:
             "to_game": receipt.get("target"),
             "generation": receipt.get("generation"),
             "error_code": ERROR_TIMEOUT,
-            "detail": "試合終了境界のdeadlineが経過したため待機を取り消しました",
+            "detail": detail,
             "failure_phase": "round_boundary",
             "retained_active": copy.deepcopy(active),
             "boundary_cancelled": True,
@@ -5149,18 +5301,18 @@ class GameSwitchCoordinator:
                 "last_result": last_result,
                 "last_error": {
                     "error_code": ERROR_TIMEOUT,
-                    "detail": last_result["detail"],
+                    "detail": detail,
                 },
             },
             crash_hook=self.crash_hook,
         )
         saved = tx.finish_request(request_id, "failed", last_result)
         self._log(
-            "drain_recovered_timeout",
+            log_event,
             phase="ready",
             result="failed",
             error_code=ERROR_TIMEOUT,
-            detail=last_result["detail"],
+            detail=detail,
         )
         return _result_from_receipt(saved)
 

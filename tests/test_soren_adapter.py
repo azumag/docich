@@ -1200,6 +1200,24 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     adapter.cleanup_runtime(time.monotonic() + 30, None)
             text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
             self.assertLessEqual(len(text), 8192 + 512)
+    # --- early-cancel capability is deliberately absent -------------------
+
+    def test_soren_adapter_does_not_expose_round_terminal(self):
+        """Soren must stay fail-closed for the coordinator's early cancel.
+
+        The broker's ``status`` only returns stored evidence and ``cancel``
+        does not re-check the current board, so no stored snapshot can justify
+        cancelling a live drain (review: stale GAMEOVER while the board is back
+        at MOVE).  A terminal round is already ackable through the broker's own
+        fresh ``boundary`` poll, which the adapter drives in
+        ``_wait_round_boundary`` -- so the capability must not exist here and
+        the durable drain deadline stays the only bound.
+        """
+
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            self.assertFalse(hasattr(adapter, "round_terminal"))
+            self.assertIs(getattr(adapter, "round_terminal", None), None)
 
 
 if __name__ == "__main__":
