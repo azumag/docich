@@ -1487,6 +1487,14 @@ def _defender_egg_window(mem, cur):
     bosses and unobserved resource availability do not get an invented rule.
     A known castle name and observed defense suffice here: no navigation uses
     this decision, so later chapters do not need guessed map coordinates.
+
+    The deadline is bounded by the largest *measured* enemy HP loss, including
+    the loss already visible on the confirmed opening panel (g684: アルテミス
+    19 -> 5 in one interval while the deadline was 11, so B opened on the frame
+    the enemy had already chosen its egg; the rescue menu costs its own
+    observations and cannot wait for the enemy's HP rule to be sampled).
+    Only the real menu's おくのて-only observation proves this defender has no
+    card, egg or retreat of its own; general metadata never authorizes it.
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_egg_preempt') or {}
@@ -1510,9 +1518,18 @@ def _defender_egg_window(mem, cur):
         return None
     observed_drop = cur.get('defender_enemy_hp_drop')
     observed_drop = observed_drop if type(observed_drop) is int and observed_drop > 0 else 0
-    # Leave one wall hit in addition to the largest observed inter-frame loss
-    # for capture/input/menu latency. This cannot bound an unseen X trigger.
-    margin = EGG_WALL_DAMAGE + max(EGG_WALL_DAMAGE, observed_drop)
+    # The confirmed opening panel is already below the enemy's maximum, and
+    # that measured opening loss is the same evidence as an inter-observation
+    # drop: it is how far this enemy already is toward its own wall trigger.
+    # Without it a single interval could skip the whole deadline, so the rescue
+    # menu opened after the summon had started. A fresh enemy read at full
+    # strength has no opening loss and keeps the previous deadline unchanged.
+    opening_drop = enemy_max - enemy_start
+    opening_drop = opening_drop if type(opening_drop) is int and opening_drop > 0 else 0
+    measured_burst = max(observed_drop, opening_drop)
+    # Leave one wall hit in addition to the largest measured loss for
+    # capture/input/menu latency. This cannot bound an unseen X trigger.
+    margin = EGG_WALL_DAMAGE + max(EGG_WALL_DAMAGE, measured_burst)
     critical_hp = chapter + 2
     holds = int(cur.get('melee_holds') or 0)
     hp_budget = max(MELEE_HP_HOLD_FLOOR, start // MELEE_HP_HOLD_DIVISOR)
@@ -1526,7 +1543,8 @@ def _defender_egg_window(mem, cur):
             'enemy_egg_basis': 'static_general_data', 'own_egg_usable': False,
             'resources_basis': 'observed_okunote_only', 'enemy_hp': enemy, 'ally_hp': hp,
             'wall_critical_hp': critical_hp, 'wall_damage': EGG_WALL_DAMAGE,
-            'observed_hp_drop': observed_drop, 'input_margin_hp': margin,
+            'observed_hp_drop': observed_drop, 'opening_hp_drop': opening_drop,
+            'measured_hp_burst': measured_burst, 'input_margin_hp': margin,
             'open_at_hp': critical_hp + margin,
             'clash_internal_x_threshold': chapter * 4 + 32, 'clash_position_measured': False,
             'hold_count': holds, 'hold_hp_bled': start - hp, 'hold_hp_budget': hp_budget,
