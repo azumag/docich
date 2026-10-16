@@ -38,6 +38,42 @@ BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
 
+# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜207
+# （_trade_choice_pair と同じ帯）。本文の内側列だけを読み、パネル外枠のタイルは除く。
+PROSE_ROWS = range(135, 176)
+PROSE_COLUMNS = (24, 232)
+
+
+def readable_prose_screen(screen: Screen) -> bool:
+    """「完全に読める別の頁」を、生のグリフセルから判定する。
+
+    trade_guard / bijin_guard は「依頼文が無い・選択肢帯が無い・手が無い」という
+    証拠の*不在*を保留の解除に使う。その不在の証拠を ``screen.text`` に求めると
+    足りない: ``screen.text`` は ``joined()`` が各行の両端の ``UNKNOWN`` を
+    ``strip`` して作るため、行頭・行末の欠字や全UNKNOWN行が消え、所持金ヘッダだけの
+    頁でも「読める本文」に見える（PR #2325 レビューのP1）。本文帯の生セルを読み、
+    実際に読める本文が1つ以上あり、かつ部分的にしか読めなかった行が無い時だけ真を返す。
+
+    帯に本文が無い（所持金ヘッダだけ）頁と、全部が未読の頁はどちらも偽になる。
+    外枠が作る欠字だけの行は本文の証拠に数えない（読めた行が別にあれば解除できる）。
+    """
+    if screen.kind != 'text' or screen.hand is not None:
+        return False
+    if any(176 <= line.y <= 207 for line in screen.lines):
+        return False
+    x0, x1 = PROSE_COLUMNS
+    readable = False
+    for line in screen.lines:
+        if line.y not in PROSE_ROWS:
+            continue
+        cells = [ch for x, ch in line.cells if x0 <= x < x1]
+        known = [ch for ch in cells if ch != UNKNOWN and ch != ' ']
+        if known and UNKNOWN in cells:
+            return False   # 行頭・行末を欠いた本文は終了証拠にしない
+        if known:
+            readable = True
+    return readable
+
 
 def _trade_choice_pair(options):
     band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
@@ -111,11 +147,10 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
             else _trade_choice_pair(options))
     labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
-    if (guard.get('choice_seen') and screen.kind == 'text' and screen.hand is None
-            and flat and UNKNOWN not in flat and not _trade_named_general(flat)
+    if (guard.get('choice_seen') and readable_prose_screen(screen)
+            and not _trade_named_general(flat)
             and not any(tok in flat for tok in TRADE_GUARD_TOKENS)
-            and not any(word in labels for _, _, word in options)
-            and not any(176 <= line.y <= 207 for line in screen.lines)):
+            and not any(word in labels for _, _, word in options)):
         mem.pop('trade_guard', None)  # a readable different prose screen
         return None
     suspect_choice = (screen.hand is not None or pair is not None
@@ -212,12 +247,10 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             # L114-L119). Without this boundary the hold below stays true on an
             # unrelated readable dialogue and orchestrator L407 skips the
             # no-input fallback for good, so the bot sends nothing at all.
-            # A partly unread page keeps UNKNOWN cells, so this can never
-            # re-open the owner-review blind A.
-            flat = ''.join(screen.text.split())
-            if (screen.kind == 'text' and screen.hand is None and flat
-                    and UNKNOWN not in flat
-                    and not any(176 <= line.y <= 207 for line in screen.lines)):
+            # Read the raw cells of the message band: a partly unread page (or
+            # a page left with nothing but the gold header) is not end evidence,
+            # so this can never re-open the owner-review blind A.
+            if readable_prose_screen(screen):
                 mem.pop('bijin_guard', None)
                 return None
             # Owner review (2026-10-15, PR #2286): the choices of this request
