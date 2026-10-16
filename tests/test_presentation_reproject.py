@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -23,6 +24,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich.presentation import ReprojectPolicy  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'src' / 'docich' / 'presentation.py'
+
+
+def _ffplay_stub(spawns: Path, fail_first: int) -> str:
+    """Stub ffplay: counts its own spawns.
+
+    The counter is published with ``os.replace`` so a concurrent reader never
+    observes the truncated slice -- a plain ``write_text`` truncates before it
+    writes and made the whole-CI run fail with ``int('')`` (#2305).
+    """
+    return textwrap.dedent(f'''\
+        #!/usr/bin/env python3
+        import os
+        import time
+        from pathlib import Path
+        counter = Path({str(spawns)!r})
+        count = int(counter.read_text()) + 1 if counter.exists() else 1
+        tmp = counter.with_name('%s.%d.tmp' % (counter.name, os.getpid()))
+        tmp.write_text(str(count))
+        os.replace(tmp, counter)
+        if count <= {fail_first}:
+            raise SystemExit(1)
+        time.sleep(120)
+    ''')
 
 XVFB = '''#!/usr/bin/env python3
 import os, sys, time
@@ -87,17 +111,7 @@ class PresentationReprojectScript(unittest.TestCase):
             path.write_text(body)
             path.chmod(0o755)
         ffplay = bin_dir / 'ffplay'
-        ffplay.write_text(textwrap.dedent(f'''\
-            #!/usr/bin/env python3
-            import time
-            from pathlib import Path
-            counter = Path({str(spawns)!r})
-            count = int(counter.read_text()) + 1 if counter.exists() else 1
-            counter.write_text(str(count))
-            if count <= {fail_first}:
-                raise SystemExit(1)
-            time.sleep(120)
-        '''))
+        ffplay.write_text(_ffplay_stub(spawns, fail_first))
         ffplay.chmod(0o755)
         env = dict(os.environ, PATH=f'{bin_dir}{os.pathsep}{os.environ["PATH"]}')
         state = root / 'presentation.json'
@@ -139,17 +153,36 @@ class PresentationReprojectScript(unittest.TestCase):
                              stable_for: float = 1.5) -> int:
         """Return the spawn count once it has stopped growing."""
         limit = time.monotonic() + timeout
-        last = int(spawns.read_text()) if spawns.exists() else 0
+        last = self._read_spawn_count(spawns)
         unchanged_since = time.monotonic()
         while time.monotonic() < limit:
             time.sleep(0.1)
-            current = int(spawns.read_text()) if spawns.exists() else 0
+            current = self._read_spawn_count(spawns)
             if current != last:
                 last = current
                 unchanged_since = time.monotonic()
             elif time.monotonic() - unchanged_since >= stable_for:
                 return last
         return last
+
+    @staticmethod
+    def _read_spawn_count(spawns: Path, attempts: int = 50,
+                          delay: float = 0.005) -> int:
+        """Read the spawn counter, tolerating a torn write in flight.
+
+        The counter file is written by a separate process; even with an atomic
+        rename a reader can observe the pre-rename (empty) slice. Retrying a
+        bounded number of times -- without extending the caller's deadline --
+        keeps a transient empty file from failing the poll loop (#2305).
+        """
+        for _ in range(attempts):
+            try:
+                return int(spawns.read_text())
+            except (ValueError, OSError):
+                time.sleep(delay)
+        if not spawns.exists():
+            return 0
+        return int(spawns.read_text())
 
     def _wait_spawns(self, spawns: Path, count: int, timeout: float) -> int:
         """Wait for the ffplay stub to have been started `count` times."""
@@ -198,9 +231,54 @@ class PresentationReprojectScript(unittest.TestCase):
         self.assertGreaterEqual(settled, 3, 'retries must happen inside the window')
         self.assertEqual(self._wait_status(state, {'presentation_failed'}, timeout=10),
                          'presentation_failed')
-        self.assertEqual(int(spawns.read_text()), settled, 'attempts stop at the window')
+        self.assertEqual(self._read_spawn_count(spawns), settled, 'attempts stop at the window')
         self.assertEqual(json.loads(state.read_text()).get('status'), 'presentation_failed')
         self.assertIsNone(proc.poll())
+
+
+class SpawnCounterGuardTests(unittest.TestCase):
+    """Regression: a torn counter read failed the whole-CI run (#2305)."""
+
+    def test_read_spawn_count_retries_past_a_torn_write(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        counter = Path(tmp.name) / 'ffplay-count'
+        counter.write_text('')  # the truncated slice a non-atomic writer leaves
+        threading.Timer(0.03, lambda: counter.write_text('7')).start()
+        self.assertEqual(PresentationReprojectScript._read_spawn_count(counter), 7)
+
+    def test_read_spawn_count_gives_up_bounded_when_the_file_never_heals(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        counter = Path(tmp.name) / 'ffplay-count'
+        counter.write_text('')
+        with self.assertRaises(ValueError):
+            PresentationReprojectScript._read_spawn_count(
+                counter, attempts=3, delay=0.01)
+
+    def test_ffplay_stub_publishes_the_counter_atomically(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        counter = root / 'ffplay-count'
+        stub = root / 'ffplay'
+        stub.write_text(_ffplay_stub(counter, fail_first=99))
+        stub.chmod(0o755)
+        proc = subprocess.Popen([sys.executable, str(stub)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def stop():
+            proc.kill()
+            proc.communicate()
+        self.addCleanup(stop)
+        # A tight reader must never observe an empty/partial counter.
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and proc.poll() is None:
+            value = PresentationReprojectScript._read_spawn_count(counter)
+            self.assertGreaterEqual(value, 1)
+        self.assertEqual(counter.read_text(), '1')
+        self.assertEqual(list(root.glob('ffplay-count*.tmp')), [],
+                         'the temp slice must not survive the rename')
 
 
 if __name__ == '__main__':
