@@ -684,7 +684,7 @@ def test_rolled_back_start_timeout_terminalizes_the_previous_game(tmp_path):
 
 def test_rolled_back_start_stays_latched_for_an_unreviewed_error_code(tmp_path):
     """Widening must stay bounded: only reviewed switch-start codes qualify."""
-    manager, request_id, _previous = _rolled_back_setup(tmp_path, code="prepare_failed")
+    manager, request_id, _previous = _rolled_back_setup(tmp_path, code="an_unreviewed_error_code")
 
     assert manager.reconcile_failed_start(request_id) is False
     assert json.loads(manager.path.read_text())["status"] == "failed"
