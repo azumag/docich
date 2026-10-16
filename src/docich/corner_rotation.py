@@ -33,6 +33,10 @@ from .game_switch import TERMINAL_RECEIPT_STATUSES, atomic_write_json
 DAY = 86400.0
 MANUAL_CAPTURE_PROFILE_TTL = 60.0
 STOP_REQUEST_DIR = "corner-stop-requests"
+# Durable rotation ledger file name inside ``state_dir``. Adapters that must
+# re-read the release record of their own failed owner import this constant
+# instead of duplicating the path (#2352).
+LEDGER_FILE = "corner_rotation.json"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 
@@ -178,7 +182,7 @@ class CornerRotationManager:
         self.cooldown_seconds = cooldown_seconds(g)
         # Fixed interval-mode cadence, or None for the 24h/N target.
         self.configured_interval = configured_interval_seconds(g)
-        self.path = Path(g.state_dir) / "corner_rotation.json"
+        self.path = Path(g.state_dir) / LEDGER_FILE
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
 
     @contextmanager

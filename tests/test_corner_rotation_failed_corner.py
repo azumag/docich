@@ -290,6 +290,49 @@ def test_older_released_owner_is_settled_after_a_later_failed_request(tmp_path):
     assert settled == [old_request]
 
 
+def test_a_newer_release_record_never_settles_the_older_failed_owner(tmp_path):
+    """#2352 review: only the original request's own release record counts.
+
+    The per-corner pointer names the NEW request, and the bounded audit row for
+    the OLDER request is gone. Nothing then proves that the owner still in the
+    corner state was released, so it must stay busy and keep blocking the
+    rotation instead of being retired by the newer request's record.
+    """
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    state["failed_corners"] = [
+        row for row in state["failed_corners"]
+        if not (row["corner"] == corner and row["request_id"] == old_request)
+    ]
+    manager.save(state)
+    executor.result = "completed"
+    dispatched = list(executor.calls)
+
+    result = manager.tick()
+
+    assert settled == []
+    assert result["status"] == "waiting"
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+    # The unproven owner keeps blocking: no new corner is dispatched.
+    assert executor.calls == dispatched
+    assert ledger(manager)["pending"] is None
+
+
 def test_released_failure_skip_survives_audit_list_rollover(tmp_path):
     manager, _clock, executor, _adapters = build(
         tmp_path,

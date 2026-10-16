@@ -201,6 +201,26 @@ class GameCornerAdapter:
             return False
         return manager.reconcile_failed_rotation_start(request_id)
 
+    def settle_released_failure(self, request_id):
+        """Retire the retro ``game`` owner the rotation proved released (#2352).
+
+        The common rotation calls this only after it re-proved that the shared
+        program slot holds nothing from that request. Scoped to the ``game``
+        adapter: Meriken and NetHack own separate state files and separate
+        fixed recovery entries, so this change does not widen their authority.
+        The manager re-reads the durable release record of this exact request
+        and re-proves the terminal receipt and the stable canonical owner under
+        the shared store lock, so ``False`` leaves the current fail-closed
+        state untouched.
+        """
+
+        if getattr(self.corner, "adapter", None) != "game":
+            return False
+        settle = getattr(self.manager, "settle_released_failure", None)
+        if not callable(settle):
+            return False
+        return settle(request_id, corner_id=self.corner.id) is True
+
     def recover_failed_restore(self):
         """Timer-safe restore recovery for a failed corner *end* (#2187).
 

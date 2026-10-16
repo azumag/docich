@@ -914,7 +914,9 @@ class RetroCornerManager:
             # the next timer tick, without replaying the switch.
             return False
 
-    def _prelaunch_quiesce_failure_proved(self, state: dict[str, object]) -> bool:
+    def _prelaunch_quiesce_failure_proved(
+        self, state: dict[str, object], *, expected_request_id: str | None = None
+    ) -> bool:
         """Prove a failed boundary wait never reached the corner (#1044, #1681).
 
         ``reconcile_failed_rotation_start`` only accepts a ``rolled_back``
@@ -930,7 +932,10 @@ class RetroCornerManager:
         reviewed prelaunch codes for the exact ``from_game``/``to_game`` pair.
         If the corner preserved an error code it must match the receipt. A
         missing, pruned, non-terminal or differently-shaped receipt leaves the
-        ``failed`` state latched.
+        ``failed`` state latched. When ``expected_request_id`` is given the
+        proof is additionally bound to that exact request, so a caller acting
+        on one released reservation can never terminalize another request's
+        slot (#2352).
         """
 
         state_error = state.get("last_error_code")
@@ -945,7 +950,9 @@ class RetroCornerManager:
         if (not isinstance(target, str) or not target
                 or not isinstance(previous, str) or not previous
                 or target == previous
-                or not isinstance(request_id, str) or not request_id):
+                or not isinstance(request_id, str) or not request_id
+                or (expected_request_id is not None
+                    and request_id != expected_request_id)):
             return False
         try:
             receipt = self.store.receipts.load(request_id)
@@ -996,7 +1003,7 @@ class RetroCornerManager:
         return isinstance(active, dict) and active.get("game") != target
 
     def _terminalize_prelaunch_quiesce_failure(
-        self, state: dict[str, object]
+        self, state: dict[str, object], *, expected_request_id: str | None = None
     ) -> CornerResult | None:
         """Settle a slot whose switch failed before launch, else ``None``.
 
@@ -1039,7 +1046,9 @@ class RetroCornerManager:
                 # Keep receipt proof, canonical verification, and the corner
                 # commit in the same lock interval.  Game-switch writers take
                 # this store lock exclusively.
-                if not self._prelaunch_quiesce_failure_proved(state):
+                if not self._prelaunch_quiesce_failure_proved(
+                    state, expected_request_id=expected_request_id
+                ):
                     return None
                 try:
                     canonical, missing = self.store.canonical.load()
@@ -1081,6 +1090,122 @@ class RetroCornerManager:
             game=target,
             previous_game=previous,
             detail="起動前に失敗した手動起動をinterruptedとして確定",
+        )
+
+    def settle_released_failure(self, request_id: str, *, corner_id: str) -> bool:
+        """Retire this corner's exact released pre-start failure (#2352).
+
+        The common rotation releases an unproven automatic failure only after
+        it proves the shared program slot holds nothing from that request, and
+        then asks the adapter to retire its own failed owner. PAPER and Doushi
+        implement that hook; the retro ``game`` state had no equivalent, so the
+        shared ``retro_corner.json`` stayed ``failed``. ``run_rotation`` then
+        refused every later ``game`` corner with "rotation execution owner
+        mismatch", and the fixed operator could not clear it either: the
+        released ledger stays ``waiting`` while ``recover-failed`` only accepts
+        ``recovery_required`` (#2352).
+
+        Three facts must belong to the *same* request before anything is
+        written, and all of them are re-checked here under the corner tick lock
+        (the shared game-switch store lock is taken inside the terminalization):
+
+        * the durable release record of that exact request for this corner,
+          re-read from the ledger — never taken from the caller or from memory,
+        * the terminal switch result that proves the corner never became active,
+        * the resource state (canonical owner) that proves the slot was
+          released.
+
+        A released record for a *newer* request of the same corner names a
+        different request and is never permission to retire an older owner.
+        ``started_at`` is not an activation proof: a retro start writes it when
+        the reservation is made, before the switch runs. Nothing is replayed
+        and no new owner is selected.
+        """
+
+        if not isinstance(request_id, str) or not request_id:
+            return False
+        if not isinstance(corner_id, str) or not corner_id:
+            return False
+        try:
+            with self._locked():
+                state = self._read_state()
+                if (state.get("status") != "failed"
+                        or state.get("rotation_request_id") != request_id
+                        or state.get("switch_request_id") != request_id):
+                    return False
+                if not self._released_record_proved(
+                    corner_id, request_id, state.get("game")
+                ):
+                    return False
+                result = self._terminalize_prelaunch_quiesce_failure(
+                    state, expected_request_id=request_id
+                )
+                if getattr(result, "status", None) != "succeeded":
+                    return False
+                # ``stop_manual()`` writes a durable stop-request marker while
+                # the owner is still ``starting``. Only the same proofs that
+                # retired that owner may clear it: leaving it behind would make
+                # the NEXT request stop right after it starts (the old stop
+                # carries over). A marker that does not name this state file is
+                # left untouched. A slot whose proofs fail returns above, so an
+                # unproven stop request is always preserved.
+                self._clear_released_stop_request()
+        except (RetroCornerError, GameSwitchBusyError):
+            return False
+        return True
+
+    def _clear_released_stop_request(self) -> bool:
+        """Clear the retired owner's durable stop request for this state file."""
+
+        from .corner_rotation import (
+            clear_rotation_stop_request,
+            rotation_stop_requested,
+        )
+
+        if not rotation_stop_requested(self.g, self.state_path):
+            return True
+        return clear_rotation_stop_request(self.g, self.state_path)
+
+    def _released_record_proved(self, corner_id, request_id, game) -> bool:
+        """Require the durable rotation record that names THIS request (#2352).
+
+        The rotation's release decision and this corner write are separate
+        operations, so the ledger is re-read and matched to the exact request
+        that owns the failed state. The per-corner pointer may already name a
+        later request; the bounded audit row is what keeps the original
+        request's release provable (#2282). Anything unreadable, a different
+        corner, a different game, or a non-``game`` adapter refuses.
+        """
+
+        if not isinstance(game, str) or not game:
+            return False
+        from .corner_rotation import LEDGER_FILE
+
+        try:
+            ledger = json.loads(
+                (Path(self.g.state_dir) / LEDGER_FILE).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False
+        if not isinstance(ledger, dict):
+            return False
+        known = ledger.get("known_corners")
+        record = known.get(corner_id) if isinstance(known, dict) else None
+        if (not isinstance(record, dict)
+                or record.get("adapter") != "game"
+                or record.get("game") != game):
+            return False
+        released = ledger.get("released_requests")
+        pointer = released.get(corner_id) if isinstance(released, dict) else None
+        if isinstance(pointer, dict) and pointer.get("request_id") == request_id:
+            return True
+        audit = ledger.get("failed_corners")
+        return isinstance(audit, list) and any(
+            isinstance(row, dict)
+            and row.get("corner") == corner_id
+            and row.get("request_id") == request_id
+            and row.get("resolution") == "released-unverified"
+            for row in audit
         )
 
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
