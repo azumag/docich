@@ -811,10 +811,12 @@ class RetroCornerManager:
         so the corner never became active either. The request-wide deadline
         expiring during the start switch reports ``timeout``
         (``game_switch._failure_code``) and still runs that same rollback, so it
-        is accepted for the identical proof (#2187).
+        is accepted for the identical proof (#2187). A preparation failure
+        (``prepare_failed``) can also roll back to that proved previous owner.
         """
         from .game_switch import (
             ERROR_AGENT_START_FAILED,
+            ERROR_PREPARE_FAILED,
             ERROR_QUIESCE_FAILED,
             ERROR_READINESS_TIMEOUT,
             ERROR_START_FAILED,
@@ -838,6 +840,7 @@ class RetroCornerManager:
                     if (completed.tzinfo is None or completed_ts < 0
                             or state.get("last_error_code") not in {
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
+                                ERROR_PREPARE_FAILED,
                                 ERROR_QUIESCE_FAILED, ERROR_READINESS_TIMEOUT,
                                 ERROR_TIMEOUT,
                             }):
