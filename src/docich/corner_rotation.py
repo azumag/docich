@@ -594,11 +594,20 @@ class CornerRotationManager:
                     # re-evaluated here, so a later owner stops the skip.
                     request_id = raw.get("rotation_request_id")
                     entry = released_requests.get(corner_id)
-                    if not (isinstance(request_id, str) and isinstance(entry, dict)
-                            and entry.get("request_id") == request_id
-                            and self._slot_reusable(adapter, {"request_id": request_id,
-                                                              "corner": corner_id})):
+                    released = (isinstance(request_id, str) and isinstance(entry, dict)
+                                and entry.get("request_id") == request_id
+                                and self._slot_reusable(adapter, {"request_id": request_id,
+                                                                  "corner": corner_id}))
+                    if not released:
                         busy = True
+                    else:
+                        # The same proof also retires the registry row this
+                        # corner left behind, so the skip is real at the shared
+                        # program slot and not only in this ledger. Re-running
+                        # it every tick is what clears a row written before the
+                        # release learned to do it, without an SSH recovery
+                        # (#2282).
+                        self._release_program_owner(adapter)
                 # Use actual start AND completion; a delayed queued start can
                 # never become eligible 24h after its much earlier selection.
                 stamps = [timestamp(raw[key]) for key in ("started_at", "completed_at") if raw.get(key) is not None]
@@ -953,6 +962,21 @@ class CornerRotationManager:
                 released.pop(key, None)
         state["released_requests"] = released
 
+    def _release_program_owner(self, adapter):
+        """Clear the stale program registry row naming a released corner (#2282).
+
+        Never raises: the release itself is already settled, and a row that
+        cannot be cleared only keeps the existing (fixed) blocking behaviour.
+        """
+        state_path = getattr(adapter, "state_path", None)
+        if state_path is None:
+            return False
+        try:
+            from .corner_boundary import release_program_owner
+            return release_program_owner(self.g, state_path)
+        except Exception:
+            return False
+
     def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
                                base_unrestored=False):
         """Settle an unproven automatic failure without stopping the rotation.
@@ -969,6 +993,13 @@ class CornerRotationManager:
                                    error_kind=error_kind, now=now,
                                    reason_code="base-game-unrestored" if base_unrestored else None)
         self._mark_released_request(state, reservation["corner"], reservation.get("request_id"), now)
+        # The registry is the only thing the shared program slot reads, and it
+        # still names this corner's own state file. Leaving the row there makes
+        # ``_owner_free`` observe the untouched ``failed`` record as BUSY and
+        # livelock every later corner for as long as the release stands
+        # (#2282). The slot proof above already established that nothing from
+        # this request is in flight, so the row is stale by construction.
+        self._release_program_owner(adapter)
         state["history"].append(dict(corner=reservation["corner"], at=now, source="failure"))
         state["pending"] = None
         # Advance the watermark exactly like the operator recovery does: a long

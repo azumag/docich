@@ -75,12 +75,14 @@ class Store:
 
 
 class Adapter:
-    def __init__(self, g, corner, *, store=None, states=None, released=True, available=True):
+    def __init__(self, g, corner, *, store=None, states=None, released=True, available=True,
+                 state_path=None):
         self.corner = corner
         self.manager = SimpleNamespace(store=store) if store is not None else None
         self.states = list(states or [])
         self.released = released
         self.available = available
+        self.state_path = state_path
 
     def eligible(self):
         return self.available
@@ -118,12 +120,13 @@ class Executor:
 
 
 def build(tmp_path, *, storages, states=None, released=True, executor=None,
-          restore_recovery=None):
+          restore_recovery=None, soren_root=None):
     """Build a two-corner queue rotation with per-corner fake stores."""
 
     path = tmp_path / "config.toml"
     path.write_text(
         '[corner_rotation]\nenabled=true\nschedule_mode="queue"\n[paths]\nstate_dir="run"\n'
+        + (f'[webui]\nsoren_root="{soren_root}"\n' if soren_root else '')
     )
     g = load_global(tmp_path, path)
     clock = [1000000.0]
@@ -526,3 +529,96 @@ def test_released_failure_rows_stay_bounded(tmp_path):
 
     assert len(state["failed_corners"]) == FAILED_CORNER_LIMIT
     assert state["failed_corners"][-1]["corner"] == "b"
+
+
+def test_released_failure_drops_the_stale_program_registry_row(tmp_path):
+    # #2282: the shared program registry kept naming the released corner's own
+    # state file, so ``_owner_free`` observed its untouched ``failed`` record as
+    # BUSY forever and livelocked every later corner in the shared slot. The
+    # release path must retire that row, because #2187 never rewrites the failed
+    # corner's own state.
+    registry_dir = tmp_path / "soren" / "tmp" / "state"
+    registry_dir.mkdir(parents=True)
+    registry = registry_dir / "docich_program_active.json"
+    # The pending corner for this fixture is deterministic (fixed seed, catalog
+    # and clock); the adapter's state file is the one the release must release.
+    state_file = tmp_path / "run" / "a_corner.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"owner_state": str(state_file)}))
+
+    manager, _clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+        soren_root=tmp_path / "soren",
+    )
+    adapters["a"].state_path = state_file
+    adapters["b"].state_path = tmp_path / "run" / "b_corner.json"
+
+    outcome = manager.tick()
+
+    assert outcome["reason"] == RELEASED_REASON
+    assert outcome["corner"] == "a"
+    assert not registry.exists()
+
+
+def test_released_failure_keeps_another_corners_registry_row(tmp_path):
+    # The release is scoped to the released corner's own state file: a row
+    # naming a different corner stays, so a corner that legitimately holds the
+    # program slot is never released out from under itself (#2282).
+    registry_dir = tmp_path / "soren" / "tmp" / "state"
+    registry_dir.mkdir(parents=True)
+    registry = registry_dir / "docich_program_active.json"
+    state_file = tmp_path / "run" / "a_corner.json"
+    other_file = tmp_path / "run" / "b_corner.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"owner_state": str(other_file)}))
+
+    manager, _clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+        soren_root=tmp_path / "soren",
+    )
+    adapters["a"].state_path = state_file
+    adapters["b"].state_path = other_file
+
+    outcome = manager.tick()
+
+    assert outcome["reason"] == RELEASED_REASON
+    assert json.loads(registry.read_text())["owner_state"] == str(other_file)
+
+
+def test_next_tick_clears_registry_from_an_already_released_failure(tmp_path):
+    """A row left by an older release must not block a later program slot."""
+    registry_dir = tmp_path / "soren" / "tmp" / "state"
+    registry_dir.mkdir(parents=True)
+    registry = registry_dir / "docich_program_active.json"
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+        soren_root=tmp_path / "soren",
+    )
+    for corner_id, adapter in adapters.items():
+        adapter.state_path = tmp_path / "run" / f"{corner_id}_corner.json"
+
+    first = manager.tick()
+    assert first["reason"] == RELEASED_REASON
+    released_corner = first["corner"]
+    request_id = ledger(manager)["released_requests"][released_corner]["request_id"]
+    released_state = adapters[released_corner].state_path
+    adapters[released_corner].states = [{
+        "status": "failed", "rotation_request_id": request_id,
+    }]
+    registry.write_text(json.dumps({"owner_state": str(released_state)}))
+
+    executor.result = "completed"
+    second = manager.tick()
+
+    assert second["corner"] != released_corner
+    assert second["status"] == "ready"
+    assert not registry.exists()
