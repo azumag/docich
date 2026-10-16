@@ -821,6 +821,11 @@ class SorenCoordinatorAdapter:
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
         self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
         self._completed_stop_receipt = receipt
+        # Capture the paused loop identity while the marker is still present.
+        # Candidate cleanup may consume the marker before materialize runs,
+        # so preserve it here (issue #2061).
+        if self._resumed_loop is None:
+            self._resumed_loop = self._paused_loop_identity()
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
@@ -848,7 +853,8 @@ class SorenCoordinatorAdapter:
                 # clears the pause.  That loop is the same legitimate instance, so remember
                 # it; otherwise the freshness fence below can never accept it and the
                 # restore times out (2026-10-11 05:23, 06:44, with a live healthy Soren).
-                self._resumed_loop = self._paused_loop_identity()
+                if self._resumed_loop is None:
+                    self._resumed_loop = self._paused_loop_identity()
             rc, _ = self._run([str(self.control), "fresh-start", request_id], deadline, cancel)
             if rc != 0:
                 raise AdapterError(f"Soren fresh start準備に失敗しました (rc={rc})")
