@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .game_switch import (
     ERROR_AGENT_START_FAILED,
+    ERROR_PREPARE_FAILED,
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
     ERROR_ROLLBACK_FAILED,
@@ -43,6 +44,7 @@ RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
 ROLLBACK_ERROR_CODES = frozenset({
     ERROR_AGENT_START_FAILED,
+    ERROR_PREPARE_FAILED,
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
     ERROR_START_FAILED,
