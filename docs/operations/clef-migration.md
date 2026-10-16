@@ -14,38 +14,63 @@ backend名 `COMMENT_CLASSIFIER_BACKEND=jev` は互換性のため維持する。
 
 ## owner-only CLI
 
-初回だけ、承認済みsecret管理経路で次のペアを設定用プロセスの環境へ渡す。
-値をコマンド引数・チャット・公開ログへ書かない。このVMが既にCloudflareの組を
-発行済みなら、**secretを一度も転送しない**次の経路を使える。
+初回のprovisioningには2つの経路がある。どちらも設定後にchat workerの実効環境で検証する。
+
+### 経路A: このVMの中だけで完結させる（secretをVM外へ出さない）
+
+VMが既にCloudflareの組を持っている（またはオーナーがVM上で用意する）場合の経路。
+`docs/operations/paper-ai-canary.md` が前提とする Workers AI の組を、`soren/.env` に
+次の名前で置く。値はGitHub・コマンド引数・チャット・公開ログへ書かない。
+
+```text
+DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID            32文字の小文字16進
+CLOUDFLARE_API_TOKEN                         または CLOUDFLARE_API_TOKEN_FILE
+```
 
 ```text
 VM operations (workflow_dispatch, target=production, ref=main, confirm=production)
-  configure_jev_route_clef_reuse   初回provisioning。VM自身のレビュー済みpairを流用
+  configure_jev_route_clef_reuse   VM自身のレビュー済みpairを流用（stdinは空のみ）
 ```
 
 `--reuse-existing-cloudflare-credentials`（gateway operationでは
-`configure_jev_route_clef_reuse`）は、稼働中chat workerのenvironから
-`CLEF_REUSE_SOURCES` の順に**providerごとのaccount/token組**を探し、最初に
-成立した組だけをClefの専用名へ書く。別providerのaccountとtokenを混ぜない。
-accountが32文字小文字16進でない場合は推測せず `clef_source_account_invalid`、
-どの組も成立しなければ `clef_source_credentials_missing` で**設定ファイルを変更する前に**
-失敗する。tokenの `_FILE` 間接参照は `docich.discord_chat.read_secret` と同じ契約
-（valueとの併用禁止・symlink不追従・regular file・他者書込不可・4096バイト上限）で解決する。
-流用元の変数は書き換えも削除もしない。
+`configure_jev_route_clef_reuse`）は、**sorenの `.env` を先に、次に稼働中chat workerの
+environを見て**、`CLEF_REUSE_SOURCES` の順に**providerごとのaccount/token組**を探し、
+最初に成立した組だけをClefの専用名へ書く。
+
+- `.env` を先に見るのは、置換後のworkerが実際に読むのが `.env` であり、かつ
+  オーナーが `.env` に書いた直後のworkerがまだその値を持っていないためである。
+- 組は必ず**同一のmapping内**で成立させる。`.env` のaccountとworkerのtokenのように
+  別sourceの片割れを混ぜない。
+- accountが32文字小文字16進でない場合は推測せず `clef_source_account_invalid`、
+  どの組も成立しなければ `clef_source_credentials_missing` で
+  **設定ファイルを変更する前に**失敗する。
+- 各値の `_FILE` 間接参照は `docich.discord_chat.read_secret` と同じ契約
+  （valueとの併用禁止・symlink不追従・regular file・他者書込不可・4096バイト上限）で解決する。
+- `.env` の読み取りは `CLEF_REUSE_NAMES` の固定名だけを対象にし、shellと同じ規則
+  （quote・`#`コメント）でunquoteする。unterminated/複数語に分裂する値は推測せず
+  `env_unreadable` で失敗する。`.env` の欠落は「値なし」、非regularは `env_not_regular`。
+- 流用元の変数は書き換えも削除もしない。
 
 ```text
 CLEF_REUSE_SOURCES（レビュー済みの流用元。追加はレビュー対象の変更）
-  DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID            + CLOUDFLARE_API_TOKEN            （Workers AI direct）
+  DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID              + DOCICH_JEV_CLOUDFLARE_API_TOKEN（既にprovision済みの場合）
+  DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID             + CLOUDFLARE_API_TOKEN            （Workers AI direct）
   DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID + DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN
 ```
 
-専用の組を別途発行した場合は、従来どおり `configure_jev_route_clef` のstdinで
-ペアを渡す。両者は併用でき、どちらも設定後に検証される。
+### 経路B: 専用pairを承認済みsecret管理経路で渡す
+
+専用の組を別途発行した場合、またはGitHubから渡したい場合は、`configure_jev_route_clef`
+のstdinでペアを渡す（2値のペアで、値はrunnerのstep envからstdinへ流す）。
 
 ```text
 DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID
 DOCICH_JEV_CLOUDFLARE_API_TOKEN
 ```
+
+どちらの経路でも、結果として `soren/.env` に専用名2つが永続化される（往復切替の前提）。
+差分は値がどこを経由するかだけである。経路AはVM外へ出ず、経路BはGitHubの
+environment secretにも残る。
 
 既存chat workerに `TYPESAFE_API_KEY` が必要。戻し先の認証が失われている場合は、
 Clefへの切替も設定ファイルを変更する前に拒否する。これは認証の存在確認であり、
@@ -99,6 +124,9 @@ Clefの保存済み認証はこの操作でも残す。既存Vercel設定・削�
   出力をしない。書き込むのはClefの専用名2つだけで、流用元のサービスは従来どおり
   自分の名前を読み続ける。流用元の組が片方でも欠ければ失敗し、他providerの片割れを
   補って成立させない。
+- `.env` を読む対象は `CLEF_REUSE_NAMES` の固定名だけに限る。無関係な行は値も名前も
+  読み取らず、読み取った値はログ・戻り値・例外へ出さない（異常は固定codeのみ）。
+  経路Aではauth値がこのVMの外（GitHub・Actionsログ・runner）へ一切出ない。
 - 流用は権限を増やさない。Clefは `@cf/cloudflare/clef`（Workers AI）であり、流用元の
   Workers AI pairと同じcapability familyを使う。専用tokenを発行する場合は
   Account > Workers AI > Read を持つものを用いる。

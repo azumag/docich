@@ -208,16 +208,133 @@ class ReuseExistingCloudflareCredentialsTests(unittest.TestCase):
 
     def test_every_source_is_one_provider_pair_and_never_crosses_accounts(self):
         # A token must never be combined with another source's account: each
-        # entry is one provider's own (account, token) pair.
+        # entry is one provider's own (account, token) pair. An already
+        # provisioned Clef pair is first, then this VM's Workers AI capable
+        # provider pairs.
         self.assertEqual(route.CLEF_REUSE_SOURCES, (
+            route.CLEF_KEYS,
             ("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"),
             ("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID",
              "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"),
         ))
-        # The sources are other services' keys, so they must never be managed
+        # The other providers' keys are read only: they must never be managed
         # (rewritten or removed) by this script.
-        self.assertEqual(set(route.MANAGED_KEYS + route.CLEF_KEYS) &
-                         {name for pair in route.CLEF_REUSE_SOURCES for name in pair}, set())
+        other = {name for pair in route.CLEF_REUSE_SOURCES[1:] for name in pair}
+        self.assertEqual(set(route.MANAGED_KEYS + route.CLEF_KEYS) & other, set())
+        # Only the reviewed names (and their _FILE forms) are ever read.
+        self.assertEqual(set(route.CLEF_REUSE_NAMES), {
+            "DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID", "DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID_FILE",
+            "DOCICH_JEV_CLOUDFLARE_API_TOKEN", "DOCICH_JEV_CLOUDFLARE_API_TOKEN_FILE",
+            "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID_FILE",
+            "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN_FILE",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID_FILE",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN_FILE",
+        })
+
+    def test_dotenv_pair_is_used_when_the_live_worker_does_not_have_it_yet(self):
+        # Path A (#2301): the owner installs the pair in soren's .env, so no
+        # secret has to transit GitHub, and the running worker (started before
+        # the edit) cannot be the only source.
+        with tempfile.TemporaryDirectory(prefix="clef-dotenv-") as raw:
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                "KEEP=value\n"
+                "TYPESAFE_API_KEY=untouched\n"
+                f"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID={self.ACCOUNT}\n"
+                "CLOUDFLARE_API_TOKEN=SYNTHETIC_WORKERS_AI_TOKEN\n",
+                encoding="utf-8",
+            )
+            dotenv = route._read_dotenv_values(env_file)
+        self.assertEqual(dotenv, {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.ACCOUNT,
+                                  "CLOUDFLARE_API_TOKEN": "SYNTHETIC_WORKERS_AI_TOKEN"})
+        # The live worker environ has neither, yet the pair is found.
+        self.assertEqual(route.clef_credentials_from_existing({}, dotenv),
+                         (self.ACCOUNT, "SYNTHETIC_WORKERS_AI_TOKEN"))
+
+    def test_dotenv_wins_over_the_live_worker_for_the_same_pair(self):
+        dotenv = {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.ACCOUNT,
+                  "CLOUDFLARE_API_TOKEN": "SYNTHETIC_NEW_TOKEN"}
+        worker = {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.OTHER_ACCOUNT,
+                  "CLOUDFLARE_API_TOKEN": "SYNTHETIC_OLD_TOKEN"}
+        self.assertEqual(route.clef_credentials_from_existing(worker, dotenv),
+                         (self.ACCOUNT, "SYNTHETIC_NEW_TOKEN"))
+
+    def test_a_pair_is_never_half_from_dotenv_and_half_from_the_worker(self):
+        # The account exists in .env, the token only on the worker: that is not
+        # a pair, so the source is skipped rather than completed.
+        dotenv = {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.ACCOUNT}
+        worker = {"CLOUDFLARE_API_TOKEN": "SYNTHETIC_WORKERS_AI_TOKEN",
+                  "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": self.OTHER_ACCOUNT,
+                  "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "SYNTHETIC_SEARCH_TOKEN"}
+        self.assertEqual(route.clef_credentials_from_existing(worker, dotenv),
+                         (self.OTHER_ACCOUNT, "SYNTHETIC_SEARCH_TOKEN"))
+
+    def test_dotenv_values_are_unquoted_and_only_the_reviewed_names_are_read(self):
+        with tempfile.TemporaryDirectory(prefix="clef-dotenv-") as raw:
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                "UNRELATED_SECRET=SHOULD_NEVER_BE_READ\n"
+                'DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID="%s"\n'
+                "CLOUDFLARE_API_TOKEN='SYNTHETIC_QUOTED_TOKEN'\n"
+                "# CLOUDFLARE_API_TOKEN=COMMENTED_OUT\n"
+                "OTHER_CLOUDFLARE_THING=nope\n" % self.ACCOUNT,
+                encoding="utf-8",
+            )
+            dotenv = route._read_dotenv_values(env_file)
+        self.assertEqual(dotenv, {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.ACCOUNT,
+                                  "CLOUDFLARE_API_TOKEN": "SYNTHETIC_QUOTED_TOKEN"})
+        self.assertNotIn("UNRELATED_SECRET", dotenv)
+        self.assertNotIn("OTHER_CLOUDFLARE_THING", dotenv)
+        self.assertEqual(route.clef_credentials_from_existing({}, dotenv),
+                         (self.ACCOUNT, "SYNTHETIC_QUOTED_TOKEN"))
+
+    def test_dotenv_file_indirection_and_ambiguity_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="clef-dotenv-") as raw:
+            token_file = Path(raw) / "token"
+            token_file.write_text("SYNTHETIC_FROM_FILE\n", encoding="utf-8")
+            token_file.chmod(0o600)
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                f"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID={self.ACCOUNT}\n"
+                f"CLOUDFLARE_API_TOKEN_FILE={token_file}\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(route.clef_credentials_from_existing(
+                {}, route._read_dotenv_values(env_file)), (self.ACCOUNT, "SYNTHETIC_FROM_FILE"))
+
+            # An ambiguous (multi-word, unquoted) reviewed value is refused
+            # instead of being guessed, and an unrelated line is not affected.
+            env_file.write_text(
+                f"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID={self.ACCOUNT}\n"
+                "CLOUDFLARE_API_TOKEN=one two\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(route.ConfigureError) as caught:
+                route._read_dotenv_values(env_file)
+            self.assertEqual(str(caught.exception), "env_unreadable")
+
+    def test_a_missing_dotenv_is_no_values_but_a_non_regular_one_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="clef-dotenv-") as raw:
+            self.assertEqual(route._read_dotenv_values(Path(raw) / "absent.env"), {})
+            # A directory (or any non-regular file) named .env is a
+            # misconfiguration, never silently treated as "no values".
+            with self.assertRaises(route.ConfigureError) as caught:
+                route._read_dotenv_values(Path(raw))
+            self.assertEqual(str(caught.exception), "env_not_regular")
+
+    def test_an_already_provisioned_clef_pair_in_dotenv_is_reused_as_is(self):
+        with tempfile.TemporaryDirectory(prefix="clef-dotenv-") as raw:
+            env_file = Path(raw) / ".env"
+            env_file.write_text(
+                f"DOCICH_JEV_ROUTE=clef\n"
+                f"DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID={self.ACCOUNT}\n"
+                "DOCICH_JEV_CLOUDFLARE_API_TOKEN=SYNTHETIC_CLEF_TOKEN\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(route.clef_credentials_from_existing(
+                {}, route._read_dotenv_values(env_file)), (self.ACCOUNT, "SYNTHETIC_CLEF_TOKEN"))
 
     def test_prefers_the_workers_ai_pair_and_returns_it_unchanged(self):
         env = {"DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": self.ACCOUNT,
