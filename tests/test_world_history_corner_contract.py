@@ -154,3 +154,18 @@ def test_non_production_acceptance_boundary():
     assert acceptance["overlayAndProgressSplitAfterInputContract"] is True
     assert acceptance["partialCompletionAllowed"] is True
     assert acceptance["independentYouTubeDraftRequired"] is True
+
+def test_synthetic_fixture_contains_historical_improvement_input():
+    """Check this fixed fixture's fictional input, not real-history validation."""
+    data = load_fixture()
+    assert data["isSyntheticFixture"] is True
+    narrative = data["topic"]["lastingImpact"]
+    assert "現在まで、国境、産業集積、港湾・航路、法制度、教育・言語、インフラ、対立記憶が残存している。" in narrative
+    for required in (
+        "合成fixture内の改良履歴",
+        "旧案",
+        "改良案",
+        "架空の世界史読解履歴",
+        "実世界史の評価や歴史解釈の改善を示さない",
+    ):
+        assert required in narrative, required
