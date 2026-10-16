@@ -344,6 +344,47 @@ def test_doushi_corner_stop_before_start_needs_no_game_switch(tmp_path):
     assert canonical["active"]["game"] == "robots"
 
 
+def test_released_failed_doushi_owner_allows_a_later_rotation(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _doushi_adapter(g, _corner(), switch, now, sleep)
+    old_request = str(uuid.uuid4())
+    old = adapter.manager._new_state(old_request)
+    old.update(status="failed", completed_at=now[0], last_error_code="prepare_failed")
+    adapter.manager._save(old)
+
+    assert adapter.settle_released_failure(old_request) is True
+    settled = json.loads(adapter.state_path.read_text())
+    assert settled["status"] == "interrupted"
+    assert settled["rotation_request_id"] == old_request
+    assert settled["end_reason"] == "released-failure-before-retry"
+
+    new_request = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(new_request) == "completed"
+    current = json.loads(adapter.state_path.read_text())
+    assert current["rotation_request_id"] == new_request
+    assert current["status"] == "completed"
+
+
+def test_released_failed_doushi_owner_requires_the_exact_request(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    adapter = _doushi_adapter(g, _corner(), switch, now, lambda seconds: None)
+    old_request = str(uuid.uuid4())
+    old = adapter.manager._new_state(old_request)
+    old.update(status="failed", completed_at=now[0])
+    adapter.manager._save(old)
+
+    assert adapter.settle_released_failure(str(uuid.uuid4())) is False
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+    assert switch.switch(VIEW_NAME).status == "succeeded"
+    assert adapter.settle_released_failure(old_request) is False
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+
 def test_doushi_adapter_carries_the_catalog_audio_opt_in(tmp_path):
     g, _now, _factory, _store, _switch = _setup(tmp_path, duration=3)
 

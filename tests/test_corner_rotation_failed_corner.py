@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -241,11 +242,14 @@ def test_released_failure_does_not_block_the_other_corner(tmp_path):
     # The released corner keeps a stale BUSY record on disk …
     failed_adapter = manager.adapters[released_corner]
     failed_adapter.states = [{"status": "failed", "rotation_request_id": request_id}]
+    settled = []
+    failed_adapter.settle_released_failure = lambda owner: settled.append(owner) or True
     executor.result = "completed"
 
     # … and the other corner still runs.
     result = manager.tick()
     assert result["corner"] != released_corner
+    assert settled == [request_id]
 
     # A later owner of that corner's game stops the skip (fail closed again).
     manager.adapters[released_corner].manager.store.canonical = _Canonical(
@@ -254,6 +258,36 @@ def test_released_failure_does_not_block_the_other_corner(tmp_path):
     waited = manager.tick()
     assert waited["status"] == "waiting"
     assert waited["reason"] == "other-corner-needs-finish-or-recovery"
+    assert settled == [request_id]
+
+
+def test_older_released_owner_is_settled_after_a_later_failed_request(tmp_path):
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+
+    # A later attempt can fail before the adapter writes its own new state.
+    # The per-corner release pointer now names that new request, while the
+    # adapter still owns the older failure recorded in the bounded audit.
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    manager.save(state)
+    executor.result = "completed"
+    result = manager.tick()
+
+    assert result["corner"] != corner
+    assert settled == [old_request]
 
 
 def test_released_failure_skip_survives_audit_list_rollover(tmp_path):
@@ -614,6 +648,8 @@ def test_next_tick_clears_registry_from_an_already_released_failure(tmp_path):
     adapters[released_corner].states = [{
         "status": "failed", "rotation_request_id": request_id,
     }]
+    settled = []
+    adapters[released_corner].settle_released_failure = lambda owner: settled.append(owner) or True
     registry.write_text(json.dumps({"owner_state": str(released_state)}))
 
     executor.result = "completed"
@@ -622,3 +658,4 @@ def test_next_tick_clears_registry_from_an_already_released_failure(tmp_path):
     assert second["corner"] != released_corner
     assert second["status"] == "ready"
     assert not registry.exists()
+    assert settled == [request_id]

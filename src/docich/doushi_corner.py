@@ -31,7 +31,9 @@ from .game_switch import (
     ERROR_TIMEOUT,
     GameSwitchBusyError,
     GameSwitchCoordinator,
+    GameSwitchError,
     GameSwitchStore,
+    TERMINAL_RECEIPT_STATUSES,
     atomic_write_json,
 )
 from .doushi_view import VIEW_NAME
@@ -665,6 +667,51 @@ class DoushiCornerManager:
                 self._clear_stop_request()
                 return True
         except (OSError, ValueError, GameSwitchBusyError, DoushiCornerError):
+            return False
+
+    def settle_released_failure(self, request_id):
+        """Retire an old failed owner after rotation proved its slot released.
+
+        A released failure remains in the rotation audit, but the single
+        corner state file must become terminal before a later request can use
+        it. Recheck the shared plane under its lock because the rotation's
+        release proof and this write are separate operations.
+        """
+        try:
+            request_id = self._request_id(request_id)
+            with self.store.lock(exclusive=True):
+                state = self._read_state()
+                if (state.get("status") != "failed"
+                        or state.get("rotation_request_id") != request_id
+                        or state.get("started_at") is not None
+                        or state.get("doushi_runtime_identity") is not None):
+                    return False
+                canonical, missing = self.store.canonical.load()
+                if missing or not _stable(canonical):
+                    return False
+                if (canonical.get("operation") is not None
+                        or canonical.get("request_id") is not None
+                        or canonical.get("deadline_at") is not None):
+                    return False
+                active = _identity(canonical.get("active"))
+                if active is None or active["game"] == VIEW_NAME:
+                    return False
+                receipt = self.store.receipts.load(request_id)
+                if (isinstance(receipt, dict)
+                        and receipt.get("status") not in TERMINAL_RECEIPT_STATUSES):
+                    return False
+                queued = self.store.receipts.queued()
+                if not isinstance(queued, list) or any(
+                        isinstance(row, dict) and row.get("request_id") == request_id
+                        for row in queued):
+                    return False
+                state.update(status="interrupted",
+                             completed_at=state.get("completed_at") or self.clock(),
+                             end_reason="released-failure-before-retry")
+                self._save(state)
+                self._clear_stop_request()
+                return True
+        except (OSError, ValueError, GameSwitchError, DoushiCornerError):
             return False
 
     def stop(self):

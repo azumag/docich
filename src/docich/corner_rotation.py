@@ -594,13 +594,23 @@ class CornerRotationManager:
                     # re-evaluated here, so a later owner stops the skip.
                     request_id = raw.get("rotation_request_id")
                     entry = released_requests.get(corner_id)
-                    released = (isinstance(request_id, str) and isinstance(entry, dict)
-                                and entry.get("request_id") == request_id
+                    audited_release = any(
+                        isinstance(row, dict)
+                        and row.get("corner") == corner_id
+                        and row.get("request_id") == request_id
+                        and row.get("resolution") == "released-unverified"
+                        for row in (state.get("failed_corners") or [])
+                    )
+                    released = (isinstance(request_id, str)
+                                and ((isinstance(entry, dict)
+                                      and entry.get("request_id") == request_id)
+                                     or audited_release)
                                 and self._slot_reusable(adapter, {"request_id": request_id,
                                                                   "corner": corner_id}))
                     if not released:
                         busy = True
                     else:
+                        self._settle_released_failure(adapter, request_id)
                         # The same proof also retires the registry row this
                         # corner left behind, so the skip is real at the shared
                         # program slot and not only in this ledger. Re-running
@@ -977,12 +987,23 @@ class CornerRotationManager:
         except Exception:
             return False
 
+    @staticmethod
+    def _settle_released_failure(adapter, request_id):
+        settle = getattr(adapter, "settle_released_failure", None)
+        if not callable(settle):
+            return False
+        try:
+            return settle(request_id) is True
+        except Exception:
+            return False
+
     def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
                                base_unrestored=False):
         """Settle an unproven automatic failure without stopping the rotation.
 
-        Only the shared-slot proof gates this; the corner's own state is left
-        untouched (an operator or the adapter's own recovery still fixes it).
+        Only the shared-slot proof gates this. Adapters may retire their own
+        failed owner after rechecking that proof; the failed rotation remains
+        in the audit either way.
         The failed use is recorded in history so the rolling cooldown applies
         and the corner returns at its normal cadence. ``base_unrestored`` marks
         the case where the plane was reclaimed from a finished corner whose own
@@ -993,6 +1014,7 @@ class CornerRotationManager:
                                    error_kind=error_kind, now=now,
                                    reason_code="base-game-unrestored" if base_unrestored else None)
         self._mark_released_request(state, reservation["corner"], reservation.get("request_id"), now)
+        self._settle_released_failure(adapter, reservation.get("request_id"))
         # The registry is the only thing the shared program slot reads, and it
         # still names this corner's own state file. Leaving the row there makes
         # ``_owner_free`` observe the untouched ``failed`` record as BUSY and
