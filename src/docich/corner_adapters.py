@@ -421,6 +421,9 @@ class PaperCornerAdapter(GameCornerAdapter):
         """
         return False
 
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
 

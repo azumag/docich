@@ -17,7 +17,9 @@ from .adapters import make_coordinator_adapter
 from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_slot
-from .game_switch import GameSwitchStore, atomic_write_json, new_request_id
+from .game_switch import (GameSwitchError, GameSwitchStore,
+                          TERMINAL_RECEIPT_STATUSES, atomic_write_json,
+                          new_request_id, validate_request_id)
 from .overlay_queue import OVERLAY_BODY_LIMIT
 from .procs import user_bus_env
 from .tmux import Tmux
@@ -223,6 +225,53 @@ class PaperCornerManager:
                 return 'switch-busy'
 
         return self._with_guard(reconcile)
+
+    def settle_released_failure(self, request_id):
+        """Retire a pre-start PAPER owner after rotation proves its slot free."""
+        try:
+            request_id = validate_request_id(request_id)
+        except (TypeError, ValueError, GameSwitchError):
+            return False
+
+        def settle():
+            try:
+                with self.store.lock(exclusive=True):
+                    state = self._read_state()
+                    if (state.get('status') != 'starting'
+                            or state.get('rotation_request_id') != request_id
+                            or state.get('started_at') is not None):
+                        return False
+                    canonical, missing = self.store.canonical.load()
+                    if (missing or canonical.get('phase') not in ('idle', 'ready')
+                            or any(canonical.get(key) is not None for key in
+                                   ('operation', 'request_id', 'deadline_at',
+                                    'candidate', 'previous'))
+                            or canonical.get('retiring')):
+                        return False
+                    active = canonical.get('active')
+                    if (not isinstance(active, dict)
+                            or active.get('game') in (None, PAPER_VIEW_NAME)
+                            or any(not isinstance(active.get(key), str) or not active[key]
+                                   for key in ('game', 'runtime_id', 'lease_id'))
+                            or type(active.get('generation')) is not int
+                            or active['generation'] < 1):
+                        return False
+                    receipt = self.store.receipts.load(request_id)
+                    if (isinstance(receipt, dict)
+                            and receipt.get('status') not in TERMINAL_RECEIPT_STATUSES):
+                        return False
+                    if any(row.get('request_id') == request_id
+                           for row in self.store.receipts.queued()):
+                        return False
+                    state.update(status='interrupted',
+                                 completed_at=state.get('completed_at') or self.clock(),
+                                 end_reason='released-failure-before-start')
+                    self.save(state)
+                    return True
+            except (OSError, ValueError, GameSwitchError):
+                return False
+
+        return self._with_guard(settle) is True
 
     def summary(self):
         try:
