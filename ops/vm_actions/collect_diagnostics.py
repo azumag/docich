@@ -116,6 +116,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import errno
 import math
 import os
 import re
@@ -7512,6 +7513,36 @@ PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
 })
 
 
+PROGRAM_ADMISSION_FAILURE_STAGES = frozenset({
+    'none', 'pending', 'owner', 'queue', 'lock', 'registry', 'fifo',
+    'prediction', 'audio', 'recheck_owners', 'recheck_runtime', 'recheck_audio',
+})
+PROGRAM_ADMISSION_FAILURE_CODES = frozenset({
+    'none', 'missing', 'unsafe_path', 'non_regular', 'oversize', 'json_invalid',
+    'schema_invalid', 'queue_mismatch', 'scan_limit', 'evidence_changed', 'read_error',
+})
+
+
+class _ProgramAdmissionFailure(ValueError):
+    """Only a reviewed fixed code, never exception text, reaches diagnostics."""
+    def __init__(self, code):
+        self.code = code if code in PROGRAM_ADMISSION_FAILURE_CODES else 'schema_invalid'
+        super().__init__(self.code)
+
+
+def _program_admission_failure_code(exc):
+    if isinstance(exc, _ProgramAdmissionFailure):
+        return exc.code
+    if isinstance(exc, OSError):
+        return ('unsafe_path' if exc.errno in {errno.ELOOP, errno.ENOTDIR}
+                else 'missing' if exc.errno == errno.ENOENT
+                else 'non_regular' if exc.errno == errno.EISDIR else 'read_error')
+    if isinstance(exc, _NethackEvidenceError):
+        # This shared reader/UUID validator uses only fixed internal codes.
+        return 'unsafe_path' if exc.args == ('unsafe_path',) else 'schema_invalid'
+    return 'schema_invalid'
+
+
 class _ProgramAdmissionReader(_NethackEvidenceReader):
     """Bounded no-follow reads, including same-byte replacement detection.
 
@@ -7537,35 +7568,42 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
                 if mode == 'presence':
                     info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode):
-                        raise _NethackEvidenceError('invalid_record')
+                        raise _ProgramAdmissionFailure(
+                            'unsafe_path' if stat.S_ISLNK(info.st_mode) else 'non_regular')
                     signature, value = self.fingerprint(info), True
                 else:
                     fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                                  dir_fd=directory)
                     with os.fdopen(fd, 'rb') as stream:
                         before = os.fstat(stream.fileno())
-                        if not stat.S_ISREG(before.st_mode) or before.st_size > self.FILE_BYTES:
-                            raise _NethackEvidenceError('invalid_record')
+                        if not stat.S_ISREG(before.st_mode):
+                            raise _ProgramAdmissionFailure('non_regular')
+                        if before.st_size > self.FILE_BYTES:
+                            raise _ProgramAdmissionFailure('oversize')
                         raw = stream.read(self.FILE_BYTES + 1)
                         after = os.fstat(stream.fileno())
-                    if (self.fingerprint(before) != self.fingerprint(after)
-                            or len(raw) > self.FILE_BYTES):
-                        raise _NethackEvidenceError('evidence_changed')
+                    if self.fingerprint(before) != self.fingerprint(after):
+                        raise _ProgramAdmissionFailure('evidence_changed')
+                    if len(raw) > self.FILE_BYTES:
+                        raise _ProgramAdmissionFailure('oversize')
                     signature = (self.fingerprint(after), raw)
                     value = raw
                     if mode == 'json':
-                        value = json.loads(raw, object_pairs_hook=self.unique_object,
-                                           parse_constant=lambda _: (_ for _ in ()).throw(
-                                               _NethackEvidenceError('invalid_record')))
+                        try:
+                            value = json.loads(raw, object_pairs_hook=self.unique_object,
+                                               parse_constant=lambda _: (_ for _ in ()).throw(
+                                                   _ProgramAdmissionFailure('json_invalid')))
+                        except (ValueError, RecursionError) as exc:
+                            raise _ProgramAdmissionFailure('json_invalid') from exc
                         if not isinstance(value, dict):
-                            raise _NethackEvidenceError('invalid_record')
+                            raise _ProgramAdmissionFailure('schema_invalid')
             finally:
                 os.close(directory)
         except FileNotFoundError:
             signature, value = None, None
         key = (parts, mode)
         if key in self.samples and self.samples[key] != signature:
-            raise _NethackEvidenceError('evidence_changed')
+            raise _ProgramAdmissionFailure('evidence_changed')
         self.samples[key] = signature
         return value
 
@@ -7579,14 +7617,15 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
                 with os.scandir(directory) as entries:
                     for index, entry in enumerate(entries):
                         if index >= self.SCAN_LIMIT:
-                            raise _NethackEvidenceError('scan_limit')
+                            raise _ProgramAdmissionFailure('scan_limit')
                         info = entry.stat(follow_symlinks=False)
                         if not stat.S_ISREG(info.st_mode):
-                            raise _NethackEvidenceError('invalid_record')
+                            raise _ProgramAdmissionFailure(
+                                'unsafe_path' if stat.S_ISLNK(info.st_mode) else 'non_regular')
                         rows.append((entry.name, self.fingerprint(info)))
                 after = self.fingerprint(os.fstat(directory))
                 if before != after:
-                    raise _NethackEvidenceError('evidence_changed')
+                    raise _ProgramAdmissionFailure('evidence_changed')
                 value = tuple(sorted(rows))
                 signature = (after, value)
             finally:
@@ -7595,7 +7634,7 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
             signature, value = None, None
         key = (parts, 'listing')
         if key in self.samples and self.samples[key] != signature:
-            raise _NethackEvidenceError('evidence_changed')
+            raise _ProgramAdmissionFailure('evidence_changed')
         self.samples[key] = signature
         return value
 
@@ -7607,10 +7646,13 @@ class _ProgramAdmissionReader(_NethackEvidenceReader):
                 self.sample(parts, mode)
 
 
-def _program_admission_empty(reason='unavailable'):
+def _program_admission_empty(reason='unavailable', *, stage='none', code='none'):
     return {
         'status': 'unknown', 'reason': reason, 'recovery_authority': False,
-        'observation': 'rechecked_non_atomic',
+        # Method vocabulary alone is not proof that recheck was reached.
+        'observation': 'rechecked_non_atomic', 'recheck_completed': False,
+        'failure_stage': stage if stage in PROGRAM_ADMISSION_FAILURE_STAGES else 'none',
+        'failure_code': code if code in PROGRAM_ADMISSION_FAILURE_CODES else 'schema_invalid',
         'queue_identity_basis': 'fixed_owner_and_selected_at_only',
         'pending_queue_matches': None,
         'owner_created_for_request': None, 'queue_status': 'unknown',
@@ -7680,52 +7722,61 @@ def _collect_program_admission_evidence(state_dir, soren, now):
     remain unknown here when their inputs cannot be safely observed.
     """
     result = _program_admission_empty()
+    stage = 'pending'
     try:
         owners = _ProgramAdmissionReader(Path(state_dir))
         runtime = _ProgramAdmissionReader(Path(soren) / 'tmp' / 'state')
         ledger = owners.sample(('corner_rotation.json',))
         if not isinstance(ledger, dict) or ledger.get('manual_pending'):
-            return _program_admission_empty('pending_unavailable')
+            return _program_admission_empty('pending_unavailable', stage=stage,
+                                            code='missing' if ledger is None else 'schema_invalid')
         pending = ledger.get('pending')
         if (not isinstance(pending, dict) or pending.get('phase') != 'dispatched'
                 or not isinstance(pending.get('corner'), str)
                 or pending['corner'] not in PROGRAM_ADMISSION_OWNERS):
-            return _program_admission_empty('pending_unavailable')
+            return _program_admission_empty('pending_unavailable', stage=stage, code='schema_invalid')
         requested = _finite_number(pending.get('selected_at'))
         request = _nethack_evidence_uuid(pending.get('request_id'))
         if requested is None or not 0 <= requested <= now:
-            return _program_admission_empty('pending_unavailable')
+            return _program_admission_empty('pending_unavailable', stage=stage, code='schema_invalid')
         expected = PROGRAM_ADMISSION_OWNERS[pending['corner']]
+        stage = 'owner'
         owner = owners.sample((expected + '.json',))
         owner_request = owner.get('rotation_request_id') if owner is not None else None
         result['owner_created_for_request'] = (False if owner is None else
             owner_request == request if isinstance(owner_request, str) and re.fullmatch(
                 r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
                 owner_request) else None)
+        stage = 'queue'
         queue = runtime.sample(('docich_program_queue', expected + '.json'))
         if (queue is None or _finite_number(queue.get('requested_at')) != requested
                 or queue.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES):
-            return _program_admission_empty('pending_queue_unverified')
+            return _program_admission_empty('pending_queue_unverified', stage=stage,
+                                            code='missing' if queue is None else 'queue_mismatch')
         result['pending_queue_matches'] = True
         result['queue_status'] = queue['status']
+        stage = 'lock'
         result['program_lock']['present'] = bool(runtime.sample(('docich_program.lock',), 'presence'))
+        stage = 'registry'
         result['registry_owner_free'] = _program_admission_owner_free(runtime, owners, expected)
+        stage = 'fifo'
         rows = runtime.listing(('docich_program_queue',))
         if rows is None:
-            raise _NethackEvidenceError('invalid_record')
+            raise _ProgramAdmissionFailure('missing')
         earlier = False
         for name, _ in rows:
             if not name.endswith('.json') or name == expected + '.json':
                 continue
             entry = runtime.sample(('docich_program_queue', name))
             if entry is None or entry.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES:
-                raise _NethackEvidenceError('invalid_record')
+                raise _ProgramAdmissionFailure('schema_invalid')
             if entry['status'] in {'waiting', 'waiting_turn'}:
                 stamp = _finite_number(entry.get('requested_at'))
                 if stamp is None or stamp < 0 or stamp > now:
-                    raise _NethackEvidenceError('invalid_record')
+                    raise _ProgramAdmissionFailure('schema_invalid')
                 earlier |= stamp < requested  # No age cutoff or lexical tie-break.
         result['fifo_scan_complete'], result['earlier_waiter'] = True, earlier
+        stage = 'prediction'
         prediction = runtime.sample(('current_prediction.json',))
         local_status = prediction.get('status') if prediction is not None else None
         local_active = (local_status in {'ACTIVE', 'LOCKED'} if local_status in {
@@ -7741,6 +7792,7 @@ def _collect_program_admission_evidence(state_dir, soren, now):
         # Reuse the existing resolver, suffixes and count/quiet semantics.
         # Do not invoke the legacy unbounded scan a second time: every scan
         # in this projection is bounded and no-follow. No bodies or .env reads.
+        stage = 'audio'
         audio_path = _comment_queue_dir(Path(soren))
         audio_reader = _ProgramAdmissionReader(audio_path)
         audio_rows = audio_reader.listing(())
@@ -7754,19 +7806,23 @@ def _collect_program_admission_evidence(state_dir, soren, now):
         # worker environment or .env; runtime source verification stays false.
         result['audio'].update(readable=True, queued=counts[0], playing=counts[1],
                                quiet=not any(counts))
+        stage = 'prediction'
         worker_again = _program_admission_worker(runtime)
         if worker_again != worker:
-            raise _NethackEvidenceError('evidence_changed')
-        for reader in (owners, runtime, audio_reader):
+            raise _ProgramAdmissionFailure('evidence_changed')
+        for stage, reader in (('recheck_owners', owners), ('recheck_runtime', runtime),
+                              ('recheck_audio', audio_reader)):
             reader.recheck()
+        result['recheck_completed'] = True
         result.update(status='observed', reason=(
             'pre_owner' if result['owner_created_for_request'] is False else
             'owner_already_created' if result['owner_created_for_request'] is True else
             'owner_identity_unverified'))
         return result
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError,
-            _NethackEvidenceError):
-        return _program_admission_empty('evidence_unverified')
+            _NethackEvidenceError) as exc:
+        return _program_admission_empty('evidence_unverified', stage=stage,
+                                        code=_program_admission_failure_code(exc))
 
 
 def _nethack_evidence_uuid(value):

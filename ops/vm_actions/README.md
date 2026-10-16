@@ -336,3 +336,17 @@ request UUID がないため、一致は同一リクエストの所有証明で�
 
 既存の診断budget削減順序は変えず、latest NetHack履歴より前にCPU/audio詳細を
 削減する方針を保ちます。新投影がある場合も同じ順序を回帰テストします。
+
+失敗時も `observation:rechecked_non_atomic` は観測方式の固定語彙です。
+`recheck_completed:true` が全sourceの再照合完了を示し、unknown/早期returnではfalseです。
+`failure_stage` と `failure_code` は固定enumだけを返し、安全path拒否、非regular、
+64KiB超過、JSON/schema不正、走査上限、途中更新、読取失敗を区別します。
+例外本文、filename/path、request値を返さず、失敗時の依存値は従来どおりnullです。
+これらはcollectorの読取失敗分類であり、runtimeの待機理由や復旧許可を表しません。
+
+正常なaudio writerもqueue直下に `audio_dedup` / `.weather_audio_receipts` などの
+metadata directoryを作ります。現行のstrict regular-only scanはこれらも拒否するため、
+synthetic回帰では `failure_stage:audio` / `failure_code:non_regular` として観測します。
+このprovenance追加ではreaderの安全条件・読取対象を変えず、directoryを無視する等の
+挙動変更は行いません。current_predictionの公開writerにstatusがない形式も、
+local_active/ waitingを推測せずnullに保つ回帰で扱います。

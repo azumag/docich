@@ -372,3 +372,135 @@ def test_collector_env_does_not_attest_worker_queue_source(admission, monkeypatc
     assert result['quiet'] is True
     assert result['runtime_source_verified'] is False
     assert result['source_basis'] == 'collector_env_or_default'
+
+
+@pytest.mark.parametrize('case,stage,code', [
+    ('missing_pending', 'pending', 'missing'),
+    ('invalid_pending_json', 'pending', 'json_invalid'),
+    ('invalid_pending_schema', 'pending', 'schema_invalid'),
+    ('oversized_owner', 'owner', 'oversize'),
+    ('owner_directory', 'owner', 'non_regular'),
+    ('missing_queue', 'queue', 'missing'),
+    ('queue_mismatch', 'queue', 'queue_mismatch'),
+    ('symlink_lock', 'lock', 'unsafe_path'),
+    ('invalid_registry_json', 'registry', 'json_invalid'),
+    ('fifo_directory', 'fifo', 'non_regular'),
+    ('fifo_scan_limit', 'fifo', 'scan_limit'),
+    ('prediction_array', 'prediction', 'schema_invalid'),
+    ('prediction_symlink', 'prediction', 'unsafe_path'),
+    ('audio_directory', 'audio', 'non_regular'),
+])
+def test_failure_provenance_distinguishes_safe_fixed_stages(admission, case, stage, code):
+    owners, soren, runtime, collect = admission
+    if case == 'missing_pending':
+        (owners / 'corner_rotation.json').unlink()
+    elif case == 'invalid_pending_json':
+        (owners / 'corner_rotation.json').write_text('{SECRET')
+    elif case == 'invalid_pending_schema':
+        write(owners / 'corner_rotation.json', {'pending': {'corner': 'SECRET'}})
+    elif case == 'oversized_owner':
+        (owners / 'retro_corner.json').write_text('SECRET' * 12000)
+    elif case == 'owner_directory':
+        (owners / 'retro_corner.json').mkdir()
+    elif case == 'missing_queue':
+        (runtime / 'docich_program_queue' / 'retro_corner.json').unlink()
+    elif case == 'queue_mismatch':
+        write(runtime / 'docich_program_queue' / 'retro_corner.json',
+              {'status': 'waiting_turn', 'requested_at': 99})
+    elif case == 'symlink_lock':
+        (runtime / 'docich_program.lock').symlink_to(owners / 'corner_rotation.json')
+    elif case == 'invalid_registry_json':
+        (runtime / 'docich_program_active.json').write_text('{SECRET')
+    elif case == 'fifo_directory':
+        (runtime / 'docich_program_queue' / 'SECRET').mkdir()
+    elif case == 'fifo_scan_limit':
+        for index in range(129):
+            write(runtime / 'docich_program_queue' / f'SECRET{index}.json', {'status': 'done'})
+    elif case == 'prediction_array':
+        write(runtime / 'current_prediction.json', [])
+    elif case == 'prediction_symlink':
+        (runtime / 'current_prediction.json').unlink()
+        (runtime / 'current_prediction.json').symlink_to(owners / 'corner_rotation.json')
+    else:
+        (soren / 'tmp' / '.comment_queue' / 'SECRET').mkdir(parents=True)
+    result = collect()
+    assert result['status'] == 'unknown'
+    assert result['failure_stage'] == stage
+    assert result['failure_code'] == code
+    assert result['recheck_completed'] is False
+    assert result['pending_queue_matches'] is None
+    assert result['recovery_authority'] is False
+    for private in ('SECRET', REQUEST, str(owners), str(soren)):
+        assert private not in json.dumps(result)
+
+
+@pytest.mark.parametrize('directory', ['audio_dedup', '.weather_audio_receipts'])
+def test_public_audio_writer_metadata_directory_has_explicit_failure(admission, directory):
+    # Public fixed Soren gitlink68f02445 writes these normal queue directories:
+    # lib/outbound_queue.sh:324 and lib/weather_audio_consumer.py:242.
+    # Keep the existing strict reader unchanged, but stop hiding its refusal.
+    _, soren, _, collect = admission
+    (soren / 'tmp' / '.comment_queue' / directory).mkdir(parents=True)
+    result = collect()
+    assert (result['failure_stage'], result['failure_code']) == ('audio', 'non_regular')
+    assert result['audio']['quiet'] is None
+    assert result['recheck_completed'] is False
+    assert directory not in json.dumps(result)
+
+
+def test_success_truthfully_marks_completed_recheck(admission):
+    result = admission[-1]()
+    assert result['status'] == 'observed'
+    assert result['recheck_completed'] is True
+    assert result['failure_stage'] == 'none'
+    assert result['failure_code'] == 'none'
+
+
+def test_public_prediction_writer_without_status_remains_unverified(admission, monkeypatch):
+    # Public twitch_predictions.sh:845-855 writes this shape without status.
+    _, _, runtime, collect = admission
+    (runtime / 'prediction_worker.paused').unlink()
+    (runtime / 'prediction_worker.pid').write_text('123')
+    monkeypatch.setattr(diag.os, 'kill', lambda *_: None)
+    write(runtime / 'current_prediction.json', {
+        'id': 'SECRET', 'title': 'SECRET', 'outcomes': {'a': 'SECRET', 'b': 'SECRET'},
+        'created_at': 90, 'lock_at': 110})
+    result = collect()
+    assert result['status'] == 'observed'
+    assert result['prediction']['worker_running'] is True
+    assert result['prediction']['local_active'] is None
+    assert result['prediction']['waiting'] is None
+    assert result['recheck_completed'] is True
+    assert 'SECRET' not in json.dumps(result)
+
+
+def test_read_error_never_exposes_exception_body_or_filename(admission, monkeypatch):
+    original = diag._ProgramAdmissionReader.sample
+    def unreadable(reader, parts, mode='json'):
+        if tuple(parts) == ('retro_corner.json',):
+            raise PermissionError(13, 'SECRET exception body', '/SECRET/path')
+        return original(reader, parts, mode)
+    monkeypatch.setattr(diag._ProgramAdmissionReader, 'sample', unreadable)
+    result = admission[-1]()
+    assert (result['failure_stage'], result['failure_code']) == ('owner', 'read_error')
+    assert result['recheck_completed'] is False
+    assert 'SECRET' not in json.dumps(result)
+
+
+def test_recheck_failure_is_not_reported_as_completed(admission, monkeypatch):
+    original = diag._ProgramAdmissionReader.recheck
+    def changed(reader):
+        raise diag._ProgramAdmissionFailure('evidence_changed')
+    monkeypatch.setattr(diag._ProgramAdmissionReader, 'recheck', changed)
+    result = admission[-1]()
+    assert (result['failure_stage'], result['failure_code']) == ('recheck_owners', 'evidence_changed')
+    assert result['recheck_completed'] is False
+    monkeypatch.setattr(diag._ProgramAdmissionReader, 'recheck', original)
+    assert admission[-1]()['recheck_completed'] is True
+
+
+def test_failure_vocabularies_are_closed_and_do_not_echo_input():
+    result = diag._program_admission_empty(stage='SECRET', code='SECRET')
+    assert result['failure_stage'] in diag.PROGRAM_ADMISSION_FAILURE_STAGES
+    assert result['failure_code'] in diag.PROGRAM_ADMISSION_FAILURE_CODES
+    assert 'SECRET' not in json.dumps(result)
