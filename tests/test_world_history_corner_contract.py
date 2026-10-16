@@ -169,3 +169,49 @@ def test_synthetic_fixture_contains_historical_improvement_input():
         "実世界史の評価や歴史解釈の改善を示さない",
     ):
         assert required in narrative, required
+
+
+def test_runtime_overlay_preserves_question_labels_and_citations():
+    import copy
+
+    from docich.new_corner_runtime import (
+        load_corner_fixture,
+        render_overlay,
+    )
+
+    data = load_corner_fixture("world-history", root=Path(__file__).resolve().parents[1])
+    overlay = render_overlay(data)
+    assert overlay["question"] == data["topic"]["currentQuestion"]
+    assert overlay["segmentLabels"] == ["fact", "analysis", "forecast"]
+    assert data["topic"]["url"] in overlay["citationUrls"]
+
+    mutated = copy.deepcopy(data)
+    mutated["topic"]["url"] = ""
+    mutated["topic"]["primarySources"] = []
+    mutated["verifiedWebMaterial"]["items"] = []
+    try:
+        render_overlay(mutated)
+    except ValueError as exc:
+        assert "citation" in str(exc).lower() or "citation" in str(exc)
+    else:
+        raise AssertionError("runtime overlay did not fail on mutated citations")
+
+def test_runtime_overlay_fails_on_missing_required_section():
+    import copy
+
+    from docich.new_corner_runtime import (
+        load_corner_fixture,
+        render_overlay,
+    )
+
+    data = load_corner_fixture("world-history", root=Path(__file__).resolve().parents[1])
+    mutated = copy.deepcopy(data)
+    del mutated["topic"]["currentQuestion"]
+
+    try:
+        render_overlay(mutated)
+    except (ValueError, KeyError):
+        pass
+    else:
+        raise AssertionError("runtime overlay did not reject a missing section")
+
