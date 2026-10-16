@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
+import uuid
 import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
@@ -96,6 +97,54 @@ def test_terminal_failure_reconciliation_holds_both_ownership_guards(tmp_path, m
     canonical['active']['game'] = 'moon-buggy'
     assert mgr.reconcile_terminal_failure() == 'unchanged'
     assert json.loads(mgr.path.read_text()) == {**original, 'status': 'completed'}
+
+
+def test_released_prestart_paper_owner_allows_later_rotation(tmp_path, monkeypatch):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'sorengame', 'runtime_id': 'base', 'lease_id': 'lease', 'generation': 1}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(old_request) is True
+    saved = json.loads(mgr.path.read_text())
+    assert saved['status'] == 'interrupted'
+    assert saved['rotation_request_id'] == old_request
+    assert saved['end_reason'] == 'released-failure-before-start'
+
+    seen = []
+    monkeypatch.setattr(mgr, '_start_locked', lambda **kwargs: seen.append(kwargs) or 'completed')
+    new_request = str(uuid.uuid4())
+    assert mgr.run_rotation(new_request) == 'completed'
+    assert seen == [{'rotation_request_id': new_request}]
+
+
+def test_released_prestart_paper_owner_rejects_unproven_slot(tmp_path, monkeypatch):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'paper-view', 'runtime_id': 'paper', 'lease_id': 'lease', 'generation': 2}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(str(uuid.uuid4())) is False
+    assert mgr.settle_released_failure(old_request) is False
+    canonical['active'] = {
+        'game': 'sorengame', 'runtime_id': 'base', 'lease_id': 'lease', 'generation': 3}
+    canonical['phase'] = 'draining'
+    assert mgr.settle_released_failure(old_request) is False
+    canonical['phase'] = 'ready'
+    with mgr.store.lock(exclusive=True):
+        assert mgr.settle_released_failure(old_request) is False
+    monkeypatch.setattr(mgr.store.receipts, 'load',
+                        lambda _request_id: {'status': 'accepted'})
+    assert mgr.settle_released_failure(old_request) is False
+    assert json.loads(mgr.path.read_text())['status'] == 'starting'
 
 
 def test_delayed_boundary_runs_all_eight_narrations(tmp_path):

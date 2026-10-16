@@ -421,6 +421,9 @@ class PaperCornerAdapter(GameCornerAdapter):
         """
         return False
 
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
 
@@ -724,6 +727,9 @@ class DoushiCornerAdapter:
         if state_file is not None and state_file != self.state_path.name:
             return False
         return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
 
     def resources_released(self):
         return self.manager.resources_released()
