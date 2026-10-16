@@ -146,7 +146,28 @@ def _load_registry():
     return module
 
 
+def _load_founding_marker_rule():
+    """The recovery guard's marker-ownership rule, shared instead of re-derived.
+
+    Diagnostics report the same answer the guard acts on (#2345). A load
+    failure must not fail the whole diagnostics operation, so it degrades to
+    "unknown" rather than to a wrong answer.
+    """
+    try:
+        spec = _importlib_util.spec_from_file_location(
+            "recover_soren_game_rule", str(PROD_ROOT / "ops" / "vm_actions" / "recover_soren_game.py")
+        )
+        module = _importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.founding_marker_is_current
+    except Exception:
+        # Diagnostics must never fail closed here: an unavailable rule degrades
+        # the two derived fields to null instead of failing the operation.
+        return None
+
+
 _REG = _load_registry()
+_FOUNDING_MARKER_IS_CURRENT = _load_founding_marker_rule()
 DIAG_WINDOW_SEC = _REG.DIAG_WINDOW_SEC
 DUPLICATES_FRESH_SEC = _REG.DUPLICATES_FRESH_SEC
 KNOWN_LANES = _REG.KNOWN_LANES
@@ -5675,6 +5696,7 @@ def _collect_soren_game(soren, now):
     runner = _read_json(soren / "tmp/state/main_strategy_runner_active.json")
     result = {"present": path.is_file(), "readable": isinstance(state, dict),
               "state": "unknown", "age_sec": -1, "founding_seen": None,
+              "founding_marker_current": None, "founding_marker_stale": None,
               "make_soren_count": None, "game_count": None, "score": None,
               "pieces_count": None,
               "runner_pid": None, "runner_alive": None}
@@ -5692,6 +5714,13 @@ def _collect_soren_game(soren, now):
         except OSError:
             pass
     result["founding_seen"] = (soren / "tmp/markers/.soviet_created").exists()
+    # #2345: the raw marker only says that *some* match founded. Operators need
+    # to know whether it still belongs to this board; a stale marker used to
+    # read as founding evidence and hid a real GAME OVER for ~15h40m.
+    if _FOUNDING_MARKER_IS_CURRENT is not None:
+        result["founding_marker_current"] = _FOUNDING_MARKER_IS_CURRENT(soren, path)
+        result["founding_marker_stale"] = bool(
+            result["founding_seen"] and not result["founding_marker_current"])
     try:
         count = int((soren / "game_count.txt").read_text(encoding="utf-8").strip())
         result["game_count"] = count if 0 <= count <= 100000000 else None
