@@ -589,3 +589,36 @@ def test_released_failure_keeps_another_corners_registry_row(tmp_path):
 
     assert outcome["reason"] == RELEASED_REASON
     assert json.loads(registry.read_text())["owner_state"] == str(other_file)
+
+
+def test_next_tick_clears_registry_from_an_already_released_failure(tmp_path):
+    """A row left by an older release must not block a later program slot."""
+    registry_dir = tmp_path / "soren" / "tmp" / "state"
+    registry_dir.mkdir(parents=True)
+    registry = registry_dir / "docich_program_active.json"
+    manager, _clock, executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+        soren_root=tmp_path / "soren",
+    )
+    for corner_id, adapter in adapters.items():
+        adapter.state_path = tmp_path / "run" / f"{corner_id}_corner.json"
+
+    first = manager.tick()
+    assert first["reason"] == RELEASED_REASON
+    released_corner = first["corner"]
+    request_id = ledger(manager)["released_requests"][released_corner]["request_id"]
+    released_state = adapters[released_corner].state_path
+    adapters[released_corner].states = [{
+        "status": "failed", "rotation_request_id": request_id,
+    }]
+    registry.write_text(json.dumps({"owner_state": str(released_state)}))
+
+    executor.result = "completed"
+    second = manager.tick()
+
+    assert second["corner"] != released_corner
+    assert second["status"] == "ready"
+    assert not registry.exists()
