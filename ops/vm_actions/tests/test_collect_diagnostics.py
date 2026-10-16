@@ -570,7 +570,7 @@ def test_pulse_mute_count_includes_streams_omitted_from_details():
     assert output['muted'] == 1
 
 
-def test_pulse_stream_detail_is_the_last_thing_dropped_for_the_size_budget():
+def test_pulse_stream_detail_yields_to_the_size_budget_but_counts_survive():
     # A muted BGM must not disappear behind the diagnostics size budget: the
     # mute count survives even when the per-stream detail is omitted (#968).
     module = load_collector()

@@ -254,6 +254,75 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(payload['ai']['anomalous_components'], {'preserved': 1})
         self.assertNotIn('output_omitted', payload['nethack_history']['daily'])
 
+    def test_latest_result_summary_beats_cpu_and_audio_details(self):
+        self.run_record(score=42, turns=120, max_depth=7)
+        self.daily.rmdir()
+        components = [
+            {'component': f'worker-{index}-' + 'x' * 48, 'cpu_pct': index,
+             'processes': index + 1}
+            for index in range(12)
+        ]
+        spawns = [
+            {'component': f'worker-{index}-' + 'x' * 48,
+             'spawner': 'poll-worker-' + 'y' * 40, 'count': index + 1}
+            for index in range(12)
+        ]
+        streams = [
+            {'sink': 'sink-0', 'role': 'music', 'mute': index < 2,
+             'corked': False, 'volume_percent': [100], 'player': 'ffmpeg'}
+            for index in range(64)
+        ]
+        payload = {
+            'nethack_history': self.collect(),
+            'cpu_profile': {
+                'schema_version': 1, 'status': 'ok', 'present': True, 'readable': True,
+                'meta': {'samples': 48, 'ncpu': 4},
+                'host': {'cpu_busy_pct': 72.5, 'processes_end': 23},
+                'components': components, 'components_truncated': 0,
+                'spawns': spawns,
+            },
+            'pulse_sink_inputs': {
+                'schema_version': 1, 'readable': True, 'reason': None,
+                'total': 64, 'muted': 2, 'truncated': False, 'streams': streams,
+            },
+            'ai': {'recent_events': ['old event'], 'anomalous_components': {}},
+            'workers': {'details': {}},
+            'soren91_drop_profile': {'profileStatus': 'missing'},
+        }
+        import copy
+        expected = copy.deepcopy(payload)
+        expected['ai']['recent_events'] = []
+        expected['ai']['recent_events_omitted'] = True
+        profile = expected['cpu_profile']
+        profile.update(components=[], components_omitted=len(components),
+                       spawns=[], spawns_omitted=len(spawns))
+        expected['pulse_sink_inputs'].update(
+            streams=[], truncated=True, output_omitted=True)
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+            text = diag._diagnostics_budget(payload)
+
+        self.assertLessEqual(len(text.encode()), budget)
+        latest = payload['nethack_history']['completed_runs']['records'][0]
+        self.assertEqual(latest['terminal_status'], 'dead')
+        self.assertEqual(latest['score'], 42)
+        self.assertEqual(latest['turns'], 120)
+        self.assertEqual(latest['max_depth'], 7)
+        self.assertEqual(latest['expedition'], 0)
+        self.assertEqual(payload['cpu_profile']['meta'], {'samples': 48, 'ncpu': 4})
+        self.assertEqual(payload['cpu_profile']['host'],
+                         {'cpu_busy_pct': 72.5, 'processes_end': 23})
+        self.assertEqual(payload['cpu_profile']['components'], [])
+        self.assertEqual(payload['cpu_profile']['components_omitted'], len(components))
+        self.assertEqual(payload['cpu_profile']['spawns'], [])
+        self.assertEqual(payload['cpu_profile']['spawns_omitted'], len(spawns))
+        audio = payload['pulse_sink_inputs']
+        self.assertEqual((audio['total'], audio['muted']), (64, 2))
+        self.assertEqual(audio['streams'], [])
+        self.assertTrue(audio['output_omitted'])
+        self.assertEqual(payload, expected)
+
     def test_full_budget_can_drop_latest_only_after_other_reductions(self):
         self.run_record()
         self.daily.rmdir()
