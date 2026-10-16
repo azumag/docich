@@ -267,6 +267,14 @@ class PaperCornerManager:
                                  completed_at=state.get('completed_at') or self.clock(),
                                  end_reason='released-failure-before-start')
                     self.save(state)
+                    # stop_manual() writes a durable marker for a *starting*
+                    # owner. Leaving this old request's marker behind would
+                    # make the next owner restore right after it starts (the
+                    # old stop carries over). Clear it under the same guards
+                    # that proved the old owner released; Doushi's settle does
+                    # the same.
+                    from .corner_rotation import clear_rotation_stop_request
+                    clear_rotation_stop_request(self.g, self.path)
                     return True
             except (OSError, ValueError, GameSwitchError):
                 return False

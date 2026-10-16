@@ -355,18 +355,25 @@ def test_released_failed_doushi_owner_allows_a_later_rotation(tmp_path):
     old = adapter.manager._new_state(old_request)
     old.update(status="failed", completed_at=now[0], last_error_code="prepare_failed")
     adapter.manager._save(old)
+    # The old request's durable stop marker must not carry over to the next
+    # owner either (Paper's settle mirrors this).
+    marker = Path(g.state_dir) / STOP_REQUEST_DIR / "doushi_corner.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"state_file": "doushi_corner.json", "requested_at": now[0]}))
 
     assert adapter.settle_released_failure(old_request) is True
     settled = json.loads(adapter.state_path.read_text())
     assert settled["status"] == "interrupted"
     assert settled["rotation_request_id"] == old_request
     assert settled["end_reason"] == "released-failure-before-retry"
+    assert not marker.exists()
 
     new_request = str(uuid.uuid4())
     assert adapter.manager.run_rotation(new_request) == "completed"
     current = json.loads(adapter.state_path.read_text())
     assert current["rotation_request_id"] == new_request
     assert current["status"] == "completed"
+    assert not marker.exists()
 
 
 def test_released_failed_doushi_owner_requires_the_exact_request(tmp_path):
