@@ -656,6 +656,13 @@ game = "yosou-view", enabled = true, audio_enabled = true }` を登録してい�
 （2026-10-14 に有効化、2026-10-15 に `manual_only` を解除して自動抽選へ追加・読み上げを有効化）。
 チャネルポイント予想の
 的中率ランキング（上位予想者のみ集計）を 960×540 の読み取り専用 view で表示する。
+配信では天気予報と同じく配信ネイティブの情報画面として扱い、`display.width/height`
+（本番 1280×720）が既知なら `(0, 0, width, height)` の全画面に提示して、コーナー中だけ
+ステータス枠・通知枠を覆う（occlusion。#2237、2026-10-15 オーナー判断。枠の位置・サイズは
+変更せず、終了は既存 GameSwitch の復帰経路で元画面へ戻す。枠を隠す/戻す専用経路は追加
+しないため `audio-complete` 早期終了と復帰が二重にならない。`display.width/height` が無い
+環境では従来の `viewport` へ fallback する）。
+詳細は `docs/features/yosou-oh-corner.md` と `AGENTS.md` の全画面例外を参照。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
 view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（catalog の `duration_minutes` で
