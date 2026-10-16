@@ -2402,6 +2402,19 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertIn("start-hanjuku", data["detail"])
         popen.assert_not_called()
 
+        # The read-only catalog keeps this corner selectable for Stop while
+        # explaining that Start must retain the owner-only workflow gates.
+        with mock.patch("docich.corner_rotation.CornerRotationManager") as manager:
+            status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        row = view["catalog"][0]
+        self.assertTrue(row["manual"])
+        self.assertFalse(row["manual_start"])
+        self.assertTrue(row["manual_stop"])
+        self.assertEqual(row["manual_start_reason"], "operator-workflow-required")
+        self.assertEqual(row["manual_mode"], "runner")
+        manager.assert_not_called()
+
     def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
         self._write_catalog_config()
         with mock.patch("docich.webui.subprocess.Popen") as popen:
@@ -3237,30 +3250,115 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
                 self.assertEqual([], _shutdown_test_server(server, th))
 
 
+class TestCornerManualCapabilities(unittest.TestCase):
+    def test_game_start_capability_requires_cli_and_preserves_stop(self):
+        for game, adapter, allowed, reason in (
+            ("nsnake", "cli", True, None),
+            ("hanjuku-hero", "retroarch", False, "operator-workflow-required"),
+            ("other-game", "retroarch", False, "non-cli-manual-unsupported"),
+        ):
+            with self.subTest(game=game), mock.patch(
+                "docich.config.load_game", return_value=mock.Mock(adapter=adapter)
+            ):
+                row = mock.Mock(adapter="game", game=game)
+                self.assertEqual(webui._corner_manual_capabilities(mock.Mock(), row), {
+                    "manual_start": allowed, "manual_stop": True,
+                    "manual_start_reason": reason,
+                })
+
+    def test_unknown_game_configuration_fails_closed_without_error_text(self):
+        with mock.patch("docich.config.load_game", side_effect=ValueError("PRIVATE-CONFIG")):
+            result = webui._corner_manual_capabilities(
+                mock.Mock(), mock.Mock(adapter="game", game="unknown"))
+        self.assertEqual(result, {"manual_start": False, "manual_stop": True,
+                                  "manual_start_reason": "game-configuration-unavailable"})
+        self.assertNotIn("PRIVATE-CONFIG", json.dumps(result))
+
+    def test_other_runners_and_queued_corners_keep_both_controls(self):
+        for adapter in ("nethack", "paper", "meriken", "weather", "tsuitate", "yoso", "doushi"):
+            with self.subTest(adapter=adapter):
+                result = webui._corner_manual_capabilities(
+                    mock.Mock(), mock.Mock(adapter=adapter, game="test"))
+                self.assertEqual(result, {"manual_start": True, "manual_stop": True,
+                                          "manual_start_reason": None})
+
+
 class TestCornerReservationDisplay(unittest.TestCase):
-    def _render(self, rotation, *, weather_status="completed"):
+    def _render(self, rotation, *, weather_status="completed", catalog=None,
+                corners=None, selected="weather", select_after=None):
         if shutil.which("node") is None:
             self.skipTest("JS レンダリング検証には node が必要 (CI runner には同梱)")
         source = webui.INDEX_HTML.split("const ROT_STATUS_JA=", 1)[1].split(
             "async function cornerAction", 1)[0]
         data = {"rotation": rotation, "game_switch": {"phase": "ready", "active_game": "sorengame"},
-                "catalog_status": "available", "catalog": [
+                "catalog_status": "available", "catalog": catalog if catalog is not None else [
                     {"id": "weather", "game": "weather-view", "adapter": "weather",
                      "manual": True, "manual_mode": "queue", "enabled": True, "paused": False,
                      "duration_minutes": 1, "state_file": "weather_corner", "eligible": True}],
-                "corners": {"weather_corner": {"present": True, "status": weather_status}}}
+                "corners": corners if corners is not None else {
+                    "weather_corner": {"present": True, "status": weather_status}}}
         script = '''
 const elements={};
-const document={getElementById(id){return elements[id]||(elements[id]={value:id==='corners-select'?'weather':'',innerHTML:'',textContent:'',style:{},querySelectorAll(){return []}})}};
+''' + "const selected=" + json.dumps(selected) + ''';
+const document={getElementById(id){return elements[id]||(elements[id]={value:id==='corners-select'?selected:'',innerHTML:'',textContent:'',style:{},querySelectorAll(){return []}})}};
 const esc=x=>String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtTime=x=>x?String(x):'-';
-''' + "const ROT_STATUS_JA=" + source + "\nrenderCorners(" + json.dumps(data) + ''');
-const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
+''' + "const ROT_STATUS_JA=" + source + "\nrenderCorners(" + json.dumps(data) + ");\n" + (
+            "document.getElementById('corners-select').value=" + json.dumps(select_after)
+            + ";updateCornerButtons();\n" if select_after is not None else ""
+        ) + '''
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration','corners-start-operator'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_hanjuku_disables_direct_start_but_keeps_stop_and_owner_guidance(self):
+        row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+               "manual": True, "manual_start": False, "manual_stop": True,
+               "manual_start_reason": "operator-workflow-required", "manual_mode": "runner",
+               "enabled": True, "paused": False, "state_file": "retro_corner"}
+        for state, can_stop in (("completed", False), ("active", True), ("restoring", True)):
+            with self.subTest(state=state):
+                out = self._render({"status": "ready"}, catalog=[row], selected=row["id"],
+                                   corners={"retro_corner": {"present": True,
+                                            "status": state, "game": "hanjuku-hero"}})
+                self.assertTrue(out["corners-start"]["disabled"])
+                self.assertTrue(out["corners-duration"]["disabled"])
+                self.assertEqual(out["corners-stop"]["disabled"], not can_stop)
+                self.assertEqual(out["corners-start-operator"]["style"]["display"], "")
+                self.assertIn("operation=start-hanjuku", out["corners-hint"]["textContent"])
+                self.assertIn("confirm=production", out["corners-hint"]["textContent"])
+        self.assertIn('href="https://github.com/azumag/docich/actions/workflows/corner-rotation-operator.yml"',
+                      webui.INDEX_HTML)
+
+    def test_selection_change_clears_operator_guidance_and_legacy_rows_still_start(self):
+        catalog = [
+            {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+             "manual": True, "manual_start": False, "manual_stop": True,
+             "manual_start_reason": "operator-workflow-required", "state_file": "retro_corner"},
+            {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,
+             "manual_mode": "runner", "state_file": "retro_corner"},
+        ]
+        for selected, changed, can_start in (("hanjuku-hero", "nsnake", True),
+                                             ("nsnake", "hanjuku-hero", False)):
+            with self.subTest(selected=selected):
+                out = self._render({"status": "ready"}, catalog=catalog, corners={},
+                                   selected=selected, select_after=changed)
+                self.assertEqual(out["corners-start"]["disabled"], not can_start)
+                self.assertEqual(out["corners-duration"]["disabled"], not can_start)
+                self.assertEqual(out["corners-start-operator"]["style"]["display"],
+                                 "none" if can_start else "")
+                self.assertEqual("start-hanjuku" in out["corners-hint"]["textContent"], not can_start)
+
+    def test_explicit_stop_capability_is_independent_of_start(self):
+        row = {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,
+               "manual_start": True, "manual_stop": False, "state_file": "retro_corner"}
+        out = self._render({"status": "ready"}, catalog=[row], selected="nsnake",
+                           corners={"retro_corner": {"present": True, "status": "active",
+                                                      "game": "nsnake"}})
+        self.assertTrue(out["corners-stop"]["disabled"])
 
     def test_queued_weather_and_blocking_owner_are_visible_while_switch_is_ready(self):
         out = self._render({"status": "waiting", "reason": "manual-request-needs-resume-or-recovery",

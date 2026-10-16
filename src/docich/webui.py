@@ -2141,6 +2141,31 @@ def _soren91_renderer_view(g: GlobalConfig) -> dict[str, Any]:
     }
 
 
+def _corner_manual_capabilities(g: GlobalConfig, row: Any) -> dict[str, Any]:
+    """Describe direct WebUI controls without changing their authorization.
+
+    ``manual`` remains the legacy start-or-stop selection flag. RetroArch can
+    still be stopped here even though the one-off start runner is CLI-only.
+    """
+    supported = (row.adapter in _CORNER_MANUAL_LAUNCHERS
+                 or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS)
+    start, reason = supported, None
+    if supported and row.adapter == "game":
+        from .config import load_game
+
+        try:
+            game_adapter = load_game(g, row.game).adapter
+        except Exception:
+            start, reason = False, "game-configuration-unavailable"
+        else:
+            if game_adapter != "cli":
+                start = False
+                reason = ("operator-workflow-required" if row.game == "hanjuku-hero"
+                          else "non-cli-manual-unsupported")
+    return {"manual_start": start, "manual_stop": supported,
+            "manual_start_reason": reason}
+
+
 def _corners_view(g: GlobalConfig) -> dict[str, Any]:
     """Read-only page model: rotation ledger + game switch + catalog + corner states."""
     from .corner_catalog import load_catalog
@@ -2175,6 +2200,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "manual_only": bool(row.manual_only),
                 "manual": (row.adapter in _CORNER_MANUAL_LAUNCHERS
                            or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS),
+                **_corner_manual_capabilities(g, row),
                 "manual_mode": "queue" if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS else "runner",
                 "duration_minutes": row.duration_minutes,
                 "eligible": row.id in eligible_ids,
