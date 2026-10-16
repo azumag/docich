@@ -29,7 +29,6 @@ ALLOWED_PHASES = {"recovery_required", "failed"}
 ALLOWED_CLEANUP_PENDING = {"true", "false"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
-
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
@@ -65,6 +64,8 @@ def main() -> None:
     cleanup_pending = env.get("INPUT_CLEANUP_PENDING", "")
     if cleanup_pending not in ALLOWED_CLEANUP_PENDING:
         fail("invalid or unknown cleanup_pending")
+    if env.get("INPUT_CONFIRM", "") != "production":
+        fail("production confirmation required")
     result = {
         "operation": OPERATION,
         "target": "production",
