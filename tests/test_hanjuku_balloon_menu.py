@@ -51,8 +51,11 @@ def test_menu_recovery_shout_and_recovery_cycle(records):
     assert mem['battle']['balloon_finch_survival']['pending']['action'] == 'skill2'
     assert menus.monster_menu_step(screen(700), mem) == [menus.pad('a')]
     assert mem['monster_menu_choice'] == 'skill1'
-    assert mem['battle']['balloon_finch_survival']['damage'] == 200
-    assert mem['battle']['balloon_finch_survival']['samples'] == 1
+    # Own-HP halving (1800 -> 900) must not be counted as enemy damage.
+    # The observed residual loss (900 -> 700) is conservatively doubled
+    # because enemy damage may have occurred before シャウト.
+    assert mem['battle']['balloon_finch_survival']['damage'] == 400
+    assert mem['battle']['balloon_finch_survival']['samples'] == 2
 
 
 def test_predicted_cursor_does_not_establish_damage_evidence(records):
@@ -81,13 +84,73 @@ def test_new_monster_invalidates_early_shout_choice(records):
     assert mem['battle']['balloon_finch_survival']['damage'] == 0
 
 
-def test_unknown_damage_still_inflates_then_shouts_at_cap(records):
+def test_unknown_damage_shouts_before_cap_with_cautious_reserve(records):
     mem = memory()
-    menus.monster_menu_step(screen(9998), mem)
-    assert mem['monster_menu_choice'] == 'skill1'
+    assert menus.monster_menu_step(screen(6144), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    proof = records[-1][1]['observed_metric']['balloon_survival']
+    assert proof['rule'] == 'unmeasured_reserve'
+    assert proof['target_hp'] == 6144
+    assert proof['incoming_damage'] is None
+    # Cursor travel is not proof of a committed action.
+    assert 'pending' not in mem['battle']['balloon_finch_survival']
+    assert menus.monster_menu_step(screen(6144, cursor=176), mem) == [menus.pad('a')]
+    assert mem['battle']['balloon_finch_survival']['pending']['action'] == 'skill2'
+
+
+def test_unknown_damage_still_shouts_at_full_cap(records):
+    mem = memory()
     menus.monster_menu_step(screen(9999), mem)
     assert mem['monster_menu_choice'] == 'skill2'
     assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'hp_cap'
+
+
+def test_confirmed_zero_loss_cycles_take_early_shout_route(records):
+    mem = memory()
+    assert menus.monster_menu_step(screen(1024), mem) == [menus.pad('a')]
+    assert menus.monster_menu_step(screen(2048), mem) == [menus.pad('a')]
+    assert menus.monster_menu_step(screen(4096), mem) == [menus.pad('down')]
+    proof = records[-1][1]['observed_metric']['balloon_survival']
+    assert proof['rule'] == 'observed_zero_reserve'
+    assert proof['zero_loss_samples'] == 2
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert menus.monster_menu_step(screen(4096, cursor=176), mem) == [menus.pad('a')]
+
+
+def test_unmeasured_high_hp_can_shout_without_fake_cursor_damage(records):
+    mem = memory()
+    assert menus.monster_menu_step(screen(6144, cursor=None), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert 'pending' not in mem['battle']['balloon_finch_survival']
+    assert menus.monster_menu_step(screen(6144, cursor=176), mem) == [menus.pad('a')]
+    assert mem['battle']['balloon_finch_survival']['pending']['action'] == 'skill2'
+
+
+def test_old_cached_full_hp_only_choice_is_invalidated_on_hotloaded_policy(records):
+    # Before the new deploy the bot might have cached skill1 at HP6144.
+    # The HP panel need not change to switch to the new skill2 decision.
+    mem = memory()
+    mem.update(
+        monster_menu_choice='skill1',
+        monster_menu_choice_hp=(6144, 1000),
+        monster_menu_key=['ふくらむ', 'シャウト', 'たまごにもどれ'],
+        monster_menu_choice_scope=['ally', 'バルーンフィンチ', 'ヒュドラ'],
+    )
+    assert menus.monster_menu_step(screen(6144), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert mem['monster_menu_choice_policy_epoch'] == '20261016-balloon-akematsu-v2'
+    assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
+
+
+@pytest.mark.parametrize('skills', [
+    ['ふくらむ', 'シヤウト?'],
+    ['ふく?む', 'シャウト'],
+])
+def test_one_recognized_skill_keeps_balloon_policy_when_other_ocr_is_unreadable(records, skills):
+    mem = memory()
+    assert menus.monster_menu_step(screen(6144, skills=skills), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
 
 
 def test_ascii_spaces_in_skill_labels_preserve_balloon_recognition(records):

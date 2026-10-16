@@ -815,16 +815,17 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
 @pytest.mark.parametrize(
     ('ally_hp', 'enemy_hp', 'choice'),
     [
-        (192, 1000, 'skill1'),    # even badly behind, inflate instead of retreating
-        (6144, 40, 'skill1'),     # an intermediate observed high is not "full"
-        (9998, 40, 'skill1'),     # one point below the cap still inflates
-        (9999, 40, 'skill2'),     # only full HP may shout
-        (4999, 40, 'skill1'),     # after shout/damage, inflate back to full
+        (192, 1000, 'skill1'),    # badly wounded: recover before shouting
+        (4096, 40, 'skill1'),     # no damage readings: larger cautious reserve
+        (6144, 40, 'skill2'),     # do not wait for 9999 when reserve exists
+        (9998, 40, 'skill2'),     # a point below cap still permits a shout
+        (9999, 40, 'skill2'),     # original cap fallback remains
+        (4999, 40, 'skill1'),     # without a sample, cannot use smaller reserve
     ],
 )
-def test_balloon_finch_inflates_to_real_cap_then_shouts(ally_hp, enemy_hp, choice):
-    # Owner 2026-10-06: ふくらむ until HP is actually maxed, then シャウト.
-    # The policy is fixed for this monster and must beat generic retreat/experience.
+def test_balloon_finch_uses_early_cautious_reserve_without_measured_damage(ally_hp, enemy_hp, choice):
+    # Owner 2026-10-16: even unmeasured fights may shout at the cautious
+    # reserve; the full-HP-only behavior created a slow repeat loop.
     frame = monster_menu_frame(
         ['ふくらむ', 'シャウト'],
         ally=('バルーンフィンチ', ally_hp), enemy=('クミン', enemy_hp), cursor=0)
@@ -833,6 +834,30 @@ def test_balloon_finch_inflates_to_real_cap_then_shouts(ally_hp, enemy_hp, choic
         'ally_hp': ally_hp, 'step': None}}}
     _, state = decide(frame, state)
     assert state['policy']['monster_menu_choice'] == choice
+
+
+def test_akematsu_greets_once_then_offers_hospitality_on_real_parsed_menu():
+    # An unchanged HP panel does not mean exchanging abilities again helps.
+    frame = monster_menu_frame(
+        ['ごあいさつ', 'おもてなし'],
+        ally=('あけまつ', 256), enemy=('ハデス', 500), cursor=0)
+    initial = {'policy': {'chapter': 1, 'battle': {
+        'enemy': 'クイーン', 'ally': 'ヴィーナス', 'enemy_hp': 60,
+        'ally_hp': 70, 'step': '1-B2'}}}
+    actions, state = decide(frame, initial)
+    assert state['screen_kind'] == 'monster_menu'
+    assert actions[0]['buttons'] == ['a']
+    assert state['policy']['battle']['akematsu_exchange']['greeting_submitted'] is True
+    actions, state = decide(frame, state)
+    assert actions[0]['buttons'] == ['down']
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['observed_metric']['akematsu_exchange']['rule'] == 'hospitality_after_greeting'
+    second = monster_menu_frame(
+        ['ごあいさつ', 'おもてなし'],
+        ally=('あけまつ', 256), enemy=('ハデス', 500), cursor=1)
+    actions, state = decide(second, state)
+    assert actions[0]['buttons'] == ['a']
 
 
 def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
