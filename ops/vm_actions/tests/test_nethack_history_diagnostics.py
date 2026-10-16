@@ -273,6 +273,7 @@ class HistoryTests(unittest.TestCase):
             for index in range(64)
         ]
         payload = {
+            'program_admission_evidence': diag._program_admission_empty(),
             'nethack_history': self.collect(),
             'cpu_profile': {
                 'schema_version': 1, 'status': 'ok', 'present': True, 'readable': True,

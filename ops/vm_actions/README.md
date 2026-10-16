@@ -309,3 +309,30 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 - 稼働中の `audio_worker` が無ければ exit 66 で何も積まない。enqueue 自体の失敗は exit 1（何も積まれていないので再実行可）。積んだ後は最大90秒、worker の `tmp/.say_queue/debug.log` にその項目名で記録される結果を待つ: `再生完了` で exit 0、`再生失敗`／`重複スキップ`（同じ文が直近50件の再生済みハッシュにある）／`破棄`（mode不一致）で exit 3、記録なしは exit 2（未claim・再生中・記録なし消失を区別してstderrに出す）。**exit 2/3 は積み済みなので、再実行すると二重に読まれうる。キューファイルの消失だけでは成功扱いしない。exit 0 は say_enqueue への受け渡し成功であり、配信ミックスでの可聴は別途確認が必要。**
 - 本文は**配信で読み上げられ、かつ workflow run の入力として公開リポジトリ上に残る**。秘密情報は入れない。実行出力は gateway が VM private log に退避する（Actions には出ない）。
 - 話者は audio_worker 既定。変更したい場合は別 PR で固定の許可リスト入力を追加する。
+
+### program admission の読取専用投影
+
+`diagnostics.program_admission_evidence` は、通常の `pending` が `dispatched`
+になってから owner が作られるまでの観測を補います。固定catalog対応の owner と
+`selected_at == queue.requested_at` の一致、registry の `owner_free`、FIFO の
+先行待機、prediction worker とローカル ACTIVE/LOCKED・要求後の確定境界、
+既存 audio queue の queued/playing/quiet/readable を別々に返します。queue には
+request UUID がないため、一致は同一リクエストの所有証明ではありません。
+
+- program lock は変更も取得もせず、存在だけを観測します。state は常に `unknown`。
+- FIFO は waiting/waiting_turn の厳密な先行時刻だけを数え、同時刻や
+  waiting_boundary を先行扱いしません。抽選用の3時間cutoffは適用しません。
+- 欠損・未知schema・読取失敗・不完全走査・読取中の更新は依存する値を null にします。
+  前後再照合は atomic snapshot/lease ではなく、観測後の変化も防ぎません。
+- audio は既存collectorと同じqueue解決を再利用します。Soren `.env` や稼働workerの
+  環境は読みません。`source_basis:collector_env_or_default` で観測したqueueのcountsと
+  quietだけを返し、`runtime_source_verified:false` は常に固定です。`quiet:true` 単独では
+  実runtime queueの静止を証明しません。
+- request/corner/runtime識別子、PID、パス、自由文、audio本文を返しません。
+  `recovery_authority:false` は固定です。復旧許可や aggregate ready 判定を追加しません。
+- collector 内だけの変更なので、現行gateway契約では通常のreview済みmain配布で
+  読まれます。新しいroot-owned installer/helper/allowlist更新は不要です。
+  実機gateway版・稼働collectorとの一致や配布済みであることは別途確認が必要です。
+
+既存の診断budget削減順序は変えず、latest NetHack履歴より前にCPU/audio詳細を
+削減する方針を保ちます。新投影がある場合も同じ順序を回帰テストします。
