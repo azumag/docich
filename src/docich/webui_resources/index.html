@@ -218,6 +218,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn" id="corners-refresh">更新</button>
 </div>
 <div id="corners-hint" class="help"></div>
+<a id="corners-start-operator" class="help" href="https://github.com/azumag/docich/actions/workflows/corner-rotation-operator.yml" target="_blank" rel="noopener noreferrer" style="display:none">GitHub Actions の Corner rotation operator を開く</a>
 <div id="corners-msg" class="help"></div>
 </div>
 <div class="card"><h2>メリケンAI 描画ホスト</h2>
@@ -2377,11 +2378,13 @@ function updateCornerButtons(){
   const stopTarget=stopStateOf(d,c);
   const hints=[];
   const queuedMode=!!c&&c.manual_mode==="queue";
-  const canStart=!!c && (queuedMode||!switching) && !r.latch && !busy
+  const directStart=!!c&&c.manual_start!==false;
+  const operatorStart=!!c&&c.manual_start_reason==="operator-workflow-required";
+  const canStart=directStart && (queuedMode||!switching) && !r.latch && !busy
     && (!queuedMode||(c.enabled&&!c.paused&&r.enabled!==false&&!r.queued_manual));
   const durationInput=document.getElementById("corners-duration");
   if(durationInput){
-    durationInput.disabled=queuedMode;
+    durationInput.disabled=queuedMode||!directStart;
     if(queuedMode&&c&&c.duration_minutes!=null) durationInput.value=c.duration_minutes;
   }
   if(!c) hints.push("手動実行できるコーナーを選んでください。");
@@ -2398,6 +2401,12 @@ function updateCornerButtons(){
     if(!c.enabled||c.paused||r.enabled===false) hints.push("コーナーまたはローテーションが無効・休止中のため予約できません。");
     if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約は受付済みです。${r.reason==="manual-request-needs-resume-or-recovery"?"未精算の手動要求があり開始待ちです。":"予約は実行中のコーナー終了後に処理されます。"}`);
   }
+  if(operatorStart) hints.push("半熟英雄の開始は owner が GitHub Actions の Corner rotation operator で main・operation=start-hanjuku・confirm=production を指定してください。受理後は現在のコーナー終了を待ちます。");
+  else if(c&&!directStart) hints.push(c.manual_start_reason==="game-configuration-unavailable"
+    ? "ゲーム設定を確認できないため、この画面から開始できません。停止可能な実行は手動停止できます。"
+    : "このゲームは one-off runner で開始できません。停止可能な実行は手動停止できます。");
+  const operatorLink=document.getElementById("corners-start-operator");
+  if(operatorLink) operatorLink.style.display=operatorStart?"":"none";
   const startBtn=document.getElementById("corners-start");
   const scheduleBtn=document.getElementById("corners-schedule");
   const cancelScheduleBtn=document.getElementById("corners-cancel-schedule");
@@ -2410,7 +2419,7 @@ function updateCornerButtons(){
   if(scheduleBtn) scheduleBtn.disabled=!canSchedule;
   if(cancelScheduleBtn) cancelScheduleBtn.disabled=!scheduledHere;
   if(scheduleInput) scheduleInput.disabled=!canSchedule;
-  if(stopBtn) stopBtn.disabled=!(c&&stopTarget);
+  if(stopBtn) stopBtn.disabled=!(c&&c.manual_stop!==false&&stopTarget);
   if(recBtn) recBtn.disabled=!r.can_recover;
   if(r.queued_manual&&r.queued_manual.scheduled){
     const label=r.queued_manual.due?"指定時刻に到達済みで、安全な空き枠を待っています。":`${fmtTime(r.queued_manual.trigger_at)} 以降に1回だけ開始します。`;
