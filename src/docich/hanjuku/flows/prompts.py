@@ -206,6 +206,20 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         return None
     if not _is_bijin_request(screen.text):
         if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
+            # A positively readable page without the request wording, without
+            # any bottom choice row and without a blinking hand is the same end
+            # evidence trade_guard accepts ("a readable different prose screen",
+            # L114-L119). Without this boundary the hold below stays true on an
+            # unrelated readable dialogue and orchestrator L407 skips the
+            # no-input fallback for good, so the bot sends nothing at all.
+            # A partly unread page keeps UNKNOWN cells, so this can never
+            # re-open the owner-review blind A.
+            flat = ''.join(screen.text.split())
+            if (screen.kind == 'text' and screen.hand is None and flat
+                    and UNKNOWN not in flat
+                    and not any(176 <= line.y <= 207 for line in screen.lines)):
+                mem.pop('bijin_guard', None)
+                return None
             # Owner review (2026-10-15, PR #2286): the choices of this request
             # have already been seen, so a partly unread question is not end
             # evidence. The hand may still blink over the accept line (a 500G

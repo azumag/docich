@@ -151,6 +151,43 @@ def test_unread_question_after_a_seen_choice_keeps_the_request_pending():
     assert state['policy']['bijin_guard']['chosen'] is True
 
 
+def test_a_readable_page_without_the_request_releases_the_held_episode():
+    # Follow-up to PR #2286: the hold needs trade_guard's "a readable different
+    # prose screen" boundary as well. Without it, `bijin_guard_hold` keeps the
+    # no-input fallback suppressed on an unrelated readable page (orchestrator
+    # L407) and the bot sends nothing at all, on every observation.
+    state = bijin_state()
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['choice_seen'] is True
+    # No request wording, no choice band, no hand: positively readable end.
+    actions, state = decide_bijin(bijin_pixels(question=False, rows=(), hand=False), state)
+    assert actions == [policy.pad('a')]
+    assert 'bijin_guard' not in state['policy']
+
+
+def test_a_partly_unread_unrelated_page_still_holds_without_a_blind_a():
+    # The release above needs a positively readable page: one UNKNOWN cell is
+    # enough to keep the episode held, so the owner review's blind A cannot
+    # come back through this boundary.
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    from docich.hanjuku_screen import parse
+    state = bijin_state()
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(48, 15, '1ねん 6のつき 500G')
+    canvas.text(24, 151, 'むらの ひとは はなしている')
+    canvas.tile(24 + 8 * 3, 151, 0x0123456789ABCDEF)   # one unread cell in the prose
+    frame = canvas.frame()
+    assert parse(frame).kind == 'text'
+    actions, state = decide_bijin(frame, state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
 def test_a_completed_bijin_request_releases_its_guard():
     actions, state = decide_bijin(bijin_pixels(selected=1))
     assert state['policy']['bijin_guard']['chosen'] is True
