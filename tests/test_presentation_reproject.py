@@ -168,12 +168,17 @@ class PresentationReprojectScript(unittest.TestCase):
     @staticmethod
     def _read_spawn_count(spawns: Path, attempts: int = 50,
                           delay: float = 0.005) -> int:
-        """Read the spawn counter, tolerating a torn write in flight.
+        """Read the spawn counter, tolerating the not-yet-published file.
 
-        The counter file is written by a separate process; even with an atomic
-        rename a reader can observe the pre-rename (empty) slice. Retrying a
-        bounded number of times -- without extending the caller's deadline --
-        keeps a transient empty file from failing the poll loop (#2305).
+        The counter is written by a separate process, so an early poll can
+        still find no file at all before the first publish. Retrying a bounded
+        number of times -- without extending the caller's deadline -- keeps
+        that start-up window from failing the poll loop (#2305). The publish
+        itself is atomic (`os.replace`, see _ffplay_stub), so a reader never
+        observes a truncated slice while a write is in flight; a counter that
+        never becomes readable still raises after the attempts instead of
+        hiding a real stall
+        (test_read_spawn_count_gives_up_bounded_when_the_file_never_heals).
         """
         for _ in range(attempts):
             try:
@@ -279,6 +284,22 @@ class SpawnCounterGuardTests(unittest.TestCase):
         self.assertEqual(counter.read_text(), '1')
         self.assertEqual(list(root.glob('ffplay-count*.tmp')), [],
                          'the temp slice must not survive the rename')
+
+    def test_ffplay_stub_never_truncates_the_live_counter(self):
+        """The publish mechanism itself must not open the live counter.
+
+        The torn read (#2305) is timing dependent, so the decisive check is
+        the mechanism: the stub writes a private slice and publishes it with
+        ``os.replace``, which leaves the live counter at either its previous
+        value or the new one -- never empty. Reverting the stub to
+        ``counter.write_text(str(count))`` fails this test, while the
+        timed reader loops above still pass by luck.
+        """
+        stub = _ffplay_stub(Path('/tmp/unused/ffplay-count'), fail_first=1)
+        self.assertIn('os.replace(tmp, counter)', stub)
+        self.assertIn('tmp.write_text(str(count))', stub)
+        self.assertNotIn('counter.write_text', stub)
+        self.assertNotIn('counter.open(', stub)
 
 
 if __name__ == '__main__':
