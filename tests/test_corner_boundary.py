@@ -744,3 +744,45 @@ def test_release_program_owner_frees_the_slot_for_the_next_corner(tmp_path):
     assert boundary._owner_free(root, str(next_corner)) is True
     with boundary.program_lock(g, next_corner):
         assert json.loads((root / REGISTRY_FILE).read_text())['owner_state'] == str(next_corner)
+
+
+def test_waiting_tick_keeps_a_released_row_until_the_release_runs(tmp_path):
+    # #2282: while a tick waits in the shared slot it holds the rotation lock, so
+    # a row written before the release is never cleared mid-wait. The waiter only
+    # expires; the release path (or the next tick's ``_observe``) drops the row,
+    # and only then does the following corner take the slot. This pins the
+    # bounded recovery the design doc states instead of an instant clear.
+    from docich.corner_boundary import release_program_owner
+
+    root = _state_dir(tmp_path)
+    g = _fake_g(tmp_path)
+    released = root / 'doushi_corner.json'
+    next_corner = root / 'weather_corner.json'
+    _owner(released, 'failed')
+    registry = root / REGISTRY_FILE
+    registry.write_text(json.dumps({'owner_state': str(released)}))
+
+    def no_sleep(seconds):
+        pytest.fail('an expired waiter must not sleep past its window')
+
+    with pytest.raises(CornerWaitExpired):
+        with program_slot(g, next_corner, requested_at=time.time(),
+                          wait_deadline_ts=time.time() - 1,
+                          wait_boundary=False, sleep=no_sleep, now=time.time):
+            pytest.fail('a row naming a released corner must not yield the slot')
+
+    # The waiter never released the row: only the release path owns that change.
+    assert json.loads(registry.read_text())['owner_state'] == str(released)
+    assert _queue(root, 'weather_corner')['status'] == 'expired'
+
+    # The release path drops it, and the next corner can take the slot.
+    assert release_program_owner(g, released) is True
+    with program_slot(g, next_corner, requested_at=time.time(),
+                      wait_deadline_ts=time.time() + 60,
+                      wait_boundary=False, sleep=no_sleep, now=time.time) as slot_root:
+        assert slot_root == root
+    assert json.loads(registry.read_text())['owner_state'] == str(next_corner)
+    # The release never rewrites the corner's own state (#2187): a tempting
+    # "fix" that marked the released record terminal would erase the evidence
+    # the operator still diagnoses from.
+    assert json.loads(released.read_text())['status'] == 'failed'
