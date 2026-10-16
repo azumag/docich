@@ -18,7 +18,7 @@
       "競合時の進行性と公平性"
     ],
     "naiveApproach": "単一の共有変数にロックをかけず全スレッドが読み書きする。測定可能な収束を前提とし、更新順序や可視性を考慮しない。",
-    "mechanismAndPrinciples": "MESI/MOESI系のキャッシュライン状態遷移、ストアバッファ、メモリバリア、フェンス、Acquire/Release、メモリConsistencyモデル、false sharingとキャッシュラインパディング。",
+    "mechanismAndPrinciples": "MESI/MOESI系のキャッシュライン状態遷移、ストアバッファ、メモリバリア、フェンス、Acquire/Release、メモリConsistencyモデル、false sharingとキャッシュラインパディング。 合成fixture内の改良履歴: 旧案は MESI の状態名と遷移だけを説明対象にし、ストアバッファ・メモリConsistencyモデル・メモリバリア・false sharing を比較対象から外していた。改良案はそれらを比較対象へ追加し、状態遷移・順序付け・性能影響を並べて検討する。これは入力契約確認のために設定した架空の設計履歴であり、実CPUの開発史や性能改善を示さない。",
     "implementationExample": "C11/C++11 std::atomic の relaxed/acquire/release順序付け、Linux kernelの READ_ONCE/WRITE_ONCEとsmp_mb、Go sync/atomic、パディング済みカウンタ配列、perf statでのcache-miss観測。",
     "failureModes": "lost update、stale read、再順序化による不変条件違反、false sharingによるスループット劣化、デッドロック、ABA、メモリリークに相当する更新欠落。",
     "tradeoffs": "強整合性は待ちとバリアが増えスループットを下げ、弱整合性は性能を上げるが推論と検証コストを上げる。キャッシュライン充填はfalse sharingを防ぐがメモリ使用量と局所性を犠牲にする。",
