@@ -48,6 +48,8 @@ jobs:
       - name: Install fixed test requirements
         run: python3 -m pip install -r requirements-test.txt
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
+      - name: Read-only program admission evidence (bounded synthetic fixtures)
+        run: python3 -m pytest -q ops/vm_actions/tests/test_program_admission_diagnostics.py
       - name: Fixed supervisor identity (Linux proc and local Bash only)
         env:
           PYTHONPATH: src

@@ -7497,6 +7497,278 @@ class _NethackEvidenceReader:
             self.restored_runtime(int(name.split('-')[0][1:]))
 
 
+# Admission observations are deliberately separate from recovery authority.
+# Keep this mapping fixed: never turn a state-provided corner/path into a read.
+PROGRAM_ADMISSION_OWNERS = {
+    **{name: 'retro_corner' for name in (
+        'ninvaders', 'nsnake', 'bastet', 'moon-buggy', 'pacman4console', 'hanjuku-hero')},
+    'nethack': 'nethack_corner', 'paper': 'paper_corner', 'meriken': 'soren91_corner',
+    'tsuitate': 'tsuitate_corner', 'weather': 'weather_corner',
+    'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
+}
+PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
+    'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',
+    'expired', 'cancelled',
+})
+
+
+class _ProgramAdmissionReader(_NethackEvidenceReader):
+    """Bounded no-follow reads, including same-byte replacement detection.
+
+    Rechecking is an optimistic observation window, not an atomic snapshot or
+    a lease. Missing files and directory listings are rechecked as well.
+    """
+    SCAN_LIMIT = 128
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.samples = {}
+
+    @staticmethod
+    def fingerprint(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    def sample(self, parts, mode='json'):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts[:-1])
+            try:
+                if mode == 'presence':
+                    info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise _NethackEvidenceError('invalid_record')
+                    signature, value = self.fingerprint(info), True
+                else:
+                    fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 dir_fd=directory)
+                    with os.fdopen(fd, 'rb') as stream:
+                        before = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(before.st_mode) or before.st_size > self.FILE_BYTES:
+                            raise _NethackEvidenceError('invalid_record')
+                        raw = stream.read(self.FILE_BYTES + 1)
+                        after = os.fstat(stream.fileno())
+                    if (self.fingerprint(before) != self.fingerprint(after)
+                            or len(raw) > self.FILE_BYTES):
+                        raise _NethackEvidenceError('evidence_changed')
+                    signature = (self.fingerprint(after), raw)
+                    value = raw
+                    if mode == 'json':
+                        value = json.loads(raw, object_pairs_hook=self.unique_object,
+                                           parse_constant=lambda _: (_ for _ in ()).throw(
+                                               _NethackEvidenceError('invalid_record')))
+                        if not isinstance(value, dict):
+                            raise _NethackEvidenceError('invalid_record')
+            finally:
+                os.close(directory)
+        except FileNotFoundError:
+            signature, value = None, None
+        key = (parts, mode)
+        if key in self.samples and self.samples[key] != signature:
+            raise _NethackEvidenceError('evidence_changed')
+        self.samples[key] = signature
+        return value
+
+    def listing(self, parts):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts)
+            try:
+                before = self.fingerprint(os.fstat(directory))
+                rows = []
+                with os.scandir(directory) as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= self.SCAN_LIMIT:
+                            raise _NethackEvidenceError('scan_limit')
+                        info = entry.stat(follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise _NethackEvidenceError('invalid_record')
+                        rows.append((entry.name, self.fingerprint(info)))
+                after = self.fingerprint(os.fstat(directory))
+                if before != after:
+                    raise _NethackEvidenceError('evidence_changed')
+                value = tuple(sorted(rows))
+                signature = (after, value)
+            finally:
+                os.close(directory)
+        except FileNotFoundError:
+            signature, value = None, None
+        key = (parts, 'listing')
+        if key in self.samples and self.samples[key] != signature:
+            raise _NethackEvidenceError('evidence_changed')
+        self.samples[key] = signature
+        return value
+
+    def recheck(self):
+        for parts, mode in tuple(self.samples):
+            if mode == 'listing':
+                self.listing(parts)
+            else:
+                self.sample(parts, mode)
+
+
+def _program_admission_empty(reason='unavailable'):
+    return {
+        'status': 'unknown', 'reason': reason, 'recovery_authority': False,
+        'observation': 'rechecked_non_atomic',
+        'queue_identity_basis': 'fixed_owner_and_selected_at_only',
+        'pending_queue_matches': None,
+        'owner_created_for_request': None, 'queue_status': 'unknown',
+        'program_lock': {'state': 'unknown', 'present': None},
+        'registry_owner_free': None, 'fifo_scan_complete': None,
+        'earlier_waiter': None,
+        'prediction': {'worker_running': None, 'local_active': None,
+                       'boundary_after_request': None, 'waiting': None},
+        'audio': {'readable': None, 'queued': None, 'playing': None,
+                  'quiet': None, 'runtime_source_verified': False,
+                  'source_basis': 'collector_env_or_default'},
+    }
+
+
+def _program_admission_owner_free(runtime, owners, expected):
+    registry = runtime.sample(('docich_program_active.json',))
+    if registry is None:
+        return True
+    previous = registry.get('owner_state')
+    if previous == str(owners.root / (expected + '.json')):
+        return True
+    allowed = {str(owners.root / (name + '.json')): name
+               for name in ROTATION_PENDING_OWNER_FILES}
+    if not isinstance(previous, str) or previous not in allowed:
+        return None
+    name = allowed[previous]
+    state = owners.sample((name + '.json',))
+    if state is None:
+        return True
+    status = state.get('status')
+    if not isinstance(status, str) or status not in ROTATION_STATUSES:
+        return None
+    # These views have a canonical restoration exception. Do not reproduce it
+    # incompletely or call them occupied/free without its additional evidence.
+    if status == 'failed' and name in {'paper_corner', 'paper_corner_manual', 'doushi_corner'}:
+        return None
+    return status not in {'starting', 'active', 'restoring', 'recovery_required', 'failed'}
+
+
+def _program_admission_worker(runtime):
+    if runtime.sample(('prediction_worker.paused',), 'presence'):
+        return False
+    raw = runtime.sample(('prediction_worker.pid',), 'raw')
+    if raw is None or len(raw) > 256:
+        return None
+    try:
+        pid = next((int(word) for word in raw.decode('utf-8').split()
+                    if word.isdigit()), None)
+        if pid is None or pid <= 0:
+            return None
+        os.kill(pid, 0)  # Existence probe only, exactly as corner_boundary.
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, OverflowError, UnicodeError):
+        return None
+
+
+def _collect_program_admission_evidence(state_dir, soren, now):
+    """Observe pre-owner admission gates; never grant recovery or acquire locks.
+
+    A queue has no request UUID, so a match means only fixed-owner/time
+    correspondence. No deadline is inferred from selected_at. Manual sibling
+    reservations and unfamiliar schemas stay unknown. Runtime fail-open paths
+    remain unknown here when their inputs cannot be safely observed.
+    """
+    result = _program_admission_empty()
+    try:
+        owners = _ProgramAdmissionReader(Path(state_dir))
+        runtime = _ProgramAdmissionReader(Path(soren) / 'tmp' / 'state')
+        ledger = owners.sample(('corner_rotation.json',))
+        if not isinstance(ledger, dict) or ledger.get('manual_pending'):
+            return _program_admission_empty('pending_unavailable')
+        pending = ledger.get('pending')
+        if (not isinstance(pending, dict) or pending.get('phase') != 'dispatched'
+                or not isinstance(pending.get('corner'), str)
+                or pending['corner'] not in PROGRAM_ADMISSION_OWNERS):
+            return _program_admission_empty('pending_unavailable')
+        requested = _finite_number(pending.get('selected_at'))
+        request = _nethack_evidence_uuid(pending.get('request_id'))
+        if requested is None or not 0 <= requested <= now:
+            return _program_admission_empty('pending_unavailable')
+        expected = PROGRAM_ADMISSION_OWNERS[pending['corner']]
+        owner = owners.sample((expected + '.json',))
+        owner_request = owner.get('rotation_request_id') if owner is not None else None
+        result['owner_created_for_request'] = (False if owner is None else
+            owner_request == request if isinstance(owner_request, str) and re.fullmatch(
+                r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                owner_request) else None)
+        queue = runtime.sample(('docich_program_queue', expected + '.json'))
+        if (queue is None or _finite_number(queue.get('requested_at')) != requested
+                or queue.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES):
+            return _program_admission_empty('pending_queue_unverified')
+        result['pending_queue_matches'] = True
+        result['queue_status'] = queue['status']
+        result['program_lock']['present'] = bool(runtime.sample(('docich_program.lock',), 'presence'))
+        result['registry_owner_free'] = _program_admission_owner_free(runtime, owners, expected)
+        rows = runtime.listing(('docich_program_queue',))
+        if rows is None:
+            raise _NethackEvidenceError('invalid_record')
+        earlier = False
+        for name, _ in rows:
+            if not name.endswith('.json') or name == expected + '.json':
+                continue
+            entry = runtime.sample(('docich_program_queue', name))
+            if entry is None or entry.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES:
+                raise _NethackEvidenceError('invalid_record')
+            if entry['status'] in {'waiting', 'waiting_turn'}:
+                stamp = _finite_number(entry.get('requested_at'))
+                if stamp is None or stamp < 0 or stamp > now:
+                    raise _NethackEvidenceError('invalid_record')
+                earlier |= stamp < requested  # No age cutoff or lexical tie-break.
+        result['fifo_scan_complete'], result['earlier_waiter'] = True, earlier
+        prediction = runtime.sample(('current_prediction.json',))
+        local_status = prediction.get('status') if prediction is not None else None
+        local_active = (local_status in {'ACTIVE', 'LOCKED'} if local_status in {
+            'ACTIVE', 'LOCKED', 'RESOLVED', 'CANCELED', 'CANCELLED', 'CLOSED', 'NONE', 'IDLE'} else None)
+        boundary = runtime.sample(('corner_boundary_prediction.json',))
+        stamp = _finite_number(boundary.get('completed_at')) if boundary is not None else None
+        fresh = requested <= stamp <= now if stamp is not None else None
+        worker = _program_admission_worker(runtime)
+        waiting = (False if worker is False or local_active is False else
+                   not fresh if worker is True and local_active is True and fresh is not None else None)
+        result['prediction'].update(worker_running=worker, local_active=local_active,
+                                    boundary_after_request=fresh, waiting=waiting)
+        # Reuse the existing resolver, suffixes and count/quiet semantics.
+        # Do not invoke the legacy unbounded scan a second time: every scan
+        # in this projection is bounded and no-follow. No bodies or .env reads.
+        audio_path = _comment_queue_dir(Path(soren))
+        audio_reader = _ProgramAdmissionReader(audio_path)
+        audio_rows = audio_reader.listing(())
+        counts = [0, 0]
+        for name, _ in audio_rows or ():
+            if name.startswith(AUDIO_ITEM_PREFIX):
+                counts[0] += name.endswith(AUDIO_QUEUED_SUFFIX)
+                counts[1] += name.endswith(AUDIO_PLAYING_SUFFIX)
+        # Neither the collector environment nor current .env existence proves
+        # the running worker's inherited environment. Do not read either the
+        # worker environment or .env; runtime source verification stays false.
+        result['audio'].update(readable=True, queued=counts[0], playing=counts[1],
+                               quiet=not any(counts))
+        worker_again = _program_admission_worker(runtime)
+        if worker_again != worker:
+            raise _NethackEvidenceError('evidence_changed')
+        for reader in (owners, runtime, audio_reader):
+            reader.recheck()
+        result.update(status='observed', reason=(
+            'pre_owner' if result['owner_created_for_request'] is False else
+            'owner_already_created' if result['owner_created_for_request'] is True else
+            'owner_identity_unverified'))
+        return result
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError,
+            _NethackEvidenceError):
+        return _program_admission_empty('evidence_unverified')
+
+
 def _nethack_evidence_uuid(value):
     if not isinstance(value, str) or re.fullmatch(
             r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value) is None:
@@ -8576,6 +8848,8 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
+        "program_admission_evidence": _collect_program_admission_evidence(
+            _program_state_dir(), soren, now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
