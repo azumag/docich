@@ -740,6 +740,74 @@ class TestRunWebuiStartsWithoutSorenRoot(unittest.TestCase):
             self.assertIn("soviet_now 未配置として起動します", out.getvalue())
 
 
+def _tracking_server_class():
+    """handler thread を追跡して明示的に待てる ThreadingHTTPServer を作る。
+
+    ``http.server.ThreadingHTTPServer`` は ``daemon_threads = True`` で、
+    ``ThreadingMixIn`` の ``_Threads`` は daemon thread を join 対象にしない。
+    そのため ``server_close()`` は「応答送信後も書込みを続けている handler」
+    (例: ``_guard_mutation`` の audit event、webui.log) を待たない。受け付けた
+    request をここで追跡し、tmp を消す前に完了を待てるようにする。
+
+    conftest が ``webui.ThreadingHTTPServer`` を poll interval 短縮版へ
+    monkeypatch するため、基底クラスは import 時ではなく呼び出し時に取得する
+    (追跡は fixture 用サーバーにだけ入れ、production の設定は変えない)。
+    """
+
+    base = webui.ThreadingHTTPServer
+
+    class _TrackingHTTPServer(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._handler_threads = []
+            self._handler_threads_lock = threading.Lock()
+
+        def process_request(self, request, client_address):
+            thread = threading.Thread(
+                target=self.process_request_thread,
+                args=(request, client_address),
+                daemon=True,
+                name="test-webui-handler",
+            )
+            with self._handler_threads_lock:
+                self._handler_threads.append(thread)
+            thread.start()
+
+        def wait_for_handlers(self, timeout=5.0):
+            """accept 済み request の handler が終わるまで待つ。
+
+            期限内に終わらなかった thread を返す (空 list なら全て完了)。
+            """
+            deadline = time.monotonic() + timeout
+            while True:
+                with self._handler_threads_lock:
+                    pending = [t for t in self._handler_threads if t.is_alive()]
+                    self._handler_threads = pending
+                if not pending:
+                    return []
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return pending
+                for thread in pending:
+                    thread.join(max(0.0, deadline - time.monotonic()))
+
+    return _TrackingHTTPServer
+
+
+def _shutdown_test_server(server, serve_thread, *, timeout=5.0):
+    """実 HTTP fixture の server を止め、in-flight handler の完了まで待つ。
+
+    戻り値は期限内に終わらなかった handler thread (空 list なら全て完了)。
+    ``shutdown()`` は accept loop しか止めず、daemon handler は ``server_close()``
+    でも join されないため、この待ちを挟まずに ``TemporaryDirectory.cleanup()``
+    すると rmtree と応答後の書込みが競合する (``OSError [Errno 39]``)。
+    """
+    server.shutdown()
+    server.server_close()
+    serve_thread.join(timeout=timeout)
+    return server.wait_for_handlers(timeout=timeout)
+
+
 class TestHttpHandlers(unittest.TestCase):
     """実サーバー (ThreadingHTTPServer) を起動して API を叩く。"""
 
@@ -756,7 +824,7 @@ class TestHttpHandlers(unittest.TestCase):
         (self.soren / "eloop_lib.sh").write_text("# x\n")
         _write_env(self.soren, "AI_AGENT_BACKOFF_SEC=600\n")
         self.g = _make_global(self.repo_root)
-        self.server = webui.ThreadingHTTPServer(("127.0.0.1", 0), webui._Handler)
+        self.server = _tracking_server_class()(("127.0.0.1", 0), webui._Handler)
         webui._Handler.g = self.g
         webui._Handler.soren_root = self.soren
         webui._Handler.read_only = False
@@ -776,15 +844,15 @@ class TestHttpHandlers(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
-        self.server.shutdown()
-        # ThreadingHTTPServer serves each request in its own thread and
-        # shutdown() only stops the accept loop.  A handler that is still
-        # finishing (for example writing the mutation audit event) would
-        # otherwise race the temp-dir removal and fail it with
-        # ``OSError [Errno 39] Directory not empty``; server_close() joins the
-        # tracked handler threads, and the serve_forever thread is joined too.
-        self.server.server_close()
-        self.thread.join(timeout=5)
+        # ThreadingHTTPServer serves each request in its own daemon thread and
+        # shutdown() only stops the accept loop.  ThreadingMixIn._Threads does
+        # not track daemon threads, so server_close() does not join a handler
+        # that is still finishing (for example writing the mutation audit
+        # event); that writer would race the temp-dir removal and fail it with
+        # ``OSError [Errno 39] Directory not empty``.  Wait for the tracked
+        # handlers explicitly before cleanup.
+        stuck = _shutdown_test_server(self.server, self.thread)
+        self.assertEqual([], stuck, "in-flight handler did not finish before cleanup")
         self.tmp.cleanup()
 
     def _fetch_csrf(self):
@@ -2583,6 +2651,115 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertTrue(data["latch_resolved"])
 
 
+class _PostResponseWriterHandler(webui._Handler):
+    """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
+
+    応答送信後に ``post_response_started`` を set し、``release_post_response``
+    が set されるまで保留する。テスト側はこれで「handler が応答後の書込み途中に
+    いる」状態を決定的に作れる。解放後の書込み先は tmp 配下なので、後片付けが
+    先に tmp を消せば書込みが失敗する (= full-suite flake の再現)。
+    """
+
+    POST_RESPONSE_PATH = "/test/post-response-write"
+    WRITE_RELATIVE = "tmp/debug/post-response-audit.json"
+
+    def do_GET(self):
+        if self.path != self.POST_RESPONSE_PATH:
+            return super().do_GET()
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.server.post_response_started.set()
+        if not self.server.release_post_response.wait(timeout=5):
+            return
+        target = Path(self.soren_root) / self.WRITE_RELATIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("post-response write completed", encoding="utf-8")
+
+
+class TestHttpHandlerTeardownWaitsForPostResponseWriter(unittest.TestCase):
+    """応答後に書く handler が残っていても、後片付けが先に tmp を消さないこと。
+
+    PR #2340 の full-suite flake (``OSError [Errno 39] Directory not empty``) の
+    決定的な回帰テスト。daemon handler は ``server_close()`` で join されないため、
+    完了を待たずに tmp を消すと rmtree と応答後の書込みが競合する。
+    """
+
+    def test_cleanup_waits_for_handler_that_writes_after_the_response(self):
+        import http.client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = repo_root / "soren"
+            (soren / "tmp/state").mkdir(parents=True)
+            g = _make_global(repo_root)
+            handler = type("_PostResponseWriterTestHandler", (_PostResponseWriterHandler,), {})
+            handler.g = g
+            handler.soren_root = soren
+            handler.read_only = False
+            handler.start_time = time.time()
+            server = _tracking_server_class()(("127.0.0.1", 0), handler)
+            server.post_response_started = threading.Event()
+            server.release_post_response = threading.Event()
+            serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            serve_thread.start()
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            stop_result = {}
+            stopped = threading.Event()
+
+            def _stop_server():
+                try:
+                    stop_result["stuck"] = _shutdown_test_server(server, serve_thread)
+                except Exception as exc:  # pragma: no cover - assertion で理由を出す
+                    stop_result["error"] = exc
+                finally:
+                    stopped.set()
+
+            stopper = threading.Thread(target=_stop_server, daemon=True)
+            stopper_started = False
+            try:
+                conn.request("GET", _PostResponseWriterHandler.POST_RESPONSE_PATH)
+                res = conn.getresponse()
+                self.assertEqual(200, res.status)
+                res.read()
+                self.assertTrue(
+                    server.post_response_started.wait(timeout=5),
+                    "handler did not reach the post-response write",
+                )
+
+                stopper.start()
+                stopper_started = True
+                # 応答後 writer は保留中なので、後片付けはここで完了してはならない。
+                # 完了するなら handler を待たずに tmp を消した (= 競合) ということ。
+                self.assertFalse(
+                    stopped.wait(timeout=1.0),
+                    "teardown removed the tmp dir without waiting for the post-response writer",
+                )
+                self.assertTrue(
+                    soren.exists(),
+                    "handler の完了前に tmp dir が消えた",
+                )
+            finally:
+                server.release_post_response.set()
+                if stopper_started:
+                    stopper.join(timeout=5)
+                else:
+                    _shutdown_test_server(server, serve_thread)
+                conn.close()
+
+            self.assertNotIn("error", stop_result, stop_result.get("error"))
+            self.assertEqual([], stop_result.get("stuck"), "in-flight handler did not finish")
+            written = soren / _PostResponseWriterHandler.WRITE_RELATIVE
+            self.assertEqual(
+                "post-response write completed",
+                written.read_text(encoding="utf-8"),
+            )
+
+
 class TestMutationGuard(TestHttpHandlers):
     """issue #42: Host/Origin allowlist・CSRF token・Content-Type・read-only identity・
     dangerous action の再確認・CORS wildcard+credentials 不可・authorization audit event。"""
@@ -3041,7 +3218,7 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
             BoundHandler.soren_root = soren
             BoundHandler.read_only = False
             BoundHandler.start_time = time.time()
-            server = webui.ThreadingHTTPServer(("127.0.0.1", 0), BoundHandler)
+            server = _tracking_server_class()(("127.0.0.1", 0), BoundHandler)
             th = threading.Thread(target=server.serve_forever, daemon=True)
             th.start()
             try:
@@ -3056,8 +3233,8 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
                 self.assertTrue(body["ok"])
                 conn.close()
             finally:
-                server.shutdown()
-                server.server_close()
+                # 応答後に書く handler を残したまま tmp を消さない (PR #2340)。
+                self.assertEqual([], _shutdown_test_server(server, th))
 
 
 class TestCornerReservationDisplay(unittest.TestCase):
