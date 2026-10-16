@@ -1204,11 +1204,25 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
     # --- round_terminal evidence gate -----------------------------------
 
     @staticmethod
-    def _status_payload(snapshot=None, *, key="snapshot", **ack):
-        ack = {"request_id": "req-1", "status": "waiting", **ack}
+    def _observed(snapshot, age=0.0, **changes):
+        import datetime as _dt
+        at = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=age)
+        value = dict(snapshot or {})
+        value.update(changes)
+        value["observed_at"] = at.isoformat().replace("+00:00", "Z")
+        return value
+
+    @staticmethod
+    def _status_payload(snapshot=None, *, key="snapshot", request_id="req-1",
+                        ack_request_id=None, **ack):
+        ack = {
+            "request_id": request_id if ack_request_id is None else ack_request_id,
+            "status": "waiting",
+            **ack,
+        }
         if snapshot is not None:
             ack[key] = snapshot
-        return {"request": {"request_id": "req-1"}, "ack": ack}
+        return {"request": {"request_id": request_id}, "ack": ack}
 
     def test_round_terminal_requires_soren_evidence_not_a_raw_stop(self):
         incident = {
@@ -1223,20 +1237,49 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             "runner_alive": True,
         }
         cases = [
-            (self._status_payload(incident), False),
-            (self._status_payload({"state": "STOP"}), False),
-            (self._status_payload({"state": "STOP", "terminal": "true"}), False),
-            (self._status_payload({"state": "STOP", "terminal": 1}), False),
-            (self._status_payload({"founding_boundary_token": "x",
-                                   "founding_boundary_board": {"state": "STOP"}}), False),
-            (self._status_payload({"stale_founding_stop": True,
-                                   "founding_boundary_token": "x"}), False),
+            (self._status_payload(self._observed(incident)), False),
+            (self._status_payload(self._observed({"state": "STOP"})), False),
+            # A live runner keeps the broker waiting, so terminal alone is not
+            # a boundary (review point).
+            (self._status_payload(self._observed(
+                {"state": "GAMEOVER", "terminal": True, "runner_alive": True})), False),
+            (self._status_payload(self._observed(
+                {"state": "GAMEOVER", "terminal": True, "runner_alive": False})), True),
+            (self._status_payload(self._observed(
+                {"state": "STOP", "terminal": "true", "runner_alive": False})), False),
+            (self._status_payload(self._observed(witness)), True),
+            (self._status_payload(self._observed(
+                {"stale_founding_stop": True, "founding_boundary_token": "",
+                 "founding_boundary_board": {"state": "STOP"}, "runner_alive": True}),), False),
             ({"ack": {}}, False),
             ({"ack": {"snapshot": None}}, False),
             ({"ack": "not-a-dict"}, False),
-            (self._status_payload({"state": "GAMEOVER", "terminal": True}), True),
-            (self._status_payload(witness), True),
-            (self._status_payload(witness, key="boundary_snapshot"), True),
+            (self._status_payload(self._observed(witness), key="boundary_snapshot"), True),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            for payload, expected in cases:
+                with self.subTest(payload=payload):
+                    with patch.object(adapter, "_status", return_value=payload):
+                        self.assertIs(adapter.round_terminal(time.monotonic() + 5, None), expected)
+
+    def test_round_terminal_rejects_stale_or_foreign_snapshots(self):
+        """A stored snapshot must be fresh and belong to the stored request."""
+
+        witness = {
+            "state": "STOP", "terminal": False, "stale_founding_stop": True,
+            "founding_boundary_token": "3f2f0d0f7c8b4c1e9a1d2b3c4d5e6f70",
+            "founding_boundary_board": {"state": "STOP"}, "runner_alive": True,
+        }
+        cases = [
+            # stale beyond the freshness bound
+            (self._status_payload(self._observed(witness, age=600)), False),
+            # no timestamp at all
+            (self._status_payload(witness), False),
+            # ack belongs to a different request than the stored one
+            (self._status_payload(self._observed(witness), ack_request_id="other"), False),
+            # no stored request to bind against
+            ({"ack": {"request_id": "req-1", "snapshot": self._observed(witness)}}, False),
         ]
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
@@ -1259,7 +1302,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(Path(temp))
             self.assertTrue(callable(getattr(adapter, "round_terminal", None)))
             with patch.object(adapter, "_status", return_value=self._status_payload(
-                    {"state": "STOP", "terminal": False, "stale_founding_stop": False})):
+                    self._observed({"state": "STOP", "terminal": False,
+                                    "stale_founding_stop": False}))):
                 self.assertIs(adapter.round_terminal(time.monotonic() + 5, None), False)
 
     def test_round_terminal_runs_the_real_broker_status_command(self):
@@ -1267,7 +1311,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
-            payload = self._status_payload({"state": "GAMEOVER", "terminal": True})
+            payload = self._status_payload(self._observed(
+                {"state": "GAMEOVER", "terminal": True, "runner_alive": False}))
             result = SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
             with patch("docich.adapters.soren.subprocess.run", return_value=result) as run:
                 self.assertIs(adapter.round_terminal(time.monotonic() + 5, None), True)
@@ -1277,10 +1322,10 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
 
             # The incident state (STOP with a founding marker, makeSorenCount 0)
             # stays unproven through the same plumbing.
-            payload = self._status_payload({
+            payload = self._status_payload(self._observed({
                 "state": "STOP", "terminal": False, "stale_founding_stop": False,
-                "founding_seen": True, "make_soren_count": 0,
-            })
+                "founding_seen": True, "make_soren_count": 0, "runner_alive": True,
+            }))
             result = SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
             with patch("docich.adapters.soren.subprocess.run", return_value=result):
                 self.assertIs(adapter.round_terminal(time.monotonic() + 5, None), False)
