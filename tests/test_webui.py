@@ -777,6 +777,14 @@ class TestHttpHandlers(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.server.shutdown()
+        # ThreadingHTTPServer serves each request in its own thread and
+        # shutdown() only stops the accept loop.  A handler that is still
+        # finishing (for example writing the mutation audit event) would
+        # otherwise race the temp-dir removal and fail it with
+        # ``OSError [Errno 39] Directory not empty``; server_close() joins the
+        # tracked handler threads, and the serve_forever thread is joined too.
+        self.server.server_close()
+        self.thread.join(timeout=5)
         self.tmp.cleanup()
 
     def _fetch_csrf(self):
