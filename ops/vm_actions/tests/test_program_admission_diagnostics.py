@@ -436,7 +436,8 @@ def test_failure_provenance_distinguishes_safe_fixed_stages(admission, case, sta
 
 @pytest.mark.parametrize('directory', ['audio_dedup', '.weather_audio_receipts'])
 def test_public_audio_writer_metadata_directory_is_not_an_audio_item(admission, directory):
-    # Public fixed Soren gitlink68f02445 writes these normal queue directories:
+    # The pinned Soren revision writes these normal queue directories; the
+    # paths and line numbers are unchanged from 68f02445 to the current pin.
     # lib/outbound_queue.sh:324 and lib/weather_audio_consumer.py:242.
     # Audio ignores non-item names without stat or descent; FIFO stays strict.
     _, soren, _, collect = admission
