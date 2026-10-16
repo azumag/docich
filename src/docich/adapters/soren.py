@@ -17,6 +17,7 @@ from ..game_switch import (
     committed_retirement_result,
 )
 from .base import AdapterError
+from .soren_terminal import soren_round_terminal
 
 
 class SorenCoordinatorAdapter:
@@ -338,6 +339,26 @@ class SorenCoordinatorAdapter:
             [str(self.control), "cancel", request_id], deadline, cancel
         )
         return rc == 0 and self._ack(payload).get("status") == "cancelled"
+
+    def round_terminal(self, deadline: float, cancel) -> bool:
+        """True only when Soren's own evidence proves the round already ended.
+
+        The coordinator may cancel a live ``draining`` early on this answer, so
+        the bar is Soren's reviewed terminal evidence and never a raw
+        ``game_state.json`` value.  The stored ack carries the snapshot its
+        boundary poll just computed; only Soren's shared terminal predicate
+        (``GAMEOVER``, or a quiet non-founding ``STOP``) or the runner-owned
+        founding-boundary witness (identity token plus attested board)
+        qualifies.  Everything else -- a bare ``STOP``, a truthy non-boolean,
+        a stale or unreadable ack -- leaves the durable drain deadline as the
+        only bound.
+        """
+
+        ack = self._ack(self._status(deadline, cancel))
+        for key in ("snapshot", "boundary_snapshot"):
+            if soren_round_terminal(ack.get(key)):
+                return True
+        return False
 
     def _diagnostic_log_path(self) -> Path | None:
         """State-dir log file for lifecycle controller output (failures only)."""
