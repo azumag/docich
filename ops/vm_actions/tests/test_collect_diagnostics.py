@@ -3744,7 +3744,8 @@ def test_presentation_memory_retains_status_geometry_and_same_fd_mtime():
         value["status"] = status
         memory.nodes[record]["raw"] = json.dumps(value).encode()
         assert _presentation_memory_collect(memory) == {
-            "present": True, "readable": True, "active_runtime": True,
+            "present": True, "readable": True, "reason": "ok",
+            "active_runtime": True,
             "status": status, "display": ":99", "window": "123456789012",
             "width": 640, "height": 480, "age_sec": 1}
         assert all(call["kind"] == "fstat" for call in memory.stats)
@@ -3839,7 +3840,8 @@ def test_presentation_memory_preserves_field_bounds_and_public_shape():
         memory, record = _presentation_memory_fixture(source)
         memory.nodes[record]["raw"] = json.dumps(state).encode()
         result = _presentation_memory_collect(memory)
-        assert result == {"present": True, "readable": True, "active_runtime": True,
+        assert result == {"present": True, "readable": True,
+                          "reason": "status_unknown", "active_runtime": True,
                           "status": None, "display": None, "window": None,
                           "width": None, "height": None, "age_sec": 1}
 
@@ -3877,3 +3879,238 @@ def test_tsuitate_review_projection_is_bounded():
                                        'boundary':'later','model_failure':'boom','moves':'many'}}
     )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,
                   'model_failure':None,'moves':None}
+
+
+def test_pulse_attribution_separates_players_and_survives_the_budget():
+    # The AV projection must answer "who owns this sink input" even when the
+    # per-stream detail is dropped by the size budget: media.role is usually
+    # unset, so by_player is the usable axis.
+    module = load_collector()
+    _fixed_pulse_listing(module)
+    pulse = module._collect_pulse_sink_inputs()
+    attribution = pulse['attribution']
+    assert attribution['by_player']['bridge-ffplay'] == 1
+    assert attribution['by_player']['speech-worker'] == 1
+    assert attribution['by_player']['unknown'] == 0
+    assert attribution['by_role']['music'] == 1
+    assert attribution['by_role']['unattributed'] == 1
+
+    payload = {
+        'pulse_sink_inputs': pulse,
+        'nethack_history': {
+            'daily': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+            'completed_runs': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+        },
+        'ai': {'recent_events': ['x'], 'recent_events_omitted': False,
+               'anomalous_components': {'a': 1}},
+        'workers': {'details': {'w': 1}},
+        'soren91_drop_profile': {'profileStatus': 'unavailable', 'groups': [],
+                                 'games': [], 'slowest': []},
+    }
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    kept = payload['pulse_sink_inputs']
+    assert kept['streams'] == [] and kept['output_omitted'] is True
+    assert kept['attribution'] == attribution
+
+
+def test_pulse_attribution_marks_streams_without_a_player_as_unknown():
+    module = load_collector()
+    listing = 'Sink Input #9\n\tSink: 0\n\tMute: no\n'
+    _fixed_pulse_listing(module, listing=listing, short='0\tsoren_null\n')
+    output = module._collect_pulse_sink_inputs()
+    assert output['attribution']['by_player']['unknown'] == 1
+    assert output['attribution']['by_role'] == {'unattributed': 1}
+
+
+def _write_external_video(state_dir, now, *, rid, mtime=None, audio=True):
+    (state_dir / 'external-video' / rid).mkdir(parents=True)
+    (state_dir / 'external_video_receiver.json').write_text(json.dumps({
+        'schema_version': 1, 'receiver_id': rid, 'expires_at': now + 60,
+        'status': 'receiving', 'audio_present': audio, 'pid': 1234,
+        'start_ticks': 99,
+    }))
+    frame = state_dir / 'external-video' / rid / 'current.png'
+    if mtime is not None:
+        frame.write_bytes(b'\x89PNG')
+        os.utime(frame, (mtime, mtime))
+    return frame
+
+
+def test_external_video_projects_frame_age_and_bounds_it(tmp_path):
+    module = load_collector()
+    now = 100000
+    rid = '11111111-1111-1111-1111-111111111111'
+    _write_external_video(tmp_path, now, rid=rid, mtime=now - 5)
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        output = module._collect_external_video(tmp_path, now)
+    assert output['frame_fresh'] is True
+    assert output['frame_age_sec'] == 5
+
+    frame = tmp_path / 'external-video' / rid / 'current.png'
+    os.utime(frame, (now - 30 * 86400, now - 30 * 86400))
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        stale = module._collect_external_video(tmp_path, now)
+    # A receiver that has been stopped for a month stays a small bounded int.
+    assert stale['frame_age_sec'] == module._REG.EXTERNAL_VIDEO['frame_age_max_sec']
+    assert stale['frame_fresh'] is False
+
+
+def test_external_video_frame_age_is_null_when_the_frame_is_missing(tmp_path):
+    module = load_collector()
+    now = 100000
+    rid = '22222222-2222-2222-2222-222222222222'
+    _write_external_video(tmp_path, now, rid=rid, mtime=None)
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        output = module._collect_external_video(tmp_path, now)
+    # Never 0: a missing frame is unknown, not "just captured".
+    assert output['frame_age_sec'] is None
+    assert output['frame_fresh'] is False
+
+
+def test_runtime_presentation_always_reports_a_reason(tmp_path):
+    module = load_collector()
+    state = tmp_path / 'state'
+    state.mkdir()
+
+    # No game_switch.json at all.
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'active_unreadable'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': None}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'no_active_runtime'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': {'runtime_id': '../x'}}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'runtime_id_invalid'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': {'runtime_id': 'rt-1'}}))
+    missing = module._collect_runtime_presentation(state, 100)
+    assert missing['reason'] == 'record_absent' and missing['present'] is False
+
+    (state / 'runtimes' / 'rt-1').mkdir(parents=True)
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text('{not json')
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'record_unreadable'
+
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text(json.dumps({'status': 'mystery'}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'status_unknown'
+
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text(json.dumps({'status': 'ready'}))
+    ok = module._collect_runtime_presentation(state, 100)
+    assert ok['reason'] == 'ok' and ok['readable'] is True
+
+
+def _write_encoder_sources(tmp_path, now, *, twica=None, direct=None):
+    state_dir = tmp_path / 'state'
+    soren = tmp_path / 'soren'
+    if twica is not None:
+        path = state_dir / 'twica-common' / 'pipeline.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(twica))
+        os.utime(path, (now - 1, now - 1))
+    if direct is not None:
+        path = soren / 'tmp' / 'state' / 'direct_stream' / 'status.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(direct))
+        os.utime(path, (now - 1, now - 1))
+    return state_dir, soren
+
+
+def test_encoder_prefers_a_fresh_twica_heartbeat(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        twica={'schema': 1, 'ready': True, 'fps': 29.97, 'frames_sent': 10,
+               'frame_state': 'open'},
+        direct={'state': 'running', 'running': True, 'frame': 5, 'fps': 30,
+                'out_time_us': 5_000_000},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'twica_common'
+    assert output['state'] == 'running' and output['ready'] is True
+    assert output['frames_sent'] == 10 and output['fps'] == 29.97
+    assert output['progress_age_sec'] == 1 and output['reason'] == 'ok'
+
+
+def test_encoder_falls_back_to_direct_stream_when_twica_is_stale(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        twica={'schema': 1, 'ready': True, 'frames_sent': 10},
+        direct={'state': 'running', 'running': True, 'frame': 5, 'fps': 30,
+                'out_time_us': 5_000_000},
+    )
+    old = state_dir / 'twica-common' / 'pipeline.json'
+    os.utime(old, (now - 600, now - 600))
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'direct_stream'
+    assert output['frames_sent'] == 5 and output['out_time_sec'] == 5
+    assert output['reason'] == 'ok'
+
+
+def test_encoder_reports_stale_instead_of_a_healthy_encoder(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': 'running', 'running': True, 'frame': 5},
+    )
+    path = soren / 'tmp' / 'state' / 'direct_stream' / 'status.json'
+    os.utime(path, (now - 600, now - 600))
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['present'] is True and output['reason'] == 'stale'
+    assert output['progress_age_sec'] == 600
+
+
+def test_encoder_tolerates_a_malformed_state_value(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': ['DO-NOT-PUBLISH'], 'running': True, 'frame': 1},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['state'] == 'running' and output['frames_sent'] == 1
+
+
+def test_encoder_rejects_a_bad_record_and_reports_absence(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now, twica={'schema': 2, 'ready': True})
+    invalid = module._collect_encoder(state_dir, soren, now)
+    assert invalid['readable'] is False and invalid['reason'] == 'invalid_schema'
+
+    empty = module._collect_encoder(tmp_path / 'none', tmp_path / 'none', now)
+    assert empty['source'] == 'none' and empty['reason'] == 'absent'
+
+
+def test_encoder_never_leaks_stream_configuration_or_channel(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': 'running', 'running': True, 'frame': 5,
+                'config': {'rtmp_url': 'rtmp://DO-NOT-PUBLISH',
+                           'stream_key': 'DO-NOT-PUBLISH'},
+                'reconnect': {'twitch_channel': 'DO-NOT-PUBLISH-CHANNEL'},
+                'closed_captions': {'active': False}},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'direct_stream'
+    published = json.dumps(output)
+    assert 'DO-NOT-PUBLISH' not in published
+    assert 'rtmp' not in published and 'channel' not in published
+
+
+def test_encoder_survives_the_size_budget():
+    module = load_collector()
+    payload = {'encoder': {'source': 'twica_common', 'frames_sent': 1},
+               'pulse_sink_inputs': {'streams': [{'x': 1}] * 5, 'attribution': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'soren91_drop_profile': {'profileStatus': 'unavailable'},
+               'ai': {'recent_events': ['x']}, 'workers': {'details': {}}}
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    assert payload['encoder']['frames_sent'] == 1
