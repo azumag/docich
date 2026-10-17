@@ -31,7 +31,10 @@ find_bin() {
 }
 
 missing=()
-for b in Xvfb tmux ffmpeg xdotool xterm nethack; do
+# xdpyinfo is not called by this script directly: `docich up` waits for the
+# display through XKit.wait_display() -> xdpyinfo. Check it here so a missing
+# binary fails as a dependency error instead of a traceback mid-run.
+for b in Xvfb tmux ffmpeg xdotool xdpyinfo xterm nethack; do
     if ! find_bin "$b"; then
         missing+=("$b")
     fi
@@ -44,7 +47,7 @@ if [ "${#missing[@]}" -ne 0 ]; then
     done
     exit 1
 fi
-log "依存コマンドの確認 OK (Xvfb tmux ffmpeg xdotool xterm nethack)"
+log "依存コマンドの確認 OK (Xvfb tmux ffmpeg xdotool xdpyinfo xterm nethack)"
 
 # --- 一時 config (soren :99 とも本番 docich :98 とも衝突しない :96 を使う) -----
 TMP_DIR="$(mktemp -d)"

@@ -78,9 +78,11 @@ jobs:
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb nethack-console
+          # x11-utils provides xdpyinfo, which `docich up` uses to wait for the display.
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console
           # smoke_cli.sh resolves nethack from PATH or /usr/games.
           command -v nethack || test -x /usr/games/nethack
+          command -v xdpyinfo
       - name: Run the NetHack CLI presenter smoke
         run: bash scripts/smoke_cli.sh
 
