@@ -9,6 +9,7 @@ from ...hanjuku_egg_stock import observed_uses
 RETRY_TICKS = 30
 ATTEMPT_LIMIT = 3
 READ_LIMIT = 3
+STATUS_CLOSE_READ_LIMIT = 4
 ARRIVAL_READ_LIMIT = 3
 ARRIVAL_RETRY_TICKS = 120
 
@@ -25,6 +26,7 @@ _ALLOWED_KINDS = {
     'recheck_focus': {'map', 'text', 'unknown'},
     'recheck_status': {'text', 'map', 'unknown'},
     'recheck_read': {'text', 'unknown'},
+    'recheck_close': {'text', 'unknown'},
     'menu': {'text', 'unknown'},
     'dest': {'world_map', 'map_target', 'map', 'text', 'unknown'},
     'await_dispatch': {'world_map', 'map_target', 'map', 'text', 'unknown'},
@@ -42,18 +44,20 @@ def _owner_shape(mem, state):
     if (not isinstance(stage, str) or stage not in _ALLOWED_KINDS
             or type(state.get('steps')) is not int or state['steps'] < 0
             or type(now) is not int or now < 0 or type(chapter) is not int or chapter <= 0
+            or (stage == 'recheck_close' and 'reads' not in state)
             or identity is None or any(type(state[key]) is not bool for key in
                                       ('retreat_recheck', 'anonymous_recheck', 'arrival_check_only') if key in state)
             or not (state.get('retreat_recheck') or state.get('anonymous_recheck'))):
         return False
     if any(key in state and (type(state[key]) is not int or not 0 <= state[key] <= limit)
-           for key, limit in (('reads', READ_LIMIT), ('scrolls', roster_receipts.MAX_GENERALS))):
+           for key, limit in (('reads', STATUS_CLOSE_READ_LIMIT if stage == 'recheck_close' else READ_LIMIT),
+                              ('scrolls', roster_receipts.MAX_GENERALS))):
         return False
     if state.get('retreat_recheck'):
         return (_clean_name(actor) and roster_receipts.run_identity(state.get('identity')) == identity
                 and type(state.get('chapter')) is int and state['chapter'] == chapter
                 and type(state.get('recheck_tick')) is int and 0 <= state['recheck_tick'] <= now)
-    return (stage in ('recheck_status', 'recheck_read', 'menu', 'dest', 'await_dispatch')
+    return (stage in ('recheck_status', 'recheck_read', 'recheck_close', 'menu', 'dest', 'await_dispatch')
             and (_clean_name(actor) or actor is None and stage in ('recheck_status', 'recheck_read'))
             and roster_receipts.run_identity(state.get('anonymous_identity')) == identity
             and type(state.get('anonymous_chapter')) is int and state['anonymous_chapter'] == chapter)
@@ -564,9 +568,10 @@ def _named_step(screen, mem, frame, state):
             actor = state['general'] = info['general']
             row = _scope(mem).get(actor)
             if row is not None:
-                if row['attempts'] >= ATTEMPT_LIMIT or mem['tick'] < row['retry_after']:
+                sent = _arrival_request(mem, actor, row) is not None
+                if sent or row['attempts'] >= ATTEMPT_LIMIT or mem['tick'] < row['retry_after']:
                     _defer(mem, state, '実本人が再確認待ちまたは予算上限のため帰還Aを再送しない',
-                           status=row['status'])
+                           status='arrival_unconfirmed' if sent else row['status'])
                     return [pad('b')]
                 row['attempts'] += 1
                 state.update(retreat_recheck=True, identity=row['identity'], chapter=row['chapter'],
@@ -580,13 +585,54 @@ def _named_step(screen, mem, frame, state):
                                  'identity': episode['identity'], 'chapter': episode['chapter'],
                                  'episode': episode['serial'], 'camp_frame_sha256': camp['frame_sha256'],
                                  'camp_observed_tick': camp['observed_tick']}
-        _advance(state, 'menu')
+        _advance(state, 'recheck_close')
         _record(mem, 'retreat_recheck_status', chart_step=None, general=actor,
                 observed_metric=state['named_status'],
                 resulting_event='named_camp_observed',
                 reason='現tentを選択した後の本人ステータスと生存HPを確認。回復や到着は未確認')
         return [pad('b')]
     return None
+
+
+def _status_close_step(screen, mem, state):
+    """B is a request; observe the real unit menu before choosing return."""
+    from ..decision_log import _record
+    from ..os_layer.commands import pad
+    from ..os_layer.readers import is_camp_menu
+    from . import house
+    if not _valid_status(mem, state):
+        panel = house.general_status(screen) if screen.kind == 'text' else None
+        _defer(mem, state, 'status閉鎖待ちの本人・現在tent・episodeを確認できず帰還しない')
+        if is_camp_menu(screen) or panel:
+            return [pad('b')]
+        return [] if screen.kind == 'unknown' else None
+    if is_camp_menu(screen):
+        _record(mem, 'retreat_recheck_status_closed', general=state['general'],
+                observed_metric={'reads': state['reads']}, resulting_event='unit_menu_observed',
+                reason='現在の部隊メニューを観測してstatus閉鎖を確認。帰還先や到着は未確認')
+        _advance(state, 'menu')
+        return None
+    if screen.kind != 'unknown':
+        info = house.general_status(screen)
+        field_panel = info and any(line.y == 31 and line.span(16, 80).strip() == info['general']
+                                   and line.span(80, 128) == 'しょうぐん' for line in screen.lines)
+        if field_panel and info['general'] == state['general'] and type(info.get('hp')) is int and info['hp'] == 0:
+            _invalidate(mem, 'status閉鎖待ちで本人HP0を観測。死亡や到着を断定せず帰還intentを終了', state['general'])
+            return [pad('b')]
+        if (not field_panel or info['general'] != state['general']
+                or type(info.get('hp')) is not int or info['hp'] != state['named_status']['hp']):
+            _defer(mem, state, '閉鎖待ち中に本人status以外を観測したため旧UIを再利用しない')
+            return [pad('b')] if field_panel else None
+    state['reads'] += 1
+    if state['reads'] >= STATUS_CLOSE_READ_LIMIT:
+        _defer(mem, state, 'status閉鎖を有限観測で確認できないため再確認予算を保って保留')
+        return [pad('b')] if screen.kind == 'text' else []
+    if state['reads'] == 2 and screen.kind == 'text':
+        _record(mem, 'retreat_recheck_status_close_retry', general=state['general'],
+                resulting_event='close_requested_not_observed',
+                reason='同じ本人statusが残るためBを一度だけ再提案。閉鎖観測の上限は延ばさない')
+        return [pad('b')]
+    return []
 
 
 def interrupt(screen, mem):
@@ -621,14 +667,15 @@ def _visible_camps(mem, frame, queue):
     if not camps:
         return camps
     roofs = sorted([r['kind'], *r['target']] for r in castle_roofs(frame))
-    for row in queue.values():
+    for actor, row in queue.items():
         observed = row.get('camp_observation') or {}
         target = observed.get('target')
         # No durable camp ID is inferred from a screen coordinate. Suppress
         # only the same unchanged image or a view with two unchanged roofs.
         same_view = (observed.get('frame_sha256') == frame.digest()
                      or bool(observed.get('roofs')) and observed['roofs'] == roofs)
-        if target and same_view and (mem['tick'] < row['retry_after'] or row['attempts'] >= ATTEMPT_LIMIT):
+        if target and same_view and (_arrival_request(mem, actor, row) is not None
+                                     or mem['tick'] < row['retry_after'] or row['attempts'] >= ATTEMPT_LIMIT):
             camps = [camp for camp in camps if any(
                 abs(camp['target'][axis] - target[axis]) > RECALL_ARRIVE_PX for axis in (0, 1))]
     return camps
@@ -693,6 +740,7 @@ def step(screen, mem, frame, existing):
             and 0 <= row.get('arrival_reads', 0) < ARRIVAL_READ_LIMIT
             and mem['tick'] >= row['retry_after']), None)
         actor = arrival_actor or next((name for name, row in queue.items() if row['attempts'] < ATTEMPT_LIMIT
+                      and _arrival_request(mem, name, row) is None
                       and mem['tick'] >= row['retry_after']), None)
         if actor is not None:
             if arrival_actor:
@@ -712,6 +760,15 @@ def step(screen, mem, frame, existing):
                              'chapter': queue[actor]['chapter'], 'recheck_tick': queue[actor]['tick'],
                              'camp_episode': _new_episode(mem)}
             return [pad('x')]
+    # Old saved state moved straight to menu after proposing B. Migrate only
+    # that untouched phase; a previously operated menu cannot regain a budget.
+    if (state.get('stage') == 'menu' and state.get('steps') == 0 and state.get('reads') == 0
+            and _new_owner(state) and _valid_status(mem, state) and not is_camp_menu(screen)):
+        state['stage'] = 'recheck_close'
+    if state.get('stage') == 'recheck_close':
+        actions = _status_close_step(screen, mem, state)
+        if actions is not None or state['stage'] != 'menu':
+            return actions
     if not named:
         if state.get('hero') and not _new_owner(state):
             # The independent emergency hero return owns its measured unit UI;

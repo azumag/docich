@@ -564,7 +564,7 @@ def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(
     if owner == 'house':
         assert state['policy']['house']['phase'] == 'unit_move'
     else:
-        assert state['policy']['recall']['stage'] == 'menu'
+        assert state['policy']['recall']['stage'] == 'recheck_close'
         assert state['policy']['recall']['general'] == 'ゼウス'
 
     actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
