@@ -27,6 +27,9 @@ from _webui_http_fixture import (  # noqa: E402
     tracking_server_class as _tracking_server_class,
 )
 
+# Node の起動と JS 評価には CI の並列負荷を見込む。停止時の上限は維持する。
+_NODE_TEST_TIMEOUT = 30
+
 
 def _make_global(repo_root: Path) -> config.GlobalConfig:
     return config.load_global(repo_root)
@@ -1552,14 +1555,24 @@ class TestHttpHandlers(unittest.TestCase):
     def test_access_log_does_not_contain_token(self):
         self.g.webui.token = "supersecret123"
         try:
-            self._request("GET", "/api/health?token=supersecret123")
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            status, _ = self._request("GET", "/api/health?token=supersecret123")
+            self.assertEqual(status, 401)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
+            self.assertEqual(status, 200)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            self.assertEqual(status, 401)
         finally:
             self.g.webui.token = ""
+        # 応答の受信だけでは handler の finally にあるログ書込みは完了しない。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         self.assertTrue(log_file.is_file())
         content = log_file.read_text(encoding="utf-8")
+        records = [json.loads(line) for line in content.splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
         self.assertNotIn("supersecret123", content)
         self.assertNotIn("wrongtoken", content)
 
@@ -2743,6 +2756,70 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertTrue(data["latch_resolved"])
 
 
+class TestAccessLogSynchronization(unittest.TestCase):
+    def test_token_check_waits_for_post_response_access_logs(self):
+        case = TestHttpHandlers("test_access_log_does_not_contain_token")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+        # setup の CSRF ログがあっても、対象リクエストの完了待ちは省略できない。
+        setup_log = log_file.read_text(encoding="utf-8")
+        self.assertIn('"path": "/api/csrf"', setup_log)
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_request
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, status, latency_ms, extra=""):
+            if path == "/api/health":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, status, latency_ms, extra)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_tokens():
+            try:
+                case.test_access_log_does_not_contain_token()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_tokens, daemon=True)
+        with mock.patch.object(webui, "_log_request", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # 待ちへ到達するか検査が終了するまで待つ。sleep による競合再現ではない。
+                self.assertTrue(checkpoint.wait(timeout=5), "token check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "health access logs were not held after the response")
+                self.assertFalse(finished.is_set(), "token check finished before the access logs were written")
+                self.assertEqual(setup_log, log_file.read_text(encoding="utf-8"))
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "token check thread did not finish")
+        self.assertEqual([], log_timeouts, "access log hold timed out before release")
+        self.assertEqual([], errors, "token check failed after releasing the access logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
+
+
 class _PostResponseWriterHandler(webui._Handler):
     """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
 
@@ -3389,7 +3466,7 @@ const fmtTime=x=>x?String(x):'-';
 const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration','corners-start-operator'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -3508,7 +3585,7 @@ class TestPredictionWorkerDisplay(unittest.TestCase):
         self.assertIn(end_marker, html)
         source = html.split(start_marker, 1)[1].split(end_marker, 1)[0]
         script = source + "\nconst out=predictionWorkerDisplay(" + json.dumps(row, ensure_ascii=False) + "," + json.dumps(prediction, ensure_ascii=False) + "); process.stdout.write(JSON.stringify(out));"
-        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5, check=False)
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
