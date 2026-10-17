@@ -82,6 +82,7 @@ jobs:
           ops/vm_actions/collect_diagnostics.py
           ops/vm_actions/recover_soren_game.py
           ops/vm_actions/recover_soren_round.py
+          ops/vm_actions/release_soren_loop_pause.py
           ops/vm_actions/recover_bgm_mute.py
           ops/vm_actions/monitor_silence.py
           ops/vm_actions/realign_hanjuku_presentation.py
@@ -111,6 +112,7 @@ jobs:
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/recover_soren_round.sh
+          ops/vm_actions/release_soren_loop_pause.sh
           ops/vm_actions/recover_bgm_mute.sh
           ops/vm_actions/realign_hanjuku_presentation.sh
           ops/vm_actions/start_weather_corner.sh

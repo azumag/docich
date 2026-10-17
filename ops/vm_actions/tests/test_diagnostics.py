@@ -311,6 +311,33 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_REF="feature").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
 
+    def test_loop_pause_release_is_owner_only_production_main_with_confirm(self):
+        base = {"INPUT_OPERATION": "release_soren_loop_pause", "INPUT_CONFIRM": "production"}
+        proc = self.run_auth(**base)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("release_soren_loop_pause", "production", "main"))
+        # Owner-only, production-only, main-only and confirmation-gated: every
+        # relaxation must fail closed (docich #2061).
+        for override in (
+            {"INPUT_TARGET": "preview"},
+            {"INPUT_REF": "feature"},
+            {"INPUT_CONFIRM": ""},
+            {"INPUT_CONFIRM": "PRODUCTION"},
+            {"GITHUB_TRIGGERING_ACTOR": "collab"},
+            {"GITHUB_ACTOR": "collab"},
+        ):
+            with self.subTest(**override):
+                env = dict(base)
+                env.update(override)
+                self.assertNotEqual(self.run_auth(**env).returncode, 0)
+        # The public-repository guard only blocks arbitrary `exec`; the fixed
+        # release stays available (docich #2061 needed exactly this).
+        env = dict(base)
+        env["GITHUB_REPOSITORY_PRIVATE"] = "false"
+        self.assertEqual(self.run_auth(**env).returncode, 0)
+
 
 class DiagnosticsWorkflowTests(unittest.TestCase):
     def test_workflow_exposes_diagnostics_operation(self):
@@ -318,12 +345,25 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
             "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
-            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection]", text
+            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
         self.assertIn("steps.auth.outputs.operation == 'diagnostics'", text)
         self.assertIn("steps.auth.outputs.operation == 'cpu_profile'", text)
+
+    def test_workflow_runs_the_fixed_loop_pause_release_through_the_gateway(self):
+        text = WF.read_text(encoding="utf-8")
+        self.assertIn("steps.auth.outputs.operation == 'release_soren_loop_pause'", text)
+        self.assertIn("control/ops/vm_actions/release_soren_loop_pause.sh", text)
+        self.assertIn('"exec docich production $SHA"', text)
+        # The release step must not touch the shared delivery units or the
+        # canonical ledger; it only pipes the reviewed fixed script.
+        step = text.split("Release the loop pause a consumed succeeded switch owns", 1)[1]
+        step = step.split("- name:", 1)[0]
+        for forbidden in ("systemctl", "soren-rtmp", "soren-bgm", "shared-overlay", "xvfb"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, step)
 
     def test_workflow_explains_stale_installed_gateway_without_relaxing_exec_boundary(self):
         text = WF.read_text(encoding="utf-8")
