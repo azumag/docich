@@ -18,6 +18,7 @@ from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
                                 _measured_card_select, _options, _present_generals, _sortie_inventory)
 from ..os_layer.world import NAME, _en_route, _owned
+from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
                             _deploy_cards, _is_boss_order, _observe_card_stock, _strict_boss_cards)
@@ -210,10 +211,21 @@ def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
         return False                     # 残り枠は予定札で埋まる
     stock = mem.get('card_stock') or {}
     used = sum(CARD_IDS[c] for c in wanted)
-    card = next((name for name in reference.STRONG_CARDS
-                 if name not in wanted and int(stock.get(name, 0) or 0) > 0
-                 and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
-                 and len(wanted) + 1 <= CARRY_SLOTS), None)
+    held = [name for name in reference.STRONG_CARDS
+            if name not in wanted and int(stock.get(name, 0) or 0) > 0
+            and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
+            and len(wanted) + 1 <= CARRY_SLOTS]
+    # Copies the pending base boss kit still needs are not spare (g825).
+    card = next((name for name in held if not boss_card_reserved(mem, order, name)), None)
+    reserved = held[:held.index(card)] if card is not None else held  # passed over
+    marker = [mem.get('month'), step, reserved]
+    if reserved and mem.get('strong_card_reserved') != marker:
+        mem['strong_card_reserved'] = marker
+        _record(mem, 'strong_card_reserved_for_boss', **_deploy_context(order, mem), chart_step=step,
+                observed_metric={'reserved': reserved,
+                                 'stock': {name: stock.get(name) for name in reserved},
+                                 'boss_kit': dict(boss_kit(mem)[1]), 'chosen': card},
+                reason='ボス注文に必要な枚数しかない切り札は、非ボスの出撃へ強い切り札として足さない')
     if card is None:
         return False
     mem.setdefault('strong_card_kit', {})[step] = card
@@ -863,9 +875,15 @@ def deploy_step(screen: Screen, mem):
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
             return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
+            proven = _card_proven_absent(card, inventory)
+            if proven:
+                # Measured, even for a card never listed before: a month plan
+                # buys a short boss card back (strategy.boss_cards).
+                mem.setdefault('card_stock', {})[card] = 0
+                (mem.get(UNSEEN) or {}).pop(card, None)
             # The base boss kit stays strict unless the panel proves the card
             # is gone: holding for a card that does not exist never ends.
-            if not _strict_boss_cards(order, mem) or _card_proven_absent(card, inventory):
+            if not _strict_boss_cards(order, mem) or proven:
                 dropped = _drop_card(screen, mem, order, card, inventory)
                 if dropped is not None:
                     return dropped

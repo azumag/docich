@@ -10,6 +10,7 @@ from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
 from ..strategy.bargains import merchant_card_spendable, plan_bargains
+from ..strategy.boss_cards import note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough)
@@ -261,6 +262,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                             strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
                             reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
                                     if extra else 'チャート/予算計画どおりの個数を確認して購入'))
+                    note_card_purchase(mem, want[0], value)  # a boss card returns to its kit
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
                     shop['want'] = None
