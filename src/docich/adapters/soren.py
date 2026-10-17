@@ -44,6 +44,7 @@ class SorenCoordinatorAdapter:
         self._resumed_loop: tuple[int, int] | None = None
         self._last_command_output = ""
         self._completed_stop_receipt: dict | None = None
+        self._expected_resumed_request_id: str | None = None
 
     def _check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
@@ -819,8 +820,26 @@ class SorenCoordinatorAdapter:
             reason = self._classify_stop_failure(self._last_command_output)
             self._record_command_output("stop-after-boundary", request_id, rc)
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
+        # Capture the paused loop identity immediately after stop-after-boundary
+        # returns, before _wait_status (which may allow candidate cleanup to
+        # consume the marker).  The marker is created during
+        # stop-after-boundary, so it should exist now.
+        # (issue #2061)
+        if self._resumed_loop is None:
+            self._resumed_loop = self._paused_loop_identity()
         self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
         self._completed_stop_receipt = receipt
+        # Persist the captured identity so a later adapter instance (the real
+        # recovery path creates a new instance) can recover it.  Tied to the
+        # stop receipt's request_id to avoid stale reuse (issue #2061).
+        if self._resumed_loop is not None:
+            try:
+                path = self._resumed_loop_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"request_id": request_id,
+                                           "identity": list(self._resumed_loop)}))
+            except (OSError, TypeError, ValueError):
+                pass
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
@@ -837,6 +856,19 @@ class SorenCoordinatorAdapter:
             request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
+            # Keep the expected request identity (verified before fresh-start
+            # archives the broker record) so readiness can still verify a
+            # persisted snapshot after the broker record is gone (issue #2061).
+            self._expected_resumed_request_id = request_id
+            try:
+                path = self._resumed_loop_path()
+                if path.exists():
+                    data = json.loads(path.read_text())
+                    if isinstance(data, dict):
+                        data["expected_request_id"] = request_id
+                        path.write_text(json.dumps(data))
+            except (OSError, ValueError, TypeError):
+                pass
             # An irreversible stopped runtime must prove that its game workers
             # were born after this fresh start.  A cancelled rollback restores
             # the already-running previous runtime, so applying that timestamp
@@ -844,11 +876,14 @@ class SorenCoordinatorAdapter:
             # recovered.
             if ack.get("status") == "stopped" or not ack:
                 self._fresh_started_at = time.time()
+                if self._resumed_loop is None:
+                    self._recover_resumed_loop(request_id)
                 # Stop pauses soren_loop.sh instead of killing it, and fresh-start only
                 # clears the pause.  That loop is the same legitimate instance, so remember
                 # it; otherwise the freshness fence below can never accept it and the
                 # restore times out (2026-10-11 05:23, 06:44, with a live healthy Soren).
-                self._resumed_loop = self._paused_loop_identity()
+                if self._resumed_loop is None:
+                    self._resumed_loop = self._paused_loop_identity()
             rc, _ = self._run([str(self.control), "fresh-start", request_id], deadline, cancel)
             if rc != 0:
                 raise AdapterError(f"Soren fresh start準備に失敗しました (rc={rc})")
@@ -858,6 +893,22 @@ class SorenCoordinatorAdapter:
         while True:
             self._check(deadline, cancel)
             payload = self._status(deadline, cancel)
+            if self._resumed_loop is None:
+                ack = self._ack(payload)
+                rid = str(ack.get("request_id") or "")
+                if not rid:
+                    req = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+                    rid = str(req.get("request_id") or "")
+                expected = self._expected_resumed_request_id
+                if not expected:
+                    try:
+                        data = json.loads(self._resumed_loop_path().read_text())
+                        if isinstance(data, dict):
+                            expected = data.get("expected_request_id")
+                    except (OSError, ValueError, TypeError):
+                        expected = None
+                if expected:
+                    self._recover_resumed_loop(str(expected))
             if not self._ack(payload):
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
@@ -873,6 +924,39 @@ class SorenCoordinatorAdapter:
         if not (self.root / "tmp/state/soren_loop.paused").exists():
             return None
         return self._singleton_process_identity("soren_loop.sh")
+
+    def _resumed_loop_path(self) -> Path:
+        return self.root / "tmp" / "state" / "soren_loop.resumed"
+
+    def _recover_resumed_loop(self, request_id: str | None = None) -> None:
+        """Recover a paused-loop identity persisted by another adapter instance.
+
+        The real recovery path creates a fresh adapter instance, so an
+        in-memory ``_resumed_loop`` from cleanup is not available there.
+        The identity was persisted (tied to the stop receipt's request_id)
+        during cleanup; accept it only when it matches the current stopped
+        request, preserving the fail-closed contract (issue #2061).
+        """
+        if self._resumed_loop is not None:
+            return
+        if not request_id:
+            return
+        try:
+            raw = self._resumed_loop_path().read_text()
+            data = json.loads(raw)
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        persisted_request = data.get("request_id")
+        if persisted_request != request_id:
+            return
+        identity = data.get("identity")
+        if not isinstance(identity, list) or len(identity) != 2:
+            return
+        if not all(type(x) is int for x in identity):
+            return
+        self._resumed_loop = (identity[0], identity[1])
 
     def _process_matches(self, expected: str) -> list[tuple[float, int, int]] | None:
         matches: list[tuple[float, int, int]] = []

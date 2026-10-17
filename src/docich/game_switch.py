@@ -2097,53 +2097,66 @@ class GameSwitchCoordinator:
         adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
-        try:
-            with self.store.transaction() as tx:
-                deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
-                if expected_snapshot is not None:
-                    # An owner-only recovery can read a stable snapshot and a
-                    # terminal game, but another legitimate switch may start
-                    # before it acquires the canonical writer lock. Refuse to
-                    # act on any changed state *inside* that same transaction.
-                    # Do not log/surface either snapshot; runtime metadata
-                    # belongs to the private store.
-                    observed, missing = self.store.canonical.load()
-                    if missing or observed != expected_snapshot:
-                        self._log("rejected", phase="", result="failed",
-                                  error_code=ERROR_SOURCE_FENCE_LOST)
-                        return SwitchResult(
-                            request_id="", operation="recover", status="failed",
-                            target=None, from_game=None, to_game=None,
-                            generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
-                            detail="recover source changed before execution",
-                            warnings=(), cleanup_pending=True, receipt=None,
-                        )
-                recovered = self._recover_locked(
-                    tx, deadline=deadline, abandon_program_view=abandon_program_view,
-                    adopt_failed_candidate=adopt_failed_candidate,
-                )
-                self._log(
-                    "recovery_finished", phase="",
-                    result=recovered.status, error_code=recovered.error_code,
-                    cleanup_pending=recovered.cleanup_pending,
-                )
-                return recovered
-        except GameSwitchBusyError as exc:
-            self._log("rejected", phase="", result="busy", error_code=ERROR_BUSY)
-            return SwitchResult(
-                request_id="",
-                operation="recover",
-                status="busy",
-                target=None,
-                from_game=None,
-                to_game=None,
-                generation=None,
-                error_code=ERROR_BUSY,
-                detail=_safe_detail(exc),
-                warnings=(),
-                cleanup_pending=False,
-                receipt=None,
-            )
+        deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
+        # The writer is released during boundary waits, so a stale driver
+        # finishing its rollback (or another recovery) can hold it for a few
+        # milliseconds exactly when recover() enters.  One non-blocking attempt
+        # would spuriously report busy here (#2145); retry briefly within the
+        # caller's budget before degrading.  A genuinely live drain outlasts
+        # this window, so real busyness still reports busy.
+        acquire_until = time.monotonic() + min(
+            ENTRY_ACQUIRE_RETRY_S, max(deadline - time.monotonic(), 0.0)
+        )
+        while True:
+            try:
+                with self.store.transaction() as tx:
+                    if expected_snapshot is not None:
+                        # An owner-only recovery can read a stable snapshot and a
+                        # terminal game, but another legitimate switch may start
+                        # before it acquires the canonical writer lock. Refuse to
+                        # act on any changed state *inside* that same transaction.
+                        # Do not log/surface either snapshot; runtime metadata
+                        # belongs to the private store.
+                        observed, missing = self.store.canonical.load()
+                        if missing or observed != expected_snapshot:
+                            self._log("rejected", phase="", result="failed",
+                                      error_code=ERROR_SOURCE_FENCE_LOST)
+                            return SwitchResult(
+                                request_id="", operation="recover", status="failed",
+                                target=None, from_game=None, to_game=None,
+                                generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
+                                detail="recover source changed before execution",
+                                warnings=(), cleanup_pending=True, receipt=None,
+                            )
+                    recovered = self._recover_locked(
+                        tx, deadline=deadline, abandon_program_view=abandon_program_view,
+                        adopt_failed_candidate=adopt_failed_candidate,
+                    )
+                    self._log(
+                        "recovery_finished", phase="",
+                        result=recovered.status, error_code=recovered.error_code,
+                        cleanup_pending=recovered.cleanup_pending,
+                    )
+                    return recovered
+            except GameSwitchBusyError as exc:
+                now = time.monotonic()
+                if now >= acquire_until:
+                    self._log("rejected", phase="", result="busy", error_code=ERROR_BUSY)
+                    return SwitchResult(
+                        request_id="",
+                        operation="recover",
+                        status="busy",
+                        target=None,
+                        from_game=None,
+                        to_game=None,
+                        generation=None,
+                        error_code=ERROR_BUSY,
+                        detail=_safe_detail(exc),
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                time.sleep(min(self.poll_interval_s, max(acquire_until - now, 0.0)))
 
     def resume_queued(
         self,
@@ -5136,24 +5149,32 @@ class GameSwitchCoordinator:
             "retained_active": copy.deepcopy(active),
             "boundary_cancelled": True,
         }
-        tx.transition(
-            {"draining"},
-            "ready",
-            updates={
-                "active": copy.deepcopy(active),
-                "candidate": None,
-                "previous": None,
-                "operation": None,
-                "request_id": None,
-                "deadline_at": None,
-                "last_result": last_result,
-                "last_error": {
-                    "error_code": ERROR_TIMEOUT,
-                    "detail": last_result["detail"],
+        # Another recovery (e.g. the stale driver itself, or a concurrent
+        # request) may have already transitioned canonical state out of
+        # ``draining`` while this one released the writer lock during the
+        # adapter cancel above.  In that case the transition is already done;
+        # do not raise ``InvalidTransitionError`` (ready -> ready).  Finish
+        # the receipt idempotently and report the same timeout result.
+        current_state, _migrated = self.store.canonical.load()
+        if current_state.get("phase") == "draining":
+            tx.transition(
+                {"draining"},
+                "ready",
+                updates={
+                    "active": copy.deepcopy(active),
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": {
+                        "error_code": ERROR_TIMEOUT,
+                        "detail": last_result["detail"],
+                    },
                 },
-            },
-            crash_hook=self.crash_hook,
-        )
+                crash_hook=self.crash_hook,
+            )
         saved = tx.finish_request(request_id, "failed", last_result)
         self._log(
             "drain_recovered_timeout",

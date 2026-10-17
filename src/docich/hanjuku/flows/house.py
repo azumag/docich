@@ -535,6 +535,16 @@ def step(screen, mem, frame):
         if monthly:
             if any(mem.get(k) for k in ('recall', 'battle')):
                 return None
+            from .month import army_count_owned
+            shop = mem.get('shop') or {}
+            if (army_count_owned(mem)
+                    or (shop.get('key') == mem.get('month')
+                        and (shop.get('soldier_receipt') or {}).get('status') == 'pending')):
+                # Issue #2366 (g809 5-7/6-2): the survey took the menu to
+                # メインメニュー mid-inspection; the inspection read that as
+                # another owner and dropped the month's refill. The count
+                # check and an unsettled refill finish first (both bounded).
+                return None
             if ((mem.get('shop') or {}).get('key') == mem.get('month')
                     and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
                 return None

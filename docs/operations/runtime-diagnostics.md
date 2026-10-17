@@ -89,9 +89,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
                      "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
-  "runtime_presentation": {"present": true, "readable": true, "active_runtime": true,
-                           "status": "ready", "display": ":1", "window": "2097160",
+  "runtime_presentation": {"present": true, "readable": true, "reason": "ok",
+                           "active_runtime": true, "status": "ready",
+                           "display": ":1", "window": "2097160",
                            "width": 299, "height": 224, "age_sec": 12},
+  "encoder": {"schema_version": 1, "present": true, "readable": true,
+              "source": "twica_common", "state": "running", "ready": true,
+              "frames_sent": 123456, "fps": 29.97, "progress_age_sec": 2,
+              "out_time_sec": 98765, "reason": "ok"},
   "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
             "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
             "served_reachable": true, "served_matches_deployed": true,
@@ -122,6 +127,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   のcanonical phaseは自動でリセットしない。
 - `runtime_presentation` は **canonical が active とする runtime** の投影状態
   （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
+  `reason` は `present=false` / `readable=false` の理由を固定enumで示す
+  （`ok` / `status_unknown` / `no_active_runtime` / `active_unreadable` /
+  `runtime_id_invalid` / `record_absent` / `record_unreadable`）。
   `status` は `starting` / `ready` / `presentation_failed` / `cleanup_failed` / `stopped` の
   固定enumに限定し、`display` / `window` / `width` / `height` は形式検証済みの値、
   `age_sec` は記録ファイルのmtimeからの経過秒。`groups`（pid）・argv・path・自由文は出さない。
@@ -146,6 +154,26 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `unparsable`）。gateway は `XDG_RUNTIME_DIR` を渡さないため、collector は
   `/run/user/<uid>/pulse/native` が socket のときだけそこを明示する。
   固定(owner-only)な mute 解除 operation は本 projection に含めない。
+  `attribution` は同じ stream 集合の固定軸集計で、`by_player`（`bridge-ffplay` /
+  `retroarch` / `browser` / `speech-worker` / `monitor-capture` /
+  `stream-capture` / `other` / `unknown`）と `by_role`（`media.role` の13語彙のうち
+  実在するもの + `unattributed`）を返す。`media.role` は通常設定されないため
+  `by_role` は補助で、所有主体の切り分けは `by_player` で行う。
+  `streams` が出力予算で省略されても `attribution` は残す（`output_omitted=true`）。
+  詳細リストは `PULSE_SINK_INPUTS_MAX`（8件）で打ち切り、`truncated` で示す。
+- `external_video` は receiver の状態と `frame_fresh` に加え、最終フレームの
+  mtime からの経過秒を `frame_age_sec` として返す（0〜604800秒にクランプ、
+  フレームが無い/未来時刻は `null`）。`frame_fresh=false` は「受信していない」を
+  意味し、`frame_age_sec=null` は「フレームが存在しない」を意味する。
+- `encoder` はエンコーダの送信ハートビートを固定射影する。供給元は TwiCa 共通
+  アダプタの `run/twica-common/pipeline.json` と Soren `direct_stream` の
+  `tmp/state/direct_stream/status.json` で、fresh な方を優先する（TwiCa 5秒、
+  direct_stream 15秒）。`state` / `ready` / `frames_sent` / `fps` /
+  `progress_age_sec` / `out_time_sec` のみを返し、`source` は
+  `twica_common` / `direct_stream` / `none`。`reason` は `ok` / `absent` /
+  `stale` / `unreadable` / `invalid_schema`。供給元の記録には配信設定と
+  再接続先チャンネルが含まれるため、**allowlistの数値・enumキーだけを写し、
+  元のdictは保持しない**。URL・キー・チャンネル名・PIDは出さない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
@@ -445,7 +473,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
   予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
   `cpu_profile`の行・Soren91のgroup・`scene_narration`・`hanjuku_tactical`・
-  `pulse_sink_inputs` の順に削る。`decision_plans` はこの soft 予算では削らず、
+  `pulse_sink_inputs`（`streams`のみ。`attribution` は残す）の順に削る。
+  `encoder` はこの予算では削らない。`decision_plans` はこの soft 予算では削らず、
   gatewayのhard上限時のみ削る。残る最大要素が `cpu_profile` なので、
   ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
   （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
@@ -715,9 +744,17 @@ owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.ym
 `hanjuku-evidence-export-<repo>`）を持ち、scheduled `vm-storage-monitor` と同一 group
 を共有しない。#1922 のとおり、開始しない queued run が shared group を占有して
 以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなるからである。
-monitor 側は引き続き `vm-storage-monitor-<repo>` を維持し、VM 操作の直列化は
+monitor 側は `vm-storage-monitor-v2-<repo>` を持つ。VM 操作の直列化は
 gateway の固定 `vm-operations.lock` が担うため、group は二重の防御であり、失敗時に
 owner の read-only 証跡取得まで止める必要はない。
+
+旧名 `vm-storage-monitor-<repo>` は 2026-10-15 まで owner 起動 evidence workflow と
+共有していた group で、その間に開始しない queued run が占有した状態が残り、evidence
+側が専用 group へ移った後も monitor だけが同じ group へ到着し続けた。結果として
+scheduled monitor の run は 2026-10-02 以降 job を作らない `pending` / `cancelled`
+のまま停止した（#2376）。group 名は 2026-10-17 に `vm-storage-monitor-v2-<repo>` へ
+更新し、wedge した group 状態から離脱した。production control lane を
+`vm-operations-v2-<repo>` へ移した #1875 と同じ処置である。旧名は再利用しない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ

@@ -15,7 +15,7 @@ from docich.game_switch import DeadlineExceededError, GameSwitchCoordinator, Gam
 
 class TestSorenCoordinatorAdapter(unittest.TestCase):
     def make_adapter(self, root: Path) -> SorenCoordinatorAdapter:
-        (root / "lib").mkdir()
+        (root / "lib").mkdir(exist_ok=True)
         (root / "lib/game_lifecycle.py").write_text("# broker\n")
         (root / "game_lifecycle_control.sh").write_text("#!/bin/sh\n")
         game = SimpleNamespace(
@@ -131,7 +131,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 cancelled[0] = True
                 return 0, self.boundary_payload("boundary")
             with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), patch.object(adapter, "_broker", side_effect=broker):
-                with self.assertRaises(DeadlineExceededError):
+                with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
                     adapter._wait_round_boundary(self.boundary_payload("accepted")["request"], time.monotonic() + 30, cancel)
 
     def test_boundary_poll_rejects_inconsistent_request_and_ack_or_return_code(self):
@@ -159,7 +159,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 cancel = SimpleNamespace(is_set=lambda: cancel_set)
                 with patch.object(adapter, "_status", side_effect=status), patch.object(adapter, "_broker", side_effect=lambda *args: calls.append(args)):
                     # Enter the wait with a valid receipt, then a cancelled or expired call.
-                    with self.assertRaises(DeadlineExceededError):
+                    with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
                         adapter._wait_round_boundary(receipt["request"], time.monotonic() - (1 if not cancel_set else -30), cancel)
                 self.assertEqual(calls, [])
 
@@ -1200,6 +1200,83 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     adapter.cleanup_runtime(time.monotonic() + 30, None)
             text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
             self.assertLessEqual(len(text), 8192 + 512)
+
+    def test_resumed_loop_identity_carries_across_adapter_instances(self):
+        """#2061 review: identity captured during cleanup must survive a new instance."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-2")
+            adapter_a = self.make_adapter(root)
+            adapter_a._request_id = "req-2"
+            adapter_a._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter_a, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter_a.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_a._resumed_loop, (4242, 777))
+            pause.unlink()
+            adapter_b = self.make_adapter(root)
+            self.assertIsNone(adapter_b._resumed_loop)
+            identity = {"request_id": "req-2", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None,
+                        "resource": {**identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter_b.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_b._resumed_loop, (4242, 777))
+
+    def test_resumed_loop_recovery_rejects_mismatched_request_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text(
+                json.dumps({"request_id": "req-other", "identity": [4242, 777]}))
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
+
+    def test_resumed_loop_recovery_rejects_malformed_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text("not json")
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
+
+    def test_mismatched_snapshot_rejected_by_materialize_stays_rejected_after_archive(self):
+        """#2061 review P2: materialize rejects mismatched snapshot; readiness must not recover it."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text(
+                json.dumps({"request_id": "req-other", "identity": [4242, 777]}))
+            adapter = self.make_adapter(root)
+            # broker reports the current (different) stopped request
+            current_identity = {"request_id": "req-current", "game": "sorengame", "generation": 7}
+            outputs = [{"request": current_identity, "ack": None,
+                        "resource": {**current_identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertIsNone(adapter._resumed_loop)
+            # broker archived: readiness sees no request/ack
+            archived = {"schema": 1, "request": None, "ack": None, "resource": None}
+            adapter._status = Mock(return_value=archived)
+            with patch.object(adapter, "_live_process", return_value=False), \
+                    patch("docich.adapters.soren.time.sleep", return_value=None):
+                with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            self.assertIsNone(adapter._resumed_loop)
 
 
 if __name__ == "__main__":

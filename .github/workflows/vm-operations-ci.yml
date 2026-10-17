@@ -15,6 +15,7 @@ on:
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
+      - '.github/workflows/vm-monitor-silence-alert.yml'
   push:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
+      - '.github/workflows/vm-monitor-silence-alert.yml'
 
 permissions:
   contents: read
@@ -83,6 +85,7 @@ jobs:
           ops/vm_actions/gameswitch_recover.py
           ops/vm_actions/recover_soren_round.py
           ops/vm_actions/recover_bgm_mute.py
+          ops/vm_actions/monitor_silence.py
           ops/vm_actions/realign_hanjuku_presentation.py
           ops/vm_actions/runtime_registry.py
           ops/vm_actions/nethack_canary_production_smoke.py

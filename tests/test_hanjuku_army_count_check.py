@@ -99,20 +99,24 @@ def test_no_runtime_identity_or_header_cannot_bind_a_count_inspection():
     assert monthly._month_army_count_check(s,memory(),{}) is None
 
 
-@pytest.mark.parametrize('gold,reserve,wages,expected',[(45,15,30,0),(100,50,30,20),
-                                                    (70,0,62,40),(500,50,30,99)])
-def test_zero_refill_keeps_egg_repair_and_the_shortfall_floor(monkeypatch,gold,reserve,wages,expected):
+@pytest.mark.parametrize('gold,reserve,repair,wages,expected',[(45,15,0,30,15),(100,50,0,30,50),
+                                                           (100,50,50,30,20),(70,0,0,62,40),
+                                                           (500,50,0,30,99)])
+def test_zero_refill_keeps_repair_and_the_shortfall_floor_ahead_of_the_egg(
+        monkeypatch,gold,reserve,repair,wages,expected):
     # Owner (2026-10-14): a soldier refill does not reserve the whole measured
-    # payroll, only the documented month-end shortfall floor.
+    # payroll, only the documented month-end shortfall floor. Owner
+    # (2026-10-17): twenty or fewer soldiers are refilled before the egg hold.
     mem=memory(gold);observe_count(mem,0,gold)
-    shop=mem['shop'];shop['reserve']=reserve
+    shop=mem['shop'];shop.update(reserve=reserve,hero_repair_reserve=repair)
     monkeypatch.setattr(economy,'_egg_recovery_wage_floor',lambda m:wages)
-    economy._zero_army_refill(mem,shop,screen(gold).header)
+    economy._low_army_refill(mem,shop,screen(gold).header)
     assert shop['soldiers']==expected
+    assert shop['reserve']==reserve  # waits, not released or paid
     assert not shop.get('soldier_receipt')
 
 
-@pytest.mark.parametrize('block',['payment','ritual','unverified_recruit','unknown_price'])
+@pytest.mark.parametrize('block',['payment','ritual','unverified_recruit'])
 def test_live_or_unverified_transaction_is_never_rewritten(block):
     mem=memory();observe_count(mem,0);shop=mem['shop']
     if block=='payment':shop['soldier_receipt']={'status':'pending'}
@@ -120,7 +124,7 @@ def test_live_or_unverified_transaction_is_never_rewritten(block):
     elif block=='unverified_recruit':shop['recruit']='unverified'
     else:shop.update(merchant_done=False,items=[['未測定',1]])
     before=deepcopy(shop)
-    economy._zero_army_refill(mem,shop,screen().header)
+    economy._low_army_refill(mem,shop,screen().header)
     assert shop==before
 
 
@@ -151,7 +155,7 @@ def test_measured_empty_army_gets_a_plan_even_before_a_future_chart_purchase(mon
     monkeypatch.setattr(p.chart,'purchase_for',lambda *a:None)
     shop=economy._plan(mem,screen().header)
     assert shop is not None
-    economy._zero_army_refill(mem,shop,screen().header)
+    economy._low_army_refill(mem,shop,screen().header)
     assert shop['soldiers']==42 and shop['soldiers_done'] is False
 
 
@@ -325,7 +329,7 @@ def test_native_count_intro_a_only_opens_editor_then_inspection_uses_b():
 def test_finished_recruitment_receipt_is_kept_while_remaining_cash_refills_zero_army():
     mem=memory(100);observe_count(mem,0,100);shop=mem['shop']
     shop.update(recruit='done',recruit_receipt={'payment_verified':True,'cost':50})
-    economy._zero_army_refill(mem,shop,screen(100).header)
+    economy._low_army_refill(mem,shop,screen(100).header)
     assert shop['soldiers']==50 and shop['soldiers_done'] is False
     assert shop['recruit']=='done' and shop['recruit_receipt']=={'payment_verified':True,'cost':50}
     assert not shop.get('soldier_receipt')

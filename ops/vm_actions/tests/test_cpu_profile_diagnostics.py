@@ -228,16 +228,59 @@ class CpuProfileBudgetTests(unittest.TestCase):
         self.assertEqual(profile["host"], {"cpu_busy_pct": 63.5})
         self.assertIn("decision_plans", text)
 
-    def test_short_profile_detail_is_counted_when_removed(self):
+    def test_pressure_keeps_the_top_rows_when_the_envelope_affords_it(self):
+        # azumag/docich#970: when the envelope can afford it, the projection
+        # still names the top CPU consumers / spawn paths, not just host totals.
+        payload = self.payload(self.rows(30), self.spawn_rows(30))
+        full = len(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+        found = None
+        for budget in range(1200, full + 1, 25):
+            trial = json.loads(json.dumps(payload))
+            with mock.patch.object(collector, "MAX_JSON_BYTES", budget):
+                collector._diagnostics_budget(trial)
+            if len(trial["cpu_profile"]["components"]) == collector.CPU_PROFILE_FLOOR_COMPONENTS:
+                found = (budget, trial["cpu_profile"])
+                break
+        self.assertIsNotNone(found, "no budget kept the floor rows")
+        _, profile = found
+        self.assertEqual(len(profile["spawns"]), collector.CPU_PROFILE_FLOOR_SPAWNS)
+        self.assertEqual(profile["components_omitted"],
+                         30 - collector.CPU_PROFILE_FLOOR_COMPONENTS)
+        self.assertEqual(profile["spawns_omitted"], 30 - collector.CPU_PROFILE_FLOOR_SPAWNS)
+        # Busiest-first producer order: the head survives.
+        self.assertEqual(profile["components"][0]["component"], "worker-0")
+        self.assertEqual(profile["spawns"][0]["count"], 30)
+        self.assertEqual(profile["meta"], {"samples": 48})
+        self.assertEqual(profile["host"], {"cpu_busy_pct": 63.5})
+
+    def test_extreme_pressure_drops_the_floor_as_last_optional_detail(self):
+        # The floor is still optional detail: under a budget that cannot hold
+        # it, the rows go entirely (counted in *_omitted) rather than pushing a
+        # higher-priority section out.
+        payload = self.payload(self.rows(30), self.spawn_rows(30))
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
+            collector._diagnostics_budget(payload)
+        profile = payload["cpu_profile"]
+        self.assertEqual(profile["components"], [])
+        self.assertEqual(profile["spawns"], [])
+        self.assertEqual(profile["components_omitted"], 30)
+        self.assertEqual(profile["spawns_omitted"], 30)
+        self.assertEqual(profile["meta"], {"samples": 48})
+        self.assertEqual(profile["host"], {"cpu_busy_pct": 63.5})
+
+    def test_a_short_profile_detail_is_counted_when_extreme_pressure_drops_it(self):
         payload = self.payload(self.rows(3), self.spawn_rows(3))
         with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
             collector._diagnostics_budget(payload)
-        self.assertEqual(payload["cpu_profile"]["components"], [])
-        self.assertEqual(payload["cpu_profile"]["components_omitted"], 3)
-        self.assertEqual(payload["cpu_profile"]["spawns"], [])
-        self.assertEqual(payload["cpu_profile"]["spawns_omitted"], 3)
-        self.assertEqual(payload["cpu_profile"]["meta"], {"samples": 48})
-        self.assertEqual(payload["cpu_profile"]["host"], {"cpu_busy_pct": 63.5})
+        profile = payload["cpu_profile"]
+        self.assertEqual(profile["components"], [])
+        self.assertEqual(profile["components_omitted"], 3)
+        self.assertEqual(profile["spawns"], [])
+        self.assertEqual(profile["spawns_omitted"], 3)
+        self.assertEqual(profile["meta"], {"samples": 48})
+        self.assertEqual(profile["host"], {"cpu_busy_pct": 63.5})
+
+    def test_unexpected_profile_shapes_are_left_untouched(self):
         payload = self.payload("PRIVATE_ROWS", {"PRIVATE_ROWS": 1})
         with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
             collector._diagnostics_budget(payload)

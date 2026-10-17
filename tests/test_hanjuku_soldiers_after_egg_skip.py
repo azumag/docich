@@ -40,16 +40,18 @@ def test_cached_zero_plan_opens_refill_after_unaffordable_recovery(count, gold, 
 
 
 def test_new_skip_replans_in_the_same_observation_instead_of_exiting():
-    mem = memory()
+    # Above LOW_ARMY the recovery is still tried first; twenty or fewer
+    # soldiers are refilled before it (test_hanjuku_low_army_refill_first).
+    mem = memory(30)
     mem['shop'].update(egg='pending', closed=False)
     assert p.month_step(screen(79), mem) == [p.pad('a')]
-    assert mem['shop']['soldiers'] == 40
+    assert mem['shop']['soldiers'] == 20
     assert mem['shop']['egg'] == 'skipped'
     assert not mem.get('month_exit')
 
 
 def test_affordable_recovery_still_opens_before_soldiers():
-    mem = memory(gold=130)
+    mem = memory(30, gold=130)
     mem['shop'].update(egg='pending', closed=False)
     assert p.month_step(screen(130, on='たまごのかいふく'), mem) == [p.pad('a')]
     assert mem['month_sub']['kind'] == 'egg'
@@ -149,7 +151,7 @@ def test_json_hotload_does_not_restore_egg_or_recruit_reserves_or_renew_finished
     shop.update(soldiers=0, soldiers_done=True)
     for _ in range(5):
         economy._refresh_egg_priority(mem, shop, screen(79).header)
-        economy._zero_army_refill(mem, shop, screen(79).header)
+        economy._low_army_refill(mem, shop, screen(79).header)
         economy._prioritise_recruit(mem, shop, 79)
     assert shop['soldiers'] == 0 and shop['soldiers_done'] is True
     assert shop['reserve'] == shop['recruit_reserve'] == 0
