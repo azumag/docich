@@ -192,10 +192,60 @@ ENGINEERING_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat"),
 )
 
+INFORMATION_ENGINEERING_SPEC = CornerRuntimeSpec(
+    corner_id="information_engineering",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "information_engineering_corner",
+        "fixed_information_engineering_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="mechanismTheme",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("mechanismTheme", "fact", "今日のテーマ"),
+        Section("problemContext", "fact", "問題とワークロード"),
+        Section("requirementsAndConstraints", "fact", "要求と制約"),
+        Section("naiveApproach", "fact", "素朴な方法"),
+        Section("mechanismAndPrinciples", "analysis", "情報工学上の仕組み"),
+        Section("implementationExample", "analysis", "実装例"),
+        Section("failureModes", "caveat", "失敗すると何が起きるか"),
+        Section("tradeoffs", "analysis", "性能・安全・複雑さのトレードオフ"),
+        Section("limitations", "caveat", "限界・未検証点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "mechanismTheme",
+        "problemContext",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "naiveApproach",
+        "mechanismAndPrinciples",
+        "implementationExample",
+        "failureModes",
+        "tradeoffs",
+        "limitations",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations",),
+    labels=("fact", "analysis", "caveat"),
+)
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
     ENGINEERING_SPEC.corner_id: ENGINEERING_SPEC,
+    INFORMATION_ENGINEERING_SPEC.corner_id: INFORMATION_ENGINEERING_SPEC,
 }
 
 
