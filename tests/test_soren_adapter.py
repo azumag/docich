@@ -15,7 +15,7 @@ from docich.game_switch import DeadlineExceededError, GameSwitchCoordinator, Gam
 
 class TestSorenCoordinatorAdapter(unittest.TestCase):
     def make_adapter(self, root: Path) -> SorenCoordinatorAdapter:
-        (root / "lib").mkdir()
+        (root / "lib").mkdir(exist_ok=True)
         (root / "lib/game_lifecycle.py").write_text("# broker\n")
         (root / "game_lifecycle_control.sh").write_text("#!/bin/sh\n")
         game = SimpleNamespace(
@@ -1200,6 +1200,56 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     adapter.cleanup_runtime(time.monotonic() + 30, None)
             text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
             self.assertLessEqual(len(text), 8192 + 512)
+
+    def test_resumed_loop_identity_carries_across_adapter_instances(self):
+        """#2061 review: identity captured during cleanup must survive a new instance."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-2")
+            adapter_a = self.make_adapter(root)
+            adapter_a._request_id = "req-2"
+            adapter_a._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter_a, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter_a.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_a._resumed_loop, (4242, 777))
+            pause.unlink()
+            adapter_b = self.make_adapter(root)
+            self.assertIsNone(adapter_b._resumed_loop)
+            identity = {"request_id": "req-2", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None,
+                        "resource": {**identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter_b.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_b._resumed_loop, (4242, 777))
+
+    def test_resumed_loop_recovery_rejects_mismatched_request_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text(
+                json.dumps({"request_id": "req-other", "identity": [4242, 777]}))
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
+
+    def test_resumed_loop_recovery_rejects_malformed_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text("not json")
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
 
 
 if __name__ == "__main__":
