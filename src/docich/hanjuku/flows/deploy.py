@@ -263,6 +263,29 @@ def _drop_card(screen, mem, order, card, inventory):
     return []
 
 
+def _card_proven_absent(card, inventory):
+    """The readable panel proves this card is out of stock, not scrolled off.
+
+    Rows are listed in card-ID order and depleted cards disappear. A card shown
+    with stock 0, missing from a panel of fewer than four rows, or whose ID
+    falls between two visible rows' IDs cannot be elsewhere in the list.
+    g825 2-9 (2026-10-17 09:3x): 1-B1 wanted クースカン(13); the panel showed
+    ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) and the strict boss
+    kit held for good.
+    """
+    rows = inventory['rows']
+    if inventory['remaining'] == 0:
+        return False
+    shown = next((r for r in rows if r['card'] == card), None)
+    if shown is not None:
+        return shown['stock'] == 0
+    ids = [CARD_IDS.get(r['card']) for r in rows]
+    target = CARD_IDS.get(card)
+    if target is None or None in ids or ids != sorted(ids):
+        return False
+    return len(rows) < 4 or min(ids) < target < max(ids)
+
+
 def _selected_actor_guard(screen, mem, order):
     """A runtime sortie must show its actual named actor before confirmation.
 
@@ -827,6 +850,7 @@ def deploy_step(screen: Screen, mem):
         card = next((c for c in planned if c in shown), planned[0])
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
+                and not _card_proven_absent(card, inventory)
                 and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
                    else CARD_SCROLL_LIMIT)):
             scrolls = mem.setdefault('card_scroll', {})
@@ -839,7 +863,9 @@ def deploy_step(screen: Screen, mem):
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
             return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
-            if not _strict_boss_cards(order, mem):
+            # The base boss kit stays strict unless the panel proves the card
+            # is gone: holding for a card that does not exist never ends.
+            if not _strict_boss_cards(order, mem) or _card_proven_absent(card, inventory):
                 dropped = _drop_card(screen, mem, order, card, inventory)
                 if dropped is not None:
                     return dropped
