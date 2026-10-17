@@ -975,6 +975,8 @@ LIFECYCLE_PAUSE_RECORDS = {
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
 LIFECYCLE_DEADLINE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
     "boundary",
     "stop_requested",
     "stopping",
@@ -1013,6 +1015,12 @@ LIFECYCLE_WAITING_FOR = (
     "lifecycle_handover",
     "fresh_launch",
     "operator_action",
+    # An accepted/waiting handover whose request deadline has already passed
+    # while its lifecycle pause markers survive (docich #2061).  The broker
+    # only rewrites such an ack to ``timeout`` when something polls
+    # ``boundary``, so a wedged cleanup keeps reporting ``waiting``; this enum
+    # identifies the expired cleanup instead of reading as a live handover.
+    "expired_waiting",
     "unknown",
 )
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
@@ -1359,6 +1367,7 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             owned.append(name)
     owned = sorted(owned)
     active = False
+    expired_waiting = False
     if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
         if ack_status == "stopped":
             # Terminal park: the bridge intentionally waits for a fresh
@@ -1369,18 +1378,27 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
             if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
                 active = bool(float(deadline_raw) > float(now))
+                expired_waiting = bool(
+                    not active and ack_status in {"accepted", "waiting"}
+                )
             else:
                 active = False
         else:
-            # accepted/waiting/boundary: handover accepted but the broker has
-            # not parked a deadline-bound phase yet; still governed.
-            active = True
+            # Any remaining live status is deadline-bound too; fail closed
+            # rather than report an unproven handover as active.
+            active = False
     if active and ack_status == "stopped" and owned:
         waiting_for = "fresh_launch"
     elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
         waiting_for = "lifecycle_handover"
     elif operator_paused:
         waiting_for = "operator_action"
+    elif expired_waiting and any_paused:
+        # docich #2061: an accepted/waiting handover past its deadline left
+        # lifecycle pause markers behind.  Reporting this as
+        # "lifecycle_handover" hid the exact cleanup the operator has to
+        # cancel, so it gets its own enum (see LIFECYCLE_WAITING_FOR).
+        waiting_for = "expired_waiting"
     elif any_paused:
         # Paused markers exist but none prove an active lifecycle handover
         # nor an operator webui pause: stale, expired or mismatched.
