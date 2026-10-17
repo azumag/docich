@@ -288,12 +288,63 @@ ELECTRONICS_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat"),
 )
 
+ARCHITECTURE_SPEC = CornerRuntimeSpec(
+    corner_id="architecture",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "architecture_corner",
+        "fixed_architecture_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="buildingTheme",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("buildingTheme", "fact", "今日の建物・テーマ"),
+        Section("requirementsAndConstraints", "fact", "要求条件と制約"),
+        Section("structureAndMaterials", "analysis", "構造・材料"),
+        Section("seismicSafety", "analysis", "耐震・免震と安全"),
+        Section("buildingEquipment", "analysis", "設備（空調・給排水・電気等）"),
+        Section("circulationAndUse", "analysis", "動線と使われ方"),
+        Section("constructionMethod", "analysis", "施工方法"),
+        Section("designRationale", "analysis", "なぜこの設計になったか"),
+        Section("limitations", "caveat", "限界・未検証点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "buildingTheme",
+        "siteContext",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "structureAndMaterials",
+        "seismicSafety",
+        "buildingEquipment",
+        "circulationAndUse",
+        "constructionMethod",
+        "designRationale",
+        "limitations",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations",),
+    labels=("fact", "analysis", "caveat"),
+)
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
     ENGINEERING_SPEC.corner_id: ENGINEERING_SPEC,
     INFORMATION_ENGINEERING_SPEC.corner_id: INFORMATION_ENGINEERING_SPEC,
     ELECTRONICS_SPEC.corner_id: ELECTRONICS_SPEC,
+    ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
 }
 
 
