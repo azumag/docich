@@ -8887,6 +8887,30 @@ def _cpu_profile_detail_budget(payload):
     return payload
 
 
+def _cpu_profile_detail_drop(payload):
+    """Drop the remaining per-component rows as the last optional detail.
+
+    The floor kept by ``_cpu_profile_detail_budget`` is still optional detail:
+    it must go before the latest NetHack result, which the reviewed priority
+    order ranks above CPU/audio detail. Host totals survive, and the dropped
+    rows move into ``*_omitted`` so an omitted row is never reported as absent.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key in ("components", "spawns"):
+        rows = profile.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        omitted_key = f"{key}_omitted"
+        previous = profile.get(omitted_key, 0)
+        if type(previous) is not int or previous < 0:
+            previous = 0
+        profile[omitted_key] = previous + len(rows)
+        profile[key] = []
+    return payload
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -8946,6 +8970,11 @@ def _diagnostics_budget(payload):
     # latest result is allowed to go only after optional CPU/audio detail.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload, keep_latest=True)
+    # The CPU floor is still optional detail: drop it entirely before the latest
+    # NetHack result, preserving the reviewed priority order (review of #2406).
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_detail_drop(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload)
     # The repeated-operation projection deliberately survives the soft budget.
