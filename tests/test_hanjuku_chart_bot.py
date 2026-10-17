@@ -449,7 +449,7 @@ def _goninja_offer(gold, hand_y=177):
 
 
 def test_goninja_is_ordered_only_at_the_owner_cash_floor():
-    # Owner rule 2026-10-06: 所持金1000G以上なら依頼、未満・不明なら拒否。
+    # Owner rule 2026-10-17: 所持金300G以上なら依頼、未満・不明なら拒否。
     screen = parse(_goninja_offer(7572).frame())
     assert screen.kind == 'yes_no'
     assert screen.header == {'chapter': None, 'year': 5, 'month': 10, 'gold': 7572}
@@ -458,9 +458,9 @@ def test_goninja_is_ordered_only_at_the_owner_cash_floor():
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'accept_goninja'
     assert rec['choice'] == 'うむッ!'
-    assert rec['observed_metric'] == {'gold': 7572, 'minimum_gold': 1000}
+    assert rec['observed_metric'] == {'gold': 7572, 'minimum_gold': 300}
 
-    # 依頼料50Gがあっても1000G未満なら断る。
+    # 依頼料50Gがあっても300G未満なら断る。
     mem2 = {'chapter': 3, '_records': []}
     assert policy.yes_no_step(parse(_goninja_offer(60).frame()), mem2)[0]['buttons'] == ['down']
     low = _goninja_offer(60, hand_y=193)                 # うむッ! -> いかんッ! へ移動済み
@@ -482,18 +482,18 @@ def test_goninja_is_ordered_only_at_the_owner_cash_floor():
 
 def test_goninja_uses_cash_not_the_old_monthly_spare_budget():
     assert policy.GONINJA_COST == 50
-    assert policy.GONINJA_MIN_GOLD == 1000
+    assert policy.GONINJA_MIN_GOLD == 300
     mem = {'chapter': 1, '_records': []}
     header = {'chapter': None, 'year': 1, 'month': 5, 'gold': 999}
     # The old 214G purchase and 30G wage reserve no longer define "余裕".
-    assert policy._goninja_budget(mem, header) == {'gold': 999, 'minimum_gold': 1000}
-    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
-        'gold': 1000, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, header) == {'gold': 999, 'minimum_gold': 300}
+    assert policy._goninja_budget(mem, dict(header, gold=300)) == {
+        'gold': 300, 'minimum_gold': 300}
     # An unpriced adjusted chart cannot veto the explicit readable cash floor.
     mem['chart_plan'] = {'purchases': {'month': (1, 5),
                                       'cards': (('デッドガン', 1),)}}
-    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
-        'gold': 1000, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, dict(header, gold=300)) == {
+        'gold': 300, 'minimum_gold': 300}
     assert policy._goninja_budget(mem, None) is None
 
 

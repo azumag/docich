@@ -276,8 +276,8 @@ RECRUIT_COST = 50
 # 月イチイベント「ゴニンジャー」(gcgx event.html: 50Gで敵将軍の暗殺を依頼できる。
 # 成功率は低い)。隠密戦隊ごにんじゃーへの依頼料。
 GONINJA_COST = 50
-# Owner (2026-10-06): 1000G以上ある時だけ依頼する。募集の閾値には使わない。
-GONINJA_MIN_GOLD = 1000
+# Owner (2026-10-17): 300G未満なら断る。募集の閾値には使わない。
+GONINJA_MIN_GOLD = 300
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
 # The month menu stays on screen for a few observations after the A press that
 # opens a sub (g462 18:06:02-05); only that stale frame may not end the sub.
@@ -1106,7 +1106,7 @@ def _merchant_spendable(mem, shop, header):
 def _goninja_budget(mem, header):
     """Readable cash and the owner's explicit floor, else None.
 
-    Owner (2026-10-06): 所持金1000G以上なら依頼し、未満・読取不明は断る。
+    Owner (2026-10-17): 所持金300G未満・読取不明は断る。
     This supersedes the old chart-purchase/reserve-based spare calculation.
     Never substitute remembered funds or borrow this floor for recruitment.
     """

@@ -307,16 +307,16 @@ def yes_no_step(screen: Screen, mem):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
     elif _is_goninja_prompt(text):
         # 月イチイベント「ゴニンジャー」: 50Gで敵将軍の暗殺を依頼する。成功率は低い。
-        # Owner rule (2026-10-06): 所持金1000G以上の時だけ依頼する。
+        # Owner rule (2026-10-17): 所持金300G未満なら断る。
         budget = metric = _goninja_budget(mem, screen.header)
         if budget is None:
             choice, reason, variant = ('いかんッ!', '所持金が読めないためゴニンジャーへの依頼を見送る',
                                        'decline_goninja_unreadable')
         elif budget['gold'] >= GONINJA_MIN_GOLD:
-            choice, reason, variant = ('うむッ!', '所持金が1000G以上あるためゴニンジャーへ依頼する',
+            choice, reason, variant = ('うむッ!', f'所持金が{GONINJA_MIN_GOLD}G以上あるためゴニンジャーへ依頼する',
                                        'accept_goninja')
         else:
-            choice, reason, variant = ('いかんッ!', '所持金が1000G未満のためゴニンジャーへの依頼を断る',
+            choice, reason, variant = ('いかんッ!', f'所持金が{GONINJA_MIN_GOLD}G未満のためゴニンジャーへの依頼を断る',
                                        'decline_goninja_below_floor')
     elif 'はたしあい' in text or 'ごあいて' in text:
         # Owner decision (2026-09-25): accept. A duel fought with the blue
