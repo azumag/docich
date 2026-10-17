@@ -85,6 +85,41 @@ class TestRecoverEntryAcquireRetry(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
         self.assertTrue(self.sleeps, "recover must sleep before the successful retry")
 
+    def test_time_functions_are_restored_after_the_retry(self):
+        """The scoped time patch must not leak into the rest of the suite (#2379 review).
+
+        ``game_switch.time`` is the stdlib ``time`` module itself, so a patch that
+        is not restored freezes ``monotonic`` and turns ``sleep`` into a no-op for
+        every later test in the same pytest worker; deadline/retry suites can then
+        misjudge or never finish.  Exercise the retry path, run the scoped cleanup
+        explicitly, and prove the stdlib functions are back and the real clock
+        advances again.
+        """
+        import docich.game_switch as game_switch
+
+        original_monotonic = time.monotonic
+        original_sleep = time.sleep
+
+        self.store.transaction = lambda: _BusyContext()
+        # A constant fake clock keeps the acquire window at zero, so the first
+        # busy attempt already exceeds it and recover() returns without looping.
+        self._patch_time([0.0])
+
+        # The instrumentation is active while the retry test runs...
+        self.assertIsNot(game_switch.time.monotonic, original_monotonic)
+        self.assertIsNot(game_switch.time.sleep, original_sleep)
+        self.assertEqual(self.coordinator.recover(timeout_s=0.0).status, "busy")
+
+        # ...and the scoped cleanup puts the stdlib functions back.
+        self.doCleanups()
+        self.assertIs(game_switch.time.monotonic, original_monotonic)
+        self.assertIs(game_switch.time.sleep, original_sleep)
+
+        # The real clock advances, so a later deadline test cannot hang.
+        before = game_switch.time.monotonic()
+        game_switch.time.sleep(0.01)
+        self.assertGreater(game_switch.time.monotonic(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
