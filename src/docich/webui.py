@@ -3790,14 +3790,28 @@ class _Handler(BaseHTTPRequestHandler):
             # 413 を返す前に宣言された本文を bounded に drain する。
             # 読まずに close すると TCP が RST を送り、既に送った 413
             # 応答がクライアント側で失われるため (issue #2371)。
+            # ただし本文を送らない/遅いクライアントで 413 が返らない DoS を
+            # 避けるため、drain には短い deadline を設ける (review P2)。
             # 上限を超える巨大な宣言値に対しては DoS を避けるため cap する。
             _DRAIN_CAP = MAX_BODY_BYTES + 65536
+            _DRAIN_DEADLINE_SEC = 0.5
             to_drain = min(length if length > 0 else 0, _DRAIN_CAP)
             if to_drain > 0:
+                _prev_timeout = None
                 try:
+                    _prev_timeout = self.request.gettimeout()
+                except Exception:
+                    _prev_timeout = None
+                try:
+                    self.request.settimeout(_DRAIN_DEADLINE_SEC)
                     self.rfile.read(to_drain)
                 except Exception:
                     pass
+                finally:
+                    try:
+                        self.request.settimeout(_prev_timeout)
+                    except Exception:
+                        pass
             self._send_error_json(413, "body_too_large", f"Content-Length は 0..{MAX_BODY_BYTES} である必要があります")
             self.close_connection = True
             return None, 413
