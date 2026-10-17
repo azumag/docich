@@ -632,25 +632,42 @@ def resume_sortie_step(screen: Screen, mem):
 def boss_stock_restart_step(screen: Screen, mem):
     """Keep ownership of a partly read sortie confirmation while backing out."""
     from ..os_layer.roster import run_identity
+    if screen.kind in {'map', 'castle_menu'}:
+        # These observed backouts finish the old UI episode before normal
+        # map_step can open a new survey/Y view with a different owner.
+        for key in ('boss_stock_restart', 'boss_stock_cancelled', 'boss_stock_cancelled_identity',
+                    'boss_card_hold', 'boss_card_hold_scope'):
+            mem.pop(key, None)
+        return None
     rows = {line.y: line for line in screen.lines}
     partial_confirmation = (screen.kind in {'yes_no', 'text', 'unknown'}
             and 31 in rows and rows[31].span(80, 128) == 'しょうぐん'
             and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
             and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
             and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
-    if mem.get('boss_stock_cancelled'):
-        if ('boss_stock_cancelled_identity' in mem
-                and mem['boss_stock_cancelled_identity'] != run_identity(mem.get('_run_identity'))):
+    cancelled = mem.get('boss_stock_cancelled')
+    if cancelled:
+        if isinstance(cancelled, dict) and (
+                mem.get('active') not in (None, cancelled.get('step'))
+                or cancelled.get('chapter') != mem.get('chapter')
+                or 'identity' not in cancelled
+                or cancelled['identity'] != run_identity(mem.get('_run_identity'))):
             mem.pop('boss_stock_cancelled', None)
             mem.pop('boss_stock_cancelled_identity', None)
             return None
-        if screen.kind in {'sortie_confirm', 'card_select', 'general_list', 'map_target', 'world_map', 'unknown'} or partial_confirmation:
+        # Legacy boolean latches have no step evidence. Keep their original
+        # confirmation guard, but never claim a new card/actor/survey view.
+        held_kinds = {'sortie_confirm', 'unknown'}
+        if isinstance(cancelled, dict):
+            held_kinds.update({'card_select', 'general_list', 'map_target', 'world_map'})
+        elif screen.kind in {'card_select', 'general_list', 'map_target', 'world_map'}:
+            mem.pop('boss_stock_cancelled', None)
+            mem.pop('boss_stock_cancelled_identity', None)
+            return None
+        if screen.kind in held_kinds or partial_confirmation:
             _record(mem, 'situation_held', screen=screen.kind,
                     reason='取り消し上限後も同じ出撃確認が残るため承認せず保留')
             return []
-        if screen.kind in {'map', 'castle_menu'}:
-            mem.pop('boss_stock_cancelled', None)
-            mem.pop('boss_stock_cancelled_identity', None)
     restarting = mem.get('boss_stock_restart')
     if not isinstance(restarting, dict):
         return None
@@ -665,9 +682,6 @@ def boss_stock_restart_step(screen: Screen, mem):
     if order is None or restarting.get('step') != order['step']:
         mem.pop('boss_stock_restart', None)
         return None
-    if kind == 'castle_menu':
-        mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
-        return None
     fade = kind == 'unknown' and not partial_confirmation
     if kind not in {'general_list', 'card_select', 'sortie_confirm', 'map_target', 'world_map'}:
         # The action label can lose a glyph and classify as generic yes/no.
@@ -678,9 +692,9 @@ def boss_stock_restart_step(screen: Screen, mem):
     restarting['readings'] = int(restarting.get('readings') or 0) + 1
     if restarting['readings'] >= 12:
         mem.pop('boss_stock_restart', None)
-        mem['boss_stock_cancelled'] = True
-        if restarting.get('cancel_only') is True:
-            mem['boss_stock_cancelled_identity'] = restarting['identity']
+        mem['boss_stock_cancelled'] = {'step': order['step'], 'chapter': mem.get('chapter'),
+                                       'identity': run_identity(mem.get('_run_identity'))}
+        mem.pop('boss_stock_cancelled_identity', None)
         actions = _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
             '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
             {'screen': kind, 'readings': 12})

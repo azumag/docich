@@ -186,3 +186,89 @@ def test_another_run_cannot_inherit_the_cancel_only_owner_or_its_hold(capped):
     mem['_run_identity'] = {**ID, 'lease_id': 'new-run'}
     assert p.boss_stock_restart_step(screen, mem) is None
     assert not mem.get('boss_stock_restart') and not mem.get('boss_stock_cancelled')
+
+
+@pytest.mark.parametrize('capped', [False, True])
+def test_free_map_completes_cancel_before_a_new_survey_world_map(capped):
+    from test_hanjuku_off_chart import FRAME, map_screen, _world_map_frame
+    mem = cancelled_state()['policy']
+    if capped:
+        for _ in range(12): p.boss_stock_restart_step(parse(unread_native()), mem)
+    # Follow the public flow dispatch continuously: B completed, then normal
+    # map_step opens Y. That new view belongs to survey, not the old cancel.
+    screen = map_screen(100, 100)
+    actions = p.boss_stock_restart_step(screen, mem)
+    if actions is None: actions = p.map_step(screen, mem, FRAME)
+    assert actions == [p.pad('y')]
+    frame = _world_map_frame({'アルマムーン': 'own'})
+    for _ in range(14):
+        mem = json.loads(json.dumps(mem))
+        actions = p.boss_stock_restart_step(parse(frame), mem)
+        if actions is None: actions = p.world_map_step(parse(frame), mem, frame)
+        assert actions == [p.pad('y')]
+        assert not mem.get('boss_stock_restart') and not mem.get('boss_stock_cancelled')
+    assert not mem.get('boss_card_hold') and not mem.get('boss_card_hold_scope')
+
+
+@pytest.mark.parametrize('capped', [False, True])
+def test_public_decide_cancel_then_free_map_then_survey_through_json(capped):
+    from test_hanjuku_off_chart import _world_map_frame
+    state = cancelled_state()
+    if capped:
+        for _ in range(12):
+            _, state = decide(unread_native(), json.loads(json.dumps(state)), run_identity=ID)
+    # Existing public chapter-2 map texture supplies only the measured free
+    # field/cursor UI here, not evidence for this chapter-1 synthetic state.
+    field = read_png(Path(__file__).parent / 'fixtures/hanjuku/resume-chapter-2-map.png')
+    assert parse(field).kind == 'map' and parse(field).marker is None
+    actions, state = decide(field, json.loads(json.dumps(state)), run_identity=ID)
+    assert actions == [p.pad('y')]
+    view = _world_map_frame({'アルマムーン': 'own'})
+    for _ in range(14):
+        actions, state = decide(view, json.loads(json.dumps(state)), run_identity=ID)
+        assert actions == [p.pad('y')]
+        assert not state['policy'].get('boss_stock_restart')
+        assert not state['policy'].get('boss_stock_cancelled')
+    assert not state['policy'].get('boss_card_hold')
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'general_list', 'world_map', 'sortie_confirm', 'unknown'])
+def test_capped_cancel_cannot_hold_a_different_active_order(kind):
+    mem = cancelled_state()['policy']
+    for _ in range(12): p.boss_stock_restart_step(parse(unread_native()), mem)
+    assert mem['boss_stock_cancelled'] and mem['active'] is None
+    mem = json.loads(json.dumps(mem)); mem['active'] = '1-A2'
+    for _ in range(14):
+        assert p.boss_stock_restart_step(Screen([], None, '', kind=kind), mem) is None
+        assert not mem.get('boss_stock_cancelled') and not mem.get('boss_stock_restart')
+        assert mem['active'] == '1-A2'
+
+
+def test_capped_cancel_is_bound_to_the_chapter_as_well_as_the_run():
+    mem = cancelled_state()['policy']
+    for _ in range(12): p.boss_stock_restart_step(parse(unread_native()), mem)
+    mem['chapter'] = 2
+    assert p.boss_stock_restart_step(parse(unread_native()), mem) is None
+    assert not mem.get('boss_stock_cancelled')
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'world_map'])
+def test_public_decide_capped_owner_yields_to_another_order_like_an_unowned_view(kind):
+    from test_hanjuku_off_chart import _world_map_frame
+    state = cancelled_state()
+    for _ in range(12):
+        _, state = decide(unread_native(), json.loads(json.dumps(state)), run_identity=ID)
+    state['policy']['active'] = '1-A2'
+    baseline = deepcopy(state); baseline['policy'].pop('boss_stock_cancelled')
+    frame = unread_native() if kind == 'card_select' else _world_map_frame({'アルマムーン': 'own'})
+    expected, _ = decide(frame, baseline, run_identity=ID)
+    actions, state = decide(frame, json.loads(json.dumps(state)), run_identity=ID)
+    assert expected and actions == expected
+    assert not state['policy'].get('boss_stock_cancelled')
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'general_list', 'world_map'])
+def test_legacy_unscoped_latch_cannot_claim_a_new_selection_or_survey(kind):
+    mem = memory(); mem.update(boss_stock_cancelled=True, active='1-A2')
+    assert p.boss_stock_restart_step(Screen([], None, '', kind=kind), mem) is None
+    assert not mem.get('boss_stock_cancelled') and mem['active'] == '1-A2'
