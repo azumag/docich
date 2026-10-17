@@ -16,6 +16,8 @@ on:
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/gameswitch-adopt.yml'
+
   push:
     branches: [main]
     paths:
@@ -32,6 +34,8 @@ on:
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/gameswitch-adopt.yml'
+
 
 permissions:
   contents: read
@@ -77,6 +81,7 @@ jobs:
           python3 -m py_compile
           ops/vm_actions/authorize.py
           ops/vm_actions/authorize_gameswitch_recover.py
+          ops/vm_actions/authorize_gameswitch_adopt.py
           ops/vm_actions/authorize_nethack_corner.py
           ops/vm_actions/authorize_hanjuku_admin_query.py
           ops/vm_actions/authorize_weather_start_query.py
@@ -85,6 +90,7 @@ jobs:
           ops/vm_actions/collect_diagnostics.py
           ops/vm_actions/recover_soren_game.py
           ops/vm_actions/gameswitch_recover.py
+          ops/vm_actions/gameswitch_adopt.py
           ops/vm_actions/recover_soren_round.py
           ops/vm_actions/release_soren_loop_pause.py
           ops/vm_actions/recover_bgm_mute.py
@@ -116,6 +122,7 @@ jobs:
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/gameswitch_recover.sh
+          ops/vm_actions/gameswitch_adopt.sh
           ops/vm_actions/recover_soren_round.sh
           ops/vm_actions/release_soren_loop_pause.sh
           ops/vm_actions/recover_bgm_mute.sh
