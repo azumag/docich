@@ -102,6 +102,7 @@ def test_bought_copy_is_not_bought_again_until_a_panel_reads_it():
 
 def test_restored_card_is_carried_by_the_next_boss_sortie():
     mem = {**memory(), 'active': '1-B1', 'picked': ['ノリウツール'],
+           'captured': list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
            'sortie_general': {'1-B1': 'アンディーブ'}}
     boss_cards.note_card_purchase(mem, 'クースカン', 1)
     shown = ('ブラッキー', 'フットバース', 'ノリウツール', 'クースカン')
@@ -114,6 +115,7 @@ def test_restored_card_below_the_panel_is_searched_not_held():
     # The drop's exhausted scroll budget restarts with the purchase: the bought
     # copy may sit below a full panel whose IDs end before クースカン(13).
     mem = {**memory(), 'active': '1-B1', 'picked': ['ノリウツール'],
+           'captured': list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
            'sortie_general': {'1-B1': 'アンディーブ'}}
     boss_cards.note_card_purchase(mem, 'クースカン', 1)
     top = ('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール')
@@ -258,6 +260,7 @@ def test_id_ordered_panel_proves_a_stale_positive_stock_is_zero():
 
 def test_proven_absent_boss_card_never_listed_before_is_recorded_and_rebought():
     mem = {**memory(), 'active': '1-B1', 'picked': ['ノリウツール'],
+           'captured': list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
            'sortie_general': {'1-B1': 'アンディーブ'}, 'card_drop': {}, 'card_scroll': {}}
     mem['card_stock'] = {}
     for _ in range(p.CARD_MISS_LIMIT):

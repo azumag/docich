@@ -4278,7 +4278,8 @@ def test_native_list_hero_priority_waits_for_companion_cursor_before_a():
         c.text(144, 55, 'ゼウス')
         c.hand(122, 33 + 16*selected)
         return parse(c.frame())
-    mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'}}
+    mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'},
+           'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})}
     assert policy.deploy_step(frame(0), mem) == [policy.pad('down')]
     assert not mem.get('sortie_general')
     assert policy.deploy_step(frame(1), mem) == [policy.pad('a')]

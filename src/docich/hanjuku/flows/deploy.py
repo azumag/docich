@@ -22,7 +22,7 @@ from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
                             _deploy_cards, _is_boss_order, _observe_card_stock, _strict_boss_cards)
-from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, _boss_egg_depleted, _broken_hero_order,
+from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                _continue_transit_sorties, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
                                _order_hero_alternatives, _reserve_source_guard, _retake_reserved, _sortie_general,
@@ -522,6 +522,18 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     return [pad('b'), pad('b')]
 
 
+def _hold_locked_boss(mem, order):
+    """Recheck unsent active orders too; retain already-sent reconciliation."""
+    status = (mem.get('orders') or {}).get(order['step'])
+    if (status in ('launched', 'launched_unconfirmed')
+            or _boss_target_unlocked(order, mem)):
+        return None
+    mem.pop('sortie_attempt', None)
+    return _hold_guarded_sortie(mem, order, 'boss_target_locked',
+            '章内の通常城をすべて制圧した現在の根拠がないため、未解放ボス城への未送信出撃を保留',
+            {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or [])})
+
+
 def _keep_sortie_defender(screen, mem, order):
     if not _reserve_source_guard(order, mem):
         return None
@@ -644,6 +656,9 @@ def deploy_step(screen: Screen, mem):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
+    locked = _hold_locked_boss(mem, order)
+    if locked is not None:
+        return locked
     if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.

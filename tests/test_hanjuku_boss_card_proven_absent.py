@@ -13,6 +13,7 @@ G825 = ('ブラッキー', 'フットバース', 'ノリウツール', 'バル�
 
 def memory(picked=('ノリウツール',)):
     return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1',
+            'captured': list(set(policy.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
             'variant': 'chart', 'orders': {'1-B1': 'pending'}, 'picked': list(picked),
             'sortie_general': {'1-B1': 'アンディーブ'}}
 
