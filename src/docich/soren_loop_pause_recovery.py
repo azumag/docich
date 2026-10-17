@@ -50,6 +50,18 @@ REASONS = frozenset(
         "unexpected_failure",
     }
 )
+# One fixed exit code per refusal reason, so the owner-only workflow can report
+# the reason verbatim without publishing VM-private output.  The 7x range is
+# local to this operation; the value carries no meaning for any other one.
+REASON_EXIT_CODES = {
+    "canonical_unavailable": 70,
+    "phase_not_releasable": 71,
+    "game_still_active": 72,
+    "no_soren_candidate": 73,
+    "pause_not_owned": 74,
+    "receipt_not_owner": 75,
+    "unexpected_failure": 76,
+}
 
 
 class LoopPauseReleaseRefused(RuntimeError):
@@ -79,6 +91,14 @@ def completed_result() -> dict:
         "ownership_proven": True,
         "backup": "private",
     }
+
+
+def exit_code(result: object) -> int:
+    """0 for a completed release, otherwise the fixed code for its reason."""
+    if isinstance(result, dict) and result.get("status") == "completed":
+        return 0
+    reason = result.get("reason") if isinstance(result, dict) else None
+    return REASON_EXIT_CODES[_reason(reason)]
 
 
 def _read_json(path: Path) -> object:

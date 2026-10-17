@@ -456,8 +456,19 @@ class AuthorizeTests(unittest.TestCase):
                           INPUT_REF="main", INPUT_CONFIRM="production")
         self.assertEqual(p.returncode, 0, p.stderr)
         step = WF.read_text().split("Release the loop pause a consumed succeeded switch owns", 1)[1].split("- name:", 1)[0]
-        self.assertIn("cat control/ops/vm_actions/release_soren_loop_pause.sh | ssh", step)
+        self.assertIn("cat control/ops/vm_actions/release_soren_loop_pause.sh | \\", step)
+        self.assertIn('"exec docich production $SHA"', step)
         self.assertNotIn("VM_COMMAND", step)
+        # One fixed exit code per refusal reason, reported verbatim.
+        for code, reason in (
+            ("70", "canonical_unavailable"), ("71", "phase_not_releasable"),
+            ("72", "game_still_active"), ("73", "no_soren_candidate"),
+            ("74", "pause_not_owned"), ("75", "receipt_not_owner"),
+            ("76", "unexpected_failure"),
+        ):
+            with self.subTest(code=code):
+                self.assertIn(f'{code}) reason="{reason}"', step)
+        self.assertIn('*) reason="transport_failure"', step)
         # The fixed entry itself is argument-free and pins the production root.
         script = (ROOT / "ops/vm_actions/release_soren_loop_pause.sh").read_text()
         self.assertIn('[[ $# -eq 0 ]] || exit 2', script)

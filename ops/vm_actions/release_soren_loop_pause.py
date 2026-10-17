@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from docich.soren_loop_pause_recovery import (  # noqa: E402
     OrphanedLoopPauseRelease,
+    exit_code,
     incomplete_result,
 )
 
@@ -28,8 +29,8 @@ try:
     result = OrphanedLoopPauseRelease(STATE, SOREN).run()
 except (OSError, ValueError, RuntimeError):
     # Other errors may carry paths or identifiers; keep them out of the output.
-    print(json.dumps(incomplete_result("unexpected_failure"), sort_keys=True))
-    raise SystemExit(1) from None
+    result = incomplete_result("unexpected_failure")
 print(json.dumps(result, sort_keys=True))
-if result.get("status") != "completed":
-    raise SystemExit(1)
+# One fixed exit code per refusal reason, so the owner-only workflow can report
+# the reason verbatim without publishing VM-private output.
+raise SystemExit(exit_code(result))

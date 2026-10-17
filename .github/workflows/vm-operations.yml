@@ -860,7 +860,31 @@ jobs:
           # decides whether to start a fresh loop. Output stays in the
           # VM-private exec log.
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          cat control/ops/vm_actions/release_soren_loop_pause.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          set +e
+          (ulimit -f 16; cat control/ops/vm_actions/release_soren_loop_pause.sh | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA") \
+            >/dev/null 2>"$RUNNER_TEMP/release.err"
+          rc=$?
+          set -e
+          if (( rc != 0 )); then
+            # One fixed exit code per refusal reason (docich #2061); the fixed
+            # JSON result itself stays in the VM-private exec log.
+            case "$rc" in
+              2 | 64) reason="invalid_request" ;;
+              3 | 25) reason="invalid_runtime" ;;
+              70) reason="canonical_unavailable" ;;
+              71) reason="phase_not_releasable" ;;
+              72) reason="game_still_active" ;;
+              73) reason="no_soren_candidate" ;;
+              74) reason="pause_not_owned" ;;
+              75) reason="receipt_not_owner" ;;
+              76) reason="unexpected_failure" ;;
+              *) reason="transport_failure" ;;
+            esac
+            echo "::error::Soren loop pause release refused: $reason (exit $rc)"
+            tail -n 5 "$RUNNER_TEMP/release.err" >&2 || true
+            exit 1
+          fi
 
       - name: Recover only the held Soren round after explicit confirmation
         if: ${{ steps.auth.outputs.operation == 'recover_soren_round' }}

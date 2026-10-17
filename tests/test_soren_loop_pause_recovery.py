@@ -17,8 +17,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich.game_switch import GameSwitchStore  # noqa: E402
 from docich.naming import runtime_directory, runtime_names  # noqa: E402
 from docich.soren_loop_pause_recovery import (  # noqa: E402
+    REASON_EXIT_CODES,
     REASONS,
     OrphanedLoopPauseRelease,
+    completed_result,
+    exit_code,
     incomplete_result,
 )
 
@@ -285,6 +288,33 @@ class FixedSchemaTests(unittest.TestCase):
         for value in ("", "anything", None, 7, {"a": 1}, ["x"]):
             with self.subTest(value=value):
                 self.assertEqual(incomplete_result(value)["reason"], "unexpected_failure")
+
+
+class ExitCodeTests(unittest.TestCase):
+    """One fixed exit code per refusal reason, and 0 only for a release."""
+
+    def test_every_reason_has_a_distinct_fixed_code(self):
+        self.assertEqual(set(REASON_EXIT_CODES), set(REASONS))
+        codes = list(REASON_EXIT_CODES.values())
+        self.assertEqual(len(codes), len(set(codes)), "exit codes must not collide")
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertIs(type(code), int)
+                self.assertNotIn(code, (0, 1))
+
+    def test_incomplete_results_map_to_their_reason_code(self):
+        for reason in sorted(REASONS):
+            with self.subTest(reason=reason):
+                self.assertEqual(exit_code(incomplete_result(reason)), REASON_EXIT_CODES[reason])
+
+    def test_completed_result_exits_zero(self):
+        self.assertEqual(exit_code(completed_result()), 0)
+
+    def test_unknown_or_malformed_results_fail_closed(self):
+        for value in (None, 7, "x", [], {"status": "incomplete"},
+                      {"status": "incomplete", "reason": "nope"}):
+            with self.subTest(value=value):
+                self.assertEqual(exit_code(value), REASON_EXIT_CODES["unexpected_failure"])
 
 
 if __name__ == "__main__":
