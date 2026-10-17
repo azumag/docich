@@ -67,10 +67,13 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
+        camp = (x == 24 and y == 39 and any(r.y == 151
+                and r.span(24, 232).replace(' ', '') == 'キャンプしています' for r in screen.lines))
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
+                **({'camp_observed': True} if camp else {}),
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': any(phrase in screen.text for phrase in
+                'location_observed': camp or any(phrase in screen.text for phrase in
                                          ('しろのなかにいます', 'いどうしています'))}
     return None
 
