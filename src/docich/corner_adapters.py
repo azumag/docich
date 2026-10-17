@@ -202,23 +202,28 @@ class GameCornerAdapter:
         return manager.reconcile_failed_rotation_start(request_id)
 
     def settle_released_failure(self, request_id):
-        """Retire the retro ``game`` owner the rotation proved released (#2352).
+        """Retire the ``game``/NetHack owner the rotation proved released (#2352).
 
         The common rotation calls this only after it re-proved that the shared
-        program slot holds nothing from that request. Scoped to the ``game``
-        adapter: Meriken and NetHack own separate state files and separate
-        fixed recovery entries, so this change does not widen their authority.
-        The manager re-reads the durable release record of this exact request
-        and re-proves the terminal receipt and the stable canonical owner under
-        the shared store lock, so ``False`` leaves the current fail-closed
-        state untouched.
+        program slot holds nothing from that request. The ``game`` adapter and
+        the NetHack adapter are in scope: both own a state file whose released
+        failed owner otherwise blocks every later dispatch with run_rotation's
+        owner inspection. Production falsified the "separate fixed recovery
+        entry" argument for NetHack on 2026-10-16: the released ledger stays
+        ``waiting`` while ``nethack-corner recover-failed-rotation`` only
+        accepts the ``recovery_required`` latch, so no entry could retire the
+        owner and NetHack was never dispatched again. Meriken keeps its own
+        separate entry and stays out of scope. The manager re-reads the durable
+        release record of this exact request and re-proves the terminal receipt
+        and the stable canonical owner under the shared store lock, so
+        ``False`` leaves the current fail-closed state untouched.
 
         The manager's answer is forwarded unchanged: ``True`` retired, ``None``
         proved but not retired yet (the rotation keeps this shared state file
         out of selection and retries), ``False`` not applicable.
         """
 
-        if getattr(self.corner, "adapter", None) != "game":
+        if getattr(self.corner, "adapter", None) not in {"game", "nethack"}:
             return False
         settle = getattr(self.manager, "settle_released_failure", None)
         if not callable(settle):
