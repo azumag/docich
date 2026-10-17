@@ -42,7 +42,9 @@ def summon_reading(screen, mem, cur):
         return None
     ally = [r for r in screen.egg_rows if r.side == 'ally']
     enemy = [r for r in screen.egg_rows if r.side == 'enemy']
-    full = general_max_hp('しゅじんこう' if cur.get('ally') == 'どうし' else cur.get('ally'))
+    # Match _remember_general_for_summon / _egg_general_reading: a resumed
+    # hero uses the observed maximum, which can initially be below 90.
+    full = mem.get('hero_max_hp') if cur.get('ally') == 'どうし' else general_max_hp(cur.get('ally'))
     if (len(ally) != 1 or len(enemy) != 1 or ally[0].name != cur.get('ally')
             or type(full) is not int or proof['max_hp'] != full
             or type(ally[0].hp) is not int or not 0 < ally[0].hp <= full

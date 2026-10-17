@@ -136,3 +136,15 @@ def test_unfinished_or_foreign_combat_cannot_restore_another_selection(case):
     p.battle_step(s, mem)
     assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
     assert not any(r['decision'] == 'battle_okunote_combat_return' for r in mem['_records'])
+
+
+def test_resumed_hero_observed_maximum_matches_existing_general_reading_contract():
+    from docich.hanjuku_screen import EggRow
+    mem = summon_memory(); mem['hero_max_hp'] = 89
+    cur = mem['battle']; cur.update(ally='どうし', ally_hp=89, start_ally_hp=89, side='attack')
+    cur.pop('summon_general_reading')
+    p._remember_general_for_summon(mem, cur, 'どうし', 89)
+    assert cur['summon_general_reading']['max_hp'] == 89
+    s = parse(summon_frame()); s.egg_rows[0] = EggRow('どうし', 89, 'ally', 183)
+    assert p._egg_general_reading(s, mem, cur) == (89, 89)
+    assert p.battle_menu_step(s, mem) == [p.pad('a')]
