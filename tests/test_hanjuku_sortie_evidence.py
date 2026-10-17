@@ -916,9 +916,13 @@ def test_no_carry_slot_left_drops_every_remaining_card():
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
 
 
-def test_boss_kit_is_never_dropped():
+def test_boss_kit_is_never_dropped_while_a_card_may_be_hidden():
+    # A full panel whose IDs end below クースカン(13)/ノリウツール(11) does not
+    # prove them out of stock. Proven absence: test_hanjuku_boss_card_proven_absent.
     mem = memory()
-    screen = measured_card_select(('イッテツーン', 'ブラッキー'), stocks=('3', '1'))
+    mem['card_scroll'] = {'1-B1': policy.CARD_SCROLL_LIMIT}
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'グリンボー'),
+                                  stocks=('3', '1', '1', '1'))
     for _ in range(policy.CARD_MISS_LIMIT * 2):
         assert policy.deploy_step(screen, mem) == []
     assert not mem.get('card_drop')

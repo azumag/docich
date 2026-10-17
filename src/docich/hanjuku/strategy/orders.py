@@ -134,7 +134,15 @@ def _ready(order, mem) -> bool:
         return after[1] in captured
     if after[0] == 'all_captured':
         chapter = mem.get('chapter') or 1
-        chapter_castles = set(chart.castles(chapter)) - {
+        # Partial measurements must still account for every castle in the
+        # chapter, including ones whose coordinates have not been measured yet.
+        # Using measured coordinates (chart.castles) here let unmeasured normal
+        # castles be skipped and released the boss order early.
+        chapter_names = chart.CASTLE_NAMES.get(chapter)
+        if not chapter_names:
+            # Fail closed: an unknown chapter must never look fully captured.
+            return False
+        chapter_castles = set(chapter_names) - {
             chart.home_castle(chapter), chart.boss_castle(chapter)}
         return chapter_castles <= captured
     return False

@@ -15,6 +15,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import config, webui, tsuitate_beta_control as control
 
+# 実 HTTP fixture の共有ヘルパー (issue #2346)。応答後の書込み (audit event) が
+# tmp の削除と競合しないよう、handler の完了を待ってから cleanup する。
+from _webui_http_fixture import (  # noqa: E402
+    assert_no_stuck_handlers,
+    shutdown_test_server,
+    tracking_server_class,
+)
+
 SECRET = "fixture-only-control-capability-not-credential"
 OPERATOR = "fixture-only-operator-not-credential"
 VIEWER = "fixture-only-viewer-not-credential"
@@ -194,14 +202,18 @@ class TestWebUiGate(unittest.TestCase):
         class Handler(webui._Handler): pass
         Handler.g = g; Handler.soren_root = Path(self.directory.name); Handler.read_only = False
         Handler.csrf_secret = b"fixture-csrf-only-not-a-credential"; Handler.start_time = time.time()
-        self.server = webui.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = tracking_server_class()(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
         self.port = self.server.server_address[1]
         self.client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         self.csrf = webui._make_csrf_token(Handler.csrf_secret)
 
     def tearDown(self):
-        self.client.close(); self.server.shutdown(); self.server.server_close(); self.directory.cleanup()
+        self.client.close()
+        # ``_guard_mutation`` は拒否応答の後に authorization audit event を書く。
+        # daemon handler は server_close() で join されないため、完了を待たずに
+        # tmp を消すと rmtree と競合する (PR #2340 の full-suite flake)。
+        _stop_gate_fixture(self.server, self.thread, self.directory, self)
 
     def request(self, method="POST", payload=None, headers=None):
         h = {"Authorization": "Bearer " + OPERATOR, "Origin": f"http://127.0.0.1:{self.port}",
@@ -239,6 +251,126 @@ class TestWebUiGate(unittest.TestCase):
     def test_unconfigured_bridge_returns_fixed_error(self):
         with mock.patch.dict(os.environ, {"DOCICH_BETA_CONTROL_SECRET": ""}, clear=True):
             self.assertEqual(self.request("GET"), (503, {"error": "control_not_configured"}))
+
+
+class _PostResponseWriterHandler(webui._Handler):
+    """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
+
+    応答送信後に ``post_response_started`` を set し、``release_post_response``
+    が set されるまで保留する。テスト側はこれで「handler が応答後の書込み途中に
+    いる」状態を決定的に作れる。解放後の書込み先は tmp 配下なので、後片付けが
+    先に tmp を消せば ``write_text`` が失敗して ``post_response_written`` が
+    set されない (= full-suite flake の再現)。
+    """
+
+    POST_RESPONSE_PATH = "/test/tsuitate-post-response-write"
+    WRITE_RELATIVE = "tmp/debug/tsuitate-post-response-audit.json"
+
+    def do_POST(self):
+        if self.path != self.POST_RESPONSE_PATH:
+            return super().do_POST()
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.server.post_response_started.set()
+        if not self.server.release_post_response.wait(timeout=5):
+            return
+        target = Path(self.soren_root) / self.WRITE_RELATIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("post-response write completed", encoding="utf-8")
+        self.server.post_response_written.set()
+
+
+def _stop_gate_fixture(server, thread, directory, case):
+    """``TestWebUiGate`` の後片付け: 応答後 writer を待ってから tmp を消す。
+
+    期限付きで handler の完了を待ち、残った handler は黙って見逃さず
+    ``case`` の失敗として報告する (issue #2346)。
+    """
+    stuck = shutdown_test_server(server, thread)
+    assert_no_stuck_handlers(case, stuck)
+    directory.cleanup()
+
+
+class TestWebUiGateTeardownWaitsForPostResponseWriter(unittest.TestCase):
+    """応答後に書く handler が残っていても、後片付けが先に tmp を消さないこと。
+
+    issue #2346 の決定的な回帰テスト。``_stop_gate_fixture`` から待ちを外す
+    (``shutdown`` + ``server_close`` だけにする) と、このテストは
+    ``assertFalse(stopped...)`` で fail する。
+    """
+
+    def test_teardown_waits_for_handler_that_writes_after_the_response(self):
+        directory = tempfile.TemporaryDirectory()
+        g = config.load_global(Path(directory.name))
+
+        class Handler(_PostResponseWriterHandler):
+            pass
+
+        Handler.g = g
+        Handler.soren_root = Path(directory.name)
+        Handler.read_only = False
+        Handler.csrf_secret = b"fixture-csrf-only-not-a-credential"
+        Handler.start_time = time.time()
+        server = tracking_server_class()(("127.0.0.1", 0), Handler)
+        server.post_response_started = threading.Event()
+        server.release_post_response = threading.Event()
+        server.post_response_written = threading.Event()
+        serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        serve_thread.start()
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        stop_result = {}
+        stopped = threading.Event()
+
+        def _stop_server():
+            try:
+                _stop_gate_fixture(server, serve_thread, directory, self)
+            except Exception as exc:  # pragma: no cover - assertion で理由を出す
+                stop_result["error"] = exc
+            finally:
+                stopped.set()
+
+        stopper = threading.Thread(target=_stop_server, daemon=True)
+        stopper_started = False
+        try:
+            conn.request("POST", _PostResponseWriterHandler.POST_RESPONSE_PATH)
+            res = conn.getresponse()
+            self.assertEqual(200, res.status)
+            res.read()
+            self.assertTrue(
+                server.post_response_started.wait(timeout=5),
+                "handler did not reach the post-response write",
+            )
+
+            stopper.start()
+            stopper_started = True
+            # 応答後 writer は保留中なので、後片付けはここで完了してはならない。
+            # 完了するなら handler を待たずに tmp を消した (= 競合) ということ。
+            self.assertFalse(
+                stopped.wait(timeout=1.0),
+                "teardown removed the tmp dir without waiting for the post-response writer",
+            )
+            self.assertTrue(
+                Path(directory.name).exists(),
+                "handler の完了前に tmp dir が消えた",
+            )
+        finally:
+            server.release_post_response.set()
+            if stopper_started:
+                stopper.join(timeout=5)
+            else:
+                shutdown_test_server(server, serve_thread)
+            conn.close()
+
+        self.assertNotIn("error", stop_result, stop_result.get("error"))
+        self.assertTrue(
+            server.post_response_written.is_set(),
+            "post-response write did not complete before cleanup",
+        )
 
 
 if __name__ == "__main__": unittest.main()
