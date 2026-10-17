@@ -390,6 +390,117 @@ class TestReadiness(CoordinatorAdapterTestBase):
         xkit_class.return_value.find_window.assert_not_called()
 
 
+class _AttributedAdapter(cli_game.CliCoordinatorAdapter):
+    """CLI adapter that opts into the presenter failure record (soren91 shape)."""
+
+    def _presentation_failure_path(self):
+        return self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE
+
+
+class TestReadinessPresenterAttribution(CoordinatorAdapterTestBase):
+    """docich#1221: a vanished game window must carry the presenter's reason.
+
+    The tmux pane dies with its window, so without the runtime-owned record
+    the coordinator can only report the symptom ("game windowがありません")
+    and the real cause (the remote viewer never appeared) is lost.
+    """
+
+    def _attributed(self):
+        adapter = _AttributedAdapter(self.g, config.load_game(self.g, "nethack"), self.spec)
+        adapter.tmux = self.tmux
+        return adapter
+
+    def test_presenter_failure_explains_the_missing_window(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE).write_text(
+            json.dumps({
+                "status": "viewer_timeout",
+                "reason": "native game viewer did not appear",
+                "viewer_wait_sec": 240,
+                "elapsed_s": 240.012,
+                "viewer_exit_code": None,
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            self._attributed().readiness(self.deadline, None)
+        message = str(ctx.exception)
+        self.assertIn("viewer_timeout", message)
+        self.assertIn("viewer_wait_sec=240", message)
+        self.assertNotEqual(message, "game windowがありません")
+
+    def test_viewer_exit_is_reported_with_its_exit_code(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE).write_text(
+            json.dumps({
+                "status": "viewer_exited",
+                "reason": "native game viewer did not appear",
+                "viewer_wait_sec": 240,
+                "elapsed_s": 3.5,
+                "viewer_exit_code": 1,
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            self._attributed().readiness(self.deadline, None)
+        self.assertIn("viewer_exited", str(ctx.exception))
+        self.assertIn("viewer_exit_code=1", str(ctx.exception))
+
+    def test_plain_detail_stays_when_no_record_exists(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            self.adapter.readiness(self.deadline, None)
+        self.assertEqual(str(ctx.exception), "game windowがありません")
+
+    def test_unrelated_record_is_ignored(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE).write_text(
+            json.dumps({"status": "ready"}), encoding="utf-8"
+        )
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            self._attributed().readiness(self.deadline, None)
+        self.assertEqual(str(ctx.exception), "game windowがありません")
+
+    def test_malformed_record_is_ignored(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        record = self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE
+        for payload in (b"not json", b'{"status": ["viewer_timeout"]}', b"[]"):
+            record.write_bytes(payload)
+            with self.assertRaises(ReadinessTimeoutError) as ctx:
+                self._attributed().readiness(self.deadline, None)
+            self.assertEqual(str(ctx.exception), "game windowがありません")
+
+    def test_materialize_clears_a_stale_record_before_a_new_window(self):
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        record = self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE
+        record.write_text(json.dumps({"status": "viewer_timeout"}), encoding="utf-8")
+        with mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
+        ):
+            self._attributed().materialize_runtime(self.deadline, None)
+        self.assertFalse(record.exists())
+
+    def test_second_window_loss_after_a_new_attempt_is_not_misattributed(self):
+        # 新しい game window を作った後に窓が消えた場合、前回の記録を原因と
+        # して報告しない (記録は materialize 時点で消えている)。
+        self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
+        record = self.spec.runtime_dir / cli_game.PRESENTATION_FAILURE_FILE
+        record.write_text(json.dumps({"status": "viewer_timeout"}), encoding="utf-8")
+        with mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
+        ):
+            adapter = self._attributed()
+            adapter.materialize_runtime(self.deadline, None)
+        self.tmux.windows.pop("docich-game-g1:game-g1")
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            adapter.readiness(self.deadline, None)
+        self.assertEqual(str(ctx.exception), "game windowがありません")
+
+
 class TestAlive(CoordinatorAdapterTestBase):
     def test_alive_reflects_session_existence(self):
         self.assertFalse(self.adapter.alive(self.deadline, None))

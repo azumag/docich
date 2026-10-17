@@ -35,6 +35,12 @@ GAME_SESSION = "docich-game"
 RUNTIME_GAME_SESSION_ENV = "DOCICH_GAME_SESSION"
 PRESENTATION_SEARCH_TIMEOUT_S = 0.25
 PRESENTATION_POLL_INTERVAL_S = 0.1
+# 観測された失敗の原因は、presenter が消えると tmux pane ごと失われる。原因を
+# 残す presenter は runtime_dir のこの bounded record へ書き、adapter は
+# 「game windowがありません」という症状ではなく実際の原因を報告する。
+PRESENTATION_FAILURE_FILE = "presentation_failure.json"
+PRESENTATION_FAILURE_LIMIT = 4096
+PRESENTATION_FAILURE_STATUSES = frozenset({"viewer_timeout", "viewer_exited"})
 
 # --- round boundary (design v2 §5) ------------------------------------------
 # CLIゲーム (robots) の1試合終了は "Another game?" プロンプトの表示のみで
@@ -478,6 +484,9 @@ class CliCoordinatorAdapter:
             self._verify_window_ownership(game_target, "game")
         else:
             self._check_active(deadline, cancel)
+            # 新しい game window を作る時点で、前回 presenter の失敗記録は
+            # もう現在の runtime を説明しない。stale な原因を報告しない。
+            self._clear_presentation_failure()
             self.tmux.create_window_owned(
                 self.spec.game_window,
                 self._xterm_command(),
@@ -485,6 +494,62 @@ class CliCoordinatorAdapter:
                 env={"DISPLAY": self.g.display.name},
             )
         self._check_active(deadline, cancel)
+
+    # --- presenter failure attribution (docich#1221) --------------------------
+
+    def _presentation_failure_path(self) -> Path | None:
+        """Where this adapter's contained presenter records a viewer failure.
+
+        Only adapters whose game window depends on a late/remote viewer opt
+        in (soren91's SRT renderer); local CLI viewers keep the plain
+        tmux-window contract and return ``None``.
+        """
+        return None
+
+    def _clear_presentation_failure(self) -> None:
+        path = self._presentation_failure_path()
+        if path is None:
+            return
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def _presentation_failure(self) -> str:
+        """Bounded description of why the presenter never showed its viewer."""
+        path = self._presentation_failure_path()
+        if path is None:
+            return ""
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            if path.stat().st_size > PRESENTATION_FAILURE_LIMIT:
+                return ""
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        status = data.get("status")
+        if not isinstance(status, str) or status not in PRESENTATION_FAILURE_STATUSES:
+            return ""
+        detail = f"presenter がviewer windowを提示できませんでした (status={status}"
+        waited = data.get("viewer_wait_sec")
+        if isinstance(waited, int) and not isinstance(waited, bool) and waited > 0:
+            detail += f", viewer_wait_sec={waited}"
+        elapsed = data.get("elapsed_s")
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+            detail += f", elapsed_s={elapsed:g}"
+        exit_code = data.get("viewer_exit_code")
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            detail += f", viewer_exit_code={exit_code}"
+        return detail[:200] + ")"
+
+    def _missing_game_window_detail(self) -> str:
+        failure = self._presentation_failure()
+        return failure or "game windowがありません"
 
     def readiness(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
@@ -494,7 +559,7 @@ class CliCoordinatorAdapter:
 
         game_target = self._game_window_target()
         if not self.tmux.window_target_exists(game_target):
-            raise ReadinessTimeoutError("game windowがありません")
+            raise ReadinessTimeoutError(self._missing_game_window_detail())
         self._verify_window_ownership(game_target, "game")
 
         states = self.tmux.pane_states_checked(self.spec.adapter_session)
@@ -521,7 +586,7 @@ class CliCoordinatorAdapter:
                     raise ReadinessTimeoutError("paneがdeadです")
 
                 if not self.tmux.window_target_exists(game_target):
-                    raise ReadinessTimeoutError("game windowがありません")
+                    raise ReadinessTimeoutError(self._missing_game_window_detail())
                 self._verify_window_ownership(game_target, "game")
                 game_states = self.tmux.pane_states_checked(game_target)
                 if any(pane.dead for pane in game_states):
