@@ -312,6 +312,65 @@ def _record_settled(root, remote, now, client):
         raise APIError('leaderboard') from None
 
 
+def _canceled_candidate(row):
+    """Reuse a verified row as evidence of a refunded no-contest round.
+
+    A ``CANCELED`` row is already in the right shape. A ``LOCKED`` row is the
+    authoritative betting snapshot (betting is closed), and the cancellation we
+    already verified turns it into refunded participation evidence.
+    """
+    if not isinstance(row, dict):
+        return None
+    if row.get('status') == 'CANCELED':
+        return row
+    if row.get('status') == 'LOCKED':
+        return {**row, 'status': 'CANCELED', 'winning_outcome_id': None}
+    return None
+
+
+def _record_canceled(root, now, client, *, sources=()):
+    """Record a no-contest CANCELED round's participation in the 予想王 ledger.
+
+    The round is stored once per prediction id with the refunded stake and the
+    fixed reason ``no-contest``. A row without predictors is still stored (the
+    per-outcome counts are the evidence); no viewer, count or point is invented
+    when the row does not prove one. A contract violation is refused and a
+    ledger read/write failure raises ``APIError('leaderboard')`` so the same id
+    is retried later.
+    """
+    from . import prediction_leaderboard as leaderboard
+
+    candidate = None
+    for source in sources:
+        annotated = _canceled_candidate(source)
+        if annotated is None:
+            continue
+        if candidate is None or (_has_predictors(annotated)
+                                 and not _has_predictors(candidate)):
+            candidate = annotated
+    if candidate is None or not _has_predictors(candidate):
+        prediction_id = next((s.get('id') for s in sources
+                              if isinstance(s, dict) and isinstance(s.get('id'), str)), None)
+        if isinstance(prediction_id, str):
+            rows = client.list(prediction_id)
+            match = next((r for r in rows
+                          if isinstance(r, dict) and r.get('id') == prediction_id), None)
+            annotated = _canceled_candidate(match)
+            if annotated is not None and (candidate is None or _has_predictors(annotated)):
+                candidate = annotated
+    if candidate is None:
+        raise APIError('invalid_response')
+    try:
+        leaderboard.extract(candidate)
+    except leaderboard.LeaderboardError:
+        raise APIError('invalid_response') from None
+    try:
+        return leaderboard.record_settled(root, candidate, corner='hanjuku',
+                                          now=int(now), cancel_reason='no-contest')
+    except (leaderboard.LeaderboardError, OSError):
+        raise APIError('leaderboard') from None
+
+
 def summary(state):
     row = state.get('round') or {}
     return {'mode': state.get('mode'), 'error': state.get('error'),
@@ -376,6 +435,15 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     if exc.code == 'invalid_response':
                         row['status'] = 'RESOLVED'
                     raise
+            elif remote['status'] == 'CANCELED' and _no_contest(remote):
+                # 不成立キャンセルで落ちた参加実績を、再観測・再起動のあとでも
+                # 一度だけ記録する（#933 追記）。
+                try:
+                    _record_canceled(root, now, client, sources=(remote,))
+                except APIError as exc:
+                    if exc.code == 'invalid_response':
+                        row['status'] = 'CANCELED'
+                    raise
             row['status'] = remote['status']
             # Persist adopted ownership before any PATCH; API retries are idempotent.
             atomic_write_json(root / FILE, state)
@@ -395,6 +463,7 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
             if result or cancel:
                 state['mode'] = 'settling'
                 atomic_write_json(root / FILE, state)
+                cancel_reason = None
                 if cancel:
                     response = client.end(row['id'], 'CANCELED')
                     desired = 'CANCELED'
@@ -414,6 +483,7 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                         # チャンネルポイントを全額返却する。
                         response = client.end(row['id'], 'CANCELED')
                         desired = 'CANCELED'
+                        cancel_reason = 'no-contest'
                     else:
                         response = client.end(row['id'], 'RESOLVED', row['outcome_ids'][index])
                         desired = 'RESOLVED'
@@ -422,6 +492,16 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 if desired == 'RESOLVED':
                     try:
                         _record_settled(root, response[0], now, client)
+                    except APIError as exc:
+                        if exc.code == 'invalid_response':
+                            row['status'] = desired
+                        raise
+                elif cancel_reason is not None:
+                    # 不成立キャンセルの参加実績を残す。記録に失敗したら round を
+                    # terminal にせず、次の観測で CANCELED を再読取して再試行する。
+                    try:
+                        _record_canceled(root, now, client,
+                                         sources=(response[0], settled_from))
                     except APIError as exc:
                         if exc.code == 'invalid_response':
                             row['status'] = desired
