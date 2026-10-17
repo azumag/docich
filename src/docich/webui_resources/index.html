@@ -2952,6 +2952,54 @@ function updateAudioTextCount(){
   const cnt=$("#audio-text-count");
   if(el && cnt) cnt.textContent=`${el.value.length}/1000`;
 }
+// #970: presentation-only polling. Browser-side read-only refreshes pause while
+// the tab is hidden and a slow response never stacks another request. The
+// server API contract, trading decision/risk/fill paths and all writes are
+// untouched. The trading dashboard already uses this pattern.
+// webui-poll-visibility:start
+const pollInFlight = new Set();
+function pollGate(key, fn){
+  if(document.hidden) return;
+  if(pollInFlight.has(key)) return;
+  pollInFlight.add(key);
+  Promise.resolve().then(fn).catch(()=>{}).finally(()=>pollInFlight.delete(key));
+}
+function clearTabTimers(){
+  if(statusTimer){ clearInterval(statusTimer); statusTimer=null; }
+  if(cornersTimer){ clearInterval(cornersTimer); cornersTimer=null; }
+  if(streamTimer){ clearInterval(streamTimer); streamTimer=null; }
+  if(audioTimer){ clearInterval(audioTimer); audioTimer=null; }
+}
+function activeTabName(){
+  const btn=document.querySelector("#tabs button.active");
+  return btn? btn.getAttribute("data-tab") : "dashboard";
+}
+function startTabPolling(tab, opts){
+  const refresh=!!(opts && opts.refresh);
+  clearTabTimers();
+  if(document.hidden) return;
+  if(tab==="status"){ if(refresh) pollGate("status",loadStatus); statusTimer=setInterval(()=>pollGate("status",loadStatus),10000); }
+  else if(tab==="corners"){ if(refresh) pollGate("corners",loadCorners); cornersTimer=setInterval(()=>pollGate("corners",loadCorners),10000); }
+  else if(tab==="stream"){ const load=()=>{ loadStream(); loadWorkersControl(); }; if(refresh) pollGate("stream",load); streamTimer=setInterval(()=>pollGate("stream",load),10000); }
+  else if(tab==="audio"){ if(refresh) pollGate("audio",loadVoiceChain); audioTimer=setInterval(()=>pollGate("audio",loadVoiceChain),10000); }
+}
+function startDashboardPolling(opts){
+  const refresh=!!(opts && opts.refresh);
+  if(dashTimer){ clearInterval(dashTimer); dashTimer=null; }
+  if(document.hidden) return;
+  if(refresh) pollGate("dashboard",loadDashboard);
+  dashTimer=setInterval(()=>pollGate("dashboard",loadDashboard),10000);
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){
+    if(dashTimer){ clearInterval(dashTimer); dashTimer=null; }
+    clearTabTimers();
+  }else{
+    startDashboardPolling({refresh:true});
+    startTabPolling(activeTabName(), {refresh:true});
+  }
+});
+// webui-poll-visibility:end
 document.addEventListener("DOMContentLoaded",()=>{
   // ログインフォーム: token 入力→sessionStorage 保存 (URL query token は廃止: issue #41)
   const loginInput = $("#login-token-input");
@@ -2975,17 +3023,14 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="stats") loadStats();
     if(tab==="health") loadHealth();
     if(tab==="dashboard") loadDashboard();
-    if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
-    else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
-    if(tab==="corners") { loadCorners(); if(cornersTimer) clearInterval(cornersTimer); cornersTimer=setInterval(loadCorners,10000); }
-    else { if(cornersTimer) { clearInterval(cornersTimer); cornersTimer=null; } }
-    if(tab==="stream") { loadStream(); loadWorkersControl(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(()=>{ loadStream(); loadWorkersControl(); },10000); }
-    else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
+    if(tab==="status") loadStatus();
+    if(tab==="corners") loadCorners();
+    if(tab==="stream") { loadStream(); loadWorkersControl(); }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
-    if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); if(audioTimer) clearInterval(audioTimer); audioTimer=setInterval(()=>{ loadVoiceChain(); },10000); }
-    else { if(audioTimer) { clearInterval(audioTimer); audioTimer=null; } }
+    if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); }
     if(tab==="predictions") loadPredictions();
     if(tab==="prompts") loadPrompts();
+    startTabPolling(tab);
   });
   // overlay sub tabs
   $$("[data-overlay-sub]").forEach(btn=>btn.onclick=()=>{
@@ -3011,8 +3056,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   // initial load
   loadConfig().catch(e=>toast(String(e),5000));
   loadBackoffs().catch(()=>{});
-  loadDashboard();
-  dashTimer=setInterval(loadDashboard,10000);
+  startDashboardPolling({refresh:true});
   // handlers
   $("#chains-save").onclick=saveChains;
   $("#chains-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
