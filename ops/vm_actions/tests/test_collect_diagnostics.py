@@ -477,6 +477,67 @@ def test_doushi_corner_state_is_collected_without_the_ranking_or_lease(tmp_path)
     assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
 
 
+def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
+    # docich#1221: the presenter pane dies with its tmux window, so the
+    # corner's own record is the only durable evidence of *why* a
+    # readiness_timeout rollback happened. Statuses stay fixed enums and the
+    # detail is bounded and redacted.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'soren91_corner.json').write_text(json.dumps({
+        'status':'failed','game':'soren91','previous_game':'sorengame',
+        'last_error_code':'readiness_timeout',
+        'last_error':'presenter がviewer windowを提示できませんでした '
+                     '(status=viewer_timeout, viewer_wait_sec=240, elapsed_s=240.0)',
+        'switch_status':'rolled_back',
+        'switch_request_id':'70eb5f95-DO-NOT-PUBLISH',
+        'completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['soren91_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['status']=='failed'
+    assert entry['game']=='soren91'
+    assert entry['previous_game']=='sorengame'
+    assert entry['switch_status']=='rolled_back'
+    assert entry['switch_error_code']=='readiness_timeout'
+    assert 'viewer_timeout' in entry['last_error']
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'DO-NOT-PUBLISH' not in rendered and '70eb5f95' not in rendered
+
+
+def test_soren91_corner_redacts_the_error_and_refuses_unknown_enums(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'soren91_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'last_error':'renderer failed token=SUPERSECRET123',
+        'last_error_code':'x'*200,
+        'switch_status':'DO-NOT-PUBLISH'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['soren91_corner']
+    assert entry['switch_status'] is None
+    assert isinstance(entry['switch_error_code'],str)
+    assert len(entry['switch_error_code'])<=64
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+    assert '[REDACTED]' in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+
+def test_soren91_corner_absent_is_reported_without_inventing_state(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+    assert result['soren91_corner']=={'present':False,'readable':False}
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'
