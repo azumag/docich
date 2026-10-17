@@ -33,6 +33,8 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     A hotloaded old policy has no attempt marker; its verified confirmation
     context and previous map_target observation provide the same evidence.
     """
+    from .camp_recheck import observe_departure_return
+    observe_departure_return(screen, mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
     if (mem.get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
@@ -446,6 +448,8 @@ def target_step(screen: Screen, mem, frame):
             **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
                if 'departure_binding' in snapshot else {})}
         ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+        from .camp_recheck import departure_requested
+        departure_requested(mem, general, snapshot.get('departure_binding', {}).get('confirm_tick'))
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 

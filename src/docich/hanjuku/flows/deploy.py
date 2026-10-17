@@ -65,6 +65,8 @@ def _verify_sortie_source(screen, mem, order):
     mem.setdefault('orders', {})[step] = 'pending' if cancelled else 'launched'
     if not cancelled:
         _garrison_move(mem, sortie['general'], source=sortie['source'])
+        from .camp_recheck import observe_departure
+        observe_departure(mem, sortie['general'], sortie.get('tick'))
     _record(mem, 'sortie_cancelled_observed' if cancelled else 'sortie_departed_observed',
             chart_step=step, general=sortie['general'], source=sortie['source'], target=None,
             observed_metric=present,

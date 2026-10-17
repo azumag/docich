@@ -773,3 +773,106 @@ def test_camp_status_preserves_the_existing_dispatch_and_arrival_budgets():
     for _ in range(5): c.observe_camp_status(parse(camp_status_frame()), mem)
     assert mem['retreat_rechecks']['ゼウス'] == before
     assert mem['recall_verification'] == verification
+
+
+def test_new_game_discards_old_camp_status_suppression_and_intent():
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame()), mem)
+    assert mem.get('camp_status_seen')
+    c.interrupt(Screen([], None, '', kind='name_entry'), mem)
+    assert not mem.get('camp_status_seen') and not mem.get('retreat_rechecks')
+
+
+@pytest.mark.parametrize('hp', [6, 85])
+def test_new_observed_departure_rearms_same_camp_status_once_after_castle(hp):
+    import json
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory()
+    _, state = decide(camp_status_frame(hp=hp), {'policy': mem}, run_identity=ID)
+    mem = state['policy']; first = mem['retreat_rechecks']['ゼウス']['tick']
+    # Complete the first named arrival check through the existing status route.
+    mem['recall'] = {'stage': 'recheck_roster_read', 'steps': 0, 'general': 'ゼウス',
+                     'retreat_recheck': True, 'arrival_check_only': True,
+                     'identity': deepcopy(ID), 'chapter': 1, 'recheck_tick': first,
+                     'camp_episode': c._new_episode(mem)}
+    mem['recall_verification'] = {'general': 'ゼウス', 'identity': deepcopy(ID), 'chapter': 1,
+                                  'input_sent': True, 'status': 'arrival_unconfirmed'}
+    _, state = decide(status('ゼウス', main=True, castle=True, hp=hp), state, run_identity=ID)
+    mem = state['policy']
+    assert not mem.get('retreat_rechecks')
+    assert mem['recall_verification']['status'] == 'in_castle_observed'
+    _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
+    assert not state['policy'].get('retreat_rechecks')  # old camp page alone
+    # A plan / A-side en_route cache is insufficient. Observe this actor moving.
+    mem = state['policy']; mem['tick'] = 200
+    mem['sorties'] = {'new': {'general': 'ゼウス', 'status': 'en_route', 'tick': 200}}
+    _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
+    assert not state['policy'].get('retreat_rechecks')
+    _, state = decide(status('ゼウス', main=True, castle=False, hp=hp), state, run_identity=ID)
+    _, state = decide(camp_status_frame(hp=hp), json.loads(json.dumps(state)), run_identity=ID)
+    mem = state['policy']; row = mem['retreat_rechecks']['ゼウス']
+    assert row['tick'] > first and row['attempts'] == 0
+    row.update(attempts=3, status='needs_observation')
+    before = deepcopy(row)
+    for _ in range(4):
+        state = json.loads(json.dumps(state))
+        _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
+    assert state['policy']['retreat_rechecks']['ゼウス'] == before
+
+
+def test_source_absence_observation_rearms_only_the_new_departing_actor():
+    from docich import hanjuku_camp_recheck as c
+    from docich.hanjuku.flows.deploy import _verify_sortie_source
+    from test_hanjuku_sortie_interruption import screen
+    mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    mem.pop('retreat_rechecks'); mem['tick'] = 200
+    mem['sorties'] = {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
+                             'status': 'launched_unconfirmed', 'tick': 150}}
+    assert _verify_sortie_source(screen('general_list', ['しょうぐんはおりません']), mem,
+                                {'step': 'new'}) == [p.pad('b'), p.pad('b')]
+    c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    assert mem['retreat_rechecks']['ゼウス']['tick'] == 200
+
+
+@pytest.mark.parametrize('case', ['planned', 'cancelled', 'old', 'future', 'foreign', 'other_actor'])
+def test_no_departure_receipt_can_rearm_camp_status(case):
+    from docich import hanjuku_camp_recheck as c
+    from docich.hanjuku.flows.deploy import _verify_sortie_source
+    from test_hanjuku_sortie_interruption import screen
+    mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    mem.pop('retreat_rechecks'); mem['tick'] = 200
+    mem['sorties'] = {'new': {'general': 'ヴィーナス' if case == 'other_actor' else 'ゼウス',
+                             'source': 'アルマムーン', 'status': 'launched_unconfirmed',
+                             'tick': 50 if case == 'old' else 201 if case == 'future' else 150}}
+    if case == 'foreign': mem['_run_identity'] = {**ID, 'generation': 2}
+    if case != 'planned':
+        _verify_sortie_source(screen('general_list', ['ゼウス', 'どうし'] if case == 'cancelled'
+                                    else ['しょうぐんはおりません']), mem, {'step': 'new'})
+    if case == 'foreign': mem['_run_identity'] = deepcopy(ID)
+    c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    assert not mem.get('retreat_rechecks')
+
+
+@pytest.mark.parametrize('return_kind,want', [('map', True), ('unknown', True),
+                                           ('map_target', False), ('yes_no', False), ('battle', False)])
+def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch, return_kind, want):
+    import json
+    from docich import hanjuku_camp_recheck as c
+    from test_hanjuku_execution_binding import memory as execution_memory, confirm
+    mem = execution_memory(); mem['tick'] = 100
+    c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    mem.pop('retreat_rechecks'); mem['tick'] = 200
+    confirm(mem)
+    mem['sortie_attempt']['confirmation_tick'] = 200
+    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
+    monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
+    assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('a')]
+    c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    assert not mem.get('retreat_rechecks')  # A alone
+    mem = json.loads(json.dumps(mem)); mem['tick'] = 201
+    p.observe_sortie_transition(Screen([], None, '', kind=return_kind), mem, 'map_target')
+    if return_kind == 'unknown':
+        p.observe_sortie_transition(MAP, mem, 'unknown')
+    c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
+    assert bool(mem.get('retreat_rechecks')) is want

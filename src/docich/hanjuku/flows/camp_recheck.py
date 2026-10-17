@@ -200,6 +200,8 @@ def _scope(mem):
 def _invalidate(mem, reason, actor=None, *, new_game=False):
     from ..decision_log import _record
     queue = _scope(mem)
+    if new_game:
+        mem.pop('camp_status_seen', None)
     raw_state = mem.get('recall')
     state = raw_state if isinstance(raw_state, dict) else {}
     affected = bool(queue) if actor is None else actor in queue
@@ -221,12 +223,79 @@ def _invalidate(mem, reason, actor=None, *, new_game=False):
                 resulting_event='intent_invalidated_location_unconfirmed', reason=reason)
 
 
+def observe_departure(mem, actor, started_tick):
+    """A newly observed departure ends this actor's completed camp episode.
+
+    Call only after receipt, never from a plan or the A-side en_route cache.
+    An old pending departure cannot replenish a later camp search budget.
+    """
+    from ..decision_log import _record
+    identity = roster_receipts.run_identity(mem.get('_run_identity'))
+    chapter, now = mem.get('chapter'), mem.get('tick')
+    seen = mem.get('camp_status_seen')
+    if (not _clean_name(actor) or identity is None or type(chapter) is not int or chapter <= 0
+            or type(now) is not int or type(started_tick) is not int
+            or not isinstance(seen, dict)
+            or seen.get('scope') != {'identity': identity, 'chapter': chapter}
+            or not isinstance(seen.get('actors'), dict)):
+        return
+    old = seen['actors'].get(actor)
+    if (not isinstance(old, dict) or type(old.get('tick')) is not int
+            or not 0 <= old['tick'] < started_tick <= now):
+        return
+    _invalidate(mem, '本人の新しい出発を観測したため前任務の在営再確認を終了', actor)
+    seen['actors'].pop(actor)
+    verification = mem.get('recall_verification') or {}
+    if (isinstance(verification, dict) and verification.get('general') == actor
+            and roster_receipts.run_identity(verification.get('identity')) == identity
+            and verification.get('chapter') == chapter):
+        verification['status'] = 'superseded_by_departure'
+    _record(mem, 'camp_status_episode_departed', general=actor,
+            observed_metric={'started_tick': started_tick},
+            reason='本人の新しい出発を実観測。前任務と同じHP・卵でも次の在営を再確認できる')
+
+
+def departure_requested(mem, actor, started_tick):
+    """The target A arms a short observation, not a new camp episode yet."""
+    seen = mem.get('camp_status_seen') or {}
+    scope = {'identity': roster_receipts.run_identity(mem.get('_run_identity')), 'chapter': mem.get('chapter')}
+    actors = seen.get('actors') if isinstance(seen, dict) and seen.get('scope') == scope else None
+    old = actors.get(actor) if isinstance(actors, dict) and _clean_name(actor) else None
+    now = mem.get('tick')
+    if (isinstance(old, dict) and type(old.get('tick')) is int and type(now) is int
+            and type(started_tick) is int and 0 <= old['tick'] < started_tick <= now):
+        old['departure_pending'] = {'tick': started_tick, 'requested_tick': now, 'reads': 0}
+
+
+def observe_departure_return(screen, mem):
+    """A target marker must disappear into the field after the requested A.
+
+    Three unknown fade readings are allowed. An unchanged picker or another
+    foreground never proves departure. This receipt creates no arrival facts.
+    """
+    seen = mem.get('camp_status_seen') or {}
+    scope = {'identity': roster_receipts.run_identity(mem.get('_run_identity')), 'chapter': mem.get('chapter')}
+    actors = seen.get('actors') if isinstance(seen, dict) and seen.get('scope') == scope else None
+    if scope['identity'] is None or not isinstance(actors, dict):
+        return
+    for actor, old in list(actors.items()):
+        pending = old.pop('departure_pending', None) if isinstance(old, dict) else None
+        if (not isinstance(pending, dict) or type(pending.get('reads')) is not int
+                or not 0 <= pending['reads'] <= 3 or type(pending.get('requested_tick')) is not int
+                or type(mem.get('tick')) is not int or not 0 <= mem['tick'] - pending['requested_tick'] <= 4):
+            continue
+        if screen.kind == 'map' and not mem.get('battle'):
+            observe_departure(mem, actor, pending.get('tick'))
+        elif screen.kind == 'unknown' and pending['reads'] < 3:
+            old['departure_pending'] = {**pending, 'reads': pending['reads'] + 1}
+
+
 def observe_camp_status(screen, mem):
     """A current named camp status requests SELECT-based discovery, not a location.
 
     Repeated status pixels never refresh a pending intent or its budgets.
-    Keep a bounded scoped signature after completion too, so an old page
-    cannot start the same request again as soon as the queue is removed.
+    Keep a bounded actor episode after completion too. Only a new observed
+    departure releases it; HP/egg changes alone do not replenish any budget.
     """
     from . import house
     from ..decision_log import _record
@@ -236,7 +305,9 @@ def observe_camp_status(screen, mem):
     identity = roster_receipts.run_identity(mem.get('_run_identity'))
     now, chapter = mem.get('tick'), mem.get('chapter')
     header_chapter = (screen.header or {}).get('chapter')
-    if (not info or info.get('camp_observed') is not True or identity is None
+    main_panel = info and any(r.y == 39 and r.span(24, 88).strip() == info['general']
+                             and r.span(88, 136) == 'しょうぐん' for r in screen.lines)
+    if (not main_panel or identity is None
             or type(now) is not int or now < 0 or type(chapter) is not int or chapter <= 0
             or type(header_chapter) is not int or header_chapter != chapter
             or type(info.get('hp')) is not int or info['hp'] <= 0
@@ -246,23 +317,40 @@ def observe_camp_status(screen, mem):
     owner = mem.get('recall') or mem.get('house') or {}
     if isinstance(owner, dict) and owner.get('general') not in (None, actor):
         return  # another actor's requested status cannot adopt this page
-    queue = _scope(mem)
-    if actor not in queue and len(queue) >= roster_receipts.MAX_GENERALS:
-        return
-    verification = mem.get('recall_verification') or {}
     scope = {'identity': identity, 'chapter': chapter}
     seen = mem.get('camp_status_seen')
     if not isinstance(seen, dict) or seen.get('scope') != scope:
+        if info.get('camp_observed') is not True:
+            return
         seen = mem['camp_status_seen'] = {'scope': scope, 'actors': {}}
     actors = seen.get('actors')
     if not isinstance(actors, dict):
         return  # malformed saved suppression must not reset into permission
-    signature = [info[key] for key in ('hp', 'max_hp', 'egg', 'uses', 'broken')]
-    if actors.get(actor) == signature or (actor not in actors and len(actors) >= roster_receipts.MAX_GENERALS):
+    old = actors.get(actor)
+    location = next((r.span(24, 232).replace(' ', '') for r in screen.lines if r.y == 151), None)
+    if old is not None and location == 'しろのなかにいます':
+        # Upgrade old list-shaped saved signatures only through a new receipt.
+        if isinstance(old, list):
+            old = actors[actor] = {'signature': old, 'tick': now}
+        if isinstance(old, dict) and type(old.get('tick')) is int and old['tick'] <= now:
+            old['castle_tick'] = now
+    elif isinstance(old, dict) and location == 'いどうしています':
+        castle_tick = old.get('castle_tick')
+        if (type(castle_tick) is int and type(old.get('tick')) is int
+                and 0 <= old['tick'] <= castle_tick < now):
+            observe_departure(mem, actor, now)
+    if info.get('camp_observed') is not True:
         return
-    actors[actor] = signature
+    queue = _scope(mem)
+    if actor not in queue and len(queue) >= roster_receipts.MAX_GENERALS:
+        return
+    if actor in actors or len(actors) >= roster_receipts.MAX_GENERALS:
+        return
+    actors[actor] = {'signature': [info[key] for key in ('hp', 'max_hp', 'egg', 'uses', 'broken')],
+                     'tick': now}
     if actor in queue:
         return
+    verification = mem.get('recall_verification') or {}
     if (isinstance(verification, dict) and verification.get('general') == actor
             and verification.get('input_sent') is True
             and verification.get('status') in ('arrival_unconfirmed', 'dispatch_unconfirmed')
