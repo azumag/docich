@@ -190,6 +190,24 @@ def test_view_serves_broadcast_html_and_a_runtime_bound_projection(served):
     assert status == 404
 
 
+def test_view_rotates_the_five_independent_boards_in_one_table(served):
+    """#933 (a): 1枚の表を部門ごとに切り替え、5指標をすべて出せること。"""
+    _state, port, _lease = served
+
+    status, html = _get(port, "/broadcast")
+    assert status == 200
+    for label in ("予想的中率", "賭けたポイント数", "得たポイント数",
+                  "失ったポイント数", "賭けた回数"):
+        assert label in html
+    assert "data.boards" in html and "BOARD_SECONDS" in html
+
+    status, raw = _get(port, "/api/yosou")
+    data = json.loads(raw)
+    assert status == 200 and set(data["boards"]) == set(lb.METRICS)
+    # 部門ごとに独立したランキングで、同じ行をそのまま使い回していない。
+    assert data["boards"]["hit_rate"][0]["user_name"] == "Alice"
+
+
 def test_view_rejects_a_foreign_host_header(served):
     _state, port, _lease = served
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)

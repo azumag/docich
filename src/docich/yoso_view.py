@@ -53,7 +53,7 @@ table{width:100%;border-collapse:collapse;table-layout:fixed}
 thead th{background:#13202d;color:#8ea6b6;font-size:10px;letter-spacing:.1em;font-weight:600;text-align:left;padding:6px 10px;border-bottom:1px solid #263a4c;white-space:nowrap;overflow:hidden}
 tbody td{padding:6px 10px;border-bottom:1px solid #1b2937;font-size:17px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 tbody tr:nth-child(1) td{background:linear-gradient(90deg,#3a2f12aa,#13202d00)}
-.rank{width:58px;font-weight:800;color:#ffd67a;font-size:20px}.name{width:auto;font-weight:700}.rate{width:118px;color:#9ff0c8;font-weight:750}.rounds{width:86px;color:#c8d6e2}.won{width:132px;color:#ffd9a8}.net{width:112px}
+.rank{width:58px;font-weight:800;color:#ffd67a;font-size:20px}.name{width:auto;font-weight:700}.record{width:132px;color:#ffd9a8;font-weight:750}.rate{width:104px;color:#9ff0c8;font-weight:750}.net{width:104px}#board-tag{margin-left:10px;color:#9fd3dc;font-weight:700}
 .up{color:#9ff0c8}.down{color:#ffb1b1}.zero{color:#8fa3b3}
 #empty{padding:38px 20px;text-align:center;color:#9fb0bf;font-size:18px;line-height:1.7}
 #unavailable{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:#0b1017ee;color:#f0d9ad;text-align:center;font-size:20px;line-height:1.7;padding:40px}
@@ -65,9 +65,9 @@ tbody tr:nth-child(1) td{background:linear-gradient(90deg,#3a2f12aa,#13202d00)}
 <div><span class="eyebrow">PREDICTION KING</span><h1>予想王</h1><div class="sub">チャンネルポイント予想・的中率ランキング</div></div>
 <div class="tags"><span class="tag">上位予想者のみ集計</span><span class="tag" id="window-tag">最小参加数 -</span></div>
 </header>
-<div id="status-line"><span><i class="dot"></i><span id="state">台帳を確認中</span></span><span id="totals"></span></div>
+<div id="status-line"><span><i class="dot"></i><span id="state">台帳を確認中</span><span id="board-tag"></span></span><span id="totals"></span></div>
 <section id="board">
-<table><thead><tr><th class="rank">順位</th><th class="name">表示名</th><th class="rate">的中率</th><th class="rounds">参加数</th><th class="won">獲得ポイント</th><th class="net">純増</th></tr></thead><tbody id="rows"></tbody></table>
+<table><thead><tr><th class="rank">順位</th><th class="name">表示名</th><th class="record" id="record-head">記録</th><th class="rate">的中率</th><th class="net">純増</th></tr></thead><tbody id="rows"></tbody></table>
 <div id="empty" hidden>確定した予想がまだありません</div>
 </section>
 <div id="footer">出典：Twitch Helix GET /helix/predictions の top_predictors（RESOLVEDのみ）／ 半熟英雄・Sorenの予想 ／ 上位予想者だけを集計したランキングです（全参加者の的中率ではありません）</div>
@@ -81,23 +81,48 @@ function pct(v){return `${(v*100).toFixed(1)}%`;}
 function points(v){return String(v);}
 function net(v){const sign=v>0?'+':'';return `${sign}${v}`;}
 function showUnavailable(on){document.getElementById('unavailable').hidden=!on;}
-function render(data){
- document.getElementById('state').textContent='確定済みの予想を集計したランキング';
- document.getElementById('totals').textContent=`確定 ${data.rounds} 予想 ／ 集計対象 ${data.viewers} 名`;
- document.getElementById('window-tag').textContent=`最小参加数 ${data.min_rounds}`;
+// 部門は5指標それぞれ独立したランキング。1枚の表を一定秒数で切り替える（#933 (a)）。
+const BOARDS=[
+ {key:'hit_rate',label:'予想的中率',head:'参加数',record:r=>`${r.rounds}回`},
+ {key:'staked',label:'賭けたポイント数',head:'賭けたpt',record:r=>`${r.used}pt`},
+ {key:'won',label:'得たポイント数',head:'得たpt',record:r=>`${r.won}pt`},
+ {key:'lost',label:'失ったポイント数',head:'失ったpt',record:r=>`${r.lost}pt`},
+ {key:'plays',label:'賭けた回数',head:'賭けた回数',record:r=>`${r.participations}回`}
+];
+const BOARD_SECONDS=18;
+let boardIndex=0;
+let lastData=null;
+function rowsFor(data,cfg){
+ if(data.boards&&Array.isArray(data.boards[cfg.key]))return data.boards[cfg.key];
+ return cfg.key==='hit_rate'&&Array.isArray(data.ranking)?data.ranking:[];
+}
+function draw(){
+ if(!lastData)return;
+ const data=lastData,cfg=BOARDS[boardIndex],rows=rowsFor(data,cfg);
+ document.getElementById('record-head').textContent=cfg.head;
+ document.getElementById('board-tag').textContent=`部門 ${boardIndex+1}/${BOARDS.length} ${cfg.label}`;
+ document.getElementById('window-tag').textContent=cfg.key==='hit_rate'
+  ?`最小参加数 ${data.min_rounds}`
+  :`最小参加数 ${data.min_participations}`;
  const body=document.getElementById('rows');body.replaceChildren();
- for(const row of data.ranking){
+ for(const row of rows){
   const tr=document.createElement('tr');
-  const cells=[[String(row.rank),'rank'],[row.user_name,'name'],[pct(row.hit_rate),'rate'],
-   [points(row.rounds),'rounds'],[points(row.won),'won'],[net(row.net),'net '+(row.net>0?'up':row.net<0?'down':'zero')]];
+  const cells=[[String(row.rank),'rank'],[row.user_name,'name'],[cfg.record(row),'record'],
+   [pct(row.hit_rate),'rate'],[net(row.net),'net '+(row.net>0?'up':row.net<0?'down':'zero')]];
   for(const [text,className] of cells){const td=document.createElement('td');td.className=className;td.textContent=text;tr.append(td);}
   body.append(tr);
  }
- document.getElementById('empty').hidden=data.ranking.length>0;
+ document.getElementById('empty').hidden=rows.length>0;
  document.getElementById('empty').textContent=data.rounds>0
-  ?`確定 ${data.rounds} 予想のうち、最小参加数（${data.min_rounds}）を満たす予想者はいません`
+  ?`この部門で条件（最小参加数）を満たす予想者はいません`
   :'確定した予想がまだありません';
  showUnavailable(false);
+}
+function render(data){
+ document.getElementById('state').textContent='確定済みの予想を集計したランキング';
+ document.getElementById('totals').textContent=`確定 ${data.rounds} 予想 ／ 集計対象 ${data.viewers} 名`;
+ lastData=data;
+ draw();
 }
 async function poll(){
  try{
@@ -108,6 +133,7 @@ async function poll(){
   render(data);
  }catch(_){showUnavailable(true);document.getElementById('state').textContent='台帳を再確認中';}
 }
+setInterval(()=>{boardIndex=(boardIndex+1)%BOARDS.length;draw();},BOARD_SECONDS*1000);
 poll();setInterval(poll,2000);
 </script></html>'''
 
