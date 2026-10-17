@@ -332,3 +332,63 @@ def test_runtime_rejects_duplicate_event_ids():
     data["events"][1]["id"] = data["events"][0]["id"]
     with pytest.raises(ValueError):
         mod.validate_observation(data)
+
+
+def test_runtime_same_tick_introduces_remaining_events_across_reloads():
+    """Regression for #2426 review P2: a same-tick introduced event must be
+    persisted (keeping observedAt) instead of being re-selected forever."""
+
+    mod = runtime()
+    data = copy.deepcopy(load_fixture())
+    events = [
+        {"id": f"evt-{i}", "tick": i + 1, "kind": "trade_completed", "message": f"event {i}"}
+        for i in range(4)
+    ]
+    data["events"] = events
+    data["snapshot"]["events"] = events
+    observed_at = "2026-10-17T00:00:00+09:00"
+
+    import tempfile as _t
+    from pathlib import Path as _P
+
+    state_dir = _P(_t.mkdtemp())
+    previous = None
+    seen = ()
+
+    # Run 1: 4 unseen -> 3 introduced, persisted.
+    diff = mod.diff_observation(data, previous, seen)
+    topics = mod.select_topics(diff)
+    assert [t["eventId"] for t in topics] == ["evt-0", "evt-1", "evt-2"]
+    assert mod.should_persist(data, previous) is True
+    record = mod.build_record(
+        data, observed_at=observed_at, source_base_url="https://example.org/moyogarden",
+        diff=diff, topics=topics, seen_event_ids=seen,
+    )
+    assert record["observedAt"] == observed_at
+    mod.save_record(state_dir, record)
+    previous = record
+    seen = tuple(record["seenEventIds"])
+    assert seen == ("evt-0", "evt-1", "evt-2")
+
+    # Run 2: same tick -> 1 introduced, persisted, observedAt unchanged.
+    loaded = mod.load_record(state_dir)
+    seen2 = tuple(loaded["seenEventIds"])
+    diff2 = mod.diff_observation(data, loaded, seen2)
+    topics2 = mod.select_topics(diff2)
+    assert [t["eventId"] for t in topics2] == ["evt-3"]
+    assert mod.should_persist(data, loaded) is True
+    record2 = mod.build_record(
+        data, observed_at=observed_at, source_base_url="https://example.org/moyogarden",
+        diff=diff2, topics=topics2, seen_event_ids=seen2,
+    )
+    assert record2["observedAt"] == observed_at
+    mod.save_record(state_dir, record2)
+    assert tuple(record2["seenEventIds"]) == ("evt-0", "evt-1", "evt-2", "evt-3")
+
+    # Run 3: reload -> 0 introduced -> not persisted.
+    loaded3 = mod.load_record(state_dir)
+    seen3 = tuple(loaded3["seenEventIds"])
+    diff3 = mod.diff_observation(data, loaded3, seen3)
+    topics3 = mod.select_topics(diff3)
+    assert topics3 == ()
+    assert mod.should_persist(data, loaded3) is False
