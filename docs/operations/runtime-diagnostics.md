@@ -31,6 +31,33 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   production の任意コマンド結果を Actions へ公開してはならない。
 - `stream_title_sync` は Soren の owner-only journal 1ファイルだけを読む。最大32KiB、最新行だけを許可schemaで検証し、現在の Soren gitlink SHA と一致し15分以内の記録に限って platform enum / skip reason を表示する。
 
+## 汎用 PID helper の診断専用契約（#2469 follow-up）
+
+`ops/vm_actions/safe_pid_cleanup.py` は、既存 API 名
+`safe_unlink_pid_file()` / `safe_cleanup_stale_pid_files()` を維持するが、
+PID ファイルを unlink しない。戻り値の success は常に `False`。
+dead/zombie PID と観測しても `cleanup_disabled:no_writer_lock` を返す。
+live PID は `pid_alive`、その他の guard 不成立は従来の理由コードを返す。
+`dry_run=True` も同じ診断であり、`deleted` / `would_delete` は返さない。
+
+writer と共有する排他契約がないため、存在・stat・inode の再確認だけでは
+最終検査から unlink までの置換競合を防げない。診断結果は観測時点の情報であり、
+後から同じパスを削除してよい根拠にしない。実際の cleanup は、writer との協調を
+含む別途レビュー済みの所有 lifecycle に属する。この helper は gateway の
+`diagnostics` collector に組み込まれておらず、soviet_now の専用 cleanup helper とも別実装。
+
+ローカル fixture での CLI 例:
+
+```sh
+python3 ops/vm_actions/safe_pid_cleanup.py /path/to/test-root
+python3 ops/vm_actions/safe_pid_cleanup.py --dry-run /path/to/test-root
+```
+
+root 省略時は `/home/ubuntu/soren`。`--dry-run` は互換引数で、指定の有無・順序によらず
+診断のみ。走査対象は `tmp/state/*.pid` と `tmp/.soren_loop.lock/pid`。
+結果は `SKIP: <path> (<reason>)` と表示する。終了コード 0 は走査の完了を示し、
+cleanup の成功・対象の不存在・すべての読み取りの成功を保証しない。
+
 ## Output 契約
 
 ```json

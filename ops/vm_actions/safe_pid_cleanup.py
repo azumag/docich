@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for PID file deletion.
+"""Read-only PID file diagnostics; deletion is disabled.
 
-This module provides safe_unlink_pid_file() which only deletes a PID file
-when ALL of the following conditions are met:
+The legacy safe_unlink_pid_file() and safe_cleanup_stale_pid_files() names
+are retained for compatibility. They never unlink PID files and always
+return success=False, including with dry_run=True. Existing path, owner and
+process checks provide diagnostic reasons only. A stale observation returns
+"cleanup_disabled:no_writer_lock"; it does not authorize later deletion.
 
-  1. Path is under tmp/state/ or tmp/.soren_loop.lock/ (allowlist).
-  2. Path is a regular file (not a symlink, not a hardlink with nlink > 1).
-  3. Owner matches the expected owner (default: current user).
-  4. PID in the file is not currently running.
-  5. PID has not been reused by a different process.
-
-If any condition fails, the file is NOT deleted and a reason is returned.
-This is the "fail-closed" approach: when in doubt, don't delete.
+There is no exclusion contract shared with PID file writers. Even a final
+stat/inode comparison would leave a race before unlink(path), so this generic
+helper fails closed without attempting deletion. Diagnostics can become stale
+as soon as they are observed. Cleanup belongs to a separately reviewed owner
+lifecycle with a writer coordination contract, not to this module or CLI.
 
 Usage:
     from safe_pid_cleanup import safe_unlink_pid_file
-    ok, reason = safe_unlink_pid_file(path, root="/home/ubuntu/soren")
-    if ok:
-        print("Deleted")
-    else:
-        print(f"Skipped: {reason}")
+    _, reason = safe_unlink_pid_file(path, root="/path/to/soren")
+    print(f"Retained: {reason}")
 """
 
 import os
-import stat as statmod
 
 
 # Allowlisted subdirectories relative to root.
@@ -163,7 +159,7 @@ def _pid_reused(pid, expected_cmdline_substring=None):
 
 def safe_unlink_pid_file(path, root="/home/ubuntu/soren", expected_owner=None,
                          expected_cmdline=None, dry_run=False):
-    """Safely unlink a PID file with fail-closed guards.
+    """Diagnose a PID file without deleting it (legacy API name).
 
     Args:
         path: Path to the PID file (str or Path).
@@ -172,12 +168,13 @@ def safe_unlink_pid_file(path, root="/home/ubuntu/soren", expected_owner=None,
         expected_cmdline: Expected substring in the process command line.
             If provided, the PID is only considered "not reused" if the
             running process's cmdline contains this substring.
-        dry_run: If True, don't actually delete; just return what would happen.
+        dry_run: Accepted for compatibility; both values are read-only.
 
     Returns:
         (success: bool, reason: str)
-        success=True means the file was (or would be) deleted.
-        success=False means the file was NOT deleted, with reason explaining why.
+        success is always False. reason describes the observed guard failure,
+        or cleanup_disabled:no_writer_lock if the checks found a stale PID.
+        Neither result guarantees that the path or PID stayed unchanged.
     """
     path = str(path)
     root = str(root)
@@ -220,25 +217,18 @@ def safe_unlink_pid_file(path, root="/home/ubuntu/soren", expected_owner=None,
         if _pid_reused(pid, expected_cmdline):
             return False, "pid_reused"
 
-    # Guard 8: File must still exist (TOCTOU protection).
+    # Last diagnostic observation only; this does not prevent replacement.
     if not os.path.exists(path):
         return False, "already_gone"
 
-    # All guards passed - safe to delete.
-    if dry_run:
-        return True, "would_delete"
-
-    try:
-        os.unlink(path)
-        return True, "deleted"
-    except OSError as e:
-        return False, f"unlink_failed:{e}"
+    # No shared writer lock: never turn stale observations into unlink(path).
+    return False, "cleanup_disabled:no_writer_lock"
 
 
 def safe_cleanup_stale_pid_files(root="/home/ubuntu/soren", dry_run=False):
-    """Scan tmp/state/ for stale PID files and safely delete them.
+    """Diagnose tmp/state/*.pid and tmp/.soren_loop.lock/pid without deletion.
 
-    Returns list of (path, success, reason) tuples.
+    Returns (path, False, reason) tuples. dry_run is a compatibility no-op.
     """
     root = str(root)
     state_dir = os.path.join(root, "tmp", "state")
@@ -268,10 +258,24 @@ def safe_cleanup_stale_pid_files(root="/home/ubuntu/soren", dry_run=False):
     return results
 
 
+def main(argv=None):
+    """Run the read-only diagnostic scan; exit status is not cleanup success."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Read-only PID file diagnostics. Never deletes PID files.",
+        epilog="Stale observations report cleanup_disabled:no_writer_lock. "
+               "Exit status 0 means the diagnostic scan completed, not cleanup.",
+    )
+    parser.add_argument("root", nargs="?", default="/home/ubuntu/soren",
+                        help="installation root (default: %(default)s)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="compatibility option; diagnostics never delete files")
+    args = parser.parse_args(argv)
+    results = safe_cleanup_stale_pid_files(root=args.root, dry_run=args.dry_run)
+    for path, _, reason in results:
+        print(f"SKIP: {path} ({reason})")
+
+
 if __name__ == "__main__":
-    import sys
-    root = sys.argv[1] if len(sys.argv) > 1 else "/home/ubuntu/soren"
-    dry = "--dry-run" in sys.argv
-    results = safe_cleanup_stale_pid_files(root=root, dry_run=dry)
-    for path, ok, reason in results:
-        print(f"{'OK' if ok else 'SKIP'}: {path} ({reason})")
+    main()
