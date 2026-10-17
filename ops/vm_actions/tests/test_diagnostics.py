@@ -8,7 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+try:  # run from ops/vm_actions/tests (unittest discover, pytest on the file)
+    from sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+except ModuleNotFoundError:  # imported as a package module, e.g. by tests/test_presentation_recovery.py
+    from ops.vm_actions.tests.sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
 
 ROOT = Path(__file__).resolve().parents[3]
 AUTH = ROOT / "ops" / "vm_actions" / "authorize.py"
