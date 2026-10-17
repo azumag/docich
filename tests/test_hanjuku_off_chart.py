@@ -820,7 +820,8 @@ def test_a_boss_sortie_without_its_general_continues_with_the_listed_substitute(
             'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'orders': {'F1': 'failed'}, 'picked': [], '_records': [], 'active': 'F2',
            'launched_orders': {'F2': order}, 'target_cancel': {'F1': 2},
-           'captured': ['スペンソニア'], 'chart_plan': {'request_id': 'x', 'orders': [hero, order]}}
+           'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
+           'chart_plan': {'request_id': 'x', 'orders': [hero, order]}}
     rows = [TextLine(47, tuple((64 + 8 * i, ch) for i, ch in enumerate('しゅつげき'))),
             TextLine(39, tuple((144 + 8 * i, ch) for i, ch in enumerate('どうし'))),
             TextLine(55, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
@@ -842,7 +843,8 @@ def test_an_absent_boss_general_retries_with_the_listed_fit_substitute():
     order = {'step': 'F1', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'orders': {'F1': 'failed'}, 'picked': [], '_records': [], 'active': 'F1',
-           'target_cancel': {'F1': 2}, 'captured': ['スペンソニア'],
+           'target_cancel': {'F1': 2},
+           'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
            'garrison': {'スペンソニア': ['リーキ']},
            'chart_plan': {'request_id': 'x', 'orders': [order]}}
     rows = [TextLine(47, tuple((64 + 8 * i, ch) for i, ch in enumerate('しゅつげき'))),
@@ -863,7 +865,8 @@ def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(
     order = {'step': 'J3', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'J3',
-           'captured': ['スペンソニア'], 'launched_orders': {'J3': order},
+           'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
+           'launched_orders': {'J3': order},
            'cursor': list(CASTLES['スペンソニア']),
            'near_goal': {'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}}
     roofs = [{'kind': 'own', 'target': (150, 110), 'clipped': False}]

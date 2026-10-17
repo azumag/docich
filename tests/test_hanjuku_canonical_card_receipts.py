@@ -71,6 +71,7 @@ def test_extra_known_card_outside_slot_is_not_ignored():
 
 def boss_memory():
     return {'chapter': 2, 'active': '2-B1', 'tick': 3000,
+            'captured': list(set(policy.chart.CASTLE_NAMES[2]) - {'アルマムーン', 'ボス'}),
             'garrison': {'スペランザ': [policy.NAME]},
             'sortie_general': {'2-B1': 'ゼウス'}}
 

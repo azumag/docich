@@ -117,7 +117,28 @@ def _broken_hero_order(order, mem):
             and order.get('target') in chart.castles(mem.get('chapter') or 0))
 
 
+def _all_normal_captured(mem):
+    """Boss unlock covers the chapter's full names, including unmeasured ones."""
+    chapter = mem.get('chapter')
+    chapter_names = chart.CASTLE_NAMES.get(chapter) if type(chapter) is int else None
+    captured = mem.get('captured', [])
+    if not chapter_names or not isinstance(captured, (list, tuple, set, frozenset)):
+        return False
+    chapter_castles = set(chapter_names) - {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    return chapter_castles <= set(captured)
+
+
+def _boss_target_unlocked(order, mem):
+    # An adjusted after=None (including normalized self-capture conditions),
+    # a retry or a hotloaded active order cannot remove the game prerequisite.
+    if order.get('target') not in chart.BOSS_CASTLES.values():
+        return True
+    return _is_boss_order(order, mem) and _all_normal_captured(mem)
+
+
 def _ready(order, mem) -> bool:
+    if not _boss_target_unlocked(order, mem):
+        return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
             and _boss_companion_source(order, mem) is None
             and (mem.get('garrison') or {}).get(_source(order, mem)) is not None):
@@ -133,18 +154,7 @@ def _ready(order, mem) -> bool:
     if after[0] == 'captured':
         return after[1] in captured
     if after[0] == 'all_captured':
-        chapter = mem.get('chapter') or 1
-        # Partial measurements must still account for every castle in the
-        # chapter, including ones whose coordinates have not been measured yet.
-        # Using measured coordinates (chart.castles) here let unmeasured normal
-        # castles be skipped and released the boss order early.
-        chapter_names = chart.CASTLE_NAMES.get(chapter)
-        if not chapter_names:
-            # Fail closed: an unknown chapter must never look fully captured.
-            return False
-        chapter_castles = set(chapter_names) - {
-            chart.home_castle(chapter), chart.boss_castle(chapter)}
-        return chapter_castles <= captured
+        return _all_normal_captured(mem)
     return False
 
 

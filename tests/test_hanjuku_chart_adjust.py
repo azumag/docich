@@ -107,6 +107,9 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     assert mem['chart_adjust']['interim_wanted'] is False     # plan still waiting: no JEV
     mem['captured'].append('スペンソニア')
     policy.map_step(map_screen(), mem, FRAME)
+    assert mem.get('active') is None  # the adjusted condition cannot skip ジョンリギ
+    mem['captured'].append('ジョンリギ')
+    policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == j2
     # The base chart is never mutated.
     assert chart.CHAPTER_1_ORDERS == BASE_ORDERS

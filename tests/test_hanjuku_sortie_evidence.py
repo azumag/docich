@@ -50,8 +50,9 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
 
 
 def memory():
-    # These contracts start after the separate rare-inventory discovery pass.
+    # These kit/actor contracts start after boss unlock and rare discovery.
     return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
+            'captured': list(set(policy.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
             'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'ゼウス'}}
 
 

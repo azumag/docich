@@ -10,7 +10,7 @@ from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
-                            _hold_guarded_sortie)
+                            _hold_guarded_sortie, _hold_locked_boss)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import pad
@@ -373,6 +373,9 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    locked = _hold_locked_boss(mem, order)
+    if locked is not None:
+        return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         mem.pop('sortie_attempt', None)
