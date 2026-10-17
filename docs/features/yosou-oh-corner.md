@@ -117,6 +117,9 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   次の観測で再試行する。`invalid_response` の row は再試行せず記録しない。
 - 保持: 最大 `MAX_ROUNDS = 2000` 件。超過時は `(ended_at, id)` の古い順に間引く。
 - 入力上限: 台帳 512 KiB、1 outcome あたり predictor 100 件、文字列 128 文字。
+  保存も schema 移行後の最終 UTF-8 バイト列（末尾改行込み）を 512 KiB で検査し、
+  超過時は元ファイルをバイト単位で保ったまま明示的に拒否する。サイズを理由に参加履歴を
+  追加で間引かない。拒否後も元台帳は読めるが、追記は容量の扱いを別途判断するまで再試行になる。
 - 検証: `hit` を誤記録しないよう、壊れた resolved row は **fail-closed**（例外）で記録しない。
   非 resolved の row は静かにスキップする。
 - プライバシー: 保存・表示する視聴者情報は Twitch が公開する `id / login / 表示名` と
@@ -135,6 +138,16 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   既に `CANCELED` の row を再観測した時に `hanjuku_predictions._record_canceled` が
   `cancel_reason = "no-contest"` で記録する。PATCH 応答に `top_predictors` が無いときは
   権威ある `LOCKED` の row を `CANCELED` として再利用し、それも無ければ同じ id を1回 GET する。
+- cancel 前に、所有する予想 ID・outcome ID・タイトル・不成立条件と台帳 row 契約を検証した
+  `LOCKED` snapshot を `<state_dir>/hanjuku_prediction_cancel_<予想IDのSHA-256>.json` へ
+  `CANCELED` の記帳候補として保存する（この時点では台帳へ記帳しない）。上限は改行込み
+  UTF-8 256 KiB。0600・一時ファイル・fsync・原子的置換を使い、保存失敗・上限超過時は
+  cancel へ進まない。既存の予想状態は16 KiBのままで、snapshot を埋め込まない。
+- 再起動後も同一予想 ID の snapshot だけを再検証して再利用し、CANCELED の PATCH/GET が
+  参加者や件数を省略しても既知の参加を失わない。別 ID・別 outcome・壊れた snapshot は
+  空の参加として記帳せず拒否する。LOCKED の再試行応答が参加者を省略しても既存証拠を上書きしない。
+  snapshot は台帳記録の成功（同一 ID が記録済みの冪等 no-op を含む）後だけ削除する。
+  削除失敗時も再試行でき、再記帳しない。row 契約違反等で記録しなかった証拠は保持する。
 - 記録に失敗したとき（`leaderboard`）: round を terminal にせず次の観測・再試行 tick で
   再記録する。同じ `prediction id` は一度しか記録しない（再起動・再読取でも二重計上が無い）。
 - round 契約違反（`invalid_response`）: 記録せず、その round を terminal にして再試行しない

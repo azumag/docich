@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -25,6 +27,7 @@ from .retroarch_boundary import read_record
 
 FILE = 'hanjuku_predictions.json'
 RESULT_FILE = 'hanjuku_prediction_result.json'
+MAX_CANCEL_SNAPSHOT_BYTES = 256 * 1024
 POLL_SECONDS = 30
 RETRY_SECONDS = 300
 LIVE = {'ACTIVE', 'LOCKED'}
@@ -328,6 +331,56 @@ def _canceled_candidate(row):
     return None
 
 
+def _cancel_snapshot_path(root, row):
+    # Never put a remote id into a filesystem path. Each owned prediction has
+    # its own retry evidence; another generation cannot consume or replace it.
+    digest = hashlib.sha256(row['id'].encode('utf-8')).hexdigest()
+    return root / f'hanjuku_prediction_cancel_{digest}.json'
+
+
+def _check_cancel_snapshot(snapshot, row):
+    from . import prediction_leaderboard as leaderboard
+
+    if (not isinstance(snapshot, dict) or snapshot.get('status') != 'CANCELED'
+            or not _matches(snapshot, row)
+            or not _no_contest(snapshot)):
+        raise ValueError('invalid cancel snapshot ownership')
+    leaderboard.extract(snapshot)
+    return snapshot
+
+
+def _load_cancel_snapshot(root, row):
+    # Keep the main intent small: its existing 16 KiB readers need no change.
+    path = _cancel_snapshot_path(root, row)
+    snapshot = read_record(path, limit=MAX_CANCEL_SNAPSHOT_BYTES)
+    if not snapshot and not path.exists() and not path.is_symlink():
+        return None
+    return _check_cancel_snapshot(snapshot, row)
+
+
+def _save_cancel_snapshot(root, row, remote):
+    """Write verified closed-betting evidence BEFORE the irreversible cancel."""
+    if remote.get('status') != 'LOCKED':
+        raise APIError('invalid_response')
+    existing = _load_cancel_snapshot(root, row)
+    if existing is not None:
+        # A failed/unknown PATCH may still leave the remote LOCKED. Never
+        # overwrite known participation with a poorer response on that retry.
+        return existing
+    try:
+        snapshot = _check_cancel_snapshot(_canceled_candidate(remote), row)
+        payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n'
+        if len(payload.encode('utf-8')) > MAX_CANCEL_SNAPSHOT_BYTES:
+            raise ValueError('cancel snapshot exceeds the byte limit')
+    except ValueError:
+        raise APIError('invalid_response') from None
+    try:
+        atomic_write_json(_cancel_snapshot_path(root, row), snapshot)
+    except OSError:
+        raise APIError('leaderboard') from None
+    return snapshot
+
+
 def _record_canceled(root, now, client, *, sources=()):
     """Record a no-contest CANCELED round's participation in the 予想王 ledger.
 
@@ -345,6 +398,10 @@ def _record_canceled(root, now, client, *, sources=()):
         annotated = _canceled_candidate(source)
         if annotated is None:
             continue
+        try:
+            leaderboard.extract(annotated)
+        except leaderboard.LeaderboardError:
+            raise APIError('invalid_response') from None
         if candidate is None or (_has_predictors(annotated)
                                  and not _has_predictors(candidate)):
             candidate = annotated
@@ -435,15 +492,18 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     if exc.code == 'invalid_response':
                         row['status'] = 'RESOLVED'
                     raise
-            elif remote['status'] == 'CANCELED' and _no_contest(remote):
+            elif remote['status'] == 'CANCELED':
                 # 不成立キャンセルで落ちた参加実績を、再観測・再起動のあとでも
                 # 一度だけ記録する（#933 追記）。
-                try:
-                    _record_canceled(root, now, client, sources=(remote,))
-                except APIError as exc:
-                    if exc.code == 'invalid_response':
-                        row['status'] = 'CANCELED'
-                    raise
+                snapshot = _load_cancel_snapshot(root, row)
+                if snapshot is not None or _no_contest(remote):
+                    try:
+                        _record_canceled(root, now, client, sources=(snapshot, remote))
+                    except APIError as exc:
+                        if exc.code == 'invalid_response':
+                            row['status'] = 'CANCELED'
+                        raise
+                    _cancel_snapshot_path(root, row).unlink(missing_ok=True)
             row['status'] = remote['status']
             # Persist adopted ownership before any PATCH; API retries are idempotent.
             atomic_write_json(root / FILE, state)
@@ -481,6 +541,7 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     if _no_contest(settled_from):
                         # 賭けが成立していない予想は勝者を出さず中止し、投票済みの
                         # チャンネルポイントを全額返却する。
+                        snapshot = _save_cancel_snapshot(root, row, settled_from)
                         response = client.end(row['id'], 'CANCELED')
                         desired = 'CANCELED'
                         cancel_reason = 'no-contest'
@@ -501,11 +562,12 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     # terminal にせず、次の観測で CANCELED を再読取して再試行する。
                     try:
                         _record_canceled(root, now, client,
-                                         sources=(response[0], settled_from))
+                                         sources=(snapshot, response[0]))
                     except APIError as exc:
                         if exc.code == 'invalid_response':
                             row['status'] = desired
                         raise
+                    _cancel_snapshot_path(root, row).unlink(missing_ok=True)
                 row['status'] = desired
                 state['mode'] = desired.lower()
                 return

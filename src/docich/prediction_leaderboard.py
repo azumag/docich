@@ -449,15 +449,17 @@ def load(path) -> dict:
 
 def save(path, ledger: dict) -> None:
     _check_ledger(ledger)
+    payload = (json.dumps(ledger, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")) + "\n").encode("utf-8")
+    if len(payload) > MAX_BYTES:
+        raise LeaderboardError("leaderboard exceeds the byte limit")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(ledger, stream, ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":"))
-            stream.write("\n")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
