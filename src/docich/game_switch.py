@@ -2156,6 +2156,7 @@ class GameSwitchCoordinator:
                         cleanup_pending=False,
                         receipt=None,
                     )
+                time.sleep(min(self.poll_interval_s, max(acquire_until - now, 0.0)))
 
     def resume_queued(
         self,
