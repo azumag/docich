@@ -772,6 +772,9 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
     _reserve_general_repair(mem, shop, shop.get('gold_start'))
+    # A short base boss card is bought before the hiring fee and soldiers are sized.
+    from .boss_cards import plan_boss_card_rebuy
+    plan_boss_card_rebuy(mem, shop)
     _prioritise_recruit(mem, shop, shop.get('gold_start'))
     _limit_soldier_refill(mem, shop, {'year': int(shop['key'].split('-')[0]),
         'month': int(shop['key'].split('-')[1]), 'gold': shop.get('gold_start')})
@@ -930,7 +933,8 @@ def _soldier_refill_plan(mem, header, key):
                           'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step=month_chart_step(mem), strategy_variant='soldier_refill_only',
-            month=key, gold=gold, plan={'cards': [], 'soldiers': shop['soldiers']},
+            month=key, gold=gold,
+            plan={'cards': [list(row) for row in shop['items']], 'soldiers': shop['soldiers']},
             deviation_reason='chart_month_uncovered',
             expected_metric={'soldier_cap': SOLDIER_CAP},
             reason='チャートに当月の購入計画がないため残金で兵士を補充')

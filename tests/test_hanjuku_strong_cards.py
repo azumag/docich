@@ -70,11 +70,11 @@ def test_strong_cards_are_selectable_and_not_sacrificial():
     assert 'ファバード' not in reference.STRONG_CARDS   # 自軍も半減させる犠牲札
 
 
-def _sortie(step, picked=(), remaining=3, stock=('クースカン',)):
+def _sortie(step, picked=(), remaining=3, stock=('クースカン',), count=1):
     mem = {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': step,
            'variant': 'chart', 'orders': {step: 'pending'}, 'picked': list(picked),
            '_records': []}
-    inventory = {'rows': [{'card': name, 'stock': 1, 'y': 55 + 16*i}
+    inventory = {'rows': [{'card': name, 'stock': count, 'y': 55 + 16*i}
                           for i, name in enumerate(stock)],
                  'selected_y': 55, 'remaining': remaining}
     policy._observe_card_stock(mem, inventory)
@@ -83,7 +83,9 @@ def _sortie(step, picked=(), remaining=3, stock=('クースカン',)):
 
 
 def test_held_strong_card_joins_a_sortie_with_a_free_carry_slot():
-    order, mem, inventory = _sortie('1-A2')          # 予定札: フットバース1枚 (ID 3)
+    # 2枚目は余剰: ボス注文 1-B1 が必要とするクースカンは1枚だけ
+    # (必要枚数以下の在庫は test_hanjuku_boss_card_rebuy で予約を確認する)。
+    order, mem, inventory = _sortie('1-A2', count=2)  # 予定札: フットバース1枚 (ID 3)
     wanted = policy._deploy_cards(order, mem)
     assert wanted == ['フットバース']
     assert policy._strong_card_inventory(mem, order, inventory, wanted) is True
