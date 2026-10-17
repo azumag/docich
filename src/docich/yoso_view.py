@@ -116,12 +116,15 @@ function draw(){
  document.getElementById('empty').textContent=data.rounds>0
   ?`この部門で条件（最小参加数）を満たす予想者はいません`
   :'確定した予想がまだありません';
- showUnavailable(false);
+ // 休止の解除はここでは行わない。draw() は部門切替タイマーからも呼ばれ、
+ // 失敗中に古い lastData を描き直すだけで取得状態を変えてはいけない（#2435 P2）。
 }
 function render(data){
  document.getElementById('state').textContent='確定済みの予想を集計したランキング';
  document.getElementById('totals').textContent=`確定 ${data.rounds} 予想 ／ 集計対象 ${data.viewers} 名`;
  lastData=data;
+ // 取得成功の経路だけが休止表示を解除する。
+ showUnavailable(false);
  draw();
 }
 async function poll(){
