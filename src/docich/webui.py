@@ -3226,6 +3226,15 @@ def _log_authz_event(soren_root: Path, method: str, path: str, identity: str, de
 # --- HTTP handler --------------------------------------------------------
 
 MAX_BODY_BYTES = 256 * 1024
+# issue #2371: 上限超過の宣言 Content-Length に対して 413 を返す前に、本文を
+# bounded に読み捨てる (drain) ための上限。未読データを残した close は TCP RST を
+# 招き、送信中のクライアントが ConnectionResetError で 413 を読めなくなる。
+# 一方で本文を送らない/遅いクライアントに handler を占有されないよう、読み捨てる
+# 総量 (cap) と総時間 (deadline) の両方に上限を設ける。
+_BODY_DRAIN_CHUNK_BYTES = 64 * 1024
+_BODY_DRAIN_CAP_BYTES = MAX_BODY_BYTES + 64 * 1024
+_BODY_DRAIN_DEADLINE_SEC = 0.5
+_BODY_DRAIN_READ_TIMEOUT_SEC = 0.1
 # One Twitch category search at a time (it runs the Soren updater's --resolve).
 _SPECIAL_CATEGORY_SEARCH_LOCK = threading.Lock()
 
@@ -3778,6 +3787,48 @@ class _Handler(BaseHTTPRequestHandler):
         )
         return 200
 
+    def _drain_oversized_body(self, length: int) -> None:
+        """413 を返す前に、宣言された本文を bounded に読み捨てる (issue #2371)。
+
+        未読データを残したまま close すると TCP が RST を送り、送信中だった
+        クライアントは ``send()`` で ConnectionResetError を受けて、既に届いた
+        413 応答も破棄され得る。読める分だけ drain して graceful close に寄せる。
+
+        上限は 2 つ。読み捨てる総量 (``_BODY_DRAIN_CAP_BYTES``) と総時間
+        (``_BODY_DRAIN_DEADLINE_SEC``)。後者は slow-trickle 対策で、per-read
+        timeout だけでは少量を継続送信するクライアントに handler を占有される。
+
+        ``read`` ではなく ``read1`` を使うのが要点。``BufferedReader.read(n)`` は
+        n バイト揃うまで内部で recv を繰り返すため、呼び出しの間に deadline を
+        判定しても制御が戻らず総時間を制限できない。``read1`` は 1 反復 = 1 raw
+        read で戻るので、各反復で deadline を判定でき、遅いクライアントでも
+        deadline + per-read timeout 程度で打ち切れる。
+        """
+        to_drain = min(max(length, 0), _BODY_DRAIN_CAP_BYTES)
+        if to_drain <= 0:
+            return
+        try:
+            prev_timeout = self.request.gettimeout()
+        except Exception:
+            prev_timeout = None
+        try:
+            self.request.settimeout(_BODY_DRAIN_READ_TIMEOUT_SEC)
+            deadline = time.monotonic() + _BODY_DRAIN_DEADLINE_SEC
+            remaining = to_drain
+            while remaining > 0 and time.monotonic() < deadline:
+                try:
+                    chunk = self.rfile.read1(min(remaining, _BODY_DRAIN_CHUNK_BYTES))
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        finally:
+            try:
+                self.request.settimeout(prev_timeout)
+            except Exception:
+                pass
+
     def _read_body(self) -> tuple[bytes | None, int]:
         # returns (body, status); body None + status != 0 => error already sent
         raw_len = self.headers.get("Content-Length", "0") or "0"
@@ -3787,6 +3838,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, "invalid_content_length", f"Content-Length が数値ではありません: {raw_len!r}")
             return None, 400
         if length < 0 or length > MAX_BODY_BYTES:
+            # 413 の契約 (宣言 Content-Length が上限超過なら拒否) は変えず、
+            # close 前の bounded drain で RST を減らす。保証範囲は
+            # 「宣言長 <= _BODY_DRAIN_CAP_BYTES かつ deadline 内に届いた分」で、
+            # cap 超過や slow-trickle では未読が残り RST が起こり得る
+            # (DoS 保護を優先)。#2145/#2305 と同様、失敗を隠す意図はない。
+            self._drain_oversized_body(length)
+            self.close_connection = True
             self._send_error_json(413, "body_too_large", f"Content-Length は 0..{MAX_BODY_BYTES} である必要があります")
             return None, 413
         if length == 0:

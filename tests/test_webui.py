@@ -958,6 +958,145 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("PUT", "/api/config", body="x" * (webui.MAX_BODY_BYTES + 1))
         self.assertEqual(status, 413)
 
+    def test_put_config_body_too_large_no_body_returns_413_within_deadline(self):
+        # 生ソケットで巨大 Content-Length を宣言し本文を送らない。
+        # drain に deadline が無いと 413 が返らずハングする (review P2)。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_partial_body_returns_413_within_deadline(self):
+        # 本文を一部だけ送って停止するケースでも deadline 内に 413 を返す。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 262145\r\n"
+                 "Connection: close\r\n\r\n" + "x" * 17).encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_slow_trickle_is_bounded(self):
+        # per-read timeout より短い間隔で送り続ける slow-trickle。
+        # 総時間 deadline が実装されていないと read が制御を返さず handler が
+        # 占有され続ける (read(n) は n バイト揃うまで内部で recv を繰り返すため)。
+        # 「413 を読める」か「RST/EOF で接続が終わる」のどちらかが期限までに
+        # 起きること = handler が期限付きで解放されることを固定する。413 の
+        # 受信自体は RST で失われ得るので、このケースでは必須にしない
+        # (DoS 保護を優先し、413 の契約は送信の速い既存テストで固定する)。
+        import socket as _socket
+        import threading as _threading
+        import time as _time
+
+        # 送信間隔 < per-read timeout にして「無通信 timeout では抜けない」状況を作る。
+        # (per-read timeout は 0.1s。実装定数に依存させず literal で固定する。)
+        trickle_interval = 0.02
+        recv_timeout = 4.0
+        release_deadline = 2.0  # 総時間 deadline (0.5s) + 十分な余裕
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        stop = _threading.Event()
+        sent = [0]
+
+        def trickle():
+            end = _time.monotonic() + recv_timeout + 2.0
+            while not stop.is_set() and _time.monotonic() < end:
+                try:
+                    sock.sendall(b"x")
+                    sent[0] += 1
+                except OSError:
+                    return
+                stop.wait(trickle_interval)
+
+        sender = _threading.Thread(target=trickle, daemon=True)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sender.start()
+            sock.settimeout(recv_timeout)
+            t0 = _time.monotonic()
+            buf = b""
+            closed = False
+            while b"\r\n\r\n" not in buf:
+                try:
+                    chunk = sock.recv(4096)
+                except _socket.timeout:
+                    break
+                except ConnectionResetError:
+                    closed = True
+                    break
+                if not chunk:
+                    closed = True
+                    break
+                buf += chunk
+            elapsed = _time.monotonic() - t0
+            first_status = buf.split(b"\r\n", 1)[0] if buf else b""
+            self.assertLess(
+                elapsed,
+                release_deadline,
+                "slow-trickle で handler が deadline 内に解放されなかった: elapsed=%.2fs sent=%d"
+                % (elapsed, sent[0]),
+            )
+            self.assertTrue(buf or closed, "応答も接続終了も観測できなかった")
+            # 413 以外の HTTP 応答を返してはいけない (RST/EOF は許容)。
+            if first_status:
+                self.assertIn(b"413", first_status)
+        finally:
+            stop.set()
+            try:
+                sock.close()
+            except OSError:
+                pass
+            sender.join(timeout=1.0)
+
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
         try:
