@@ -577,6 +577,11 @@ CPU_PROFILE_MAX_SPAWNS = 30
 # so only the tail is dropped, and the omitted counts stay visible.
 CPU_PROFILE_BUDGET_COMPONENTS = 10
 CPU_PROFILE_BUDGET_SPAWNS = 10
+# Last-resort floor. Even under the hardest output pressure the busiest rows
+# stay, so the projection can still name the top consumers / spawn paths
+# (azumag/docich#970) rather than showing host totals only.
+CPU_PROFILE_FLOOR_COMPONENTS = 5
+CPU_PROFILE_FLOOR_SPAWNS = 5
 CPU_PROFILE_FRESH_SEC = 900
 
 
@@ -8853,20 +8858,32 @@ def _cpu_profile_budget(payload):
 
 
 def _cpu_profile_detail_budget(payload):
-    """Omit per-component rows under pressure while retaining CPU totals."""
+    """Trim per-component rows to a small floor under pressure.
+
+    Host totals are always retained; the busiest few rows survive too, so the
+    sanitized projection can still name the top CPU consumers and spawn paths
+    (azumag/docich#970) instead of degrading to host totals only. The producer
+    already orders both lists busiest-first, and the dropped-row counts stay
+    visible in ``*_omitted``.
+    """
     profile = payload.get("cpu_profile")
     if not isinstance(profile, dict):
         return payload
-    for key in ("components", "spawns"):
+    for key, floor in (("components", CPU_PROFILE_FLOOR_COMPONENTS),
+                       ("spawns", CPU_PROFILE_FLOOR_SPAWNS)):
         rows = profile.get(key)
         if not isinstance(rows, list) or not rows:
+            continue
+        kept = rows[:floor]
+        dropped = len(rows) - len(kept)
+        profile[key] = kept
+        if not dropped:
             continue
         omitted_key = f"{key}_omitted"
         previous = profile.get(omitted_key, 0)
         if type(previous) is not int or previous < 0:
             previous = 0
-        profile[omitted_key] = previous + len(rows)
-        profile[key] = []
+        profile[omitted_key] = previous + dropped
     return payload
 
 
