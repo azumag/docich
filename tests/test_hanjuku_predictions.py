@@ -1221,3 +1221,19 @@ def test_cancel_cleanup_failure_retries_a_committed_ledger_without_duplicates(en
     assert path.read_bytes() == original
     assert not snapshot_path.exists()
     assert leaderboard.boards(leaderboard.load(path))['plays'][0]['participations'] == 1
+
+
+def test_canceled_response_keeps_its_settlement_time_when_predictors_are_present(env, monkeypatch):
+    _locked_cancel_snapshot(env)
+    end = env.remote.end
+
+    def ended(*args):
+        rows = end(*args)
+        if args[1] == 'CANCELED':
+            rows[0]['ended_at'] = '2026-10-17T06:00:00Z'
+        return rows
+
+    monkeypatch.setattr(env.remote, 'end', ended)
+    assert _settle(env, now=131)['mode'] == 'canceled'
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert next(iter(ledger['rounds'].values()))['ended_at'] == '2026-10-17T06:00:00Z'

@@ -498,7 +498,7 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 snapshot = _load_cancel_snapshot(root, row)
                 if snapshot is not None or _no_contest(remote):
                     try:
-                        _record_canceled(root, now, client, sources=(snapshot, remote))
+                        _record_canceled(root, now, client, sources=(remote, snapshot))
                     except APIError as exc:
                         if exc.code == 'invalid_response':
                             row['status'] = 'CANCELED'
@@ -562,7 +562,7 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     # terminal にせず、次の観測で CANCELED を再読取して再試行する。
                     try:
                         _record_canceled(root, now, client,
-                                         sources=(snapshot, response[0]))
+                                         sources=(response[0], snapshot))
                     except APIError as exc:
                         if exc.code == 'invalid_response':
                             row['status'] = desired
