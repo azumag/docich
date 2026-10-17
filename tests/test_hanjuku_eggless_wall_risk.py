@@ -54,14 +54,15 @@ def test_real_card_list_licenses_control_then_bounded_melee_without_fake_receipt
     assert not cur.get('enemy_egg_dropped') and cur['cards_used'] == []
 
 
-def test_confirmed_no_resources_retreats_before_healthy_wall_melee():
+def test_confirmed_no_resources_keeps_clear_hp_lead_before_the_wall_summon():
     mem = trevis()
     assert p.battle_step(battle(mem), mem) == [p.pad('b')]
     assert p.battle_menu_step(menu(('たいきゃく',)), mem) == [p.pad('b')]
     assert mem['battle']['survival']['exhausted']
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(('たいきゃく',)), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
+    assert p.battle_step(battle(mem), mem) == p._power_mash(mem, mem['battle'])
+    assert not p._hero_retreat_needed(mem['battle'])
+    assert p._hero_retreat_menu(menu(('たいきゃく',)), mem, mem['battle']) is None
+    assert not mem['battle'].get('hero_retreat')
     assert not mem['battle'].get('defeat_owner')
 
 

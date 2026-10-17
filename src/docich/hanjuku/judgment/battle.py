@@ -1397,7 +1397,7 @@ def _default_retreat_needed(cur):
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')
-            and not _healthy_melee_advantage(cur)):
+            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -1412,6 +1412,33 @@ def _hero_retreat_needed(cur):
     """Value-aware ordinary retreat with the existing special-case guards."""
     from .retreat import retreat_needed
     return retreat_needed(cur)
+
+
+def _pre_summon_hp_advantage(cur):
+    """Owner policy: a clear HP lead can keep melee after a resource probe.
+
+    Reverse the existing 70%-HP disadvantage boundary. This is a willingness
+    to continue before a summon, not a combat estimate or a promise of a win.
+    Unknown armies stay unknown; no soldier count is needed or manufactured.
+    """
+    from .retreat import _resources_exhausted, _strength, retreat_profile, STRONG_RETREAT_HP
+
+    profile, enemy_stats = retreat_profile(cur), _strength(cur.get('enemy'))
+    if (profile['class'] in ('hero', 'unknown') or enemy_stats is None
+            or cur.get('side') != 'attack'
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_damage_rescue_needed') or cur.get('event_duel')
+            or (cur.get('hero_retreat') or {}).get('selected')
+            or not _resources_exhausted(cur)):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    floor = STRONG_RETREAT_HP if profile['class'] == 'strong' else GENERAL_CRITICAL_RETREAT_HP
+    return (type(hp) is int and floor < hp <= profile['max_hp']
+            and type(enemy) is int and 0 < enemy <= enemy_stats[0]
+            and enemy * 10 <= hp * BEHIND_EGG_RATIO_TENTHS)
 
 
 def _healthy_melee_advantage(cur):
