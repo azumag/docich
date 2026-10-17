@@ -35,7 +35,8 @@ def route(monkeypatch):
 
 
 def screen(kind):
-    return SimpleNamespace(kind=kind, text='', lines=[], hand=None, header=None)
+    return SimpleNamespace(kind=kind, text='', lines=[], hand=None, header=None,
+                           marker=(100, 100) if kind == 'map_target' else None, cursor=None)
 
 
 def confirm(mem, phase='castle_confirm'):
@@ -75,10 +76,12 @@ def test_enemy_well_outside_route_does_not_block_repair(route):
     assert mem['house']['phase'] == 'out_target'
 
 
-def test_freshly_observed_friendly_castle_permits_route(route):
+def test_freshly_observed_friendly_castle_permits_route(route, monkeypatch):
     mem, _ = route
     make_crossing_friendly(mem)
     assert confirm(mem) == [commands.pad('a')]
+    # This route contract assumes the separately tested current field fix.
+    monkeypatch.setattr(world, 'observed_cursor_cell', lambda *args, **kwargs: [1120, 1120])
     assert confirm(mem, 'house_confirm') == [commands.pad('a')]
     assert mem['house']['phase'] == 'travel'
     assert mem['house']['departure_pending'] is True

@@ -1046,7 +1046,8 @@ def _repair_step(screen, mem, frame):
         return actions
     if phase == 'out_target':
         if screen.kind == 'map_target':
-            _phase(state, 'house_view')
+            state.pop('target_observation', None)
+            _phase(state, 'house_view', alignment_unread=0, alignment_moves=0)
             return [pad('y')]
         return []
     if phase == 'house_view':
@@ -1055,9 +1056,35 @@ def _repair_step(screen, mem, frame):
         if screen.kind == 'map_target':
             if _defer_unsafe_house_route(mem):
                 return []
+            from ..os_layer.world import observed_cursor_cell
+            from ..os_layer.navigation import Y_JUMP_OFFSET, MAX_HOLD_FRAMES
+            # A on the Y view only proposes a landing. Measure the current
+            # field marker before committing this unit's movement; the old
+            # integrated cursor / house_view phase cannot authorize that A.
+            position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
+            offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
+            if position is None or offset is None or not screen.marker:
+                reads = state.get('alignment_unread', 0)
+                if type(reads) is not int or not 0 <= reads < 2:
+                    return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留')
+                state['alignment_unread'] = reads + 1
+                return []
+            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
+            delta = [target[a] - position[a] for a in (0, 1)]
+            if any(abs(d) > 2 for d in delta):
+                moves = state.get('alignment_moves', 0)
+                if type(moves) is not int or not 0 <= moves < 8:
+                    return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留')
+                state['alignment_moves'] = moves + 1
+                axis = 0 if abs(delta[0]) >= abs(delta[1]) else 1
+                button = ('right' if delta[axis] > 0 else 'left') if axis == 0 else (
+                          'down' if delta[axis] > 0 else 'up')
+                return [pad(button, min(MAX_HOLD_FRAMES, abs(delta[axis])))]
+            state['target_observation'] = {'position': position, 'target': target, 'tick': mem.get('tick')}
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
-                    observed_metric={'view': HOUSE_TARGET[mem['chapter']]},
+                    observed_metric={'view': HOUSE_TARGET[mem['chapter']], 'field_position': position,
+                                     'field_target': target, 'basis': 'current_two_roof_constellation'},
                     reason='卵が壊れた本人をあたしの家へ派遣する入力を確定')
             return [pad('a')]
         return []
