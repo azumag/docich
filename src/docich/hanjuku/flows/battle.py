@@ -1067,7 +1067,11 @@ def message_step(screen: Screen, mem):
         step, match = _match_sortie(mem, castle, general)
         if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
             return [pad('a')]              # same entry text still on screen
-        ours = step is not None or match == 'ambiguous' or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+        # 'legacy' is our own launched record for this general and castle; it
+        # may carry no step (g839 step 4210: アマンディーヌ read as side='enemy',
+        # which switched off the value-aware retreat policy).
+        ours = (step is not None or match in ('ambiguous', 'legacy')
+                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス'))
         side = 'attack' if ours else 'enemy'
         _bind_sortie(mem, step, castle)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
