@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+
 ROOT = Path(__file__).resolve().parents[3]
 COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
 
@@ -1252,14 +1254,17 @@ class CollectorContractTests(CollectorFixture):
         stats = self.soren / "tmp" / "state" / "ai_stats"
         stats.mkdir(parents=True, exist_ok=True)
         day = time.strftime("%Y%m%d", time.localtime(self.now))
-        with open(stats / f"{day}.jsonl", "w", encoding="utf-8") as handle:
-            for _ in range(60000):
-                handle.write(json.dumps(self.event("fail", rc="1", error="x" * 5000)) + "\n")
+        line = json.dumps(self.event("fail", rc="1", error="x" * 5000)) + "\n"
+        # ~300 MB apparent size, but only the scanned tail is real data (sparse_files).
+        size = write_sparse_tail_jsonl(stats / f"{day}.jsonl", line, 60000)
+        self.assertGreater(size, 30 * jsonl_scan_window_bytes())
         proc = self.run_collector()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertLessEqual(len(proc.stdout.encode()), 32768)
         data = json.loads(proc.stdout)
         self.assertLessEqual(len(data["ai"]["recent_events"]), 20)
+        # The scanned tail is real telemetry, not the sparse hole.
+        self.assertGreater(data["ai"]["failures"], 0)
 
     def test_improve_loop_states(self):
         self.write_required_alive()
