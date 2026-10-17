@@ -11,7 +11,8 @@ def setup_case():
     order = dict(step='F1', general='どうし', source='スペンソニア', target='けっかい',
                  cards=[], after=None, note='test')
     mem = dict(chapter=1, active='F1', castle_verified='F1', orders={}, picked=[],
-               captured=['スペンソニア'], garrison={'スペンソニア': ['どうし', 'ガルバンゾー']},
+               captured=list(set(policy.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
+               garrison={'スペンソニア': ['どうし', 'ガルバンゾー']},
                chart_plan={'request_id': 'test', 'orders': [order]}, _records=[])
     return order, mem
 
