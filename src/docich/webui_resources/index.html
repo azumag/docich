@@ -2032,6 +2032,7 @@ function renderScCategory(){
   const el=document.getElementById("sc-category");
   if(el) el.textContent=SC_CATEGORY?`${SC_CATEGORY.name}（ID ${SC_CATEGORY.id}）`:"未選択";
 }
+// webui-loader:loadSpecialSettings:start
 async function loadSpecialSettings(force){
   // Do not overwrite what the operator is typing on the 10-second refresh.
   if(SC_LOADED && !force) return;
@@ -2049,6 +2050,7 @@ async function loadSpecialSettings(force){
     SC_LOADED=true;
   }catch(e){ if(note) note.textContent="設定を取得できません。"; }
 }
+// webui-loader:loadSpecialSettings:end
 async function searchScCategory(){
   const q=($("#sc-category-query").value||"").trim();
   const sel=document.getElementById("sc-category-candidates");
@@ -2078,9 +2080,13 @@ async function saveSpecialSettings(){
   }catch(e){ toast("保存できませんでした: "+String(e.message||e)); }
   finally{ b.disabled=false; }
 }
+// webui-loader:loadSpecial:start
 async function loadSpecial(){
   const el=document.getElementById("special-status"), b=document.getElementById("special-end");
-  loadSpecialSettings(false);
+  // #970 (review of #2395): settings is a child request of this panel. Await it
+  // as well, so a settings fetch that is still pending keeps the presentation
+  // poll guard held (loadCorners already awaits loadSpecial).
+  const settings = loadSpecialSettings(false);
   try{
     const r=await api("/api/special-corner");
     const t0=document.getElementById("special-title"); if(t0) t0.textContent=r.title||"-";
@@ -2092,7 +2098,9 @@ async function loadSpecial(){
     }
     if(b) b.disabled=!r.can_end;
   }catch(e){ if(el) el.textContent="状態を取得できません。"; if(b) b.disabled=true; }
+  await Promise.allSettled([settings]);
 }
+// webui-loader:loadSpecial:end
 const RECEIVER_LABELS={none:"未準備",stopped:"停止中",launching:"起動中…",waiting:"受付中（OBS 未接続）",receiving:"受信中（音声なし）",receiving_audio:"受信中（音声あり）",stale:"映像が途切れています"};
 function renderSpecialControl(c){
   const el=document.getElementById("special-receiver");
