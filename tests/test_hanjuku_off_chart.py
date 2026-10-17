@@ -1274,7 +1274,8 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
     ask = S(lines=[], hand=None, kind='text', text='アルマムーン1どのしろをぞうちくなさいますか?',
             header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
     assert policy._chikujou_step(ask, mem, sub) == [policy.pad('a')]
-    confirm = S(lines=[], hand=None, kind='yes_no',
+    from test_hanjuku_multi_chikujou import line
+    confirm = S(lines=[line(24, 199, '5Gかかりますが')], hand=None, kind='yes_no',
                 text='アルマムーンじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!',
                 header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
     assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
@@ -1286,7 +1287,7 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
     assert policy._chikujou_step(again, mem, sub) == [policy.pad('b')]
     # Too little left after the wage reserve: decline.
     poor = {'chapter': 2, '_records': [], 'month_sub': {'kind': 'chikujou', 'gold_before': 40, 'presses': 0}}
-    pricey = S(lines=[], hand=None, kind='yes_no', text='うむッ!15Gかかりますがよろしいですかないかんッ!',
+    pricey = S(lines=[line(24, 199, '15Gかかりますが')], hand=None, kind='yes_no', text='うむッ!15Gかかりますがよろしいですかないかんッ!',
                header={'chapter': None, 'year': 2, 'month': 6, 'gold': 40})
     assert policy._chikujou_step(pricey, poor, poor['month_sub']) == [policy.pad('a')]   # on いかんッ!
     assert poor['month_sub'].get('declined') and decisions(poor, 'chikujou_declined')
@@ -1443,7 +1444,8 @@ def test_chikujou_refused_home_can_confirm_fresh_alternative(monkeypatch):
     refused = S(lines=[], hand=None, kind='text', header=None,
                 text='これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
     assert policy._chikujou_step(refused, mem, sub) == [policy.pad('a')]
-    confirm = S(lines=[], hand=None, kind='yes_no', header={'gold': 96},
+    from test_hanjuku_multi_chikujou import line
+    confirm = S(lines=[line(24, 199, '5Gかかりますが')], hand=None, kind='yes_no', header={'gold': 96},
                 text='ジョンリギじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!')
     assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
     assert sub['quoted_cost'] == 5

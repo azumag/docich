@@ -29,7 +29,8 @@ def castles(on=HOME, text=PROMPT, names=(HOME, OTHER)):
 
 def quote(castle=HOME, gold=150, cost=5, on='うむッ!'):
     x = 32 if on == 'うむッ!' else 136
-    return Screen([line(32, 191, 'うむッ!'), line(136, 191, 'いかんッ!')],
+    return Screen([line(32, 191, 'うむッ!'), line(136, 191, 'いかんッ!'),
+                   line(24, 199, f'{cost}Gかかりますが')],
                   (x - 22, 185, x - 4, 198),
                   f'{castle}じょうですな{cost}Gかかりますがよろしいですかなうむッ!いかんッ!',
                   header={'gold': gold}, kind='yes_no')
