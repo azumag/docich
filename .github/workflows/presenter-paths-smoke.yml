@@ -15,6 +15,9 @@ name: Presenter path smoke (isolated)
 #   - scripts/smoke_brain.sh: hanjuku-hero observation + fake brain fixture,
 #     then a ROM-less RetroArch menu with real key injection when the
 #     `retroarch` binary and `dbus-run-session` are present.
+#   - scripts/retro_smoke/run.sh: real retro CLI games (bastet, moon-buggy,
+#     pacman4console, ninvaders, nsnake) inside a throwaway `--network none`
+#     container, driven through the real CliGameAdapter and CommandBrain.
 #   - This does NOT prove TwiCa foreground compositing over those presenters in
 #     the final stream frame; that remains the real-pixel contracts job plus a
 #     production observation window. Do not read a green run here as card
@@ -27,8 +30,9 @@ on:
       - 'scripts/smoke_cli.sh'
       - 'scripts/smoke_brain.sh'
       - 'bin/docich'
-      - 'brains/hanjuku/**'
+      - 'brains/**'
       - 'config/games/**'
+      - 'scripts/retro_smoke/**'
       - 'tests/fixtures/hanjuku_fake_brain.jsonl'
       - 'src/docich/adapters/**'
       - 'src/docich/cli.py'
@@ -46,8 +50,9 @@ on:
       - 'scripts/smoke_cli.sh'
       - 'scripts/smoke_brain.sh'
       - 'bin/docich'
-      - 'brains/hanjuku/**'
+      - 'brains/**'
       - 'config/games/**'
+      - 'scripts/retro_smoke/**'
       - 'tests/fixtures/hanjuku_fake_brain.jsonl'
       - 'src/docich/adapters/**'
       - 'src/docich/cli.py'
@@ -109,3 +114,57 @@ jobs:
           set -o pipefail
           bash scripts/smoke_brain.sh 2>&1 | tee /tmp/smoke_brain.log
           grep -q 'retroarch 入力到達 OK' /tmp/smoke_brain.log
+
+  retro-cli-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build the throwaway offline retro game image
+        run: docker build -q -t docich-retro-smoke:local scripts/retro_smoke >/dev/null
+      - name: Run real CLI retro games through the adapter and the brain
+        env:
+          OUT: ${{ runner.temp }}/retro-smoke
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          # bastet and nsnake have [agent] enabled = true, so the real
+          # CommandBrain drives the real wrapper through the CliGameAdapter.
+          # run.sh uses `--network none` and a read-only copy of the checkout.
+          for game in bastet nsnake; do
+            scripts/retro_smoke/run.sh "$game" 90
+          done
+      - name: Assert the games rendered and the brain acted
+        env:
+          OUT: ${{ runner.temp }}/retro-smoke
+        run: |
+          python3 - "$OUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          problems = []
+          for game in ("bastet", "nsnake"):
+              path = root / game / "summary.json"
+              if not path.is_file():
+                  problems.append(f"{game}: summary.json missing")
+                  continue
+              summary = json.loads(path.read_text(encoding="utf-8"))
+              print(f"{game}: {json.dumps(summary, ensure_ascii=False)}")
+              if summary["iteration_errors"] != 0:
+                  problems.append(f"{game}: iteration_errors={summary['iteration_errors']}")
+              if summary["cycles"] <= 0:
+                  problems.append(f"{game}: the agent loop never observed")
+              if summary["actions_total"] <= 0:
+                  problems.append(f"{game}: the brain sent no action")
+              if summary["pane_changes"] <= 0:
+                  problems.append(f"{game}: the pane never changed")
+              if not summary["session_alive_at_end"]:
+                  problems.append(f"{game}: the game session died")
+          if problems:
+              raise SystemExit("retro smoke failed: " + "; ".join(problems))
+          print("retro smoke OK")
+          PY
