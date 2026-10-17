@@ -54,7 +54,13 @@ def _deploy_cards(order, mem):
     rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
     strong = (mem.get('strong_card_kit') or {}).get(order['step']) if rare_kit is None else None
     if _strict_boss_cards(order, mem) and rare_kit is None:
-        return _with_strong_card(list(order['cards']), strong, mem, order['step'])
+        cards = list(order['cards'])
+        # Only a card the measured panel proved out of stock leaves the boss
+        # kit (flows.deploy._card_proven_absent); one copy per drop entry.
+        for card in (mem.get('card_drop') or {}).get(order['step']) or ():
+            if card in cards:
+                cards.remove(card)
+        return _with_strong_card(cards, strong, mem, order['step'])
     cards = list(rare_kit if rare_kit is not None else
                  mem.get('card_override', {}).get(order['step'], order['cards']))
     # One planned copy leaves the kit per drop entry. g454 12:22: a planned
