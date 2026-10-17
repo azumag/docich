@@ -221,6 +221,62 @@ def _invalidate(mem, reason, actor=None, *, new_game=False):
                 resulting_event='intent_invalidated_location_unconfirmed', reason=reason)
 
 
+def observe_camp_status(screen, mem):
+    """A current named camp status requests SELECT-based discovery, not a location.
+
+    Repeated status pixels never refresh a pending intent or its budgets.
+    Keep a bounded scoped signature after completion too, so an old page
+    cannot start the same request again as soon as the queue is removed.
+    """
+    from . import house
+    from ..decision_log import _record
+    if screen.kind != 'text' or mem.get('battle'):
+        return
+    info = house.general_status(screen)
+    identity = roster_receipts.run_identity(mem.get('_run_identity'))
+    now, chapter = mem.get('tick'), mem.get('chapter')
+    header_chapter = (screen.header or {}).get('chapter')
+    if (not info or info.get('camp_observed') is not True or identity is None
+            or type(now) is not int or now < 0 or type(chapter) is not int or chapter <= 0
+            or type(header_chapter) is not int or header_chapter != chapter
+            or type(info.get('hp')) is not int or info['hp'] <= 0
+            or not _clean_name(info['general'])):
+        return
+    actor = info['general']
+    owner = mem.get('recall') or mem.get('house') or {}
+    if isinstance(owner, dict) and owner.get('general') not in (None, actor):
+        return  # another actor's requested status cannot adopt this page
+    queue = _scope(mem)
+    if actor not in queue and len(queue) >= roster_receipts.MAX_GENERALS:
+        return
+    verification = mem.get('recall_verification') or {}
+    scope = {'identity': identity, 'chapter': chapter}
+    seen = mem.get('camp_status_seen')
+    if not isinstance(seen, dict) or seen.get('scope') != scope:
+        seen = mem['camp_status_seen'] = {'scope': scope, 'actors': {}}
+    actors = seen.get('actors')
+    if not isinstance(actors, dict):
+        return  # malformed saved suppression must not reset into permission
+    signature = [info[key] for key in ('hp', 'max_hp', 'egg', 'uses', 'broken')]
+    if actors.get(actor) == signature or (actor not in actors and len(actors) >= roster_receipts.MAX_GENERALS):
+        return
+    actors[actor] = signature
+    if actor in queue:
+        return
+    if (isinstance(verification, dict) and verification.get('general') == actor
+            and verification.get('input_sent') is True
+            and verification.get('status') in ('arrival_unconfirmed', 'dispatch_unconfirmed')
+            and roster_receipts.run_identity(verification.get('identity')) == identity
+            and type(verification.get('chapter')) is int and verification['chapter'] == chapter):
+        return
+    queue[actor] = {'identity': identity, 'chapter': chapter, 'tick': now, 'attempts': 0,
+                    'retry_after': now, 'status': 'needs_observation', 'trigger': 'observed_camp_status'}
+    mem['retreat_rechecks'] = queue
+    _record(mem, 'camp_status_recall_pending', general=actor,
+            resulting_event='camp_observed_position_unconfirmed',
+            reason='本人ステータスの在営を確認。位置を推定せず実名簿の本人SELECTから現在tentを探す')
+
+
 def capture(mem, battle):
     """A selected retreat and surviving named actor justify checking, not camp facts."""
     from ..decision_log import _record

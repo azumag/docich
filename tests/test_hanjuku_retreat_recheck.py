@@ -634,3 +634,142 @@ def test_isolated_status_words_do_not_turn_the_map_into_a_status_panel(label):
             c.put(x, y, frame.pixel(x, y))
     frame = c.frame()
     assert parse(frame, phase=classify(frame)).kind == 'map'
+
+
+def camp_status_frame(name='ゼウス', phrase='キャンプしています', hp=6):
+    from test_hanjuku_house import Canvas as StatusCanvas
+    c = StatusCanvas(); c.rgb = bytearray(status(name, main=True, castle=False, hp=hp).rgb)
+    for y in range(151, 159):
+        for x in range(24, 232): c.put(x, y, (16, 72, 57))
+    c.text(24, 151, phrase)
+    return c.frame()
+
+
+def camp_memory():
+    return {'chapter': 1, 'tick': 100, '_run_identity': deepcopy(ID),
+            'survey_run_identity': deepcopy(ID), '_records': []}
+
+
+def test_decide_current_camp_status_enqueues_offscreen_actor_without_a_retreat_selection():
+    mem = camp_memory()
+    _, updated = decide(camp_status_frame(), {'policy': mem}, run_identity=ID)
+    row = updated['policy']['retreat_rechecks']['ゼウス']
+    assert row['trigger'] == 'observed_camp_status' and row['attempts'] == 0
+    assert not row.get('camp_observation') and not row.get('target')
+    assert not updated['policy'].get('garrison')
+
+
+def test_offscreen_camp_discovery_named_status_return_and_current_castle_observation(monkeypatch):
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame()), mem)
+    empty = Canvas().frame()
+    assert p.own_camps(empty) == []
+    assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('select')]
+    assert p.camp_recall_step(MAP, mem, empty) == []  # camera transition, no blind A
+    shifted = Canvas()
+    for y in range(64, 84):
+        for x in range(24, 44): shifted.put(x + 64, y + 24, FRAME.pixel(x, y))
+    frame = shifted.frame(); focused = Screen([], None, '', kind='map', cursor=(90, 90))
+    assert p.camp_recall_step(focused, mem, frame) == [p.pad('a')]
+    assert mem['recall']['target'] == [90, 90]
+    assert p.camp_recall_step(camp_menu(1), mem, frame) == [p.pad('a')]
+    assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, frame) == [p.pad('b')]
+    assert p.camp_recall_step(camp_menu(3), mem, frame) == [p.pad('a')]
+    x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {'アルマムーン': 'own'})
+    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, frame) == [
+        p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    trace = {**ID, 'decision_id': f"{ID['runtime_id']}:{ID['generation']}:1", 'frame_sha256': 'a' * 64}
+    mem['recall']['request_trace'] = trace
+    mem['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
+    assert p.camp_recall_step(MAP, mem, empty) == []
+    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
+    mem['tick'] += c.RETRY_TICKS
+    assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
+    assert mem['recall']['arrival_check_only'] is True
+    assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('a')]
+    assert p.camp_recall_step(parse(status('ゼウス', main=True, castle=True, hp=6)), mem, empty) == [p.pad('b')]
+    assert mem['recall_verification']['status'] == 'in_castle_observed'
+    assert not mem.get('retreat_rechecks') and not mem.get('garrison')
+    c.observe_camp_status(parse(camp_status_frame()), mem)
+    assert not mem.get('retreat_rechecks')  # replayed old page cannot restart the return
+
+
+def test_repeated_camp_status_cannot_reset_exhausted_search_or_anonymous_budget():
+    import json
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); screen = parse(camp_status_frame())
+    c.observe_camp_status(screen, mem); created = mem['retreat_rechecks']['ゼウス']['tick']
+    empty = Canvas().frame()
+    for n in range(c.ATTEMPT_LIMIT):
+        assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
+        assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
+        assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('select')]
+        for _ in range(c.READ_LIMIT): assert p.camp_recall_step(MAP, mem, empty) == []
+        mem['retreat_anonymous_budget'] = {'key': 'preserved', 'reads': 17}
+        for _ in range(10):
+            mem = json.loads(json.dumps(mem)); mem['tick'] += 1
+            c.observe_camp_status(screen, mem)
+        assert mem['retreat_rechecks']['ゼウス']['attempts'] == n + 1
+        assert mem['retreat_rechecks']['ゼウス']['tick'] == created
+        assert mem['retreat_anonymous_budget'] == {'key': 'preserved', 'reads': 17}
+        mem['tick'] += c.RETRY_TICKS
+    assert p.camp_recall_step(MAP, mem, empty) is None
+    assert not mem.get('recall')
+    assert len([r for r in mem['_records'] if r['decision'] == 'camp_status_recall_pending']) == 1
+
+
+@pytest.mark.parametrize('phrase', ['いどうしています', 'しろのなかにいます', 'キャンプしていま', 'キャンプしていません'])
+def test_only_explicit_current_camp_phrase_can_start_discovery(phrase):
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(phrase=phrase)), mem)
+    assert not mem.get('retreat_rechecks')
+
+
+@pytest.mark.parametrize('change', ['dead', 'unread_name', 'unknown_hp', 'foreign_owner', 'chapter_unknown', 'run_unknown', 'other_foreground'])
+def test_unconfirmed_camp_status_never_creates_an_actor_or_position(change):
+    from docich import hanjuku_camp_recheck as c
+    from docich.hanjuku_font import UNKNOWN, TextLine
+    mem = camp_memory(); screen = parse(camp_status_frame(hp=0 if change == 'dead' else 6))
+    if change == 'unread_name':
+        row = next(r for r in screen.lines if r.y == 39)
+        screen.lines[screen.lines.index(row)] = TextLine(39, tuple((x, UNKNOWN if x == 24 else ch) for x, ch in row.cells))
+    elif change == 'unknown_hp': screen.lines = [r for r in screen.lines if r.y != 55]
+    elif change == 'foreign_owner': mem['recall'] = {'general': 'ヴィーナス'}
+    elif change == 'chapter_unknown': mem['chapter'] = None
+    elif change == 'run_unknown': mem['_run_identity'] = None
+    elif change == 'other_foreground': screen.kind = 'shop_quantity'
+    c.observe_camp_status(screen, mem)
+    assert not mem.get('retreat_rechecks') and not mem.get('garrison')
+
+
+def test_cached_camp_information_without_a_current_panel_does_not_create_work():
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); mem['house_eggs'] = {'ゼウス': {'camp_observed': True, 'observed_chapter': 1}}
+    c.observe_camp_status(MAP, mem)
+    assert not mem.get('retreat_rechecks')
+
+
+@pytest.mark.parametrize('header', [None, {'chapter': 2}, {'chapter': True}])
+def test_unknown_or_foreign_status_chapter_cannot_create_a_camp_intent(header):
+    from docich import hanjuku_camp_recheck as c
+    mem = camp_memory(); screen = parse(camp_status_frame()); screen.header = header
+    c.observe_camp_status(screen, mem)
+    assert not mem.get('retreat_rechecks')
+
+
+def test_camp_status_preserves_the_existing_dispatch_and_arrival_budgets():
+    from docich import hanjuku_camp_recheck as c
+    mem = memory()
+    row = mem['retreat_rechecks']['ゼウス']
+    row.update(attempts=3, arrival_reads=2, status='arrival_unconfirmed', retry_after=220)
+    mem['recall_verification'] = {**ID, 'identity': deepcopy(ID), 'chapter': 1,
+                                 'general': 'ゼウス', 'input_sent': True, 'status': 'arrival_unconfirmed'}
+    before = deepcopy(row); verification = deepcopy(mem['recall_verification'])
+    for _ in range(5): c.observe_camp_status(parse(camp_status_frame()), mem)
+    assert mem['retreat_rechecks']['ゼウス'] == before
+    assert mem['recall_verification'] == verification

@@ -167,6 +167,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         return starter_actions, updated
     from .flows import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
+    hanjuku_camp_recheck.observe_camp_status(screen, mem)
     if state.get('screen_kind') != kind:
         # A shop/information/confirmation round trip starts a new navigation
         # episode. No movement failure belongs to a different visible screen.
