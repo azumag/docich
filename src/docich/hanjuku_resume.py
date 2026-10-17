@@ -45,14 +45,23 @@ def _start_mode(record):
             raise AdapterError('Hanjuku resume decision conflicts with its boundary')
     else:
         raise AdapterError('unknown Hanjuku start decision')
+    rewind = record.get('rewind_from_boundary')
+    if rewind is not None and (
+            record.get('explicit_resume') is not True or record.get('dispatch_source') != 'manual'
+            or not isinstance(rewind, dict) or rewind.get('outcome') != 'manual_forced_stop'
+            or rewind.get('status') != 'reached' or rewind.get('save_error') != 'save_timeout'
+            or type(rewind.get('generation')) is not int or not isinstance(source, dict)
+            or type(source.get('generation')) is not int or rewind['generation'] <= source['generation']):
+        raise AdapterError('Hanjuku rewind decision lacks an explicit unsaved-stop request')
     return mode
 
 
-def _latest_boundary(g, game, *, explicit_resume=False):
+def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None):
     """Order runs by generation, then prove the latest run's reached boundary.
 
-    Never search for a usable older save: unknown or incomplete newer progress
-    must not authorize a rewind or an implicit new game.
+    Unknown or incomplete newer progress never authorizes a rewind or a new
+    game. Only explicit resume after an authorized unsaved manual stop may
+    inspect an earlier generation, with the same boundary/save verification.
     """
     from . import hanjuku_run
     from .adapters.retroarch import resolve_rom
@@ -103,6 +112,9 @@ def _latest_boundary(g, game, *, explicit_resume=False):
         except ValueError as exc:
             raise AdapterError('invalid Hanjuku runtime identity') from exc
         choices[runtime] = generation
+    if _before_generation is not None:
+        choices = {runtime: generation for runtime, generation in choices.items()
+                   if generation < _before_generation}
     if not choices:
         return None
     latest = max(choices.values())
@@ -145,7 +157,13 @@ def _latest_boundary(g, game, *, explicit_resume=False):
             if manual.get('allow_unsaved_stop') is not True or record.get('save_error') != 'save_timeout':
                 raise AdapterError('Hanjuku unsaved stop authorization mismatch')
             if explicit_resume:
-                raise AdapterError('latest Hanjuku runtime has no verified checkpoint to resume')
+                # Owner-approved exception: an explicit resume may rewind past
+                # this confirmed unsaved stop, but not past unknown progress or
+                # a game-over boundary. A bad older save still fails closed.
+                selection = _latest_boundary(g, game, explicit_resume=True, _before_generation=latest)
+                if selection is None:
+                    raise AdapterError('no earlier verified Hanjuku checkpoint to resume')
+                return dict(selection, rewind_from_boundary=record)
             # A confirmed owner-authorized unsaved stop preserves the old
             # ordinary-start meaning. It never authorizes an older save.
             return dict(mode='fresh', source_boundary=record)
@@ -311,6 +329,8 @@ def prepare(g, game, queued):
             explicit_resume=queued.get('resume_latest') is True,
             request_id=queued['request_id'], corner=queued['corner'],
             selected_at=queued['selected_at'])
+        if 'rewind_from_boundary' in selection:
+            request['rewind_from_boundary'] = selection['rewind_from_boundary']
         if selection['mode'] == 'fresh':
             atomic_write_json(root / REQUEST_FILE, request)
             return

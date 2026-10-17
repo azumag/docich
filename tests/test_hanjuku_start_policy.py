@@ -175,8 +175,8 @@ def test_legacy_unbound_state_requires_recovery_even_for_explicit_resume(setup):
         resume.prepare_start(s.g, s.queue)
 
 
-def manual_boundary(s, outcome):
-    path = s.source.parent.parent / BOUNDARY_FILE
+def manual_boundary(s, outcome, *, source=None):
+    path = (source or s.source).parent.parent / BOUNDARY_FILE
     boundary = read_record(path)
     boundary['outcome'] = outcome
     if outcome == 'manual_forced_stop':
@@ -209,6 +209,128 @@ def test_authorized_unsaved_manual_stop_preserves_ordinary_fresh_without_old_sta
     s.source.unlink()  # only g478's old stalled save remains
     receipt = execute(s, request(s, source), monkeypatch)
     assert receipt['source_boundary'] == boundary and receipt['start_mode'] == 'fresh'
+    assert not list((s.spec.runtime_dir / 'states').iterdir())
+
+
+@pytest.mark.parametrize('reason', ['screen_stalled', 'input_stalled', 'suspended'])
+@pytest.mark.parametrize('unverified_current_save', [False, True])
+def test_explicit_resume_after_authorized_unsaved_stop_rewinds_to_verified_save(setup, monkeypatch, reason, unverified_current_save):
+    s = setup
+    prior = ended(s.older, 'screen_stalled' if reason == 'suspended' else reason)
+    if reason == 'suspended':
+        prior = manual_boundary(s, reason, source=s.older)
+    forced = manual_boundary(s, 'manual_forced_stop')
+    if unverified_current_save:
+        s.source.write_bytes(state_bytes(b'unconfirmed save from the timed-out stop'))
+    else:
+        s.source.unlink()
+    receipt = execute(s, request(s, 'manual', True), monkeypatch)
+    assert receipt['start_mode'] == 'resume' and receipt['status'] == 'claimed'
+    assert receipt['source_boundary'] == prior and receipt['rewind_from_boundary'] == forced
+    assert receipt['selected_source'] == str(s.older.relative_to(s.g.state_dir))
+    assert (s.spec.runtime_dir / 'states/hanjuku-hero.state').read_bytes() == s.older.read_bytes()
+
+
+def test_explicit_rewind_skips_only_confirmed_consecutive_unsaved_stops(setup, monkeypatch):
+    s = setup
+    middle = s.older.parent.parent.with_name('g500-cafe1234') / 'states/hanjuku-hero.state'
+    middle.parent.mkdir(parents=True); middle.write_bytes(state_bytes(b'unverified save'))
+    ended(middle)
+    manual_boundary(s, 'manual_forced_stop', source=middle)
+    latest = manual_boundary(s, 'manual_forced_stop')
+    receipt = execute(s, request(s, 'manual', True), monkeypatch)
+    assert receipt['start_mode'] == 'resume' and receipt['rewind_from_boundary'] == latest
+    assert receipt['source_boundary']['runtime_id'] == s.older.parent.parent.name
+
+
+def test_explicit_rewind_retains_core_roundtrip_and_request_fixed_snapshot(setup):
+    s = setup
+    s.older.write_bytes(state_bytes())
+    ended(s.older)
+    forced = manual_boundary(s, 'manual_forced_stop')
+    s.source.unlink()
+    resume.prepare_start(s.g, s.queue)
+    path = Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE
+    selected = path.read_bytes()
+    # A later eligible save and changed source bytes cannot replace the
+    # request's already sealed checkpoint on retry.
+    newer = s.older.parent.parent.with_name('g500-cafe1234') / 'states/hanjuku-hero.state'
+    newer.parent.mkdir(parents=True); newer.write_bytes(state_bytes(b'newer'))
+    ended(newer)
+    s.older.write_bytes(b'changed after preservation')
+    resume.prepare_start(s.g, s.queue)
+    assert path.read_bytes() == selected
+    commands, _ = restore_test(s)
+    receipt = read_record(s.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['rewind_from_boundary'] == forced
+    assert commands.count('LOAD_STATE_SLOT 0') == 1
+    resume.require_verified(s.spec)
+
+
+@pytest.mark.parametrize('bad', ['missing', 'changed', 'empty', 'symlink', 'invalid-format',
+    'boundary-missing', 'wrong-lease', 'frame-mismatch', 'unknown-prior', 'no-prior',
+    'stop-authorization', 'stop-error'])
+def test_explicit_rewind_exception_never_accepts_bad_save_or_unconfirmed_identity(setup, bad):
+    s = setup
+    forced = manual_boundary(s, 'manual_forced_stop')
+    s.source.unlink()
+    runtime = s.older.parent.parent
+    if bad == 'missing':
+        s.older.unlink()
+    elif bad == 'changed':
+        s.older.write_bytes(state_bytes(b'changed'))
+    elif bad == 'empty':
+        s.older.write_bytes(b'')
+    elif bad == 'symlink':
+        s.older.unlink(); s.older.symlink_to(s.g.repo_root / 'hanjuku-hero.sfc')
+    elif bad == 'invalid-format':
+        s.older.write_bytes(b'corrupt format')
+        path = runtime / BOUNDARY_FILE
+        record = read_record(path)
+        atomic_write_json(path, dict(record, sha256=hashlib.sha256(s.older.read_bytes()).hexdigest(),
+                                    checkpoint_bytes=s.older.stat().st_size))
+    elif bad == 'boundary-missing':
+        (runtime / BOUNDARY_FILE).unlink()
+    elif bad in {'wrong-lease', 'frame-mismatch'}:
+        path = runtime / BOUNDARY_FILE
+        record = read_record(path)
+        record['lease_id' if bad == 'wrong-lease' else 'frame_sha256'] = str(uuid.uuid4()) if bad == 'wrong-lease' else 'b' * 64
+        atomic_write_json(path, record)
+    elif bad == 'unknown-prior':
+        other = runtime.with_name('g500-cafe1234'); other.mkdir()
+        atomic_write_json(other / hanjuku_run.RUN_FILE, {'game': 'hanjuku-hero',
+            'runtime_id': other.name, 'generation': 500, 'terminal_reason': None})
+    elif bad == 'no-prior':
+        shutil.rmtree(runtime)
+    elif bad == 'stop-authorization':
+        path = s.source.parent.parent / MANUAL_SAVE_FILE
+        atomic_write_json(path, dict(read_record(path), allow_unsaved_stop=False))
+    elif bad == 'stop-error':
+        atomic_write_json(s.source.parent.parent / BOUNDARY_FILE, dict(forced, save_error='unknown'))
+    with pytest.raises(AdapterError):
+        resume.prepare_start(s.g, s.queue)
+    assert not (Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE).exists()
+    assert not list((s.spec.runtime_dir / 'states').iterdir())
+
+
+@pytest.mark.parametrize('latest_is_game_over', [False, True])
+def test_explicit_unsaved_stop_exception_does_not_override_game_over_fresh(setup, monkeypatch, latest_is_game_over):
+    s = setup
+    if latest_is_game_over:
+        forced = None
+        expected = ended(s.source, 'game_over')
+    else:
+        # A game over between an older stall and the authorized unsaved stop
+        # remains a fresh boundary; never resurrect the pre-game-over stall.
+        older = s.older.parent.parent.with_name('g450-cafe1234') / 'states/hanjuku-hero.state'
+        older.parent.mkdir(parents=True); older.write_bytes(state_bytes())
+        ended(older)
+        expected = ended(s.older, 'game_over')
+        s.older.unlink()
+        forced = manual_boundary(s, 'manual_forced_stop')
+    receipt = execute(s, request(s, 'manual', True), monkeypatch)
+    assert receipt['start_mode'] == 'fresh' and receipt['source_boundary'] == expected
+    assert receipt.get('rewind_from_boundary') == forced
     assert not list((s.spec.runtime_dir / 'states').iterdir())
 
 
