@@ -149,7 +149,14 @@ sleep 2
 SIZE_1="$(stat -c '%s' "${STREAM_FILE}" 2>/dev/null || stat -f '%z' "${STREAM_FILE}")"
 sleep 3
 SIZE_2="$(stat -c '%s' "${STREAM_FILE}" 2>/dev/null || stat -f '%z' "${STREAM_FILE}")"
-[ "${SIZE_2}" -gt "${SIZE_1}" ] || fail "stream ファイルのサイズが増加していません (${SIZE_1} -> ${SIZE_2})"
+if [ "${SIZE_2}" -le "${SIZE_1}" ]; then
+    # 隔離環境では tmux の中身を見られるのが唯一の手掛かりなので、
+    # 失敗時は stream window の末尾を残す (原因究明を別ターンに先送りしない)。
+    log "stream が増えていないため診断を出力します (tmux windows / stream pane 末尾):"
+    tmux list-windows -t docich 2>&1 || true
+    tmux capture-pane -p -t docich:stream 2>&1 | tail -25 || true
+    fail "stream ファイルのサイズが増加していません (${SIZE_1} -> ${SIZE_2})"
+fi
 log "stream OK (${SIZE_1} -> ${SIZE_2} bytes)"
 
 "${DOCICH}" switch nethack
