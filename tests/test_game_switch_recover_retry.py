@@ -40,8 +40,16 @@ class TestRecoverEntryAcquireRetry(unittest.TestCase):
     def _patch_time(self, values):
         iterator = itertools.chain(values, itertools.repeat(values[-1]))
         game_switch = sys.modules["docich.game_switch"]
+        original_monotonic = game_switch.time.monotonic
+        original_sleep = game_switch.time.sleep
         game_switch.time.monotonic = lambda: next(iterator)
         game_switch.time.sleep = self.sleeps.append
+
+        def _restore():
+            game_switch.time.monotonic = original_monotonic
+            game_switch.time.sleep = original_sleep
+
+        self.addCleanup(_restore)
 
     def test_busy_retry_sleeps_and_returns_busy(self):
         import docich.game_switch as game_switch
