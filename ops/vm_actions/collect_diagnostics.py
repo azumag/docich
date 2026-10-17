@@ -2988,7 +2988,11 @@ CORNER_STATE_FILES = {
     "paper_corner_manual": "paper_corner_manual.json",
     "nethack_corner": "nethack_corner.json",
     "nethack_corner_manual": "nethack_corner_manual.json",
+    "soren91_corner": "soren91_corner.json",
 }
+
+# Fixed enum of the switch result a corner recorded in its own state file.
+SWITCH_STATUSES = frozenset({"queued", "succeeded", "failed", "rolled_back"})
 
 # These are the remaining sources consulted by rotation's live and retired
 # adapters. Do not derive filenames from state, catalog rows or request IDs.
@@ -4069,6 +4073,25 @@ def _project_corner_state(data):
     }
 
 
+def _project_soren91_corner(data):
+    """Meriken/soren91 corner lifecycle plus why its last switch ended.
+
+    The corner keeps the propagated switch error in its own state file. That
+    is the only durable evidence for a ``readiness_timeout``: the presenter
+    pane dies with its tmux window, so without this the operator sees only
+    "failed" and has to reproduce the failure to learn the cause (docich#1221).
+    ``switch_status`` stays a fixed enum; the recorded switch error code is a
+    bounded token and the detail is redacted and length-capped.
+    """
+    entry = _project_corner_state(data)
+    status = data.get("switch_status")
+    entry["switch_status"] = (
+        status if isinstance(status, str) and status in SWITCH_STATUSES else None
+    )
+    entry["switch_error_code"] = _bounded_str(data.get("last_error_code"), 64)
+    return entry
+
+
 def _project_review(value):
     """Bounded 衝立将棋 感想戦 counters: where the facts came from and the kind.
 
@@ -4828,11 +4851,15 @@ def _collect_corner_files(state_dir, payload, now):
         "tsuitate_corner",
         "yoso_corner",
         "doushi_corner",
+        "soren91_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
-            entry.update(_project_corner_state(data))
+            if name == "soren91_corner":
+                entry.update(_project_soren91_corner(data))
+            else:
+                entry.update(_project_corner_state(data))
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
@@ -5321,6 +5348,7 @@ def _collect_programs(state_dir, soren, now):
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
         "doushi_corner": {"present": False, "readable": False},
+        "soren91_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
                               "handoff_oversized": False, "cursor_present": False},

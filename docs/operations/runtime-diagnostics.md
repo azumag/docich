@@ -140,6 +140,17 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
   通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
   `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
+- `corners.soren91_corner` は meriken（soren91）枠のライフサイクルと、その枠を
+  終わらせた切替の結果を出す（#1221）。`status` / `game` / `previous_game` /
+  `completed_at` / `end_reason` は他コーナーと同じ固定射影で、加えて
+  `switch_status`（`queued` / `succeeded` / `failed` / `rolled_back` の固定enum、
+  未知は `null`）と `switch_error_code`（枠が記録した切替エラーコード。
+  `readiness_timeout` 等。64文字上限・redact済み）を返す。`last_error` は
+  200文字上限・redact済みの詳細で、`readiness_timeout` の場合は
+  **原因**（例 `status=viewer_timeout, viewer_wait_sec=240`）を含む。
+  presenter の pane は tmux window ごと消えるため、この記録が失敗理由を
+  後から確認できる唯一の正規経路になる。request ID・runtime identity・
+  自由文の本文は出さない。
 - `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
   （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
   `volume_percent` / `player` の固定キーのみで、`player` は
