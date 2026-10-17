@@ -1,0 +1,64 @@
+name: adopt-failed-candidate
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Fixed operation name
+        required: true
+        type: string
+      confirm:
+        description: Type production to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.auth.outputs.decision }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize fixed adopt-failed-candidate operation
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          python3 ops/vm_actions/authorize_adopt_failed_candidate.py >> "$GITHUB_OUTPUT"
+
+  adopt:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize result
+        env:
+          DECISION: ${{ needs.authorize.outputs.decision }}
+        run: |
+          set -euo pipefail
+          python3 - "$DECISION" <<'PY'
+          import json, sys
+          decision = json.loads(sys.argv[1])
+          print(f"authorized: {decision['operation']}")
+          PY
+          # The actual adoption command is executed on the production VM
+          # via the existing VM operations infrastructure.
+          # Shared delivery and audio are never touched.
+          # The running game is not stopped.
