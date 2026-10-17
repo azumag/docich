@@ -44,6 +44,7 @@ class SorenCoordinatorAdapter:
         self._resumed_loop: tuple[int, int] | None = None
         self._last_command_output = ""
         self._completed_stop_receipt: dict | None = None
+        self._expected_resumed_request_id: str | None = None
 
     def _check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
@@ -855,6 +856,19 @@ class SorenCoordinatorAdapter:
             request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
+            # Keep the expected request identity (verified before fresh-start
+            # archives the broker record) so readiness can still verify a
+            # persisted snapshot after the broker record is gone (issue #2061).
+            self._expected_resumed_request_id = request_id
+            try:
+                path = self._resumed_loop_path()
+                if path.exists():
+                    data = json.loads(path.read_text())
+                    if isinstance(data, dict):
+                        data["expected_request_id"] = request_id
+                        path.write_text(json.dumps(data))
+            except (OSError, ValueError, TypeError):
+                pass
             # An irreversible stopped runtime must prove that its game workers
             # were born after this fresh start.  A cancelled rollback restores
             # the already-running previous runtime, so applying that timestamp
@@ -885,7 +899,16 @@ class SorenCoordinatorAdapter:
                 if not rid:
                     req = payload.get("request") if isinstance(payload.get("request"), dict) else {}
                     rid = str(req.get("request_id") or "")
-                self._recover_resumed_loop(rid or None)
+                expected = self._expected_resumed_request_id
+                if not expected:
+                    try:
+                        data = json.loads(self._resumed_loop_path().read_text())
+                        if isinstance(data, dict):
+                            expected = data.get("expected_request_id")
+                    except (OSError, ValueError, TypeError):
+                        expected = None
+                if expected:
+                    self._recover_resumed_loop(str(expected))
             if not self._ack(payload):
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
@@ -916,6 +939,8 @@ class SorenCoordinatorAdapter:
         """
         if self._resumed_loop is not None:
             return
+        if not request_id:
+            return
         try:
             raw = self._resumed_loop_path().read_text()
             data = json.loads(raw)
@@ -924,7 +949,7 @@ class SorenCoordinatorAdapter:
         if not isinstance(data, dict):
             return
         persisted_request = data.get("request_id")
-        if request_id is not None and persisted_request != request_id:
+        if persisted_request != request_id:
             return
         identity = data.get("identity")
         if not isinstance(identity, list) or len(identity) != 2:
