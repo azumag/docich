@@ -22,9 +22,11 @@ import uuid
 
 from .prediction_leaderboard import (
     DEFAULT_LIMIT,
+    DEFAULT_MIN_PARTICIPATIONS,
     DEFAULT_MIN_ROUNDS,
     FILE as LEDGER_FILE,
     LeaderboardError,
+    boards as leaderboard_boards,
     load as load_ledger,
     ranking,
     stats,
@@ -130,19 +132,42 @@ def display_name(value: str) -> str:
 
 
 def board(state_dir, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
+          min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
           limit: int = DEFAULT_LIMIT, clock=time.time) -> dict:
     """Project the recorded leaderboard to the fixed broadcast payload."""
     min_rounds = _int_bound(min_rounds, 1, MAX_MIN_ROUNDS, "min_rounds")
+    min_participations = _int_bound(min_participations, 1, MAX_LIMIT, "min_participations")
     limit = _int_bound(limit, 1, MAX_LIMIT, "limit")
     ledger = load_ledger(Path(state_dir) / LEDGER_FILE)
     counts = stats(ledger)
     rows = ranking(ledger, min_rounds=min_rounds, limit=limit)
+    all_boards = leaderboard_boards(ledger, min_rounds=min_rounds,
+                                    min_participations=min_participations, limit=limit)
+    def _project(metric_rows):
+        return [
+            {
+                "rank": index,
+                "user_name": display_name(row["user_name"] or row["user_login"]),
+                "hit_rate": row["hit_rate"],
+                "rounds": row["rounds"],
+                "participations": row["participations"],
+                "hits": row["hits"],
+                "used": row["used"],
+                "won": row["won"],
+                "lost": row["lost"],
+                "refunded": row["refunded"],
+                "net": row["net"],
+            }
+            for index, row in enumerate(metric_rows, 1)
+        ]
     return {
         "ok": True,
         "updated_at": int(clock()),
         "rounds": counts["rounds"],
         "viewers": counts["viewers"],
+        "canceled": counts.get("canceled", 0),
         "min_rounds": min_rounds,
+        "min_participations": min_participations,
         "limit": limit,
         "ranking": [
             {
@@ -157,11 +182,14 @@ def board(state_dir, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
             }
             for index, row in enumerate(rows, 1)
         ],
+        "boards": {metric: _project(metric_rows)
+                   for metric, metric_rows in all_boards.items()},
     }
 
 
 def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
                 lease_id=None, min_rounds: int = DEFAULT_MIN_ROUNDS,
+                min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
                 limit: int = DEFAULT_LIMIT, clock=time.time):
     state_dir = Path(state_dir)
     if not isinstance(runtime_id, str) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
@@ -175,6 +203,7 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
         except (ValueError, TypeError, AttributeError):
             raise YosoViewError("invalid lease id") from None
     min_rounds = _int_bound(min_rounds, 1, MAX_MIN_ROUNDS, "min_rounds")
+    min_participations = _int_bound(min_participations, 1, MAX_LIMIT, "min_participations")
     limit = _int_bound(limit, 1, MAX_LIMIT, "limit")
 
     class Handler(BaseHTTPRequestHandler):
@@ -211,7 +240,8 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
                 self.reply(404, b"not found", "text/plain; charset=utf-8")
                 return
             try:
-                data = board(state_dir, min_rounds=min_rounds, limit=limit, clock=clock)
+                data = board(state_dir, min_rounds=min_rounds,
+                             min_participations=min_participations, limit=limit, clock=clock)
             except (OSError, LeaderboardError, YosoViewError):
                 data, status = {"ok": False, "reason": "leaderboard-unavailable"}, 503
             else:
@@ -225,6 +255,7 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
 
 def serve(state_dir, *, port: int = DEFAULT_PORT, runtime_id: str = "preview",
           generation=None, lease_id=None, min_rounds: int = DEFAULT_MIN_ROUNDS,
+          min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
           limit: int = DEFAULT_LIMIT) -> None:
     if type(port) is not int or not 1024 <= port <= 65535:
         raise YosoViewError("invalid port")
@@ -232,7 +263,8 @@ def serve(state_dir, *, port: int = DEFAULT_PORT, runtime_id: str = "preview",
     with ThreadingHTTPServer(
         ("127.0.0.1", port),
         handler_for(state_dir, runtime_id, generation=generation, lease_id=lease_id,
-                    min_rounds=min_rounds, limit=limit),
+                    min_rounds=min_rounds, min_participations=min_participations,
+                    limit=limit),
     ) as server:
         server.serve_forever(poll_interval=0.2)
 
@@ -245,12 +277,14 @@ def main(argv=None) -> int:
     parser.add_argument("--generation", type=int)
     parser.add_argument("--lease-id")
     parser.add_argument("--min-rounds", type=int, default=DEFAULT_MIN_ROUNDS)
+    parser.add_argument("--min-participations", type=int, default=DEFAULT_MIN_PARTICIPATIONS)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     args = parser.parse_args(argv)
     try:
         serve(args.state_dir, port=args.port, runtime_id=args.runtime_id,
               generation=args.generation, lease_id=args.lease_id,
-              min_rounds=args.min_rounds, limit=args.limit)
+              min_rounds=args.min_rounds,
+              min_participations=args.min_participations, limit=args.limit)
     except (OSError, YosoViewError):
         print(json.dumps({"ok": False, "reason": "view-unavailable"}))
         return 2

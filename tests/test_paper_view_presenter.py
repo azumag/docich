@@ -263,15 +263,23 @@ def test_paper_view_renders_the_dashboard_fixture_inside_the_viewport(tmp_path):
         assert (geometry.get("X"), geometry.get("Y")) == (VIEWPORT[0], VIEWPORT[1]), geometry
         assert (geometry.get("WIDTH"), geometry.get("HEIGHT")) == (VIEWPORT[2], VIEWPORT[3]), geometry
 
-        # Give the contained projection a moment to paint a full frame.
-        time.sleep(2)
-        frame, width, height = _capture(display, tmp_path)
-
-        inside = {
-            _pixel(frame, width, x, y)
-            for x in range(VIEWPORT[0] + 20, VIEWPORT[0] + VIEWPORT[2] - 20, 7)
-            for y in range(VIEWPORT[1] + 20, VIEWPORT[1] + VIEWPORT[3] - 20, 7)
-        }
+        # The dashboard page paints its canvas after the window appears, so poll
+        # the final frame instead of trusting one fixed delay: a single 2s wait
+        # captured an all-white page on a slower runner.
+        deadline = time.monotonic() + 30
+        frame = width = height = None
+        inside: set[tuple[int, int, int]] = set()
+        while time.monotonic() < deadline:
+            time.sleep(1)
+            frame, width, height = _capture(display, tmp_path)
+            inside = {
+                _pixel(frame, width, x, y)
+                for x in range(VIEWPORT[0] + 20, VIEWPORT[0] + VIEWPORT[2] - 20, 7)
+                for y in range(VIEWPORT[1] + 20, VIEWPORT[1] + VIEWPORT[3] - 20, 7)
+            }
+            if len(inside) >= 8:
+                break
+        assert frame is not None
         assert len(inside) >= 8, f"viewport looks blank: {sorted(inside)[:5]}"
         assert any(pixel != (0, 0, 0) for pixel in inside), "viewport is entirely black"
 

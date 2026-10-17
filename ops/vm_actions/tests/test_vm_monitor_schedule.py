@@ -18,6 +18,16 @@ class VmMonitorScheduleTests(unittest.TestCase):
         self.assertIn("diagnostics docich production", text)
         self.assertNotIn("exec docich production", text)
 
+    def test_monitor_lane_is_the_v2_group_and_never_the_wedged_name(self):
+        text = WORKFLOW.read_text()
+
+        # #2376: the pre-2026-10-17 name is the group state that stopped every
+        # scheduled run from starting (no job created, pending / cancelled for
+        # 15 days). Bumping the lane is the remediation used in #1875.
+        self.assertIn("group: vm-storage-monitor-v2-${{ github.repository }}", text)
+        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", text)
+        self.assertIn("cancel-in-progress: false", text)
+
 
 class VmMonitorStorageBreakdownTests(unittest.TestCase):
     def setUp(self):
