@@ -395,3 +395,4 @@ GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン�
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
 - [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate
 - [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md): native captions
+- [`docs/vrchat-osc.md`](docs/vrchat-osc.md): VRChat アバターとの OSC 双方向連携 (VR同志)
