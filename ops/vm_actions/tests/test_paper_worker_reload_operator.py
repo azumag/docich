@@ -17,7 +17,7 @@ from docich.paper_corner import PaperCornerError  # noqa: E402
 
 
 class ReloadAuthorizeTests(unittest.TestCase):
-    def _run(self, body):
+    def _run(self, body, state="open"):
         env = {
             "GITHUB_REPOSITORY": "azumag/docich",
             "GITHUB_REPOSITORY_ID": "1327276249",
@@ -34,6 +34,7 @@ class ReloadAuthorizeTests(unittest.TestCase):
             "GITHUB_EVENT_ACTION": "edited",
             "GITHUB_SHA": "a" * 40,
             "GITHUB_ISSUE_NUMBER": "293",
+            "GITHUB_ISSUE_STATE": state,
             "GITHUB_ISSUE_AUTHOR": "azumag",
             "GITHUB_ISSUE_AUTHOR_ID": "9018513",
             "GITHUB_ISSUE_BODY": body,
@@ -76,6 +77,16 @@ class ReloadAuthorizeTests(unittest.TestCase):
         })
         self.assertNotEqual(self._run(no_confirm).returncode, 0)
         self.assertNotEqual(self._run(extra).returncode, 0)
+
+    def test_closed_command_issue_is_rejected(self):
+        body = json.dumps({
+            "operation": "reload-worker",
+            "confirm": "production",
+            "nonce": "closed",
+        })
+        result = self._run(body, state="closed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not open", result.stderr)
 
 
 class ReloadOperatorTests(unittest.TestCase):
@@ -143,6 +154,8 @@ class ReloadWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("--reload-worker", text)
         self.assertIn("github.actor_id == 9018513", text)
         self.assertIn("github.ref_protected == true", text)
+        self.assertIn("github.event.issue.state == 'open'", text)
+        self.assertIn("GITHUB_ISSUE_STATE: ${{ github.event.issue.state }}", text)
         self.assertIn("Require production to equal current protected main", text)
         self.assertNotIn("inputs.command", text)
         self.assertNotIn("event.comment.body", text)
