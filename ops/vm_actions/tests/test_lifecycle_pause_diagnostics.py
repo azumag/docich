@@ -312,3 +312,82 @@ def test_expired_waiting_enum_is_part_of_the_documented_contract(tmp_path):
     assert "waiting" in module.LIFECYCLE_DEADLINE_STATUSES
     assert "accepted" in module.LIFECYCLE_DEADLINE_STATUSES
 
+
+# --- docich #2061: the residue the ownership fix preserves is identifiable ---
+#
+# The fix keeps loop_pause.json alive after its request is consumed.  Without a
+# dedicated enum that residue read as an unprovable "unknown" pause, so the
+# operator could not tell it apart from an operator stop or a corrupt marker.
+
+
+def test_orphaned_lifecycle_pause_is_identified(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    (state_dir / "game_lifecycle").mkdir(parents=True)
+    # No request/ack at all: the owning switch was consumed.
+    _write_owned_marker(state_dir, "soren_loop", "loop_pause.json", "loop_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    # Per-worker ownership stays honest: no live handover proves it.
+    assert workers["details"]["soren_loop"]["pause_owner"] == "unknown"
+    assert lifecycle["active"] is False
+    assert lifecycle["request_status"] == "absent"
+    assert lifecycle["ack_status"] == "absent"
+    assert lifecycle["pause_owned_by_lifecycle"] == []
+    assert lifecycle["waiting_for"] == "orphaned_lifecycle_pause"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_a_lifecycle_marker_without_a_record_stays_unknown(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    # A lifecycle marker with no ownership record proves nothing.
+    (state_dir / "soren_loop.paused").write_text(f"lifecycle:{SECRET_REQUEST_ID}\n")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["active"] is False
+    assert lifecycle["waiting_for"] == "unknown"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_a_record_that_does_not_claim_creation_stays_unknown(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "soren_loop.paused").write_text(f"lifecycle:{SECRET_REQUEST_ID}\n")
+    (state_dir / "game_lifecycle").mkdir(parents=True)
+    (state_dir / "game_lifecycle" / "loop_pause.json").write_text(
+        json.dumps({"request_id": SECRET_REQUEST_ID, "loop_marker_created": False})
+    )
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["waiting_for"] == "unknown"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_an_operator_pause_is_still_operator_action_not_orphaned(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "soren_loop.paused").write_text(json.dumps({"paused": True, "source": "webui"}))
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["waiting_for"] == "operator_action"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_orphaned_enum_is_part_of_the_documented_contract(tmp_path):
+    module = load_collector()
+    assert "orphaned_lifecycle_pause" in module.LIFECYCLE_WAITING_FOR
+    # The per-worker ownership contract is unchanged (monitoring counts on it).
+    assert module.PAUSE_OWNERS == ("lifecycle_owned", "operator_owned", "unknown")
+
