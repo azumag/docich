@@ -627,6 +627,12 @@ def validate_status(data: dict, frames=None, corner_id: str | None = None) -> di
         frames = tuple(frames)
     if not frames:
         raise CornerRuntimeError("corner progression has no frames")
+    # Re-derive the canonical frame sequence from the same data/spec and
+    # require an exact match: a mutated sequence (swapped chapter, emptied
+    # caveat value/text, ...) must not be accepted as valid.
+    canonical = progress_frames(data, spec.corner_id)
+    if frames != canonical:
+        raise CornerRuntimeError("corner frames do not match the validated progression")
     if len(frames) != entry["totalFrames"]:
         raise CornerRuntimeError("corner frames do not match the status overlay length")
     if [frame.get("index") for frame in frames] != list(range(len(frames))):
