@@ -277,6 +277,22 @@ class TestSrtAndViewer(Soren91AdapterTestBase):
         self.assertIn("docich-present-g3-abcdef12", cmd)
         self.assertIn(f"srt://{OCI_IP}:19192?mode=listener", cmd)
 
+    def test_viewer_records_why_it_never_appeared(self):
+        # docich#1221: the SRT viewer only materializes on the first frame from
+        # the renderer. The presenter pane dies with its tmux window, so the
+        # reason must be written into the runtime dir for readiness to report.
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        adapter = self._adapter()
+        cmd = adapter._xterm_command()
+        self.assertIn("--failure-state", cmd)
+        self.assertEqual(
+            Path(cmd[cmd.index("--failure-state") + 1]),
+            adapter.spec.runtime_dir / "presentation_failure.json",
+        )
+
     def test_viewer_plays_game_audio_into_the_broadcast_sink(self):
         # Issue #303 feedback: the SRT viewer used to drop audio with `-an`,
         # so the broadcast had no game sound. It must decode audio and play it
@@ -506,6 +522,30 @@ class TestLifecycle(Soren91AdapterTestBase):
             self.http_plan = [(200, {"ok": True, "running": False})]
             with self.assertRaises(ReadinessTimeoutError):
                 adapter.readiness(time.monotonic() + 1.5, None)
+
+    def test_readiness_reports_the_presenters_viewer_failure(self):
+        # docich#1221: the presenter gives up when no SRT frame arrives and its
+        # tmux window disappears. readiness must report that recorded cause
+        # instead of the bare "game windowがありません" symptom.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+        (adapter.spec.runtime_dir / "presentation_failure.json").write_text(
+            json.dumps({
+                "status": "viewer_timeout",
+                "reason": "native game viewer did not appear",
+                "viewer_wait_sec": 240,
+                "elapsed_s": 240.0,
+                "viewer_exit_code": None,
+            }),
+            encoding="utf-8",
+        )
+        self.tmux.windows.pop("docich-game-g3:game-g3")
+        with self.assertRaises(ReadinessTimeoutError) as ctx:
+            adapter.readiness(time.monotonic() + 30, None)
+        self.assertIn("viewer_timeout", str(ctx.exception))
+        self.assertIn("viewer_wait_sec=240", str(ctx.exception))
 
     def test_alive_reflects_agent_status(self):
         adapter = self._adapter()

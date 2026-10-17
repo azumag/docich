@@ -46,7 +46,7 @@ from ..game_switch import (
     RuntimeSpec,
 )
 from .base import AdapterError
-from .cli_game import CliCoordinatorAdapter
+from .cli_game import PRESENTATION_FAILURE_FILE, CliCoordinatorAdapter
 
 DEFAULT_AGENT_BASE_URL_ENV = "SOREN91_MACOS_AGENT_BASE_URL"
 DEFAULT_AGENT_TOKEN_ENV = "SOREN91_LOCAL_AGENT_TOKEN"
@@ -413,6 +413,15 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             "-i", self.listener_srt_url(),
         ]
 
+    def _presentation_failure_path(self) -> Path:
+        """The SRT viewer may never appear (no first frame from the renderer).
+
+        This adapter is the one whose game window depends on a remote viewer,
+        so it records the presenter's own reason; without it a vanished game
+        window is indistinguishable from a materialize failure (docich#1221).
+        """
+        return self.spec.runtime_dir / PRESENTATION_FAILURE_FILE
+
     def _xterm_command(self) -> list[str]:
         inner = self._viewer_command_inner()
         d = self.g.display
@@ -426,6 +435,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 # arrives (Chrome boot + game load take a minute or more), so
                 # the presenter gets a longer viewer budget than local games.
                 "--viewer-wait-sec", str(self.viewer_wait_sec),
+                "--failure-state", str(self._presentation_failure_path()),
                 *(["--sdl-software-render"] if self.sdl_software_render else []),
                 *(["--audio-sink", self.audio_sink] if self.audio_sink else []),
                 "--", *inner,

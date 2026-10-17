@@ -39,6 +39,30 @@ def _write_state(path, **fields):
             os.unlink(temporary)
 
 
+def _record_viewer_failure(path, viewer, *, viewer_wait_sec, elapsed_s):
+    """Record why this presenter never showed a viewer window.
+
+    The reason is otherwise lost with the tmux pane, leaving the owning
+    adapter to report only that the game window vanished.  Best effort and
+    bounded: recording must never replace the real startup failure.
+    """
+    if not path:
+        return
+    exit_code = viewer.poll()
+    try:
+        _write_state(
+            path,
+            status='viewer_timeout' if exit_code is None else 'viewer_exited',
+            reason='native game viewer did not appear',
+            viewer_wait_sec=viewer_wait_sec,
+            elapsed_s=round(max(0.0, elapsed_s), 3),
+            viewer_exit_code=exit_code,
+            at=time.time(),
+        )
+    except OSError:
+        pass
+
+
 def _groups_stopped(children):
     # A reaped wrapper (e.g. dbus-run-session) does not prove its children
     # exited. Never publish stopped while its process group still exists.
@@ -263,6 +287,12 @@ def _parser() -> argparse.ArgumentParser:
                         help='Minimum seconds between re-projection attempts (default 2s)')
     parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
+    # Optional durable record of *why* the viewer window never appeared. The
+    # tmux window that runs this script is destroyed with its pane, so a
+    # caller that only observes "the game window is gone" cannot tell a
+    # missing window from a viewer that never showed one (docich#1221).
+    # Written only when this presenter gives up; never used to supervise.
+    parser.add_argument('--failure-state')
     # Opt-in: make the viewer ffplay and the x11grab projection ffplay use
     # SDL's CPU renderer instead of Mesa llvmpipe (software OpenGL, which burns
     # ~1 core on a 4 vCPU VM for 960x540). Off by default so other games keep
@@ -393,6 +423,7 @@ def main(argv=None) -> int:
             return windows[0] if windows else ''
 
         deadline = time.monotonic() + args.viewer_wait_sec
+        started = time.monotonic()
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:
             window = find_window()
@@ -400,6 +431,12 @@ def main(argv=None) -> int:
                 break
             time.sleep(0.1)
         if not window:
+            _record_viewer_failure(
+                args.failure_state,
+                viewer,
+                viewer_wait_sec=args.viewer_wait_sec,
+                elapsed_s=time.monotonic() - started,
+            )
             raise RuntimeError('native game viewer did not appear')
         output_env = dict(os.environ, DISPLAY=args.display)
         if args.sdl_software_render:
