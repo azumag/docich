@@ -784,8 +784,9 @@ class RetroArchCoordinatorAdapter:
                 record = read_record(path)
                 if record and record.get('status') != 'cancelled' and not matches(record, self.spec, request_id):
                     raise AdapterError('Hanjuku boundary identity mismatch')
+                terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                 manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
-                if manual and matches(manual, self.spec, request_id):
+                if not terminal and manual and matches(manual, self.spec, request_id):
                     if record.get('status') == 'reached':
                         self._verify_manual_boundary(record, deadline, cancel)
                         return
@@ -800,7 +801,6 @@ class RetroArchCoordinatorAdapter:
                         atomic_write_json(path, dict(identity(self.spec, request_id),
                             status='reached', outcome='manual_forced_stop', save_error='save_timeout'))
                     return
-                terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                 if terminal:
                     if terminal['terminal_reason'] in STALLED_TERMINAL_REASONS:
                         if record.get('status') == 'reached':

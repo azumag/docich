@@ -280,7 +280,7 @@ def test_month_plan_commentary_follows_the_actual_plan():
         'decision': 'month_plan', 'month': '1-5', 'gold': 171,
         'deviation_reason': '所持金171Gがチャート想定214G未満',
         'plan': {'cards': [['クースカン', 1], ['イッテツーン', 6]], 'soldiers': 40}})
-    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充します' in text
+    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充する予定です' in text
     assert '優先順で買える分' in text
     # A chart-uncovered month must not claim it buys the boss kit (g460 1年6月:
     # the commentary said it would buy クースカン/ノリウツール with an empty plan).
