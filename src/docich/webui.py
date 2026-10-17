@@ -3787,7 +3787,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, "invalid_content_length", f"Content-Length が数値ではありません: {raw_len!r}")
             return None, 400
         if length < 0 or length > MAX_BODY_BYTES:
+            # 413 を返す前に宣言された本文を bounded に drain する。
+            # 読まずに close すると TCP が RST を送り、既に送った 413
+            # 応答がクライアント側で失われるため (issue #2371)。
+            # 上限を超える巨大な宣言値に対しては DoS を避けるため cap する。
+            _DRAIN_CAP = MAX_BODY_BYTES + 65536
+            to_drain = min(length if length > 0 else 0, _DRAIN_CAP)
+            if to_drain > 0:
+                try:
+                    self.rfile.read(to_drain)
+                except Exception:
+                    pass
             self._send_error_json(413, "body_too_large", f"Content-Length は 0..{MAX_BODY_BYTES} である必要があります")
+            self.close_connection = True
             return None, 413
         if length == 0:
             return b"{}", 0
