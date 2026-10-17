@@ -238,6 +238,28 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
     shop['soldier_total_target'] = target
 
 
+# Issue #2366: how a month's refill ended when no payment was matched. Only a
+# paid soldier_refill_receipt is a purchase; an A press, a planned count or a
+# control "done" flag never is.
+REFILL_OUTCOMES = frozenset({'cancelled', 'insufficient_funds', 'unverified',
+                             'attempt_limit', 'not_attempted'})
+
+
+def refill_outcome(mem, shop, outcome, reason, **detail):
+    """Record once per month why the soldier refill ended unpaid."""
+    if (not isinstance(shop, dict) or outcome not in REFILL_OUTCOMES or shop.get('refill_outcome')
+            or (shop.get('soldier_receipt') or {}).get('status') == 'paid'):
+        return
+    shop['refill_outcome'] = outcome
+    key, count = shop.get('key'), mem.get('soldiers_seen')
+    current = key is not None and mem.get('soldiers_seen_key') == key and type(count) is int
+    planned = shop.get('soldiers')
+    _record(mem, 'soldier_refill_outcome', month=key, resulting_event=outcome,
+            observed_metric={'outcome': outcome, 'planned': planned if type(planned) is int else None,
+                             'soldiers': count if current else None, 'gold': mem.get('gold'), **detail},
+            reason=reason)
+
+
 def _soldiers_enough(mem, shop, header):
     key = _month_key(header) if header else None
     count = mem.get('soldiers_seen')

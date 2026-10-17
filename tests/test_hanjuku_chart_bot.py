@@ -280,7 +280,7 @@ def test_month_plan_commentary_follows_the_actual_plan():
         'decision': 'month_plan', 'month': '1-5', 'gold': 171,
         'deviation_reason': '所持金171Gがチャート想定214G未満',
         'plan': {'cards': [['クースカン', 1], ['イッテツーン', 6]], 'soldiers': 40}})
-    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充します' in text
+    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充する予定です' in text
     assert '優先順で買える分' in text
     # A chart-uncovered month must not claim it buys the boss kit (g460 1年6月:
     # the commentary said it would buy クースカン/ノリウツール with an empty plan).
@@ -748,13 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v232-low-army-refill-first'
+    assert state['bot_version'] == 'hanjuku-chart-v233-refill-outcome'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_finishing_resource_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v232-low-army-refill-first'
+    assert BOT_VERSION == 'hanjuku-chart-v233-refill-outcome'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
