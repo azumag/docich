@@ -26,11 +26,19 @@ class CommentMessage:
     source: str = "fixture"
     stable_id: str = ""
     message_id: str = ""
+    # Actual poster identity (Twitch login). May differ from the display name
+    # in ``author``. Used to decide whether a comment is the bot's own past
+    # statement; display names and in-text self-declarations are NOT trusted.
+    author_login: str = ""
 
     @property
     def line(self) -> str:
         author = self.author.strip() or "unknown"
         return f"{author}: {self.text}"
+
+    @property
+    def identity_login(self) -> str:
+        return (self.author_login or self.author).strip().lower()
 
 
 @dataclass(frozen=True)

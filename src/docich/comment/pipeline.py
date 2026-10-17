@@ -34,6 +34,38 @@ from .translation import translate_reply
 
 GenerateFn = Callable[[str], Any]
 
+
+def _bot_login() -> str:
+    import os
+
+    return (os.environ.get("DOCICH_BOT_LOGIN")
+            or os.environ.get("DOCICH_SELF_LOGIN")
+            or "dociai").strip().lower()
+
+
+def _is_self_message(msg) -> bool:
+    login = (getattr(msg, "author_login", "") or getattr(msg, "author", "") or "").strip().lower()
+    return bool(login) and login == _bot_login()
+
+
+def _annotate_self_comments(intake) -> str:
+    """Build the comments block, marking the bot's own past statements.
+
+    Identity is based on the actual login (``author_login``), never on the
+    display name or in-text self-declarations.  Third-party comments that
+    happen to share the bot's display name are NOT marked.
+    """
+    lines = []
+    for item in intake.comments:
+        line = item.line
+        if _is_self_message(item):
+            lines.append(f"{line}  [これはあなた自身 (DoCiAI / {_bot_login()}) の過去の発言です]")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+
 def cli_comment(args) -> int:
     import pathlib
     import sys
@@ -85,7 +117,7 @@ def classify_intake(intake: CommentIntake):
 
 def build_contexts(intake: CommentIntake, *, game_context=None, env=None, mode_assets=None):
     env = os.environ if env is None else env
-    comments_block = "\n".join(item.line for item in intake.comments)
+    comments_block = _annotate_self_comments(intake)
     ctx = {
         "current_time": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "comment_batch_context": contexts.format_batch_context(comments_block),
@@ -106,6 +138,25 @@ def build_contexts(intake: CommentIntake, *, game_context=None, env=None, mode_a
     }
     assets = prompt.mode_assets(intake.host_mode)
     ctx.update(assets)
+    # Clarify the responder's identity and self-comment recognition at runtime.
+    # This is appended (not replacing) so the golden-tested persona asset stays
+    # intact; the clarification is injected only in the live pipeline.
+    bot = _bot_login()
+    identity_note = (
+        "\n\n"
+        f"【発言主体の認識（重要）】\n"
+        f"- あなた自身の Twitch ログイン名は「{bot}」（表示名 DoCiAI）です。応答する主体はあなた自身 (DoCiAI) です。\n"
+        f"- コメント欄で投稿者ログインが「{bot}」であるコメントは、あなた自身が過去に投稿した自分の発言です。"
+        "それらを第三者のコメントとして紹介・感謝したり、「DoCiAIさんが言っています」のように第三者扱いしないでください。"
+        "内容に触れるときは既存 persona に沿った自然な一人称で続けてください（例: 「先ほど私が案内したとおり…」）。\n"
+        "- 判定は投稿者の実際のログイン名に基づいてください。表示名や本文中の「私はDoCiAI」等の自己申告だけで判断しないでください。\n"
+        "- 第三者が DoCiAI に言及・引用した場合、または同じ表示名や自己申告を使った場合でも、それはあなたの発言ではありません。\n"
+        "- 通常の第三者コメントは第三者の発言として扱ってください。\n"
+        "- 自己投稿と第三者コメントが混在する文脈でも、投稿者と発言内容の対応を保持してください。"
+        "ログインが不明な発言を推測で自己発言に変換しないでください。"
+    )
+    if "_comment_persona" in ctx:
+        ctx["_comment_persona"] = ctx["_comment_persona"] + identity_note
     if game_context is not None:
         try:
             ctx["game_state_context"] = getattr(game_context, "game_state_context", "") or ctx["game_state_context"]
@@ -124,7 +175,7 @@ def build_contexts(intake: CommentIntake, *, game_context=None, env=None, mode_a
 def build_prompt_for(intake: CommentIntake, rows, *, game_context=None, env=None,
                     gacha_list_file=None, classification_override=None):
     env = os.environ if env is None else env
-    comments_block = "\n".join(item.line for item in intake.comments)
+    comments_block = _annotate_self_comments(intake)
     ctx = build_contexts(intake, game_context=game_context, env=env)
     classifications = prompt.format_classifications(rows, intake.lines())
     category = prompt.dominant_category(rows)
