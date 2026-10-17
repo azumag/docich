@@ -1766,12 +1766,14 @@ function renderStream(d){
   if(cStart) cStart.disabled=(!d.chat_paused)||READ_ONLY;
   if(cStop) cStop.disabled=(!!d.chat_paused)||READ_ONLY;
 }
+// webui-loader:loadStream:start
 async function loadStream(){
   try{
     const data=await api("/api/stream");
     renderStream(data);
   }catch(e){ console.warn("loadStream",e); toast(String(e),4000); }
 }
+// webui-loader:loadStream:end
 async function streamAction(action){
   if(READ_ONLY){ toast("read-only"); return; }
   const confirmMsg=action==="stop"?"配信を停止しますか？視聴者には配信終了として見えます。":"配信を開始しますか？";
@@ -1902,6 +1904,7 @@ async function loadPredictionWorkerStatus(force=false){
     .finally(()=>{ predictionWorkerStatusInFlight=null; });
   return predictionWorkerStatusInFlight;
 }
+// webui-loader:loadWorkersControl:start
 async function loadWorkersControl(forcePrediction=false){
   try{
     const data=await api("/api/workers");
@@ -1910,6 +1913,7 @@ async function loadWorkersControl(forcePrediction=false){
     if(prediction) renderWorkersControl(data.workers,prediction);
   }catch(e){ console.warn("loadWorkersControl",e); }
 }
+// webui-loader:loadWorkersControl:end
 async function workerControl(worker,action){
   if(READ_ONLY){ toast("read-only"); return; }
   let confirmMsg;
@@ -2118,10 +2122,12 @@ async function endSpecial(){
   catch(e){ toast("終了を依頼できませんでした。状態更新後に確認してください。"); }
   finally{ await loadSpecial(); }
 }
+// webui-loader:loadCorners:start
 async function loadCorners(){
-  loadSpecial();
-  loadBetaStatus();
-  loadRenderer();
+  // #970 (review of #2395): the child panels keep their own requests in flight.
+  // Await them before resolving so the presentation poll guard is not released
+  // while a child request is still running.
+  const children = Promise.allSettled([loadSpecial(), loadBetaStatus(), loadRenderer()]);
   try{
     renderCorners(await api("/api/corners"));
   }catch(e){
@@ -2129,7 +2135,9 @@ async function loadCorners(){
     if(el) el.textContent="コーナー情報を取得できません。WebUI/API の接続を確認してください。";
     renderCornerCatalogMessage("コーナー情報の取得に失敗しました。WebUI/API の接続を確認してください。");
   }
+  await children;
 }
+// webui-loader:loadCorners:end
 function renderCornerCatalogMessage(message){
   const cat=document.getElementById("corners-catalog");
   if(cat) cat.innerHTML=`<tr><td colspan="6" class="help">${esc(message)}</td></tr>`;
@@ -2962,6 +2970,9 @@ function pollGate(key, fn){
   if(document.hidden) return;
   if(pollInFlight.has(key)) return;
   pollInFlight.add(key);
+  // fn must return a promise that settles only after every request it started
+  // has settled. Resolving early (or returning undefined) frees the guard while
+  // a child request is still running, so the next tick stacks a duplicate.
   Promise.resolve().then(fn).catch(()=>{}).finally(()=>pollInFlight.delete(key));
 }
 function clearTabTimers(){
@@ -2980,7 +2991,10 @@ function startTabPolling(tab, opts){
   if(document.hidden) return;
   if(tab==="status"){ if(refresh) pollGate("status",loadStatus); statusTimer=setInterval(()=>pollGate("status",loadStatus),10000); }
   else if(tab==="corners"){ if(refresh) pollGate("corners",loadCorners); cornersTimer=setInterval(()=>pollGate("corners",loadCorners),10000); }
-  else if(tab==="stream"){ const load=()=>{ loadStream(); loadWorkersControl(); }; if(refresh) pollGate("stream",load); streamTimer=setInterval(()=>pollGate("stream",load),10000); }
+  // A single tab refresh can start more than one request (stream = stream +
+  // workers, corners = rotation + child panels). allSettled keeps the guard
+  // until every child settles and never rejects when only one side fails.
+  else if(tab==="stream"){ const load=()=>Promise.allSettled([loadStream(), loadWorkersControl()]); if(refresh) pollGate("stream",load); streamTimer=setInterval(()=>pollGate("stream",load),10000); }
   else if(tab==="audio"){ if(refresh) pollGate("audio",loadVoiceChain); audioTimer=setInterval(()=>pollGate("audio",loadVoiceChain),10000); }
 }
 function startDashboardPolling(opts){
