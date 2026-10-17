@@ -295,8 +295,11 @@ class HistoryTests(unittest.TestCase):
         expected['ai']['recent_events'] = []
         expected['ai']['recent_events_omitted'] = True
         profile = expected['cpu_profile']
-        profile.update(components=[], components_omitted=len(components),
-                       spawns=[], spawns_omitted=len(spawns))
+        profile.update(
+            components=components[:diag.CPU_PROFILE_FLOOR_COMPONENTS],
+            components_omitted=len(components) - diag.CPU_PROFILE_FLOOR_COMPONENTS,
+            spawns=spawns[:diag.CPU_PROFILE_FLOOR_SPAWNS],
+            spawns_omitted=len(spawns) - diag.CPU_PROFILE_FLOOR_SPAWNS)
         expected['pulse_sink_inputs'].update(
             streams=[], truncated=True, output_omitted=True)
         budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
@@ -314,10 +317,14 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(payload['cpu_profile']['meta'], {'samples': 48, 'ncpu': 4})
         self.assertEqual(payload['cpu_profile']['host'],
                          {'cpu_busy_pct': 72.5, 'processes_end': 23})
-        self.assertEqual(payload['cpu_profile']['components'], [])
-        self.assertEqual(payload['cpu_profile']['components_omitted'], len(components))
-        self.assertEqual(payload['cpu_profile']['spawns'], [])
-        self.assertEqual(payload['cpu_profile']['spawns_omitted'], len(spawns))
+        self.assertEqual(payload['cpu_profile']['components'],
+                         components[:diag.CPU_PROFILE_FLOOR_COMPONENTS])
+        self.assertEqual(payload['cpu_profile']['components_omitted'],
+                         len(components) - diag.CPU_PROFILE_FLOOR_COMPONENTS)
+        self.assertEqual(payload['cpu_profile']['spawns'],
+                         spawns[:diag.CPU_PROFILE_FLOOR_SPAWNS])
+        self.assertEqual(payload['cpu_profile']['spawns_omitted'],
+                         len(spawns) - diag.CPU_PROFILE_FLOOR_SPAWNS)
         audio = payload['pulse_sink_inputs']
         self.assertEqual((audio['total'], audio['muted']), (64, 2))
         self.assertEqual(audio['streams'], [])
