@@ -183,3 +183,108 @@ def test_retro_scores_is_omitted_only_at_the_hard_ceiling(monkeypatch):
     collect_diagnostics._diagnostics_budget(payload)
 
     assert payload["corners"]["retro_scores"] == {"status": "output_omitted"}
+
+
+def test_retro_scores_survives_when_dropping_decision_plans_restores_the_ceiling(monkeypatch):
+    """The score projection is dropped only if the envelope is still over the
+    hard ceiling after the older detail reduction, never on a stale size."""
+    projection = {"present": True, "game_count": 1,
+                  "games": {"bastet": {"present": True, "records": 3}}}
+    payload = {
+        "corners": {
+            "retro_scores": projection,
+            "retro_corner": {"decision_plans": {"status": "ok", "plans": ["p" * 400]}},
+        },
+        # Never reduced by the budget chain, so the ceiling is reached.
+        "encoder": {"frames_sent": "y" * 2000},
+        "nethack_history": {"daily": {"records": []}, "completed_runs": {"records": []}},
+        # Already in its reduced shape, so the soft-budget pass cannot change
+        # the serialized size between the two measurements below.
+        "ai": {"recent_events": [], "recent_events_omitted": True,
+               "anomalous_components": {}},
+        "workers": {"details": {}},
+        "soren91_drop_profile": {"profileStatus": "missing"},
+    }
+    with_plans = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    reduced = json.loads(with_plans)
+    reduced["corners"]["retro_corner"]["decision_plans"] = {"status": "output_omitted"}
+    without_plans = json.dumps(reduced, sort_keys=True, ensure_ascii=False)
+    assert len(with_plans.encode("utf-8")) > len(without_plans.encode("utf-8"))
+    # Over the ceiling with decision_plans, under it once that one field yields.
+    monkeypatch.setattr(collect_diagnostics, "MAX_JSON_BYTES", len(without_plans.encode("utf-8")))
+    monkeypatch.setattr(collect_diagnostics, "HARD_JSON_BYTES", len(without_plans.encode("utf-8")))
+
+    text = collect_diagnostics._diagnostics_budget(payload)
+
+    assert payload["corners"]["retro_corner"]["decision_plans"] == {"status": "output_omitted"}
+    assert payload["corners"]["retro_scores"] == projection
+    assert len(text.encode("utf-8")) <= collect_diagnostics.HARD_JSON_BYTES
+
+
+def test_retro_scores_survives_the_real_hard_ceiling_boundary():
+    """Reproduces the reviewed boundary with the shipped 36/56 KiB thresholds:
+    the envelope is over the hard ceiling only while ``decision_plans`` is
+    present, and the reduction alone restores it."""
+    projection = {"present": True, "game_count": 1,
+                  "games": {"bastet": {"present": True, "records": 3}}}
+
+    def build(pad_len):
+        return {
+            "corners": {
+                "retro_scores": projection,
+                "retro_corner": {"decision_plans": {"status": "ok",
+                                                    "plans": ["p" * 400]}},
+            },
+            "encoder": {"frames_sent": "y" * pad_len},
+            "nethack_history": {"daily": {"records": []},
+                                "completed_runs": {"records": []}},
+            "ai": {"recent_events": [], "recent_events_omitted": True,
+                   "anomalous_components": {}},
+            "workers": {"details": {}},
+            "soren91_drop_profile": {"profileStatus": "missing"},
+        }
+
+    hard = collect_diagnostics.HARD_JSON_BYTES
+    probe = json.loads(json.dumps(build(0), sort_keys=True, ensure_ascii=False))
+    probe["corners"]["retro_corner"]["decision_plans"] = {"status": "output_omitted"}
+    base_without_plans = len(
+        json.dumps(probe, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    )
+    # One byte under the ceiling once decision_plans yields, over it while the
+    # field is still present.
+    payload = build(hard - base_without_plans - 1)
+    with_plans = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    reduced = json.loads(with_plans)
+    reduced["corners"]["retro_corner"]["decision_plans"] = {"status": "output_omitted"}
+    without_plans = json.dumps(reduced, sort_keys=True, ensure_ascii=False)
+    assert len(without_plans.encode("utf-8")) <= hard
+    assert len(with_plans.encode("utf-8")) > hard
+
+    text = collect_diagnostics._diagnostics_budget(payload)
+
+    assert payload["corners"]["retro_corner"]["decision_plans"] == {"status": "output_omitted"}
+    assert payload["corners"]["retro_scores"] == projection
+    assert len(text.encode("utf-8")) <= hard
+
+
+def test_retro_scores_scans_a_production_sized_log_in_full(tmp_path):
+    """The window must cover a real log so the acceptance delta is exact.
+
+    pacman4console's live log was 453 lines (2026-10-17); a 400-line cap would
+    have saturated it and made the per-corner delta unreadable.
+    """
+    state_dir = tmp_path / "state"
+    _write_scores(state_dir, "pacman4console", [
+        {"ts": 1700000000 + i, "game": "pacman4console",
+         "score": 250 + (i % 3), "source": "wrapper"}
+        for i in range(450)
+    ])
+
+    entry = collect_diagnostics._collect_retro_scores(
+        state_dir, now=int(time.time()))["games"]["pacman4console"]
+
+    assert entry["truncated"] is False
+    assert entry["records"] == 450
+    assert entry["invalid"] == 0
+    assert [row["score"] for row in entry["last"]] == [251, 252, 250, 251, 252]
+    assert entry["last"][0]["ts"] == 1700000445

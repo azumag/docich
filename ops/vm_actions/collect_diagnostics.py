@@ -3736,7 +3736,10 @@ RETRO_SCORELOG_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
 )
 RETRO_SCORELOG_TAIL_BYTES = 64 * 1024
-RETRO_SCORELOG_MAX_LINES = 400
+# Safety cap for pathological (very short) lines; the byte bound is the real
+# window.  A real match record is ~70-90 bytes, so production logs stay well
+# inside both and are scanned in full (`truncated=false`).
+RETRO_SCORELOG_MAX_LINES = 2000
 RETRO_SCORELOG_LAST = 5
 # Producers today: the CLI wrappers, the resolver brain and the corner-recorded
 # live scores. Anything else is counted as "other" instead of echoed.
@@ -3757,6 +3760,13 @@ def _collect_retro_scores(state_dir, now):
     only bounded integers, the enumerated producers and the duplicate-run
     length are emitted.  Other record fields (clip ids, hashes, paths, free
     text) are never projected.
+
+    ``records`` and ``max_same_score_run`` are window-scoped.  While
+    ``truncated=false`` the whole log was scanned, so the ``records`` delta
+    across a corner run is the exact number of appended records; with
+    ``truncated=true`` the count only lower-bounds the log, and acceptance
+    reads ``last`` and ``max_same_score_run`` (the repeated-poll signature)
+    instead.  ``last`` is oldest-first.
     """
     scores_dir = Path(state_dir) / "scores"
     result = {
@@ -9100,9 +9110,14 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
+        # Re-measure: the omission above may already bring the envelope back
+        # under the hard ceiling, and the retro_scores branch below must not
+        # decide on a stale size.
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # The scorelog tail is the only read-only evidence for "one score record per
     # match" (#2392). It stays under a few KiB, so it yields only against the
-    # gateway's hard ceiling rather than the softer budget.
+    # gateway's hard ceiling rather than the softer budget, and only if the
+    # envelope is still over that ceiling after the reductions above.
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict)
             and "retro_scores" in corners):
         corners["retro_scores"] = {"status": "output_omitted"}
