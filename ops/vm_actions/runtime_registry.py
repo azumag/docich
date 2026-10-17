@@ -78,6 +78,22 @@ EXTERNAL_VIDEO = {
     "diagnostics_key": "corners.external_video",
     "queue_lane": None,
     "frame_max_age_sec": 10,
+    # Upper bound for the projected frame age; keeps the value a small int even
+    # when the receiver has been stopped for days.
+    "frame_age_max_sec": 604800,
+}
+
+# Encoder heartbeat sources. TwiCa's common adapter writes ``pipeline.json``
+# only while it owns the output; Soren's direct_stream writes its own ffmpeg
+# progress record. Both are optional and absence is normal on the other path.
+# The collector copies fixed numeric/enum keys only -- the source records also
+# carry stream configuration and the reconnect channel name.
+ENCODER = {
+    "twica_subpath": "twica-common/pipeline.json",
+    "twica_stale_sec": 5,
+    "direct_stream_subpath": "tmp/state/direct_stream/status.json",
+    "direct_stream_stale_sec": 15,
+    "schema_version": 1,
 }
 
 # Diagnostics window for AI telemetry aggregation (seconds).

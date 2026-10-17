@@ -8,6 +8,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:  # run from ops/vm_actions/tests (unittest discover, pytest on the file)
+    from sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+except ModuleNotFoundError:  # imported as a package module, e.g. by tests/test_presentation_recovery.py
+    from ops.vm_actions.tests.sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+
 ROOT = Path(__file__).resolve().parents[3]
 AUTH = ROOT / "ops" / "vm_actions" / "authorize.py"
 GATEWAY = ROOT / "ops" / "vm_actions" / "gateway.py"
@@ -215,23 +220,24 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         stats.mkdir(parents=True, exist_ok=True)
         import time
 
-        with open(stats / "20260101.jsonl", "w", encoding="utf-8") as handle:
-            for _ in range(30000):
-                handle.write(
-                    json.dumps(
-                        {
-                            "ts": int(time.time()) - 10,
-                            "day": "20260101",
-                            "event": "fail",
-                            "label": "RADIO",
-                            "agent": "x:y",
-                            "rc": "1",
-                            "resolved_model": "",
-                            "error": "z" * 3000,
-                        }
-                    )
-                    + "\n"
-                )
+        line = (
+            json.dumps(
+                {
+                    "ts": int(time.time()) - 10,
+                    "day": "20260101",
+                    "event": "fail",
+                    "label": "RADIO",
+                    "agent": "x:y",
+                    "rc": "1",
+                    "resolved_model": "",
+                    "error": "z" * 3000,
+                }
+            )
+            + "\n"
+        )
+        # ~90 MB apparent size, but only the scanned tail is real data (sparse_files).
+        size = write_sparse_tail_jsonl(stats / "20260101.jsonl", line, 30000)
+        self.assertGreater(size, 10 * jsonl_scan_window_bytes())
         proc = self.call(f"diagnostics docich production {'b' * 40}")
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
         self.assertLessEqual(len(proc.stdout), 65536 + 4096)

@@ -122,13 +122,28 @@ def _observe_card_stock(mem, inventory):
     neither was ever in the panel -- the model was never told what the player
     actually holds. The request now carries this so it plans from observed
     stock.
+
+    Rows are listed in card-ID order, so a known card whose ID lies between
+    two shown rows' IDs is out of stock too (the proof of #2374's
+    ``_card_proven_absent``). g825 2-5..2-9: 1-B1's クースカン(13) was gone
+    from ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) panels while
+    card_stock kept its stale 1, so no month saw the boss card missing.
+    A card read here is no longer an unseen purchase (``boss_cards.UNSEEN``).
     """
     stock = mem.setdefault('card_stock', {})
     shown = {row['card']: row['stock'] for row in inventory['rows']}
     stock.update(shown)
-    if len(inventory['rows']) < 4:
-        for card in stock:
-            if card not in shown:
-                stock[card] = 0
+    read = set(shown)
+    unseen = mem.get('card_bought_unseen')
+    unseen = unseen if isinstance(unseen, dict) else {}
+    ids = [CARD_IDS.get(row['card']) for row in inventory['rows']]
+    ordered = bool(ids) and None not in ids and ids == sorted(ids)
+    for card in [*stock, *(c for c in unseen if c not in stock)]:
+        if card not in shown and (len(inventory['rows']) < 4 or (
+                ordered and min(ids) < CARD_IDS.get(card, -1) < max(ids))):
+            stock[card] = 0
+            read.add(card)
+    for card in read.intersection(unseen):
+        unseen.pop(card)
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))

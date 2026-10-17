@@ -2,12 +2,14 @@
 
 - Status: **PR-1（オフライン中核）／PR-2a（半熟英雄の記録フック）／PR-2b（Soren の記録フック）／
   PR-3（`yoso` adapter・view・catalog登録）／PR-4（読み上げ・eventOverlay・コーナー紹介）実装済み**。
+  **PR-5（不成立キャンセルの参加実績と5指標ランキングの中核、§2.1 / §3.1、Issue #933 追記）実装済み**。
   production catalog は **2026-10-14 オーナー承認で `enabled = true`**、**2026-10-15 オーナー判断で
   `manual_only` を解除して24時間 rolling rotation の自動抽選に組み入れ**（手動予約も従来どおり可能）、
   **2026-10-15 オーナー判断で `audio_enabled = true`**
   （コーナー紹介と上位3名の読み上げ）。有効化・自動抽選・読み上げは
   `config/docich.soren-live.toml` の当該行の変更で行う（§4参照）。TwiCa 前景への表示は
   **2026-10-15 のオーナー判断で対象外**（§4.1。docich 側は共通 eventOverlay までを担当する）。
+  5指標ボードの view / 読み上げへの表示と、Soren 側の不成立キャンセル記録は後続（§6 / §8）。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
 - 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
@@ -41,16 +43,23 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 
 | フィールド | 型 | 説明（要約） |
 | --- | --- | --- |
-| `outcomes[].top_predictors` | Object[] | **的中した上位の視聴者**。該当が無ければ `null`。 |
+| `outcomes[].top_predictors` | Object[] | その outcome の上位予想者（最も多く賭けた視聴者）。該当が無ければ `null`。 |
 | `top_predictors[].user_id` / `user_name` / `user_login` | String | 視聴者の id・表示名・ログイン名。 |
 | `top_predictors[].channel_points_used` | Integer | その視聴者が賭けたチャネルポイント。 |
-| `top_predictors[].channel_points_won` | Integer | その視聴者が獲得したチャネルポイント。 |
+| `top_predictors[].channel_points_won` | Integer | その視聴者が獲得したチャネルポイント。未確定（`RESOLVED` 以前）は `null`／0。 |
 | `winning_outcome_id` | String | `status = RESOLVED` 以外は `null`。 |
 
 **重要な制約**: 視聴者単位のデータは Twitch が公開する **top predictors だけ** で、
 全参加者の一覧は取得できない。したがって本コーナーのランキングは
-「**的中した上位予想者**のランキング」であり、全賭け参加者の完全な的中率ではない。
+「**上位予想者**のランキング」であり、全賭け参加者の完全な的中率ではない。
 この制約は仕様として画面にも明記する（「上位予想者のみ集計」）。
+
+- 公式リファレンス（2026-10-17 再確認）は `top_predictors` を status で限定していない
+  （`channel_points_won` だけが未確定時に `null`）。したがって **不成立キャンセルでも、
+  row が上位予想者を持っていれば参加の証拠として記録できる**（§2.1）。
+  ただし Twitch が返す範囲は `RESOLVED` の row と同じ「上位予想者」であり、全参加者ではない。
+- 上位予想者が返らない row（未確定・取得不能・キャンセルで消えた等）からは
+  **視聴者・回数・ポイントを推測しない**。その round は記録できる範囲だけを残す（§2.1）。
 
 既存クライアントは Helix 応答の生 dict をそのまま返すため、追加取得は不要。
 ただし `src/docich/hanjuku_prediction_api.py` は `top_predictors` を検証しないので、
@@ -66,10 +75,14 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 
 ## 2. 統計の記録仕様
 
-- 台帳: `<state_dir>/prediction_leaderboard.json`、`schema = 1`。実装は `prediction_leaderboard.py`。
-- 追記単位: `rounds[<prediction_id>]` に、**`RESOLVED` になった予想を1回だけ**記録する。
-  - `prediction id` をキーにした冪等追記。再送・再精算の tick が二重計上しない。
-  - `ACTIVE` / `LOCKED` / `CANCELED` は記録しない（未確定・返還のため）。
+- 台帳: `<state_dir>/prediction_leaderboard.json`、`schema = 2`。実装は `prediction_leaderboard.py`。
+  `schema = 1`（`RESOLVED` の的中率のみ）の既存台帳は読み込み時に schema 2 へ正規化する
+  （全 round を `RESOLVED`・`refunded = 0` として読み、書き出しは schema 2）。
+- 追記単位: `rounds[<prediction_id>]` に、**確定した予想を1回だけ**記録する。
+  - `prediction id` をキーにした冪等追記。再送・再精算・再起動の tick が二重計上しない。
+  - `ACTIVE` / `LOCKED` は記録しない（未確定のため）。
+  - `CANCELED` は **不成立キャンセル（`no-contest`）だけ** を参加実績として記録する（§2.1）。
+    それ以外のキャンセル（中断・既知結果・結果不明など）は記録しない。
 - **賭けが成立していない予想は `CANCELED` にして全額返却する**（2026-10-15 オーナー判断）:
   精算の直前（半熟英雄は `LOCKED` 後、Soren は `resolve` の直前）に `GET /helix/predictions` の
   `outcomes[].users` / `channel_points` を見て、賭けが入った選択肢が1つ以下（0件を含む）なら
@@ -79,15 +92,23 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   （settle を新しい理由で止めない）。半熟英雄は `hanjuku_predictions._no_contest`、
   Soren は `twitch_predictions.sh` の `_contested_outcome_count` が同じ規則を実装する。
 - 1 round の内容:
-  `{ corner, title, ended_at, winning_outcome_id, outcomes[{id,title,users,points}], predictors[] }`
+  `{ corner, title, ended_at, status, winning_outcome_id, cancel_reason?, outcomes[{id,title,users,points}], predictors[] }`
+  - `status` = `RESOLVED` または `CANCELED`。`cancel_reason` は `CANCELED` のときだけ入り、
+    値は固定語彙 `no-contest` のみ（`prediction_leaderboard.CANCEL_REASONS`）。
+  - `CANCELED` の round は `winning_outcome_id = null`、`cancel_reason` 必須。理由の無い
+    キャンセルは保存を拒否する（無言のゼロとして残さない）。
 - 1 predictor の内容:
-  `{ user_id, user_login, user_name, outcome_id, used, won, hit }`
+  `{ user_id, user_login, user_name, outcome_id, used, won, refunded, hit }`
   - `used` = `channel_points_used`、`won` = `channel_points_won`。
   - `hit` = 「その視聴者が `winning_outcome` を選んだか」（`outcome_id == winning_outcome_id`）。
-- 記録タイミング: 精算確定後に `RESOLVED` を観測した tick。書き込みは予想所有者が行う。
-  半熟英雄は docich の予想 tick が直接記録し、Soren は resolve 時に自身の handoff ファイルへ
-  追記して docich の rotation timer（`soren_predictions.tick`）が記録する。
-- 書き込み経路: `prediction_leaderboard.record_resolved(state_dir, row, corner=...)` が唯一の入口。
+    `CANCELED` の round では勝敗が確定しないため **`null`**。
+  - `refunded` = 返金された元本。`CANCELED` では `used` と同額、`RESOLVED` では 0。
+- 記録タイミング: 精算確定後に `RESOLVED` を観測した tick、および不成立 `CANCELED` を
+  確定・再観測した tick。書き込みは予想所有者が行う。半熟英雄は docich の予想 tick が
+  直接記録し、Soren は resolve 時に自身の handoff ファイルへ追記して docich の
+  rotation timer（`soren_predictions.tick`）が記録する。
+- 書き込み経路: `prediction_leaderboard.record_settled(state_dir, row, corner=..., cancel_reason=...)`
+  が唯一の入口（`record_resolved` は resolved handoff 用の互換名で、内部でこれへ委譲する）。
   `<state_dir>/locks/prediction-leaderboard.json.lock` の排他 lock の下で read-modify-write し、
   `save()` が temp file + `os.replace` で atomic に置換する。同じ `prediction id` の再送は no-op。
   壊れた台帳・壊れた row は例外で拒否し、既存の台帳を上書きしない（fail-closed）。
@@ -96,11 +117,44 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   次の観測で再試行する。`invalid_response` の row は再試行せず記録しない。
 - 保持: 最大 `MAX_ROUNDS = 2000` 件。超過時は `(ended_at, id)` の古い順に間引く。
 - 入力上限: 台帳 512 KiB、1 outcome あたり predictor 100 件、文字列 128 文字。
+  保存も schema 移行後の最終 UTF-8 バイト列（末尾改行込み）を 512 KiB で検査し、
+  超過時は元ファイルをバイト単位で保ったまま明示的に拒否する。サイズを理由に参加履歴を
+  追加で間引かない。拒否後も元台帳は読めるが、追記は容量の扱いを別途判断するまで再試行になる。
 - 検証: `hit` を誤記録しないよう、壊れた resolved row は **fail-closed**（例外）で記録しない。
   非 resolved の row は静かにスキップする。
 - プライバシー: 保存・表示する視聴者情報は Twitch が公開する `id / login / 表示名` と
   賭けポイントのみ。トークン・IP などは保存しない。診断（`stats`）へは **件数のみ**を出し、
   視聴者名は出さない。
+
+### 2.1 不成立キャンセルの参加実績（Issue #933 追記、2026-10-17）
+
+「対立する投票が無い」不成立キャンセルでも、**証拠のある参加は残す**。勝敗が確定して
+いないので的中・外れには数えず、返金は元本返却として扱い、利益・損失には二重計上しない。
+
+- 記録の根拠: 所有者が確定・再観測した `CANCELED` の row。`top_predictors` があれば
+  視聴者ごとの `used` / `refunded` を残し、無ければ round と outcome の件数だけを残す。
+  **row に無い視聴者・回数・ポイントを作らない**。
+- 記録経路（半熟英雄）: 不成立と確定して `CANCELED` を PATCH した直後、および
+  既に `CANCELED` の row を再観測した時に `hanjuku_predictions._record_canceled` が
+  `cancel_reason = "no-contest"` で記録する。PATCH 応答に `top_predictors` が無いときは
+  権威ある `LOCKED` の row を `CANCELED` として再利用し、それも無ければ同じ id を1回 GET する。
+- cancel 前に、所有する予想 ID・outcome ID・タイトル・不成立条件と台帳 row 契約を検証した
+  `LOCKED` snapshot を `<state_dir>/hanjuku_prediction_cancel_<予想IDのSHA-256>.json` へ
+  `CANCELED` の記帳候補として保存する（この時点では台帳へ記帳しない）。上限は改行込み
+  UTF-8 256 KiB。0600・一時ファイル・fsync・原子的置換を使い、保存失敗・上限超過時は
+  cancel へ進まない。既存の予想状態は16 KiBのままで、snapshot を埋め込まない。
+- 再起動後も同一予想 ID の snapshot だけを再検証して再利用し、CANCELED の PATCH/GET が
+  参加者や件数を省略しても既知の参加を失わない。別 ID・別 outcome・壊れた snapshot は
+  空の参加として記帳せず拒否する。LOCKED の再試行応答が参加者を省略しても既存証拠を上書きしない。
+  snapshot は台帳記録の成功（同一 ID が記録済みの冪等 no-op を含む）後だけ削除する。
+  削除失敗時も再試行でき、再記帳しない。row 契約違反等で記録しなかった証拠は保持する。
+- 記録に失敗したとき（`leaderboard`）: round を terminal にせず次の観測・再試行 tick で
+  再記録する。同じ `prediction id` は一度しか記録しない（再起動・再読取でも二重計上が無い）。
+- round 契約違反（`invalid_response`）: 記録せず、その round を terminal にして再試行しない
+  （`RESOLVED` の契約違反と同じ扱い）。
+- 対象外: 不成立以外のキャンセル（中断・既知結果・結果不明など）。§8-2 の判断待ち。
+- まだ約束しないこと: 既存データに参加者・投票量・正解の証拠が無い round は復元しない。
+  欠損を 0 や未参加で埋めない。
 
 ## 3. ランキング表示の仕様
 
@@ -151,6 +205,32 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   （`audio-complete` 早期終了でも同じ）で元画面へ戻る。**枠を隠す/戻す専用の経路は追加しない**
   （復帰の二重化を作らない）。`display.width/height` が無い環境では従来の `viewport` へ
   fallback する。
+
+### 3.1 5指標ボード（Issue #933 追記、2026-10-17）
+
+「予想的中率」だけでなく、次の5指標それぞれを独立した順位として集計する。
+実装は `prediction_leaderboard.boards(ledger, min_rounds=..., min_participations=..., limit=...)`
+が返す5つのリスト（`METRICS = ("hit_rate", "staked", "won", "lost", "plays")`）。
+
+| 部門（key） | 意味 | 集計対象 | 既定の最低数 | 並び順（同率の決定的順序） |
+| --- | --- | --- | --- | --- |
+| 予想的中率（`hit_rate`） | `hits / rounds` | 勝敗が確定した `RESOLVED` の round | `min_rounds`（既定 3） | 的中率降順 → 的中数降順 → `net` 降順 → login 昇順 |
+| 賭けたポイント数（`staked`） | `Σ used` | 全 round（キャンセル含む） | `min_participations`（既定 1） | `used` 降順 → 参加数降順 → login 昇順 |
+| 得たポイント数（`won`） | `Σ won` | 全 round | `min_participations` | `won` 降順 → 参加数降順 → login 昇順。`won > 0` のみ |
+| 失ったポイント数（`lost`） | `Σ (used - refunded)`（`hit == false` の round のみ） | `RESOLVED` の外れ | `min_participations` | `lost` 降順 → 参加数降順 → login 昇順。`lost > 0` のみ |
+| 賭けた回数（`plays`） | `participations` | 全 round（キャンセル含む） | `min_participations` | 参加数降順 → `rounds` 降順 → login 昇順 |
+
+- 不成立キャンセルは `participations`（賭けた回数・賭けたポイント・参加数）には入るが、
+  `rounds`（的中率の分母）・`won`・`lost` には入らない。返金 `refunded` は元本返却で、
+  `won` にも `lost` にも計上しない。したがって 100 ポイント賭けて全額返金された回は
+  「参加 1 回・累計投票 100・返金 100」で、このキャンセルによる利益と損失はともに 0。
+- `net = won - used + refunded`。`RESOLVED` の round だけを見る的中率ボードでは
+  `refunded = 0` なので従来どおり `won - used`。
+- `min_rounds` は的中率ボード専用。勝敗を判定しない部門へ流用しない（Issue #933 追記の指摘）。
+  部門ごとの最低数は `min_rounds` / `min_participations` で独立に指定できる。
+- 得た・失ったポイントの部門は 0 の行を並べても意味がないため `> 0` の視聴者だけを載せる。
+- 表示（現状）: `yoso_view` の `/api/yosou` は従来どおり的中率ボード（`ranking`）を表示する。
+  5部門すべての表示レイアウトと読み上げは後続 PR（§6 / §8-5）。集計の意味は本節が正本。
 
 ## 4. コーナー追加案（番組ローテーションへの接続）
 
@@ -230,7 +310,12 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
 - [x] 読み上げ原稿（`yoso_narration.py`、`audio_enabled` opt-in、PR-4）
 - [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）
 - [x] TwiCa 前景への表示: 2026-10-15 オーナー判断で**対象外**（§4.1）
+- [x] 不成立キャンセルの参加実績（`no-contest`）と5指標ボードのオフライン中核（`prediction_leaderboard.py`、PR-5。§2.1 / §3.1）
+- [x] 半熟英雄の不成立キャンセル記録フック（`hanjuku_predictions._record_canceled`、PR-5）
+- [ ] 5指標ボードの view / 読み上げへの表示（§3.1、表示レイアウトのオーナー判断待ち。§8-5）
+- [ ] Soren 側の不成立キャンセル記録（soviet_now の handoff 拡張。§8-2）
 - [ ] 台帳に実データを入れて ranking を実測する（初回は「確定した予想がまだありません」）
+- [ ] 不成立キャンセル・5指標ボードの実データでの受入（記録が本番で積まれてから）
 
 ## 7. 実装ステップ（PR 分割案）
 
@@ -294,6 +379,16 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
      docich 側は共通 eventOverlay までを担当する。
    - 有効化と VM 反映はオーナー承認後。2026-10-14 に `enabled = true`、2026-10-15 に
      `audio_enabled = true`（コーナー紹介と上位3名の読み上げ）で配備済み。
+5. **PR-5（不成立キャンセルの参加実績と5指標ボードの中核・実装済み、Issue #933 追記）**:
+   - `src/docich/prediction_leaderboard.py` を **schema 2** へ拡張し、`CANCELED`（`no-contest`）の
+     参加実績・返金と5指標ボード（§3.1）を実装。schema 1 の既存台帳は読み込み時に正規化する。
+   - `src/docich/hanjuku_predictions.py`: 不成立キャンセルの確定直後と、既に `CANCELED` の row を
+     再観測した時に `_record_canceled` が `cancel_reason="no-contest"` で1回だけ記録する。
+     台帳 I/O 失敗は round を terminal にせず再試行し、row 契約違反は記録せず再試行しない。
+   - `ops/vm_actions/collect_diagnostics.py`: 台帳の schema 1 / 2 の両方を読む（投影は件数のみ）。
+   - 回帰: `tests/test_prediction_leaderboard.py` / `tests/test_hanjuku_predictions.py` /
+     `ops/vm_actions/tests/test_collect_diagnostics.py`。
+   - 残り: 5指標の view / 読み上げ表示（§8-5）、Soren 側の不成立キャンセル記録（§8-2）。
 
 ## 8. 未確定・オーナー判断が要る点
 
@@ -305,16 +400,39 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
    個別の opt-in / opt-out は設けない。制御文字除去と24文字上限のみ。§5）。
 6. 既存予想への遡及（Helix は `id` 指定で過去予想も取得できるが、初回のみ 25 件/ページ）。
 
+### 8.1 Issue #933 追記（2026-10-17）の残りの判断
+
+- **8-1（解決・本案）** 部門ごとの定義: 賭けたポイント = `Σ used`、得たポイント = `Σ won`、
+  失ったポイント = 外れた `used - refunded`。返金は元本返却として `won` / `lost` に入れない（§3.1）。
+- **8-2（未決）** 不成立以外のキャンセル（結果不明・中断等）を参加実績に含める範囲。
+  現状は `no-contest` だけを記録し、他は記録しない。Soren 側の `no-contest` 記録も未実装
+  （soviet_now の handoff が `RESOLVED` のみを運ぶため。§2.1 / §6）。
+- **8-3（未決）** キャンセルでも独立した確実なゲーム結果から予想の正誤を別途評価するか。
+  未決の間は `CANCELED` だけを根拠に的中扱いしない（§2.1 のとおり実装済み）。
+- **8-4（解決・本案）** キャンセル参加者を含む5指標をどこまで正確に算出できるか。
+  データ源は引き続き `outcomes[].top_predictors`（上位予想者のみ）で、全参加者ではない。
+  上位予想者が返らない round は round と outcome の件数だけを残し、視聴者を推測しない（§1 / §2.1）。
+  これ以上の網羅には EventSub（`channel.prediction.progress`）の購読など新規経路が要るため未着手。
+- **8-5（未決）** 5指標ボードの表示: 1枚の表を部門ごとに切り替える / 部門ごとにコーナーを分ける /
+  読み上げをどこまで伸ばすか。現状は的中率ボードのみ表示（§3.1）。
+- **8-6（解決・本案）** 部門ごとの最低数: 的中率は `min_rounds`（既定 3）、
+  参加・ポイント部門は `min_participations`（既定 1）。`min_rounds` を流用しない（§3.1）。
+
 ## 9. 検証
 
 ```sh
 env -u PYTHONPATH python3 -m pytest -q tests/test_prediction_leaderboard.py
+env -u PYTHONPATH python3 -m pytest -q tests/test_hanjuku_predictions.py
 env -u PYTHONPATH python3 -m pytest -q tests/test_yoso_view.py tests/test_yoso_corner.py
 env -u PYTHONPATH python3 -m pytest -q tests/test_corner_rotation.py tests/test_webui.py -k "corner or yosou or rotation"
+env -u PYTHONPATH python3 -m pytest -q ops/vm_actions/tests/test_collect_diagnostics.py -k "leaderboard or yosou or prediction"
 ```
 
 エビデンス: PR-1 の時点で中核 22 件 green。PR-3 では view / adapter / lifecycle / WebUI 予約の
 回帰を追加し、既存の rotation・webui・diagnostics の回帰も緑のまま。
+PR-5 では `tests/test_prediction_leaderboard.py` 39 件、`tests/test_hanjuku_predictions.py` 136 件、
+`ops/vm_actions/tests/test_collect_diagnostics.py` の ledger 系 10 件が green（schema 1 の
+読み替え、不成立キャンセルの参加・返金、5指標ボード、再観測での冪等を含む）。
 Twitch・ゲーム・本番 VM への接続は行わない（view は loopback のみ、テストは GameSwitch を
 fake runtime で駆動する）。
 

@@ -114,6 +114,31 @@ def test_ready_all_captured_excludes_home_and_boss(monkeypatch):
     assert policy._ready(order, {'chapter': chapter, 'captured': set(non_boss)})
 
 
+def test_ready_all_captured_keeps_unmeasured_castles_locked(monkeypatch):
+    """A partial chapter must not release the boss order on measured castles only."""
+    chapter = 3                                  # 3-12 ship with empty CASTLES
+    home = chart.home_castle(chapter)
+    boss = chart.boss_castle(chapter)
+    normal = set(chart.CASTLE_NAMES[chapter]) - {home, boss}
+    measured = {home, boss, sorted(normal)[0]}
+    planted = {name: (i, 0) for i, name in enumerate(sorted(measured))}
+    monkeypatch.setitem(chart.CASTLES, chapter, planted)
+    order = {'after': ('all_captured',), 'source': home, 'target': boss}
+    # Capturing every measured castle (the old gate's castle set) is not enough:
+    # the chapter's unmeasured normal castles are still unconquered.
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured)})
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured) - {boss}})
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {sorted(normal)[0]}})
+    assert policy._ready(order, {'chapter': chapter, 'captured': set(normal)})
+
+
+def test_ready_all_captured_fails_closed_without_chapter_names():
+    """An unknown chapter must never look fully captured."""
+    order = {'after': ('all_captured',), 'source': 'アルマムーン', 'target': 'ボス'}
+    mem = {'chapter': 99, 'captured': {'アルマムーン', 'ボス', 'みしらずじょう'}}
+    assert not policy._ready(order, mem)
+
+
 def test_reference_tables_and_endure_rule():
     assert ref.endure_safe_kill_hp(100) == 83
     assert ref.enemy_egg_likely([20, 20, 8])
