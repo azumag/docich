@@ -19,6 +19,14 @@ from docich import config  # noqa: E402
 from docich import speech  # noqa: E402
 from docich import webui  # noqa: E402
 
+# 実 HTTP fixture の共有ヘルパー (issue #2346)。PR #2340 で本ファイルに入れた
+# 追跡つき server と後片付けの待ちを ``tests/_webui_http_fixture.py`` へ移した。
+from _webui_http_fixture import (  # noqa: E402
+    assert_no_stuck_handlers as _assert_no_stuck_handlers,
+    shutdown_test_server as _shutdown_test_server,
+    tracking_server_class as _tracking_server_class,
+)
+
 
 def _make_global(repo_root: Path) -> config.GlobalConfig:
     return config.load_global(repo_root)
@@ -740,74 +748,6 @@ class TestRunWebuiStartsWithoutSorenRoot(unittest.TestCase):
             self.assertIn("soviet_now 未配置として起動します", out.getvalue())
 
 
-def _tracking_server_class():
-    """handler thread を追跡して明示的に待てる ThreadingHTTPServer を作る。
-
-    ``http.server.ThreadingHTTPServer`` は ``daemon_threads = True`` で、
-    ``ThreadingMixIn`` の ``_Threads`` は daemon thread を join 対象にしない。
-    そのため ``server_close()`` は「応答送信後も書込みを続けている handler」
-    (例: ``_guard_mutation`` の audit event、webui.log) を待たない。受け付けた
-    request をここで追跡し、tmp を消す前に完了を待てるようにする。
-
-    conftest が ``webui.ThreadingHTTPServer`` を poll interval 短縮版へ
-    monkeypatch するため、基底クラスは import 時ではなく呼び出し時に取得する
-    (追跡は fixture 用サーバーにだけ入れ、production の設定は変えない)。
-    """
-
-    base = webui.ThreadingHTTPServer
-
-    class _TrackingHTTPServer(base):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._handler_threads = []
-            self._handler_threads_lock = threading.Lock()
-
-        def process_request(self, request, client_address):
-            thread = threading.Thread(
-                target=self.process_request_thread,
-                args=(request, client_address),
-                daemon=True,
-                name="test-webui-handler",
-            )
-            with self._handler_threads_lock:
-                self._handler_threads.append(thread)
-            thread.start()
-
-        def wait_for_handlers(self, timeout=5.0):
-            """accept 済み request の handler が終わるまで待つ。
-
-            期限内に終わらなかった thread を返す (空 list なら全て完了)。
-            """
-            deadline = time.monotonic() + timeout
-            while True:
-                with self._handler_threads_lock:
-                    pending = [t for t in self._handler_threads if t.is_alive()]
-                    self._handler_threads = pending
-                if not pending:
-                    return []
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return pending
-                for thread in pending:
-                    thread.join(max(0.0, deadline - time.monotonic()))
-
-    return _TrackingHTTPServer
-
-
-def _shutdown_test_server(server, serve_thread, *, timeout=5.0):
-    """実 HTTP fixture の server を止め、in-flight handler の完了まで待つ。
-
-    戻り値は期限内に終わらなかった handler thread (空 list なら全て完了)。
-    ``shutdown()`` は accept loop しか止めず、daemon handler は ``server_close()``
-    でも join されないため、この待ちを挟まずに ``TemporaryDirectory.cleanup()``
-    すると rmtree と応答後の書込みが競合する (``OSError [Errno 39]``)。
-    """
-    server.shutdown()
-    server.server_close()
-    serve_thread.join(timeout=timeout)
-    return server.wait_for_handlers(timeout=timeout)
-
-
 class TestHttpHandlers(unittest.TestCase):
     """実サーバー (ThreadingHTTPServer) を起動して API を叩く。"""
 
@@ -852,7 +792,7 @@ class TestHttpHandlers(unittest.TestCase):
         # ``OSError [Errno 39] Directory not empty``.  Wait for the tracked
         # handlers explicitly before cleanup.
         stuck = _shutdown_test_server(self.server, self.thread)
-        self.assertEqual([], stuck, "in-flight handler did not finish before cleanup")
+        _assert_no_stuck_handlers(self, stuck)
         self.tmp.cleanup()
 
     def _fetch_csrf(self):
@@ -3247,7 +3187,7 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
                 conn.close()
             finally:
                 # 応答後に書く handler を残したまま tmp を消さない (PR #2340)。
-                self.assertEqual([], _shutdown_test_server(server, th))
+                _assert_no_stuck_handlers(self, _shutdown_test_server(server, th))
 
 
 class TestCornerManualCapabilities(unittest.TestCase):
