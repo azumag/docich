@@ -75,9 +75,21 @@ driver() {
         max_score="$cur"
       fi
     fi
+    # moon-buggy keeps the in-play HUD line ("level: ... score:") visible on
+    # its game-over / high-score / name-entry panes, so "level:" alone does not
+    # prove a match is running.  Treating those panes as play re-armed
+    # seen_game on every poll and appended the same finished score again on
+    # each one (issue #192).  Keep this marker set aligned with the brain's
+    # decide() guard: a pane counts as in play only when it shows the HUD and
+    # none of the transition markers.
+    in_play=0
     case "$text" in
-      *"level:"*) seen_game=1 ;;
+      *"start game"*|*"new game"*|*"game over"*|*"main menu"*|*"difficulty"*|*"press any key"*|*"enter your name"*|*"high score"*|*"paused"*) ;;
+      *"level:"*) in_play=1 ;;
     esac
+    if [ "$in_play" = "1" ]; then
+      seen_game=1
+    fi
     case "$text" in
       *"enter your name"*)
         # A score that ranks in the high-score table stops at a name prompt

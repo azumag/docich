@@ -205,6 +205,22 @@ def test_moon_buggy_without_high_score_skips_name_entry(tmp_path):
     assert [s["score"] for s in scores] == [8]
 
 
+def test_moon_buggy_stuck_high_score_screen_records_the_match_once(tmp_path):
+    # The game-over/high-score pane keeps the in-play HUD line
+    # ("level: 1 lives: 0 score: N") while it also offers "y,RET:new game".
+    # When nothing dismisses it (MAX_MATCHES is already reached, or the next
+    # match never starts) that same pane is captured on every poll, so the
+    # finished match must be recorded once instead of once per poll.
+    panes = [
+        pane(MOONBUGGY_PLAY, "16"), pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_NEW_GAME, "16"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes,
+    )
+    assert [s["score"] for s in scores] == [16]
+
+
 def test_moon_buggy_wrapper_records_the_selected_ab_arm_and_hash(tmp_path):
     state_dir = tmp_path / "run"
     staged = moon_buggy_ab.stage(
