@@ -241,11 +241,59 @@ INFORMATION_ENGINEERING_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat"),
 )
 
+ELECTRONICS_SPEC = CornerRuntimeSpec(
+    corner_id="electronics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "electronics_corner",
+        "fixed_electronics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="electricalTheme",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("electricalTheme", "fact", "今日のテーマ"),
+        Section("requirementsAndConstraints", "fact", "要求と制約"),
+        Section("inputOutput", "fact", "入力と出力"),
+        Section("electricalPrinciples", "analysis", "電気的原理"),
+        Section("circuitTopology", "analysis", "回路・デバイス構造"),
+        Section("lossesNoiseThermal", "analysis", "損失・ノイズ・熱"),
+        Section("failureModesAndProtection", "caveat", "故障モードと保護"),
+        Section("designRationale", "analysis", "なぜこの設計か"),
+        Section("tradeoffs", "analysis", "設計上のトレードオフ"),
+        Section("limitations", "caveat", "限界・未検証点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "inputOutput",
+        "electricalPrinciples",
+        "circuitTopology",
+        "lossesNoiseThermal",
+        "failureModesAndProtection",
+        "designRationale",
+        "tradeoffs",
+        "limitations",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "caveat"),
+)
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
     ENGINEERING_SPEC.corner_id: ENGINEERING_SPEC,
     INFORMATION_ENGINEERING_SPEC.corner_id: INFORMATION_ENGINEERING_SPEC,
+    ELECTRONICS_SPEC.corner_id: ELECTRONICS_SPEC,
 }
 
 
