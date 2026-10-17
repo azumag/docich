@@ -23,6 +23,12 @@ proves the original owner and that no game is running:
 Nothing else is touched: no canonical ledger, no resource/ack/request record,
 no worker pid, no systemd unit, and no shared display/audio/stream service.
 The supervisor alone decides whether to start a fresh loop.
+
+``tmp/state/soren_loop.resumed`` is deliberately left alone.  It is the
+adapter-side snapshot #2396 writes for cross-instance recovery, not broker
+state, and its recovery is fail-closed on a request-id mismatch, so a stale
+snapshot cannot adopt a later request.  Removing it here would widen this
+operator's blast radius past the one marker it proves.
 """
 from __future__ import annotations
 

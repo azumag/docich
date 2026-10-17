@@ -54,6 +54,13 @@ class ReleaseFixture(unittest.TestCase):
         self.marker = self.soren / "tmp" / "state" / "soren_loop.paused"
         self.record = self.soren / "tmp" / "state" / "game_lifecycle" / "loop_pause.json"
         self.record.parent.mkdir(parents=True)
+        # The adapter-side snapshot #2396 writes for cross-instance recovery.
+        # It is outside this operator's contract and must survive untouched.
+        self.resumed_snapshot = self.soren / "tmp" / "state" / "soren_loop.resumed"
+        self.resumed_snapshot.write_text(
+            json.dumps({"request_id": REQUEST_ID, "expected_request_id": REQUEST_ID,
+                        "identity": [4242, 777]})
+        )
         self.store = GameSwitchStore(self.state_dir)
         self.store.canonical.initialize()
         # Materialize the coordinator lock file now so the byte-for-byte
@@ -174,8 +181,10 @@ class ProvenReleaseTests(ReleaseFixture):
         self.assertIn("/tmp/debug/loop-pause-release-", next(iter(added)))
         for path in set(before) & set(after):
             self.assertEqual(before[path], after[path], path)
-        # The ownership record survives as the durable proof.
+        # The ownership record survives as the durable proof, and the
+        # adapter-side snapshot #2396 owns is outside this contract.
         self.assertTrue(self.record.is_file())
+        self.assertTrue(self.resumed_snapshot.is_file())
 
     def test_rotate_receipt_away_from_sorengame_also_proves_ownership(self):
         self.write_receipt(operation="rotate", target=None)
