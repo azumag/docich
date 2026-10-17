@@ -3730,6 +3730,118 @@ def _collect_ab(soren, now):
     return entry
 
 
+# Fixed game set whose match-end records back the broadcast score-stats panel.
+# Paths are always derived from this tuple, never from state input (#2392).
+RETRO_SCORELOG_GAMES = (
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
+)
+RETRO_SCORELOG_TAIL_BYTES = 64 * 1024
+RETRO_SCORELOG_MAX_LINES = 400
+RETRO_SCORELOG_LAST = 5
+# Producers today: the CLI wrappers, the resolver brain and the corner-recorded
+# live scores. Anything else is counted as "other" instead of echoed.
+RETRO_SCORELOG_SOURCES = ("agent", "live", "wrapper")
+RETRO_SCORELOG_MAX_SCORE = 10**9
+
+
+def _collect_retro_scores(state_dir, now):
+    """Bounded, sanitized tail of each game's match-end scorelog (#2392).
+
+    A CLI wrapper appends one record per finished match.  The regression this
+    evidence exists for is a wrapper that keeps treating a lingering game-over
+    pane as "in play" and therefore appends the same confirmed score every
+    poll, so the projection has to answer "how many records, and how long is
+    the longest run of one repeated score" without exposing the raw log.
+
+    Only the fixed game names are read, only the file tail is scanned, and
+    only bounded integers, the enumerated producers and the duplicate-run
+    length are emitted.  Other record fields (clip ids, hashes, paths, free
+    text) are never projected.
+    """
+    scores_dir = Path(state_dir) / "scores"
+    result = {
+        "present": False,
+        "game_count": len(RETRO_SCORELOG_GAMES),
+        "games": {},
+    }
+    for game in RETRO_SCORELOG_GAMES:
+        entry = {
+            "present": False,
+            "readable": False,
+            "records": 0,
+            "invalid": 0,
+            "truncated": False,
+            "sources": {name: 0 for name in (*RETRO_SCORELOG_SOURCES, "other")},
+            "max_same_score_run": 0,
+            "last": [],
+            "age_sec": -1,
+        }
+        path = scores_dir / f"{game}.jsonl"
+        try:
+            if path.is_symlink() or not path.is_file():
+                result["games"][game] = entry
+                continue
+            st = path.stat()
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["present"] = True
+        result["present"] = True
+        entry["age_sec"] = _file_age_sec(path, now)
+        tail = st.st_size > RETRO_SCORELOG_TAIL_BYTES
+        try:
+            with open(path, "rb") as handle:
+                if tail:
+                    handle.seek(st.st_size - RETRO_SCORELOG_TAIL_BYTES)
+                raw = handle.read(RETRO_SCORELOG_TAIL_BYTES)
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["readable"] = True
+        entry["truncated"] = tail
+        lines = raw.split(b"\n")
+        if tail:
+            lines = lines[1:]  # drop the partial line the seek landed inside
+        lines = [line for line in lines if line.strip()]
+        if len(lines) > RETRO_SCORELOG_MAX_LINES:
+            lines = lines[-RETRO_SCORELOG_MAX_LINES:]
+            entry["truncated"] = True
+        scores = []
+        last = []
+        for line in lines:
+            try:
+                row = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                row = None
+            if not isinstance(row, dict):
+                entry["invalid"] += 1
+                continue
+            score = row.get("score")
+            if type(score) is not int or not 0 <= score <= RETRO_SCORELOG_MAX_SCORE:
+                entry["invalid"] += 1
+                continue
+            producer = row.get("source")
+            name = producer if producer in RETRO_SCORELOG_SOURCES else "other"
+            entry["sources"][name] += 1
+            entry["records"] += 1
+            scores.append(score)
+            last.append({
+                "ts": _bounded_time(row.get("ts")),
+                "score": score,
+                "source": name,
+            })
+        run = 0
+        previous = None
+        for score in scores:
+            run = run + 1 if score == previous else 1
+            previous = score
+            if run > entry["max_same_score_run"]:
+                entry["max_same_score_run"] = run
+        entry["last"] = last[-RETRO_SCORELOG_LAST:]
+        result["games"][game] = entry
+    return result
+
+
 _HOTLOAD_STATES = frozenset({"consistent", "mixed", "partial", "unestablished"})
 _HOTLOAD_ROLES = ("agent", "corner")
 _HOTLOAD_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
@@ -5185,6 +5297,7 @@ def _collect_programs(state_dir, soren, now):
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["retro_program_queues"] = _collect_retro_program_queues(soren)
     payload["ab"] = _collect_ab(soren, now)
+    payload["retro_scores"] = _collect_retro_scores(state_dir, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
     return payload
 
@@ -8987,6 +9100,12 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
+    # The scorelog tail is the only read-only evidence for "one score record per
+    # match" (#2392). It stays under a few KiB, so it yields only against the
+    # gateway's hard ceiling rather than the softer budget.
+    if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict)
+            and "retro_scores" in corners):
+        corners["retro_scores"] = {"status": "output_omitted"}
     return _nethack_history_budget(payload)
 
 
