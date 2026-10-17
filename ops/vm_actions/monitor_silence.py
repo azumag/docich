@@ -69,12 +69,12 @@ def gh_runner(args: Sequence[str]) -> str:
 
 
 def latest_success_created_at(runner: Runner, repo: str, workflow: str) -> str | None:
-    """The creation time of the newest successful run, or ``None``."""
+    """The creation time of the newest successful main run, or ``None``."""
 
     out = runner(
         [
             "api",
-            f"repos/{repo}/actions/workflows/{workflow}/runs?status=success&per_page=1",
+            f"repos/{repo}/actions/workflows/{workflow}/runs?branch=main&status=success&per_page=1",
             "--jq",
             ".workflow_runs[0].created_at // empty",
         ]

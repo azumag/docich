@@ -3,6 +3,7 @@
 import datetime as dt
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from ops.vm_actions import monitor_silence as silence
 
@@ -16,11 +17,12 @@ THRESHOLD = 6.0
 class FakeGh:
     """A bounded ``gh`` stand-in that records every mutation."""
 
-    def __init__(self, created=None, alert=None, fail_query=None, list_shape=None):
+    def __init__(self, created=None, alert=None, fail_query=None, list_shape=None, runs=None):
         self.created = created
         self.alert = alert
         self.fail_query = fail_query
         self.list_shape = list_shape
+        self.runs = runs
         self.calls = []
 
     def __call__(self, args):
@@ -30,6 +32,15 @@ class FakeGh:
         if args and args[0] == "api":
             if self.fail_query == "runs":
                 raise silence.QueryError("runs query failed")
+            if self.runs is not None:
+                query = parse_qs(urlsplit(args[1]).query)
+                runs = self.runs
+                for parameter, field in (("branch", "head_branch"),
+                                         ("status", "conclusion"), ("event", "event")):
+                    if parameter in query:
+                        runs = [r for r in runs if r[field] in query[parameter]]
+                runs = sorted(runs, key=lambda r: r["created_at"], reverse=True)
+                return (runs[0]["created_at"] if runs else "") + "\n"
             return (self.created or "") + "\n"
         if args[:2] == ["issue", "list"]:
             if self.fail_query == "issues":
@@ -80,6 +91,43 @@ class FreshnessDecisionTests(unittest.TestCase):
 
 
 class DetectorStateTests(unittest.TestCase):
+    def test_success_query_is_main_only_without_an_event_filter(self):
+        fake = FakeGh(created=iso(1))
+        silence.latest_success_created_at(fake, "azumag/docich", silence.DEFAULT_WORKFLOW)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(parse_qs(urlsplit(fake.calls[0][1]).query), {
+            "branch": ["main"], "status": ["success"], "per_page": ["1"],
+        })
+
+    def test_fresh_other_branch_success_does_not_mask_stale_main(self):
+        runs = [
+            {"head_branch": "main", "conclusion": "success", "event": "schedule",
+             "created_at": iso(8)},
+            {"head_branch": "monitor-test", "conclusion": "success",
+             "event": "workflow_dispatch", "created_at": iso(1)},
+        ]
+        for alert, expected in ((42, ["issue", "edit", "42"]),
+                                (None, ["issue", "create", "--repo"])):
+            with self.subTest(alert=alert):
+                fake = FakeGh(runs=runs, alert=alert)
+                code, _ = run_detector(fake)
+                self.assertEqual(code, silence.EXIT_OK)
+                self.assertEqual([c[:3] for c in fake.mutations()], [expected])
+                body = fake.mutations()[0][-1]
+                self.assertIn(iso(8), body)
+                self.assertNotIn(iso(1), body)
+
+    def test_a_fresh_main_dispatch_success_can_close_the_alert(self):
+        fake = FakeGh(alert=42, runs=[
+            {"head_branch": "main", "conclusion": "success", "event": "schedule",
+             "created_at": iso(8)},
+            {"head_branch": "main", "conclusion": "success",
+             "event": "workflow_dispatch", "created_at": iso(1)},
+        ])
+        code, _ = run_detector(fake)
+        self.assertEqual(code, silence.EXIT_OK)
+        self.assertEqual([c[:3] for c in fake.mutations()], [["issue", "close", "42"]])
+
     def test_a_fresh_monitor_without_an_alert_does_nothing(self):
         fake = FakeGh(created=iso(1))
         code, _ = run_detector(fake)

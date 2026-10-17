@@ -17,7 +17,8 @@ fail-closed で静かに止まる（2026-10-15〜10-17 の実測では dispatch 
 ## 動作
 
 - 毎時 `:29`（monitor の `:17` / `:47` と別スロット）に、`vm-storage-monitor.yml` の
-  **最新の成功 run** の時刻を読む。
+  **main の最新成功 run** の時刻を読む（`branch=main` で固定し、event では絞らない）。
+  main の正規 `workflow_dispatch` 成功も対象とし、別 branch の動作確認成功は含めない。
 - 成功 run が閾値（6 時間）以内なら何もしない。開いている沈黙アラートがあれば close する。
 - 閾値を超えている、または成功 run が 1 件も無い場合は、固定タイトル
   `[VM monitor] silence (no successful run)` の Issue を**1 件だけ**開き、既に開いていれば
