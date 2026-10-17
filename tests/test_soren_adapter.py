@@ -163,6 +163,71 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                         adapter._wait_round_boundary(receipt["request"], time.monotonic() - (1 if not cancel_set else -30), cancel)
                 self.assertEqual(calls, [])
 
+    def test_expired_waiting_boundary_names_the_cleanup_in_the_error(self):
+        """#2061: a waiting handover past *its own* deadline must be named.
+
+        The broker only rewrites an expired request to ack=timeout when
+        something polls it, so a wedged cleanup keeps answering waiting until
+        the caller's deadline.  The message reaches the canonical
+        last_error.detail, so it must identify the expired waiting cleanup
+        instead of a bare deadline.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            # The broker's own request deadline is already in the past.  One
+            # epoch for all three records: the identity is compared exactly.
+            past = time.time() - 600
+            expired = self.boundary_payload("accepted", deadline_epoch=past)
+            stale = self.boundary_payload("waiting", deadline_epoch=past)
+            with patch.object(adapter, "_status", return_value=stale), \
+                    patch.object(adapter, "_broker", return_value=(1, stale)):
+                with self.assertRaises(DeadlineExceededError) as ctx:
+                    adapter._wait_round_boundary(expired["request"], time.monotonic() + 0.05, None)
+            message = str(ctx.exception)
+            self.assertIn("期限切れ", message)
+            self.assertIn("expired waiting cleanup", message)
+            self.assertIn(expired["request"]["request_id"], message)
+
+    def test_a_still_valid_request_deadline_keeps_the_plain_message(self):
+        """A slow match answering waiting is a plain deadline, not a wedge.
+
+        Only the broker's own expired deadline proves the #2061 cleanup; a
+        still-valid request must not be mislabelled as an expired cleanup.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")  # deadline_epoch = 2030
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(1, self.boundary_payload("waiting"))):
+                with self.assertRaises(DeadlineExceededError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 0.05, None)
+            message = str(ctx.exception)
+            self.assertNotIn("expired waiting cleanup", message)
+            self.assertNotIn("期限切れ", message)
+
+    def test_broker_expired_boundary_names_the_request_deadline(self):
+        """A broker ack=timeout (RC_EXPIRED) is an expired cleanup, not a mystery."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(2, self.boundary_payload("timeout"))):
+                with self.assertRaises(AdapterError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 30, None)
+            message = str(ctx.exception)
+            self.assertIn("request deadline", message)
+            self.assertIn("expired waiting cleanup", message)
+
+    def test_a_terminal_ack_is_still_refused_without_claiming_an_expiry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(3, self.boundary_payload("failed"))):
+                with self.assertRaises(AdapterError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 30, None)
+            self.assertNotIn("expired waiting cleanup", str(ctx.exception))
+
     def test_reconfigure_player_commits_only_after_prepared_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))

@@ -19,6 +19,21 @@ from ..game_switch import (
 from .base import AdapterError
 
 
+def _request_deadline_passed(ack: dict) -> bool:
+    """Whether the broker's own request deadline has already passed.
+
+    ``waiting`` alone never proves an expired cleanup: a slow match keeps
+    answering ``waiting`` while its request is still valid.  Only a request
+    whose ``deadline_epoch`` has passed is the #2061 wedge (issue #2061).
+    """
+    raw = ack.get("deadline_epoch") if isinstance(ack, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return False
+    if not math.isfinite(raw):
+        return False
+    return float(raw) <= time.time()
+
+
 class SorenCoordinatorAdapter:
     name = "soren"
 
@@ -172,24 +187,61 @@ class SorenCoordinatorAdapter:
         A runner waiting for MOVE after founding STOP cannot reach its normal
         post-game boundary poll. The coordinator drives the same broker check;
         only the broker decides whether its fresh evidence permits a boundary.
+
+        A handover that keeps answering ``waiting`` past *its own* request
+        deadline is the #2061 wedge: nothing polls the broker, so it never
+        rewrites its ack to ``timeout``.  That failure names the expired waiting
+        cleanup, because the message reaches the canonical
+        ``last_error.detail`` and the read-only diagnostics.
+
+        ``waiting`` alone is not proof, though: a slow match keeps answering
+        ``waiting`` while its request is still valid, and that must stay a plain
+        deadline.  The cross-check is the broker's own ``deadline_epoch``, which
+        the receipt identity already pins.  Exception types are unchanged, so
+        the coordinator's error codes are unchanged.
         """
-        while True:
-            self._check(deadline, cancel)
-            ack = self._checked_round_boundary_ack(self._status(deadline, cancel), receipt)
-            status = ack.get("status")
-            if status == "boundary":
+        observed = ""
+        last_ack: dict = {}
+
+        def check() -> None:
+            try:
                 self._check(deadline, cancel)
+            except DeadlineExceededError as exc:
+                if observed in {"accepted", "waiting"} and _request_deadline_passed(last_ack):
+                    raise DeadlineExceededError(
+                        f"Soren lifecycle boundaryが期限切れの{observed} cleanupのままです "
+                        f"(expired waiting cleanup, request={receipt.get('request_id')})"
+                    ) from exc
+                raise
+
+        while True:
+            check()
+            ack = self._checked_round_boundary_ack(self._status(deadline, cancel), receipt)
+            last_ack = ack
+            observed = str(ack.get("status") or "")
+            if observed == "boundary":
+                check()
                 return
-            if status not in {"accepted", "waiting"}:
+            if observed not in {"accepted", "waiting"}:
                 raise AdapterError("Soren lifecycle boundaryを待機できない状態です")
 
-            self._check(deadline, cancel)
+            check()
             rc, payload = self._broker("boundary", receipt["request_id"], deadline, cancel)
             ack = self._checked_round_boundary_ack(payload, receipt)
-            self._check(deadline, cancel)
-            if rc == 0 and ack.get("status") == "boundary":
+            last_ack = ack
+            observed = str(ack.get("status") or "")
+            check()
+            if rc == 0 and observed == "boundary":
                 return
-            if rc != 1 or ack.get("status") != "waiting":
+            if observed == "timeout":
+                # The broker rewrote its ack because the request deadline
+                # expired (RC_EXPIRED). The cleanup can never reach a boundary,
+                # so name the expiry instead of a generic refusal.
+                raise AdapterError(
+                    "Soren lifecycle boundaryのrequest deadlineが期限切れです "
+                    f"(expired waiting cleanup, request={receipt.get('request_id')})"
+                )
+            if rc != 1 or observed != "waiting":
                 raise AdapterError("Soren lifecycle boundaryを確定できません")
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 

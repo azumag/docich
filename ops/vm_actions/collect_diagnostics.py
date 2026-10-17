@@ -980,6 +980,8 @@ LIFECYCLE_PAUSE_RECORDS = {
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
 LIFECYCLE_DEADLINE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
     "boundary",
     "stop_requested",
     "stopping",
@@ -1018,6 +1020,17 @@ LIFECYCLE_WAITING_FOR = (
     "lifecycle_handover",
     "fresh_launch",
     "operator_action",
+    # An accepted/waiting handover whose request deadline has already passed
+    # while its lifecycle pause markers survive (docich #2061).  The broker
+    # only rewrites such an ack to ``timeout`` when something polls
+    # ``boundary``, so a wedged cleanup keeps reporting ``waiting``; this enum
+    # identifies the expired cleanup instead of reading as a live handover.
+    "expired_waiting",
+    # A pause marker whose ownership record proves a lifecycle request created
+    # it, while that request is gone from the broker (consumed).  The #2061 fix
+    # deliberately preserves this proof, so the residue the fixed operator
+    # releases must not read as an unprovable "unknown" pause.
+    "orphaned_lifecycle_pause",
     "unknown",
 )
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
@@ -1259,6 +1272,37 @@ def _lifecycle_request_active(state_dir, request_id, now):
     return math.isfinite(deadline) and deadline > float(now)
 
 
+def _pause_record_owner(state_dir, name):
+    """The request a pause marker names, when its record proves creation.
+
+    Deliberately independent of whether that request is still live.  This is
+    the durable proof the #2061 fix preserves, so an orphaned lifecycle pause
+    can be told apart from an operator pause or an unprovable residue.
+    Never returns anything but the request id to internal callers; no caller
+    emits it.
+    """
+    marker = state_dir / f"{name}.paused"
+    raw = _read_text_capped(marker, 512)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value.startswith("lifecycle:"):
+        return None
+    request_id = value[len("lifecycle:"):].strip()
+    spec = LIFECYCLE_PAUSE_RECORDS.get(name)
+    if not request_id or spec is None:
+        return None
+    record_name, owner_field = spec
+    record = _read_json(state_dir / "game_lifecycle" / record_name)
+    if (
+        isinstance(record, dict)
+        and record.get("request_id") == request_id
+        and record.get(owner_field) is True
+    ):
+        return request_id
+    return None
+
+
 def _pause_owner(state_dir, name, now):
     """Classify one existing pause marker without exposing marker contents."""
     marker = state_dir / f"{name}.paused"
@@ -1267,18 +1311,8 @@ def _pause_owner(state_dir, name, now):
         return "unknown"
     value = raw.strip()
     if value.startswith("lifecycle:"):
-        request_id = value[len("lifecycle:"):].strip()
-        spec = LIFECYCLE_PAUSE_RECORDS.get(name)
-        if not request_id or spec is None:
-            return "unknown"
-        record_name, owner_field = spec
-        record = _read_json(state_dir / "game_lifecycle" / record_name)
-        if (
-            isinstance(record, dict)
-            and record.get("request_id") == request_id
-            and record.get(owner_field) is True
-            and _lifecycle_request_active(state_dir, request_id, now)
-        ):
+        request_id = _pause_record_owner(state_dir, name)
+        if request_id and _lifecycle_request_active(state_dir, request_id, now):
             return "lifecycle_owned"
         return "unknown"
     try:
@@ -1346,6 +1380,7 @@ def _collect_lifecycle_pause(soren, now, workers=None):
     if isinstance(workers, dict):
         details = workers.get("details") or {}
     owned = []
+    orphaned = []
     operator_paused = False
     any_paused = False
     for name in LIFECYCLE_PAUSE_RECORDS:
@@ -1362,8 +1397,14 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             operator_paused = True
         if is_paused and owner == "lifecycle_owned":
             owned.append(name)
+        elif is_paused and _pause_record_owner(state_dir, name):
+            # The record proves a lifecycle request created this marker, but
+            # that request is not live: the residue #2061's fix preserves.
+            orphaned.append(name)
     owned = sorted(owned)
+    orphaned = sorted(orphaned)
     active = False
+    expired_waiting = False
     if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
         if ack_status == "stopped":
             # Terminal park: the bridge intentionally waits for a fresh
@@ -1374,18 +1415,33 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
             if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
                 active = bool(float(deadline_raw) > float(now))
+                expired_waiting = bool(
+                    not active and ack_status in {"accepted", "waiting"}
+                )
             else:
                 active = False
         else:
-            # accepted/waiting/boundary: handover accepted but the broker has
-            # not parked a deadline-bound phase yet; still governed.
-            active = True
+            # Any remaining live status is deadline-bound too; fail closed
+            # rather than report an unproven handover as active.
+            active = False
     if active and ack_status == "stopped" and owned:
         waiting_for = "fresh_launch"
     elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
         waiting_for = "lifecycle_handover"
     elif operator_paused:
         waiting_for = "operator_action"
+    elif expired_waiting and any_paused:
+        # docich #2061: an accepted/waiting handover past its deadline left
+        # lifecycle pause markers behind.  Reporting this as
+        # "lifecycle_handover" hid the exact cleanup the operator has to
+        # cancel, so it gets its own enum (see LIFECYCLE_WAITING_FOR).
+        waiting_for = "expired_waiting"
+    elif request_status == "absent" and orphaned:
+        # The broker has no request at all, yet a pause record still proves a
+        # lifecycle request created its marker: the residue a consumed switch
+        # left behind, which the fixed operator releases (docich #2061).  It
+        # must not read as an unprovable "unknown" pause.
+        waiting_for = "orphaned_lifecycle_pause"
     elif any_paused:
         # Paused markers exist but none prove an active lifecycle handover
         # nor an operator webui pause: stale, expired or mismatched.
