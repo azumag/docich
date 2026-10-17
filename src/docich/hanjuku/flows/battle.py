@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict
 
 from ..judgment.battle import _general_egg_rescue_recheck
-from ..judgment import egg_bait
+from . import egg_bait
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience

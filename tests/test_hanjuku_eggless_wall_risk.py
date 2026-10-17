@@ -285,7 +285,7 @@ def test_unconfirmed_foreign_or_own_summons_never_prove_enemy_use(change):
 
 @pytest.mark.parametrize('change', ['run', 'chapter', 'actor', 'enemy', 'battle_end'])
 def test_old_intention_never_survives_a_different_battle_or_scope(change):
-    from docich.hanjuku.judgment import egg_bait
+    from docich.hanjuku.flows import egg_bait
     mem = bait_memory(); arm_bait(mem)
     assert p.egg_battle_step(summon_panel(), mem) == [p.pad('b')]
     if change == 'run': mem['_run_identity']['generation'] += 1
@@ -322,7 +322,7 @@ def test_native_enemy_general_command_is_not_the_opponents_egg_use():
 
 @pytest.mark.parametrize('change', ['age', 'future', 'bool_tick', 'bad_monster', 'bad_hp', 'bool_scope'])
 def test_stale_or_malformed_saved_summon_proof_does_not_authorize_retreat(change):
-    from docich.hanjuku.judgment import egg_bait
+    from docich.hanjuku.flows import egg_bait
     mem = bait_memory(); arm_bait(mem); p.egg_battle_step(summon_panel(), mem)
     proof = mem['battle']['enemy_egg_bait']
     if change == 'age': mem['tick'] += egg_bait.RETURN_PROOF_TICKS + 1

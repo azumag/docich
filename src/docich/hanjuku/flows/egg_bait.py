@@ -51,7 +51,7 @@ def cancel(mem, cur, reason):
 
 
 def observe_melee(screen, mem, cur):
-    from .battle import _own_egg_empty, _pre_summon_hp_advantage
+    from ..judgment.battle import _own_egg_empty, _pre_summon_hp_advantage
     previous = cur.get('enemy_egg_bait')
     state = _active(mem, cur)
     if previous is not None and state is None:
@@ -80,7 +80,7 @@ def observe_melee(screen, mem, cur):
 
 
 def observe_summon(screen, mem, cur):
-    from .battle import _own_egg_empty
+    from ..judgment.battle import _own_egg_empty
     state = _active(mem, cur)
     if not state or state['phase'] == 'cancelled':
         return False
@@ -115,7 +115,7 @@ def observe_summon(screen, mem, cur):
 
 
 def retreat_due(mem, cur):
-    from .battle import _own_egg_empty
+    from ..judgment.battle import _own_egg_empty
     state = _active(mem, cur)
     if (not state or state['phase'] != 'summoned' or cur.get('side') != 'attack'
             or not _own_egg_empty(mem, cur) or cur.get('card_hp_unread')
