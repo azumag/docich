@@ -464,6 +464,13 @@ class RetroCornerManager:
     # 終了告知を finish 直後に呼ぶため、それぞれで無効化する。
     announce_end_result = True
 
+    # Catalog adapters whose durable rotation records ``settle_released_failure``
+    # may retire for this manager family (#2352). The retro ``game`` manager
+    # settles only ``game`` records; ``NethackCornerManager`` widens the set to
+    # its own ``nethack`` records. A record naming any other adapter never
+    # becomes permission here.
+    _released_owner_adapters = frozenset({"game"})
+
     def __init__(
         self,
         g: GlobalConfig,
@@ -1223,7 +1230,8 @@ class RetroCornerManager:
         that owns the failed state. The per-corner pointer may already name a
         later request; the bounded audit row is what keeps the original
         request's release provable (#2282). Anything unreadable, a different
-        corner, a different game, or a non-``game`` adapter refuses.
+        corner, a different game, or an adapter outside this manager family's
+        ``_released_owner_adapters`` refuses.
 
         ``released_settle_pending`` is accepted as well: it is written into this
         corner state (never the evictable bounded audit) at the moment the
@@ -1253,7 +1261,7 @@ class RetroCornerManager:
         known = ledger.get("known_corners")
         record = known.get(corner_id) if isinstance(known, dict) else None
         if (not isinstance(record, dict)
-                or record.get("adapter") != "game"
+                or record.get("adapter") not in self._released_owner_adapters
                 or record.get("game") != game):
             return False
         released = ledger.get("released_requests")
