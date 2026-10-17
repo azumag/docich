@@ -715,9 +715,17 @@ owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.ym
 `hanjuku-evidence-export-<repo>`）を持ち、scheduled `vm-storage-monitor` と同一 group
 を共有しない。#1922 のとおり、開始しない queued run が shared group を占有して
 以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなるからである。
-monitor 側は引き続き `vm-storage-monitor-<repo>` を維持し、VM 操作の直列化は
+monitor 側は `vm-storage-monitor-v2-<repo>` を持つ。VM 操作の直列化は
 gateway の固定 `vm-operations.lock` が担うため、group は二重の防御であり、失敗時に
 owner の read-only 証跡取得まで止める必要はない。
+
+旧名 `vm-storage-monitor-<repo>` は 2026-10-15 まで owner 起動 evidence workflow と
+共有していた group で、その間に開始しない queued run が占有した状態が残り、evidence
+側が専用 group へ移った後も monitor だけが同じ group へ到着し続けた。結果として
+scheduled monitor の run は 2026-10-02 以降 job を作らない `pending` / `cancelled`
+のまま停止した（#2376）。group 名は 2026-10-17 に `vm-storage-monitor-v2-<repo>` へ
+更新し、wedge した group 状態から離脱した。production control lane を
+`vm-operations-v2-<repo>` へ移した #1875 と同じ処置である。旧名は再利用しない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
