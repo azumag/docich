@@ -81,6 +81,19 @@ def test_game_over_still_ends_without_saving_or_loading(adapter, monkeypatch):
     assert not any(c in calls for c in ['SAVE_STATE', 'LOAD_STATE', 'PAUSE_TOGGLE'])
 
 
+@pytest.mark.parametrize('reason', ['screen_stalled', 'input_stalled', 'game_over'])
+def test_manual_stop_keeps_detected_terminal_reason_and_its_save_policy(adapter, monkeypatch, reason):
+    calls = setup(adapter, monkeypatch)
+    terminal(adapter, reason)
+    game_switch.atomic_write_json(adapter.spec.runtime_dir / MANUAL_SAVE_FILE,
+        dict(identity(adapter.spec, 'manual-terminal-stop'), allow_unsaved_stop=True))
+    adapter.request_round_boundary('manual-terminal-stop', time.monotonic() + 2, None)
+    receipt = read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)
+    assert receipt['outcome'] == reason and receipt['frame_sha256'] == 'a' * 64
+    assert calls.count('SAVE_STATE') == (0 if reason == 'game_over' else 1)
+    assert ('checkpoint' in receipt) == (reason != 'game_over')
+
+
 @pytest.mark.parametrize('bad', ['missing', 'changed', 'legacy'])
 def test_cleanup_cannot_discard_a_stalled_game_without_intact_checkpoint(adapter, monkeypatch, bad):
     setup(adapter, monkeypatch)

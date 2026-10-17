@@ -810,6 +810,8 @@ class CornerExecutionCoordinator:
                     wait_deadline_ts=self.clock() + self.wait_seconds,
                     wait_boundary=True, sleep=self.sleep, now=self.clock,
                 ):
+                    from .hanjuku_resume import prepare_start
+                    prepare_start(self.g, request)
                     return adapter.run(request)
         except CornerWaitExpired:
             return "queued"
