@@ -143,12 +143,17 @@ def test_pending_recovery_keeps_its_existing_reservation(flag):
     assert mem['shop']['reserve'] == 40 and mem['shop']['egg_priority']
 
 
-def test_actual_current_member_low_stock_keeps_recovery_ahead_of_zero_army():
+def test_actual_current_member_low_stock_waits_behind_a_zero_army_refill():
+    # Owner (2026-10-17): twenty or fewer soldiers are refilled before eggs,
+    # the hero's included. The recovery is not paid, released or forgotten.
     mem = memory(); mem['egg_uses'][p.NAME] = 0
     assert p.NAME in economy._egg_recovery_targets(mem)
-    shop = mem['shop']; before = shop['soldiers']
-    economy._zero_army_refill(mem, shop, native(9331).header)
-    assert shop['soldiers'] == before and not shop.get('soldier_receipt')
+    shop = mem['shop']; reserve = shop['reserve']
+    economy._low_army_refill(mem, shop, native(9331).header)
+    assert shop['soldiers'] == 50 and shop['soldiers_done'] is False
+    assert not shop.get('soldier_receipt')
+    assert shop['reserve'] == reserve and shop['egg'] == 'skipped'
+    assert p.NAME in economy._egg_recovery_targets(mem)
     assert p._own_egg_empty(mem, {'ally': p.NAME})
 
 
@@ -204,7 +209,7 @@ def test_measured_zero_army_is_refilled_past_a_large_payroll():
     mem['soldiers_seen'] = 0
     mem['soldiers_seen_key'] = '2-4'
     mem['soldiers_seen_scope'] = economy._soldier_count_scope(mem, {'year':2,'month':4,'gold':99})
-    economy._zero_army_refill(mem, shop, {'year':2,'month':4,'gold':99})
+    economy._low_army_refill(mem, shop, {'year':2,'month':4,'gold':99})
     assert shop['soldiers'] == economy.SOLDIER_ENOUGH
     assert shop['soldiers_target'] == economy.SOLDIER_ENOUGH
 
@@ -257,7 +262,7 @@ def test_saved_completed_membership_and_pending_payment_keep_their_boundaries():
     assert mem['shop']['soldiers'] == 50
     mem['shop']['soldier_receipt'] = {'status':'pending','qty':50,'gold_before':70,'key':'2-4'}
     before = deepcopy(mem['shop']['soldier_receipt'])
-    economy._zero_army_refill(mem, mem['shop'], native(9331).header)
+    economy._low_army_refill(mem, mem['shop'], native(9331).header)
     economy._limit_soldier_refill(mem, mem['shop'], native(9331).header)
     assert mem['shop']['soldier_receipt'] == before
 

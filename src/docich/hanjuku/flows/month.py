@@ -25,12 +25,13 @@ from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_AB
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
                                 _egg_estimate, _egg_measured_cost, _egg_recovery_targets, _egg_recovery_wage_floor,
                                 _hero_egg_wage_floor, _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
-                                _month_held_reserve, _month_key, _plan, _prepare_recruit_egg_check,
+                                _low_army_planned, _low_army_refill, _month_held_reserve, _month_key, _plan,
+                                _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
                                 _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities,
                                 _refresh_egg_priority, _soldier_count_current, _soldier_count_scope,
                                 _soldiers_enough, _stop_uneconomic_recruit, _stop_unneeded_recruit,
-                                _zero_army_refill)
+                                low_army_first)
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
@@ -207,7 +208,7 @@ def month_step(screen: Screen, mem):
     body = _month_dialog_body(screen)
     if shop:
         _refresh_egg_priority(mem, shop, screen.header)
-        _zero_army_refill(mem, shop, screen.header)
+        _low_army_refill(mem, shop, screen.header)
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
         _limit_soldier_refill(mem, shop, screen.header)
     if (mem.get('month_sub', {}).get('kind') == 'recruit'
@@ -289,7 +290,8 @@ def month_step(screen: Screen, mem):
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
         return count_check
-    if shop and not shop['merchant_done'] and shop['items']:
+    # Owner (2026-10-17): a low army's refill is bought before the cards.
+    if shop and not shop['merchant_done'] and shop['items'] and not low_army_first(shop):
         move = _month_menu_move(screen, mem, 'しょうにん')
         if isinstance(move, list):
             return move
@@ -339,10 +341,12 @@ def month_step(screen: Screen, mem):
         # A known skip may release the unusable egg hold for a measured
         # shortage in this same observation. Unverified payments still hold.
         _refresh_egg_priority(mem, shop, screen.header)
-        # Keep the old bounded zero-army exception if no new deferral applies.
+        # Keep a planned low-army refill (formerly zero-army only) if no
+        # new deferral applies.
         if (_egg_before_soldiers(shop)
-                and not (_soldier_count_current(mem, screen.header) and mem.get('soldiers_seen') == 0
-                         and shop.get('zero_army_refill_recorded'))):
+                and not (_low_army_planned(mem, shop, screen.header)
+                         or (_soldier_count_current(mem, screen.header) and mem['soldiers_seen'] == 0
+                             and shop.get('zero_army_refill_recorded')))):
             shop['soldiers'] = 0
             shop['soldiers_done'] = True
     if (shop and shop.get('recruit_priority')
