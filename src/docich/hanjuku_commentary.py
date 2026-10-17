@@ -129,12 +129,24 @@ def compose(rec: dict) -> tuple[str, str | None]:
             text += 'チャートの予定と条件が異なるため、買える範囲で進めます。'
         text += f'購入予定は{cards}です。' if cards else '切り札の購入はありません。'
         if type(soldiers) is int and soldiers > 0:
-            text += f'兵士を{soldiers}人補充します。'
+            # A plan made before this month's count is read (Issue #2366).
+            text += f'兵士を{soldiers}人補充する予定です。'
         return f"plan:{rec['month']}", text
     if kind == 'buy':
         return f"buy:{rec.get('card')}:{rec.get('qty')}", f"{rec['card']}を{rec['qty']}個購入する予定です。決定操作を進めます。"
     if kind == 'soldier_refill':
         return 'soldiers', f"兵士を{rec['qty']}人補充します。"
+    if kind == 'soldier_refill_outcome':
+        # Closes an announced refill that was never paid; never a purchase.
+        metric = rec.get('observed_metric') or {}
+        ending = {'cancelled': '確認の途中で別の画面に移ったため、今月は中止しました。',
+                  'unverified': '人数や支払いを画面で確認できなかったため、補充できたとは扱いません。',
+                  'attempt_limit': '補充の画面が決められた回数のうちに開かなかったため、今月は打ち切りました。',
+                  }.get(rec.get('resulting_event'))
+        planned = metric.get('planned')
+        if ending is None or type(planned) is not int or planned <= 0:
+            return 'soldiers_outcome', None
+        return 'soldiers_outcome', f'予定していた兵士の補充は、{ending}'
     if kind == 'poor_harvest':
         return 'harvest', '凶作です。チャートならリセットする場面ですが、このまま進めます。'
     if kind == 'prompt' and rec.get('strategy_variant') == 'accept_duel':
@@ -212,7 +224,7 @@ SPOKEN = frozenset({
     'battle_egg_dropped', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
-    'castle_lost_observed', 'castle_owned_observed'})
+    'castle_lost_observed', 'castle_owned_observed', 'soldier_refill_outcome'})
 
 
 # ---------------------------------------------------------------- game over
