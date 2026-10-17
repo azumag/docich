@@ -147,12 +147,18 @@ def _wait_api(url: str, deadline: float) -> str:
     raise AssertionError(f"dashboard server did not answer {url}: {last}")
 
 
-def _tail(path: Path, lines: int = 60) -> str:
+def _tail(path: Path, lines: int = 200) -> str:
+    """Bounded presenter log excerpt: the head usually carries the real error."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
         return f"<no presenter log: {exc}>"
-    return "\n".join(text[-lines:]) or "<presenter log is empty>"
+    if not text:
+        return "<presenter log is empty>"
+    if len(text) <= lines:
+        return "\n".join(text)
+    head, tail = text[:30], text[-(lines - 30):]
+    return "\n".join(head + ["... <snip> ..."] + tail)
 
 
 def _wait_window(display: str, pattern: str, deadline: float, viewer, log_path: Path) -> str:
