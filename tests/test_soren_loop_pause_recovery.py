@@ -20,6 +20,8 @@ from docich.naming import runtime_directory, runtime_names  # noqa: E402
 from docich.soren_loop_pause_recovery import (  # noqa: E402
     REASON_EXIT_CODES,
     REASONS,
+    RELEASE_PHASES,
+    SOURCE_GAME,
     OrphanedLoopPauseRelease,
     completed_result,
     exit_code,
@@ -309,6 +311,19 @@ class RefusalTests(ReleaseFixture):
 
 
 class FixedSchemaTests(unittest.TestCase):
+    def test_the_guard_binds_the_production_soren_adapter_identity(self):
+        # The guard only fires for a seat the production Soren adapter owns.  A
+        # rename must fail here rather than silently turn the operator into a
+        # no-op that refuses every real recovery.
+        from docich.adapters.soren import SorenCoordinatorAdapter
+
+        self.assertEqual(SorenCoordinatorAdapter.name, "soren")
+        self.assertEqual(SOURCE_GAME, "sorengame")
+        # The allowed phase set is deliberately narrower than the candidate
+        # cleanup contract's {rolling_back, failed, ready, idle}; widening it is
+        # an owner decision, so pin the current set.
+        self.assertEqual(RELEASE_PHASES, frozenset({"failed", "recovery_required"}))
+
     def test_incomplete_results_never_leak_identity_or_paths(self):
         for reason in sorted(REASONS):
             with self.subTest(reason=reason):
