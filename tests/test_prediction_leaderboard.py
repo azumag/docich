@@ -419,6 +419,11 @@ def test_load_upgrades_a_schema_1_ledger(tmp_path):
     assert ledger["rounds"]["p1"]["status"] == "RESOLVED"
     assert ledger["rounds"]["p1"]["predictors"][0]["refunded"] == 0
     assert lb.ranking(ledger, min_rounds=1)[0]["hit_rate"] == 1.0
+    assert lb.record_resolved(tmp_path, with_top("p2", {"o1": [predictor("u2", "bob")]}),
+                              corner="hanjuku")
+    reloaded = lb.load(path)
+    assert set(reloaded["rounds"]) == {"p1", "p2"}
+    assert reloaded["rounds"]["p1"] == ledger["rounds"]["p1"]
 
 
 def test_load_refuses_a_legacy_round_that_is_not_graded(tmp_path):
@@ -427,3 +432,57 @@ def test_load_refuses_a_legacy_round_that_is_not_graded(tmp_path):
                     encoding="utf-8")
     with pytest.raises(lb.LeaderboardError):
         lb.load(path)
+
+
+def test_schema_1_upgrade_overflow_preserves_original_bytes(tmp_path):
+    # Synthetic, valid legacy data: migration adds status/refunded to 1400
+    # rounds that fit the read limit before conversion (PR #2390).
+    legacy = {"schema": 1, "rounds": {f"p{i}": {
+        "id": f"p{i}", "title": "t", "ended_at": "2026-10-01T00:00:00Z",
+        "winning_outcome_id": "o1", "corner": "hanjuku", "recorded_at": 7,
+        "outcomes": [{"id": "o1", "title": "A", "users": 1, "points": 100}],
+        "predictors": [{"user_id": "u1", "user_login": "alice", "user_name": "Alice",
+                        "outcome_id": "o1", "used": 100, "won": 200, "hit": True}],
+    } for i in range(1400)}}
+    encode = lambda value: (json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                       separators=(",", ":")) + "\n").encode("utf-8")
+    padding, remainder = divmod(504024 - len(encode(legacy)), 1400)
+    assert 0 <= padding < lb.MAX_TEXT - 1
+    for i, round_ in enumerate(legacy["rounds"].values()):
+        round_["title"] += "x" * (padding + (i < remainder))
+    original = encode(legacy)
+    assert len(original) == 504024 < lb.MAX_BYTES
+    path = tmp_path / lb.FILE
+    path.write_bytes(original)
+    assert len(lb.load(path)["rounds"]) == 1400
+
+    with pytest.raises(lb.LeaderboardError):
+        lb.record_resolved(tmp_path, with_top("new", {"o1": [predictor("u2", "bob")]}),
+                           corner="hanjuku")
+
+    assert path.read_bytes() == original
+    assert len(lb.load(path)["rounds"]) == 1400
+
+
+@pytest.mark.parametrize("title", ["ascii", "参加履歴😀"])
+@pytest.mark.parametrize("extra_byte", [0, 1])
+def test_save_bounds_the_exact_utf8_payload_including_newline(tmp_path, monkeypatch, title, extra_byte):
+    path = tmp_path / lb.FILE
+    lb.save(path, lb.new_ledger())
+    original = path.read_bytes()
+    ledger = lb.new_ledger()
+    lb.record(ledger, with_top("p1", {"o1": [predictor("u1", "alice")]}), corner="hanjuku")
+    ledger["rounds"]["p1"]["title"] = title
+    payload = (json.dumps(ledger, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")) + "\n").encode("utf-8")
+    monkeypatch.setattr(lb, "MAX_BYTES", len(payload) - extra_byte)
+
+    if extra_byte:
+        with pytest.raises(lb.LeaderboardError):
+            lb.save(path, ledger)
+        assert path.read_bytes() == original
+    else:
+        lb.save(path, ledger)
+        assert path.read_bytes() == payload
+        assert lb.load(path) == ledger
+    assert not list(tmp_path.glob(f".{lb.FILE}.*"))
