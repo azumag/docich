@@ -192,6 +192,21 @@ class ProvenReleaseTests(ReleaseFixture):
         self.assertEqual(result["status"], "completed")
         self.assertFalse(self.marker.exists())
 
+    def test_a_failed_candidate_seated_in_retiring_is_also_proven(self):
+        # The production code resolves failed candidates from `candidate` OR
+        # `retiring` (adapters/soren.py::_owns_failed_candidate_cleanup), so the
+        # #2061 state may seat the Soren candidate in retiring instead.
+        self.write_receipt()
+        self.write_canonical(
+            candidate=None,
+            retiring=[{**runtime(), "cleanup_role": "failed_candidate"}],
+        )
+
+        result = self.release()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertFalse(self.marker.exists())
+
 
 class RefusalTests(ReleaseFixture):
     def assert_refused(self, reason):
@@ -227,6 +242,15 @@ class RefusalTests(ReleaseFixture):
     def test_without_a_soren_candidate_refuses(self):
         self.write_receipt()
         self.write_canonical(candidate=None, retiring=[])
+        self.assert_refused("no_soren_candidate")
+
+    def test_a_non_soren_retiring_seat_does_not_prove_a_candidate(self):
+        self.write_receipt()
+        self.write_canonical(
+            candidate=None,
+            retiring=[runtime(game="moon-buggy", adapter="retro", generation=4)],
+            next_generation=5,
+        )
         self.assert_refused("no_soren_candidate")
 
     def test_operator_owned_marker_refuses(self):
