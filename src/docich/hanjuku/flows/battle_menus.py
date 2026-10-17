@@ -9,6 +9,7 @@ from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
+from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
@@ -96,7 +97,7 @@ def command_open_pending_step(screen, mem):
 def _hero_retreat_menu(screen, mem, cur):
     # A castle defense cannot retreat (owner 2026-09-29; the menu has no
     # たいきゃく row there), so never try to select it.
-    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
     if _egg_rescue_pending(cur):
         return []
@@ -950,6 +951,26 @@ def _partial_enemy_general_command(screen):
     return enemy
 
 
+def _egg_retreat_return(screen, mem, battle):
+    """Reuse the finite return-to-human-command route; B is not a receipt."""
+    attempts = int(battle.get('egg_retreat_attempts') or 0)
+    battle['egg_retreat_needed'] = True
+    battle['egg_retreat_tried'] = True
+    if attempts < 3:
+        battle['egg_retreat_attempts'] = attempts + 1
+        _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
+                observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
+                                 'enemy_hp': battle.get('enemy_hp'), 'attempt': attempts + 1},
+                reason='卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する')
+        return [pad('b')]
+    if not battle.get('egg_retreat_unavailable_recorded'):
+        battle['egg_retreat_unavailable_recorded'] = True
+        _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
+                observed_metric={'attempts': attempts, 'screen': screen.kind},
+                reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
+    return None
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -1018,6 +1039,10 @@ def egg_battle_step(screen: Screen, mem):
         battle['card_summon_observed'] = True
         battle['card_context_unclassified'] = False
     general_reading = _egg_general_reading(screen, mem, battle)
+    if egg_bait.observe_summon(screen, mem, battle):
+        returning = _egg_retreat_return(screen, mem, battle)
+        if returning is not None:
+            return returning
     wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
     # g684: アルテミス 49/49 saved her egg against ヘーゼル's old HP11,
     # while the actual opponent was ダークエルフ HP240. A live monster
@@ -1148,21 +1173,9 @@ def egg_battle_step(screen: Screen, mem):
         # たまごを温存している間は、まず白兵で戦う (退却しない)。
         if (not cards_left and battle.get('side') != 'defense'
                 and (wants_egg or empty_egg or 'たまごをつかう' not in screen.text)):
-            attempts = int(battle.get('egg_retreat_attempts') or 0)
-            battle['egg_retreat_needed'] = True
-            battle['egg_retreat_tried'] = True  # legacy hotloaded state
-            if attempts < 3:
-                battle['egg_retreat_attempts'] = attempts + 1
-                _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
-                        observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
-                                         'enemy_hp': battle.get('enemy_hp'), 'attempt': attempts + 1},
-                        reason='卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する')
-                return [pad('b')]
-            if not battle.get('egg_retreat_unavailable_recorded'):
-                battle['egg_retreat_unavailable_recorded'] = True
-                _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
-                        observed_metric={'attempts': attempts, 'screen': screen.kind},
-                        reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
+            returning = _egg_retreat_return(screen, mem, battle)
+            if returning is not None:
+                return returning
         # g508: after Excalibur fell, stale general HP82 concealed the
         # wounded Venus while blind A kept choosing the weakest attack.
         # Fierce attack adds lost HP to damage, but can miss/lose initiative;

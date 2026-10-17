@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict
 
 from ..judgment.battle import _general_egg_rescue_recheck
+from . import egg_bait
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
@@ -230,6 +231,8 @@ def _card_battle_reading(screen, cur, mem=None):
         cur['card_hp_unread'] = True
         cur['card_context_unclassified'] = True
         cur['card_soldiers_current'] = False
+        if mem is not None:
+            egg_bait.cancel(mem, cur, '本人HPまたは戦闘パネルが未確認になったため召喚待ちを終了')
         return
     previous = cur.get('enemy_hp')
     maximum = general_max_hp(cur.get('enemy'))
@@ -404,6 +407,7 @@ def battle_step(screen: Screen, mem):
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
     _card_damage_recheck_resources(mem, cur)
+    egg_bait.observe_melee(screen, mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
@@ -721,7 +725,7 @@ def note_duel_event(screen, mem):
 
 
 def _hero_retreat_open(mem, cur):
-    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
     if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
