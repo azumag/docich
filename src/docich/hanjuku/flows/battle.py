@@ -374,6 +374,8 @@ def battle_step(screen: Screen, mem):
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
+    from . import okunote
+    okunote.combat_return(screen, mem, cur)
     cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
     preempt_guard = cur.get('okunote_egg_preempt') or {}
     if preempt_guard.get('selected'):

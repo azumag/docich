@@ -1588,6 +1588,26 @@ def _defender_last_resort(mem, cur):
             and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
 
 
+def _defender_summon_last_resort(mem, cur, reading):
+    """The current exposed defender can take the same risky last chance.
+
+    Monster HP is kept separate from both generals' ordinary HP. This uses
+    a current bound reading, never the stale opponent HP from before summon.
+    """
+    if (not reading or not cur.get('okunote_only_observed')
+            or cur.get('side') != 'defense' or cur.get('ally') in (None, 'だいじん')
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values() or cur.get('planned_cards') or cur.get('card_flow')):
+        return False
+    hp, enemy = reading.get('ally_hp'), reading.get('enemy_monster_hp')
+    starts = (cur.get('start_ally_hp'), cur.get('start_enemy_hp'))
+    return (type(hp) is int and type(enemy) is int and 0 < hp <= OKUNOTE_MAX_SELF_DAMAGE
+            and all(type(v) is int and v > 0 for v in starts)
+            and type(general_max_hp(cur.get('enemy'))) is int
+            and 0 < enemy <= 999 and reading.get('enemy_monster') in reference.MONSTER_SKILLS
+            and (reading['enemy_monster'] == 'ダークエルフ' or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS))
+
+
 def _hold_general_loss_metric(mem):
     """HP defeat is not proof of death; invalidate old inferred counters once.
 

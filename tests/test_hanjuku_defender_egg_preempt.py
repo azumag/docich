@@ -267,17 +267,19 @@ def test_visible_candidate_list_chooses_the_least_self_damage_if_all_three_are_h
     assert mem['_records'][-1]['choice'] == 'しんだフリ'
 
 
-def test_melee_return_ends_pending_episode_but_keeps_the_one_lottery_guard():
+def test_melee_return_after_candidate_allows_new_bounded_attempt():
     mem = memory(ally='どうし', ally_hp=50, enemy_hp=10)
     opening(mem)
     assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     choices = menu(('ヤケクソ', 'あやまる', 'しんだフリ'))
     choices.kind = 'okunote_menu'
     assert p.defender_egg_pending_step(choices, mem) == [p.pad('a')]
-    p.battle_step(panel(mem), mem)
+    assert p.battle_step(panel(mem), mem) == [p.pad('b')]
     guard = mem['battle']['okunote_egg_preempt']
-    assert guard['stage'] == 'completed' and guard['selected']
-    assert p.defender_egg_pending_step(Screen([], None, 'そのあと', kind='text'), mem) is None
+    # Owner (2026-10-17): the command is reusable. A current complete combat
+    # return after the candidate choice starts a fresh bounded menu attempt.
+    assert guard['stage'] == 'opening' and not guard.get('selected')
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
 
 
