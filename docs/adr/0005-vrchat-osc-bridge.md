@@ -28,7 +28,9 @@ VRChat は公式 OSC で Expression Parameter を外部から操作でき、ア�
 5. **ループ防止**を最優先の不変条件とする: 変化時のみ送信、送信直後の同値エコーを抑制、
    Bool は立ち上がりエッジのみ、Int は変化+クールダウン、受信した `Mode` は docich 側に採用する。
 6. 既定は `127.0.0.1:9000`（VRChat 待受）へ送り、`127.0.0.1:9001` で受ける。
-   LAN をまたぐ場合だけ VRChat 側の `--osc=9000:9001:0.0.0.0` を使用し、外部公開しない。
+   LAN をまたぐ場合だけ VRChat 側を `--osc=inPort:outIP:outPort`（例
+   `--osc=9000:<bridge を動かす PC の LAN IP>:9001`）で起動し、bridge の
+   `listen_host` を LAN の待受アドレスにする。外部公開しない。
 
 ## 2. 検討した代替案
 

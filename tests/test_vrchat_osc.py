@@ -413,6 +413,31 @@ class TestBridgeInbound(unittest.TestCase):
             bridge.tick(now=4.0, packets=[alert])
             self.assertEqual(len(action_records(settings.action_spool)), 2)
 
+    def test_bool_release_is_recorded_so_the_next_outbound_true_is_sent(self):
+        # P2 (PR #2458 レビュー): アバターが Alert を 1->0 にした後、次の docich 側
+        # Alert=true が「同期済み」と誤判定されて送信されない。受信値の同期と
+        # notify の発火判定を分離し、outbound true がもう一度送られることを固定する。
+        with tempfile.TemporaryDirectory() as tmp:
+            settings, _, bridge = self._bridge(tmp)
+            sender = RecordingSender()
+            bridge.sender = sender
+
+            # docich -> VRChat: Alert=true を送り、同期済みとして記録する。
+            osc.append_events(settings.event_spool, [("Alert", True)], settings=settings)
+            bridge.tick(now=0.0)
+            self.assertEqual(sender.values("Alert"), [True])
+
+            # VRChat -> docich: アバターが Alert を解放する (1 -> 0)。
+            # notify は発火しないが、受信値は同期済みとして記録される。
+            bridge.tick(now=2.0, packets=[self._packet("Alert", 0)])
+            self.assertIs(bridge.values()["Alert"], False, "アバターの解放を採用する")
+            self.assertEqual(sender.values("Alert"), [True], "受信しただけでは送り返さない")
+
+            # docich -> VRChat: 次の true がアバターへ届く。
+            osc.append_events(settings.event_spool, [("Alert", True)], settings=settings)
+            bridge.tick(now=3.0)
+            self.assertEqual(sender.values("Alert"), [True, True])
+
     def test_int_change_requires_debounce_and_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings, _, bridge = self._bridge(tmp)

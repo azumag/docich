@@ -45,7 +45,7 @@ Expression Parameter を外部と双方向にやり取りする。
 | 項目 | 決定 |
 | --- | --- |
 | OSC Bridge の実体 | `docich vr-osc bridge`（stdlib のみの独立プロセス）。docich 本体の起動・停止に依存しない |
-| 実行場所 | 既定は **VRChat と同じ PC**。別 PC の場合は VRChat を `--osc=9000:9001:0.0.0.0` で起動し、bridge 側の `vrchat_host` を LAN IP にする |
+| 実行場所 | 既定は **VRChat と同じ PC**。別 PC の場合は VRChat を `--osc=9000:<bridge を動かす PC の LAN IP>:9001`（公式順序は `inPort:outIP:outPort`）で起動し、bridge 側は `vrchat_host` を VRChat PC の LAN IP、`listen_host` を LAN の待受アドレスにする |
 | 責務 | (1) docich 状態 → Parameter 送信 (2) VRChat Parameter → 許可された action の記録 (3) ループ防止・debounce・fail-soft |
 | 状態の受け渡し | ファイルのみ。`speaking.json`（実発話状態）と JSONL イベント spool。docich 本体と socket で直結しない |
 | 待受 | 既定 `127.0.0.1`。外部公開しない |
@@ -104,8 +104,14 @@ VRChat や OSC が落ちていても docich 本体の動作には影響しない
 
 1. VRChat の OSC を有効化する（既定で `127.0.0.1:9000` 待受 / `127.0.0.1:9001` 送信）。
    - 同一 PC: 追加設定なし。
-   - 別 PC / LAN: VRChat を `--osc=9000:9001:0.0.0.0` で起動し、bridge の
-     `vrchat_host` を VRChat PC の IP にする。信頼できる LAN 内だけで使う。
+   - 別 PC / LAN: VRChat の起動引数は公式順序で `--osc=inPort:outIP:outPort`。
+     `outIP` は **bridge を動かす PC**、`outPort` は bridge の `listen_port`（既定 9001）。
+     既定構成なら `--osc=9000:<bridge を動かす PC の LAN IP>:9001`。
+     - bridge 側は2つを別々に設定する。
+       - `listen_host`: LAN の VRChat から届くようにする（既定 `127.0.0.1` のままだと
+         LAN からは到達しない。例 `0.0.0.0`、または bridge PC の LAN IP）。
+       - `vrchat_host`: VRChat PC の LAN IP（bridge からの送信先）。
+     - 外部公開しない。信頼できる LAN 内だけで使う。
 2. VRChat の OSC Debug パネルで `/avatar/parameters/...` の受信が見えることを確認する。
 
 ### 6.2 アバター（Unity）側
