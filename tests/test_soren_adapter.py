@@ -1344,5 +1344,61 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertIsNone(adapter._resumed_loop)
 
 
+    def test_cleanup_captures_paused_loop_identity_for_later_marker_loss(self):
+        """#2061: stop-time capture survives candidate cleanup consuming the marker."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-2")
+            adapter._request_id = "req-2"
+            adapter._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
+            # Candidate cleanup consumes the marker afterwards; captured identity stays.
+            pause.unlink()
+            self.assertEqual(adapter._paused_loop_identity(), None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
+
+    def test_cleanup_does_not_overwrite_already_captured_paused_loop_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            adapter._resumed_loop = (111, 222)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.paused").write_text("lifecycle:req-2")
+            adapter._request_id = "req-2"
+            adapter._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (111, 222))
+
+    def test_materialize_preserves_captured_identity_when_marker_absent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            adapter._resumed_loop = (4242, 777)
+            identity = {"request_id": "req-9", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None,
+                        "resource": {**identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
+
 if __name__ == "__main__":
     unittest.main()
