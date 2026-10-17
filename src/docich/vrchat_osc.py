@@ -15,7 +15,9 @@ Design rules (see ``docs/vrchat-osc.md``):
   never turned into shell commands or arbitrary code.
 * **No feedback loops**: values are sent only on change, inbound values that
   echo something we just sent are dropped for a short window, and inbound
-  transitions are edge/debounce gated.
+  transitions are edge/debounce gated.  An accepted inbound value is recorded as
+  the avatar's current state even when it fires no action (a bool falling edge
+  included), so the next outbound change is still sent.
 * **Fail-soft**: a missing VRChat client, a missing speaking file, a corrupt
   spool line, or a closed UDP port must never stop docich or the bridge.
 
@@ -939,6 +941,7 @@ class InboundReceiver:
         *,
         is_echo: Callable[[str, Any, float], bool] | None = None,
         wallclock: float | None = None,
+        on_observe: Callable[[str, Any], None] | None = None,
     ) -> list[InboundAction]:
         try:
             messages = decode_packet(data)
@@ -975,6 +978,18 @@ class InboundReceiver:
             if is_echo is not None and is_echo(name, value, now):
                 self.dropped += 1
                 continue
+            if rule.action == "mode":
+                # 値域は受理条件。範囲外は観測（on_observe）より前に弾き、
+                # 現在値として採用・persist しない。
+                index = int(value)
+                if rule.values and not 0 <= index < len(rule.values):
+                    self.dropped += 1
+                    continue
+            # 受理した値の採用は callback に一元化する。notify の発火判定
+            # （edge/debounce）とは独立で、bool の falling edge も採用する。
+            # ここまでで受理条件はすべて検証済み。
+            if on_observe is not None:
+                on_observe(name, value)
             if rule.min_interval > 0:
                 last_fire = self._last_fire_at.get(name)
                 if last_fire is not None and now - last_fire < rule.min_interval:
@@ -989,9 +1004,6 @@ class InboundReceiver:
                     continue
             if rule.action == "mode":
                 index = int(value)
-                if rule.values and not 0 <= index < len(rule.values):
-                    self.dropped += 1
-                    continue
                 label = rule.values[index] if rule.values else str(index)
                 record = {
                     "ts": round(wallclock, 3),
@@ -1229,19 +1241,25 @@ class VrOscBridge:
             now,
             is_echo=self.is_echo,
             wallclock=self._wallclock(),
+            on_observe=lambda name, value: self._observe_inbound(name, value, now),
         )
         for action in actions:
-            name = action.parameter
-            spec = self.settings.params[name]
-            # Adopt the avatar's value so the outbound side does not bounce it
-            # back, and record it as synchronised so a loopback echo is ignored.
-            value = coerce_value(name, spec.kind, action.value)
-            self._slots[name] = _Slot(value=value)
-            self._synced[name] = (value, now)
-            if spec.persist:
-                self._persist()
             self._dispatch(action.record)
         return actions
+
+    def _observe_inbound(self, name: str, value: Any, now: float) -> None:
+        """Adopt an accepted inbound value as the current avatar state.
+
+        This runs for every accepted value — a bool falling edge included, which
+        fires no action — and is what lets the outbound side detect the next
+        change.  ``_slots`` and ``_synced`` are updated together so the adopted
+        value is not bounced straight back.
+        """
+        spec = self.settings.params[name]
+        self._slots[name] = _Slot(value=value)
+        self._synced[name] = (value, now)
+        if spec.persist:
+            self._persist()
 
     def _dispatch(self, record: Mapping[str, Any]) -> None:
         for sink in self._sinks:
