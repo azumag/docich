@@ -147,8 +147,20 @@ def _wait_api(url: str, deadline: float) -> str:
     raise AssertionError(f"dashboard server did not answer {url}: {last}")
 
 
-def _wait_window(display: str, pattern: str, deadline: float) -> str:
+def _tail(path: Path, lines: int = 60) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return f"<no presenter log: {exc}>"
+    return "\n".join(text[-lines:]) or "<presenter log is empty>"
+
+
+def _wait_window(display: str, pattern: str, deadline: float, viewer, log_path: Path) -> str:
     while time.monotonic() < deadline:
+        if viewer.poll() is not None:
+            raise AssertionError(
+                f"presenter exited with rc={viewer.returncode} before the window appeared:\n"
+                + _tail(log_path))
         found = subprocess.run(
             ["xdotool", "search", "--onlyvisible", "--name", pattern],
             env=dict(os.environ, DISPLAY=display),
@@ -157,7 +169,8 @@ def _wait_window(display: str, pattern: str, deadline: float) -> str:
         if ids:
             return ids[0]
         time.sleep(0.25)
-    raise AssertionError(f"projection window {pattern!r} never appeared on {display}")
+    raise AssertionError(
+        f"projection window {pattern!r} never appeared on {display}:\n" + _tail(log_path))
 
 
 def _geometry(display: str, window_id: str) -> dict[str, int]:
@@ -202,7 +215,8 @@ def test_paper_view_renders_the_dashboard_fixture_inside_the_viewport(tmp_path):
     display_process, display = _start_display()
     g.display.name = display
     api_url = f"http://127.0.0.1:{port}/api/trading/dashboard"
-    logs = (tmp_path / "presenter.log").open("wb")
+    log_path = tmp_path / "presenter.log"
+    logs = log_path.open("wb")
     server = viewer = None
     try:
         server = subprocess.Popen(adapter._game_command(), stdout=logs, stderr=logs)
@@ -212,7 +226,7 @@ def test_paper_view_renders_the_dashboard_fixture_inside_the_viewport(tmp_path):
 
         viewer = subprocess.Popen(adapter._viewer_command(), stdout=logs, stderr=logs)
         pattern = f"docich-present-{adapter.spec.runtime_id}"
-        window_id = _wait_window(display, pattern, time.monotonic() + 60)
+        window_id = _wait_window(display, pattern, time.monotonic() + 60, viewer, log_path)
         geometry = _geometry(display, window_id)
         assert (geometry.get("X"), geometry.get("Y")) == (VIEWPORT[0], VIEWPORT[1]), geometry
         assert (geometry.get("WIDTH"), geometry.get("HEIGHT")) == (VIEWPORT[2], VIEWPORT[3]), geometry
