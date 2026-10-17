@@ -398,6 +398,14 @@ class TestBridgeInbound(unittest.TestCase):
     def _packet(name: str, value: object) -> bytes:
         return osc.encode_message(osc.PARAMETER_PREFIX + name, (value,))
 
+    @staticmethod
+    def _bundle(*messages: bytes) -> bytes:
+        return (
+            b"#bundle\x00"
+            + b"\x00" * 8
+            + b"".join(len(message).to_bytes(4, "big") + message for message in messages)
+        )
+
     def test_bool_is_rising_edge_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings, _, bridge = self._bridge(tmp)
@@ -437,6 +445,46 @@ class TestBridgeInbound(unittest.TestCase):
             osc.append_events(settings.event_spool, [("Alert", True)], settings=settings)
             bridge.tick(now=3.0)
             self.assertEqual(sender.values("Alert"), [True, True])
+
+    def test_bundle_release_keeps_the_last_observed_value(self):
+        # P2 (PR #2464 レビュー): bundle 内で Alert=1 -> 0 が来ると、action loop が
+        # 過去の true を再採用して受信した解放が失われ、次の outbound true が省略される。
+        # 採用は callback に一元化し、loop は dispatch だけにする。
+        with tempfile.TemporaryDirectory() as tmp:
+            settings, _, bridge = self._bridge(tmp)
+            sender = RecordingSender()
+            bridge.sender = sender
+
+            osc.append_events(settings.event_spool, [("Alert", True)], settings=settings)
+            bridge.tick(now=0.0)
+            self.assertEqual(sender.values("Alert"), [True])
+
+            bundle = self._bundle(self._packet("Alert", 1), self._packet("Alert", 0))
+            bridge.tick(now=2.0, packets=[bundle])
+            self.assertIs(bridge.values()["Alert"], False, "bundle 内の最後の値が残る")
+            self.assertEqual(sender.values("Alert"), [True], "受信しただけでは送り返さない")
+
+            osc.append_events(settings.event_spool, [("Alert", True)], settings=settings)
+            bridge.tick(now=3.0)
+            self.assertEqual(sender.values("Alert"), [True, True])
+
+    def test_out_of_range_mode_is_rejected_before_being_adopted(self):
+        # P2 (PR #2464 レビュー): 値域拒否より先に on_observe へ渡すと、範囲外の値が
+        # 現在値として採用され persist される（再生成した bridge も範囲外になる）。
+        # 受理条件をすべて検証してから採用する。
+        with tempfile.TemporaryDirectory() as tmp:
+            settings, _, bridge = self._bridge(tmp)
+            osc.append_events(settings.event_spool, [("Mode", 2)], settings=settings)
+            bridge.tick(now=0.0)
+            self.assertEqual(bridge.values()["Mode"], 2)
+
+            bridge.tick(now=1.0, packets=[self._packet("Mode", 99)])
+            self.assertEqual(bridge.receiver.actions, 0)
+            self.assertGreaterEqual(bridge.receiver.dropped, 1)
+            self.assertEqual(bridge.values()["Mode"], 2, "範囲外の値を採用しない")
+
+            restored = make_bridge(settings, sender=RecordingSender())
+            self.assertEqual(restored.values()["Mode"], 2, "範囲外の値を persist しない")
 
     def test_int_change_requires_debounce_and_change(self):
         with tempfile.TemporaryDirectory() as tmp:

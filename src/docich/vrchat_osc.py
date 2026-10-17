@@ -978,11 +978,16 @@ class InboundReceiver:
             if is_echo is not None and is_echo(name, value, now):
                 self.dropped += 1
                 continue
-            # Recording the accepted value is deliberately separate from the
-            # notify gate below: a bool falling edge produces no action, but the
-            # avatar's new state still has to be remembered. Otherwise the next
-            # outbound ``true`` compares equal to the stale record and is never
-            # sent.
+            if rule.action == "mode":
+                # 値域は受理条件。範囲外は観測（on_observe）より前に弾き、
+                # 現在値として採用・persist しない。
+                index = int(value)
+                if rule.values and not 0 <= index < len(rule.values):
+                    self.dropped += 1
+                    continue
+            # 受理した値の採用は callback に一元化する。notify の発火判定
+            # （edge/debounce）とは独立で、bool の falling edge も採用する。
+            # ここまでで受理条件はすべて検証済み。
             if on_observe is not None:
                 on_observe(name, value)
             if rule.min_interval > 0:
@@ -999,9 +1004,6 @@ class InboundReceiver:
                     continue
             if rule.action == "mode":
                 index = int(value)
-                if rule.values and not 0 <= index < len(rule.values):
-                    self.dropped += 1
-                    continue
                 label = rule.values[index] if rule.values else str(index)
                 record = {
                     "ts": round(wallclock, 3),
@@ -1242,10 +1244,6 @@ class VrOscBridge:
             on_observe=lambda name, value: self._observe_inbound(name, value, now),
         )
         for action in actions:
-            name = action.parameter
-            spec = self.settings.params[name]
-            value = coerce_value(name, spec.kind, action.value)
-            self._observe_inbound(name, value, now)
             self._dispatch(action.record)
         return actions
 
