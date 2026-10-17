@@ -7013,7 +7013,9 @@ PULSE_SINK_INPUTS_TIMEOUT = 5
 # Bounded so the projection cannot crowd the 36 KiB diagnostics envelope; the
 # production session has far fewer streams than this, and the omitted remainder
 # is reported rather than silently dropped.
-PULSE_SINK_INPUTS_MAX = 32
+# Bounded detail list; the attribution summary carries the ownership signal
+# when this cap (or the output budget) drops the per-stream rows.
+PULSE_SINK_INPUTS_MAX = 8
 PULSE_SINK_INPUTS_OUTPUT_MAX = 256 * 1024
 # ``application.name`` is an externally supplied free-form string, so it is
 # never emitted verbatim. These fixed categories still separate the bridge's
@@ -8908,6 +8910,10 @@ def _diagnostics_budget(payload):
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
     # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
     # their per-component/per-stream details and the latest NetHack result.
+    # ``encoder`` and ``pulse_sink_inputs.attribution`` are never reduced here
+    # (#AV projection): they are the only read-only evidence for "is the encoder
+    # still sending" and "which player owns this stream", and each is bounded
+    # well under 1 KiB. Only ``streams`` yields below.
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     pulse = payload.get("pulse_sink_inputs")
     if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse, dict)
