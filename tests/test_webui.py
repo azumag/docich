@@ -1079,6 +1079,50 @@ class TestHttpHandlers(unittest.TestCase):
         finally:
             sock.close()
 
+    def test_put_config_body_too_large_slow_trickle_returns_413_within_deadline(self):
+        # 0.2s ごとに少量送信する slow-trickle でも総時間上限で打ち切る。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            # 0.2s ごとに 1 バイト送信 (slow-trickle)
+            for _ in range(10):
+                if _time.monotonic() - t0 > 1.0:
+                    break
+                try:
+                    sock.sendall(b"x")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+                _time.sleep(0.2)
+            # 応答を読む
+            buf = b""
+            sock.settimeout(2.0)
+            while True:
+                try:
+                    chunk = sock.recv(4096)
+                except _socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\r\n\r\n" in buf:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 1.5, "slow-trickle で deadline を超えた: %.2fs" % elapsed)
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0] if buf else b"")
+        finally:
+            sock.close()
+
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
         try:

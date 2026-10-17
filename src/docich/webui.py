@@ -3798,7 +3798,11 @@ class _Handler(BaseHTTPRequestHandler):
             # (DoS 保護優先)。#2145/#2305 と同様に「隠す」意図はない。
             # 上限を超える巨大な宣言値に対しては DoS を避けるため cap する。
             _DRAIN_CAP = MAX_BODY_BYTES + 65536
+            # 総時間上限 (slow-trickle でも deadline を超えたら打ち切る)。
+            # per-read timeout だけだと少量ずつの送信で無期限に延びるため、
+            # 経過時間を監視して打ち切る (review 追加 P2)。
             _DRAIN_DEADLINE_SEC = 0.5
+            _PER_READ_TIMEOUT_SEC = 0.1
             to_drain = min(length if length > 0 else 0, _DRAIN_CAP)
             if to_drain > 0:
                 _prev_timeout = None
@@ -3807,10 +3811,17 @@ class _Handler(BaseHTTPRequestHandler):
                 except Exception:
                     _prev_timeout = None
                 try:
-                    self.request.settimeout(_DRAIN_DEADLINE_SEC)
-                    self.rfile.read(to_drain)
-                except Exception:
-                    pass
+                    self.request.settimeout(_PER_READ_TIMEOUT_SEC)
+                    _deadline = time.monotonic() + _DRAIN_DEADLINE_SEC
+                    _remaining = to_drain
+                    while _remaining > 0 and time.monotonic() < _deadline:
+                        try:
+                            _chunk = self.rfile.read(min(_remaining, 65536))
+                        except Exception:
+                            break
+                        if not _chunk:
+                            break
+                        _remaining -= len(_chunk)
                 finally:
                     try:
                         self.request.settimeout(_prev_timeout)
