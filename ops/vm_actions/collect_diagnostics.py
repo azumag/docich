@@ -4690,7 +4690,7 @@ def _collect_external_video(state_dir, now):
     """Fixed enums/health only: no IP, request, PID, file body or argv output."""
     entry = {"receiver_present": False, "receiver_readable": False,
              "receiver_status": "absent", "receiver_alive": None,
-             "frame_fresh": None, "audio_present": None,
+             "frame_fresh": None, "frame_age_sec": None, "audio_present": None,
              "corner_status": "absent", "recovery_required": None}
     present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
     if present:
@@ -4721,11 +4721,134 @@ def _collect_external_video(state_dir, now):
         age = None
     fresh = (alive and receiver.get("status") == "receiving" and now < expiry
              and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    if age is not None and math.isfinite(age) and age >= 0:
+        entry["frame_age_sec"] = min(int(age), _REG.EXTERNAL_VIDEO["frame_age_max_sec"])
     entry.update(receiver_readable=True, receiver_alive=alive,
                  frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
     if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
         entry["receiver_status"] = receiver["status"]
     return entry
+
+
+# Encoder heartbeat projection (#AV projection). Only fixed numeric/enum keys
+# are copied: the source records also carry stream configuration and the
+# reconnect channel name, which must never cross this boundary.
+_ENCODER_STATES = frozenset({"running", "stopped", "failed"})
+_ENCODER_MAX_FRAMES = 2 ** 53 - 1
+
+
+def _encoder_count(value):
+    if type(value) is not int or not 0 <= value <= _ENCODER_MAX_FRAMES:
+        return None
+    return value
+
+
+def _normalize_encoder(kind, data):
+    """Return the fixed projection of one heartbeat record, or None."""
+    normalized = {
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "out_time_sec": None,
+    }
+    if kind == "twica":
+        if (type(data.get("schema")) is not int
+                or data["schema"] != _REG.ENCODER["schema_version"]):
+            return None
+        ready = data.get("ready")
+        normalized["ready"] = ready if isinstance(ready, bool) else None
+        normalized["frames_sent"] = _encoder_count(data.get("frames_sent"))
+        fps = data.get("fps")
+        if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+            normalized["fps"] = round(float(fps), 2)
+        if normalized["ready"] is True:
+            normalized["state"] = "running"
+        elif data.get("frame_state") == "closed":
+            normalized["state"] = "stopped"
+        return normalized
+    # Soren direct_stream writes the parsed ffmpeg progress record.
+    state = data.get("state")
+    if isinstance(state, str) and state in _ENCODER_STATES:
+        normalized["state"] = state
+    elif data.get("running") is True:
+        normalized["state"] = "running"
+    elif data.get("running") is False:
+        normalized["state"] = "stopped"
+    normalized["ready"] = data.get("running") if isinstance(data.get("running"), bool) else None
+    normalized["frames_sent"] = _encoder_count(data.get("frame"))
+    fps = data.get("fps")
+    if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+        normalized["fps"] = round(float(fps), 2)
+    out_time_us = data.get("out_time_us")
+    if type(out_time_us) is int and 0 <= out_time_us <= 10 ** 15:
+        normalized["out_time_sec"] = out_time_us // 1_000_000
+    return normalized
+
+
+def _collect_encoder(state_dir, soren, now):
+    """Read-only encoder heartbeat from the two existing producer paths.
+
+    TwiCa's common adapter owns ``run/twica-common/pipeline.json`` only while
+    it holds the output; Soren's ``direct_stream`` owns its own progress record.
+    Whichever is fresh wins, and a stale record is reported as ``stale`` rather
+    than as a healthy encoder.
+    """
+    result = {
+        "schema_version": _REG.ENCODER["schema_version"],
+        "present": False,
+        "readable": False,
+        "source": "none",
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "progress_age_sec": None,
+        "out_time_sec": None,
+        "reason": "absent",
+    }
+    candidates = (
+        ("twica_common", Path(state_dir) / _REG.ENCODER["twica_subpath"],
+         _REG.ENCODER["twica_stale_sec"], "twica"),
+        ("direct_stream", Path(soren) / _REG.ENCODER["direct_stream_subpath"],
+         _REG.ENCODER["direct_stream_stale_sec"], "direct"),
+    )
+    stale = None
+    invalid = None
+    for source, path, stale_sec, kind in candidates:
+        present, readable, data = _load_state_file(path)
+        if not present:
+            continue
+        if not readable or not isinstance(data, dict):
+            invalid = invalid or (source, "unreadable")
+            continue
+        normalized = _normalize_encoder(kind, data)
+        if normalized is None:
+            invalid = invalid or (source, "invalid_schema")
+            continue
+        try:
+            raw_age = now - path.stat().st_mtime
+            # A clock jump must not make an old record look fresh; an mtime far
+            # in the future is treated as stale rather than as age 0.
+            age = None if raw_age < -300 else max(0, int(raw_age))
+        except OSError:
+            age = None
+        if age is None or age > stale_sec:
+            stale = stale or (source, normalized, age)
+            continue
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="ok")
+        return result
+    if stale is not None:
+        source, normalized, age = stale
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="stale")
+        return result
+    if invalid is not None:
+        result.update(source=invalid[0], present=True, readable=False, reason=invalid[1])
+    return result
 
 
 _HANJUKU_PREDICTION_RECORD_LIMIT = 16384
@@ -6990,6 +7113,34 @@ def _project_pulse_stream(item, names, roles):
     }
 
 
+PULSE_PLAYER_CATEGORY_KEYS = tuple(
+    dict.fromkeys(category for _needle, category in PULSE_PLAYER_CATEGORIES)
+) + ("other", "unknown")
+
+
+def _pulse_attribution(items, roles):
+    """Fixed-axis attribution that survives the output budget.
+
+    ``media.role`` is rarely set by the players, so ``by_player`` is the useful
+    axis: it separates the BGM bridge (``bridge-ffplay``), game audio
+    (``retroarch``), overlay audio (``browser``) and the encoder's monitor
+    capture (``stream-capture``). ``by_role`` keeps only the roles that are
+    actually present plus an explicit ``unattributed`` count, so the projection
+    stays small and never looks like a role was assumed.
+    """
+    by_player = {key: 0 for key in PULSE_PLAYER_CATEGORY_KEYS}
+    by_role = {"unattributed": 0}
+    for item in items:
+        category = _pulse_player_category(item.get("application")) or "unknown"
+        by_player[category] = by_player.get(category, 0) + 1
+        role = item.get("role")
+        if isinstance(role, str) and role in roles:
+            by_role[role] = by_role.get(role, 0) + 1
+        else:
+            by_role["unattributed"] += 1
+    return {"by_player": by_player, "by_role": by_role}
+
+
 def _collect_pulse_sink_inputs():
     """Read-only PulseAudio sink-input projection (#968).
 
@@ -7009,7 +7160,7 @@ def _collect_pulse_sink_inputs():
     listing, failure = _pulse_listing('list', 'sink-inputs')
     if failure is not None:
         return {'schema_version': 1, 'readable': False, 'reason': failure,
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     # ``list sink-inputs`` reports the sink by index; the name is what makes a
     # muted shared stream recognizable, so the fixed short listing is read too.
     # A missing name mapping is not a failure: mute is still readable.
@@ -7024,7 +7175,7 @@ def _collect_pulse_sink_inputs():
         names = sink_names(short or '')
     except (TypeError, ValueError):
         return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     streams = [_project_pulse_stream(item, names, MEDIA_ROLES)
                for item in items[:PULSE_SINK_INPUTS_MAX]]
     return {
@@ -7038,6 +7189,8 @@ def _collect_pulse_sink_inputs():
         # never mistaken for a complete one.
         'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
         'streams': streams,
+        # Kept even when the budget drops ``streams`` (#AV projection).
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
     }
 
 
@@ -8373,6 +8526,7 @@ def _collect_runtime_presentation(state_dir, now):
     result = {
         "present": False,
         "readable": False,
+        "reason": None,
         "active_runtime": False,
         "status": None,
         "display": None,
@@ -8385,24 +8539,33 @@ def _collect_runtime_presentation(state_dir, now):
         Path(state_dir) / "game_switch.json"
     )
     if not readable:
+        result["reason"] = "active_unreadable"
         return result
     active = data.get("active")
     if not isinstance(active, dict):
+        result["reason"] = "no_active_runtime"
         return result
     runtime_id = active.get("runtime_id")
     if (not isinstance(runtime_id, str) or runtime_id in (".", "..")
             or not _RUNTIME_ID_RE.fullmatch(runtime_id)):
+        result["reason"] = "runtime_id_invalid"
         return result
     result["active_runtime"] = True
     path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
     present, readable, state, modified = _presentation_record_nofollow(path)
     result["present"] = present
     result["readable"] = readable
+    if not present:
+        result["reason"] = "record_absent"
+        return result
     if not readable or not isinstance(state, dict):
+        result["reason"] = "record_unreadable"
         return result
     status = state.get("status")
+    result["reason"] = "status_unknown"
     if isinstance(status, str) and status in _PRESENTATION_STATUSES:
         result["status"] = status
+        result["reason"] = "ok"
     display = state.get("display")
     if isinstance(display, str) and re.fullmatch(r":[0-9]{1,3}", display):
         result["display"] = display
@@ -8918,6 +9081,7 @@ def main(argv):
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "encoder": _collect_encoder(_program_state_dir(), soren, now),
         "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
