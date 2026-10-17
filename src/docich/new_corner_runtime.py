@@ -140,9 +140,62 @@ RESEARCH_PAPER_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat", "application"),
 )
 
+ENGINEERING_SPEC = CornerRuntimeSpec(
+    corner_id="engineering",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "engineering_structure_principles_corner",
+        "fixed_engineering_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="problemStatement",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("subjectSystem", "fact", "まず現物を見る"),
+        Section("problemStatement", "fact", "問題を定義"),
+        Section("principles", "analysis", "原理（必要最小限）"),
+        Section("structure", "analysis", "構造（断面・模式図）"),
+        Section("inputToMechanismToOutput", "analysis", "入力 → 機構 → 出力"),
+        Section("physicalQuantities", "fact", "重要な物理量"),
+        Section("failureModes", "caveat", "壊れ方"),
+        Section("weakPoints", "caveat", "弱点・想定外状態"),
+        Section("safetyDesign", "analysis", "安全・冗長設計"),
+        Section("tradeoffs", "analysis", "技術的トレードオフ"),
+        Section("limitations", "caveat", "限界・未検証点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "subjectSystem",
+        "operatingEnvironment",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "problemStatement",
+        "principles",
+        "structure",
+        "inputToMechanismToOutput",
+        "physicalQuantities",
+        "failureModes",
+        "weakPoints",
+        "safetyDesign",
+        "tradeoffs",
+        "limitations",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+    ),
+    caveat_keys=("limitations",),
+    labels=("fact", "analysis", "caveat"),
+)
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
+    ENGINEERING_SPEC.corner_id: ENGINEERING_SPEC,
 }
 
 
