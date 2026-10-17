@@ -21,8 +21,8 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
             "group: soren91-evidence-export-${{ github.repository }}",
             evidence,
         )
-        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", evidence)
-        self.assertIn("group: vm-storage-monitor-${{ github.repository }}", monitor)
+        self.assertNotIn("group: vm-storage-monitor-v2-${{ github.repository }}", evidence)
+        self.assertIn("group: vm-storage-monitor-v2-${{ github.repository }}", monitor)
         self.assertIn("cancel-in-progress: false", evidence)
         self.assertIn("cancel-in-progress: false", monitor)
 

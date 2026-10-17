@@ -409,10 +409,10 @@ class HanjukuEvidenceConcurrencyGroupTests(unittest.TestCase):
         monitor = self.MONITOR_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("group: hanjuku-evidence-query-${{ github.repository }}", query)
-        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", query)
+        self.assertNotIn("group: vm-storage-monitor-v2-${{ github.repository }}", query)
         self.assertIn("group: hanjuku-evidence-export-${{ github.repository }}", export)
-        self.assertNotIn("group: vm-storage-monitor-${{ github.repository }}", export)
-        self.assertIn("group: vm-storage-monitor-${{ github.repository }}", monitor)
+        self.assertNotIn("group: vm-storage-monitor-v2-${{ github.repository }}", export)
+        self.assertIn("group: vm-storage-monitor-v2-${{ github.repository }}", monitor)
         self.assertIn("cancel-in-progress: false", query)
         self.assertIn("cancel-in-progress: false", export)
         self.assertIn("cancel-in-progress: false", monitor)
