@@ -464,7 +464,7 @@ class AuthorizeTests(unittest.TestCase):
             ("70", "canonical_unavailable"), ("71", "phase_not_releasable"),
             ("72", "game_still_active"), ("73", "no_soren_candidate"),
             ("74", "pause_not_owned"), ("75", "receipt_not_owner"),
-            ("76", "unexpected_failure"),
+            ("76", "unexpected_failure"), ("77", "handover_in_flight"),
         ):
             with self.subTest(code=code):
                 self.assertIn(f'{code}) reason="{reason}"', step)

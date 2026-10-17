@@ -13,6 +13,9 @@ proves the original owner and that no game is running:
 - the canonical game switch is in a stable failure phase with no active seat,
   so releasing the park cannot start Soren underneath a live game;
 - a Soren failed candidate is still seated (the recovery this release feeds);
+- the lifecycle broker holds no request/ack record: the proven recovery
+  archives them (cancel then fresh-start) before releasing, and a non-empty
+  broker would race that handover's own pause handling;
 - the marker body and its ownership record name the same request R, and the
   record positively claims it created the marker;
 - R's immutable receipt is a *succeeded* switch/rotate whose recorded result
@@ -51,6 +54,7 @@ REASONS = frozenset(
         "phase_not_releasable",
         "game_still_active",
         "no_soren_candidate",
+        "handover_in_flight",
         "pause_not_owned",
         "receipt_not_owner",
         "unexpected_failure",
@@ -64,6 +68,7 @@ REASON_EXIT_CODES = {
     "phase_not_releasable": 71,
     "game_still_active": 72,
     "no_soren_candidate": 73,
+    "handover_in_flight": 77,
     "pause_not_owned": 74,
     "receipt_not_owner": 75,
     "unexpected_failure": 76,
@@ -145,6 +150,18 @@ def _marker_owner(marker: Path) -> str | None:
     return owner
 
 
+def _broker_handover_in_flight(marker: Path) -> bool:
+    """True when the lifecycle broker still holds a request or ack record.
+
+    The proven #2061 recovery archives the broker records (cancel then
+    fresh-start) *before* releasing the loop pause.  A non-empty broker means a
+    handover is still live or parked, and releasing the park then would race
+    that handover's own stop/pause handling, so this refuses instead.
+    """
+    lifecycle = marker.parent / "game_lifecycle"
+    return any((lifecycle / name).is_file() for name in ("request.json", "ack.json"))
+
+
 def prove_owner(canonical: object, store: GameSwitchStore, marker: Path, record: Path) -> str:
     """Return the proven owning request, or refuse without mutating anything."""
     if not isinstance(canonical, dict):
@@ -160,6 +177,9 @@ def prove_owner(canonical: object, store: GameSwitchStore, marker: Path, record:
     seats = [canonical.get("candidate"), *(canonical.get("retiring") or [])]
     if not any(_soren_seat(seat) for seat in seats):
         raise LoopPauseReleaseRefused("no_soren_candidate")
+    if _broker_handover_in_flight(marker):
+        # Archive the broker records first, exactly as the proven recovery did.
+        raise LoopPauseReleaseRefused("handover_in_flight")
 
     owner = _marker_owner(marker)
     if owner is None:

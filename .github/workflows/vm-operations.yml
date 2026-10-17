@@ -879,6 +879,7 @@ jobs:
               74) reason="pause_not_owned" ;;
               75) reason="receipt_not_owner" ;;
               76) reason="unexpected_failure" ;;
+              77) reason="handover_in_flight" ;;
               *) reason="transport_failure" ;;
             esac
             echo "::error::Soren loop pause release refused: $reason (exit $rc)"

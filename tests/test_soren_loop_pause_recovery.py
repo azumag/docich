@@ -257,6 +257,22 @@ class RefusalTests(ReleaseFixture):
         )
         self.assert_refused("no_soren_candidate")
 
+    def test_a_live_broker_request_refuses(self):
+        # The proven recovery archives the broker records before releasing, so
+        # a non-empty broker must refuse rather than race that handover.
+        self.write_receipt()
+        (self.soren / "tmp" / "state" / "game_lifecycle" / "request.json").write_text(
+            json.dumps({"request_id": OTHER_REQUEST, "status": "stopping"})
+        )
+        self.assert_refused("handover_in_flight")
+
+    def test_a_parked_broker_ack_refuses(self):
+        self.write_receipt()
+        (self.soren / "tmp" / "state" / "game_lifecycle" / "ack.json").write_text(
+            json.dumps({"request_id": OTHER_REQUEST, "status": "stopped"})
+        )
+        self.assert_refused("handover_in_flight")
+
     def test_operator_owned_marker_refuses(self):
         self.write_receipt()
         self.write_marker(body="operator\n")
