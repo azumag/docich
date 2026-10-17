@@ -16,6 +16,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
@@ -603,10 +604,23 @@ def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
         return []
+    from . import okunote
+    pending = okunote.menu_pending(screen, mem, cur)
+    if pending is not None:
+        return pending
     flow = cur.setdefault('okunote_flow', {'ticks': 0})
     flow['ticks'] += 1
     if screen.kind == 'battle_menu':
         hp = cur.get('ally_hp')
+        summon = None
+        if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
+            summon = okunote.summon_reading(screen, mem, cur)
+            if summon is None:
+                _record(mem, 'battle_okunote_summon_unconfirmed', **_battle_labels(cur),
+                        reason='現在の本人HP・敵召喚獣・自軍コマンドを同じ戦闘に照合できず奥の手を開かない')
+                return [pad('b')]
+            _egg_general_reading(screen, mem, cur)
+            hp = summon['ally_hp']
         # g482: パプリカ34 entered the irreversible random choices and chose
         # しんだフリ (28..48 self damage), then lost at HP0. Before opening
         # the candidates, require enough *current* HP to survive even the
@@ -645,7 +659,8 @@ def okunote_step(screen, mem):
                         observed_metric={**egg_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                         resulting_event='irreversible_risk_accepted',
                         reason='敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る')
-        last_resort = _defender_last_resort(mem, cur)
+        last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
+                       else _defender_last_resort(mem, cur))
         if last_resort and not cur.get('okunote_last_resort_recorded'):
             cur['okunote_last_resort_recorded'] = True
             _record(mem, 'battle_okunote_last_resort', **_battle_labels(cur),
@@ -697,6 +712,7 @@ def okunote_step(screen, mem):
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
+    okunote.selected(mem, cur, candidate=label != 'おくのて')
     return [pad('a')]
 
 
@@ -1035,6 +1051,9 @@ def egg_battle_step(screen: Screen, mem):
     mem.pop('enemy_general_menu', None)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
+    from . import okunote
+    summon = okunote.summon_reading(screen, mem, battle)
+    okunote.combat_return(screen, mem, battle, summon=summon)
     if battle:
         battle['card_summon_observed'] = True
         battle['card_context_unclassified'] = False
