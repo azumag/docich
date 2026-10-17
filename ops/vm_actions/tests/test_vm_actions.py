@@ -430,6 +430,45 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn("cat control/ops/vm_actions/recover_bgm_mute.sh | ssh", step)
         self.assertNotIn("VM_COMMAND", step)
 
+    def test_loop_pause_release_is_fixed_confirmed_main_only(self):
+        # docich #2061: the release must be owner-only, production-only,
+        # main-only and confirmation-gated, and it must never accept an
+        # argument or an arbitrary command.
+        for overrides in (
+            dict(INPUT_TARGET="preview"), dict(INPUT_REF="feature"), dict(INPUT_CONFIRM=""),
+            dict(INPUT_CONFIRM="PRODUCTION"),
+            dict(GITHUB_ACTOR="collab", GITHUB_ACTOR_ID="42"),
+            dict(GITHUB_TRIGGERING_ACTOR="collab"),
+        ):
+            values = dict(INPUT_OPERATION="release_soren_loop_pause", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+            values.update(overrides)
+            self.assertNotEqual(self.run_auth(**values).returncode, 0)
+        for operation in ("release_soren_loop_pause --force", "release_soren_loop_pause;id",
+                          "release_soren_loop_pause "):
+            self.assertNotEqual(
+                self.run_auth(INPUT_OPERATION=operation, INPUT_TARGET="production",
+                              INPUT_REF="main", INPUT_CONFIRM="production").returncode,
+                0,
+            )
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false",
+                          INPUT_OPERATION="release_soren_loop_pause", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        step = WF.read_text().split("Release the loop pause a consumed succeeded switch owns", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/release_soren_loop_pause.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
+        # The fixed entry itself is argument-free and pins the production root.
+        script = (ROOT / "ops/vm_actions/release_soren_loop_pause.sh").read_text()
+        self.assertIn('[[ $# -eq 0 ]] || exit 2', script)
+        self.assertIn('[[ "$(pwd -P)" == /home/ubuntu/docich ]] || exit 3', script)
+        self.assertIn("exec python3 ops/vm_actions/release_soren_loop_pause.py", script)
+        self.assertNotIn("eval", script)
+        self.assertNotIn("$1", script)
+        entry = (ROOT / "ops/vm_actions/release_soren_loop_pause.py").read_text()
+        self.assertIn('ROOT = Path("/home/ubuntu/docich")', entry)
+        self.assertIn("len(sys.argv) != 1", entry)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)
