@@ -11,5 +11,6 @@
 6. `soviet_now` の `config.sh` 既定値変更は worker 完全再起動で反映する。
 7. 作業中は `codex_work_indicator.sh start/stop`（または webui 作業中バナー）で粒度細かく進捗を報告する。
 8. 障害時は復旧を最優先し、原因究明・恒久対応は follow-up Issue で後追いにする。
+9. ローカルでは変更に関係するテストファイルだけを実行し、フルスイートは CI に任せる（§13）。
 
 詳細・理由は [`AGENTS.md`](./AGENTS.md) を参照。
