@@ -44,6 +44,34 @@ def test_soren_game_projection_is_bounded_and_read_only(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_soren_game_projection_separates_a_stale_founding_marker(tmp_path):
+    module = load_collector()
+    (tmp_path / "tmp/state").mkdir(parents=True)
+    (tmp_path / "tmp/markers").mkdir(parents=True)
+    (tmp_path / "game_state.json").write_text(json.dumps({
+        "state": "STOP", "makeSorenCount": 0, "score": 1976}))
+    os.utime(tmp_path / "game_state.json", (1000, 1000))
+    marker = tmp_path / "tmp/markers/.soviet_created"
+    marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
+    observation = tmp_path / "tmp/state/game_observation.json"
+    observation.write_text(json.dumps({
+        "schema": 1, "game_id": "22222222-2222-4222-8222-222222222222"}))
+
+    # The marker belongs to an earlier match: it is present but not evidence
+    # for this board (#2345).
+    output = module._collect_soren_game(tmp_path, 1100)
+    assert output["founding_seen"] is True
+    assert output["founding_marker_current"] is False
+    assert output["founding_marker_stale"] is True
+
+    # The same match is still holding its founding board: not stale.
+    observation.write_text(json.dumps({
+        "schema": 1, "game_id": "11111111-1111-4111-8111-111111111111"}))
+    output = module._collect_soren_game(tmp_path, 1100)
+    assert output["founding_marker_current"] is True
+    assert output["founding_marker_stale"] is False
+
+
 def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({

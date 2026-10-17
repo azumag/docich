@@ -77,6 +77,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                                                      "generation_matches_owner": true}, ...},
               "soren_game": {"present": true, "readable": true, "state": "MOVE",
                              "age_sec": 2, "founding_seen": false,
+                             "founding_marker_current": false,
+                             "founding_marker_stale": false,
                              "make_soren_count": 0, "game_count": 12,
                              "score": 117, "pieces_count": 16,
                              "runner_pid": 1234, "runner_alive": true},
@@ -189,9 +191,16 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
 - `corners.soren_game` は試合状態の固定enum（`MOVE`/`DROP`/`WAITING`/`STOP`/
-  `GAMEOVER`）、state更新からの秒数、建国markerの有無、試合数、score、駒数、
+  `GAMEOVER`）、state更新からの秒数、建国markerの有無と帰属、試合数、score、駒数、
   試合runnerのPID/生存だけを出す。盤面内容、ログ、入力、生成文は出さない。
-  `STOP` が古くても `founding_seen=true` の場合は通常の試合終了と判定しない。
+  markerの帰属は `founding_marker_current` / `founding_marker_stale` で判定する。
+  `founding_seen` は実在のみを表し、前の試合のmarkerでも `true` になる
+  （#2345 では前の試合のmarkerを実在だけで建国中と誤判定し、復旧が約15時間
+  遅れた）。`STOP` が古くても `founding_marker_current=true`（現試合の建国）の
+  場合は通常の試合終了と判定しない。`founding_marker_stale=true` なら通常の
+  試合終了として扱ってよい。`founding_marker_current` / `founding_marker_stale`
+  が `null`（ruleを取得できず帰属が不明）のときは、`founding_seen=true` を
+  建国中の疑いとして従来どおり通常の試合終了と判定しない。
 - `tracked_drift` は deploy を拒否させる `git_clean(root)==false` の内訳を、
   **固定カテゴリとcounterだけ**で帰属する（#412）。`parent_tracked_dirty` /
   `owned_submodule_head_mismatch` / `owned_submodule_tracked_dirty` /
