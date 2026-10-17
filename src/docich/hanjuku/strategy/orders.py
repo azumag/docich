@@ -567,7 +567,9 @@ def _recall_goal(mem, flags=None):
     origin = state.get('origin')
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
             and all(type(value) is int for value in origin)):
-        return min(owned, key=lambda c: (sum(abs(cells[c][a] - origin[a]) for a in (0, 1)),
+        # Units march directly; axis-summed distance can rank a diagonal
+        # nearer castle behind a farther one. Squaring avoids rounding ties.
+        return min(owned, key=lambda c: (sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1)),
                                          c != hero_castle, c)) if owned else None
     if hero_castle:
         return hero_castle
