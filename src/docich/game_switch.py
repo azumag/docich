@@ -5148,24 +5148,32 @@ class GameSwitchCoordinator:
             "retained_active": copy.deepcopy(active),
             "boundary_cancelled": True,
         }
-        tx.transition(
-            {"draining"},
-            "ready",
-            updates={
-                "active": copy.deepcopy(active),
-                "candidate": None,
-                "previous": None,
-                "operation": None,
-                "request_id": None,
-                "deadline_at": None,
-                "last_result": last_result,
-                "last_error": {
-                    "error_code": ERROR_TIMEOUT,
-                    "detail": last_result["detail"],
+        # Another recovery (e.g. the stale driver itself, or a concurrent
+        # request) may have already transitioned canonical state out of
+        # ``draining`` while this one released the writer lock during the
+        # adapter cancel above.  In that case the transition is already done;
+        # do not raise ``InvalidTransitionError`` (ready -> ready).  Finish
+        # the receipt idempotently and report the same timeout result.
+        current_state, _migrated = self.store.canonical.load()
+        if current_state.get("phase") == "draining":
+            tx.transition(
+                {"draining"},
+                "ready",
+                updates={
+                    "active": copy.deepcopy(active),
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": {
+                        "error_code": ERROR_TIMEOUT,
+                        "detail": last_result["detail"],
+                    },
                 },
-            },
-            crash_hook=self.crash_hook,
-        )
+                crash_hook=self.crash_hook,
+            )
         saved = tx.finish_request(request_id, "failed", last_result)
         self._log(
             "drain_recovered_timeout",
