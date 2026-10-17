@@ -147,15 +147,26 @@ log "snap OK (${SNAP_SIZE} bytes)"
 sleep 2
 [ -f "${STREAM_FILE}" ] || fail "stream ファイルが作成されていません (${STREAM_FILE})"
 SIZE_1="$(stat -c '%s' "${STREAM_FILE}" 2>/dev/null || stat -f '%z' "${STREAM_FILE}")"
-sleep 3
-SIZE_2="$(stat -c '%s' "${STREAM_FILE}" 2>/dev/null || stat -f '%z' "${STREAM_FILE}")"
+# 静止画面では x264 の映像出力がほぼ無くなり、muxer のバッファが flush される
+# までファイルサイズが動かないことがある (隔離 CI の実測で 256KiB 単位の段階
+# 増加を確認)。固定3秒だと「書き出しが続いている」ことの確認が flake になる
+# ため、期限付きで増加を待つ。音声 (anullsrc) があるので必ず増加する。
+SIZE_2="${SIZE_1}"
+deadline=$(( $(date +%s) + 30 ))
+while [ "$(date +%s)" -lt "${deadline}" ]; do
+    sleep 2
+    SIZE_2="$(stat -c '%s' "${STREAM_FILE}" 2>/dev/null || stat -f '%z' "${STREAM_FILE}")"
+    if [ "${SIZE_2}" -gt "${SIZE_1}" ]; then
+        break
+    fi
+done
 if [ "${SIZE_2}" -le "${SIZE_1}" ]; then
     # 隔離環境では tmux の中身を見られるのが唯一の手掛かりなので、
     # 失敗時は stream window の末尾を残す (原因究明を別ターンに先送りしない)。
     log "stream が増えていないため診断を出力します (tmux windows / stream pane 末尾):"
     tmux list-windows -t docich 2>&1 || true
     tmux capture-pane -p -t docich:stream 2>&1 | tail -25 || true
-    fail "stream ファイルのサイズが増加していません (${SIZE_1} -> ${SIZE_2})"
+    fail "stream ファイルのサイズが増加していません (${SIZE_1} -> ${SIZE_2}, 30秒待機後)"
 fi
 log "stream OK (${SIZE_1} -> ${SIZE_2} bytes)"
 
