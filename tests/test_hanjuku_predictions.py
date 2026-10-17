@@ -908,6 +908,51 @@ def test_malformed_settled_row_is_refused_without_recording(env, settled_by):
 
 
 @pytest.mark.parametrize('settled_by', ['patch', 'remote'])
+def test_malformed_canceled_row_is_refused_without_recording(env, settled_by):
+    """The P2 invariant (PR #2205) also holds on the no-contest cancel path.
+
+    A cancelled row that violates the record contract must not be recorded, and
+    the round must be held terminal so the old ACTIVE ownership neither keeps
+    re-reading the same id nor blocks the next canonical generation. Without the
+    terminal status the tick would retry the rejected id forever.
+    """
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+    # A cancelled prediction cannot name a winner: extract() refuses this row.
+    env.remote.rows[0]['winning_outcome_id'] = 'outcome-1'
+
+    if settled_by == 'patch':
+        result = _settle(env, now=131)
+    else:
+        env.remote.rows[0].update(status='CANCELED')
+        result = env.tick(131)
+
+    assert result['mode'] == 'error' and result['error'] == 'invalid_response'
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+    # Neither a cooldown tick nor a common retry tick re-reads the rejected row.
+    calls = list(env.remote.calls)
+    env.tick(132, None)
+    env.tick(131 + p.RETRY_SECONDS + 1, None)
+    assert env.remote.calls == calls
+    assert env.state()['round']['id'] == prediction_id
+    assert env.state()['round']['status'] == 'CANCELED'
+
+    # The rejected terminal round must not block the next canonical generation.
+    env.setup(ID2)
+    assert env.tick(131 + p.RETRY_SECONDS + 32, ID2)['mode'] == 'active'
+    assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+    assert env.state()['round']['id'] != prediction_id
+    env.tick(131 + p.RETRY_SECONDS + 62, ID2)
+    assert len([call for call in env.remote.calls if call == ('GET', prediction_id)]) == 1
+    assert len([call for call in env.remote.calls if call[0] == 'POST']) == 2
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+@pytest.mark.parametrize('settled_by', ['patch', 'remote'])
 @pytest.mark.parametrize('error_code', ['leaderboard', 'transport'])
 def test_retryable_recording_error_keeps_owned_round_nonterminal(env, monkeypatch, settled_by, error_code):
     assert env.tick()['mode'] == 'active'
