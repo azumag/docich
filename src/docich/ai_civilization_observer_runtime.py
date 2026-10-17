@@ -499,7 +499,15 @@ def build_record(
 
 
 def should_persist(observation: dict, previous: dict | None) -> bool:
-    """Same tick with the same living set is idempotent: keep the old record."""
+    """Decide whether a new record must be written.
+
+    A same-tick / same-region / same-living-set observation is idempotent
+    when nothing new would be introduced, so the old record is kept.  But
+    topic ids introduced during that same tick still have to be persisted
+    (with the original ``observedAt`` kept by the caller): otherwise the
+    introduced event would be re-selected on every reload.  So persistence
+    is also required when the unseen-event set would grow ``seenEventIds``.
+    """
 
     if previous is None:
         return True
@@ -508,7 +516,22 @@ def should_persist(observation: dict, previous: dict | None) -> bool:
         return True
     if previous.get("regionId") != current["regionId"]:
         return True
-    return list(previous.get("livingAgentIds") or ()) != list(current["livingAgentIds"])
+    if list(previous.get("livingAgentIds") or ()) != list(current["livingAgentIds"]):
+        return True
+    # Same tick / region / living set: persist only if a new topic would be
+    # introduced, i.e. the persisted seen-event set would grow.
+    if "seenEventIds" not in previous:
+        # Legacy/minimal record without seen-tracking: preserve the original
+        # same-tick idempotent behaviour.
+        return False
+    seen = tuple(previous.get("seenEventIds") or ())
+    try:
+        diff = diff_observation(observation, previous, seen)
+        topics = select_topics(diff)
+    except (ObserverRuntimeError, ValueError, TypeError, KeyError):
+        return False
+    new_seen = update_seen_event_ids(seen, topics)
+    return tuple(new_seen) != tuple(seen)
 
 
 def save_record(state_dir: Path, record: dict) -> Path:
