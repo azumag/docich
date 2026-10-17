@@ -221,6 +221,21 @@ def test_moon_buggy_stuck_high_score_screen_records_the_match_once(tmp_path):
     assert [s["score"] for s in scores] == [16]
 
 
+def test_moon_buggy_repeated_high_score_screen_does_not_leak_into_next_match(tmp_path):
+    # A game-over/high-score pane that lingers (captured more than once) after
+    # the first match must not re-seed max_score; otherwise the first match's
+    # score leaks into the second match's record (issue #192 P2).
+    panes = [
+        pane(MOONBUGGY_PLAY, "16"), pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_PLAY, "8"), pane(MOONBUGGY_NEW_GAME, "8"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes,
+    )
+    assert [s["score"] for s in scores] == [16, 8]
+
+
 def test_moon_buggy_wrapper_records_the_selected_ab_arm_and_hash(tmp_path):
     state_dir = tmp_path / "run"
     staged = moon_buggy_ab.stage(
