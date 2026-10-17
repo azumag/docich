@@ -55,6 +55,29 @@ STREAM_FILE="${TMP_DIR}/out.flv"
 CONFIG_PATH="${TMP_DIR}/docich.toml"
 STATE_DIR="${TMP_DIR}/run"
 
+# config/games/nethack.toml は tiles presentation を既定にしている。tiles は
+# display viewport と Chromium のビューアを必要とし、隔離検証は
+# nethack-tiles-gui-smoke.yml が担当する。このスクリプトが確かめるのは cli
+# アダプタの tty 経路 (obs が text を返し、キー注入と pane 変化が見える経路)
+# なので、game config の私用コピーで当該1行だけ tty に戻して実行する。
+GAMES_DIR="${TMP_DIR}/games"
+cp -R "${REPO_ROOT}/config/games" "${GAMES_DIR}"
+python3 - "${GAMES_DIR}/nethack.toml" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if path.is_file():
+    section = False
+    patched = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped == "[nethack.presentation]"
+        patched.append('mode = "tty"' if section and stripped.startswith("mode") else line)
+    path.write_text("\n".join(patched) + "\n", encoding="utf-8")
+PY
+
 cat > "${CONFIG_PATH}" <<EOF
 [display]
 number = 96
@@ -74,7 +97,7 @@ bufsize = "1600k"
 
 [paths]
 state_dir = "${STATE_DIR}"
-games_dir = "${REPO_ROOT}/config/games"
+games_dir = "${GAMES_DIR}"
 roms_dir = "${REPO_ROOT}/games/roms"
 EOF
 
@@ -86,7 +109,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "一時 config = ${CONFIG_PATH} (display :96, audio 無効, stream=file)"
+log "一時 config = ${CONFIG_PATH} (display :96, audio 無効, stream=file, nethack=tty)"
 
 # --- 実行 -------------------------------------------------------------------
 "${DOCICH}" up
