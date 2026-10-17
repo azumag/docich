@@ -10,11 +10,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from docich.game_switch import GameSwitchStore  # noqa: E402
+from docich.game_switch import GameSwitchCoordinator, GameSwitchStore  # noqa: E402
 from docich.naming import runtime_directory, runtime_names  # noqa: E402
 from docich.soren_loop_pause_recovery import (  # noqa: E402
     REASON_EXIT_CODES,
@@ -24,6 +25,7 @@ from docich.soren_loop_pause_recovery import (  # noqa: E402
     exit_code,
     incomplete_result,
 )
+from test_coordinator import FakeAdapterFactory  # noqa: E402
 
 REQUEST_ID = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
 OTHER_REQUEST = "11111111-2222-4333-8444-555555555555"
@@ -348,6 +350,69 @@ class ExitCodeTests(unittest.TestCase):
                       {"status": "incomplete", "reason": "nope"}):
             with self.subTest(value=value):
                 self.assertEqual(exit_code(value), REASON_EXIT_CODES["unexpected_failure"])
+
+
+class RealCoordinatorIntegrationTests(unittest.TestCase):
+    """The proof must accept a receipt the real coordinator actually wrote.
+
+    The hand-built fixtures above are validated by the store's own loaders, but
+    only a real switch proves that the operator fires for the #2061 shape: the
+    receipt's ``result`` direction, its ``source_runtime`` identity, and the
+    canonical failed-candidate seat all come from production code here.
+    """
+
+    def test_a_real_succeeded_switch_receipt_proves_the_release(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state_dir = root / "run-soren-live"
+            soren = root / "soren"
+            (soren / "tmp" / "state" / "game_lifecycle").mkdir(parents=True)
+            marker = soren / "tmp" / "state" / "soren_loop.paused"
+            store = GameSwitchStore(state_dir)
+            factory = FakeAdapterFactory({"sorengame": {"name": "soren"}, "robots": {}})
+            coordinator = GameSwitchCoordinator(
+                store, factory, quiesce_verify_timeout_s=0.3, poll_interval_s=0.01,
+                default_timeout_s=60,
+            )
+            self.assertEqual(coordinator.start("sorengame").status, "succeeded")
+            source = store.canonical.load()[0]["active"]
+            self.assertEqual((source["game"], source["adapter"]), ("sorengame", "soren"))
+
+            switched = coordinator.switch("robots", request_id=str(uuid.uuid4()))
+            self.assertEqual(switched.status, "succeeded")
+            request_id = switched.request_id
+            receipt = store.receipts.load(request_id)
+            self.assertEqual(receipt["status"], "succeeded")
+            self.assertEqual(receipt["operation"], "switch")
+            self.assertEqual(receipt["result"]["from_game"], "sorengame")
+            self.assertEqual(receipt["result"]["to_game"], "robots")
+
+            # The switch that parked the loop is consumed; the marker and its
+            # ownership record survive exactly as #2061 found them.
+            marker.write_text(f"lifecycle:{request_id}\n")
+            (soren / "tmp" / "state" / "game_lifecycle" / "loop_pause.json").write_text(
+                json.dumps({"request_id": request_id, "loop_marker_created": True})
+            )
+            # Canonical in the failed-candidate shape the recovery started from:
+            # no active seat, the stopped Soren runtime seated as the candidate.
+            state = dict(store.canonical.load()[0])
+            state.update(
+                {
+                    "phase": "failed",
+                    "operation": None,
+                    "request_id": None,
+                    "active": None,
+                    "candidate": dict(source),
+                    "retiring": [],
+                }
+            )
+            store.canonical.save(state)
+
+            released = OrphanedLoopPauseRelease(state_dir, soren).run()
+
+            self.assertEqual(released["status"], "completed", released)
+            self.assertEqual(released["released"], "soren_loop_pause")
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":
