@@ -61,3 +61,11 @@ Do not add VM credentials or a broad GitHub token to the Worker.
 ## Rollback
 
 Disable or remove the Cloudflare Cron Trigger (or delete the Worker). The native GitHub `schedule` and manual `workflow_dispatch` paths remain unchanged.
+
+## See also: independent silence alert
+
+This Worker fails closed and silently when GitHub is unreachable or its own token is no longer
+valid, so a dead Worker cannot report the monitor's silence. `.github/workflows/vm-monitor-silence-alert.yml`
+covers that case with a different failure mode: its own schedule, its own concurrency group and
+the run-scoped `GITHUB_TOKEN`. It opens one deduplicated Issue while the monitor has had no
+successful run for longer than the threshold. See `docs/operations/vm-monitor-silence-alert.md`.
