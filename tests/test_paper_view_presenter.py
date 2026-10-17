@@ -230,7 +230,33 @@ def test_paper_view_renders_the_dashboard_fixture_inside_the_viewport(tmp_path):
         # The fixture reached the page: the sentinel only exists in our files.
         assert SYMBOL in body, "the dashboard server did not render the fixture"
 
-        viewer = subprocess.Popen(adapter._viewer_command(), stdout=logs, stderr=logs)
+        viewer_command = adapter._viewer_command()
+        browser_command = viewer_command[viewer_command.index("--") + 1:]
+
+        # Production reuses /tmp/docich-paper-view-<port>, so its Chromium
+        # profile starts warm. Warm the same profile here too: a cold Chromium
+        # start on the runner can outlast presentation.py's 10s viewer window,
+        # and the production browser command must not be widened for CI.
+        warm = subprocess.Popen(browser_command, env=dict(os.environ, DISPLAY=display),
+                               stdout=logs, stderr=logs)
+        warm_deadline = time.monotonic() + 90
+        while time.monotonic() < warm_deadline and warm.poll() is None:
+            found = subprocess.run(
+                ["xdotool", "search", "--onlyvisible", "--pid", str(warm.pid)],
+                env=dict(os.environ, DISPLAY=display),
+                capture_output=True, text=True, timeout=5)
+            if [item for item in found.stdout.split() if item.isdigit()]:
+                break
+            time.sleep(0.25)
+        if warm.poll() is None:
+            warm.terminate()
+            try:
+                warm.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                warm.kill()
+                warm.wait()
+
+        viewer = subprocess.Popen(viewer_command, stdout=logs, stderr=logs)
         pattern = f"docich-present-{adapter.spec.runtime_id}"
         window_id = _wait_window(display, pattern, time.monotonic() + 60, viewer, log_path)
         geometry = _geometry(display, window_id)
