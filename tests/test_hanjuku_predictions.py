@@ -417,7 +417,15 @@ def test_a_single_outcome_with_bets_is_canceled_and_refunded(env):
     statuses = [c[2] for c in env.remote.calls if c[0] == 'PATCH']
     assert statuses == ['LOCKED', 'CANCELED']
     assert env.state()['round']['status'] == 'CANCELED'
-    assert not (env.g.state_dir / leaderboard.FILE).exists()
+    # 不成立キャンセルでも参加実績と返金を残す（#933 追記）。
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    round_ = ledger['rounds'][env.remote.rows[0]['id']]
+    assert round_['status'] == 'CANCELED' and round_['cancel_reason'] == 'no-contest'
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 1}
+    assert all(entry['hit'] is None and entry['won'] == 0
+               and entry['refunded'] == entry['used'] for entry in round_['predictors'])
+    # 勝敗が確定していないので的中率の分母には入らない。
+    assert leaderboard.ranking(ledger, min_rounds=1) == []
 
 
 def test_no_bets_at_all_is_canceled_and_refunded(env):
@@ -428,7 +436,8 @@ def test_no_bets_at_all_is_canceled_and_refunded(env):
     assert _settle(env)['mode'] == 'canceled'
 
     assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
-    assert not (env.g.state_dir / leaderboard.FILE).exists()
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 1}
 
 
 def test_a_contested_prediction_resolves_as_before(env):
@@ -441,7 +450,7 @@ def test_a_contested_prediction_resolves_as_before(env):
     assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-1'
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
     # 4択すべてに top predictor が1人ずついる（_seed_top_predictors）。
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
     assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['LOCKED', 'RESOLVED']
 
 
@@ -813,7 +822,7 @@ def test_settled_round_is_recorded_in_the_yosou_leaderboard(env):
         f'u{index}': outcome['id'] == round_['winning_outcome_id']
         for index, outcome in enumerate(env.remote.rows[0]['outcomes'])
     }
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
 
     # The runtime-retention tick after teardown never counts the round twice.
     env.tick(131)
@@ -841,7 +850,7 @@ def test_patch_response_without_predictors_uses_one_authoritative_read(env):
                    if call[0] == 'PATCH' and call[2] == 'RESOLVED')
     assert any(call == ('GET', prediction_id) for call in calls[patch_at + 1:])
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
 
 
 def test_broken_ledger_keeps_the_settled_round_retryable(env):
@@ -946,3 +955,43 @@ def test_unverified_settlement_response_keeps_owned_round_retryable(env, monkeyp
     assert not (env.g.state_dir / leaderboard.FILE).exists()
     assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'resolved'
     assert len(leaderboard.load(env.g.state_dir / leaderboard.FILE)['rounds']) == 1
+
+
+def test_broken_ledger_keeps_the_canceled_round_retryable(env):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+    path = env.g.state_dir / leaderboard.FILE
+    path.write_text('{broken', encoding='utf-8')
+
+    first = _settle(env, now=131)
+    assert first['mode'] == 'error' and first['error'] == 'leaderboard'
+    assert env.state()['round']['status'] != 'CANCELED'
+    assert path.read_text(encoding='utf-8') == '{broken'
+
+    # The next observation of the already-canceled remote records the refunded
+    # participation exactly once.
+    path.write_text(json.dumps(leaderboard.new_ledger()), encoding='utf-8')
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'canceled'
+    ledger = leaderboard.load(path)
+    assert set(ledger['rounds']) == {prediction_id}
+    assert ledger['rounds'][prediction_id]['cancel_reason'] == 'no-contest'
+    assert leaderboard.stats(ledger)['canceled'] == 1
+    env.tick(131 + 2 * p.RETRY_SECONDS + 2, None)
+    assert len(leaderboard.load(path)['rounds']) == 1
+
+
+def test_a_non_contest_cancel_is_not_recorded(env):
+    """An ``input_stalled`` ending cancels the round, but it is not the refunded
+    no-contest round the 予想王 ledger keeps (Issue #933 scopes the addendum to
+    no-contest cancellations)."""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['CANCELED']
+    assert not (env.g.state_dir / leaderboard.FILE).exists()

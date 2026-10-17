@@ -24,6 +24,24 @@ def predictor(user_id, login, *, outcome="o1", used=100, won=200):
             "channel_points_used": used, "channel_points_won": won}
 
 
+def canceled_row(pid, picks=None, *, ended="2026-10-01T00:00:00Z",
+                 title="半熟英雄：どこまで到達できるか？"):
+    """A no-contest CANCELED Helix row (``winning_outcome_id`` is null)."""
+    outcomes = []
+    for oid, otitle in (("o1", "新記録"), ("o2", "惜しい")):
+        rows = (picks or {}).get(oid, [])
+        outcomes.append({"id": oid, "title": otitle, "users": len(rows),
+                         "channel_points": sum(r["channel_points_used"] for r in rows),
+                         "top_predictors": rows or None})
+    return {"id": pid, "title": title, "status": "CANCELED", "winning_outcome_id": None,
+            "ended_at": ended, "outcomes": outcomes}
+
+
+def canceled_predictor(user_id, login, *, outcome="o1", used=100):
+    return {"user_id": user_id, "user_login": login, "user_name": login.title(),
+            "channel_points_used": used}
+
+
 def with_top(pid, picks, *, winner="o1", ended="2026-10-01T00:00:00Z"):
     """``picks`` maps outcome -> list of predictor dicts."""
     outcomes = []
@@ -103,7 +121,7 @@ def test_record_requires_corner_and_valid_now():
 
 def test_record_rejects_invalid_ledger():
     with pytest.raises(lb.LeaderboardError):
-        lb.record({"schema": 2, "rounds": {}}, row("p1"), corner="hanjuku")
+        lb.record({"schema": 3, "rounds": {}}, row("p1"), corner="hanjuku")
     with pytest.raises(lb.LeaderboardError):
         lb.record({"schema": True, "rounds": {}}, row("p1"), corner="hanjuku")
 
@@ -163,7 +181,7 @@ def test_ranking_uses_latest_name_and_rejects_bad_bounds():
 
 def test_stats_counts_rounds_and_distinct_viewers_without_names():
     ledger = _three_round_ledger()
-    assert lb.stats(ledger) == {"rounds": 3, "viewers": 2}
+    assert lb.stats(ledger) == {"rounds": 3, "viewers": 2, "canceled": 0}
 
 
 def test_load_missing_is_empty_and_save_round_trips(tmp_path):
@@ -174,7 +192,7 @@ def test_load_missing_is_empty_and_save_round_trips(tmp_path):
               corner="hanjuku", now=7)
     lb.save(path, ledger)
     assert lb.load(path) == ledger
-    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 2
 
 
 def test_load_rejects_unbounded_and_corrupt_files(tmp_path):
@@ -236,7 +254,7 @@ def test_record_resolved_serializes_writers_and_is_idempotent(tmp_path):
 
 def test_record_resolved_never_overwrites_a_broken_ledger(tmp_path):
     path = tmp_path / lb.FILE
-    path.write_text(json.dumps({"schema": 2, "rounds": {}}), encoding="utf-8")
+    path.write_text(json.dumps({"schema": 3, "rounds": {}}), encoding="utf-8")
     before = path.read_bytes()
 
     with pytest.raises(lb.LeaderboardError):
@@ -251,3 +269,161 @@ def test_record_resolved_ignores_unsettled_rows(tmp_path):
                  outcomes=[{"id": "o1", "title": "A"}, {"id": "o2", "title": "B"}])
     assert lb.record_resolved(tmp_path, active, corner="hanjuku") is False
     assert not (tmp_path / lb.FILE).exists()
+
+
+def test_canceled_round_keeps_participation_and_refund_without_grading():
+    remote = canceled_row("p1", {"o1": [canceled_predictor("u1", "alice", used=100)]})
+    round_, predictors = lb.extract(remote)
+    assert round_["status"] == "CANCELED"
+    assert round_["winning_outcome_id"] is None
+    assert predictors == [{
+        "user_id": "u1", "user_login": "alice", "user_name": "Alice",
+        "outcome_id": "o1", "used": 100, "won": 0, "refunded": 100, "hit": None}]
+
+    ledger = lb.new_ledger()
+    assert lb.record(ledger, remote, corner="hanjuku", cancel_reason="no-contest", now=5)
+    stored = ledger["rounds"]["p1"]
+    assert stored["status"] == "CANCELED" and stored["cancel_reason"] == "no-contest"
+    # A retried observation tick must not count the refunded round twice.
+    assert lb.record(ledger, remote, corner="hanjuku", cancel_reason="no-contest") is False
+
+
+def test_canceled_row_without_predictors_is_still_evidence():
+    ledger = lb.new_ledger()
+    assert lb.record(ledger, canceled_row("p1"), corner="hanjuku", cancel_reason="no-contest")
+    assert ledger["rounds"]["p1"]["predictors"] == []
+    assert lb.stats(ledger) == {"rounds": 1, "viewers": 0, "canceled": 1}
+
+
+def test_canceled_row_ignores_an_echoed_won_amount():
+    remote = canceled_row("p1", {"o1": [canceled_predictor("u1", "alice")]})
+    remote["outcomes"][0]["top_predictors"][0]["channel_points_won"] = 200
+    round_, predictors = lb.extract(remote)
+    assert predictors[0]["won"] == 0 and predictors[0]["refunded"] == 100
+    remote["outcomes"][0]["top_predictors"][0]["channel_points_won"] = None
+    assert lb.extract(remote)[1][0]["won"] == 0
+
+
+def test_canceled_round_requires_a_known_reason():
+    ledger = lb.new_ledger()
+    remote = canceled_row("p1")
+    for reason in (None, "", "refund", 1):
+        with pytest.raises(lb.LeaderboardError):
+            lb.record(ledger, remote, corner="hanjuku", cancel_reason=reason)
+    with pytest.raises(lb.LeaderboardError):
+        lb.record(ledger, with_top("p2", {"o1": [predictor("u1", "alice")]}),
+                  corner="hanjuku", cancel_reason="no-contest")
+    assert ledger["rounds"] == {}
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r.update(winning_outcome_id="o1"),
+    lambda r: r["outcomes"][0]["top_predictors"][0].update(channel_points_won=-1),
+    lambda r: r["outcomes"][0]["top_predictors"][0].update(channel_points_won="many"),
+])
+def test_extract_rejects_malformed_canceled_rows(mutate):
+    remote = canceled_row("p1", {"o1": [canceled_predictor("u1", "alice")]})
+    mutate(remote)
+    with pytest.raises(lb.LeaderboardError):
+        lb.extract(remote)
+
+
+def test_save_refuses_a_canceled_round_without_a_reason(tmp_path):
+    ledger = lb.new_ledger()
+    ledger["rounds"]["p1"] = {
+        "id": "p1", "title": "t", "ended_at": "", "status": "CANCELED",
+        "winning_outcome_id": None, "outcomes": [], "predictors": []}
+    with pytest.raises(lb.LeaderboardError):
+        lb.save(tmp_path / lb.FILE, ledger)
+    assert not (tmp_path / lb.FILE).exists()
+
+
+def test_record_settled_records_a_canceled_round_once(tmp_path):
+    remote = canceled_row("p1", {"o1": [canceled_predictor("u1", "alice")]})
+    assert lb.record_settled(tmp_path, remote, corner="hanjuku", now=9,
+                             cancel_reason="no-contest") is True
+    assert lb.record_settled(tmp_path, remote, corner="hanjuku", now=9,
+                             cancel_reason="no-contest") is False
+    assert lb.load(tmp_path / lb.FILE)["rounds"]["p1"]["cancel_reason"] == "no-contest"
+
+
+def test_a_full_refund_is_neither_a_gain_nor_a_loss():
+    """100 staked and fully refunded: 1 participation, 0 gain, 0 loss."""
+    ledger = lb.new_ledger()
+    lb.record(ledger, with_top("p1", {"o1": [predictor("alice", "alice", used=100, won=300)]}),
+              corner="hanjuku")
+    lb.record(ledger, canceled_row("p2", {"o1": [canceled_predictor("alice", "alice", used=100)]}),
+              corner="hanjuku", cancel_reason="no-contest")
+    # Only the graded round counts for the hit-rate board.
+    assert [(e["user_id"], e["rounds"], e["hits"], e["used"], e["won"])
+            for e in lb.ranking(ledger, min_rounds=1)] == [("alice", 1, 1, 100, 300)]
+    alice = {e["user_id"]: e for e in lb.boards(ledger, min_rounds=1)["staked"]}["alice"]
+    assert alice["participations"] == 2
+    assert alice["used"] == 200 and alice["refunded"] == 100
+    assert alice["won"] == 300 and alice["lost"] == 0
+    assert alice["net"] == 300 - 200 + 100
+
+
+def test_lost_points_are_the_stake_of_a_graded_miss_only():
+    ledger = lb.new_ledger()
+    lb.record(ledger, with_top("p1", {"o1": [predictor("alice", "alice", used=10, won=40)],
+                                      "o2": [predictor("bob", "bob", used=30, won=0)]}),
+              corner="hanjuku")
+    lb.record(ledger, with_top("p2", {"o1": [predictor("bob", "bob", used=20, won=60)]}),
+              corner="hanjuku")
+    lb.record(ledger, canceled_row("p3", {"o1": [canceled_predictor("bob", "bob", used=70)]}),
+              corner="hanjuku", cancel_reason="no-contest")
+    boards = lb.boards(ledger, min_rounds=1)
+    bob = {e["user_id"]: e for e in boards["lost"]}["bob"]
+    assert bob["lost"] == 30 and bob["won"] == 60 and bob["refunded"] == 70
+    # A no-contest cancel on its own puts a viewer on the play/stake boards only.
+    lb.record(ledger, canceled_row("p4", {"o1": [canceled_predictor("carol", "carol")]}),
+              corner="hanjuku", cancel_reason="no-contest")
+    boards = lb.boards(ledger, min_rounds=1)
+    assert "carol" not in {e["user_id"] for e in boards["lost"]}
+    assert "carol" not in {e["user_id"] for e in boards["hit_rate"]}
+    assert "carol" in {e["user_id"] for e in boards["plays"]}
+
+
+def test_boards_are_independent_and_deterministically_ordered():
+    ledger = lb.new_ledger()
+    for index in range(3):
+        lb.record(ledger, with_top(f"g{index}",
+                                   {"o1": [predictor("graded", "graded", used=10, won=20)]}),
+                  corner="hanjuku")
+    lb.record(ledger, canceled_row("c1", {"o1": [canceled_predictor("casual", "casual", used=5)]}),
+              corner="hanjuku", cancel_reason="no-contest")
+    assert set(lb.boards(ledger)) == set(lb.METRICS)
+    graded = lb.boards(ledger, min_rounds=3, min_participations=1)
+    assert {e["user_id"] for e in graded["hit_rate"]} == {"graded"}
+    assert [e["user_id"] for e in graded["plays"]] == ["graded", "casual"]
+    # min_rounds must not filter a board that never grades a round.
+    strict = lb.boards(ledger, min_rounds=99, min_participations=1)
+    assert strict["hit_rate"] == [] and len(strict["staked"]) == 2
+    assert lb.boards(ledger, min_rounds=1, min_participations=5)["plays"] == []
+    with pytest.raises(lb.LeaderboardError):
+        lb.boards(ledger, min_participations=0)
+
+
+def test_load_upgrades_a_schema_1_ledger(tmp_path):
+    path = tmp_path / lb.FILE
+    path.write_text(json.dumps({"schema": 1, "rounds": {"p1": {
+        "id": "p1", "title": "t", "ended_at": "2026-10-01T00:00:00Z",
+        "winning_outcome_id": "o1",
+        "outcomes": [{"id": "o1", "title": "A", "users": 1, "points": 100}],
+        "predictors": [{"user_id": "u1", "user_login": "alice", "user_name": "Alice",
+                        "outcome_id": "o1", "used": 100, "won": 200, "hit": True}],
+        "corner": "hanjuku", "recorded_at": 7}}}), encoding="utf-8")
+    ledger = lb.load(path)
+    assert ledger["schema"] == 2
+    assert ledger["rounds"]["p1"]["status"] == "RESOLVED"
+    assert ledger["rounds"]["p1"]["predictors"][0]["refunded"] == 0
+    assert lb.ranking(ledger, min_rounds=1)[0]["hit_rate"] == 1.0
+
+
+def test_load_refuses_a_legacy_round_that_is_not_graded(tmp_path):
+    path = tmp_path / lb.FILE
+    path.write_text(json.dumps({"schema": 1, "rounds": {"p1": {"id": "p1", "predictors": "x"}}}),
+                    encoding="utf-8")
+    with pytest.raises(lb.LeaderboardError):
+        lb.load(path)

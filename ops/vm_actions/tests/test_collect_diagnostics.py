@@ -371,11 +371,12 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     (state_dir).mkdir(parents=True)
     (soren/'tmp'/'state').mkdir(parents=True)
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
-        'schema':1,
+        'schema':2,
         'rounds':{
-            'p1':{'corner':'soren','title':'SECRET-TITLE','predictors':[
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED','predictors':[
                 {'user_id':'u1','user_name':'SECRET-NAME','user_login':'secret','hit':True}]},
-            'p2':{'corner':'hanjuku','predictors':[{'user_id':'u2','hit':False}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'predictors':[{'user_id':'u2','hit':None}]},
         }}),encoding='utf-8')
     (soren/'tmp'/'state'/'prediction_resolved.jsonl').write_text(
         json.dumps({'id':'p1','status':'RESOLVED'})+'\n\n',encoding='utf-8')
@@ -390,6 +391,15 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
     rendered=json.dumps(result,ensure_ascii=False)
     assert 'SECRET-NAME' not in rendered and 'SECRET-TITLE' not in rendered
+
+    # A ledger written before the cancel-participation upgrade (schema 1) stays a
+    # readable projection: it holds graded rounds only.
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':1,'rounds':{'p1':{'predictors':[{'user_id':'u1','hit':True}]}}}),
+        encoding='utf-8')
+    legacy=module._collect_programs(state_dir,soren,int(time.time()))
+    assert legacy['prediction_leaderboard']=={
+        'present':True,'readable':True,'rounds':1,'viewers':1}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')

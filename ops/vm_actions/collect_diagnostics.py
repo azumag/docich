@@ -4946,7 +4946,7 @@ def _collect_prediction_leaderboard(state_dir):
         data = json.loads(raw) if raw is not None else None
     except ValueError:
         data = None
-    if (not isinstance(data, dict) or data.get("schema") != 1
+    if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
     viewers = set()

@@ -702,6 +702,16 @@ Soren の `twitch_predictions.sh` が resolve 成功時に追記する
 診断は `prediction_leaderboard`（rounds/viewers の件数のみ）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
 
+### 不成立キャンセルの参加実績と5指標ランキング（#933 PR-5）
+
+対立する投票が無い不成立キャンセル（`CANCELED` / `no-contest`）でも、証拠のある参加を
+台帳へ1回だけ記録する。半熟英雄の予想 tick は `CANCELED` を確定した直後と、既に `CANCELED` の
+row を再観測した時に `hanjuku_predictions._record_canceled` で記録する。返金は元本返却として
+「得たポイント」「失ったポイント」へ二重計上せず、的中率の分子・分母は勝敗が確定した
+`RESOLVED` の round だけで数える。集計は的中率・賭けたポイント・得たポイント・失ったポイント・
+賭けた回数の5部門で、それぞれ独立した最低数・並び順を持つ。定義と表示の正本は
+`docs/features/yosou-oh-corner.md` §2.1 / §3.1。不成立以外のキャンセルと Soren 側の記録は未対応。
+
 ### 予想王コーナーの発表（読み上げ・eventOverlay、#933 PR-4）
 
 予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
