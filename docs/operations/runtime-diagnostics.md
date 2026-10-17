@@ -393,7 +393,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `paper_corner.json` の `degraded` は
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
-  production checkout 内に制約する。
+  production checkout 内に制約する。同 `state_dir` 配下の `scores/<game>.jsonl` は
+  固定6ゲームの末尾 64 KiB だけを読み、件数・連続重複長・直近5件に要約する
+  （`corners.retro_scores`。後述「レトロ枠のスコアログ投影」）。
 - Hanjukuの `retro_corner.bot_version` は固定許可値だけを表示する。従来の v1/v2 に加え、
   `hanjuku-chart-v129-battle-card-progress` / `hanjuku-chart-v130-summer-cursor-evidence` /
   `hanjuku-chart-v131-defense-month-economy` を許可する。
@@ -536,6 +538,39 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   **severity には加算しない**（webui は任意コンポーネント）。deploy 済みなのに
   別プロセスがポートを掴んで旧 UI を出し続ける case を `served_matches_deployed=false` +
   `listener_is_unit=false` で検出する（`restart_webui` operation の終了コード14と同じ状態）。
+
+## レトロ枠のスコアログ投影（#2392）
+
+`diagnostics.corners.retro_scores` は、配信のスコア統計パネルの元になる
+`<state_dir>/scores/<game>.jsonl`（1試合終了につき1レコード）の**末尾だけ**を
+固定ゲーム集合（`gnurobots` / `ninvaders` / `nsnake` / `bastet` / `moon-buggy` /
+`pacman4console`）について投影する。試合終了画面が残ったまま wrapper が
+在プレイと誤認し続けると、同じ確定スコアが poll ごとに追記される。この回帰を
+正規の read-only 経路で照合できるようにするのが目的で、public リポジトリでは
+`exec` が使えないため、この投影が唯一の観測点になる。
+
+- ゲーム名は固定タプルからのみ導出し、state・リクエスト由来のパスや basename を使わない。
+- regular file のみ（symlink は `present=false`）。読むのは末尾 64 KiB（行数上限 2000 は
+  極端に短い行への安全弁。実レコードは約 70〜90 バイトのため通常は全行走査）。
+  窓を外れた場合は `truncated=true` とし、欠落を不在として扱わない。
+- 出すのは `present` / `readable` / `records`（窓内の有効レコード数）/
+  `invalid`（解釈できない行数）/ `truncated` / `sources`（`agent` / `live` /
+  `wrapper` と、それ以外をまとめた `other` の件数のみ）/
+  `max_same_score_run`（同一スコアが連続した最長長。重複記録の署名）/
+  `last`（直近5件の `ts` / `score` / `source`）/ `age_sec`。
+- `score` は 0〜10^9 の整数のみ有効。0点の試合も1レコードとして数える。
+  ts 以外の自由文・clip id・hash・path・例外本文・追加フィールドは出さない。
+- `records` と `max_same_score_run` は**走査窓の中の集計**であり、
+  「重複した試合数」そのものではない。
+  `truncated=false`（ログ全体を走査）なら、コーナー実行前後の
+  **`records` の差分**が追記レコード数そのものになる。受入はこの差分で読み、
+  `max_same_score_run` は poll ごとの重複追記の署名として読む。
+  `truncated=true` のとき `records` は下限値にしかならないため差分の基準にせず、
+  `last` と `max_same_score_run` を主に見る。
+- severity には加算しない。HARD_JSON_BYTES を超える場合だけ
+  `{"status": "output_omitted"}` に縮退する（通常は数 KiB 未満）。
+  縮退の判定は直前の `decision_plans` 縮退を再計測した後に行う
+  （同縮退だけで hard ceiling 以下に戻る場合は `retro_scores` を保持する）。
 
 ## Soren91 投下間の read-only 集計
 
