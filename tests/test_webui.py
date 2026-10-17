@@ -1079,11 +1079,38 @@ class TestHttpHandlers(unittest.TestCase):
         finally:
             sock.close()
 
-    def test_put_config_body_too_large_slow_trickle_returns_413_within_deadline(self):
-        # 0.2s ごとに少量送信する slow-trickle でも総時間上限で打ち切る。
+    def test_put_config_body_too_large_slow_trickle_is_bounded(self):
+        # per-read timeout より短い間隔で送り続ける slow-trickle。
+        # 総時間 deadline が実装されていないと read が制御を返さず handler が
+        # 占有され続ける (read(n) は n バイト揃うまで内部で recv を繰り返すため)。
+        # 「413 を読める」か「RST/EOF で接続が終わる」のどちらかが期限までに
+        # 起きること = handler が期限付きで解放されることを固定する。413 の
+        # 受信自体は RST で失われ得るので、このケースでは必須にしない
+        # (DoS 保護を優先し、413 の契約は送信の速い既存テストで固定する)。
         import socket as _socket
+        import threading as _threading
         import time as _time
+
+        # 送信間隔 < per-read timeout にして「無通信 timeout では抜けない」状況を作る。
+        # (per-read timeout は 0.1s。実装定数に依存させず literal で固定する。)
+        trickle_interval = 0.02
+        recv_timeout = 4.0
+        release_deadline = 2.0  # 総時間 deadline (0.5s) + 十分な余裕
         sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        stop = _threading.Event()
+        sent = [0]
+
+        def trickle():
+            end = _time.monotonic() + recv_timeout + 2.0
+            while not stop.is_set() and _time.monotonic() < end:
+                try:
+                    sock.sendall(b"x")
+                    sent[0] += 1
+                except OSError:
+                    return
+                stop.wait(trickle_interval)
+
+        sender = _threading.Thread(target=trickle, daemon=True)
         try:
             sock.sendall(
                 ("PUT /api/config HTTP/1.1\r\n"
@@ -1093,35 +1120,42 @@ class TestHttpHandlers(unittest.TestCase):
                  "Content-Length: 1000000000\r\n"
                  "Connection: close\r\n\r\n").encode("ascii")
             )
-            sock.settimeout(2.0)
+            sender.start()
+            sock.settimeout(recv_timeout)
             t0 = _time.monotonic()
-            # 0.2s ごとに 1 バイト送信 (slow-trickle)
-            for _ in range(10):
-                if _time.monotonic() - t0 > 1.0:
-                    break
-                try:
-                    sock.sendall(b"x")
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
-                _time.sleep(0.2)
-            # 応答を読む
             buf = b""
-            sock.settimeout(2.0)
-            while True:
+            closed = False
+            while b"\r\n\r\n" not in buf:
                 try:
                     chunk = sock.recv(4096)
                 except _socket.timeout:
                     break
+                except ConnectionResetError:
+                    closed = True
+                    break
                 if not chunk:
+                    closed = True
                     break
                 buf += chunk
-                if b"\r\n\r\n" in buf:
-                    break
             elapsed = _time.monotonic() - t0
-            self.assertLess(elapsed, 1.5, "slow-trickle で deadline を超えた: %.2fs" % elapsed)
-            self.assertIn(b"413", buf.split(b"\r\n", 1)[0] if buf else b"")
+            first_status = buf.split(b"\r\n", 1)[0] if buf else b""
+            self.assertLess(
+                elapsed,
+                release_deadline,
+                "slow-trickle で handler が deadline 内に解放されなかった: elapsed=%.2fs sent=%d"
+                % (elapsed, sent[0]),
+            )
+            self.assertTrue(buf or closed, "応答も接続終了も観測できなかった")
+            # 413 以外の HTTP 応答を返してはいけない (RST/EOF は許容)。
+            if first_status:
+                self.assertIn(b"413", first_status)
         finally:
-            sock.close()
+            stop.set()
+            try:
+                sock.close()
+            except OSError:
+                pass
+            sender.join(timeout=1.0)
 
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
