@@ -3842,7 +3842,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v228-bijin-request-decline",
             "hanjuku-chart-v229-bijin-hold-release",
             "hanjuku-chart-v232-low-army-refill-first",
-            "hanjuku-chart-v233-refill-outcome",
+            "hanjuku-chart-v234-refill-outcome",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
