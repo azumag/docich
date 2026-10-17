@@ -194,10 +194,18 @@ def _survival_menu(screen, mem, cur):
     # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     # At critical HP do not spend more live melee frames scouting an unknown
     # card inventory when a usable egg is already on the current menu.
+    # Three selections whose announcements all stayed unclassified are not a
+    # reading of an empty list (g839 4214-4272: 59/59 vs 40 retreated with
+    # きりふだ still on the menu). Read the real list once more; its own
+    # rules use a card, keep cards_uncertain, or find it empty.
+    attempted = rescue.get('cards_attempted') or []
+    final_read = ('きりふだ' in labels and rescue['cards_checked'] >= 3
+                  and not rescue.get('cards_exhausted') and not rescue.get('final_card_read')
+                  and attempted and attempted[-1] in (cur.get('cards_unclassified') or []))
     if (critical or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
-            and rescue['cards_checked'] < 3):
+            and rescue['cards_checked'] < 3) or final_read:
         label = 'きりふだ'
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
           and not _own_egg_empty(mem, cur)):
@@ -212,6 +220,8 @@ def _survival_menu(screen, mem, cur):
     if move != 'here':
         return [move] if move else []  # no blind A on a missing cursor
     if label == 'きりふだ':
+        if rescue['cards_checked'] >= 3:
+            rescue['final_card_read'] = True
         rescue['cards_checked'] += 1
         cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
     else:
