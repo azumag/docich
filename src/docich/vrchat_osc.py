@@ -939,6 +939,7 @@ class InboundReceiver:
         *,
         is_echo: Callable[[str, Any, float], bool] | None = None,
         wallclock: float | None = None,
+        observe: Callable[[str, Any, float], None] | None = None,
     ) -> list[InboundAction]:
         try:
             messages = decode_packet(data)
@@ -972,9 +973,20 @@ class InboundReceiver:
                 continue
             previous = self._last_value.get(name)
             self._last_value[name] = value
-            if is_echo is not None and is_echo(name, value, now):
+            if rule.action == "mode" and rule.values and not 0 <= int(value) < len(rule.values):
+                # Semantically invalid for docich: never adopted, never fired.
                 self.dropped += 1
                 continue
+            if is_echo is not None and is_echo(name, value, now):
+                # Our own send echoed back: no action and no re-adoption, so a
+                # pending docich-side change is not clobbered by its echo.
+                self.dropped += 1
+                continue
+            if observe is not None:
+                # Sync observation is deliberately separate from the action
+                # decision below: a falling edge (Alert 1 -> 0) fires no
+                # action but still has to update the outbound sync state.
+                observe(name, value, now)
             if rule.min_interval > 0:
                 last_fire = self._last_fire_at.get(name)
                 if last_fire is not None and now - last_fire < rule.min_interval:
@@ -989,9 +1001,6 @@ class InboundReceiver:
                     continue
             if rule.action == "mode":
                 index = int(value)
-                if rule.values and not 0 <= index < len(rule.values):
-                    self.dropped += 1
-                    continue
                 label = rule.values[index] if rule.values else str(index)
                 record = {
                     "ts": round(wallclock, 3),
@@ -1229,19 +1238,30 @@ class VrOscBridge:
             now,
             is_echo=self.is_echo,
             wallclock=self._wallclock(),
+            observe=self._observe_inbound,
         )
         for action in actions:
-            name = action.parameter
-            spec = self.settings.params[name]
-            # Adopt the avatar's value so the outbound side does not bounce it
-            # back, and record it as synchronised so a loopback echo is ignored.
-            value = coerce_value(name, spec.kind, action.value)
-            self._slots[name] = _Slot(value=value)
-            self._synced[name] = (value, now)
-            if spec.persist:
-                self._persist()
             self._dispatch(action.record)
         return actions
+
+    def _observe_inbound(self, name: str, value: Any, now: float) -> None:
+        """Adopt a genuine avatar-side value into the outbound state.
+
+        Called for every allowlisted, valid, non-echo value — including a
+        falling edge that fires no action.  Without this, an avatar-side
+        ``Alert`` 1 -> 0 left ``_synced`` stale at ``True`` and the *next*
+        docich ``Alert=true`` was skipped as already synced (PR #2458
+        review).  Echoes of our own sends are excluded so a pending docich
+        change is never clobbered by its own reflection, and out-of-allowlist
+        ``Mode`` values are dropped before this runs.
+        """
+        spec = self.settings.params[name]
+        previous = self._slots.get(name)
+        changed = previous is None or not _same_value(previous.value, value)
+        self._slots[name] = _Slot(value=value)
+        self._synced[name] = (value, now)
+        if spec.persist and changed:
+            self._persist()
 
     def _dispatch(self, record: Mapping[str, Any]) -> None:
         for sink in self._sinks:

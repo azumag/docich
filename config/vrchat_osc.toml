@@ -1,9 +1,12 @@
 # VRChat OSC 連携 (Issue #316) — 解説は docs/vrchat-osc.md
 #
 # 既定値は「VRChat と docich が同じ PC で動く」構成です。
-# 別 PC の VRChat とつなぐ場合は vrchat_host を LAN の IP に変更し、
-# VRChat 側を `--osc=9000:9001:0.0.0.0` で起動してください。
-# 外部公開は想定しません。localhost / LAN 内に閉じてください。
+# 別 PC の VRChat とつなぐ場合は:
+#   1. osc.vrchat_host を VRChat PC の IP にする (bridge -> VRChat への送信先)
+#   2. osc.listen_host を "0.0.0.0" または自 PC の LAN IP にして VRChat から受ける
+#   3. VRChat を公式形式 `--osc=<inPort>:<outIP>:<outPort>` で起動し、
+#      <outIP>:<outPort> をこの bridge へ向ける (例: --osc=9000:192.168.1.42:9001)
+# 外部公開は想定しません。localhost / 信頼できる LAN 内に閉じてください。
 
 [osc]
 vrchat_host = "127.0.0.1"

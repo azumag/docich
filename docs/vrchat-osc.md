@@ -45,7 +45,7 @@ Expression Parameter を外部と双方向にやり取りする。
 | 項目 | 決定 |
 | --- | --- |
 | OSC Bridge の実体 | `docich vr-osc bridge`（stdlib のみの独立プロセス）。docich 本体の起動・停止に依存しない |
-| 実行場所 | 既定は **VRChat と同じ PC**。別 PC の場合は VRChat を `--osc=9000:9001:0.0.0.0` で起動し、bridge 側の `vrchat_host` を LAN IP にする |
+| 実行場所 | 既定は **VRChat と同じ PC**。別 PC の場合は VRChat を `--osc=<受信ポート>:<bridge PC の LAN IP>:9001` で起動し、bridge 側は `vrchat_host` に VRChat PC の IP / `listen_host` に LAN から到達可能なアドレスを設定する（§6.1） |
 | 責務 | (1) docich 状態 → Parameter 送信 (2) VRChat Parameter → 許可された action の記録 (3) ループ防止・debounce・fail-soft |
 | 状態の受け渡し | ファイルのみ。`speaking.json`（実発話状態）と JSONL イベント spool。docich 本体と socket で直結しない |
 | 待受 | 既定 `127.0.0.1`。外部公開しない |
@@ -104,8 +104,22 @@ VRChat や OSC が落ちていても docich 本体の動作には影響しない
 
 1. VRChat の OSC を有効化する（既定で `127.0.0.1:9000` 待受 / `127.0.0.1:9001` 送信）。
    - 同一 PC: 追加設定なし。
-   - 別 PC / LAN: VRChat を `--osc=9000:9001:0.0.0.0` で起動し、bridge の
-     `vrchat_host` を VRChat PC の IP にする。信頼できる LAN 内だけで使う。
+   - 別 PC / LAN: VRChat の起動引数は公式形式 `--osc=<inPort>:<outIP>:<outPort>`
+     （既定の再現例は `--osc=9000:127.0.0.1:9001`）。`<inPort>` は VRChat 自身の
+     待受ポート（既定 9000）、`<outIP>:<outPort>` がパラメータ変更通知の送信先＝
+     この bridge です。例:
+
+     ```text
+     VRChat PC:  --osc=9000:192.168.1.42:9001    （192.168.1.42 = bridge PC の LAN IP）
+     ```
+
+     bridge 側は `vrchat_host` に VRChat PC の IP を設定し（→ その 9000 へ送信）、
+     受信は `listen_host`（既定 `127.0.0.1`）を `"0.0.0.0"` または bridge PC の
+     LAN IP へ変更して 9001 で受ける。`DOCICH_VRCHAT_OSC_LISTEN_HOST` 環境変数でも
+     上書きできる。**送信先と待受は別々に設定する**（VRChat の引数は送信先、
+     bridge の `listen_host` は待受側）。
+     信頼できる LAN 内だけで使い、外部公開しない（9000/9001 は firewall で閉じる）。
+
 2. VRChat の OSC Debug パネルで `/avatar/parameters/...` の受信が見えることを確認する。
 
 ### 6.2 アバター（Unity）側
@@ -167,8 +181,9 @@ docich vr-osc send AI_Emotion=2     # 別ターミナル
    同じ値を受信したら捨てる。
 3. **受信の debounce / edge**: Bool は立ち上がりのみ、Int は変化+
    クールダウン。連打・ループで action が増えない。
-4. **受信値の採用**: 受信した `Mode` は docich 側にも採用するため、送り返し（バウンス）が
-   起きない。
+4. **受信値の採用**: 受信した値（自分の送信のエコーと `[inbound]` の範囲外を除く）は
+   docich 側の同期状態へ採用する。そのため送り返し（バウンス）が起きず、アバターが
+   値を戻した後（例: `Alert` 1 → 0）の次の docich 側変更も1回だけ確実に届く。
 
 ### フェイルソフト
 

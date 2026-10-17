@@ -25,10 +25,13 @@ VRChat は公式 OSC で Expression Parameter を外部から操作でき、ア�
    `notify` / `mode` の名前付き action にだけ変換し、任意コマンド実行へは接続しない。
 4. **状態の受け渡しはファイル**（speaking.json + JSONL spool）。docich 本体と bridge を
    socket で直結せず、VRChat/OSC が落ちても docich 本体の動作を阻害しない。
-5. **ループ防止**を最優先の不変条件とする: 変化時のみ送信、送信直後の同値エコーを抑制、
-   Bool は立ち上がりエッジのみ、Int は変化+クールダウン、受信した `Mode` は docich 側に採用する。
+5. **ループ防止**を最優先の不変条件とする: 変化時のみ送信、自分の送信のエコーは同期更新にも
+   使わない、Bool は立ち上がりエッジのみ、Int は変化+クールダウン。受信値（エコーと
+   allowlist 範囲外を除く）は docich 側の同期状態へ採用し、送り返さない。
 6. 既定は `127.0.0.1:9000`（VRChat 待受）へ送り、`127.0.0.1:9001` で受ける。
-   LAN をまたぐ場合だけ VRChat 側の `--osc=9000:9001:0.0.0.0` を使用し、外部公開しない。
+   LAN をまたぐ場合だけ、VRChat 側を公式形式 `--osc=<inPort>:<outIP>:<outPort>`
+   （例: `--osc=9000:<bridge PC の LAN IP>:9001`）で起動し、bridge の
+   `listen_host` を LAN から到達可能なアドレスへ変更する。外部公開しない。
 
 ## 2. 検討した代替案
 

@@ -453,6 +453,42 @@ class TestBridgeInbound(unittest.TestCase):
             self.assertEqual(bridge.values()["Mode"], 1, "VRChat側の選択をdocichも採用する")
             self.assertNotIn(("Mode", 1), sender.calls, "同じ値を送り返さない")
 
+    def test_avatar_released_alert_then_new_emit_is_delivered_once(self):
+        # PR #2458 review P2: the falling edge (avatar released the button)
+        # must update the outbound sync state, otherwise the NEXT docich
+        # Alert=true is skipped as "already synced".
+        with tempfile.TemporaryDirectory() as tmp:
+            settings, _, bridge = self._bridge(tmp)
+            sender = RecordingSender()
+            bridge.sender = sender
+            bridge.tick(now=0.0)  # initial sync: 4 params including Alert=False
+            bridge.tick(now=1.0, packets=[self._packet("Alert", 1)])
+            self.assertEqual(len(action_records(settings.action_spool)), 1)
+            self.assertNotIn(("Alert", True), sender.calls, "採用値を送り返さない")
+            bridge.tick(now=2.0, packets=[self._packet("Alert", 0)])
+            self.assertEqual(len(action_records(settings.action_spool)), 1, "立ち下がりでnotifyしない")
+            self.assertIs(bridge.values()["Alert"], False, "立ち下がりをdocich状態へ反映する")
+            osc.append_events(
+                settings.event_spool, [("Alert", True)], settings=settings, hold_ms=2000
+            )
+            bridge.tick(now=3.0)
+            self.assertEqual(
+                sender.values("Alert"), [False, True], "新しいAlert=trueを1回だけ送る"
+            )
+            bridge.tick(now=3.5)
+            self.assertEqual(sender.values("Alert"), [False, True], "同じ値を再送しない")
+
+    def test_out_of_range_mode_is_neither_adopted_nor_persisted(self):
+        # The observation path must not let a semantically invalid avatar
+        # value (outside [inbound.Mode].values) poison docich state.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings, _, bridge = self._bridge(tmp)
+            bridge.tick(now=0.0)  # initial sync persists Mode=0
+            bridge.tick(now=1.0, packets=[self._packet("Mode", 9)])
+            self.assertEqual(bridge.values()["Mode"], 0)
+            stored = json.loads(settings.state_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["params"]["Mode"], 0)
+
     def test_echo_of_our_own_send_is_suppressed(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings, _, bridge = self._bridge(tmp)
