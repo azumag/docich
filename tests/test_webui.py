@@ -1018,6 +1018,67 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("PUT", "/api/config", body="x" * (webui.MAX_BODY_BYTES + 1))
         self.assertEqual(status, 413)
 
+    def test_put_config_body_too_large_no_body_returns_413_within_deadline(self):
+        # 生ソケットで巨大 Content-Length を宣言し本文を送らない。
+        # drain に deadline が無いと 413 が返らずハングする (review P2)。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_partial_body_returns_413_within_deadline(self):
+        # 本文を一部だけ送って停止するケースでも deadline 内に 413 を返す。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 262145\r\n"
+                 "Connection: close\r\n\r\n" + "x" * 17).encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
         try:

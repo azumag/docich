@@ -3792,6 +3792,10 @@ class _Handler(BaseHTTPRequestHandler):
             # 応答がクライアント側で失われるため (issue #2371)。
             # ただし本文を送らない/遅いクライアントで 413 が返らない DoS を
             # 避けるため、drain には短い deadline を設ける (review P2)。
+            # 保証範囲: declared length <= _DRAIN_CAP の場合のみ close 前に
+            # 全文を drain し RST を回避できる。cap を超える宣言値では
+            # deadline 到達後に 413 を返すが未読が残り RST が起こり得る
+            # (DoS 保護優先)。#2145/#2305 と同様に「隠す」意図はない。
             # 上限を超える巨大な宣言値に対しては DoS を避けるため cap する。
             _DRAIN_CAP = MAX_BODY_BYTES + 65536
             _DRAIN_DEADLINE_SEC = 0.5
