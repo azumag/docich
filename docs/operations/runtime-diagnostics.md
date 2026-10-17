@@ -708,6 +708,27 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 
+### 解決器の限界（実測）
+
+参照を pin しない代わりに解決器へ依存するときは、次の限界を前提にする。
+
+- **探索範囲は run の発生量に依存する。** `--scan`（既定 30）は完了した
+  `workflow_dispatch` run を新しい順に調べるため、30 件が遡る範囲は実測で
+  約 5 時間分だった（2026-10-16 の 12 時間で `vm-operations.yml` は 68 run）。
+  それより古い diagnostics run を探すときは `--scan` を明示的に増やすか、
+  対象の `databaseId` を直接使う。
+- **`--dump-json` の出力は JSON として再パースできない場合がある。** secret
+  masking は数値や日付の途中にも `***` を入れるためで、実測した 1 回の出力に
+  35 箇所あった（`"at":1792176165.***7505`、`"ends_at":"2026-10-16T***:14:58"` 等）。
+  `***` を保持したまま必要な固定 field を抜き出す消費側を前提にする。この性質は
+  回帰テストが固定する既知契約で、パース失敗は不具合ではない。
+- **最後の diagnostics run が古いと log の保持期限で解決できないことがある。**
+  artifact/log retention は 1 日（`actions/permissions/artifact-and-log-retention`
+  の実測値）で、log を読めない候補は解決器が skip する。実測では 1.6 日前の run は
+  取得でき、15 日前の run は HTTP 410 だった。長期間 diagnostics run が無いと
+  「run は存在するのに正規参照を解決できない」状態になりうる。run の消滅（#1881）
+  と合わせ、古い参照を保存して使い回さない。
+
 owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.yml`、
 `.github/workflows/hanjuku-evidence-query.yml`、
 `.github/workflows/hanjuku-evidence-export.yml`）はそれぞれ専用の concurrency group
