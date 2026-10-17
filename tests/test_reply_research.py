@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -341,19 +342,57 @@ def test_bounded_local_process_timeout_and_output_limit():
 
 
 @pytest.mark.parametrize("diagnostics", [False, True])
-def test_timeout_kills_descendant_process_group(tmp_path, diagnostics):
+def test_timeout_kills_descendant_process_group(tmp_path, monkeypatch, diagnostics):
     pid_path = tmp_path / "child.pid"
     child_code = "import time; time.sleep(30)"
+    # Reproduce slow fixture setup beyond _run's .25-second deadline.
     parent_code = (
         "import pathlib,subprocess,sys,time; "
         f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
-        f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid)); time.sleep(30)"
+        f"pathlib.Path({str(pid_path)!r}).touch(); time.sleep(.4); "
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid)+'\\n'); time.sleep(30)"
     )
+    parent_argv = [sys.executable, "-c", parent_code]
+    real_popen = subprocess.Popen
+
+    def popen_when_child_ready(argv, *args, **kwargs):
+        proc = real_popen(argv, *args, **kwargs)
+        if argv != parent_argv:
+            return proc
+        # _run's deadline stays real and can expire during this gate. Only
+        # hand it the fixture once the full PID (including newline) is ready.
+        try:
+            ready_deadline = time.monotonic() + 5
+            while time.monotonic() < ready_deadline:
+                try:
+                    raw_pid = pid_path.read_text()
+                except FileNotFoundError:
+                    raw_pid = ""
+                if raw_pid.endswith("\n") and raw_pid[:-1].isdigit() and int(raw_pid) > 0:
+                    return proc
+                if proc.poll() is not None:
+                    pytest.fail("parent exited before writing child PID")
+                time.sleep(.01)
+            pytest.fail("child PID was not ready within 5 seconds")
+        except BaseException:
+            # _run has not received proc yet, so it cannot clean up this group.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                try:
+                    proc.wait(timeout=2)
+                finally:
+                    proc.stdout.close()
+            raise
+
+    monkeypatch.setattr(r.subprocess, "Popen", popen_when_child_ready)
     def broken_sink(row):
         raise RuntimeError("synthetic sink failure")
     options = {"diagnostic": broken_sink} if diagnostics else {}
     with pytest.raises(ValueError, match="timeout"):
-        r._run([sys.executable, "-c", parent_code], b"", {}, .25, **options)
+        r._run(parent_argv, b"", {}, .25, **options)
     child_pid = int(pid_path.read_text())
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
