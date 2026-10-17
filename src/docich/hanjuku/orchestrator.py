@@ -244,8 +244,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
     if actions is None:
         actions = deploy_flow.resume_sortie_step(screen, mem)
+    sortie_cancel_hold = False
     if actions is None:
         actions = deploy_flow.boss_stock_restart_step(screen, mem)
+        sortie_cancel_hold = actions == [] and bool(mem.get('boss_stock_restart') or mem.get('boss_stock_cancelled'))
     if actions is None:
         actions = battle_menus_flow.orphan_battle_menu_step(screen, mem)
     if actions is None:
@@ -406,6 +408,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
+            and not sortie_cancel_hold
+            and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
+                     and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'

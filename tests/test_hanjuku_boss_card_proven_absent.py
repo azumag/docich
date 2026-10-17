@@ -62,20 +62,22 @@ def test_absence_needs_a_readable_id_ordered_proof(names, stocks, remaining, exp
     assert _card_proven_absent('クースカン', inventory) is expected
 
 
-def test_card_that_may_be_scrolled_off_keeps_the_strict_boss_hold():
+def test_card_that_may_be_scrolled_off_cancels_without_weakening_the_boss_kit():
     mem = memory()
     names = ('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール')
     mem['card_scroll'] = {'1-B1': policy.CARD_SCROLL_LIMIT}
-    for _ in range(policy.CARD_MISS_LIMIT + 3):
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(panel(names), mem) == []
+    assert policy.deploy_step(panel(names), mem) == [policy.pad('b'), policy.pad('b')]
     assert not mem.get('card_drop')
-    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert mem['_records'][-1]['decision'] == 'boss_card_selection_unconfirmed'
 
 
-def test_unreadable_boss_panel_is_still_held():
+def test_unreadable_boss_panel_cancels_without_dropping_any_card():
     mem = memory()
     mem['sortie_general']['1-B1'] = 'ゼウス'  # the actor menu() draws
     screen = menu('card_select', ['クースカン1'], True)
-    for _ in range(policy.CARD_UNREADABLE_LIMIT + 2):
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert not mem.get('card_drop') and mem['orders']['1-B1'] == 'pending'

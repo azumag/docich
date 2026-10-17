@@ -385,6 +385,30 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
     return []
 
 
+def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
+    """A strict kit forbids an unverified departure, not bounded cancellation."""
+    from ..os_layer.roster import run_identity
+    scope = {'identity': run_identity(mem.get('_run_identity')), 'chapter': mem.get('chapter')}
+    waits = mem.get('boss_card_hold')
+    old_scope = mem.get('boss_card_hold_scope')
+    if waits is None or old_scope is not None and old_scope != scope:
+        waits = mem['boss_card_hold'] = {}
+    mem['boss_card_hold_scope'] = scope
+    old = waits.get(order['step'], 0) if isinstance(waits, dict) else None
+    reads = min(CARD_UNREADABLE_LIMIT, old + 1) if type(old) is int and old >= 0 else CARD_UNREADABLE_LIMIT
+    if isinstance(waits, dict):
+        waits[order['step']] = reads
+    if reads < CARD_UNREADABLE_LIMIT:
+        return _hold_deploy(screen, mem, order, reason, card=card)
+    actions = _hold_guarded_sortie(mem, order, 'boss_card_selection_unconfirmed',
+        '必須切り札の実一覧・在庫・携行余枠を有限観測で確認できず、装備条件を変えず出撃を取り消す',
+        {'screen': screen.kind, 'readings': reads, 'required_cards': _deploy_cards(order, mem),
+         'card': card, 'departure': 'unconfirmed'})
+    mem['boss_stock_restart'] = {'step': order['step'], 'readings': 0, 'cancel_only': True,
+                                 'identity': scope['identity']}
+    return actions
+
+
 def _move_general_pick(screen, mem, order):
     """Pick the general a move sends: never the donor's last one."""
     present = _present_generals(screen)
@@ -607,6 +631,7 @@ def resume_sortie_step(screen: Screen, mem):
 
 def boss_stock_restart_step(screen: Screen, mem):
     """Keep ownership of a partly read sortie confirmation while backing out."""
+    from ..os_layer.roster import run_identity
     rows = {line.y: line for line in screen.lines}
     partial_confirmation = (screen.kind in {'yes_no', 'text', 'unknown'}
             and 31 in rows and rows[31].span(80, 128) == 'しょうぐん'
@@ -614,37 +639,53 @@ def boss_stock_restart_step(screen: Screen, mem):
             and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
             and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
     if mem.get('boss_stock_cancelled'):
-        if screen.kind == 'sortie_confirm' or partial_confirmation:
+        if ('boss_stock_cancelled_identity' in mem
+                and mem['boss_stock_cancelled_identity'] != run_identity(mem.get('_run_identity'))):
+            mem.pop('boss_stock_cancelled', None)
+            mem.pop('boss_stock_cancelled_identity', None)
+            return None
+        if screen.kind in {'sortie_confirm', 'card_select', 'general_list', 'map_target', 'world_map', 'unknown'} or partial_confirmation:
             _record(mem, 'situation_held', screen=screen.kind,
                     reason='取り消し上限後も同じ出撃確認が残るため承認せず保留')
             return []
-        if screen.kind in {'map', 'map_target', 'castle_menu', 'general_list', 'card_select'}:
+        if screen.kind in {'map', 'castle_menu'}:
             mem.pop('boss_stock_cancelled', None)
+            mem.pop('boss_stock_cancelled_identity', None)
     restarting = mem.get('boss_stock_restart')
     if not isinstance(restarting, dict):
         return None
     order = _order(mem)
     kind = screen.kind
+    if restarting.get('cancel_only') is True:
+        order = next((row for row in chart.orders(mem.get('chapter') or 0)
+                      if row['step'] == restarting.get('step') and _is_boss_order(row, mem)), None)
+        if (mem.get('active') not in (None, restarting.get('step')) or 'identity' not in restarting
+                or restarting['identity'] != run_identity(mem.get('_run_identity'))):
+            order = None  # a different actor/order keeps its own foreground
     if order is None or restarting.get('step') != order['step']:
         mem.pop('boss_stock_restart', None)
         return None
     if kind == 'castle_menu':
         mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
         return None
-    if kind not in {'general_list', 'card_select', 'sortie_confirm'}:
+    fade = kind == 'unknown' and not partial_confirmation
+    if kind not in {'general_list', 'card_select', 'sortie_confirm', 'map_target', 'world_map'}:
         # The action label can lose a glyph and classify as generic yes/no.
         # Retain only this measured status+carry+choice layout; unrelated
         # events, battle menus and monthly confirmations keep their owners.
-        if not partial_confirmation:
+        if not partial_confirmation and not fade:
             return None
     restarting['readings'] = int(restarting.get('readings') or 0) + 1
     if restarting['readings'] >= 12:
         mem.pop('boss_stock_restart', None)
         mem['boss_stock_cancelled'] = True
-        return _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
+        if restarting.get('cancel_only') is True:
+            mem['boss_stock_cancelled_identity'] = restarting['identity']
+        actions = _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
             '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
             {'screen': kind, 'readings': 12})
-    return [pad('b')]
+        return [] if fade else actions
+    return [] if fade else [pad('b')]
 
 
 def deploy_step(screen: Screen, mem):
@@ -653,6 +694,9 @@ def deploy_step(screen: Screen, mem):
         return restart
     order = _order(mem)
     kind = screen.kind
+    if kind in {'castle_menu', 'general_list'}:
+        mem.pop('boss_card_hold', None)  # observed backout/new actor selection, never a requeued intent
+        mem.pop('boss_card_hold_scope', None)
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
@@ -827,6 +871,9 @@ def deploy_step(screen: Screen, mem):
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if not (mem.get('sortie_general') or {}).get(order['step']):
+            if kind == 'card_select' and _strict_boss_cards(order, mem):
+                return _hold_boss_card_selection(screen, mem, order,
+                    'ボス出撃の選択本人cacheを確認できないため承認せず保留')
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人を確認できないため保留')
     if kind == 'card_select':
         mem.setdefault('order_context', {}).pop(order['step'], None)
@@ -838,10 +885,13 @@ def deploy_step(screen: Screen, mem):
         card = wanted[0] if wanted else None
         inventory = _measured_card_select(screen)
         if inventory is None:
-            if not _strict_boss_cards(order, mem):
+            if _strict_boss_cards(order, mem):
+                return _hold_boss_card_selection(screen, mem, order,
+                    '必須切り札一覧の名前・数量・配置またはカーソルを読めないため承認せず保留', card=card)
+            else:
                 # An unreadable panel must not hold the sortie forever (g454
                 # 10:02: an unknown card name stalled シェーブル's sortie). The
-                # base boss kit keeps its strict hold.
+                # base boss kit has its own cancellation budget above.
                 misses = mem.setdefault('card_unreadable', {})
                 misses[order['step']] = misses.get(order['step'], 0) + 1
                 if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
@@ -904,6 +954,9 @@ def deploy_step(screen: Screen, mem):
                 dropped = _drop_card(screen, mem, order, card, inventory)
                 if dropped is not None:
                     return dropped
+            else:
+                return _hold_boss_card_selection(screen, mem, order,
+                    '必須切り札の正数在庫と携行余枠を確認できないため承認せず保留', card=card)
             return _hold_deploy(screen, mem, order,
                                 '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
         if inventory['selected_y'] == row['y']:
