@@ -201,6 +201,17 @@ jobs:
           test -n "${browser:-}" || { echo "Chromium-family browser is required" >&2; exit 1; }
           printf 'Selected browser: %s\n' "$browser"
           "$browser" --version
+      - name: Allow Chromium's user-namespace sandbox on this disposable runner
+        run: |
+          # Ubuntu 23.10+ restricts unprivileged user namespaces through
+          # AppArmor, so Chromium aborts with "No usable sandbox!" unless it is
+          # started with --no-sandbox. The production command must not be
+          # weakened for CI, so lift the restriction on the throwaway runner
+          # instead:
+          # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Run the isolated PAPER dashboard presenter
