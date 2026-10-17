@@ -331,6 +331,76 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(audio['output_omitted'])
         self.assertEqual(payload, expected)
 
+    def test_latest_result_survives_before_the_cpu_detail_floor(self):
+        """Review of #2406: the CPU floor must never outrank the latest result.
+
+        With the same fixed envelope, the previous all-or-nothing detail drop
+        kept the latest NetHack result while the floor version dropped it. Pin
+        the priority invariant across budgets: whenever the latest record is
+        gone, every optional CPU row must already be gone too, and there must be
+        a budget where dropping only the floor saves the latest result.
+        """
+        import copy
+        self.run_record(score=42, turns=120, max_depth=7)
+        self.daily.rmdir()
+        components = [
+            {'component': f'worker-{index}-' + 'x' * 48, 'cpu_pct': index,
+             'processes': index + 1}
+            for index in range(12)
+        ]
+        spawns = [
+            {'component': f'worker-{index}-' + 'x' * 48,
+             'spawner': 'poll-worker-' + 'y' * 40, 'count': index + 1}
+            for index in range(12)
+        ]
+        streams = [
+            {'sink': f'sink-{index}', 'role': 'music', 'mute': False,
+             'corked': False, 'volume_percent': [100], 'player': 'ffmpeg'}
+            for index in range(64)
+        ]
+        base_payload = {
+            'program_admission_evidence': diag._program_admission_empty(),
+            'nethack_history': self.collect(),
+            'cpu_profile': {
+                'schema_version': 1, 'status': 'ok', 'present': True, 'readable': True,
+                'meta': {'samples': 48, 'ncpu': 4},
+                'host': {'cpu_busy_pct': 72.5, 'processes_end': 23},
+                'components': components, 'components_truncated': 0,
+                'spawns': spawns,
+            },
+            'pulse_sink_inputs': {
+                'schema_version': 1, 'readable': True, 'reason': None,
+                'total': 64, 'muted': 0, 'truncated': False, 'streams': streams,
+            },
+            'ai': {'recent_events': [], 'anomalous_components': {}},
+            'workers': {'details': {}},
+            'soren91_drop_profile': {'profileStatus': 'missing'},
+        }
+        full = len(json.dumps(base_payload, sort_keys=True, ensure_ascii=False).encode())
+        saw_floor_dropped_to_keep_latest = False
+        for budget in range(600, full + 1, 25):
+            trial = copy.deepcopy(base_payload)
+            with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+                diag._diagnostics_budget(trial)
+            records = trial['nethack_history']['completed_runs']['records']
+            profile = trial['cpu_profile']
+            has_rows = bool(profile['components']) or bool(profile['spawns'])
+            if not records:
+                self.assertFalse(
+                    has_rows,
+                    f"latest result dropped while CPU detail remained (budget={budget})",
+                )
+            if records and not has_rows:
+                saw_floor_dropped_to_keep_latest = True
+                self.assertEqual(trial['cpu_profile']['components'], [])
+                self.assertEqual(trial['cpu_profile']['spawns'], [])
+                self.assertEqual(profile['components_omitted'], len(components))
+                self.assertEqual(profile['spawns_omitted'], len(spawns))
+        self.assertTrue(
+            saw_floor_dropped_to_keep_latest,
+            'no budget kept the latest result by dropping the CPU floor',
+        )
+
     def test_full_budget_can_drop_latest_only_after_other_reductions(self):
         self.run_record()
         self.daily.rmdir()
