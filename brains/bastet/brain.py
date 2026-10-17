@@ -47,13 +47,6 @@ DEFAULT_WEIGHTS = {
     # How much the next piece's best follow-up placement counts. 0 disables the
     # 2-ply search (the preview is ignored whenever it cannot be read).
     "next_piece_weight": 1.0,
-    # Strong penalty applied when an exposed piece of a different type is
-    # buried (covered from above) by the current placement. Prevents the
-    # "A / B / A" pattern where a same-type merge candidate is blocked.
-    "buried_same_piece_penalty": -4.8,
-    # Per-cell loss of merge accessibility: each exposed cell of a different
-    # type that is no longer the topmost cell in its column after placement.
-    "merge_accessibility_loss": -0.5,
     # Deterministic tie-break towards short key sequences.
     "path_length": -0.001,
 }
@@ -521,36 +514,6 @@ def _followup_value(static, piece: str, weights: dict) -> float:
     return value
 
 
-def _exposed_top_cells(board):
-    """Return dict: col -> (row, piece_type) for the topmost occupied cell
-    in each column. These are pieces visible/reachable from above and thus
-    candidates for future merging (line clears)."""
-    result = {}
-    for col in range(BOARD_WIDTH):
-        for row in range(BOARD_HEIGHT):
-            if board[row][col] is not None:
-                result[col] = (row, board[row][col])
-                break
-    return result
-
-
-def _buried_merge_count(static, settled, piece, exposed_before, type_counts):
-    """Count exposed merge-candidate pieces (of a different type than `piece`,
-    with a same-type counterpart on the board) that are no longer the topmost
-    cell in their column after placement but are still on the board."""
-    exposed_after = _exposed_top_cells(settled)
-    buried_count = 0
-    for col, (row_a, type_a) in exposed_before.items():
-        if type_a == piece:
-            continue
-        if type_counts.get(type_a, 0) <= 1:
-            continue
-        if row_a < len(settled) and settled[row_a][col] == type_a:
-            if col not in exposed_after or exposed_after[col][0] != row_a:
-                buried_count += 1
-    return buried_count
-
-
 def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
               weights: dict | None = None) -> list[str] | None:
     """Choose a reachable placement that clears lines and keeps the well open."""
@@ -564,15 +527,11 @@ def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
         if row >= 0:
             static[row][col] = None
 
-    exposed_before = _exposed_top_cells(static)
-    from collections import Counter
-    type_counts = Counter(cell for row in static for cell in row if cell is not None)
-
     lookahead = weights["next_piece_weight"]
     use_lookahead = next_piece is not None and lookahead != 0
 
-    # First pass: enumerate candidates and compute buried counts.
-    candidates = []
+    best_value = float("-inf")
+    best_path = None
     for x, landing_y, orientation, path in _placements(
         static, piece, (start_x, start_y, start_o)
     ):
@@ -580,36 +539,9 @@ def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
         if locked is None:
             continue
         settled, cleared = locked
-        buried = _buried_merge_count(static, settled, piece, exposed_before, type_counts)
-        candidates.append((x, landing_y, orientation, path, settled, cleared, buried))
-
-    if not candidates:
-        return None
-
-    # Minimum buried count across candidates: only penalize excess burial.
-    min_buried = min(c[6] for c in candidates)
-
-    import os as _os
-    _debug = _os.environ.get("DOCICH_BRAIN_DEBUG", "").lower() in ("1", "true", "yes")
-    if _debug:
-        import sys as _sys
-        _sys.stderr.write(
-            "plan_keys: %d candidates, min_buried=%d, merge_candidates=%s\n"
-            % (len(candidates), min_buried,
-               sorted(set(t for row in static for t in row if t is not None)))
-        )
-
-    best_value = float("-inf")
-    best_path = None
-    for x, landing_y, orientation, path, settled, cleared, buried in candidates:
         value = _board_value(
             settled, cleared, _landing_height(SHAPES[piece][orientation], landing_y), weights,
         )
-        # Penalize only burial beyond the minimum (avoidable burial).
-        excess = buried - min_buried
-        if excess > 0:
-            value += weights.get("buried_same_piece_penalty", 0.0)
-            value += weights.get("merge_accessibility_loss", 0.0) * excess
         if use_lookahead:
             value += lookahead * _followup_value(settled, next_piece, weights)
         value += weights["path_length"] * len(path)
@@ -621,6 +553,7 @@ def plan_keys(board: list[list[str | None]], next_piece: str | None = None,
     if best_path is None or len(best_path) > MAX_PLAN_KEYS:
         return None
     return best_path
+
 
 def decide(text: str, weights: dict, color_text: str | None = None) -> list[str] | None:
     lower = text.lower()
