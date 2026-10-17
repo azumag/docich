@@ -489,7 +489,11 @@ def _trade_named_general(text: str):
 
 def _is_goninja_prompt(text: str) -> bool:
     # Measured monthly assassination offer; a generic 50G prompt is not enough.
-    return 'うちとおす' in ''.join(text.split())
+    # The public native frame (gcgx img/ninja.png) says うちとってみせるが.
+    # Keep the old synthetic wording readable without letting its mistaken
+    # fixture send the real offer through unclassified_prompt's default yes.
+    flat = ''.join(text.split())
+    return any(word in flat for word in ('うちとってみせる', 'うちとおす'))
 
 
 def _is_bijin_request(text: str) -> bool:

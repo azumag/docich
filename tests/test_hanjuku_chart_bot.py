@@ -431,8 +431,8 @@ def test_decline_the_general_trade_prompt():
 def _goninja_offer(gold, hand_y=177):
     """The measured monthly-event offer (gcgx img/ninja.png):
 
-    「5ねん 10のつき 7572G / 50Gで てきの ティピオカしょうぐんで /
-    うちとおすか? いかがかな!? / うむッ! / いかんッ!」
+    「5ねん 10のつき 7572G / 50Gで てきの タピオカしょうぐんを /
+    うちとってみせるが いかがかな!? / うむッ! / いかんッ!」
 
     ``gold=None`` draws the same offer without a readable status header,
     ``hand_y=193`` the cursor already moved down onto いかんッ!.
@@ -440,8 +440,8 @@ def _goninja_offer(gold, hand_y=177):
     c = Canvas()
     if gold is not None:
         c.text(16, 15, f'5ねん 10のつき {gold}G')
-    c.text(24, 151, '50Gで てきの ティピオカ')
-    c.text(24, 183, 'うちとおすか?')
+    c.text(24, 151, '50Gで てきの タピオカ')
+    c.text(24, 183, 'うちとってみせるが')
     c.text(184, 183, 'うむッ!')
     c.text(184, 199, 'いかんッ!')
     c.hand(162, hand_y)
