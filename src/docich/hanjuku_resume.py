@@ -32,7 +32,9 @@ def _start_mode(record):
         return 'resume'  # legacy claimed transfers retain their sealed snapshot
     mode, source = record.get('start_mode'), record.get('source_boundary')
     if mode == 'fresh':
-        if ((source is not None and (not isinstance(source, dict) or source.get('outcome') != 'game_over'))
+        if ((source is not None and (not isinstance(source, dict)
+                                    or source.get('outcome') not in {'game_over', 'suspended', 'manual_forced_stop'}
+                                    or (record.get('explicit_resume') is True and source.get('outcome') != 'game_over')))
                 or any(k in record for k in ('sha256', 'selected_source', 'core_state_sha256'))):
             raise AdapterError('Hanjuku fresh decision conflicts with saved progress')
     elif mode == 'resume':
@@ -46,7 +48,7 @@ def _start_mode(record):
     return mode
 
 
-def _latest_boundary(g, game):
+def _latest_boundary(g, game, *, explicit_resume=False):
     """Order runs by generation, then prove the latest run's reached boundary.
 
     Never search for a usable older save: unknown or incomplete newer progress
@@ -69,6 +71,19 @@ def _latest_boundary(g, game):
         if (receipt.get('status') == 'succeeded'
                 and (receipt.get('target') == 'hanjuku-hero'
                      or result.get('to_game') == 'hanjuku-hero')):
+            # The queued start/switch catch-up path succeeds without starting
+            # its reserved runtime. Recognize that exact result, not all old
+            # successes lacking an active_runtime proof (which stay barriers).
+            if (receipt.get('operation') in {'start', 'switch'}
+                    and result.get('operation') == receipt['operation']
+                    and result.get('request_id') == receipt['request_id']
+                    and result.get('status') == 'succeeded'
+                    and type(result.get('generation')) is int
+                    and result['generation'] == receipt['generation']
+                    and result.get('from_game') == result.get('to_game') == receipt.get('target')
+                    and result.get('detail') == '既に起動中です'
+                    and 'active_runtime' not in result and 'source_runtime' not in result):
+                continue
             choices[runtimes / receipt['runtime_id']] = receipt['generation']
     for runtime in runtimes.glob('g*'):
         # RUN_FILE is Hanjuku-specific. Saved states alone also constitute
@@ -116,7 +131,7 @@ def _latest_boundary(g, game):
                 or record.get('frame_sha256') != terminal['frame_sha256']
                 or type(run.get('generation')) is not int):
             raise AdapterError('Hanjuku terminal boundary evidence mismatch')
-    elif outcome == 'suspended':
+    elif outcome in {'suspended', 'manual_forced_stop'}:
         manual = read_record(runtime / MANUAL_SAVE_FILE)
         if (any(type(manual.get(k)) is not type(v) or manual.get(k) != v
                 for k, v in {**expected, 'schema': 1, 'request_id': record['request_id']}.items())
@@ -126,6 +141,14 @@ def _latest_boundary(g, game):
         # A manual marker cannot override an already detected game over/stall.
         if run.get('terminal_reason') is not None:
             raise AdapterError('Hanjuku manual boundary conflicts with terminal evidence')
+        if outcome == 'manual_forced_stop':
+            if manual.get('allow_unsaved_stop') is not True or record.get('save_error') != 'save_timeout':
+                raise AdapterError('Hanjuku unsaved stop authorization mismatch')
+            if explicit_resume:
+                raise AdapterError('latest Hanjuku runtime has no verified checkpoint to resume')
+            # A confirmed owner-authorized unsaved stop preserves the old
+            # ordinary-start meaning. It never authorizes an older save.
+            return dict(mode='fresh', source_boundary=record)
     else:
         raise AdapterError('Hanjuku last outcome requires explicit recovery')
     if outcome == 'game_over':
@@ -138,6 +161,12 @@ def _latest_boundary(g, game):
     if (digest != record.get('sha256') or type(record.get('checkpoint_bytes')) is not int
             or selected.stat().st_size != record['checkpoint_bytes']):
         raise AdapterError('Hanjuku boundary checkpoint changed')
+    if outcome == 'suspended' and not explicit_resume:
+        # Only the requested stalled outcomes gain automatic restoration.
+        # Still reject a corrupt saved suspension rather than hiding it with
+        # an implicit reset; an ordinary valid suspension keeps fresh semantics.
+        core_digest(selected)
+        return dict(mode='fresh', source_boundary=record)
     return dict(mode='resume', source_boundary=record, selected=selected)
 
 
@@ -272,7 +301,7 @@ def prepare(g, game, queued):
             raise AdapterError('another checkpoint request is pending')
         if prior.get('request_id') == queued['request_id']:
             return  # a verified retry must not select from its own new run
-        selection = _latest_boundary(g, game)
+        selection = _latest_boundary(g, game, explicit_resume=queued.get('resume_latest') is True)
         if selection is None and queued.get('resume_latest') is True:
             raise AdapterError('no remaining checkpoint')
         selection = selection or dict(mode='fresh', source_boundary=None)

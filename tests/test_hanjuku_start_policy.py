@@ -175,18 +175,58 @@ def test_legacy_unbound_state_requires_recovery_even_for_explicit_resume(setup):
         resume.prepare_start(s.g, s.queue)
 
 
-def test_explicit_manual_suspension_still_resumes_verified_boundary(setup):
-    s = setup
+def manual_boundary(s, outcome):
     path = s.source.parent.parent / BOUNDARY_FILE
     boundary = read_record(path)
-    boundary['outcome'] = 'suspended'
+    boundary['outcome'] = outcome
+    if outcome == 'manual_forced_stop':
+        boundary = {k: v for k, v in boundary.items() if k not in {
+            'checkpoint', 'sha256', 'checkpoint_bytes', 'checkpoint_mtime_ns', 'frame_sha256'}}
+        boundary['save_error'] = 'save_timeout'
     atomic_write_json(path, boundary)
-    atomic_write_json(path.parent / MANUAL_SAVE_FILE, {k: boundary[k] for k in
-        ('schema', 'game', 'runtime_id', 'generation', 'lease_id', 'request_id')})
+    atomic_write_json(path.parent / MANUAL_SAVE_FILE, dict({k: boundary[k] for k in
+        ('schema', 'game', 'runtime_id', 'generation', 'lease_id', 'request_id')}, allow_unsaved_stop=True))
     run = read_record(path.parent / hanjuku_run.RUN_FILE)
     atomic_write_json(path.parent / hanjuku_run.RUN_FILE, dict(run, terminal_reason=None))
-    resume.prepare_start(s.g, s.queue)
-    assert read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)['start_mode'] == 'resume'
+    return boundary
+
+
+@pytest.mark.parametrize('source,explicit', [('automatic', False), ('manual', False), ('manual', True)])
+def test_valid_manual_suspension_preserves_ordinary_fresh_and_explicit_resume(setup, monkeypatch, source, explicit):
+    s = setup
+    boundary = manual_boundary(s, 'suspended')
+    receipt = execute(s, request(s, source, explicit), monkeypatch)
+    assert receipt['source_boundary'] == boundary
+    assert receipt['start_mode'] == ('resume' if explicit else 'fresh')
+    assert receipt['status'] == ('claimed' if explicit else 'verified')
+    assert (s.spec.runtime_dir / 'states/hanjuku-hero.state').exists() == explicit
+
+
+@pytest.mark.parametrize('source', ['automatic', 'manual'])
+def test_authorized_unsaved_manual_stop_preserves_ordinary_fresh_without_old_stall(setup, monkeypatch, source):
+    s = setup
+    boundary = manual_boundary(s, 'manual_forced_stop')
+    s.source.unlink()  # only g478's old stalled save remains
+    receipt = execute(s, request(s, source), monkeypatch)
+    assert receipt['source_boundary'] == boundary and receipt['start_mode'] == 'fresh'
+    assert not list((s.spec.runtime_dir / 'states').iterdir())
+
+
+@pytest.mark.parametrize('bad', ['missing', 'changed', 'invalid-format'])
+def test_corrupt_manual_suspension_still_requires_safety_decision_instead_of_fresh(setup, bad):
+    s = setup
+    manual_boundary(s, 'suspended')
+    if bad == 'missing':
+        s.source.unlink()
+    else:
+        s.source.write_bytes(b'invalid checkpoint')
+        if bad == 'invalid-format':
+            path = s.source.parent.parent / BOUNDARY_FILE
+            record = read_record(path)
+            atomic_write_json(path, dict(record, sha256=hashlib.sha256(s.source.read_bytes()).hexdigest(),
+                                         checkpoint_bytes=s.source.stat().st_size))
+    with pytest.raises(AdapterError):
+        resume.prepare_start(s.g, request(s, 'automatic'))
 
 
 @pytest.mark.parametrize('reason', ['screen_stalled', 'game_over'])
@@ -247,8 +287,8 @@ def test_unclaimed_legacy_mtime_reservation_cannot_bypass_newer_game_over(setup,
 def test_changed_bytes_between_selection_and_sealing_are_rejected(setup, monkeypatch):
     s = setup
     select = resume._latest_boundary
-    def change(g, game):
-        result = select(g, game)
+    def change(g, game, **kwargs):
+        result = select(g, game, **kwargs)
         s.source.write_bytes(state_bytes(b'changed after validation'))
         return result
     monkeypatch.setattr(resume, '_latest_boundary', change)
@@ -268,7 +308,8 @@ def test_resume_request_cannot_be_changed_into_an_implicit_fresh_start(setup, mo
     assert not (s.spec.runtime_dir / resume.RECEIPT_FILE).exists()
 
 
-def test_missing_newest_committed_runtime_does_not_resurrect_old_stall(setup):
+@pytest.mark.parametrize('has_active_proof', [False, True])
+def test_missing_newest_committed_runtime_does_not_resurrect_old_stall(setup, has_active_proof):
     from docich.game_switch import GameSwitchStore
     s = setup
     store = GameSwitchStore(Path(s.g.state_dir))
@@ -277,12 +318,62 @@ def test_missing_newest_committed_runtime_does_not_resurrect_old_stall(setup):
         canonical['next_generation'] = 600
         store.canonical.save(canonical)
         acceptance = tx.accept_request(str(uuid.uuid4()), 'start', 'hanjuku-hero')
-        tx.finish_request(acceptance.request_id, 'succeeded', {
-            'status': 'succeeded', 'to_game': 'hanjuku-hero'})
+        result = {
+            'request_id': acceptance.request_id, 'operation': 'start', 'status': 'succeeded',
+            'from_game': None, 'to_game': 'hanjuku-hero', 'generation': acceptance.generation,
+            'source_runtime': None, 'active_runtime': {
+                'game': 'hanjuku-hero', 'runtime_id': acceptance.receipt['runtime_id'],
+                'generation': acceptance.generation, 'lease_id': str(uuid.uuid4())}}
+        if not has_active_proof:
+            result.pop('active_runtime')
+            result.pop('source_runtime')
+        tx.finish_request(acceptance.request_id, 'succeeded', result)
     # No run, boundary, state or even runtime directory remains for generation
     # 600, but the durable start receipt proves newer progress existed.
     with pytest.raises(AdapterError, match='unconfirmed'):
         resume.prepare_start(s.g, request(s, 'automatic'))
+
+
+@pytest.mark.parametrize('operation', ['start', 'switch'])
+@pytest.mark.parametrize('reason', ['screen_stalled', 'input_stalled', 'game_over'])
+def test_real_queued_noop_success_does_not_hide_actual_runtime_end(setup, operation, reason):
+    from docich.game_switch import GameSwitchCoordinator, GameSwitchStore, runtime_state_dict
+    from docich.naming import runtime_names
+    s = setup
+    boundary = ended(s.source, reason)
+    runtime = s.source.parent.parent
+    final_run = read_record(runtime / hanjuku_run.RUN_FILE)
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, dict(final_run, terminal_reason=None))
+    (runtime / BOUNDARY_FILE).unlink()
+    names = runtime_names(boundary['generation'])
+    active_spec = replace(s.spec, generation=boundary['generation'], runtime_id=runtime.name,
+                          runtime_dir=runtime, lease_id=boundary['lease_id'],
+                          game_window=names.game_window, agent_window=names.agent_window,
+                          adapter_session=names.adapter_session)
+    store = GameSwitchStore(Path(s.g.state_dir))
+    with store.transaction():
+        canonical = store.canonical.initialize()
+        canonical.update(phase='ready', active=runtime_state_dict(active_spec, '2026-10-17T00:00:00Z'),
+                         next_generation=600)
+        store.canonical.save(canonical)
+    pending_id = str(uuid.uuid4())
+    reserved = store.enqueue_request(pending_id, operation, 'hanjuku-hero').receipt
+    factory = mock.Mock(side_effect=AssertionError('no-op must never create an adapter'))
+    coordinator = GameSwitchCoordinator(store, factory)
+    result = getattr(coordinator, operation)('hanjuku-hero', request_id=pending_id)
+    assert result.status == 'succeeded' and result.generation == 600
+    noop = store.receipts.load(pending_id)
+    assert noop['result']['detail'] == '既に起動中です'
+    assert 'active_runtime' not in noop['result']
+    assert not Path(reserved['runtime_dir']).exists()
+    factory.assert_not_called()
+    # The real active runtime reaches its normal end after the no-op request.
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, final_run)
+    atomic_write_json(runtime / BOUNDARY_FILE, boundary)
+    resume.prepare_start(s.g, request(s, 'automatic'))
+    decision = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert decision['source_boundary'] == boundary
+    assert decision['start_mode'] == ('fresh' if reason == 'game_over' else 'resume')
 
 
 def test_legacy_claimed_startup_recovery_keeps_logical_snapshot_through_common_entry(recovery_setup, monkeypatch):
