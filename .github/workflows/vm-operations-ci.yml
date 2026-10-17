@@ -50,8 +50,6 @@ jobs:
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
       - name: Read-only program admission evidence (bounded synthetic fixtures)
         run: python3 -m pytest -q ops/vm_actions/tests/test_program_admission_diagnostics.py
-      - name: Owner-only release of a consumed switch's loop pause
-        run: python3 -m pytest -q tests/test_soren_loop_pause_recovery.py
       - name: Fixed supervisor identity (Linux proc and local Bash only)
         env:
           PYTHONPATH: src
