@@ -301,4 +301,47 @@ def test_runtime_section_order_follows_the_design_doc():
         "caveat",
         "application",
         "application",
-    ]
+        ]
+
+
+
+def test_runtime_progression_rejects_a_swapped_novelty_chapter():
+    from docich.new_corner_runtime import (
+        load_corner_fixture,
+        progress_frames,
+        validate_status,
+    )
+
+    data = load_corner_fixture("research-paper", root=RUNTIME_ROOT)
+    frames = [dict(frame) for frame in progress_frames(data)]
+    for frame in frames:
+        if frame.get("key") == "novelty":
+            frame["key"] = "priorProblem"
+    try:
+        validate_status(data, frames)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("status check accepted a frame sequence with a swapped novelty chapter")
+
+
+def test_runtime_progression_rejects_emptied_caveat_value_and_text():
+    from docich.new_corner_runtime import (
+        load_corner_fixture,
+        progress_frames,
+        validate_status,
+    )
+
+    data = load_corner_fixture("research-paper", root=RUNTIME_ROOT)
+    frames = [dict(frame) for frame in progress_frames(data)]
+    for frame in frames:
+        if isinstance(frame.get("caveats"), dict):
+            for key in list(frame["caveats"]):
+                frame["caveats"][key] = ""
+    frames[-1]["text"] = ""
+    try:
+        validate_status(data, frames)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("status check accepted emptied caveat values")
