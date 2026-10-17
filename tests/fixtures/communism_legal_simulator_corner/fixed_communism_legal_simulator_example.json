@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "corner": "communism-legal-simulator",
+  "fixtureId": "fixed-communism_legal_simulator-deepdive-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed communist-legal-simulator fixture for planning and input-contract acceptance only. It is not a real event or verified statement.",
+  "topic": {
+    "title": "Synthetic Fixture: Communist Legal Simulator",
+    "topicId": "fixed-communism_legal_simulator-001",
+    "eventDate": "2026-10-14",
+    "geography": "hypothetical communist legal system",
+    "actors": [
+      "Party",
+      "State",
+      "mediating institution"
+    ],
+    "thirtySecondSummary": "合成fixture: 共産主義法律シミュレーターの入力契約確認用 planning 例。",
+    "oneLineSummary": "合成fixture: 共産主義法律シミュレーターの入力例。",
+    "whatHappened": "共産主義法体系における法解釈と制度運用を巡る架空のシナリオ。",
+    "partyClaims": [
+      "Party: 法の統一的解釈を主張",
+      "State: 制度運用の柔軟性を主張"
+    ],
+    "parties": [
+      "Party",
+      "State"
+    ],
+    "claims": [
+      "Party claims unified interpretation",
+      "State claims flexible operation"
+    ],
+    "institutionalLegalPosition": "条約・法・制度解釈が争点。単独の確定判決は未確認。",
+    "legalPosition": "legal interpretations remain disputed",
+    "internationalLaw": "statute, institutional practice, legal interpretation",
+    "historicalBackground": "共産主義法体系の成立と変遷が背景。最近の制度改正で再燃。 植民地期の境界線と戦後の統治変遷が背景。最近の資源開発で再燃。 合成fixture内の改良履歴: 旧案は当事者主張と制度の記述を並置するだけで、歴史的背景・地理的経済的条件・主要争点・対立する見方・日本の影響を比較対象から外していた。改良案はそれらを比較対象へ追加し、事実・分析・予測のラベルと一次情報優先を並べて検討する。これは入力契約確認のために設定した架空の設計履歴であり、共産主義法律シミュレーションの改善を示さない。 実政治の解釈や外交交渉の改善を示さない。",
+    "geoEconomicSecurityConditions": "制度・経済・安全保障が絡む。",
+    "geographicConditions": "hypothetical jurisdiction",
+    "economicConditions": "planned economy, resource allocation",
+    "securityConditions": "institutional control, enforcement",
+    "keyDisputes": [
+      "法解釈",
+      "制度運用",
+      "権限範囲"
+    ],
+    "keyIssues": [
+      "legal interpretation",
+      "institutional operation",
+      "authority scope"
+    ],
+    "opposingViewpoints": [
+      "Party prioritizes formal legal text",
+      "State prioritizes institutional practice"
+    ],
+    "multiplePerspectives": [
+      "legal-formal",
+      "institutional-practice",
+      "economic"
+    ],
+    "japanImpact": "制度比較・法理論への波及。直接的主体ではない。",
+    "japan": "comparative legal and institutional implications",
+    "indicatorsAndEvents": [
+      "制度改正",
+      "法廷活動",
+      "許認可",
+      "世論"
+    ],
+    "indicators": [
+      "reform",
+      "court activity",
+      "licenses"
+    ],
+    "temporalEvents": [
+      "negotiation",
+      "ruling",
+      "statement"
+    ],
+    "labelsPolicy": {
+      "fact": "primary or corroborated",
+      "analysis": "interpretation",
+      "forecast": "conditional scenario"
+    },
+    "factAnalysisForecastLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "factAnalysisPredictionLabels": [
+      "fact",
+      "analysis",
+      "prediction"
+    ],
+    "limitations": "合成 fiction fixture であり、実国家・実協議・実裁定の検証は未実施。",
+    "limitationsAndCaveats": "synthetic fixture only; no real verification",
+    "uncertainty": "未確認の発表、非公開合意、情報の非対称。",
+    "gaps": [
+      "undisclosed agreements",
+      "asymmetric information"
+    ],
+    "figureOrDiagram": "制度・法・争点を overlay 用に分離した概念図。",
+    "overlayPlan": "event summary, parties, legal position, disputes, indicators",
+    "youtubeIndependentDraft": "YouTube 切り出しでは30秒要約、出来事、主張、制度、歴史、争点、影響、注目指標を独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/communism-legal-simulator/synthetic"
+    ],
+    "sourcePriority": [
+      "primary-statement-or-official-document",
+      "public-institution",
+      "established-media-multiple",
+      "academic-or-thinktank",
+      "fact-check-source"
+    ],
+    "citationKeepUrl": true,
+    "sourceUrls": [
+      "https://example.org/communism-legal-simulator/synthetic"
+    ],
+    "eventUrl": "https://example.org/communism-legal-simulator/synthetic",
+    "url": "https://example.org/communism-legal-simulator/synthetic",
+    "materialContract": {
+      "minPrimarySources": 1,
+      "maxVerifiedMaterials": 4,
+      "maxExcerptBytes": 8192,
+      "maxQueries": 3,
+      "maxFetchAttempts": 4
+    }
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/communism-legal-simulator/synthetic",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "bb8dc302de923dd45dc468c91b93bf2c4d1a06de204e5f176474676876462351",
+        "excerpt": "Synthetic verified communist-legal material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic communism-legal-simulator planning"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotClaimRealEvent": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealPublication": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustPrioritizePrimaryAndInstitutions": true,
+    "mustIncludeFailureAndSafety": true,
+    "mustIncludeUncertaintyAndLabels": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustIncludeResearchCaveats": true,
+    "mustStatePreprintStatusIfUnreviewed": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}
