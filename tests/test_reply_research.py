@@ -340,6 +340,16 @@ def test_bounded_local_process_timeout_and_output_limit():
         r._run([sys.executable, "-c", f"print('x'*{r.LIMIT+1})"], b"", {}, 3)
 
 
+def _read_pid_with_poll(pid_path, *, deadline):
+    """Read the child pid, tolerating a parent that has not finished writing."""
+    while time.monotonic() < deadline:
+        try:
+            return int(pid_path.read_text())
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.02)
+    pytest.fail("parent did not write a valid pid file before the deadline")
+
+
 @pytest.mark.parametrize("diagnostics", [False, True])
 def test_timeout_kills_descendant_process_group(tmp_path, diagnostics):
     pid_path = tmp_path / "child.pid"
@@ -352,9 +362,13 @@ def test_timeout_kills_descendant_process_group(tmp_path, diagnostics):
     def broken_sink(row):
         raise RuntimeError("synthetic sink failure")
     options = {"diagnostic": broken_sink} if diagnostics else {}
+    # A loaded runner can delay the parent's Python startup past a 0.25s
+    # timeout, so the pid file is not yet written when _run's kill fires
+    # and the post-kill read races with the write. Give the parent a
+    # generous window, then poll (bounded) for the pid file as a safety net.
     with pytest.raises(ValueError, match="timeout"):
-        r._run([sys.executable, "-c", parent_code], b"", {}, .25, **options)
-    child_pid = int(pid_path.read_text())
+        r._run([sys.executable, "-c", parent_code], b"", {}, 5, **options)
+    child_pid = _read_pid_with_poll(pid_path, deadline=time.monotonic() + 2)
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         try:
