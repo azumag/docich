@@ -832,9 +832,15 @@ def _chikujou_step(screen, mem, sub):
     if screen.has('うむッ') and screen.has('いかんッ'):
         if sub.get('decline_sent'):
             return [pad('b')]
-        quote = re.search(r'(\d+)Gかかりますが', text)
+        # The aggregate joins readable glyphs: an occluded 16G becomes 6G
+        # or1G. The native price starts at x24/y199; preserve every raw cell
+        # and reject gaps/unknown digits instead of authorizing a false quote.
+        rows = [r for r in screen.lines if r.y == 199]
+        quote = (re.fullmatch(r'([0-9０-９]+)Gかかりますが.*', rows[0].span(24, 176))
+                 if len(rows) == 1 and any(x == 24 and ch in '0123456789０１２３４５６７８９'
+                                           for x, ch in rows[0].cells) else None)
         gold = (screen.header or {}).get('gold')
-        cost = int(quote[1]) if quote else None
+        cost = int(quote[1].translate(str.maketrans('０１２３４５６７８９', '0123456789'))) if quote else None
         reserve = _chikujou_reserve(mem, mem.get('shop') or {})
         if (sub.get('declined') or cost is None or type(gold) is not int
                 or reserve is None or gold - cost < reserve):
