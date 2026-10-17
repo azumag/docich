@@ -899,6 +899,20 @@ def classify_text(s: Screen) -> str:
         return 'main_menu'
     if s.battle:
         return 'battle'
+    # These panels can leave the map's white bracket visible behind them.
+    # They still own the foreground: calling the named status a map discards
+    # its recall owner before it can read the person and close with B.
+    # A partial sortie question can retain this same status panel. Its two
+    # readable answers must keep the existing confirmation/backout dispatch.
+    if not ('うむッ' in t and 'いかんッ' in t):
+        if all(word in t for word in ('いどう', 'ステータス', 'キャンプ', 'きかん')):
+            return 'text'
+        for x, y in ((24, 39), (16, 31)):
+            title = next((row for row in s.lines if row.y == y), None)
+            hp = next((row for row in s.lines if row.y == y + 16), None)
+            if (title and title.span(x + 64, x + 112) == 'しょうぐん'
+                    and hp and hp.span(x, x + 16) == 'HP'):
+                return 'text'
     if s.marker:
         return 'map_target'
     if s.cursor:

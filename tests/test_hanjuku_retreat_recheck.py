@@ -506,3 +506,131 @@ def test_repeated_new_name_observations_do_not_reclaim_an_already_removed_intent
     assert count == 1
     recheck.interrupt(Screen([], None, '', kind='name_entry'), mem)
     assert sum(r['decision'] == 'retreat_recheck_invalidated' for r in mem['_records']) == count
+
+
+def panel_over_map(*, selected=None, main=False):
+    """Synthetic measured panel/cursor pixels; not a captured incident frame."""
+    c = Canvas((40, 140, 40))
+    panel = status('ゼウス', main=main, hp=6)
+    if selected is None:
+        for y in range(16, 136):
+            for x in range(8, 128 if not main else 144):
+                c.put(x, y, panel.pixel(x, y))
+    else:
+        for i, label in enumerate(('いどう', 'ステータス', 'キャンプ', 'きかん')):
+            c.text(80, 39 + 16 * i, label)
+        c.hand(58, 33 + 16 * selected)
+    # A fully measured white bracket outside the foreground panel remains
+    # independently detectable. Its presence must not make this a bare map.
+    x, y = 200, 150
+    for yy in (y + 1, y + 14):
+        for xx in (*range(x + 2, x + 5), *range(x + 11, x + 14)):
+            c.put(xx, yy, (255, 255, 255))
+    for yy in (y + 2, y + 3, y + 4):
+        c.put(x + 1, yy, (255, 255, 255))
+    return c.frame()
+
+
+@pytest.mark.parametrize('selected,main', [(1, False), (None, False), (None, True)])
+def test_measured_recall_panels_outrank_a_visible_background_map_cursor(selected, main):
+    from docich.hanjuku_bot import classify
+    frame = panel_over_map(selected=selected, main=main)
+    screen = parse(frame, phase=classify(frame))
+    assert screen.cursor == (200, 150)
+    assert screen.kind == 'text'
+
+
+@pytest.mark.parametrize('owner', ['named', 'anonymous', 'house'])
+def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(owner):
+    from test_hanjuku_house import memory as house_memory
+    if owner == 'house':
+        mem = house_memory('field_status', returning=True)
+    else:
+        mem = memory('ヴィーナス' if owner == 'anonymous' else 'ゼウス')
+        if owner == 'anonymous':
+            mem['retreat_rechecks']['ヴィーナス']['attempts'] = 3
+        else:
+            assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+            assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+            assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+        assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    mem['survey_run_identity'] = dict(ID)
+    state = {'policy': mem}
+
+    actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
+    assert actions == [p.pad('a')]
+    actions, state = decide(panel_over_map(), state, run_identity=ID)
+    assert actions == [p.pad('b')]
+    if owner == 'house':
+        assert state['policy']['house']['phase'] == 'unit_move'
+    else:
+        assert state['policy']['recall']['stage'] == 'menu'
+        assert state['policy']['recall']['general'] == 'ゼウス'
+
+    actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
+    assert actions == [p.pad('down')]
+    actions, state = decide(panel_over_map(selected=2), state, run_identity=ID)
+    assert actions == [p.pad('down')]
+    actions, state = decide(panel_over_map(selected=3), state, run_identity=ID)
+    assert actions == [p.pad('a')]
+    if owner == 'house':
+        assert state['policy']['house']['phase'] == 'return_view'
+    else:
+        assert state['policy']['recall']['stage'] == 'dest'
+        if owner == 'anonymous':
+            assert state['policy']['retreat_rechecks']['ヴィーナス']['attempts'] == 3
+    assert not state['policy'].get('garrison')
+
+
+def test_decide_unread_status_over_map_closes_within_the_existing_read_budget():
+    from docich.hanjuku_font import UNKNOWN
+    from docich.hanjuku_bot import classify
+    mem = memory(); focus(mem)
+    mem.update(survey_run_identity=dict(ID), egg_uses={'ゼウス': 2})
+    frame = panel_over_map()
+    c = Canvas(); c.rgb = bytearray(frame.rgb)
+    for y in range(111, 119):
+        for x in range(48, 56):
+            c.put(x, y, (16, 72, 57))
+    c.tile(48, 111, 0x0123456789ABCDEF)
+    unread = c.frame()
+    screen = parse(unread, phase=classify(unread))
+    assert screen.kind == 'text'
+    assert UNKNOWN in next(row for row in screen.lines if row.y == 111).text
+    state = {'policy': mem}
+    for expected in ([], [], [p.pad('b')]):
+        actions, state = decide(unread, state, run_identity=ID)
+        assert actions == expected
+    assert not state['policy'].get('recall')
+    assert state['policy']['retreat_rechecks']['ゼウス']['attempts'] == 1
+    assert state['policy']['egg_uses']['ゼウス'] == 2
+    assert not state['policy'].get('garrison')
+
+
+@pytest.mark.parametrize('cue,kind', [
+    ('きりふだセレクト', 'card_select'),
+    ('しゅつげきしますか', 'sortie_confirm'),
+    ('たまごをつかうたいきゃく', 'battle_menu'),
+    ('こうげきもうこうげきたまごをつかう', 'egg_battle_menu'),
+    ('よろしいでっか', 'shop_quantity'),
+])
+def test_specific_foregrounds_still_outrank_a_background_status_panel(cue, kind):
+    from docich.hanjuku_bot import classify
+    c = Canvas(); c.rgb = bytearray(panel_over_map().rgb)
+    c.text(16, 183, cue)
+    frame = c.frame()
+    assert parse(frame, phase=classify(frame)).kind == kind
+
+
+@pytest.mark.parametrize('label', ['ステータス', 'しょうぐん', 'HP'])
+def test_isolated_status_words_do_not_turn_the_map_into_a_status_panel(label):
+    from docich.hanjuku_bot import classify
+    frame = panel_over_map()
+    c = Canvas((40, 140, 40))
+    c.text(16, 31, label)
+    # Preserve the synthetic map bracket, with no complete foreground panel.
+    for y in range(150, 166):
+        for x in range(200, 216):
+            c.put(x, y, frame.pixel(x, y))
+    frame = c.frame()
+    assert parse(frame, phase=classify(frame)).kind == 'map'
