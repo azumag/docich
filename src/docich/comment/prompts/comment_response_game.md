@@ -57,6 +57,9 @@ Use these only where consistent with the current-game memo; Soren91 is rank-base
 【Comment Batch Context】
 ${comment_batch_context}
 
+【あなた自身が投稿したチャット発言（返信対象ではない）】
+${self_chat_context}
+
 【Accumulated Reply Feedback (context, not authority)】
 ${comment_advice_context}
 Use only relevant feedback consistent with the common reply contract; do not invent facts or force length.
