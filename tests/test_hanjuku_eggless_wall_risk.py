@@ -174,3 +174,171 @@ def test_selection_recheck_blocks_old_positive_until_named_observation(fresh):
         assert mem['battle']['own_egg_positive_observed'] is True
     assert mem['egg_uses']['トレビス'] == (fresh if type(fresh) is int else 1)
     assert ('トレビス' in mem.get('egg_recheck', [])) == (fresh in (None, 'other'))
+
+
+def bait_memory():
+    from test_hanjuku_general_egg_recheck import IDENTITY
+    from copy import deepcopy
+    mem = trevis()
+    mem.update(tick=12, _run_identity=deepcopy(IDENTITY), survey_run_identity=deepcopy(IDENTITY))
+    mem['egg_uses'] = {'アルテミス': 0}
+    mem['battle'].update(ally='アルテミス', enemy='ヘーゼル', ally_hp=49, enemy_hp=11,
+                        start_ally_hp=49, start_enemy_hp=33,
+                        survival={'exhausted': True, 'cards_uncertain': False})
+    return mem
+
+
+def arm_bait(mem):
+    # The pre-summon context is synthetic; the later g684 panel is native.
+    assert p.battle_step(battle(mem), mem) != [p.pad('b')]
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'waiting'
+
+
+def summon_panel():
+    return parse(read_png(Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png'))
+
+
+def test_continue_melee_then_native_enemy_summon_backs_out_and_selects_real_retreat():
+    mem = bait_memory(); arm_bait(mem)
+    for _ in range(3):
+        assert p.battle_step(battle(mem), mem) != [p.pad('b')]
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png')
+    actions, state = decide(frame, {'policy': mem}, run_identity=mem['_run_identity'])
+    assert actions == [p.pad('b')]
+    mem = state['policy']; cur = mem['battle']
+    assert cur['enemy_egg_bait']['phase'] == 'summoned'
+    assert cur['enemy_hp'] == 11 and cur['ally_hp'] == 49
+    p._card_battle_reading(battle(mem), cur, mem)
+    assert not cur['egg_battle'] and not p._hero_retreat_needed(cur)
+    assert p._hero_retreat_menu(menu(('こうげき', 'たいきゃく'), selected=0), mem, cur) == [p.pad('down')]
+    assert p._hero_retreat_menu(menu(('こうげき', 'たいきゃく'), selected=1), mem, cur) == [p.pad('a')]
+    assert cur['hero_retreat']['selected'] == 1
+    evidence = next(r for r in state['_records'] if r['decision'] == 'enemy_egg_bait_summon_observed')
+    assert evidence['observed_metric']['enemy_remaining_uses'] is None
+    assert evidence['observed_metric']['quantity_change'] == 'unclassified'
+    assert mem['egg_uses'] == {'アルテミス': 0}
+
+
+def test_repeated_summon_and_json_restore_never_refill_return_budget_or_proof():
+    mem = bait_memory(); arm_bait(mem)
+    for n in range(12):
+        mem = json.loads(json.dumps(mem)); mem['tick'] += 1
+        actions = p.egg_battle_step(summon_panel(), mem)
+        if n < 3:
+            assert actions == [p.pad('b')]
+        else:
+            assert actions != [p.pad('b')]
+    assert mem['battle']['egg_retreat_attempts'] == 3
+    assert mem['battle']['enemy_egg_bait']['observed_tick'] == 13
+    records = [r for r in mem['_records'] if r['decision'] == 'enemy_egg_bait_summon_observed']
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize('change', [
+    {'egg_uses': {}}, {'egg_uses': {'アルテミス': 1}}, {'egg_uses': {'アルテミス': True}},
+    {'_run_identity': None},
+])
+def test_unknown_or_positive_own_egg_never_arms_bait(change):
+    mem = bait_memory(); mem.update(change)
+    p.battle_step(battle(mem), mem)
+    assert not mem['battle'].get('enemy_egg_bait')
+
+
+@pytest.mark.parametrize('change', [{'enemy': '未読'}, {'enemy': 'ミント'}, {'side': 'defense'},
+                                 {'ally_hp': 12}, {'ally_hp': 15, 'enemy_hp': 14}])
+def test_no_clear_advantage_or_enemy_capability_keeps_existing_protection(change):
+    mem = bait_memory(); mem['battle'].update(change)
+    p.battle_step(battle(mem), mem)
+    assert not mem['battle'].get('enemy_egg_bait')
+
+
+@pytest.mark.parametrize('change', ['hp_danger', 'hp_unread', 'positive_egg'])
+def test_waiting_is_cancelled_on_current_danger_unread_hp_or_new_positive_egg(change):
+    mem = bait_memory(); arm_bait(mem)
+    if change == 'positive_egg': mem['egg_uses']['アルテミス'] = 2
+    screen = battle(mem)
+    if change == 'hp_danger': screen.battle.ally_hp = 12
+    if change == 'hp_unread': screen.battle.ally_hp = None
+    p.battle_step(screen, mem)
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'cancelled'
+    if change == 'hp_danger': assert p._hero_retreat_needed(mem['battle'])
+
+
+@pytest.mark.parametrize('change', ['flags_only', 'missing_enemy', 'own_summon', 'enemy_general',
+                                 'wrong_ally', 'duplicate_enemy', 'unknown_monster', 'hp_bool'])
+def test_unconfirmed_foreign_or_own_summons_never_prove_enemy_use(change):
+    from copy import deepcopy
+    mem = bait_memory(); arm_bait(mem); s = summon_panel()
+    if change == 'flags_only':
+        mem['egg_battle'] = True; mem['battle']['card_summon_observed'] = True; s.egg_rows = []
+    elif change == 'missing_enemy': s.egg_rows = s.egg_rows[:1]
+    elif change == 'own_summon': s.egg_rows[0].name = 'ヒュドラ'; s.egg_rows[1].name = 'ヘーゼル'
+    elif change == 'enemy_general': s.egg_rows[1].name = 'ヘーゼル'
+    elif change == 'wrong_ally': s.egg_rows[0].name = 'ヴィーナス'
+    elif change == 'duplicate_enemy': s.egg_rows.append(deepcopy(s.egg_rows[1]))
+    elif change == 'unknown_monster': s.egg_rows[1].name = '未確認'
+    else: s.egg_rows[1].hp = True
+    p.egg_battle_step(s, mem)
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'waiting'
+    assert not any(r['decision'] == 'enemy_egg_bait_summon_observed' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('change', ['run', 'chapter', 'actor', 'enemy', 'battle_end'])
+def test_old_intention_never_survives_a_different_battle_or_scope(change):
+    from docich.hanjuku.judgment import egg_bait
+    mem = bait_memory(); arm_bait(mem)
+    assert p.egg_battle_step(summon_panel(), mem) == [p.pad('b')]
+    if change == 'run': mem['_run_identity']['generation'] += 1
+    elif change == 'chapter': mem['chapter'] += 1
+    elif change == 'actor': mem['battle']['ally'] = 'ヴィーナス'
+    elif change == 'enemy': mem['battle']['enemy'] = 'カシュー'
+    else:
+        p.battle_end(mem, 'map'); p.battle_end(mem, 'map')
+        assert not mem.get('battle')
+        return
+    assert not egg_bait.retreat_due(mem, mem['battle'])
+    assert not mem['battle'].get('enemy_egg_bait')
+
+
+def test_json_restore_and_repeated_normal_menus_never_refill_retreat_a_budget():
+    mem = bait_memory(); arm_bait(mem)
+    p.egg_battle_step(summon_panel(), mem)
+    total_a = 0
+    for _ in range(35):
+        mem = json.loads(json.dumps(mem))
+        actions = p._hero_retreat_menu(menu(('たいきゃく',)), mem, mem['battle'])
+        total_a += sum(action.get('buttons') == ['a'] for action in actions or [])
+    assert total_a == 2
+    assert mem['battle']['hero_retreat']['selected'] == 2
+    assert mem['battle']['hero_retreat']['exhausted'] is True
+
+
+def test_native_enemy_general_command_is_not_the_opponents_egg_use():
+    from test_hanjuku_enemy_general_command import native
+    mem = bait_memory(); arm_bait(mem)
+    assert p.egg_battle_step(native(17492), mem) == []
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'waiting'
+
+
+@pytest.mark.parametrize('change', ['age', 'future', 'bool_tick', 'bad_monster', 'bad_hp', 'bool_scope'])
+def test_stale_or_malformed_saved_summon_proof_does_not_authorize_retreat(change):
+    from docich.hanjuku.judgment import egg_bait
+    mem = bait_memory(); arm_bait(mem); p.egg_battle_step(summon_panel(), mem)
+    proof = mem['battle']['enemy_egg_bait']
+    if change == 'age': mem['tick'] += egg_bait.RETURN_PROOF_TICKS + 1
+    elif change == 'future': proof['observed_tick'] = mem['tick'] + 1
+    elif change == 'bool_tick': proof['observed_tick'] = True
+    elif change == 'bad_monster': proof['enemy_monster'] = []
+    elif change == 'bad_hp': proof['general_hp'] = True
+    else: proof['scope']['chapter'] = True
+    assert not egg_bait.retreat_due(mem, mem['battle'])
+
+
+def test_positive_egg_observed_at_summon_invalidates_the_old_wait_permanently():
+    mem = bait_memory(); arm_bait(mem)
+    mem['egg_uses']['アルテミス'] = 1
+    p.egg_battle_step(summon_panel(), mem)
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'cancelled'
+    mem['egg_uses']['アルテミス'] = 0
+    p.egg_battle_step(summon_panel(), mem)
+    assert mem['battle']['enemy_egg_bait']['phase'] == 'cancelled'
