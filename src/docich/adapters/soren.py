@@ -819,13 +819,15 @@ class SorenCoordinatorAdapter:
             reason = self._classify_stop_failure(self._last_command_output)
             self._record_command_output("stop-after-boundary", request_id, rc)
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
-        self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
-        self._completed_stop_receipt = receipt
-        # Capture the paused loop identity while the marker is still present.
-        # Candidate cleanup may consume the marker before materialize runs,
-        # so preserve it here (issue #2061).
+        # Capture the paused loop identity immediately after stop-after-boundary
+        # returns, before _wait_status (which may allow candidate cleanup to
+        # consume the marker).  The marker is created during
+        # stop-after-boundary, so it should exist now.
+        # (issue #2061)
         if self._resumed_loop is None:
             self._resumed_loop = self._paused_loop_identity()
+        self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
+        self._completed_stop_receipt = receipt
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
