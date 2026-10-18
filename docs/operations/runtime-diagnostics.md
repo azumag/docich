@@ -708,6 +708,51 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
   secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
   遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
+- `completed_runs`は予算縮退でrecordsが全て省略されても比較できるよう、
+  scan中に観測した**全ての**有効terminal recordに対する集計`summary`
+  （`terminal_status_counts` / `score_present_count` / `analysis_error_counts`）を
+  常に返す。recordsの省略はこのsummaryに影響しない。terminal recordごとの
+  `analysis_error`は、run producerの固定理由コード（`xlogfile-missing` /
+  `xlogfile-truncated` / `no-new-player-xlog-record`）のみそのまま投影し、
+  未知のproducer値は固定token `other` に集約して出力しない。
+
+## NetHack xlogfile writer 契約の read-only 投影（#753）
+
+`nethack_xlog` は、terminal facts の正本である xlogfile への書込みが
+生産側（NetHack 3.6.x の `topten()`）で静かに失われる条件を、
+owner-only `diagnostics` の固定 collector から観測する。
+
+NetHack 3.6.x (Linux) の xlog 書込みは `link(xlogfile, xlogfile_lock)` の成功が前提で、
+(1) xlogfile が存在しない場合は ENOENT で書込みを skip し自動作成もしない、
+(2) 残置された `xlogfile_lock` hard link（プロセス死亡時の残骸）がある場合は
+EEXIST リトライ 10 秒後に無言で skip する。どちらも run store 側からは
+`ended_unknown` + `analysis_error` としてしか観測できないため、
+この投影が path/permission 契約の第一次証拠になる。
+
+- 収集元は production の tracked `config/games/nethack.toml` から解決した固定 path
+  （既定は `/var/games/nethack/` 配下）と、その兄弟契約ファイル
+  （`xlogfile` / `xlogfile_lock` / `logfile` / `logfile_lock` / `record`）、
+  親 playground・save_dir・dump_dir のみ。任意 path・環境変数・argv は追わない。
+- 各 path は `lstat`（symlink を追わない）で存在/種別/size/mtime/mode/uid/gid/nlink のみ。
+  `xlogfile_lock`・`logfile_lock` には対象との同 inode 判定（dev+ino 一致 boolean）を付け、
+  残置 lock と共有 hard link を区別する。path 名・内容・hash は出力しない。
+- `save_dir_entries` は dirfd + `O_NOFOLLOW` で player save file の個数と最新 mtime だけを
+  数える（最大128エントリ、symlink は数えない）。
+- `processes` は `/proc` の `comm` が `nethack` の稼働 process（最大4件）について
+  pid / 実効 uid / 実効 gid / starttime ticks のみ。cmdline・environment・fd は読まない。
+- `packages` は固定2 package 名（`nethack-common` / `nethack-console`）の
+  `dpkg-query -W` 結果（package / version / installed）のみ。失敗時は `available=false`。
+- `sysconf` は `/etc/nethack/sysconf` から `xlogfile` / `logfile` / `dumplogfile` の
+  3 key だけを case-insensitive に読み、安全な文字種の value のみ投影する
+  （それ以外は `configured` に key 名だけ残し value は `null`）。
+  他の key・コメント・行数は出力しない。
+- `xlog` は xlogfile の末尾最大64KiBを読み、**完全行のみ**から
+  完全行数・先頭切詰め有無・最終 record の数値 field（starttime / endtime / points /
+  turns / maxlvl / achieve）と `name_matches_player` boolean だけを導出する。
+  death 文字列・player 名・生の行内容は出力しない。
+- `findings` は導出 boolean（`xlog_lock_present` / `xlog_lock_shares_inode` /
+  `xlog_file_shared_hardlink`）のみ。原因の確定は人間の判断であり、
+  collector は修復・削除・権限変更を一切行わない。
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 

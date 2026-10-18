@@ -164,6 +164,9 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             history = data["diagnostics"]["nethack_history"]
             self.assertIs(type(history["collected_at"]), int)
             history.pop("collected_at")
+            xlog = data["diagnostics"]["nethack_xlog"]
+            self.assertIs(type(xlog["collected_at"]), int)
+            xlog.pop("collected_at")
         self.assertEqual(clean_data, evil_data)
 
     def test_modified_collector_is_refused(self):
