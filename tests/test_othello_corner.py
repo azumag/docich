@@ -362,3 +362,65 @@ def test_offline_core_stays_pure():
     source = Path(oc.__file__).read_text(encoding="utf-8")
     for banned in ("urllib", "requests", "subprocess", "popen"):
         assert banned not in source.lower(), banned
+
+
+# ---------------------------------------------------------------------------
+# pass regression (#2490 review): ai_turn used to play a single AI move, so a
+# viewer pass left the contract "caller must re-invoke" — and the Worker's
+# single-transaction chain froze the room. The fixed contract is that ai_turn
+# plays consecutive AI moves until the viewer can reply or the match finishes.
+# Seeded self-play must always finish, must never return from ai_turn with the
+# AI still holding the turn, and must exercise the pass chain (one ai_turn
+# call applying 2+ AI moves) so the fixed path cannot quietly regress.
+# ---------------------------------------------------------------------------
+
+
+def _mulberry32(seed: int):
+    """Deterministic PRNG; the seed list below is pinned to this generator."""
+    state = seed & 0xFFFFFFFF
+
+    def next_value() -> float:
+        nonlocal state
+        state = (state + 0x6D2B79F5) & 0xFFFFFFFF
+        t = state
+        t = ((t ^ (t >> 15)) * (1 | t)) & 0xFFFFFFFF
+        t = (t + ((t ^ (t >> 7)) * (61 | t)) & 0xFFFFFFFF) ^ t
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296
+
+    return next_value
+
+
+def test_pass_regression_seeded_self_play_never_freezes():
+    # seed+1 offset matches the verification run on the fix commit; seed 10 is
+    # the JS seed-11 game (the originally-frozen one) — rules lockstep in
+    # practice. Seeds 20/31 replay 3-move AI chains inside one ai_turn call.
+    for seed in (10, 17, 20, 31):
+        random = _mulberry32(seed + 1)
+        state = oc.new_state()
+        state = oc.open_room(state, f"pass-{seed}", "viewer")
+        state = oc.start_match(state)
+        plies = 0
+        max_ai_stride = 0
+        while state["phase"] == "PLAYING" and plies < 400:
+            plies += 1
+            if state["turn"] == oc.AI_PLAYER:
+                before = state["moves_played"]
+                state = oc.ai_turn(state)
+                max_ai_stride = max(max_ai_stride, state["moves_played"] - before)
+                # Freeze signature: with PLAYING continuing, ai_turn must hand
+                # the turn back to the viewer, never stay on the AI seat.
+                if state["phase"] == "PLAYING":
+                    assert state["turn"] == oc.VIEWER_PLAYER, (
+                        f"seed {seed}: ai_turn left the AI seat in control"
+                    )
+                continue
+            moves = oc.legal_moves(state["board"], oc.VIEWER_PLAYER)
+            assert moves, f"seed {seed}: viewer cannot be stuck while playing"
+            pick = moves[int(random() * len(moves)) % len(moves)]
+            state = oc.record_move(state, pick[0], pick[1])
+        assert state["phase"] == "FINISHED", f"seed {seed}: game must finish"
+        # The pass chain must actually run: one ai_turn call applying 2+ AI
+        # moves. The pre-fix code could never exceed a stride of 1.
+        assert max_ai_stride >= 2, f"seed {seed}: pass chain not exercised (stride {max_ai_stride})"
+        assert state["result"] is not None
+        assert state["result"]["outcome"] in ("viewer_win", "ai_win", "draw")

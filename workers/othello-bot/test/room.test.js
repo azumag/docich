@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   OthelloRoom, ROOM_ID_PATTERN, spectatorSnapshot, STATE_KEY, VIEWER_NAME_PATTERN,
 } from "../src/room.js";
+import { legalMoves, VIEWER_PLAYER } from "../src/rules.js";
 
 function memoryStorage() {
   const map = new Map();
@@ -141,4 +142,57 @@ test("room and viewer name patterns are strict", () => {
   assert.equal(VIEWER_NAME_PATTERN.test("comrade_01"), true);
   assert.equal(VIEWER_NAME_PATTERN.test(""), false);
   assert.equal(VIEWER_NAME_PATTERN.test(" dark knight "), false);
+});
+
+// ---------------------------------------------------------------------------
+// pass regression (#2490 review): viewerMove used to commit a single AI reply.
+// When the viewer had no legal move afterwards but the AI still did, the turn
+// stuck on white and the room froze (not_your_turn forever, no alarm). Seeded
+// self-play must always finish, must never observe turn=white between
+// dispatches, and must exercise the pass chain (one commit applying 2+ AI
+// moves) so the fixed path cannot quietly regress.
+// ---------------------------------------------------------------------------
+
+/** mulberry32: deterministic PRNG; the seed list below is pinned to it. */
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return function next() {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("pass regression: seeded self-play never freezes and exercises the AI pass chain", async () => {
+  // seed 11 is the originally-frozen game; 21/32 replay 3-move AI chains.
+  for (const seed of [11, 18, 21, 32]) {
+    const { room } = makeRoom();
+    await dispatch(room, "openRoom", { roomId: `pass-${seed}`, viewer: "comrade" });
+    await dispatch(room, "startMatch", {});
+    const random = mulberry32(seed);
+    let snapshot = await dispatch(room, "snapshot", {});
+    let guard = 0;
+    let maxStride = 0;
+    let previousMoves = 0;
+    while (snapshot.phase === "PLAYING" && guard < 400) {
+      guard += 1;
+      // Freeze signature: the AI seat never holds the turn between dispatches.
+      assert.equal(snapshot.turn, "black", `seed ${seed}: turn stuck on ${snapshot.turn}`);
+      const moves = legalMoves(snapshot.board, VIEWER_PLAYER);
+      assert.ok(moves.length > 0, `seed ${seed}: viewer cannot be stuck while playing`);
+      const pick = moves[Math.floor(random() * moves.length) % moves.length];
+      snapshot = await dispatch(room, "viewerMove", { row: pick[0], col: pick[1] });
+      maxStride = Math.max(maxStride, snapshot.movesPlayed - previousMoves);
+      previousMoves = snapshot.movesPlayed;
+    }
+    assert.equal(snapshot.phase, "FINISHED", `seed ${seed}: game must finish`);
+    // The pass chain must actually run: one commit applying 2+ AI moves. The
+    // pre-fix code could never exceed a stride of 2.
+    assert.ok(maxStride >= 3, `seed ${seed}: pass chain not exercised (max stride ${maxStride})`);
+    // result projection regression: the finished snapshot carries the score.
+    assert.ok(snapshot.result, `seed ${seed}: finished snapshot must carry result`);
+    assert.equal(typeof snapshot.result.black, "number");
+    assert.equal(typeof snapshot.result.white, "number");
+  }
 });
