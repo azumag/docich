@@ -714,7 +714,9 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   常に返す。recordsの省略はこのsummaryに影響しない。terminal recordごとの
   `analysis_error`は、run producerの固定理由コード（`xlogfile-missing` /
   `xlogfile-truncated` / `no-new-player-xlog-record`）のみそのまま投影し、
-  未知のproducer値は固定token `other` に集約して出力しない。
+  未知のproducer値は固定token `other` に集約して出力しない。型も検証し、
+  list/dict 等の非文字列値は frozenset 照合に入らず `other` に集約されるため、
+  1 record の不正値で診断全体が落ちることはない（#2515 review）。
 
 ## NetHack xlogfile writer 契約の read-only 投影（#753）
 
@@ -743,8 +745,11 @@ EEXIST リトライ 10 秒後に無言で skip する。どちらも run store �
   （`/var/lib/nethack/xlogfile` / `/usr/games/lib/nethackdir/xlogfile`）の lstat のみ。
 - `xlog_siblings` は playground の `xlogfile*` 名（字種検証済み、最大8件、名前順）の
   size/mtime のみ。`binaries` は `dpkg-query -L`（固定2 package）と launcher symlink 先から
-  実体 binary（最大2件）を解決し、8MiB 上限で `xlogfile` という文字列が
-  compile-in されているかの boolean だけを返す（binary 内容は出力しない）。
+  実体 binary（最大2件）を解決し、8MiB 上限で `xlogfile` という文字列の compile-in 有無を
+  見る（binary 内容は出力しない）。読み取り量は残り byte 数で制限し、needle は
+  256KiB read 境界を跨いでも needle長-1 byte の重なり保持で検出する。
+  `binary_scan_complete=false` は上限打切りや file 短縮で全文走査ではないことを示し、
+  その negative は確定値ではない。
 - `save_dir_entries` は dirfd + `O_NOFOLLOW` で player save file の個数と最新 mtime だけを
   数える（最大128エントリ、symlink は数えない）。
 - `processes` は `/proc` の `comm` が `nethack` の稼働 process（最大4件）について
@@ -758,6 +763,8 @@ EEXIST リトライ 10 秒後に無言で skip する。どちらも run store �
 - `xlog` は xlogfile の末尾最大64KiBを読み、**完全行のみ**から
   完全行数・先頭切詰め有無・最終/先頭 record の数値 field（starttime / endtime / points /
   turns / maxlvl / achieve）と `name_matches_player` boolean だけを導出する。
+  先頭切詰め時は window 先頭の行途中断片を完全行として数えず、最初の改行以降だけを
+  対象化する（改行が無ければ完全行 0）。読めない xlogfile は `{"readable": false}` のみ。
   `record_span`（最古 record の `starttime` / 最新 record の `endtime` / 完全行数）は
   #753 の timeline 証拠であり、soft budget の縮退でも落とさない。
   death 文字列・player 名・生の行内容は出力しない。
