@@ -146,7 +146,9 @@ def _puyo_adapter(g, corner, switch, now, sleep):
 # ---------------------------------------------------------------------------
 
 
-def test_production_catalog_keeps_puyo_disabled_and_manual_only():
+def test_production_catalog_activates_puyo_with_the_tts_opt_in():
+    # 2026-10-18 オーナー承認 (PR-4): 有効化 (手動予約) + 読み上げ opt-in。
+    # 自動抽選 (manual_only 外し) は本番チャット取り出し配線確認後の別承認ステップ。
     import tomllib
 
     raw = Path(__file__).resolve().parents[1] / "config" / "docich.soren-live.toml"
@@ -155,7 +157,8 @@ def test_production_catalog_keeps_puyo_disabled_and_manual_only():
     assert len(rows) == 1
     row = rows[0]
     assert row["adapter"] == "puyo" and row["game"] == "puyo-view"
-    assert row["enabled"] is False
+    assert row["enabled"] is True
+    assert row["audio_enabled"] is True
     assert row["manual_only"] is True
 
 
@@ -179,7 +182,6 @@ def test_puyo_catalog_row_requires_the_reviewed_identity_and_bounds(tmp_path):
     for bad in (
         '{id="puyo",adapter="puyo",game="puyo-view",enabled=false,manual_only=true}',
         '{id="puyo-corner",adapter="puyo",game="doushi-view",enabled=false,manual_only=true}',
-        '{id="puyo-corner",adapter="puyo",game="puyo-view",enabled=false,manual_only=true,audio_enabled=true}',
         '{id="puyo-corner",adapter="puyo",game="puyo-view",enabled=false,fetch_on_start=true}',
         '{id="puyo-corner",adapter="puyo",game="puyo-view",enabled=false,manual_only=false}',
         '{id="puyo-corner",adapter="puyo",game="puyo-view",enabled=false,manual_only=true,live_eligible=true}',
@@ -362,3 +364,55 @@ def test_puyo_duration_bounds_fail_closed(tmp_path):
             PuyoProgramManager(g, duration_minutes=bad)
     ok = PuyoProgramManager(g, duration_minutes=14)
     assert ok.duration_minutes == 14
+
+
+def test_puyo_slot_announces_start_and_result_once(tmp_path):
+    import datetime as dt
+
+    g, now, _factory, store, switch = _setup(tmp_path, enabled=True)
+    calls = []
+
+    def fake_announce(gg, title, body, **kwargs):
+        calls.append({"title": title, "body": body,
+                      "audio": kwargs.get("audio_enabled"),
+                      "request_id": kwargs.get("request_id")})
+        return {"overlay": "sent", "speech": "sent"}
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _puyo_adapter(g, _corner(duration=1), switch, now, sleep)
+    adapter.manager.audio_enabled = True
+    adapter.manager.announce = fake_announce
+
+    # The live runtime records every finished round into the shared ledger;
+    # one completed round inside this window must be picked up by the result
+    # announcement (ended inside [started_at - 60, now]).
+    ledger_path = g.state_dir / "puyo_corner_ledger.json"
+    ledger_path.write_text(json.dumps({"schema": 1, "entries": [{
+        "ruleset_id": "x", "started_at": None,
+        "ended_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "outcome": "user_win", "phase": "END", "round": 1,
+        "winner": "user", "user_score": 1200, "ai_score": 900,
+        "participants": ["u1"],
+    }]}) + "\n", encoding="utf-8")
+
+    request_id = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(request_id) == "completed"
+
+    assert len(calls) == 2
+    assert calls[0]["title"] == "ぷよぷよ対戦開始"
+    assert "!puyo join" in calls[0]["body"]
+    assert calls[1]["request_id"] == request_id
+    assert "プレイヤーの勝ち" in calls[1]["body"] or "結果" in calls[1]["body"]
+    for row in calls:
+        assert row["request_id"] == request_id and row["audio"] is True
+
+    recorded = adapter.manager._read_state().get("announce")
+    assert recorded["start"]["request_id"] == request_id
+    assert recorded["result"]["request_id"] == request_id
+    assert recorded["start"]["overlay"] == "sent" and recorded["start"]["speech"] == "sent"
+
+    # resuming a completed slot must never repeat the announcements
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    assert len(calls) == 2

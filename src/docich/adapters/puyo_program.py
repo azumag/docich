@@ -38,6 +38,7 @@ from .program import (
 
 READY_PATH = "/api/puyo"
 PAYLOAD_FILENAME = "puyo_match.json"
+CHAT_INBOX_FILENAME = "chat_inbox.jsonl"
 #: one bounded offline self-play; the engine's own budgets bound the loop
 MATCH_MAX_STEPS = 1600
 MAX_PAYLOAD_BYTES = 512 * 1024
@@ -77,6 +78,12 @@ class PuyoProgramViewAdapter(ProgramViewAdapter):
             "--runtime-id", self.spec.runtime_id,
             "--generation", str(self.spec.generation),
             "--lease-id", str(self.spec.lease_id),
+            # Live slot: the view process owns the chat-driven engine thread.
+            # The inbox file is the reviewed JSONL chat contract; the chat
+            # router appends the validated lines on the VM.
+            "--live",
+            "--inbox-file", str(self.spec.runtime_dir / CHAT_INBOX_FILENAME),
+            "--state-dir", str(self.g.state_dir),
         ]
 
     def _game_session_env(self) -> dict[str, str]:

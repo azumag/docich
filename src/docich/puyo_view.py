@@ -58,9 +58,9 @@ h1{font-size:28px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
 <div id="stage">
 <header>
 <div><span class="eyebrow">PUYO PUYO CLONE</span><h1>ぷよぷよクローン</h1><div class="sub">オフライン自対戦・4つ揃いで消える</div></div>
-<div class="tags"><span class="tag">自己対局の記録表示</span><span class="tag">連鎖ボーナス付き</span></div>
+<div class="tags"><span class="tag">チャット参加 !puyo join</span><span class="tag">連鎖ボーナス付き</span></div>
 </header>
-<div id="status-line"><span><i class="dot"></i><span id="state">対局を確認中</span></span><span id="result"></span></div>
+<div id="status-line"><span><i class="dot"></i><span id="state">対局を確認中</span></span><span><span id="participants"></span><span id="result"></span></span></div>
 <section id="boards">
 <div class="panel"><h2>プレイヤー</h2><div class="score" id="user-score"></div><div class="grid" id="user-grid"></div></div>
 <div class="panel"><h2>CPU</h2><div class="score" id="ai-score"></div><div class="grid" id="ai-grid"></div></div>
@@ -92,9 +92,11 @@ function drawBoard(gridId,scoreId,label,side,data){
 let lastData=null;
 function render(data){
  if(data.ok!==true||!data.user||!data.ai)throw new Error('invalid');
- document.getElementById('state').textContent='対局済みの自対戦を表示中';
+ document.getElementById('state').textContent=data.phase==='MATCH'?'対局中':data.phase==='ROUND_OVER'?'対局終了':'対局を確認中';
  document.getElementById('result').textContent=data.winner==='draw'?'引き分け':
   data.winner==='user'?'プレイヤーの勝ち':data.winner==='ai'?'CPUの勝ち':'';
+ const names=Array.isArray(data.participants)?data.participants:[];const pEl=document.getElementById('participants');
+ pEl.textContent=names.length?names.join('・')+' ':'';
  drawBoard('user-grid','user-score','得点','user',data.user);
  drawBoard('ai-grid','ai-score','得点','ai',data.ai);
  lastData=data;
@@ -214,8 +216,265 @@ def load_payload(payload_file) -> dict:
     return {"ok": True, **payload}
 
 
-def handler_for(payload: dict, runtime_id: str = "preview", *,
+# ---------------------------------------------------------------------------
+# live runtime: the engine thread owned by the view server process
+# ---------------------------------------------------------------------------
+
+import threading
+import time
+import datetime as dt_mod
+
+from . import puyo_corner as pc
+
+INBOX_INTERVAL_S = 0.5
+LIVE_POLL_S = 0.1
+MAX_INBOX_TEXT_CHARS = 200
+# Bounded inbox reading: the offset never rewinds, so these only cap how far
+# one poll may advance (a file of any size is drained forward over polls).
+INBOX_READ_BUDGET_BYTES = 64 * 1024
+INBOX_MAX_LINES_PER_POLL = 256
+
+
+def _iso_now() -> str:
+    return dt_mod.datetime.now(dt_mod.timezone.utc).isoformat(timespec="seconds")
+
+
+def _bounded_int(value, hi: int) -> int:
+    try:
+        return min(hi, max(0, int(value)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _overlay_falling_pair(board: list[list[str | None]], pair) -> list[list[str | None]]:
+    """Place the falling pair's cells onto a display-board copy (bounded).
+
+    Display-only: the engine board itself is never touched. Only empty
+    cells are filled, and a malformed pair is ignored (fail-closed) so the
+    falling pair is visible while moving without ever inventing blocks.
+    """
+    if not isinstance(pair, dict):
+        return board
+    try:
+        cells = pc.pair_cells(pair)
+    except pc.PuyoCornerError:
+        return board
+    colors = (pair.get("axis"), pair.get("satellite"))
+    for (x, y), color in zip(cells, colors):
+        if not isinstance(color, str):
+            continue
+        if 0 <= y < len(board) and 0 <= x < len(board[y]) \
+                and board[y][x] is None:
+            board[y][x] = color
+    return board
+
+
+def _snapshot_body(engine) -> dict:
+    """The current /api/puyo body from the live engine state (fail-closed)."""
+    from .puyo_corner import copy_board
+
+    state = dict(engine)
+    roster = state.get("roster") if isinstance(state.get("roster"), list) else []
+    names = []
+    for row in roster[:pc.MAX_ROSTER_DISPLAY]:
+        if isinstance(row, dict) and isinstance(row.get("display_name"), str):
+            names.append(row["display_name"][:pc.MAX_NAME_CHARS])
+    body: dict[str, object] = {"ok": True, "phase": str(state.get("phase"))}
+    for side in ("user", "ai"):
+        try:
+            board = copy_board(state.get(f"{side}_board"))
+            # the falling pair is part of what the viewer must see while it moves
+            _overlay_falling_pair(board, state.get(f"{side}_pair"))
+        except pc.PuyoCornerError:
+            return {"ok": False}
+        body[side] = {
+            "score": _bounded_int(state.get(f"{side}_score"), 10 ** 9),
+            "chain": _bounded_int(state.get(f"{side}_chain"), 10 ** 6),
+            "board": board,
+        }
+    winner = state.get("winner")
+    if winner not in ("user", "ai", "draw", None):
+        winner = None
+    body["winner"] = winner
+    body["participants"] = names
+    return body
+
+
+def _snapshot_file(payload_file, engine) -> None:
+    """Persist one terminal-round wrapper (the same schema the view loads)."""
+    try:
+        payload = match_payload_from_state(engine)
+        body = json.dumps({"schema": 1, "payload": payload},
+                          ensure_ascii=False, allow_nan=False).encode("utf-8")
+        path = Path(payload_file)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(body)
+        tmp.replace(path)
+    except Exception:
+        # Snapshots are best-effort crash mirrors; the live body and the
+        # last good file stay available either way.
+        pass
+
+
+class LiveMatch:
+    """One chat-driven engine owned by the view server process.
+
+    Bounded twice over: every step is one engine tick (the engine's action
+    and pair budgets fail the round closed), and the rounds are bounded by
+    the slot's fixed display window. The inbox file is the reviewed chat
+    contract: JSON lines ``{"user_id","display_name","text"}`` appended by
+    the production chat router; parsing is fail-closed and engine-side
+    rejects (full roster/queue) are ignored with counters only.
+    """
+
+    def __init__(self, payload_file, *, inbox_file=None, state_dir=None,
+                 seed=None, stop=None, sleep=time.sleep, poll_s=LIVE_POLL_S):
+        self.payload_file = payload_file
+        self.inbox_file = Path(inbox_file) if inbox_file else None
+        self.state_dir = Path(state_dir) if state_dir else None
+        self.stop = stop if stop is not None else threading.Event()
+        self.sleep = sleep
+        self.poll_s = poll_s
+        self._offset = 0
+        self._last_parse = 0.0
+        self._thread = None
+        self.engine = pc.new_state({}, seed=seed)
+        pc.start(self.engine, now=_iso_now())
+
+    def body(self) -> dict:
+        return _snapshot_body(self.engine)
+
+    def consume_inbox(self) -> None:
+        """Consume newly appended chat lines, forward-only and bounded.
+
+        The offset never rewinds: a file growing past any size threshold is
+        still read forward in bounded windows (fixed byte budget and a fixed
+        line count per poll), so already-consumed inputs can never be
+        re-applied. A shrunk file is treated as a rotation and re-read from
+        its start (that content is new by definition). An oversized single
+        fragment that fills the whole window is dropped forward so a
+        pathological line cannot stall the slot.
+        """
+        if self.inbox_file is None:
+            return
+        try:
+            size = self.inbox_file.stat().st_size
+        except OSError:
+            return
+        if size < self._offset:
+            self._offset = 0  # rotated/truncated: only the remaining bytes are new
+        if size <= self._offset:
+            return
+        try:
+            with self.inbox_file.open("rb") as stream:
+                stream.seek(self._offset)
+                raw = stream.read(INBOX_READ_BUDGET_BYTES)
+        except OSError:
+            return
+        if not raw:
+            return
+        complete = raw.split(b"\n")[:-1]  # the tail may be a partial line
+        if not complete:
+            if size - self._offset > len(raw):
+                self._offset += len(raw)  # drop the oversized fragment forward
+            return
+        if len(complete) > INBOX_MAX_LINES_PER_POLL:
+            complete = complete[:INBOX_MAX_LINES_PER_POLL]
+        for line in complete:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            user_id = row.get("user_id")
+            display_name = row.get("display_name")
+            text = row.get("text")
+            if not all(isinstance(v, str) for v in (user_id, display_name, text)):
+                continue
+            if len(user_id) > 64 or len(display_name) > pc.MAX_NAME_CHARS \
+                    or len(text) > MAX_INBOX_TEXT_CHARS:
+                continue
+            try:
+                pc.observe_chat(self.engine, user_id=user_id,
+                                display_name=display_name, text=text,
+                                now=_iso_now())
+            except pc.PuyoCornerError:
+                # Every engine rejection is a fixed-code bound (full roster,
+                # full queue, not in roster). Chat feedback is upstream.
+                continue
+        self._offset += sum(len(part) + 1 for part in complete)
+
+    def _record_round(self) -> None:
+        if self.state_dir is None or not self.state_dir.is_dir():
+            return
+        try:
+            def fn():
+                ledger = pc.load_ledger(self.state_dir / pc.LEDGER_FILE)
+                pc.record_match(ledger, self.engine)
+                pc.save_ledger(self.state_dir / pc.LEDGER_FILE, ledger)
+
+            pc.with_lock(self.state_dir, fn)
+        except (OSError, ValueError):
+            # The ledger is shared diagnostics only; it never blocks display.
+            return
+
+    def _restart_round(self) -> None:
+        try:
+            pc.reset(self.engine, now=_iso_now())
+            pc.start(self.engine, now=_iso_now())
+        except pc.PuyoCornerError:
+            return  # never crash the slot on a terminal-state hiccup
+
+    def step(self) -> None:
+        now = time.time()
+        if now - self._last_parse >= INBOX_INTERVAL_S:
+            self._last_parse = now
+            self.consume_inbox()
+        engine = self.engine
+        phase = engine.get("phase")
+        if phase == "MATCH":
+            try:
+                pc.advance_match(engine)
+            except pc.PuyoCornerError:
+                # Cannot happen with max_steps=1 (budgets end as TIMEOUT),
+                # but the slot never dies over one engine hiccup.
+                pass
+        elif phase in ("ROUND_OVER", "FAILED", "TIMEOUT"):
+            if phase == "ROUND_OVER":
+                try:
+                    pc.finish(engine, now=_iso_now())
+                except pc.PuyoCornerError:
+                    pass
+            self._record_round()
+            _snapshot_file(self.payload_file, engine)
+            self._restart_round()
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            self.step()
+            self.sleep(self.poll_s)
+
+    def start_thread(self):
+        if self._thread is not None and self._thread.is_alive():
+            return self._thread
+        self._thread = threading.Thread(target=self.run, daemon=True,
+                                        name="puyo-live-engine")
+        self._thread.start()
+        return self._thread
+
+
+def handler_for(payload, runtime_id: str = "preview", *,
                 generation=None, lease_id=None):
+    """Serve one match for broadcast.
+
+    ``payload`` is either the loaded static match payload (dict) or a
+    zero-argument callable returning the current body (live runtime). A
+    provider failure never serves stale data: the request is answered with a
+    fixed unavailable body (fail-closed).
+    """
     if not isinstance(runtime_id, str) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
         raise PuyoViewError("invalid runtime id")
     if generation is not None and (type(generation) is not int or generation < 1):
@@ -226,8 +485,12 @@ def handler_for(payload: dict, runtime_id: str = "preview", *,
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise PuyoViewError("invalid lease id") from None
-    body = dict(payload)
-    body.update(runtime_id=runtime_id, generation=generation, lease_id=lease_id)
+
+    def current_body() -> dict:
+        source = payload() if callable(payload) else payload
+        body = dict(source)
+        body.update(runtime_id=runtime_id, generation=generation, lease_id=lease_id)
+        return body
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -262,13 +525,17 @@ def handler_for(payload: dict, runtime_id: str = "preview", *,
             if self.path != "/api/puyo":
                 self.reply(404, b"not found", "text/plain; charset=utf-8")
                 return
+            try:
+                body = current_body()
+            except Exception:
+                body = {"ok": False}
             self.reply(200, json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8"),
                        "application/json; charset=utf-8")
 
     return Handler
 
 
-def serve(payload: dict, *, port: int = DEFAULT_PORT, runtime_id: str = "preview",
+def serve(payload, *, port: int = DEFAULT_PORT, runtime_id: str = "preview",
           generation=None, lease_id=None) -> None:
     if type(port) is not int or not 1024 <= port <= 65535:
         raise PuyoViewError("invalid port")
@@ -287,9 +554,20 @@ def main(argv=None) -> int:
     parser.add_argument("--runtime-id", default="preview")
     parser.add_argument("--generation", type=int)
     parser.add_argument("--lease-id")
+    parser.add_argument("--live", action="store_true",
+                        help="the slot owns one chat-driven engine thread")
+    parser.add_argument("--inbox-file", type=Path,
+                        help="JSONL chat route written by the production chat router")
+    parser.add_argument("--state-dir", type=Path)
     args = parser.parse_args(argv)
     try:
-        payload = load_payload(args.payload_file)
+        if args.live:
+            live = LiveMatch(args.payload_file, inbox_file=args.inbox_file,
+                             state_dir=args.state_dir)
+            payload = live.body
+            live.start_thread()
+        else:
+            payload = load_payload(args.payload_file)
         serve(payload, port=args.port, runtime_id=args.runtime_id,
               generation=args.generation, lease_id=args.lease_id)
     except (OSError, PuyoViewError):
