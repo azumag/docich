@@ -526,7 +526,7 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   として累積し、既存 `components_truncated` は書き換えない。
   一方で1行要約はこの予算の全段階で削除対象外です: `cpu_top`（上位3
   components＋others集計）と `spawn_top`（上位3 spawn経路）。合成fixtureでの
-  値部分は `cpu_top` が通常57B・長ラベル条件217B、`spawn_top` が通常75B・
+  値部分は `cpu_top` が通常58B・長ラベル条件217B、`spawn_top` が通常75B・
   長ラベル条件375B（JSONキー等の増分は別）。これらはpayload全体の本番上限
   保証ではないため、lists が全削除されても上位消費と spawn 経路は読める
   （azumag/docich#970）。
