@@ -545,8 +545,8 @@ def test_real_tty_severe_condition_spelling_is_normalized(condition):
     text = frame({"n": "#"}, condition=condition, hp="4(16)")
     assert condition in normalize_tty(text).conditions
     agent = brain()
-    assert act(agent, text) == ["."]  # wait turn, owner decision 2026-09-23
-    assert agent.last_decision.intent == "status_emergency"
+    assert act(agent, text) == ["#"]  # reviewed recovery action
+    assert agent.last_decision.intent == "status_recovery"
 
 
 @pytest.mark.parametrize("hp", ["4(16)", "8(16)", "16(16)"])
@@ -893,3 +893,20 @@ def test_welcome_banner_with_more_on_next_row_is_advanced():
     ])
     assert normalize_tty(text).prompt == "more"
     assert act(brain(), text) == [" "]
+
+
+def test_production_prayer_recovery_types_extended_command_over_fresh_frames():
+    agent = brain()
+    severe = frame(hp="4(16)", condition="Sick")
+
+    assert act(agent, severe) == ["#"]
+    assert agent.last_progress_decision.intent == "status_recovery"
+
+    # Each subsequent frame advances one character of `pray` + Enter.
+    typed = ""
+    for expected in ["p", "r", "a", "y", "\n"]:
+        prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? " + typed)
+        assert normalize_tty(prompt).prompt == "selection"
+        assert act(agent, prompt) == [expected]
+        assert agent.last_progress_decision.intent == "status_recovery"
+        typed += expected if expected != "\n" else ""
