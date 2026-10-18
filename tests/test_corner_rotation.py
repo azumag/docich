@@ -70,8 +70,13 @@ def test_flat_live_catalog_and_financial_boundary():
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
                                      "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
-                                     "yosou-oh", "doushi-card", "puyo-corner", "mystery"}
+                                     "yosou-oh", "doushi-card", "puyo-corner", "mystery",
+                                     "communist-law-simulator"}
+>>>>>>> 361f6ba0 (feat(lawsim): #697 共産主義法律シミュレーターの production 配線)
     assert all(c.live_eligible is False for c in catalog)
+    # Issue #697: 法律シミュレーターは 2026-10-18 オーナー承認で自動抽選対象。
+    lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
+    assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is False
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
@@ -85,12 +90,14 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    # 2026-10-18 #684: AI探偵ミステリー（mystery）追加 → 15本（13+ぷよ+mystery）。
-    assert len(catalog) == 15
+    # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本。
+    assert len(catalog) == 16
     # Issue #698: ぷよぷよクローン stays default-disabled and manual-only until
     # the owner approves the auto-rotation step.
     puyo = next(c for c in catalog if c.id == "puyo-corner")
     assert not puyo.enabled and puyo.manual_only
+    lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
+    assert lawsim.enabled and not lawsim.manual_only
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -237,11 +244,12 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "finished", "readyForNextRun": True,
     })
     eligible, excluded = manager._eligible()
-    # 2026-10-18 #684: mystery 追加 → 自動抽選候補は15本中14本
+    # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本中15本
     # （default-disabled のぷよぷよクローンを除く）。
-    assert len(eligible) == 14
+    assert len(eligible) == 15
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
-            "yosou-oh", "doushi-card", "mystery"} <= set(eligible)
+            "yosou-oh", "doushi-card", "mystery",
+            "communist-law-simulator"} <= set(eligible)
     # The disabled ぷよぷよクローン row is excluded, never suddenly auto-selected.
     assert excluded == {"puyo-corner": "disabled-or-paused"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
@@ -249,8 +257,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     })
     eligible, excluded = manager._eligible()
     assert len(eligible) == 13 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable",
-                        "puyo-corner": "disabled-or-paused"}
+    assert excluded == {"tsuitate": "adapter-unavailable", "puyo-corner": "disabled-or-paused"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

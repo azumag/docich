@@ -98,6 +98,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "mystery-view":
         from .mystery_program import make_mystery_view_adapter
         return make_mystery_view_adapter(g, spec)
+    if spec.game == "lawsim-view":
+        from .lawsim_program import make_lawsim_view_adapter
+        return make_lawsim_view_adapter(g, spec)
     game = load_game(g, spec.game)
     # NetHack remains a normal CLI game for legacy obs/send and for existing
     # installations.  The save-safe coordinator lifecycle is an explicit
