@@ -82,6 +82,7 @@ class XlogPathTests(unittest.TestCase):
         self.assertIsNone(result['findings']['xlog_lock_shares_inode'])
         self.assertIs(result['xlog']['readable'], False)
         self.assertIsNone(result['xlog']['last_record'])
+        self.assertIsNone(result['xlog']['record_span'])
 
     def test_fixed_alternates_and_launchers_are_reported(self):
         result = self.collect()
@@ -140,6 +141,13 @@ class XlogPathTests(unittest.TestCase):
                          len(record_own) + len(record_other) + len(incomplete))
         self.assertEqual(result['xlog']['tail_complete_lines'], 2)
         self.assertIs(result['xlog']['tail_head_truncated'], False)
+        first = result['xlog']['first_record']
+        self.assertIs(first['name_matches_player'], True)
+        self.assertEqual(first['points'], 123)
+        self.assertEqual(first['starttime'], 1789990000)
+        self.assertEqual(first['endtime'], 1789999999)
+        self.assertEqual(first['achieve'], 0x20)
+        self.assertNotIn('death', first)
         last = result['xlog']['last_record']
         self.assertIs(last['name_matches_player'], False)
         self.assertEqual(last['points'], 9)
@@ -149,12 +157,16 @@ class XlogPathTests(unittest.TestCase):
         self.assertEqual(last['endtime'], 1789990002)
         self.assertEqual(last['achieve'], 1)
         self.assertNotIn('death', last)
+        self.assertEqual(result['xlog']['record_span'], {
+            'first_starttime': 1789990000, 'last_endtime': 1789990002,
+            'complete_lines': 2})
         self.assertNotIn('SECRET', json.dumps(result))
         self.assertNotIn('docich', json.dumps(result['xlog']))
 
     def test_tail_over_cap_reports_truncated_head(self):
         big = b''.join(
-            b'version=3.6.6\tpoints=%020d\tname=docich\tturns=%d\n' % (value, value)
+            b'version=3.6.6\tpoints=%020d\tname=docich\tturns=%d\tendtime=%d\n'
+            % (value, value, 1790000000 + value)
             for value in range(diag.NETHACK_XLOG_TAIL_BYTES // 64 + 8))
         self.assertGreater(len(big), diag.NETHACK_XLOG_TAIL_BYTES)
         (self.playground / 'xlogfile').write_bytes(big)
@@ -163,6 +175,9 @@ class XlogPathTests(unittest.TestCase):
         self.assertEqual(result['xlog']['size'], len(big))
         self.assertGreater(result['xlog']['tail_complete_lines'], 0)
         self.assertIs(result['xlog']['last_record']['name_matches_player'], True)
+        span = result['xlog']['record_span']
+        self.assertIsNone(span['first_starttime'])  # head truncated: unknown
+        self.assertEqual(span['last_endtime'], 1790000000 + diag.NETHACK_XLOG_TAIL_BYTES // 64 + 7)
 
     def test_save_entries_count_only_matching_regular_files(self):
         (self.save / '1000docich').write_bytes(b'save')
@@ -442,7 +457,10 @@ class XlogBudgetTests(unittest.TestCase):
     def section(self):
         return {
             'schema_version': 1, 'collected_at': 1790000000,
-            'xlog': {'readable': True, 'last_record': {'points': 5}},
+            'xlog': {'readable': True, 'record_span': {
+                         'first_starttime': 1789990000, 'last_endtime': 1789999999,
+                         'complete_lines': 2},
+                     'first_record': {'points': 5}, 'last_record': {'points': 5}},
             'binaries': {'available': True, 'entries': [{'origin': 'dpkg'}]},
             'xlog_siblings': {'present': True, 'entries': [{'name': 'xlogfile.1'}]},
             'processes': {'count': 1, 'entries': [{'pid': 7}]},
@@ -453,8 +471,14 @@ class XlogBudgetTests(unittest.TestCase):
         payload = {'nethack_xlog': self.section()}
         diag._nethack_xlog_budget(payload)
         section = payload['nethack_xlog']
+        self.assertIsNone(section['xlog']['first_record'])
+        self.assertIs(section['xlog']['first_record_omitted'], True)
         self.assertIsNone(section['xlog']['last_record'])
         self.assertIs(section['xlog']['last_record_omitted'], True)
+        # record_span is the #753 timeline evidence: it survives trimming.
+        self.assertEqual(section['xlog']['record_span'], {
+            'first_starttime': 1789990000, 'last_endtime': 1789999999,
+            'complete_lines': 2})
         self.assertEqual(section['binaries']['entries'], [])
         self.assertIs(section['binaries']['entries_omitted'], True)
         self.assertEqual(section['xlog_siblings']['entries'], [])

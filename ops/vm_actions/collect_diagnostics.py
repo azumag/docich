@@ -9407,10 +9407,29 @@ def _nethack_xlog_int(record, key, base=10):
         return None
 
 
+def _nethack_xlog_record_fields(record, player):
+    """Allowlisted numeric projection of one parsed xlog record; no text."""
+    return {
+        "name_matches_player": (record.get("name") == player) if player else None,
+        "starttime": _nethack_xlog_int(record, "starttime"),
+        "endtime": _nethack_xlog_int(record, "endtime"),
+        "points": _nethack_xlog_int(record, "points"),
+        "turns": _nethack_xlog_int(record, "turns"),
+        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
+        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    }
+
+
 def _nethack_xlog_tail(xlogfile, player):
-    """Derived counters from the bounded xlog tail; content never leaves."""
+    """Derived counters from the bounded xlog tail; content never leaves.
+
+    ``record_span`` (oldest record's birth time, newest record's end time,
+    complete-line count) is the #753 timeline evidence and stays small enough
+    to survive the soft budget reductions.
+    """
     result = {"readable": False, "size": None, "tail_complete_lines": 0,
-              "tail_head_truncated": False, "last_record": None}
+              "tail_head_truncated": False, "record_span": None,
+              "first_record": None, "last_record": None}
     try:
         fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (FileNotFoundError, OSError):
@@ -9434,15 +9453,16 @@ def _nethack_xlog_tail(xlogfile, player):
     result["tail_complete_lines"] = len(lines)
     if not lines:
         return result
-    record = _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace'))
-    result["last_record"] = {
-        "name_matches_player": (record.get("name") == player) if player else None,
-        "starttime": _nethack_xlog_int(record, "starttime"),
-        "endtime": _nethack_xlog_int(record, "endtime"),
-        "points": _nethack_xlog_int(record, "points"),
-        "turns": _nethack_xlog_int(record, "turns"),
-        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
-        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    first = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[0].decode('utf-8', errors='replace')), player)
+    last = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace')), player)
+    result["first_record"] = first
+    result["last_record"] = last
+    result["record_span"] = {
+        "first_starttime": first["starttime"],
+        "last_endtime": last["endtime"],
+        "complete_lines": len(lines),
     }
     return result
 
@@ -9650,18 +9670,21 @@ def _collect_nethack_xlog(now):
 def _nethack_xlog_budget(payload):
     """Yield the xlog projection's optional detail under envelope pressure.
 
-    The stat-level lock/permission evidence is the incident's first-order
-    proof, so it goes last. Optional detail (tail record, binaries, sibling
-    list, process entries, sysconf values) is dropped first, and each drop is
-    visible through an ``*_omitted`` marker.
+    The stat-level lock/permission evidence and the ``record_span`` timeline
+    (oldest birth time / newest end time / line count) are the incident's
+    first-order proof, so they go last. Optional detail (first/last record
+    field detail, binaries, sibling list, process entries, sysconf values) is
+    dropped first, and each drop is visible through an ``*_omitted`` marker.
     """
     section = payload.get("nethack_xlog")
     if not isinstance(section, dict):
         return payload
     xlog = section.get("xlog")
-    if isinstance(xlog, dict) and xlog.get("last_record") is not None:
-        xlog["last_record"] = None
-        xlog["last_record_omitted"] = True
+    if isinstance(xlog, dict):
+        for key in ("first_record", "last_record"):
+            if xlog.get(key) is not None:
+                xlog[key] = None
+                xlog[key + "_omitted"] = True
     for key in ("binaries", "processes", "xlog_siblings", "sysconf"):
         part = section.get(key)
         detail_key = "values" if key == "sysconf" else "entries"

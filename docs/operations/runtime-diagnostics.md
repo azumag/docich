@@ -756,16 +756,18 @@ EEXIST リトライ 10 秒後に無言で skip する。どちらも run store �
   （それ以外は `configured` に key 名だけ残し value は `null`）。
   他の key・コメント・行数は出力しない。
 - `xlog` は xlogfile の末尾最大64KiBを読み、**完全行のみ**から
-  完全行数・先頭切詰め有無・最終 record の数値 field（starttime / endtime / points /
+  完全行数・先頭切詰め有無・最終/先頭 record の数値 field（starttime / endtime / points /
   turns / maxlvl / achieve）と `name_matches_player` boolean だけを導出する。
+  `record_span`（最古 record の `starttime` / 最新 record の `endtime` / 完全行数）は
+  #753 の timeline 証拠であり、soft budget の縮退でも落とさない。
   death 文字列・player 名・生の行内容は出力しない。
 - `findings` は導出 boolean（`xlog_lock_present` / `xlog_lock_shares_inode` /
   `xlog_file_shared_hardlink`）のみ。原因の確定は人間の判断であり、
   collector は修復・削除・権限変更を一切行わない。
-- 予算縮退では、stat 系の lock/permission 証拠が最後まで残る。省略対象は
-  tail の最終 record・binaries・siblings・processes・sysconf values の各 optional detail
-  （`*_omitted` marker 付き）だけで、それらは他の optional detail と同じ段階で先に落ちる。
-  セクション全体の collapse は hard ceiling の最終手段のみ。
+- 予算縮退では、stat 系の lock/permission 証拠と `record_span` が最後まで残る。省略対象は
+  tail の先頭/最終 record 詳細・binaries・siblings・processes・sysconf values の
+  各 optional detail（`*_omitted` marker 付き）だけで、それらは他の optional detail と
+  同じ段階で先に落ちる。セクション全体の collapse は hard ceiling の最終手段のみ。
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
