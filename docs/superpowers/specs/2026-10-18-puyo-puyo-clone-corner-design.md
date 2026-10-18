@@ -64,3 +64,34 @@ recognizable regardless of the name used:
 - honest-material hashes follow the adapter contract;
 - overlay and progression are split out after the input contract;
 - partial completion is allowed and reviewer approval is required.
+
+## Offline core (PR-2)
+
+`src/docich/puyo_corner.py` implements the offline mechanics behind this
+contract, following the precedent set by the TRPG corner offline core
+(Issue #684): pure functions, no live I/O.
+
+`load_state`/`new_state` fall back to a built-in DEFAULT_RULESET when a saved
+state has no ruleset, so legacy or empty states keep working. `record_match`
+only records terminal states (END/FAILED/TIMEOUT).
+
+Ruleset validation is fail-closed:
+
+* supported board only (6x12 + 1 hidden spawn row as declared above);
+* 2-4 distinct colors declared in the ruleset, never widened;
+* gravitySettle / chainReevaluation / simultaneousClear must be true;
+* scoring descriptors must not be None (exact tables stay in the module);
+* saved states carry a ruleset digest that must match the live module.
+
+The falling pair is axis + satellite, spawn on the first visible row.
+
+## Board mechanics
+
+Every chain pass settles the board per column, clears every group of 4+
+orthogonally connected same-color puyo at once (simultaneousClear), and the
+settle→clear loop re-evaluates until no clearable group remains; chains
+1, 2, 3, ... each add the bounded chain bonus, and an emptied board adds the
+all-clear bonus. MAX_ACTIONS, MAX_PAIRS_PER_ROUND and MAX_CHAIN_STEPS bound
+any tick, so runaway loops fail closed with an explicit budget code. A locked
+pair with no room for its refill ends the round: the surviving side wins and
+both sides topping out is a draw.
