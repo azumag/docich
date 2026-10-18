@@ -18,7 +18,8 @@ fail-closed に残るのは **`.` が質問への回答になり得る局面だ�
 
 ここで「安全」は入力の種類と観測条件の契約です。可視床にも未知の罠があり、通常戦闘でも死亡します。
 旧 P3b の「creature には一切踏み込まない」を、**可視退避先がない場合の通常方向キー1個**に限って緩めます。
-強制攻撃 `F`、攻撃承認 `y`、複数キーやマクロ、推測したアイテム・祈り・階段操作は追加しません。
+強制攻撃 `F`、攻撃承認 `y`、複数キーやマクロ、推測したアイテム・階段操作は追加しません。
+祈り `p` だけは次節の観測条件を満たす場合に限り reviewed 回復actionとして追加しました（#759）。
 閉じた扉は、探索・食料探索・低HP/食料危険状態でも、隣接creatureがなく方向入力が信頼できる隣接扉なら `o` と確認済み方向を別々の観測で1回試します。HP 50%以下や `Hungry` はそれだけでは開扉を止めません。`Fainted`・移動障害状態・重篤な病状では止めます。
 ロック解除・蹴破り・別promptへの回答は行わず、開かなかった扉は同じruntimeで再試行せず探索frontierから外します。
 開いた扉は、直後の観測で同じ座標が開扉glyphへ変わった場合だけ通行可能として記憶します。
@@ -30,7 +31,7 @@ fail-closed に残るのは **`.` が質問への回答になり得る局面だ�
 | 最上段に明示 `--More--`、ほかの質問・折り返し疑いを検出しない | Space 1個。同じraw frameには再送せず `progress_blocked` |
 | 最上段に完全な未回答 `Really save? [yn] (n)` / `Really attack …? [yn] (n)`（既定表示は省略可） | `n` 1個。全く同じ観測には再送しない。save拒否は下記のcanonical所有権確認が必須 |
 | 開扉pendingに一致しない方向prompt、その他の質問、選択・命名・メニュー、曖昧/回答済み/切れた確認 | 無入力 |
-| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll` | 移動・接触・開扉は不可。完全なframeなら `.` 1ターン |
+| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll` | 移動・接触・開扉は不可。祈り回復の観測条件を満たせば `p` 1個、満たさなければ `.` 1ターン（次節）。いずれも隣接creatureの有無で変えない |
 | `Weak/Fainting/Starved` | 移動・接触は不可。`Fainted`でなく、隣接creature/移動障害がなければ隣接扉を1回試して食料・退路を探す |
 | `Fainted` | 開扉入力は送らず、回復を待つ |
 | player・HP・HP最大値・階層を確認できない、死亡HP | 無入力 |
@@ -64,6 +65,47 @@ plain TTYにはメッセージウィンドウ境界・cursor情報がなく、�
 **そのような未知の折り返し形式での自動入力安全性は保証対象外**です。対応にはmessage/cursor等の追加観測が必要です。
 79列以上の通常メッセージを保守的に止める可能性も残ります。別port・手動改行・独自レイアウトの完全解析や、
 実TTYでの無停止は保証しません。startup専用gateとcoordinatorのsave処理は今回変更していません。
+
+## severe status の reviewed 回復（#759）
+
+severe status（`Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`）はターン経過で回復せず、
+治療なしでは時間切れで死亡します（3.6.7実測根拠: 食中毒 10-19ターン `src/eat.c`、病気 `20..19+Con`ターン
+`src/mhitu.c diseasemu`、sliming 約9ターン、stoning/strangling は `src/timeout.c` のカウントダウン）。
+そのため `.` の待機だけでは回復せず、残りターンを消費するだけです。
+
+本番 surface へ追加した回復actionは **祈り `p` 1キーのみ**です。自動実行する観測条件は
+`nethack_recovery.py` の `pray_frame_ready` が唯一の正本で、resolver の提供と
+`assert_production_safe` の最終境界が同じ述語を使います。
+
+- `status_emergency` 判断であること（policy判断自体は `requires_llm`・無actionのまま不変）
+- 完全な gameplay frame（prompt無し・player一意・HP>0・Dlvl既知）であること
+- `Dlvl <= 20` であること。Gehennom では祈りは「神は助けられない」+ `angrygods` 判定になるため
+  （`pray.c prayer_done()` の `Inhell` 分岐）、既知の浅い階層に限ります。Dlvl不明・21以上は fail-closed
+- 隣接creatureの有無で**変えない**（issue要件: 治療を隣接だけで差し替えない。状態自体が時間切れで致死）
+
+**1エピソード1回の予算**: 神の立場（`ublesscnt`/`Luck`/`ugangr`/alignment record）はTTYから観測できません。
+早すぎる・不敬な祈りは `gods_upset`/`angrygods` を引きます（`pray.c`）。そのためresolverは
+severe状態が継続している間は2度目の祈りを生成せず、severe無しの観測（治癒）が来て初めて再許可します。
+祈りの送信後は、`nomul(-3)` の3ターン凍結中に先打ちキーを送らないよう、**同一raw frameには無入力**で
+変化frameを待ちます（`--More--` だけは従来どおりSpaceで送ります）。祈りが治癒しなかった frame は
+従来どおり `.` の明示待機へ退きます（send後の `prayer_block`）。
+
+採用しなかった回復手段と理由: 治癒薬・ユニコーンの角・ユーカリ・cure sickness 呪文・polyself・
+`R` での首輪取り外しは、確定したinventory観測か選択prompt契約が必要です。
+public TTY frameはどちらも提供しないため、item keyの推測はissue要件に反してsurfaceへ入れません。
+`food_emergency`・`survival_emergency` への適用も既存契約（#752/#755）どおり行いません。
+
+残存リスク: 治癒後まもない次のエピソードの祈り1回が「早すぎる」と判定され `angrygods` を引く可能性は
+観測で排除できません（1エピソード1回に限定済み）。早期の worst case は不機嫌/能力低下/呪い程度で、
+深層・Gehennom の即死級判定は `Dlvl <= 20` gateで対象外です。 untreated死が確定する状態との
+トレードオフとして、このリスクを採用します。
+
+根拠（NetHack 3.6.7 released source）:
+[pray.c `in_trouble()`/`fix_worst_trouble()`](https://github.com/NetHack/NetHack/blob/NetHack-3.6.7_Released/src/pray.c) は
+`Stoned → Slimed → Strangled（首輪消滅）→ Sick` をmajor troubleとして祈りで治し、
+[botl.c](https://github.com/NetHack/NetHack/blob/NetHack-3.6.7_Released/src/botl.c) は
+` Stone / Slime / Strngl / FoodPois / TermIll` を表示します（`Ill` は3.6.7 ttyの表示語ではなく、
+観測語彙がfail-closedの別名として保持しています）。
 
 ## 送信直前の再検証とsave境界
 
@@ -131,6 +173,7 @@ advisory/narrator/observation shadow は元の判断を受け取り、candidate 
 LLMが本番Actionを差し替える経路は追加しません。
 
 `tests/test_nethack_progress.py` を CI の Retro corner contract 明示リストに追加しています。
+#759 の祈り回復契約は `tests/test_nethack_recovery.py` として同じ明示リストに追加しています。
 さらに `test_nethack_canary_tactics.py`、`test_agent_loop.py`、`test_agent_fence.py`、
 `test_agent_action_lock.py` も同リストで実行します。`rg --files`で実在する関連lockテストを確認しました。
 報告局面・斜め4方向・隣接8方向・混合状態・攻撃拒否連鎖・移動拒否・通常戦闘のターン更新・未知プロンプト・

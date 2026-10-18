@@ -28,6 +28,9 @@ from .nethack_policy import (
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
+from .nethack_recovery import (
+    PRAY_KEY, RECOVERY_INTENT, pray_frame_ready, pray_recovery_action,
+)
 
 
 DoorKey = tuple[int, int, int]
@@ -170,6 +173,12 @@ def assert_production_safe(
         # Any complete frame may spend one wait turn (owner decision
         # 2026-09-23); turn_ready is what keeps `.` from answering a prompt.
         allowed = turn_ready(obs) and key == "."
+    elif intent == RECOVERY_INTENT:
+        # Reviewed prayer recovery (#759): exactly one `p`, only on a
+        # complete frame with a visible severe status and a dungeon level
+        # that rules out Gehennom.  Adjacent creatures deliberately do not
+        # change the treatment (issue requirement).
+        allowed = key == PRAY_KEY and pray_frame_ready(obs)
     elif intent == "open_door_start":
         allowed = key == "o" and _next_unattempted_door(obs, attempted_doors) is not None
     elif intent == "open_door_direction":
@@ -202,6 +211,18 @@ class NethackProgressResolver:
         self._door_result_pending: _DoorTarget | None = None
         self._door_result_raw_text: str | None = None
         self._door_result_unchanged_captures = 0
+        # Reviewed prayer recovery (#759): while a transported `p` has not
+        # produced a changed frame yet, no gameplay key may be sent (a
+        # typed-ahead key would interrupt the nomul(-3) prayer).  The
+        # episode block allows at most one prayer per severe-status episode;
+        # any observation without a severe condition clears it again.
+        self._pending_prayer_raw_text: str | None = None
+        self._pending_prayer_unchanged_captures = 0
+        self._prayer_block = False
+
+    def _clear_pending_prayer(self) -> None:
+        self._pending_prayer_raw_text = None
+        self._pending_prayer_unchanged_captures = 0
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
         target = self._pending_door
@@ -237,6 +258,11 @@ class NethackProgressResolver:
         self._door_result_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
+        if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+            # A severe-free observation is the only reviewed evidence that a
+            # prayer episode ended (cured or otherwise resolved).  It re-arms
+            # the single-prayer budget for a future episode.
+            self._prayer_block = False
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
         if self._pending_door is not None and obs.prompt == "none":
@@ -294,6 +320,7 @@ class NethackProgressResolver:
             self._failed.clear()
             self._scene = scene
             self._pending = None
+            self._clear_pending_prayer()
             return
         if self._pending is None:
             return
@@ -357,6 +384,14 @@ class NethackProgressResolver:
                 self._clear_pending_door()
                 return
             key = decision.actions[0].text
+            if decision.intent == RECOVERY_INTENT:
+                # Hold all gameplay keys until a changed frame proves the
+                # prayer freeze is over, and spend the single-per-episode
+                # prayer budget now.
+                self._pending_prayer_raw_text = obs.raw_text
+                self._pending_prayer_unchanged_captures = 0
+                self._prayer_block = True
+                return
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
                 self._answered_prompt = obs.raw_text
             elif key in MOVE_KEYS:
@@ -381,6 +416,27 @@ class NethackProgressResolver:
             and self._answered_prompt == obs.raw_text
         ):
             return self._hold("prompt already answered; waiting for a new frame")
+        if self._pending_prayer_raw_text is not None:
+            # The transported prayer must never receive a typed-ahead gameplay
+            # key: NetHack freezes the hero for three turns and any key would
+            # interrupt the prayer before it completes.  A --More-- page is
+            # the only reviewed input in that window.
+            if obs.prompt == "more" and decision.intent == "advance_message":
+                return decision
+            if obs.prompt != "none":
+                return self._hold("prayer response is pending; unexpected prompt")
+            if obs.raw_text == self._pending_prayer_raw_text:
+                self._pending_prayer_unchanged_captures = min(
+                    self._pending_prayer_unchanged_captures + 1,
+                    MAX_UNCHANGED_DOOR_CAPTURES,
+                )
+                wait_reason = (
+                    "prayer response remains pending after repeated unchanged captures"
+                    if self._pending_prayer_unchanged_captures >= MAX_UNCHANGED_DOOR_CAPTURES
+                    else "prayer response is pending; waiting for a changed frame"
+                )
+                return self._hold(wait_reason)
+            self._clear_pending_prayer()
         if self._pending_door is not None:
             if obs.prompt == "direction":
                 if _door_target_matches(obs, self._pending_door):
@@ -440,6 +496,19 @@ class NethackProgressResolver:
             return decision
         if not turn_ready(obs):
             return decision
+
+        # Reviewed severe-status recovery (#759): evidence-gated prayer,
+        # deliberately independent of adjacent creatures (the issue forbids
+        # changing the treatment on adjacency alone).  One attempt per
+        # severe episode; the blocked path falls through to the explicit
+        # fail-closed wait turn below, unchanged.
+        pray = pray_recovery_action(decision, obs)
+        if pray is not None and not self._prayer_block:
+            return self._action(
+                RECOVERY_INTENT,
+                "reviewed prayer cure for a visible severe status condition",
+                pray.text,
+            )
 
         contact = _visible_creature_contact(obs)
         # Prefer an explicit rest command whenever there is no visible contact

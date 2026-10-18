@@ -106,17 +106,36 @@ def test_terrain_planner_and_bump_never_target_unreviewed_glyphs(glyph):
     assert act(brain(), text) == ["k"]  # only actual visible creature is eligible
 
 
-@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
-def test_severe_status_and_starvation_dominate_the_intent_and_still_wait(condition, hp):
-    # owner decision 2026-09-23: どんな状態でも完全なframeなら `.` を送る。
-    # 「dominate」は *movement* の意味で残る: 隣接creature+重症では退避/接触を
-    # 一切作らず、最後に1ターン待つだけ。
+def test_severe_status_prays_regardless_of_contact_and_hp(condition, hp):
+    # #759: each severe condition has exactly one reviewed recovery action.
+    # The policy decision stays fail-closed (strategic/requires_llm/no
+    # action); the resolver substitutes the evidence-gated prayer, and the
+    # issue forbids changing the treatment on adjacent creatures alone.
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
-    agent = brain()
-    assert act(agent, text) == ["."]
-    assert agent.last_decision.intent in {"status_emergency", "food_emergency"}
-    assert agent.last_progress_decision.intent == "rest_turn"
+    subject = brain()
+    assert act(subject, text) == ["p"]
+    assert subject.last_decision.intent == "status_emergency"
+    assert subject.last_progress_decision.intent == "recovery_pray"
+    # Movement helpers still refuse every severe condition even if a caller
+    # supplies a misleading survival intent (the critical-HP masking
+    # regression): movement stays blocked while the prayer is offered.
+    obs = normalize_tty(text)
+    fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
+    assert step_out_of_hold(fake, obs, NethackExplorer()) is None
+
+
+@pytest.mark.parametrize("condition", ["Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
+def test_food_emergencies_still_wait_instead_of_praying(condition, hp):
+    # The recovery surface stays limited to the severe status set; hunger
+    # keeps its explicit wait turn and never prays (#752/#755 contract).
+    text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
+    subject = brain()
+    assert act(subject, text) == ["."]
+    assert subject.last_decision.intent == "food_emergency"
+    assert subject.last_progress_decision.intent == "rest_turn"
     # Helpers also guard the observation even if a caller supplies a misleading
     # survival intent (the exact critical-HP masking regression): movement stays
     # blocked while a wait turn is allowed.
@@ -544,9 +563,11 @@ def test_new_contract_suite_is_in_explicit_ci_list():
 def test_real_tty_severe_condition_spelling_is_normalized(condition):
     text = frame({"n": "#"}, condition=condition, hp="4(16)")
     assert condition in normalize_tty(text).conditions
-    agent = brain()
-    assert act(agent, text) == ["."]  # wait turn, owner decision 2026-09-23
-    assert agent.last_decision.intent == "status_emergency"
+    subject = brain()
+    # #759: the real tty spelling resolves to the reviewed prayer recovery.
+    assert act(subject, text) == ["p"]
+    assert subject.last_decision.intent == "status_emergency"
+    assert subject.last_progress_decision.intent == "recovery_pray"
 
 
 @pytest.mark.parametrize("hp", ["4(16)", "8(16)", "16(16)"])

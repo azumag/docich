@@ -173,8 +173,11 @@ class TestNethackPolicyBrain(unittest.TestCase):
         self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
         self.assertEqual(brain.last_decision.intent, "explore_step")
 
-    def test_brain_rests_one_turn_on_severe_status(self) -> None:
-        # owner decision 2026-09-23: 入力なしで永久凍結しない。
+    def test_brain_prays_once_on_severe_status(self) -> None:
+        # #759: the policy decision stays fail-closed; the resolver
+        # substitutes the one reviewed recovery key.  (Owner decision
+        # 2026-09-23 keeps the explicit wait turn available for everything
+        # else; see tests/test_nethack_recovery.py for the full contract.)
         brain = build_brain(SimpleNamespace(), self._game())
         obs = Observation(
             game="nethack",
@@ -184,7 +187,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
             kind="text",
             text=frame(condition="Sick"),
         )
-        self.assertEqual([a.text for a in brain.decide(obs)], ["."])
+        self.assertEqual([a.text for a in brain.decide(obs)], ["p"])
         self.assertEqual(brain.last_decision.intent, "status_emergency")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:
