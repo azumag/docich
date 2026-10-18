@@ -379,13 +379,31 @@ def record_move(state: Any, row: Any, col: Any, *, by_ai: bool = False, now: str
 
 
 def ai_turn(state: Any, now: str | None = None) -> dict:
-    """Play the docich brain's single move for the AI seat (PAYING turn must be AI)."""
+    """Play the docich brain's moves until the viewer can reply or the match ends.
+
+    PLAYING turn must be AI on entry. Loops over consecutive AI moves (when the
+    viewer has no legal reply) so a pass cannot freeze the room; the caller does
+    not need to re-invoke. Returns the state once the turn leaves AI or the
+    match finishes.
+    """
     state = _dict(state, "state")
     if state.get("phase") != "PLAYING":
         raise OthelloCornerError("ai_turn requires PLAYING phase")
     if state.get("turn") != AI_PLAYER:
         raise OthelloCornerError("not ai turn")
-    return record_move(state, *ai_choose_move(state["board"], AI_PLAYER), by_ai=True, now=now)
+    while state.get("turn") == AI_PLAYER and state.get("phase") == "PLAYING":
+        if state.get("moves_played", 0) >= MAX_MOVES:
+            return finish(state, now=now)
+        board = _board(state["board"])
+        if not legal_moves(board, AI_PLAYER):
+            # AI has no move: pass to viewer or finish.
+            if legal_moves(board, VIEWER_PLAYER):
+                state["turn"] = VIEWER_PLAYER
+                state["move_deadline_at"] = None
+                return state
+            return finish(state, now=now)
+        record_move(state, *ai_choose_move(board, AI_PLAYER), by_ai=True, now=now)
+    return state
 
 
 def finish(state: Any, *, outcome: str | None = None, now: str | None = None) -> dict:

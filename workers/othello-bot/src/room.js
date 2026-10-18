@@ -72,6 +72,7 @@ export function spectatorSnapshot(state) {
     scores: score(board),
     movesPlayed: state.movesPlayed ?? 0,
     outcome: state.outcome ?? null,
+    result: state.result ?? null,
   };
   if (state.phase === "PLAYING") snapshot.yourTurn = state.turn === VIEWER_PLAYER;
   return snapshot;
@@ -194,7 +195,13 @@ export function makeRoomOperations({ storage, windowDefaultS = 45, windowMaxS = 
         if (seat === null) return finishInternal(tx, { ...state, board, movesPlayed }, nowIso());
 
         // The AI seat answers within this transaction when it holds the turn.
-        if (seat === AI_PLAYER) {
+        // Loop, because the viewer may have no reply after an AI move (pass):
+        // the AI then keeps playing until the viewer can reply or the match ends.
+        // Without the loop the turn would stick on white and freeze the room.
+        while (seat === AI_PLAYER) {
+          if (movesPlayed >= 80) {
+            return finishInternal(tx, { ...state, board, movesPlayed }, nowIso());
+          }
           const [ar, ac] = aiChooseMove(board, AI_PLAYER, legalMoves(board, AI_PLAYER));
           board = applyMove(board, AI_PLAYER, ar, ac);
           movesPlayed += 1;
