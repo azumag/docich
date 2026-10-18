@@ -737,9 +737,10 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
 
     # Compact summary that survives output pressure: even when the per-row
     # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
-    # visible (azumag/docich#970). The byte size is not a fixed cap: usually
-    # ~57B and up to ~217B when labels are long (labels are already bounded to
-    # 64 chars and sanitized by _cpu_profile_label).
+    # visible (azumag/docich#970). The byte size is not a fixed cap: in the
+    # synthetic fixture the value part is 57B usually (217B with long labels)
+    # for cpu_top and 75B usually (375B with long labels) for spawn_top; labels
+    # are already bounded to 64 chars and sanitized by _cpu_profile_label.
     cpu_top_parts = []
     for row in components[:3]:
         component = row.get("component")

@@ -524,10 +524,12 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   （`_cpu_profile_detail_drop`。latest結果は optional な CPU/audio 詳細より
   後に落とす優先順位）。omitted行数は `components_omitted`/`spawns_omitted`
   として累積し、既存 `components_truncated` は書き換えない。
-  一方で1行要約 `cpu_top`/`spawn_top`（上位3 components / 上位3 spawn経路。
-  通常 ~57B、`_cpu_profile_label` の64文字上限により最大 ~217B）は
-  この予算の全段階で削除対象外のため、lists が全削除されても上位消費と
-  spawn 経路は読める（azumag/docich#970）。
+  一方で1行要約はこの予算の全段階で削除対象外です: `cpu_top`（上位3
+  components＋others集計）と `spawn_top`（上位3 spawn経路）。合成fixtureでの
+  値部分は `cpu_top` が通常57B・長ラベル条件217B、`spawn_top` が通常75B・
+  長ラベル条件375B（JSONキー等の増分は別）。これらはpayload全体の本番上限
+  保証ではないため、lists が全削除されても上位消費と spawn 経路は読める
+  （azumag/docich#970）。
   縮めても収まらない場合の最終形は budget を超えるが、
   gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
   profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
