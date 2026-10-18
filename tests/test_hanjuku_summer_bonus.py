@@ -340,3 +340,65 @@ def test_unreadable_response_after_confirm_still_advances(monkeypatch):
     rec = state['_records'][-1]
     assert rec['decision'] == 'summer_bonus_message'
     assert '応答文は未読' in rec['reason']
+
+
+def _unreadable_choice_band_frame(*, question=None, unknown_prose=False, hand=True):
+    """The 8月 prompt with every choice label unreadable.
+
+    The choice band is still drawn (unknown tiles at 176/192/208) and the cursor
+    hand can still sit on the まとめて解雇 row, so the menu is still up even
+    though no label can be read.
+    """
+    c = Canvas((16, 72, 57))
+    c.text(8, 8, '5ねん8のつき7572G')
+    if question is not None:
+        c.text(24, 150, question)
+    if unknown_prose:
+        c.tile(24, 150, 0x0123456789ABCDEF)
+    for y in (176, 192, 208):
+        c.tile(176, y, 0x0123456789ABCDEF)
+    if hand:
+        c.hand(138, 202)          # まとめて解雇 row
+    return c.frame()
+
+
+def test_an_unreadable_choice_band_with_the_discharge_hand_is_not_a_result(monkeypatch):
+    """The prompt's own question is not the post-choice response.
+
+    A planned A is not evidence that the menu went away, and the prose band
+    holds the prompt's question as well as the response text, so reading that
+    band must not advance the episode while the choice band and its hand are
+    still on screen.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    assert state['policy']['summer_bonus_plan']['confirmation_planned'] is True
+    actions, state = decide(_unreadable_choice_band_frame(question='どちらにする'), state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_one_unknown_tile_in_the_prose_band_is_not_a_response(monkeypatch):
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    actions, state = decide(_unreadable_choice_band_frame(unknown_prose=True), state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_a_planned_confirmation_alone_does_not_advance_a_menu_we_cannot_read(monkeypatch):
+    """A single unread tile must not stand in for the response page.
+
+    No hand is detected here, but the choice band is still drawn: the menu
+    cannot be denied, so A is never sent.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    frame = _unreadable_choice_band_frame(question='どちらにする', hand=False)
+    assert parse(frame).hand is None
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'

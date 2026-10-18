@@ -352,6 +352,19 @@ def yes_no_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _summer_bonus_choice_band(screen: Screen) -> bool:
+    """True while the 8月 prompt's own choice band can still be on screen.
+
+    ``confirmation_planned`` only says A was sent; it is not evidence that the
+    menu went away. The band is denied by its own drawn rows (176-207, measured)
+    and by the choice cursor the prompt always shows: either one means the 3-choice
+    menu is still up, so an unread row (まとめて解雇 included) must not be confirmed.
+    """
+    if screen.hand is not None:
+        return True
+    return any(176 <= line.y <= 207 for line in screen.lines)
+
+
 def summer_bonus_continue(screen: Screen, mem):
     """Keep a known choice episode through partial text or cursor loss."""
     if screen.kind == 'summer_bonus':
@@ -378,23 +391,23 @@ def summer_bonus_continue(screen: Screen, mem):
             screen.kind = 'summer_bonus_message'
             _record(mem, 'summer_bonus_message', target=plan['target'],
                     reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
-        # If confirmation was planned (A was sent) and the menu is gone, check if
-        # this is a response screen (has dialogue content in PROSE_ROWS) or a
-        # menu with unreadable labels (no dialogue content). Only advance on
-        # response screens; for unreadable menus, return True to re-observe.
+        # A planned A is not evidence that the menu went away: the prompt's own
+        # question and a single unread tile both live in the prose band, so the
+        # band alone cannot distinguish the response page from the prompt. Only
+        # advance when the choice band itself is denied (see
+        # ``_summer_bonus_choice_band``): while the band or its hand can still be
+        # on screen, re-observe instead of confirming an unread choice.
         elif plan and plan.get('confirmation_planned') and not same_menu:
-            # Check for any content in the dialogue band (PROSE_ROWS 135-175).
-            # A response screen has text there; a menu with OCR failure does not.
+            band_gone = not _summer_bonus_choice_band(screen)
             has_dialogue_content = any(
                 line.y in PROSE_ROWS and (line.cells or line.spans())
-                for line in screen.lines
-            )
-            if has_dialogue_content:
+                for line in screen.lines)
+            if band_gone and has_dialogue_content:
                 screen.kind = 'summer_bonus_message'
                 _record(mem, 'summer_bonus_message', target=plan['target'],
-                        reason='夏イベントの選択確定後にメニューが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
+                        reason='夏イベントの選択確定後に選択肢帯とカーソルが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
             else:
-                return True  # Menu still present but labels unreadable; re-observe
+                return True  # the choice band cannot be denied; re-observe
         elif plan or old_choice:
             return True
     # A different recognized screen or the observed post-choice response ends
