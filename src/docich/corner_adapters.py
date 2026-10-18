@@ -476,6 +476,7 @@ class RetiredCornerObserver:
         "doushi": "doushi_corner.json",
         "puyo": "puyo_program.json",
         "mystery": "mystery_corner.json",
+        "lawsim": "lawsim_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -858,6 +859,51 @@ class MysteryCornerAdapter:
         return self.manager.resources_released()
 
 
+class LawSimCornerAdapter:
+    """Bounded 共産主義法律シミュレーター display through the shared slot.
+
+    Same shape as doushi minus speech: the narration/TTS chain is not wired for
+    this corner, so the adapter fails closed on ``audio_enabled`` (follow-up
+    card in docs/features/communist-law-simulator.md).
+    """
+
+    def __init__(self, g, corner):
+        from .lawsim_corner import DEFAULT_DURATION_MINUTES, LawSimCornerManager
+        from .lawsim_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("LawSim identity/safety contract mismatch")
+        if corner.audio_enabled is not False:
+            raise CornerExecutionError("LawSim corner does not support audio_enabled yet")
+        self.g, self.corner = g, corner
+        self.manager = LawSimCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -869,6 +915,7 @@ ADAPTERS = {
     "doushi": DoushiCornerAdapter,
     "puyo": PuyoCornerAdapter,
     "mystery": MysteryCornerAdapter,
+    "lawsim": LawSimCornerAdapter,
 }
 
 

@@ -204,6 +204,23 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 45):
                 raise CornerCatalogError("mystery duration_minutes must be an integer 1-45")
+        elif item.adapter == "lawsim":
+            # Auto-rotation-enabled 共産主義法律シミュレーター view (#697, 2026-10-18
+            # owner approval). Same shape as doushi minus speech: narration/TTS is
+            # not wired, so audio_enabled must stay false and weather-only
+            # settings are rejected.
+            if item.id != "communist-law-simulator" or item.game != "lawsim-view":
+                raise CornerCatalogError(
+                    "lawsim requires id=communist-law-simulator and game=lawsim-view"
+                )
+            if item.fetch_on_start or item.audio_enabled is not False:
+                raise CornerCatalogError(
+                    "lawsim accepts neither fetch_on_start nor audio_enabled (speech is not wired yet)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("lawsim duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

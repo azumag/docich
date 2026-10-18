@@ -1803,6 +1803,7 @@ CORNER_MANUAL_STATE_FILES = (
     "weather_corner", "tsuitate_corner", "yoso_corner",
     "doushi_corner", "mystery_corner",
     "puyo_program",
+    "lawsim_corner",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({
