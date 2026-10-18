@@ -55,7 +55,10 @@ MAX_COLORS = 4
 # --- bounded progress (fail-closed; no unbounded loop inside a tick) ---
 MAX_ACTIONS = 2048
 MAX_CHAIN_STEPS = (BOARD_ROWS * BOARD_COLS) // MIN_CONNECTION + 1
-MAX_PAIRS_PER_ROUND = BOARD_ROWS * BOARD_COLS // PIECE_SIZE + 8
+# 4x the raw cell capacity: a chaining match legitimately places far more
+# pairs than an empty board holds; the action budget still hard-bounds any
+# runaway tick loop.
+MAX_PAIRS_PER_ROUND = 4 * BOARD_ROWS * BOARD_COLS // PIECE_SIZE
 
 PHASES = ("IDLE", "MATCH", "ROUND_OVER", "END", "FAILED", "TIMEOUT")
 PHASE_SET = frozenset(PHASES)
@@ -970,3 +973,199 @@ def with_lock(directory: Any, fn, *args, **kwargs):
             return fn(*args, **kwargs)
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# bounded AI brain + self-play match runtime (offline; no chat, no VM)
+# ---------------------------------------------------------------------------
+
+# Follow-up slice agreed in the approved 2026-10-18 thread: overlay /
+# progression / match runtime / AI brain. These helpers stay offline: the
+# brain plans with the same engine primitives the live corner would use, the
+# runtime only drives this module's state machine, and the overlay draft is a
+# pure presentation helper (the 960x540 view / TTS wiring is explicit follow-up
+# work, see the design doc).
+
+MAX_PLAN_ROTATIONS = 3
+MAX_PLAN_MOVES = BOARD_COLS - 1
+MAX_PLANS_PER_DECISION = 4 * BOARD_COLS * 2
+MAX_SELFPLAY_TICKS = 1600
+MAX_OVERLAY_SECTIONS = 12
+MAX_PLAN_ACTIONS = MAX_PLAN_ROTATIONS + MAX_PLAN_MOVES + 1
+
+# Board-shape evaluation weights for the bounded brain (heights, holes,
+# bumpiness). Chain/all-clear scores come from the engine's own tables.
+HEIGHT_WEIGHT = 4
+MAX_HEIGHT_WEIGHT = 6
+HOLE_WEIGHT = 3
+BUMPINESS_WEIGHT = 2
+
+
+def _column_heights(board: list[list[str | None]]) -> list[int]:
+    heights: list[int] = []
+    for x in range(BOARD_COLS):
+        height = 0
+        for y in range(BOARD_ROWS):
+            if board[y][x] is not None:
+                height = BOARD_ROWS - y
+                break
+        heights.append(height)
+    return heights
+
+
+def _evaluate_board(board: list[list[str | None]], chain_score: int,
+                    all_clear: bool) -> int:
+    """Bounded board-shape evaluation on top of the engine's chain score."""
+    heights = _column_heights(board)
+    height_sum = sum(heights)
+    max_height = max(heights) if heights else 0
+    bumpiness = sum(abs(a - b) for a, b in zip(heights, heights[1:]))
+    holes = 0
+    for x in range(BOARD_COLS):
+        seen = False
+        for y in range(BOARD_ROWS):
+            if board[y][x] is not None:
+                seen = True
+            elif seen:
+                holes += 1
+    value = chain_score + (ALL_CLEAR_BONUS if all_clear else 0)
+    value -= HEIGHT_WEIGHT * height_sum + MAX_HEIGHT_WEIGHT * max_height
+    value -= HOLE_WEIGHT * holes + BUMPINESS_WEIGHT * bumpiness
+    return value
+
+
+def _plan_scripts(x0: int) -> list[list[str]]:
+    """All bounded candidate scripts: rotations x target column x hard drop."""
+    scripts: list[list[str]] = []
+    for rotations in range(MAX_PLAN_ROTATIONS + 1):
+        for target_col in range(BOARD_COLS):
+            script = ["rotate_cw"] * rotations
+            if target_col > x0:
+                script += ["right"] * (target_col - x0)
+            elif target_col < x0:
+                script += ["left"] * (x0 - target_col)
+            script.append("hard_drop")
+            scripts.append(script)
+    if len(scripts) > MAX_PLANS_PER_DECISION:
+        raise PuyoCornerError("plan candidates exceed the budget", "plan_budget")
+    return scripts
+
+
+def _simulate_plan(state: dict, side: str, script: Sequence[str]) -> int:
+    """Score one candidate script with the engine itself (never mutates state)."""
+    sim = dict(state)
+    board = copy_board(state[f"{side}_board"])
+    pair = dict(state[f"{side}_pair"])
+    sim[f"{side}_board"] = board
+    sim[f"{side}_pair"] = pair
+    sim["actions"] = 0
+    try:
+        for action in script:
+            apply_action(sim, side, action)
+        cells = pair_cells(pair)
+        trial = copy_board(board)
+        _lock_pair(trial, pair, cells)
+    except PuyoCornerError:
+        return -(10 ** 9)
+    _, _, score, all_clear = _resolve_chain(
+        trial, _dict(state["ruleset"], "ruleset"))
+    return _evaluate_board(trial, score, all_clear)
+
+
+def plan_actions(state: Any, side: str) -> list[str]:
+    """Bounded offline brain: the best engine-verified script for one pair.
+
+    Enumerates at most ``MAX_PLANS_PER_DECISION`` scripts (rotations x target
+    column, then a hard drop), plays each through the real engine on a copy,
+    and returns the highest-evaluated plan. Deterministic; never mutates state.
+    """
+    state = _dict(state, "state")
+    side = _side(side)
+    if state.get("phase") != "MATCH":
+        return []
+    pair = state.get(f"{side}_pair")
+    if pair is None:
+        return []
+    cells = pair_cells(pair)
+    scripts = _plan_scripts(cells[0][0])
+    best_key = None
+    best_script: list[str] = ["hard_drop"]
+    for script in scripts:
+        value = _simulate_plan(state, side, script)
+        # Prefer the better evaluation, then the shorter script.
+        key = (value, -len(script))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_script = script
+    return best_script
+
+
+def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
+    """Drive both sides with the bounded brain until the round ends.
+
+    Offline self-play only: no chat input, no adapter, no GameSwitch, no VM.
+    The engine's own bounded budgets stay authoritative; exhausting the
+    action/pair budget fails the round closed instead of looping forever.
+    """
+    state = _dict(state, "state")
+    steps = 0
+    max_steps = _int(max_steps, "max_steps", lo=1, hi=MAX_SELFPLAY_TICKS)
+    while state.get("phase") == "MATCH" and steps < max_steps:
+        steps += 1
+        for side in SIDES:
+            if state.get("phase") != "MATCH":
+                break
+            try:
+                for action in plan_actions(state, side):
+                    apply_action(state, side, action)
+                tick(state)
+            except PuyoCornerError as exc:
+                if exc.code not in ("action_budget", "pair_budget", "plan_budget"):
+                    raise
+                # The live corner runs matches inside a fixed display window,
+                # so a self-play that exhausts its budget ends the round the
+                # same way: a bounded TIMEOUT judged by the overlay scores.
+                state["failure_reason"] = f"selfplay budget exhausted: {exc.code}"
+                timeout(state)
+                break
+    return state
+
+
+def overlay_draft(state: Any) -> dict:
+    """Bounded draft of the corner overlay sections from an offline state.
+
+    Pure presentation-draft helper for Issue #698: the live overlay renderer
+    (960x540 synthetic view, fonts, TTS) is a separate, explicitly enabled
+    step and consumes this shape afterward.
+    """
+    state = _dict(state, "state")
+    sections: list[dict[str, str]] = [
+        {"key": "phase", "label": "phase", "text": str(state.get("phase"))},
+    ]
+    for side in SIDES:
+        label = "player" if side == "user" else "cpu"
+        sections.append({
+            "key": f"{side}_board",
+            "label": label,
+            "text": render_board(state.get(f"{side}_board") or empty_board(),
+                                 marker="."),
+        })
+        sections.append({
+            "key": f"{side}_score",
+            "label": label,
+            "text": str(_int(state.get(f"{side}_score", 0),
+                             f"{side}_score", lo=0, hi=10 ** 9)),
+        })
+        sections.append({
+            "key": f"{side}_chain",
+            "label": label,
+            "text": str(state.get(f"{side}_chain", 0)),
+        })
+    winner = state.get("winner")
+    if winner:
+        sections.append({"key": "winner", "label": "result", "text": str(winner)})
+    return {
+        "title": "ぷよぷよクローン",
+        "phase": str(state.get("phase")),
+        "sections": sections[:MAX_OVERLAY_SECTIONS],
+    }

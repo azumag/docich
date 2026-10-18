@@ -95,3 +95,26 @@ all-clear bonus. MAX_ACTIONS, MAX_PAIRS_PER_ROUND and MAX_CHAIN_STEPS bound
 any tick, so runaway loops fail closed with an explicit budget code. A locked
 pair with no room for its refill ends the round: the surviving side wins and
 both sides topping out is a draw.
+
+## Match runtime + AI brain + overlay draft (follow-up slice 1, PR-3)
+
+Agreed in the owner-approved thread (2026-10-18): PR #2485 stays the input
+contract; follow-ups implement overlay / progression / match runtime / AI
+brain / ネット対戦 / 本番起動. This slice adds, still fully offline:
+
+* `plan_actions(state, side)` — bounded offline brain. Enumerates at most
+  ``MAX_PLANS_PER_DECISION`` scripts (<= 3 rotations x 6 target columns x
+  hard drop), plays every candidate through the real engine on a copy, and
+  picks the highest evaluation (engine chain/all-clear score minus bounded
+  height / hole / bumpiness penalties). Deterministic; never mutates state.
+* `play_match(state)` — offline self-play driver. Applies the brain's script
+  for each side, then ticks. The engine budgets remain authoritative: the
+  action/pair budgets end a runaway round as a bounded TIMEOUT (the same way
+  the live corner's fixed display window would end it), never an infinite
+  loop. A top-out ends the round with a winner; reset clears the board.
+* `overlay_draft(state)` — bounded pure draft of the overlay sections
+  (phase, both boards, scores, chains, winner). The 960x540 synthetic view /
+  TTS / GameSwitch wiring consumes this shape in a later, explicitly enabled
+  step.
+
+No chat input, no adapter, no catalog change and no VM touched in this slice.

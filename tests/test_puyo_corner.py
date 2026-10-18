@@ -475,3 +475,132 @@ def test_corrupt_state_file_returns_fresh(tmp_path):
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("{not json")
     assert pc.load_state(corrupt)["phase"] == "IDLE"
+
+
+# ---------------------------------------------------------------------------
+# match runtime + AI brain + overlay draft (offline follow-up slice)
+# ---------------------------------------------------------------------------
+
+
+def make_pair(axis="red", satellite="red", col=2):
+    return {
+        "axis": axis,
+        "axis_pos": [col, 0],
+        "satellite": satellite,
+        "satellite_pos": [col + 1, 0],
+        "spawned_at": "2026-10-18T01:00:00+00:00",
+        "spawn_digest": ":".join((axis, satellite)),
+    }
+
+
+def test_plan_actions_is_bounded_and_engine_verified():
+    st = seeded_state(seed=3)
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    plan = pc.plan_actions(st, "user")
+    assert plan, "a live pair always yields a plan"
+    assert len(plan) <= pc.MAX_PLAN_ACTIONS
+    assert all(action in pc.ACTIONS for action in plan)
+    assert plan[-1] == "hard_drop"
+    assert plan == pc.plan_actions(st, "user")  # deterministic
+    # graceful no-plan outside MATCH or without a live pair
+    assert pc.plan_actions(seeded_state(), "user") == []
+    st["user_pair"] = None
+    assert pc.plan_actions(st, "user") == []
+
+
+def test_plan_actions_finds_a_scoring_chain():
+    st = seeded_state(seed=3)
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    st["user_board"] = pc.empty_board()
+    for x in (0, 1, 2):
+        st["user_board"][11][x] = "red"
+    st["user_pair"] = make_pair("red", "red", col=4)
+    plan = pc.plan_actions(st, "user")
+    for action in plan:
+        pc.apply_action(st, "user", action)
+    pc.tick(st, now="2026-10-18T01:00:01+00:00")
+    assert st["user_chain"] >= 1
+    assert st["user_score"] > 0
+
+
+def test_play_match_top_out_ends_with_a_winner():
+    st = seeded_state(seed=7)  # this self-play reaches a top-out
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    pc.play_match(st)
+    assert st["phase"] == "ROUND_OVER"
+    assert st["winner"] in ("user", "ai")
+    pc.finish(st, now="2026-10-18T01:00:09+00:00")
+    assert st["outcome"] in ("user_win", "ai_win")
+    assert any(r.get("reason") == "top_out" for r in st["round_results"])
+    pc.reset(st)
+    assert st["phase"] == "IDLE"
+    assert pc.blocks_left(st["user_board"]) == 0
+
+
+def test_play_match_timeout_ends_bounded():
+    st = seeded_state(seed=11)  # this self-play exhausts the pair budget
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    pc.play_match(st)
+    assert st["phase"] == "TIMEOUT" and st["outcome"] == "timeout"
+    assert "budget" in st["failure_reason"]
+    pc.reset(st)
+    assert st["phase"] == "IDLE"
+
+
+def test_play_match_is_deterministic():
+    def play():
+        st = seeded_state(seed=7)
+        pc.start(st, now="2026-10-18T01:00:00+00:00")
+        pc.play_match(st)
+        pc.finish(st, now="2026-10-18T01:00:09+00:00")
+        return st
+
+    a, b = play(), play()
+    strip = lambda s: {k: s[k] for k in (
+        "frames", "actions", "pairs_spawned", "winner", "outcome",
+        "user_score", "ai_score", "rng")}
+    assert strip(a) == strip(b)
+    assert a["user_board"] == b["user_board"] and a["ai_board"] == b["ai_board"]
+
+
+def test_play_match_budget_exhaustion_times_out_closed():
+    st = seeded_state(seed=5)
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    st["pairs_spawned"] = pc.MAX_PAIRS_PER_ROUND
+    pc.play_match(st)
+    assert st["phase"] == "TIMEOUT"
+    assert st["outcome"] == "timeout"
+    assert "budget" in st["failure_reason"]
+
+
+def test_play_match_respects_max_steps():
+    st = seeded_state(seed=5)
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    pc.play_match(st, max_steps=1)
+    assert st["phase"] in ("MATCH", "ROUND_OVER")
+    with pytest.raises(pc.PuyoCornerError):
+        pc.play_match(st, max_steps=0)
+
+
+def test_overlay_draft_is_bounded_and_pure():
+    st = seeded_state()
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    pc.tick(st, now="2026-10-18T01:00:01+00:00")
+    draft = pc.overlay_draft(st)
+    assert draft["title"] == "ぷよぷよクローン"
+    assert draft["phase"] == "MATCH"
+    keys = [section["key"] for section in draft["sections"]]
+    assert len(draft["sections"]) <= pc.MAX_OVERLAY_SECTIONS
+    assert keys[:7] == [
+        "phase", "user_board", "user_score", "user_chain",
+        "ai_board", "ai_score", "ai_chain",
+    ]
+    user_board = next(s for s in draft["sections"] if s["key"] == "user_board")
+    assert len(user_board["text"].splitlines()) == pc.BOARD_ROWS
+    # pure: drafting never advances the match
+    assert pc.overlay_draft(st) == draft
+    pc.timeout(st, now="2026-10-18T01:00:02+00:00")
+    assert pc.overlay_draft(st)["sections"][-1]["key"] != "winner"
+    win = seeded_state()
+    win["winner"] = "user"
+    assert pc.overlay_draft(win)["sections"][-1]["text"] == "user"
