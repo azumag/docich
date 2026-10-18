@@ -1,0 +1,14 @@
+# docich othello MVP Worker (Issue #699). Local configuration only until the
+# mirrored deploy path of the tsuitate bot is approved; nothing here deploys.
+name = "docich-othello-bot"
+main = "src/worker.js"
+compatibility_date = "2026-09-08"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "OTHELLO_ROOM"
+class_name = "OthelloRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OthelloRoom"]
