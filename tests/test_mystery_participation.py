@@ -74,6 +74,33 @@ def test_record_vote_bounds_participants():
         record_vote(votes, order, "overflow-user", 0)
 
 
+def test_record_vote_rejection_leaves_state_byte_identical():
+    """Over-limit rejection must not mutate anything (the trpg core's
+    post-write check let an ignored newcomer's vote linger and even score —
+    owner-verified 2026-10-18; this port checks before any write)."""
+    votes, order = {}, {}
+    for i in range(MAX_PARTICIPANTS):
+        record_vote(votes, order, f"u{i}", i % 3)
+    before = (json.dumps(votes, sort_keys=True), json.dumps(order, sort_keys=True))
+    with pytest.raises(ParticipationError):
+        record_vote(votes, order, "overflow-user", 2)
+    after = (json.dumps(votes, sort_keys=True), json.dumps(order, sort_keys=True))
+    assert before == after
+
+
+def test_existing_participant_can_resubmit_at_the_limit():
+    votes, order = {}, {}
+    for i in range(MAX_PARTICIPANTS):
+        record_vote(votes, order, f"u{i}", i % 3)
+    # An existing participant at the limit may move their vote (last wins).
+    record_vote(votes, order, "u0", 2)
+    assert order["u0"] == choice_key(2)
+    assert "u0" not in votes.get(choice_key(0), [])
+    assert "u0" in votes[choice_key(2)]
+    # Their move is counted once.
+    assert votes[choice_key(2)].count("u0") == 1
+
+
 def test_winner_is_plurality_with_lowest_index_tiebreak():
     assert winner([3, 5, 5]) == 1  # tie → lowest index
     assert winner([0, 0, 0]) is None  # no votes → solo detective takes over
