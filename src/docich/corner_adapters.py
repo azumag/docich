@@ -474,6 +474,7 @@ class RetiredCornerObserver:
         "tsuitate": "tsuitate_corner.json",
         "yoso": "yoso_corner.json",
         "doushi": "doushi_corner.json",
+        "puyo": "puyo_program.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -767,6 +768,49 @@ class DoushiCornerAdapter:
         return self.manager.resources_released()
 
 
+class PuyoCornerAdapter:
+    """Bounded ぷよぷよクローン self-play view through the shared slot.
+
+    Read-only display of one played offline match (Issue #698, default
+    disabled and manual_only). No audio, no fetch and no live_eligible run.
+    """
+
+    def __init__(self, g, corner):
+        from .puyo_program import DEFAULT_DURATION_MINUTES, PuyoProgramManager
+        from .puyo_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Puyo identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = PuyoProgramManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -776,6 +820,7 @@ ADAPTERS = {
     "tsuitate": TsuitateCornerAdapter,
     "yoso": YosoCornerAdapter,
     "doushi": DoushiCornerAdapter,
+    "puyo": PuyoCornerAdapter,
 }
 
 

@@ -141,7 +141,7 @@ def test_production_catalog_enables_doushi_card_in_auto_rotation():
     # 抽選対象へ入れる（manual_only なし = 自動抽選に参加する）。
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
-    assert len(catalog) == 13
+    assert len(catalog) == 14
     row = next(c for c in catalog if c.id == "doushi-card")
     assert (row.adapter, row.game) == ("doushi", VIEW_NAME)
     assert row.enabled is True and row.manual_only is False
