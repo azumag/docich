@@ -735,6 +735,26 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    # Compact summary that survives output pressure: even when the per-row
+    # lists are trimmed to nothing, the top CPU consumers stay visible
+    # (azumag/docich#970). Kept under ~100 bytes.
+    cpu_top_parts = []
+    for row in components[:3]:
+        component = row.get("component")
+        pct = row.get("cpu_pct")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            cpu_top_parts.append(f"{component} {pct:.0f}%")
+        else:
+            cpu_top_parts.append(str(component))
+    cpu_top = " | ".join(cpu_top_parts)
+    if len(components) > 3:
+        other = 0.0
+        for row in components[3:]:
+            pct = row.get("cpu_pct")
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                other += pct
+        cpu_top = (cpu_top + f" | other {other:.0f}%") if cpu_top else f"other {other:.0f}%"
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -747,6 +767,7 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "components_truncated": max(len(raw_components) - len(components), 0)
             if isinstance(raw_components, list) else 0,
         "spawns": spawns,
+        "cpu_top": cpu_top,
     }
 
 
