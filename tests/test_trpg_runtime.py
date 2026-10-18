@@ -7,6 +7,8 @@ import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import Mock
+from types import SimpleNamespace
+from urllib.request import urlopen
 import threading
 import time
 import uuid
@@ -143,7 +145,10 @@ def test_factory_preflight_and_identity_readiness(setup, monkeypatch):
     g, spec = setup
     adapter = make_coordinator_adapter(g, spec)
     monkeypatch.setattr(program.ProgramViewAdapter, 'preflight', lambda *_: None)
+    monkeypatch.setattr(program.ProgramViewAdapter, 'materialize_runtime', lambda *_: None)
     adapter.preflight(time.monotonic() + 2, None)
+    assert not (spec.runtime_dir / session.SESSION_FILE).exists()
+    adapter.materialize_runtime(time.monotonic() + 2, None)
     assert '--session-file' in adapter._game_command()
     # Actual local HTTP responses and the real readiness parser. Only the
     # process/X boundary is stubbed; no GUI or game process is started.
@@ -183,11 +188,24 @@ def test_readiness_rejects_foreign_identity_even_with_http_200(setup, monkeypatc
         make_coordinator_adapter(g, spec).readiness(time.monotonic() + .03, None)
 
 
+@pytest.mark.parametrize('field,value', [('runtime_id', 'foreign'), ('generation', 99),
+                                        ('lease_id', '11111111-1111-4111-8111-111111111111')])
+def test_view_launch_binding_does_not_allow_unproven_header_changes(setup, field, value):
+    g, spec = setup
+    data = session.prepare(g, spec)
+    data[field] = value
+    path = spec.runtime_dir / session.SESSION_FILE
+    path.write_text(json.dumps(data))
+    with pytest.raises(core.TrpgCornerError, match='identity'):
+        session.load(path, session.identity(spec), view=True)
+
+
 def test_chat_cursor_partial_oversize_and_retained_rotation(setup, monkeypatch):
     g, spec = setup
     monkeypatch.setattr(narration, 'publish', Mock())
     session.prepare(g, spec, now=0)
     path, expected = spec.runtime_dir / session.SESSION_FILE, session.identity(spec)
+    session.tick(g, path, expected, now=0)
     session.tick(g, path, expected, now=3)
     chat = session.chat_path(g)
     line = json.dumps({'user_id': 'u1', 'text': '!2'})
@@ -213,6 +231,267 @@ def test_chat_cursor_partial_oversize_and_retained_rotation(setup, monkeypatch):
     chat.write_text(line + '\n')
     session.tick(g, path, expected, now=10)
     assert session.load(path, expected)['state']['vote_order'] == {'u1': '1'}
+
+
+def append_chat(g, user, text, *, newline=True):
+    with session.chat_path(g).open('a') as stream:
+        stream.write(json.dumps({'user_id': user, 'text': text}) + ('\n' if newline else ''))
+
+
+def test_activation_and_choice_open_exclude_preexisting_and_partial_ballots(setup, monkeypatch):
+    g, spec = setup
+    publishing = Mock()
+    monkeypatch.setattr(narration, 'publish', publishing)
+    session.prepare(g, spec, now=0)
+    path, expected = spec.runtime_dir / session.SESSION_FILE, session.identity(spec)
+    append_chat(g, 'precommit', '!2')
+    assert session.load(path, expected)['state']['phase'] == 'IDLE'
+    assert session.public(session.load(path, expected), now=100)['phase'] == 'IDLE'
+    publishing.assert_not_called()
+    session.tick(g, path, expected, now=100)
+    data = session.load(path, expected)
+    assert data['phase_at'] == data['activated_at'] == 100
+    assert data['state']['phase'] == 'SCENE'
+    assert [call.kwargs['kind'] for call in publishing.call_args_list] == ['intro', 'scene']
+    append_chat(g, 'before-choice', '!2')
+    append_chat(g, 'partial-before-choice', '!2', newline=False)
+    session.tick(g, path, expected, now=103)
+    with session.chat_path(g).open('a') as stream:
+        stream.write('\n')
+    append_chat(g, 'valid', '!1')
+    session.tick(g, path, expected, now=104)
+    session.tick(g, path, expected, now=105)
+    assert session.load(path, expected)['state']['vote_order'] == {'valid': '1'}
+
+
+@pytest.mark.parametrize('phase,command,next_phase', [
+    ('CHOICE', '!2', 'RESOLVE'), ('CLIMAX', '!accuse B', 'REVEAL')])
+def test_ballot_closing_drains_frozen_boundary_before_tally(setup, monkeypatch, phase, command, next_phase):
+    g, spec = setup
+    monkeypatch.setattr(narration, 'publish', Mock())
+    session.prepare(g, spec)
+    path, expected = spec.runtime_dir / session.SESSION_FILE, session.identity(spec)
+    for now in (0, 3):
+        session.tick(g, path, expected, now=now)
+    opened, closes = (3, 63) if phase == 'CHOICE' else (66, 186)
+    if phase == 'CLIMAX':
+        session.tick(g, path, expected, now=63)
+        append_chat(g, 'before-climax', command)
+        session.tick(g, path, expected, now=66)
+    session.tick(g, path, expected, now=closes-1)
+    # More than one bounded poll, all written before the closing observation.
+    users = {f'u{i}' for i in range(session.MAX_LINES + 2)}
+    for user in sorted(users):
+        append_chat(g, user, command)
+    session.tick(g, path, expected, now=closes)
+    data = session.load(path, expected)
+    assert data['state']['phase'] == phase and data['phase_at'] == opened
+    boundary = data['closing']
+    append_chat(g, 'after-close', command)
+    session.tick(g, path, expected, now=closes+.1)
+    data = session.load(path, expected)
+    assert data['state']['phase'] == next_phase and 'closing' not in data
+    accepted = data['state']['vote_order'] if phase == 'CHOICE' else data['state']['accusations']
+    assert set(accepted) == users
+    assert data['cursor']['offset'] == boundary['offset']
+    session.tick(g, path, expected, now=closes+1)
+    data = session.load(path, expected)
+    accepted = data['state']['vote_order'] if phase == 'CHOICE' else data['state']['accusations']
+    assert set(accepted) == users
+
+
+def test_last_ballot_before_deadline_is_counted_and_unterminated_tail_is_not(setup, monkeypatch):
+    g, spec = setup
+    monkeypatch.setattr(narration, 'publish', Mock())
+    session.prepare(g, spec)
+    path, expected = spec.runtime_dir / session.SESSION_FILE, session.identity(spec)
+    for now in (0, 3, 62):
+        session.tick(g, path, expected, now=now)
+    append_chat(g, 'last', '!2')
+    append_chat(g, 'unfinished', '!1', newline=False)
+    session.tick(g, path, expected, now=63)
+    data = session.load(path, expected)
+    assert data['state']['phase'] == 'RESOLVE'
+    assert data['state']['vote_order'] == {'last': '2'}
+
+
+@pytest.fixture
+def real_trpg_coordinator(setup, monkeypatch):
+    """Real coordinator/adapter/HTTP; only OS processes and target faults are fake."""
+    from docich.game_switch import GameSwitchCoordinator, GameSwitchStore, StepTimeouts
+    from docich.tmux import TmuxOwnership
+    g, _ = setup
+    helper_path = Path(__file__).with_name('test_puyo_program.py')
+    module_spec = importlib.util.spec_from_file_location('trpg_rollback_processes', helper_path)
+    helpers = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(helpers)
+    processes, adapters, preflights = {}, {}, []
+    fixture = SimpleNamespace(g=g, fault=None, now=0)
+
+    class FakeTmux:
+        def __init__(self, spec): self.spec = spec
+        def session_target_exists(self, *_):
+            return processes.get(self.spec.runtime_id, {}).get('live', False)
+        def window_target_exists(self, *_): return False
+        def read_session_ownership(self, *_):
+            return TmuxOwnership(self.spec.runtime_id, self.spec.generation, 'adapter')
+
+    def close(runtime_id):
+        process = processes.get(runtime_id)
+        if process and process['live']:
+            process['live'] = False
+            process['server'].shutdown()
+            process['server'].server_close()
+            process['thread'].join(2)
+
+    def materialize(adapter, *_):
+        spec = adapter.spec
+        server = ThreadingHTTPServer(('127.0.0.1', 0), trpg_view.handler_for(
+            spec.runtime_id, generation=spec.generation, lease_id=spec.lease_id,
+            session_file=spec.runtime_dir / session.SESSION_FILE))
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01})
+        processes[spec.runtime_id] = {'live': True, 'server': server, 'thread': worker}
+        adapter.dashboard_port = server.server_port
+        worker.start()
+
+    def fail(*_): raise RuntimeError('synthetic target failure')
+
+    def factory(spec):
+        key = (spec.runtime_id, spec.lease_id)
+        if key not in adapters:
+            if spec.game == 'trpg-view':
+                adapter = make_coordinator_adapter(g, spec)
+                adapter.tmux = FakeTmux(spec)
+                adapter.cleanup_runtime = lambda *_: close(spec.runtime_id)
+                if spec.runtime_id in processes:
+                    adapter.dashboard_port = processes[spec.runtime_id]['server'].server_port
+            else:
+                adapter = helpers.FakeRuntimeAdapter(spec)
+                if spec.game == 'broken-target':
+                    if fixture.fault == 'live': adapter.preflight = fail
+                    else: adapter.materialize_runtime = fail
+            adapters[key] = adapter
+        return adapters[key]
+
+    monkeypatch.setattr(program.ProgramViewAdapter, 'preflight',
+                        lambda adapter, *_: preflights.append(adapter.spec.runtime_id))
+    monkeypatch.setattr(program.ProgramViewAdapter, 'materialize_runtime', materialize)
+    monkeypatch.setattr(CliCoordinatorAdapter, 'readiness', lambda *_: None)
+    monkeypatch.setattr(narration, 'publish', Mock())
+    fixture.store = GameSwitchStore(g.state_dir)
+    fixture.switch = GameSwitchCoordinator(fixture.store, factory, default_timeout_s=3,
+        rollback_timeout_s=2, quiesce_verify_timeout_s=.2, poll_interval_s=.01,
+        step_timeouts=StepTimeouts(preflight_s=.5, stop_agent_s=.5, start_s=.5,
+                                  agent_start_s=.5, cleanup_s=.5, probe_s=.2))
+    fixture.preflights, fixture.adapters = preflights, adapters
+    try:
+        yield fixture
+    finally:
+        for runtime_id in processes: close(runtime_id)
+
+
+class PauseManager(Exception):
+    pass
+
+
+def pause_manager(_):
+    raise PauseManager
+
+
+def test_committed_manager_activates_after_delayed_readiness(real_trpg_coordinator):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    g, switch = fixture.g, fixture.switch
+    def delayed_commit(_):
+        # Logical time spent between materialization and the post-commit hook.
+        fixture.now = 100
+        append_chat(g, 'before-activation', '!2')
+    switch.post_commit = delayed_commit
+    manager = TrpgProgramManager(g, coordinator=switch, clock=lambda: fixture.now, sleep=pause_manager)
+    state = manager._new_state(str(uuid.uuid4()))
+    assert manager._dispatch_start(state) is None
+    active = state['trpg_program_runtime_identity']
+    path = g.state_dir / 'runtimes' / active['runtime_id'] / session.SESSION_FILE
+    assert session.load(path, active)['state']['phase'] == 'IDLE'
+    narration.publish.assert_not_called()
+    with pytest.raises(PauseManager):
+        manager._wait_and_restore(state)
+    data = session.load(path, active)
+    assert data['phase_at'] == data['activated_at'] == 100
+    assert data['state']['phase'] == 'SCENE' and data['state']['vote_order'] == {}
+    assert [call.kwargs['kind'] for call in narration.publish.call_args_list] == ['intro', 'scene']
+
+
+@pytest.mark.parametrize('mode', ['live', 'fresh'])
+def test_real_rollback_preserves_session_and_manager_rebinds_identity(real_trpg_coordinator, mode):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    g, switch, store = fixture.g, fixture.switch, fixture.store
+    manager = TrpgProgramManager(g, coordinator=switch, clock=lambda: fixture.now, sleep=pause_manager)
+    state = manager._new_state(str(uuid.uuid4()))
+    assert manager._dispatch_start(state) is None
+    lifetime = (state['started_at'], state['ends_at'])
+    source = state['trpg_program_runtime_identity']
+    path = g.state_dir / 'runtimes' / source['runtime_id'] / session.SESSION_FILE
+    for now in (0, 3):
+        session.tick(g, path, source, now=now, owner_request_id=state['rotation_request_id'])
+    append_chat(g, 'existing-voter', '!2')
+    session.tick(g, path, source, now=4)
+    before = session.load(path, source)
+    fixture.fault = mode
+    result = switch.switch('broken-target')
+    canonical = store.canonical.load()[0]
+    assert result.status == 'rolled_back' and result.error_code != 'rollback_failed'
+    assert canonical['phase'] == 'ready'
+    active = {key: canonical['active'][key] for key in session.IDENTITY_KEYS}
+    assert active['lease_id'] != source['lease_id']
+    assert (active['runtime_id'] == source['runtime_id']) is (mode == 'live')
+    assert len(fixture.preflights) == 1  # restore never calls preflight
+    restored_path = g.state_dir / 'runtimes' / active['runtime_id'] / session.SESSION_FILE
+    after = session.load(restored_path, active)
+    for key in ('state', 'scenario', 'phase_at', 'activated_at', 'cursor', 'announced',
+                'intro_sent', 'recorded', 'owner_request_id'):
+        assert after[key] == before[key]
+    adapter = fixture.adapters[(active['runtime_id'], active['lease_id'])]
+    with urlopen(f'http://127.0.0.1:{adapter.dashboard_port}/api/trpg') as response:
+        projected = json.load(response)
+    assert all(projected[key] == active[key] for key in session.IDENTITY_KEYS)
+    assert projected['phase'] == 'CHOICE' and projected['votes']['2'] == 1
+    fixture.now = 5
+    with pytest.raises(PauseManager):
+        manager._wait_and_restore(state)
+    assert state['status'] == 'active' and state['trpg_program_runtime_identity'] == active
+    assert (state['started_at'], state['ends_at']) == lifetime
+    assert manager._adopt_rollback(state, canonical, {**source, 'lease_id': 'foreign'}) is None
+    assert manager._adopt_rollback({**state, 'rotation_request_id': str(uuid.uuid4())}, canonical, source) is None
+    # A stop immediately after another rollback must also adopt before restoring.
+    result = switch.switch('broken-target')
+    assert result.status == 'rolled_back'
+    assert manager._restore(state, end_reason='manual') == 'completed'
+    assert store.canonical.load()[0]['phase'] == 'idle'
+    ledger = core.load_ledger(g.state_dir / 'trpg' / core.LEDGER_FILE)
+    assert len(ledger['entries']) == 1 and ledger['entries'][0]['outcome'] == 'aborted'
+
+
+def test_failed_live_rollback_can_retry_with_old_canonical_lease(real_trpg_coordinator, monkeypatch):
+    fixture = real_trpg_coordinator
+    assert fixture.switch.start('trpg-view').status == 'succeeded'
+    source = fixture.store.canonical.load()[0]['active']
+    fixture.fault = 'live'
+    with monkeypatch.context() as fault:
+        def fail(*_): raise ReadinessTimeoutError('synthetic process readiness failure')
+        fault.setattr(CliCoordinatorAdapter, 'readiness', fail)
+        result = fixture.switch.switch('broken-target')
+    assert result.status == 'failed' and result.error_code == 'rollback_failed'
+    failed = fixture.store.canonical.load()[0]
+    assert failed['phase'] == 'failed' and failed['previous']['lease_id'] == source['lease_id']
+    fixture.switch.recover()
+    canonical = fixture.store.canonical.load()[0]
+    assert canonical['phase'] == 'ready' and canonical['last_result']['status'] == 'rolled_back'
+    active = {key: canonical['active'][key] for key in session.IDENTITY_KEYS}
+    assert active['runtime_id'] == source['runtime_id'] and active['lease_id'] != source['lease_id']
+    path = fixture.g.state_dir / 'runtimes' / active['runtime_id'] / session.SESSION_FILE
+    assert session.load(path, active)['state']['phase'] == 'IDLE'
 
 
 def test_webui_start_schedule_stop_and_state_projection(setup, monkeypatch):

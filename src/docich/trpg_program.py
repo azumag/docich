@@ -124,12 +124,33 @@ class TrpgProgramManager:
         except (OSError, ValueError, TypeError, RuntimeError):
             return False
 
-    def _session_tick(self, identity, *, stop_reason=None):
+    def _session_tick(self, identity, *, stop_reason=None, request_id=None):
         from .naming import runtime_directory
         from .trpg_session import SESSION_FILE, tick
         path = runtime_directory(self.g.state_dir, identity["runtime_id"]) / SESSION_FILE
         return tick(self.g, path, identity, audio_enabled=self.audio_enabled,
-                    now=self.clock(), stop_reason=stop_reason)
+                    now=self.clock(), stop_reason=stop_reason, owner_request_id=request_id)
+
+    def _adopt_rollback(self, state, canonical, previous):
+        from .naming import runtime_directory
+        from .trpg_session import SESSION_FILE, load
+        if (canonical.get("last_result") or {}).get("status") != "rolled_back":
+            return None
+        try:
+            active = _identity(canonical.get("active"), expected_game=VIEW_NAME)
+            if active is None:
+                return None
+            path = runtime_directory(self.g.state_dir, active["runtime_id"]) / SESSION_FILE
+            data = load(path, active)
+            if (previous not in data["owners"]
+                    or data["owner_request_id"] not in (None, state["rotation_request_id"])
+                    or data["owner_request_id"] is None and data["state"]["phase"] != "IDLE"):
+                return None
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        state["trpg_program_runtime_identity"] = active
+        self._save(state)
+        return active
 
     def _read_state(self):
         if not self.path.exists():
@@ -353,12 +374,16 @@ class TrpgProgramManager:
                             identities.append(_identity(item))
                         except TrpgProgramError:
                             continue
-                if identity in identities:
+                if any(all(item.get(key) == identity[key] for key in ("game", "runtime_id", "generation"))
+                       for item in identities):
                     return "queued"
             if not _stable(canonical):
                 raise TrpgProgramError(" runtime ownership is in an unsafe switch phase")
             if not self._matches_active(canonical, identity):
-                return self._mark_interrupted(state, "operator-moved-during-")
+                restored = self._adopt_rollback(state, canonical, identity)
+                if restored is None:
+                    return self._mark_interrupted(state, "operator-moved-during-")
+                identity = restored
             ends_at = state.get("ends_at")
             if type(ends_at) not in (int, float) or isinstance(ends_at, bool) or ends_at < 0:
                 raise TrpgProgramError(" end time is invalid")
@@ -366,7 +391,7 @@ class TrpgProgramManager:
             if remaining <= 0:
                 return self._restore(state, end_reason="duration")
             try:
-                if self._session_tick(identity):
+                if self._session_tick(identity, request_id=state["rotation_request_id"]):
                     return self._restore(state, end_reason="game-completed")
             except (OSError, ValueError, TypeError, KeyError):
                 return self._restore(state, end_reason="session-unavailable")
@@ -433,6 +458,10 @@ class TrpgProgramManager:
         canonical = self._canonical()
         if canonical is None:
             return "queued"
+        if _stable(canonical) and not self._matches_active(canonical, identity):
+            restored = self._adopt_rollback(state, canonical, identity)
+            if restored is not None:
+                identity = restored
         if self._restore_receipt_finished(state, canonical):
             state.update(status="completed", completed_at=self.clock(), end_reason=end_reason,
                          restored_runtime_identity=(
@@ -453,7 +482,7 @@ class TrpgProgramManager:
 
         if end_reason in {"manual", "duration"}:
             try:
-                self._session_tick(identity, stop_reason=end_reason)
+                self._session_tick(identity, stop_reason=end_reason, request_id=state["rotation_request_id"])
             except (OSError, ValueError, TypeError, KeyError):
                 state["last_error_code"] = "trpg-session-unavailable"
         previous = state.get("previous_game")

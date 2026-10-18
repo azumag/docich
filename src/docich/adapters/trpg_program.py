@@ -14,9 +14,9 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
-from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import DeadlineExceededError, GameSwitchStore, ReadinessTimeoutError, RuntimeSpec
 from ..trpg_view import DEFAULT_PORT, VIEW_NAME
-from ..trpg_session import SESSION_FILE, prepare
+from ..trpg_session import SESSION_FILE, chat_path, identity, load, prepare, restore, scenario
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
 from .program import (
@@ -86,10 +86,41 @@ class TrpgProgramViewAdapter(ProgramViewAdapter):
 
     def preflight(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
-        prepare(self.g, self.spec)
+        scenario(self.g)
+        chat_path(self.g)
         super().preflight(deadline, cancel)
 
+    def _restore_source(self):
+        state = GameSwitchStore(self.g.state_dir).canonical.load()[0]
+        previous = state.get("previous")
+        if (state.get("phase") not in {"rolling_back", "failed"} or not isinstance(previous, dict)
+                or previous.get("game") != VIEW_NAME):
+            return None
+        candidate = state.get("candidate")
+        if candidate is not None:
+            if all(candidate.get(key) == value for key, value in identity(self.spec).items()):
+                return previous
+        elif (previous.get("runtime_id") == self.spec.runtime_id
+              and previous.get("generation") == self.spec.generation):
+            return previous
+        return None
+
+    def materialize_runtime(self, deadline: float, cancel) -> None:
+        self._check_active(deadline, cancel)
+        previous = self._restore_source()
+        if previous is not None:
+            restore(self.g, self.spec, previous)
+        elif (self.spec.runtime_dir / SESSION_FILE).exists():
+            load(self.spec.runtime_dir / SESSION_FILE, identity(self.spec))
+        else:
+            prepare(self.g, self.spec)
+        super().materialize_runtime(deadline, cancel)
+
     def readiness(self, deadline: float, cancel) -> None:
+        previous = self._restore_source()
+        if (previous is not None and previous.get("runtime_id") == self.spec.runtime_id
+                and previous.get("generation") == self.spec.generation):
+            restore(self.g, self.spec, previous, live=True)
         CliCoordinatorAdapter.readiness(self, deadline, cancel)
         url = f"http://127.0.0.1:{self.dashboard_port}{READY_PATH}"
         while True:

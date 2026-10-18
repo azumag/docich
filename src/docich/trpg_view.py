@@ -77,7 +77,7 @@ def handler_for(runtime_id: str = "preview", *, generation=None, lease_id=None, 
                 return
             if self.path == "/api/trpg":
                 try:
-                    data = public(load(session_file, expected))
+                    data = public(load(session_file, expected, view=True))
                     status = 200
                 except (OSError, ValueError, TypeError, KeyError, StopIteration):
                     data, status = {"ok": False}, 503
