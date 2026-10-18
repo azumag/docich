@@ -543,6 +543,102 @@ def parse_accusation(text: Any) -> tuple[str, str] | None:
 
 
 # ---------------------------------------------------------------------------
+# chat participation (PR-2: read-only consumption of the chat daemon)
+# ---------------------------------------------------------------------------
+
+
+def observe_chat(state: Any, *args, display_name: Any = None, now: str | None = None,
+                **kwargs) -> str:
+    """Apply one chat message to ``state``. Returns the applied kind.
+
+    Read-only consumption of the existing chat daemon's lines: this function
+    never performs I/O. It parses the structured input (``!1``..``!4`` vote
+    or ``!accuse ...``) and, when the corner is in the matching phase,
+    records it. Returns one of ``"vote"``, ``"accusation"`` or ``"ignored"``.
+
+    Positional args after ``state``: ``user_id`` then either ``text`` or
+    ``display_name, text`` (puyo-style). Keywords ``user_id``/``uid``,
+    ``text``/``message``/``line``, ``display_name``/``name`` are accepted.
+    """
+    # collect positional
+    user_id = None
+    text = None
+    if len(args) == 1:
+        user_id = args[0]
+    elif len(args) == 2:
+        # disambiguate: if second looks like a command text, treat as text
+        if isinstance(args[1], str) and (parse_vote(args[1]) is not None
+                                         or parse_accusation(args[1]) is not None
+                                         or args[1].strip().startswith("!")):
+            user_id = args[0]
+            text = args[1]
+        else:
+            # could be (display_name, text)? assume user_id, text
+            user_id = args[0]
+            text = args[1]
+    elif len(args) >= 3:
+        user_id = args[0]
+        display_name = args[1] if display_name is None else display_name
+        text = args[2]
+
+    # tolerate alternate keyword spellings
+    if user_id is None:
+        user_id = kwargs.pop("user_id", kwargs.pop("uid", None))
+    if text is None:
+        text = kwargs.pop("text", kwargs.pop("message", kwargs.pop("line", None)))
+    if display_name is None:
+        display_name = kwargs.pop("display_name", kwargs.pop("name", None))
+
+    state = _dict(state, "state")
+    uid = _user(user_id) if user_id is not None else None
+    if uid is None:
+        raise TrpgCornerError("invalid user id")
+
+    phase = state.get("phase")
+
+    # vote
+    v = parse_vote(text)
+    if v is not None:
+        if phase == "CHOICE":
+            try:
+                record_vote(state, uid, v, now=now)
+            except TrpgCornerError:
+                return "ignored"
+            return "vote"
+        return "ignored"
+
+    # accusation
+    a = parse_accusation(text)
+    if a is not None:
+        if phase == "CLIMAX":
+            try:
+                record_accusation(state, uid, a[0], a[1], now=now)
+            except TrpgCornerError:
+                return "ignored"
+            return "accusation"
+        return "ignored"
+
+    return "ignored"
+
+
+# aliases for callers that use different verbs
+def consume_chat(state: Any, *args, **kwargs) -> str:
+    return observe_chat(state, *args, **kwargs)
+
+
+def handle_chat(state: Any, *args, **kwargs) -> str:
+    return observe_chat(state, *args, **kwargs)
+
+
+def ingest_chat(state: Any, *args, **kwargs) -> str:
+    return observe_chat(state, *args, **kwargs)
+
+
+def process_chat(state: Any, *args, **kwargs) -> str:
+    return observe_chat(state, *args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # ledger
 # ---------------------------------------------------------------------------
 
