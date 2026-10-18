@@ -1804,6 +1804,7 @@ CORNER_MANUAL_STATE_FILES = (
     "doushi_corner", "mystery_corner",
     "puyo_program",
     "lawsim_corner",
+    "trpg_corner_state",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({

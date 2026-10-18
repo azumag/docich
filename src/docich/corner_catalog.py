@@ -195,9 +195,16 @@ def load_catalog(g) -> tuple[Corner, ...]:
                 raise CornerCatalogError(
                     "trpg requires id=trpg-corner and game=trpg-view"
                 )
-            if item.fetch_on_start or item.audio_enabled:
+            if item.fetch_on_start:
                 raise CornerCatalogError(
-                    "trpg accepts neither audio_enabled nor fetch_on_start"
+                    "trpg accepts no fetch_on_start"
+                )
+            if type(item.audio_enabled) not in (bool,) and item.audio_enabled is not False:
+                # allow boolean or unset (defaults to False)
+                pass
+            if item.audio_enabled not in (False, True):
+                raise CornerCatalogError(
+                    "trpg accepts only a boolean audio_enabled"
                 )
             if item.manual_only is not True:
                 raise CornerCatalogError(

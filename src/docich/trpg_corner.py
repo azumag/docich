@@ -304,6 +304,10 @@ def record_vote(state: Any, user_id: Any, choice: Any, now: str | None = None) -
     if not (1 <= choice <= len(choices)):
         raise TrpgCornerError("invalid choice")
     ci = str(choice)
+    # participant bound is checked before any write: a rejected newcomer
+    # leaves state byte-identical (existing participants may always re-submit)
+    if uid not in state["vote_order"] and len(state["vote_order"]) >= MAX_PARTICIPANTS:
+        raise TrpgCornerError("too many participants")
     # remove previous vote by this user
     prev = state["vote_order"].get(uid)
     if prev is not None and prev in state["votes"]:
@@ -314,8 +318,6 @@ def record_vote(state: Any, user_id: Any, choice: Any, now: str | None = None) -
     state["votes"].setdefault(ci, [])
     if uid not in state["votes"][ci]:
         state["votes"][ci].append(uid)
-    if len(state["vote_order"]) > MAX_PARTICIPANTS:
-        raise TrpgCornerError("too many participants")
     return state
 
 
@@ -411,9 +413,9 @@ def record_accusation(state: Any, user_id: Any, suspect: Any, trick: Any = "", n
     if suspect not in suspects:
         raise TrpgCornerError("invalid suspect")
     trick_text = "" if trick is None or trick == "" else _text(trick, "trick", limit=MAX_TRICK_TEXT)
-    state["accusations"][uid] = {"suspect": suspect, "trick": trick_text, "at": now or _now()}
-    if len(state["accusations"]) > MAX_PARTICIPANTS:
+    if uid not in state["accusations"] and len(state["accusations"]) >= MAX_PARTICIPANTS:
         raise TrpgCornerError("too many participants")
+    state["accusations"][uid] = {"suspect": suspect, "trick": trick_text, "at": now or _now()}
     return state
 
 
