@@ -310,3 +310,51 @@ def test_vote_tally_tie_lowest():
     tc.close_choice(st)
     # tie 1-1 -> lowest index 1
     assert tc.winning_choice(st) == 1
+
+
+def test_observe_chat_votes_and_accusations():
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    # vote ignored outside CHOICE
+    assert tc.observe_chat(st, "u1", "!1") == "ignored"
+    tc.open_choice(st)
+    assert tc.observe_chat(st, "u1", "!2") == "vote"
+    assert tc.observe_chat(st, "u2", "1") == "vote"
+    assert st["vote_order"]["u1"] == "2"
+    # unparseable ignored
+    assert tc.observe_chat(st, "u3", "hello") == "ignored"
+    # accuse ignored outside CLIMAX
+    assert tc.observe_chat(st, "u1", "!accuse B x") == "ignored"
+    tc.close_choice(st)
+    # drive to climax: s2a choice then terminal
+    tc.advance_scene(st)  # -> s2a SCENE
+    assert st["phase"] == "SCENE"
+    tc.open_choice(st)
+    tc.record_vote(st, "u9", 1)
+    tc.close_choice(st)
+    tc.advance_scene(st)  # -> None -> CLIMAX
+    assert st["phase"] == "CLIMAX"
+    assert tc.observe_chat(st, "u4", "!accuse B 毒") == "accusation"
+    assert "u4" in st["accusations"]
+    # wrong phase vote ignored
+    assert tc.observe_chat(st, "u5", "!1") == "ignored"
+
+
+def test_observe_chat_aliases_and_keywords():
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    tc.open_choice(st)
+    assert tc.consume_chat(st, user_id="u1", text="!1") == "vote"
+    assert tc.handle_chat(st, "u2", message="2") == "vote"
+    assert tc.ingest_chat(st, "u3", line="!1") == "vote"
+    assert tc.process_chat(st, "u4", text="!vote 2") == "vote"
+
+
+def test_observe_chat_invalid_user_raises():
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    tc.open_choice(st)
+    with pytest.raises(tc.TrpgCornerError):
+        tc.observe_chat(st, None, "!1")
+    with pytest.raises(tc.TrpgCornerError):
+        tc.observe_chat(st, "", "!1")
