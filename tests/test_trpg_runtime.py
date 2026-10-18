@@ -165,7 +165,7 @@ def test_factory_preflight_and_identity_readiness(setup, monkeypatch):
 
 
 @pytest.mark.parametrize('field,value', [('runtime_id', 'foreign'), ('generation', 99),
-                                        ('generation', True), ('lease_id', str(uuid.uuid4()))])
+                                        ('generation', True), ('lease_id', '11111111-1111-4111-8111-111111111111')])
 def test_readiness_rejects_foreign_identity_even_with_http_200(setup, monkeypatch, field, value):
     from docich.adapters import trpg_program
     g, spec = setup
