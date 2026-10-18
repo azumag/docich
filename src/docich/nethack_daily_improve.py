@@ -42,7 +42,7 @@ MAX_RESPONSE_BYTES = 256 * 1024
 _SUCCESS_STATES = frozenset({"review_ready", "no_new_runs"})
 _PROGRESS_INTENTS = frozenset({
     "advance_message", "decline_attack", "decline_save", "prompt_decision",
-    "status_emergency", "food_emergency", "survival_emergency", "seek_food",
+    "status_emergency", "status_recovery", "food_emergency", "survival_emergency", "seek_food",
     "hold_low_hp", "hold_impaired", "inspect_screen", "assess_contact",
     "explore_step", "exploration_blocked", "progress_blocked", "rest_turn",
     "retreat_step", "bump_creature", "open_door_start", "open_door_direction",

@@ -24,7 +24,7 @@ from .nethack_exploration import (
 )
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
-    NethackLayeredPolicy, PolicyDecision, STEP_OUT_INTENTS, _has_any,
+    NethackLayeredPolicy, PolicyDecision, SEVERE_RECOVERY_COMMAND, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
@@ -170,6 +170,8 @@ def assert_production_safe(
         # Any complete frame may spend one wait turn (owner decision
         # 2026-09-23); turn_ready is what keeps `.` from answering a prompt.
         allowed = turn_ready(obs) and key == "."
+    elif intent == "status_recovery":
+        allowed = turn_ready(obs) and not _visible_creature_contact(obs) and key == SEVERE_RECOVERY_COMMAND
     elif intent == "open_door_start":
         allowed = key == "o" and _next_unattempted_door(obs, attempted_doors) is not None
     elif intent == "open_door_direction":
@@ -202,6 +204,10 @@ class NethackProgressResolver:
         self._door_result_pending: _DoorTarget | None = None
         self._door_result_raw_text: str | None = None
         self._door_result_unchanged_captures = 0
+        self._recovery_pending: str | None = None
+        self._recovery_expected: str | None = None
+        self._recovery_attempts: int = 0
+        self._recovery_last_conditions: tuple[str, ...] | None = None
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
         target = self._pending_door
@@ -237,6 +243,9 @@ class NethackProgressResolver:
         self._door_result_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
+        if self._recovery_last_conditions is not None and tuple(obs.conditions) != self._recovery_last_conditions:
+            self._recovery_attempts = 0
+            self._recovery_last_conditions = tuple(obs.conditions)
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
         if self._pending_door is not None and obs.prompt == "none":
@@ -294,6 +303,12 @@ class NethackProgressResolver:
             self._failed.clear()
             self._scene = scene
             self._pending = None
+            self._recovery_pending = None
+            self._recovery_expected = None
+            # Keep ``_recovery_attempts``: an unrelated map change (a distant
+            # cell) must not lift the bound on the same unresolved recovery
+            # episode.  It is reset only when the visible status changes.
+            self._recovery_last_conditions = tuple(obs.conditions)
             return
         if self._pending is None:
             return
@@ -323,6 +338,19 @@ class NethackProgressResolver:
     def assert_action_safe(
         self, decision: PolicyDecision, obs: NethackObservation, explorer
     ) -> None:
+        if decision.intent == "status_recovery":
+            if len(decision.actions) != 1 or decision.actions[0].type != "text":
+                raise RuntimeError("production action must be one literal text key")
+            key = decision.actions[0].text
+            if self._recovery_expected is not None:
+                if key != self._recovery_expected:
+                    raise RuntimeError("reviewed recovery continuation key is unexpected")
+                return
+            if key != SEVERE_RECOVERY_COMMAND or not turn_ready(obs) or _visible_creature_contact(obs):
+                raise RuntimeError("production action violates its observed context")
+            if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+                raise RuntimeError("production action violates its observed context")
+            return
         assert_production_safe(
             decision,
             obs,
@@ -357,6 +385,16 @@ class NethackProgressResolver:
                 self._clear_pending_door()
                 return
             key = decision.actions[0].text
+            if decision.intent == "status_recovery" and key == SEVERE_RECOVERY_COMMAND and self._recovery_expected is None:
+                self._recovery_pending = "pray\n"
+                self._recovery_attempts += 1
+                if self._recovery_last_conditions is None:
+                    self._recovery_last_conditions = tuple(obs.conditions)
+            elif decision.intent == "status_recovery" and self._recovery_expected is not None and key == self._recovery_expected:
+                # Transport acked: now consume the key we peeked in ``_resolve``.
+                self._recovery_expected = None
+                if self._recovery_pending:
+                    self._recovery_pending = self._recovery_pending[1:] or None
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
                 self._answered_prompt = obs.raw_text
             elif key in MOVE_KEYS:
@@ -373,6 +411,31 @@ class NethackProgressResolver:
         return PolicyDecision("strategic", "progress_blocked", reason, requires_llm=True)
 
     def _resolve(self, decision: PolicyDecision, obs: NethackObservation, explorer) -> PolicyDecision:
+        # A reviewed recovery command may span several single-character inputs.
+        # While it is in progress, finish it before considering a new policy
+        # decision so the game does not receive a half-typed extended command.
+        if self._recovery_pending is not None:
+            remaining = self._recovery_pending
+            if obs.prompt == "more":
+                # Let a More page clear before continuing the typed command.
+                pass
+            elif obs.prompt in {"unknown", "selection"} and re.match(r"^[Ww]hat do you want to do\?", obs.message or ""):
+                if not remaining:
+                    self._recovery_pending = None
+                    self._recovery_expected = None
+                else:
+                    # Peek only: the key is consumed once the send is acked
+                    # (``sent``).  A rejected/discarded plan must keep it so the
+                    # next replanning re-sends the same key instead of skipping.
+                    ch = remaining[0]
+                    self._recovery_expected = ch
+                    return self._action("status_recovery", "continue the reviewed recovery command", ch)
+            else:
+                # The extended command prompt we started is gone or changed:
+                # abandon the half-typed input and fail closed rather than
+                # inventing further keystrokes.
+                self._recovery_pending = None
+                self._recovery_expected = None
         decline = decline_prompt(obs)
         if decline == "decline_attack":
             decision = self._action(decline, "decline an observed attack confirmation", "n")
@@ -381,6 +444,13 @@ class NethackProgressResolver:
             and self._answered_prompt == obs.raw_text
         ):
             return self._hold("prompt already answered; waiting for a new frame")
+        if decision.intent == "status_recovery":
+            if (
+                self._recovery_attempts >= 3
+                and self._recovery_last_conditions is not None
+                and tuple(obs.conditions) == self._recovery_last_conditions
+            ):
+                return self._hold("reviewed recovery attempts exhausted without a status change")
         if self._pending_door is not None:
             if obs.prompt == "direction":
                 if _door_target_matches(obs, self._pending_door):

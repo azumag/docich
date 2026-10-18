@@ -197,19 +197,14 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertEqual((action.type, action.text), ("text", "."))
         assert_rest_safe([action])
 
-    def test_severe_status_still_spends_one_wait_turn(self):
-        # owner decision 2026-09-23: `.` はどんな時でも可。policy の判断は
-        # (strategic / requires_llm) のまま変わらず、rest だけが許可される。
+    def test_severe_status_uses_reviewed_recovery_when_safe(self):
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
                 observation, decision = self._decide(self.FREE, condition=condition)
-                self.assertEqual(decision.intent, "status_emergency")
+                self.assertEqual(decision.intent, "status_recovery")
                 self.assertTrue(decision.requires_llm)
-                self.assertEqual(decision.actions, ())
-                action = rest_action_for_hold(decision, observation)
-                self.assertIsNotNone(action)
-                self.assertEqual(action.text, ".")
-                assert_rest_safe([action])
+                self.assertEqual([a.text for a in decision.actions], ["#"])
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_a_critical_or_severe_hero_may_wait_even_beside_a_creature(self):
         # owner decision 2026-09-23: 退避/接触を試した後の最後の手段として
