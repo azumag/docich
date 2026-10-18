@@ -187,6 +187,23 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
+        elif item.adapter == "mystery":
+            # Participatory AI探偵ミステリー: one deterministic case per slot.
+            # The duration is the whole-case budget (1-45 minutes; the manager's
+            # session reserve keeps the reveal + restore inside it) and speech
+            # is a separate opt-in. No weather-only settings. The manager
+            # enforces the same bound, so a future config change cannot widen
+            # it without this file's review.
+            if item.id != "mystery" or item.game != "mystery-view":
+                raise CornerCatalogError("mystery requires id=mystery and game=mystery-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "mystery accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 45):
+                raise CornerCatalogError("mystery duration_minutes must be an integer 1-45")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

@@ -381,7 +381,7 @@ class LiveMatch:
         phase = engine.get("phase")
         if phase == "MATCH":
             try:
-                pc.play_match(engine, max_steps=1)
+                pc.advance_match(engine)
             except pc.PuyoCornerError:
                 # Cannot happen with max_steps=1 (budgets end as TIMEOUT),
                 # but the slot never dies over one engine hiccup.

@@ -17,9 +17,15 @@ Ruleset shape follows the synthetic input contract fixture
 * 4 or more orthogonally adjacent same-color puyo clear at once,
 * cleared boards settle per column and the settle→clear loop re-evaluates
   every step, so chains 1, 2, 3, ... build up,
-* scoring: perPuyo per cleared block + chain / multi-clear / color bonuses,
-  + the all-clear bonus when a full chain empties the board,
-* top-out ends the round; the surviving side wins (both top out -> draw).
+* scoring: Tsu-style ``(chain power + color + group bonus) × perPuyo ×
+  blocks`` with the published classic tables (a lone 1-chain scores 0),
+  plus the all-clear bonus when a full chain empties the board,
+* ojama (garbage) economy: attack = score // 70 with carry, a 30-ojama
+  reserve cap, at most 30 dropped per lock after the lock's own chains,
+  flat bottom-row fill, ojama pop only by adjacency to a cleared color,
+* top-out ends the round; the surviving side wins (both top out -> draw),
+  and a match that reaches MATCH_MAX_TICKS is decided by total score
+  (tie -> draw) so an unattended match always finishes,
 """
 
 from __future__ import annotations
@@ -114,12 +120,33 @@ DEFAULT_RULESET: dict[str, Any] = {
     "lossCondition": "own spawn cannot place a new pair",
 }
 
-# Per-chain power in the scoring table (chain 1, 2, 3, ... at min index 1).
-CHAIN_BONUS = {1: 0, 2: 8, 3: 96, 4: 192, 5: 960, 6: 1440, 7: 1920}
-MULTI_CLEAR_BONUS = {1: 0, 2: 240, 3: 480, 4: 960}
-COLOR_BONUS = {1: 0, 2: 120, 3: 720, 4: 1200}
+# Per-chain power in the scoring table (chain 1, 2, 3, ...), the published
+# classic ("通") values; chains beyond the table clamp at 512. A lone 1-chain
+# scores 0 points (and sends no ojama), like the original.
+CHAIN_BONUS = {
+    1: 0, 2: 8, 3: 16, 4: 32, 5: 64, 6: 96, 7: 128, 8: 160, 9: 192, 10: 224,
+    11: 256, 12: 288, 13: 320, 14: 352, 15: 384, 16: 416, 17: 448, 18: 480,
+    19: 512,
+}
+CHAIN_BONUS_MAX_CHAIN = 19
+# color bonus by distinct colors cleared in one step (1色=0 .. 4色=12)
+COLOR_BONUS = {1: 0, 2: 3, 3: 6, 4: 12}
+# connected-group bonus by group size, summed over the groups cleared in the
+# same step (the ruleset's "simultaneousBonus" descriptor); 11+ clamps at 10
+GROUP_BONUS = {4: 0, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7}
+GROUP_BONUS_MAX = 10
 ALL_CLEAR_BONUS = 2100
 SPAWN_COL = BOARD_COLS // 2 - 1
+
+# --- ojama (garbage) economy (Tsu-style, simplified; from PR #2491) ---
+OJAMA_COLOR = "ojama"  # cell color of おじゃまぷよ; never a ruleset color
+OJAMA_RATE = 70  # attack ojama = accumulated score // 70; remainder carries
+MAX_OJAMA_QUEUE = 30  # pending ojama reserve cap; overflow is discarded
+MAX_OJAMA_DROP = 30  # one lock drops at most 30 ojama (6 cols x 5 rows)
+
+# Match time limit (gravity ticks). An unattended match never stalls: at the
+# limit the round ends with the higher total score winning (tie -> draw).
+MATCH_MAX_TICKS = 15_000
 
 
 class PuyoCornerError(ValueError):
@@ -426,15 +453,22 @@ def _clear_group(board: list[list[str | None]],
 
 def _chain_score(ruleset: Mapping[str, Any], chain_index: int,
                  groups: list[int], colors: set[str]) -> int:
-    """perPuyo per cell + chain + multi-clear + color bonus, all bounded."""
+    """Tsu-style scoring, all bounded:
+
+    ``(chain power + color bonus + connected-group bonus) × perPuyo × blocks``
+
+    ``groups`` holds the per-group sizes cleared in this step; ``colors`` the
+    distinct colors. A lone 1-chain of one color scores 0 (no points and no
+    ojama attack), like the original. ``perPuyo`` stays ruleset-driven.
+    """
     per_puyo = _int(ruleset["scoring"]["perPuyo"], "scoring.perPuyo", lo=0, hi=1000)
     blocks = sum(groups)
-    group_capped = min(len(groups), max(MULTI_CLEAR_BONUS))
-    color_capped = min(len(colors), max(COLOR_BONUS))
-    bonus = CHAIN_BONUS.get(min(chain_index, max(CHAIN_BONUS)), CHAIN_BONUS[max(CHAIN_BONUS)])
-    bonus += MULTI_CLEAR_BONUS.get(group_capped, MULTI_CLEAR_BONUS[max(MULTI_CLEAR_BONUS)])
-    bonus += COLOR_BONUS.get(color_capped, COLOR_BONUS[max(COLOR_BONUS)])
-    return per_puyo * blocks + bonus
+    bonus = CHAIN_BONUS.get(min(chain_index, CHAIN_BONUS_MAX_CHAIN),
+                            CHAIN_BONUS[CHAIN_BONUS_MAX_CHAIN])
+    bonus += COLOR_BONUS.get(min(max(len(colors), 1), max(COLOR_BONUS)),
+                             COLOR_BONUS[max(COLOR_BONUS)])
+    bonus += sum(GROUP_BONUS.get(size, GROUP_BONUS_MAX) for size in groups)
+    return bonus * per_puyo * blocks
 
 
 # ---------------------------------------------------------------------------
@@ -526,9 +560,32 @@ def tick(state: Any, now: str | None = None) -> dict:
         if state.get("phase") != "MATCH":
             break
         _tick_side(state, side, ts)
+    _exchange_ojama(state)
     if state["phase"] == "MATCH":
         state = _check_round_end(state, ts)
     return state
+
+
+def _exchange_ojama(state: dict) -> None:
+    """Transfer each side's pending ojama attack to the opponent's queue.
+
+    Runs once per tick after both sides moved. The reserve cap discards
+    overflow (fail-closed, like the original's 30-ojama reserve).
+    """
+    if state.get("phase") != "MATCH":
+        return
+    for side in SIDES:
+        pending = _int(state.get(f"{side}_attack_pending", 0),
+                       f"{side}_attack_pending", lo=0)
+        if not pending:
+            continue
+        state[f"{side}_attack_pending"] = 0
+        other = "ai" if side == "user" else "user"
+        room = MAX_OJAMA_QUEUE - _int(state.get(f"{other}_ojama_in", 0),
+                                      f"{other}_ojama_in", lo=0)
+        state[f"{other}_ojama_in"] = _int(
+            state.get(f"{other}_ojama_in", 0), f"{other}_ojama_in", lo=0,
+        ) + max(0, min(pending, room))
 
 
 def _tick_side(state: dict, side: str, ts: str) -> None:
@@ -548,24 +605,38 @@ def _tick_side(state: dict, side: str, ts: str) -> None:
 
 def _lock_and_resolve(state: dict, side: str, board: list[list[str | None]],
                       pair: dict, cells: list[tuple[int, int]], ts: str) -> None:
-    """Lock the pair, resolve its chain, then refill (bounded, fail-closed)."""
+    """Lock the pair, resolve its chain, then refill (bounded, fail-closed).
+
+    Ojama order follows the original rules: the lock's own chains resolve
+    first, received ojama drops afterwards (it cannot be popped by this
+    lock), then the attack for this lock's score is queued for the opponent.
+    """
     board_key = f"{side}_board"
     landed = _bottomout_cells(board, cells)
     _lock_pair(board, pair, landed)
     ruleset = _dict(state["ruleset"], "ruleset")
     blocks, chain_depth, bonus, all_clear = _resolve_chain(board, ruleset)
+    gained = 0
     if blocks:
+        gained = bonus + (ALL_CLEAR_BONUS if all_clear else 0)
         state[f"{side}_chain"] = chain_depth
         state[f"{side}_score"] = _int(
-            state.get(f"{side}_score", 0) + bonus, f"{side}_score", lo=0, hi=10 ** 9,
+            state.get(f"{side}_score", 0) + gained, f"{side}_score", lo=0, hi=10 ** 9,
         )
-        if all_clear:
-            state[f"{side}_score"] = _int(
-                state.get(f"{side}_score", 0) + ALL_CLEAR_BONUS,
-                f"{side}_score", lo=0, hi=10 ** 9,
-            )
     else:
         state[f"{side}_chain"] = 0
+    # received ojama falls only after the lock's own chains are done
+    ojama_in = _int(state.get(f"{side}_ojama_in", 0), f"{side}_ojama_in", lo=0)
+    dropped = drop_ojama(board, ojama_in)
+    state[f"{side}_ojama_in"] = ojama_in - dropped
+    # attack = (carry + this lock's score) // OJAMA_RATE; remainder carries
+    carry = _int(state.get(f"{side}_carry", 0), f"{side}_carry", lo=0,
+                 hi=OJAMA_RATE - 1) + gained
+    sent = carry // OJAMA_RATE
+    state[f"{side}_carry"] = carry % OJAMA_RATE
+    state[f"{side}_attack_pending"] = _int(
+        state.get(f"{side}_attack_pending", 0), f"{side}_attack_pending", lo=0,
+        hi=10 ** 9) + sent
     state[board_key] = board
     pairs_spawned = _int(state.get("pairs_spawned", 0), "pairs_spawned",
                          lo=0, hi=MAX_PAIRS_PER_ROUND)
@@ -590,31 +661,74 @@ def _lock_pair(board: list[list[str | None]], pair: Mapping[str, Any],
 
 def _resolve_chain(board: list[list[str | None]],
                    ruleset: Mapping[str, Any]) -> tuple[int, int, int, bool]:
-    """Settle → clear until stable. Returns (blocks, chain, score, all_clear)."""
+    """Settle → clear until stable. Returns (blocks, chain, score, all_clear).
+
+    Ojama cells never form clearable groups; they pop only when directly
+    adjacent to a cleared color cell (ojama never chains through ojama) and
+    are never scored (``blocks`` counts color cells only).
+    """
     total_blocks = 0
     chain = 0
     score = 0
     all_clear = False
     while chain < MAX_CHAIN_STEPS:
         _settle(board)
-        clearable = [
-            group for group in connected_groups(board)
-            if len(group) >= MIN_CONNECTION
-        ]
+        clearable = []
+        for group in connected_groups(board):
+            if len(group) < MIN_CONNECTION:
+                continue
+            sample_x, sample_y = next(iter(group))
+            if board[sample_y][sample_x] == OJAMA_COLOR:
+                continue  # おじゃまぷよは4個揃っても消えない
+            clearable.append(group)
         if not clearable:
             break
         chain += 1
         cleared_counts: list[int] = []
         colors: set[str] = set()
+        cleared_cells: set[tuple[int, int]] = set()
         for group in clearable:
             count, group_colors = _clear_group(board, group)
             cleared_counts.append(count)
             colors |= group_colors
+            cleared_cells.update(group)
+        # おじゃまぷよは消える色ぷよに隣接すると消える（連鎖はしない）
+        ojama_cells: set[tuple[int, int]] = set()
+        for (x, y) in cleared_cells:
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < BOARD_COLS and 0 <= ny < BOARD_ROWS \
+                        and board[ny][nx] == OJAMA_COLOR:
+                    ojama_cells.add((nx, ny))
+        for (x, y) in ojama_cells:
+            board[y][x] = None
         total_blocks += sum(cleared_counts)
         score += _chain_score(ruleset, chain, cleared_counts, colors)
         if blocks_left(board) == 0:
             all_clear = True
     return total_blocks, chain, score, all_clear
+
+
+def drop_ojama(board: Any, count: Any, *, max_drop: int = MAX_OJAMA_DROP) -> int:
+    """Drop up to ``max_drop`` ojama into empty cells, bottom row first and
+    left to right (the flat fill the original uses). Mutates the board in
+    place and returns the number placed; leftovers stay queued. Fail-closed
+    on a malformed board or count."""
+    if not isinstance(board, list) or len(board) != BOARD_ROWS:
+        raise PuyoCornerError("invalid board")
+    for row in board:
+        if not isinstance(row, list) or len(row) != BOARD_COLS:
+            raise PuyoCornerError("invalid board row")
+    count = _int(count, "ojama count", lo=0)
+    quota = min(count, _int(max_drop, "max_drop", lo=0, hi=MAX_OJAMA_DROP))
+    placed = 0
+    for y in range(BOARD_ROWS - 1, -1, -1):
+        for x in range(BOARD_COLS):
+            if placed >= quota:
+                return placed
+            if board[y][x] is None:
+                board[y][x] = OJAMA_COLOR
+                placed += 1
+    return placed
 
 
 def _record_top_out(state: dict, side: str) -> None:
@@ -717,11 +831,17 @@ def new_state(config: Mapping[str, Any] | None = None, seed: int | None = None) 
         "user_next": None,
         "user_score": 0,
         "user_chain": 0,
+        "user_ojama_in": 0,
+        "user_carry": 0,
+        "user_attack_pending": 0,
         "ai_board": empty_board(),
         "ai_pair": None,
         "ai_next": None,
         "ai_score": 0,
         "ai_chain": 0,
+        "ai_ojama_in": 0,
+        "ai_carry": 0,
+        "ai_attack_pending": 0,
     }
 
 
@@ -1261,6 +1381,32 @@ def plan_actions(state: Any, side: str) -> list[str]:
     return best_script
 
 
+def greedy_policy(state: Any, side: str) -> str:
+    """First action of the bounded brain's best plan (the PR #2491 contract).
+
+    Single-step, deterministic and state-preserving control surface over the
+    same engine-verified planning as :func:`plan_actions` (which stays the
+    primary brain). Returns "hard_drop" when no plan is available.
+    """
+    plan = plan_actions(state, side)
+    return plan[0] if plan else "hard_drop"
+
+
+def _time_limit_end(state: dict, reason: str) -> dict:
+    """Bounded match end at a tick limit: the higher total score wins and a
+    tie is a draw. Keeps the match decidable without a live timer."""
+    user_score = _int(state.get("user_score", 0), "user_score", lo=0, hi=10 ** 9)
+    ai_score = _int(state.get("ai_score", 0), "ai_score", lo=0, hi=10 ** 9)
+    state["winner"] = "draw" if user_score == ai_score else (
+        "user" if user_score > ai_score else "ai")
+    state["failure_reason"] = _text(reason, "failure reason", limit=256)
+    state["round_results"].append({
+        "side": state["winner"], "reason": "time_limit",
+        "user_score": user_score, "ai_score": ai_score, "at": _now(),
+    })
+    return _transition(state, "ROUND_OVER")
+
+
 def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
     """Drive both sides until the round ends, honoring queued chat actions.
 
@@ -1269,13 +1415,18 @@ def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
     drives both sides, exactly as before; queued chat actions substitute the
     user-side plan for that step. The engine's own bounded budgets stay
     authoritative; exhausting the action/pair budget fails the round closed
-    instead of looping forever.
+    instead of looping forever, and a match that reaches ``MATCH_MAX_TICKS``
+    (or the driver's step cap) is decided by the overlay scores so it always
+    finishes (試合完走).
     """
     state = _dict(state, "state")
     steps = 0
     max_steps = _int(max_steps, "max_steps", lo=1, hi=MAX_SELFPLAY_TICKS)
     while state.get("phase") == "MATCH" and steps < max_steps:
         steps += 1
+        if _int(state.get("frames", 0), "frames", lo=0, hi=1 << 30) >= MATCH_MAX_TICKS:
+            _time_limit_end(state, "match tick limit")
+            break
         for side in SIDES:
             if state.get("phase") != "MATCH":
                 break
@@ -1294,6 +1445,43 @@ def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
                 state["failure_reason"] = f"selfplay budget exhausted: {exc.code}"
                 timeout(state)
                 break
+    if state.get("phase") == "MATCH":
+        # the driver's step cap hit first: decide by score so the match is
+        # never left hanging (bounded finish, no unfinished state)
+        _time_limit_end(state, "selfplay step limit")
+    return state
+
+
+def advance_match(state: Any) -> dict:
+    """One bounded step of a live match (no driver-cap forced finish).
+
+    Used by the view's live engine: each call advances both sides by one
+    gravity tick (chat actions first on the user side, the bounded brain on
+    the AI side). The round ends only through the engine's own mechanics
+    (top-out, budget exhaustion, ``MATCH_MAX_TICKS``) so a live slot is
+    never prematurely finished by an artificial step cap.
+    """
+    state = _dict(state, "state")
+    if state.get("phase") != "MATCH":
+        return state
+    if _int(state.get("frames", 0), "frames", lo=0, hi=1 << 30) >= MATCH_MAX_TICKS:
+        _time_limit_end(state, "match tick limit")
+        return state
+    for side in SIDES:
+        if state.get("phase") != "MATCH":
+            break
+        try:
+            script = (plan_actions(state, side) if side == "ai"
+                      else _chat_script(state))
+            for action in script:
+                apply_action(state, side, action)
+            tick(state)
+        except PuyoCornerError as exc:
+            if exc.code not in ("action_budget", "pair_budget", "plan_budget"):
+                raise
+            state["failure_reason"] = f"selfplay budget exhausted: {exc.code}"
+            timeout(state)
+            break
     return state
 
 

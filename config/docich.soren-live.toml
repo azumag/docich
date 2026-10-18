@@ -97,6 +97,15 @@ corners = [
   # 読み上げも承認済みのため audio_enabled = true。自動抽選 (manual_only 外し) は
   # 本番のチャット取り出し配線確認後の別承認ステップ。
   { id = "puyo-corner", adapter = "puyo", game = "puyo-view", enabled = true, audio_enabled = true, manual_only = true },
+  # AI探偵ミステリー: 視聴者参加型の1話完結推理コーナー（docich#684、2026-10-18
+  # オーナー承認の案A＋統合判断）。事件の答え（犯人・手法・動機）は決定論エンジンが
+  # 開始時にseed確定し、コミットメント（SHA-256）を配信ボードへ表示。調査の行動選択は
+  # Twitchアンケート（TWITCH_POLLS_ENABLED=1 のとき）、最終「犯人は誰？」は
+  # チャンネルポイント予想（TWITCH_PREDICTIONS_ENABLED=1 のとき）。どちらも
+  # 無効・失敗時は seeded のAI探偵が進行する展示モードで完走する。30分枠は
+  # 約13分の進行＋余裕で、終了時に必ず答えを開示してから復帰する。
+  # trpgオフラインコア(#2481)の汎用ロジック（投票・台帳・検証）を統合済み。
+  { id = "mystery", adapter = "mystery", game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = true },
 ]
 
 [nethack_corner]
@@ -176,6 +185,13 @@ timezone = "Asia/Tokyo"
 # 入力は公開リプレイから検証済みの事実だけで、盤面・駒種・捕獲は渡さない。
 [tsuitate_corner]
 review_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,amd:DeepSeek-V4-Flash"
+
+# AI探偵ミステリーのナレーション。空（既定）なら決定論テンプレートだけを読む
+# （課金LLM実行なし）。非空のchainは課金LLM実行の合意（DOCICH_ALLOW_REAL_AI=1）。
+# 入力は決定論エンジンが確定させた事件の事実だけで、LLM出力は読み上げにしか
+# 使われない（ゲーム状態・答えには一切ならない）。開示フェーズは常に定型文。
+[mystery_corner]
+narration_agents = ""
 
 [webui]
 soren_root = "/home/ubuntu/soren"
