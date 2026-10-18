@@ -229,6 +229,10 @@ from . import puyo_corner as pc
 INBOX_INTERVAL_S = 0.5
 LIVE_POLL_S = 0.1
 MAX_INBOX_TEXT_CHARS = 200
+# Bounded inbox reading: the offset never rewinds, so these only cap how far
+# one poll may advance (a file of any size is drained forward over polls).
+INBOX_READ_BUDGET_BYTES = 64 * 1024
+INBOX_MAX_LINES_PER_POLL = 256
 
 
 def _iso_now() -> str:
@@ -240,6 +244,29 @@ def _bounded_int(value, hi: int) -> int:
         return min(hi, max(0, int(value)))
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _overlay_falling_pair(board: list[list[str | None]], pair) -> list[list[str | None]]:
+    """Place the falling pair's cells onto a display-board copy (bounded).
+
+    Display-only: the engine board itself is never touched. Only empty
+    cells are filled, and a malformed pair is ignored (fail-closed) so the
+    falling pair is visible while moving without ever inventing blocks.
+    """
+    if not isinstance(pair, dict):
+        return board
+    try:
+        cells = pc.pair_cells(pair)
+    except pc.PuyoCornerError:
+        return board
+    colors = (pair.get("axis"), pair.get("satellite"))
+    for (x, y), color in zip(cells, colors):
+        if not isinstance(color, str):
+            continue
+        if 0 <= y < len(board) and 0 <= x < len(board[y]) \
+                and board[y][x] is None:
+            board[y][x] = color
+    return board
 
 
 def _snapshot_body(engine) -> dict:
@@ -256,6 +283,8 @@ def _snapshot_body(engine) -> dict:
     for side in ("user", "ai"):
         try:
             board = copy_board(state.get(f"{side}_board"))
+            # the falling pair is part of what the viewer must see while it moves
+            _overlay_falling_pair(board, state.get(f"{side}_pair"))
         except pc.PuyoCornerError:
             return {"ok": False}
         body[side] = {
@@ -316,15 +345,42 @@ class LiveMatch:
         return _snapshot_body(self.engine)
 
     def consume_inbox(self) -> None:
+        """Consume newly appended chat lines, forward-only and bounded.
+
+        The offset never rewinds: a file growing past any size threshold is
+        still read forward in bounded windows (fixed byte budget and a fixed
+        line count per poll), so already-consumed inputs can never be
+        re-applied. A shrunk file is treated as a rotation and re-read from
+        its start (that content is new by definition). An oversized single
+        fragment that fills the whole window is dropped forward so a
+        pathological line cannot stall the slot.
+        """
         if self.inbox_file is None:
             return
         try:
-            raw = self.inbox_file.read_bytes()
+            size = self.inbox_file.stat().st_size
         except OSError:
             return
-        if len(raw) < self._offset or len(raw) > MAX_INBOX_TEXT_CHARS + 10 ** 7:
-            self._offset = 0
-        for line in raw[self._offset:].split(b"\n"):
+        if size < self._offset:
+            self._offset = 0  # rotated/truncated: only the remaining bytes are new
+        if size <= self._offset:
+            return
+        try:
+            with self.inbox_file.open("rb") as stream:
+                stream.seek(self._offset)
+                raw = stream.read(INBOX_READ_BUDGET_BYTES)
+        except OSError:
+            return
+        if not raw:
+            return
+        complete = raw.split(b"\n")[:-1]  # the tail may be a partial line
+        if not complete:
+            if size - self._offset > len(raw):
+                self._offset += len(raw)  # drop the oversized fragment forward
+            return
+        if len(complete) > INBOX_MAX_LINES_PER_POLL:
+            complete = complete[:INBOX_MAX_LINES_PER_POLL]
+        for line in complete:
             if not line.strip():
                 continue
             try:
@@ -349,7 +405,7 @@ class LiveMatch:
                 # Every engine rejection is a fixed-code bound (full roster,
                 # full queue, not in roster). Chat feedback is upstream.
                 continue
-        self._offset = len(raw)
+        self._offset += sum(len(part) + 1 for part in complete)
 
     def _record_round(self) -> None:
         if self.state_dir is None or not self.state_dir.is_dir():

@@ -976,3 +976,26 @@ def test_play_match_step_cap_decides_by_score():
     assert st["failure_reason"] == "selfplay step limit"
     pc.finish(st, now="2026-10-18T01:00:09+00:00")
     assert st["outcome"] in ("user_win", "ai_win", "draw")
+
+
+def test_advance_match_moves_frames_by_one():
+    st = seeded_state()
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    pc.advance_match(st)
+    assert st["frames"] == 1  # one call advances the shared engine one tick
+    pc.advance_match(st)
+    assert st["frames"] == 2
+
+
+def test_advance_match_tick_limit_never_overshoots():
+    st = seeded_state()
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    st["frames"] = pc.MATCH_MAX_TICKS - 1
+    pc.advance_match(st)
+    # one tick per advance: the limit boundary cannot be jumped (no 14999 -> 15001)
+    assert st["frames"] == pc.MATCH_MAX_TICKS
+    assert st["phase"] == "MATCH"  # decided on the next advance, not skipped past
+    pc.advance_match(st)
+    assert st["phase"] == "ROUND_OVER"
+    assert st["failure_reason"] == "match tick limit"
+    assert st["winner"] in ("user", "ai", "draw")

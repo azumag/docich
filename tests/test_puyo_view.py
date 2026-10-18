@@ -390,3 +390,77 @@ def test_snapshot_writer_is_best_effort(tmp_path):
     _snapshot_file(path, terminal)
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["schema"] == 1 and stored["payload"]["schema"] == 1
+
+
+def test_consume_inbox_never_replays_after_size_overflow(tmp_path, monkeypatch):
+    """Regression (review finding): a file growing past the old rewind point
+    must be drained forward once, never re-applied from offset 0."""
+    from docich import puyo_corner as pc
+    from docich.puyo_view import LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    line = b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n'
+    inbox.write_bytes(line * 218000)  # ~10.0 MB: over the old 10,000,200 rewind point
+
+    calls = {"n": 0}
+    real = pc.observe_chat
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "observe_chat", spy)
+    while live._offset < inbox.stat().st_size:
+        live.consume_inbox()
+    assert calls["n"] == 218000  # every line observed exactly once
+    assert live._offset == inbox.stat().st_size
+    assert len(live.engine["roster"]) == 1
+    live.consume_inbox()  # no appends: a pure no-op, never a replay
+    assert calls["n"] == 218000
+    assert live._offset == inbox.stat().st_size
+
+
+def test_consume_inbox_treats_a_shrunk_file_as_rotation(tmp_path):
+    from docich.puyo_view import LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    inbox.write_text(
+        '{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n'
+        '{"user_id":"u2","display_name":"P2","text":"!puyo join"}\n',
+        encoding="utf-8")
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    # a shorter rewrite is a rotation: consumed forward from its start
+    inbox.write_text('{"user_id":"u3","display_name":"P3","text":"!puyo join"}\n',
+                     encoding="utf-8")
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    assert {row["user_id"] for row in live.engine["roster"]} == {"u1", "u2", "u3"}
+
+
+def test_snapshot_body_overlays_the_falling_pair():
+    """Regression (review finding): the falling pair is visible in the live
+    body while it moves, and the engine board itself stays untouched."""
+    from docich import puyo_corner as pc
+    from docich.puyo_view import _snapshot_body
+
+    engine = new_state({}, seed=7)
+    start(engine, now="2026-10-18T01:00:00+00:00")
+    pair = engine["user_pair"]
+    old_axis, old_satellite = pc.pair_cells(pair)
+    body = _snapshot_body(engine)
+    board = body["user"]["board"]
+    assert board[old_axis[1]][old_axis[0]] == pair["axis"]
+    assert board[old_satellite[1]][old_satellite[0]] == pair["satellite"]
+    assert engine["user_board"][old_axis[1]][old_axis[0]] is None  # display-only
+    pc.apply_action(engine, "user", "left")
+    body = _snapshot_body(engine)
+    board = body["user"]["board"]
+    (ax, ay), (sx, sy) = pc.pair_cells(engine["user_pair"])
+    assert board[ay][ax] == pair["axis"] and board[sy][sx] == pair["satellite"]
+    # the previously occupied satellite cell is clear again as the pair moved
+    assert board[old_satellite[1]][old_satellite[0]] is None

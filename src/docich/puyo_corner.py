@@ -1455,11 +1455,14 @@ def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
 def advance_match(state: Any) -> dict:
     """One bounded step of a live match (no driver-cap forced finish).
 
-    Used by the view's live engine: each call advances both sides by one
-    gravity tick (chat actions first on the user side, the bounded brain on
-    the AI side). The round ends only through the engine's own mechanics
-    (top-out, budget exhaustion, ``MATCH_MAX_TICKS``) so a live slot is
-    never prematurely finished by an artificial step cap.
+    Used by the view's live engine: each call applies the chat script (user
+    side) and the bounded brain (ai side) once each, then advances the
+    shared engine by exactly one gravity tick — ``frames`` moves +1 per
+    call (never two) and the ``MATCH_MAX_TICKS`` boundary is checked on
+    every advance, so the limit can never be overshot within one call. The
+    round ends only through the engine's own mechanics (top-out, budget
+    exhaustion, ``MATCH_MAX_TICKS``) so a live slot is never prematurely
+    finished by an artificial step cap.
     """
     state = _dict(state, "state")
     if state.get("phase") != "MATCH":
@@ -1467,21 +1470,17 @@ def advance_match(state: Any) -> dict:
     if _int(state.get("frames", 0), "frames", lo=0, hi=1 << 30) >= MATCH_MAX_TICKS:
         _time_limit_end(state, "match tick limit")
         return state
-    for side in SIDES:
-        if state.get("phase") != "MATCH":
-            break
-        try:
-            script = (plan_actions(state, side) if side == "ai"
-                      else _chat_script(state))
-            for action in script:
-                apply_action(state, side, action)
-            tick(state)
-        except PuyoCornerError as exc:
-            if exc.code not in ("action_budget", "pair_budget", "plan_budget"):
-                raise
-            state["failure_reason"] = f"selfplay budget exhausted: {exc.code}"
-            timeout(state)
-            break
+    try:
+        for action in _chat_script(state):
+            apply_action(state, "user", action)
+        for action in plan_actions(state, "ai"):
+            apply_action(state, "ai", action)
+        tick(state)
+    except PuyoCornerError as exc:
+        if exc.code not in ("action_budget", "pair_budget", "plan_budget"):
+            raise
+        state["failure_reason"] = f"selfplay budget exhausted: {exc.code}"
+        timeout(state)
     return state
 
 
