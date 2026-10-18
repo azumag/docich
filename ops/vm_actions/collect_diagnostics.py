@@ -29,7 +29,8 @@ Observed sources (all read-only):
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
-    yoso_corner.json, doushi_corner.json, retro_corner.json, paper_corner.json,
+    yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
+    paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
     trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
@@ -3023,6 +3024,7 @@ CORNER_STATE_FILES = {
     "yoso_corner": "yoso_corner.json",
     "doushi_corner": "doushi_corner.json",
     "mystery_corner": "mystery_corner.json",
+    "lawsim_corner": "lawsim_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -3045,7 +3047,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner", "mystery_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -4048,6 +4050,7 @@ def _project_corner_state(data):
                            "operator-moved-during-yosou",
                            "operator-moved-during-doushi",
                            "operator-moved-during-mystery",
+                           "operator-moved-during-lawsim",
                            "case-completed", "case-error",
                            "duration",
                            "audio-complete",
@@ -4894,6 +4897,7 @@ def _collect_corner_files(state_dir, payload, now):
         "yoso_corner",
         "doushi_corner",
         "mystery_corner",
+        "lawsim_corner",
         "soren91_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
@@ -5392,6 +5396,7 @@ def _collect_programs(state_dir, soren, now):
         "yoso_corner": {"present": False, "readable": False},
         "doushi_corner": {"present": False, "readable": False},
         "mystery_corner": {"present": False, "readable": False},
+        "lawsim_corner": {"present": False, "readable": False},
         "soren91_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
@@ -7929,6 +7934,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'tsuitate': 'tsuitate_corner', 'weather': 'weather_corner',
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
     'mystery': 'mystery_corner',
+    'communist-law-simulator': 'lawsim_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',
@@ -8119,6 +8125,9 @@ def _program_admission_owner_free(runtime, owners, expected):
         return None
     # These views have a canonical restoration exception. Do not reproduce it
     # incompletely or call them occupied/free without its additional evidence.
+    # lawsim は例外集合に入れない: 実行側（rotation/admission）は failed の
+    # lawsim を「占有中（要回収）」と判定するため、診断だけ unknown にすると
+    # 不一致になる（PR #2502 の独立検証で再現）。mystery と同じ扱い。
     if status == 'failed' and name in {'paper_corner', 'paper_corner_manual', 'doushi_corner'}:
         return None
     return status not in {'starting', 'active', 'restoring', 'recovery_required', 'failed'}

@@ -152,7 +152,9 @@ def test_fifo_incomplete_scan_never_claims_clear(admission, case):
     ('nethack_corner', 'restoring', False), ('nethack_corner', 'recovery_required', False),
     ('nethack_corner', 'failed', False), ('nethack_corner', 'completed', True),
     ('paper_corner', 'failed', None), ('paper_corner_manual', 'failed', None),
-    ('doushi_corner', 'failed', None), ('nethack_corner', 'secret', None),
+    ('doushi_corner', 'failed', None),
+    ('lawsim_corner', 'failed', False),
+    ('nethack_corner', 'secret', None),
     ('retro_corner', 'failed', True)])
 def test_registry_exact_owner_contract(admission, owner, status, expected):
     owners, _, runtime, collect = admission

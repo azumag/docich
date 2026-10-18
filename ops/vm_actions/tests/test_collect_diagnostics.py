@@ -477,6 +477,30 @@ def test_doushi_corner_state_is_collected_without_the_ranking_or_lease(tmp_path)
     assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
 
 
+def test_lawsim_corner_state_is_collected_without_the_runtime_identity(tmp_path):
+    # Same contract as doushi: the transient session payload and the runtime
+    # identity stay out of diagnostics; only statuses, timestamps and the
+    # fixed end_reason enum may leave state_dir.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    (state_dir/'runtimes'/'g4-a1b2c3d4').mkdir(parents=True)
+    (state_dir/'lawsim_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'lawsim-view',
+        'end_reason':'operator-moved-during-lawsim','completed_at':1.0,
+        'lawsim_runtime_identity':{'game':'lawsim-view','runtime_id':'g4-a1b2c3d4',
+                                   'generation':4,'lease_id':'SECRET-LEASE'},
+        'final_status':'plan_achieved'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['lawsim_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['game']=='lawsim-view'
+    assert entry['end_reason']=='operator-moved-during-lawsim'
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
+
+
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
     # docich#1221: the presenter pane dies with its tmux window, so the
     # corner's own record is the only durable evidence of *why* a
