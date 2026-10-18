@@ -51,6 +51,7 @@ def food(letter="f"):
 def test_catalog_loads_and_matches_the_canary_policy_surface():
     specs = load_action_catalog(CATALOG)
     assert {spec.id for spec in specs} == {
+        "severe_status_recovery",
         "advance_message",
         "confirm_attack",
         "decline_prompt",
