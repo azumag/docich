@@ -82,7 +82,12 @@ def render(data):
             leaf_complete = isinstance(leaf, dict) and leaf.get("scan_complete") is True
             incomplete = incomplete or not leaf_complete
             parts.append(f"{family}_{suffix}_bytes={_uint(leaf, 'allocated_bytes')}")
-        parts.append(f"{family}_total_bytes={_uint(item, 'allocated_bytes')}")
+        # The db/wal/shm family sum. It must not flatten to
+        # `{family}_total_bytes`: the `<family>_total` tree category below
+        # already publishes that key, so the two different byte totals would
+        # collide in the flat `key=value` context and make category-wise
+        # attribution ambiguous (azumag/docich#866).
+        parts.append(f"{family}_family_bytes={_uint(item, 'allocated_bytes')}")
 
     for category in TREE_CATEGORIES:
         item = breakdown.get(category)

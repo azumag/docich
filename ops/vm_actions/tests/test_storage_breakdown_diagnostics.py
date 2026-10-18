@@ -511,6 +511,38 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertNotIn("/", context)
         self.assertNotIn("home", context)
 
+    def test_context_keys_are_unique_across_db_family_and_tree_categories(self):
+        # #866: the db/wal/shm family sum and the `<family>_total` tree
+        # category are different byte totals, so their flat context keys must
+        # not collide (the previous `{family}_total_bytes` did).
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        family = {
+            "scan_complete": True,
+            "present_count": 3,
+            "allocated_bytes": 600,
+            "db": {**leaf, "allocated_bytes": 100},
+            "wal": {**leaf, "allocated_bytes": 200},
+            "shm": {**leaf, "allocated_bytes": 300},
+        }
+        tree = {**leaf, "count": 7, "allocated_bytes": 900}
+        breakdown = {
+            "version": 1,
+            "opencode_default": family,
+            "opencode_worker": family,
+            "opencode_default_total": tree,
+            "opencode_worker_total": tree,
+        }
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        keys = [pair.split("=", 1)[0] for pair in context.split(",")]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertIn("opencode_default_family_bytes=600", context)
+        self.assertIn("opencode_default_total_bytes=900", context)
+        self.assertIn("opencode_worker_family_bytes=600", context)
+        self.assertIn("opencode_worker_total_bytes=900", context)
+
     def test_missing_breakdown_is_explicitly_unavailable(self):
         available, incomplete, context = summary.render({})
         self.assertEqual((available, incomplete), (0, 1))
