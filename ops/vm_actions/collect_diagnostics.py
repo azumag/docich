@@ -8086,8 +8086,10 @@ def _program_admission_owner_free(runtime, owners, expected):
         return None
     # These views have a canonical restoration exception. Do not reproduce it
     # incompletely or call them occupied/free without its additional evidence.
-    if status == 'failed' and name in {'paper_corner', 'paper_corner_manual',
-                                       'doushi_corner', 'lawsim_corner'}:
+    # lawsim は例外集合に入れない: 実行側（rotation/admission）は failed の
+    # lawsim を「占有中（要回収）」と判定するため、診断だけ unknown にすると
+    # 不一致になる（PR #2502 の独立検証で再現）。mystery と同じ扱い。
+    if status == 'failed' and name in {'paper_corner', 'paper_corner_manual', 'doushi_corner'}:
         return None
     return status not in {'starting', 'active', 'restoring', 'recovery_required', 'failed'}
 
