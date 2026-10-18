@@ -336,6 +336,7 @@ class LiveMatch:
         self.sleep = sleep
         self.poll_s = poll_s
         self._offset = 0
+        self._discarding = False  # inside an oversized line being dropped
         self._last_parse = 0.0
         self._thread = None
         self.engine = pc.new_state({}, seed=seed)
@@ -351,9 +352,14 @@ class LiveMatch:
         still read forward in bounded windows (fixed byte budget and a fixed
         line count per poll), so already-consumed inputs can never be
         re-applied. A shrunk file is treated as a rotation and re-read from
-        its start (that content is new by definition). An oversized single
-        fragment that fills the whole window is dropped forward so a
-        pathological line cannot stall the slot.
+        its start (that content is new by definition).
+
+        An oversized single line that fills the whole window is dropped, and
+        the drop keeps discarding until the line's newline: a crafted tail
+        after the dropped bytes must never be re-interpreted as a fresh chat
+        line. The discard also persists across EOF — an unterminated line can
+        still be appended to, and its continuation is part of the same line —
+        so only a newline (or a rotation) ends the drop.
         """
         if self.inbox_file is None:
             return
@@ -363,6 +369,7 @@ class LiveMatch:
             return
         if size < self._offset:
             self._offset = 0  # rotated/truncated: only the remaining bytes are new
+            self._discarding = False
         if size <= self._offset:
             return
         try:
@@ -373,10 +380,24 @@ class LiveMatch:
             return
         if not raw:
             return
+        newline = raw.find(b"\n")
+        if self._discarding:
+            # inside an oversized line: drop everything up to its newline.
+            # EOF does not end the drop: the line can still be appended to,
+            # and its continuation is part of the same line.
+            if newline == -1:
+                self._offset += len(raw)
+                return
+            self._offset += newline + 1
+            self._discarding = False
+            return
         complete = raw.split(b"\n")[:-1]  # the tail may be a partial line
         if not complete:
             if size - self._offset > len(raw):
-                self._offset += len(raw)  # drop the oversized fragment forward
+                # the line is longer than the window: drop it and keep
+                # discarding until its newline (its tail is not a new line)
+                self._discarding = True
+                self._offset += len(raw)
             return
         if len(complete) > INBOX_MAX_LINES_PER_POLL:
             complete = complete[:INBOX_MAX_LINES_PER_POLL]

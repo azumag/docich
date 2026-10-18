@@ -464,3 +464,80 @@ def test_snapshot_body_overlays_the_falling_pair():
     assert board[ay][ax] == pair["axis"] and board[sy][sx] == pair["satellite"]
     # the previously occupied satellite cell is clear again as the pair moved
     assert board[old_satellite[1]][old_satellite[0]] is None
+
+
+def test_consume_inbox_discards_an_oversized_line_through_its_newline(tmp_path):
+    """Regression: an oversized line whose prefix is an exact multiple of the
+    read window is dropped window by window; the offset lands exactly on the
+    crafted tail, which the old code then applied as a fresh line. The fix
+    keeps discarding through the line's newline instead."""
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # prefix exactly 2 windows: after the second drop the offset lands at the
+    # crafted tail, so the old code parsed and applied it on the next poll
+    giant = b"x" * (INBOX_READ_BUDGET_BYTES * 2) \
+        + b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}'
+    inbox.write_bytes(giant + b"\n")
+    while live._offset < inbox.stat().st_size:
+        live.consume_inbox()
+    assert live.engine["roster"] == []  # the crafted tail was never applied
+    assert live._offset == inbox.stat().st_size
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert [row["user_id"] for row in live.engine["roster"]] == ["u1"]
+
+
+def test_consume_inbox_keeps_discarding_across_eof_until_newline(tmp_path):
+    """Regression: EOF does not end the discard. An unterminated line can
+    still be appended to; its continuation — even a crafted valid join — is
+    part of the same line and must stay discarded until the newline."""
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # prefix exactly one window, then a crafted join with NO trailing newline
+    inbox.write_bytes(b"x" * INBOX_READ_BUDGET_BYTES
+                      + b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}')
+    live.consume_inbox()  # window full of the prefix: drop, enter discard
+    live.consume_inbox()  # EOF: the crafted tail is skipped, discard persists
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []
+    # the line is appended to: the continuation is still the same line
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []  # discarded through the newline
+    # a real new line after that newline applies normally
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert [row["user_id"] for row in live.engine["roster"]] == ["u1"]
+
+
+def test_consume_inbox_keeps_discarding_across_eof_for_multi_window_giant(tmp_path):
+    """Regression: a giant line spanning several read windows must keep its
+    discard state when it reaches EOF. Otherwise an appended continuation
+    (even a crafted valid join) is re-interpreted as a fresh chat line."""
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # two full windows of junk, no newline, ending exactly at EOF
+    inbox.write_bytes(b"x" * (INBOX_READ_BUDGET_BYTES * 2))
+    while live._offset < inbox.stat().st_size:
+        live.consume_inbox()
+    assert live._discarding is True
+    assert live._offset == inbox.stat().st_size
+    # a crafted join appended as a continuation of the same physical line
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []
