@@ -734,8 +734,17 @@ EEXIST リトライ 10 秒後に無言で skip する。どちらも run store �
   （`xlogfile` / `xlogfile_lock` / `logfile` / `logfile_lock` / `record`）、
   親 playground・save_dir・dump_dir のみ。任意 path・環境変数・argv は追わない。
 - 各 path は `lstat`（symlink を追わない）で存在/種別/size/mtime/mode/uid/gid/nlink のみ。
+  不在は `{"exists": false}` だけを返し、null の羅列で予算を消費しない。
   `xlogfile_lock`・`logfile_lock` には対象との同 inode 判定（dev+ino 一致 boolean）を付け、
   残置 lock と共有 hard link を区別する。path 名・内容・hash は出力しない。
+- `launchers` は固定 2 path（`/usr/games/nethack` / `/usr/local/bin/nethack`）の
+  lstat・symlink 先（文字種検証済み）・script 先頭 4KiB からの allowlist 変数
+  （`HACKDIR` 等 4 key）のみ。`alternates` は固定 2 path
+  （`/var/lib/nethack/xlogfile` / `/usr/games/lib/nethackdir/xlogfile`）の lstat のみ。
+- `xlog_siblings` は playground の `xlogfile*` 名（字種検証済み、最大8件、名前順）の
+  size/mtime のみ。`binaries` は `dpkg-query -L`（固定2 package）と launcher symlink 先から
+  実体 binary（最大2件）を解決し、8MiB 上限で `xlogfile` という文字列が
+  compile-in されているかの boolean だけを返す（binary 内容は出力しない）。
 - `save_dir_entries` は dirfd + `O_NOFOLLOW` で player save file の個数と最新 mtime だけを
   数える（最大128エントリ、symlink は数えない）。
 - `processes` は `/proc` の `comm` が `nethack` の稼働 process（最大4件）について
@@ -753,6 +762,10 @@ EEXIST リトライ 10 秒後に無言で skip する。どちらも run store �
 - `findings` は導出 boolean（`xlog_lock_present` / `xlog_lock_shares_inode` /
   `xlog_file_shared_hardlink`）のみ。原因の確定は人間の判断であり、
   collector は修復・削除・権限変更を一切行わない。
+- 予算縮退では、stat 系の lock/permission 証拠が最後まで残る。省略対象は
+  tail の最終 record・binaries・siblings・processes・sysconf values の各 optional detail
+  （`*_omitted` marker 付き）だけで、それらは他の optional detail と同じ段階で先に落ちる。
+  セクション全体の collapse は hard ceiling の最終手段のみ。
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 

@@ -7,6 +7,7 @@ never leak xlog content, names, or death text into the output.
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,10 +46,15 @@ class XlogPathTests(unittest.TestCase):
 
     def collect(self, **overrides):
         def guard_run(argv, **_):
-            # The only allowed exec is the fixed dpkg-query; everything else
-            # (and any argv drift) fails the test.
-            if argv[:3] == ['dpkg-query', '-W',
-                            '-f=${Package}\t${Version}\t${Status}\n']:
+            # The only allowed exec is the fixed dpkg-query (package -W and
+            # file-list -L); everything else (and any argv drift) fails the test.
+            if argv[:2] == ['dpkg-query', '-W']:
+                self.assertEqual(
+                    argv[2], '-f=${Package}\t${Version}\t${Status}\n')
+                self.assertEqual(set(argv[3:]), set(diag.NETHACK_XLOG_PACKAGES))
+                return subprocess.CompletedProcess(argv, 1, '', '')
+            if argv[:2] == ['dpkg-query', '-L']:
+                self.assertEqual(set(argv[2:]), set(diag.NETHACK_XLOG_PACKAGES))
                 return subprocess.CompletedProcess(argv, 1, '', '')
             raise AssertionError('no exec: %r' % (argv,))
         with mock.patch.object(diag, '_nethack_xlog_game_paths',
@@ -58,15 +64,35 @@ class XlogPathTests(unittest.TestCase):
 
     def test_missing_files_are_absent_not_zero(self):
         result = self.collect()
-        for name in ('xlogfile', 'xlogfile_lock', 'logfile', 'logfile_lock', 'record'):
-            self.assertIs(result['paths'][name]['exists'], False, name)
-            self.assertIsNone(result['paths'][name]['size'], name)
-        self.assertIs(result['dirs']['save_dir']['exists'], True)
-        self.assertIs(result['dirs']['save_dir']['dir'], True)
+        for name in ('xlogfile', 'logfile', 'record'):
+            self.assertEqual(result['paths'][name], {'exists': False}, name)
+        self.assertEqual(result['paths']['xlogfile_lock'],
+                         {'exists': False, 'same_inode_as_xlogfile': None})
+        self.assertEqual(result['paths']['logfile_lock'],
+                         {'exists': False, 'same_inode_as_logfile': None})
+        self.assertEqual(result['dirs']['playground'], {'exists': True, 'symlink': False,
+                                                        'regular': False, 'dir': True,
+                                                        'size': self.playground.stat().st_size,
+                                                        'mtime': self.playground.stat().st_mtime,
+                                                        'mode': stat.S_IMODE(self.playground.stat().st_mode),
+                                                        'uid': self.playground.stat().st_uid,
+                                                        'gid': self.playground.stat().st_gid,
+                                                        'nlink': self.playground.stat().st_nlink})
         self.assertIs(result['findings']['xlog_lock_present'], False)
         self.assertIsNone(result['findings']['xlog_lock_shares_inode'])
         self.assertIs(result['xlog']['readable'], False)
         self.assertIsNone(result['xlog']['last_record'])
+
+    def test_fixed_alternates_and_launchers_are_reported(self):
+        result = self.collect()
+        for key in ('/var/lib/nethack/xlogfile', '/usr/games/lib/nethackdir/xlogfile'):
+            self.assertEqual(result['alternates'][key], {'exists': False}, key)
+        self.assertIn('/usr/games/nethack', result['launchers'])
+        self.assertIn('/usr/local/bin/nethack', result['launchers'])
+        self.assertIs(result['xlog_siblings']['present'], True)
+        self.assertEqual(result['xlog_siblings']['entries'], [])
+        self.assertIs(result['binaries']['available'], False)
+        self.assertEqual(result['binaries']['entries'], [])
 
     def test_stale_lock_is_detected_without_following(self):
         xlogfile = self.playground / 'xlogfile'
@@ -276,6 +302,8 @@ class XlogSysconfTests(unittest.TestCase):
 class XlogPackagesTests(unittest.TestCase):
     def run_packages(self, stdout='', returncode=0, **kwargs):
         def fake_run(argv, **_):
+            if argv[:2] == ['dpkg-query', '-L']:
+                return subprocess.CompletedProcess(argv, 1, '', '')
             self.assertEqual(argv[:3], ['dpkg-query', '-W',
                                         '-f=${Package}\t${Version}\t${Status}\n'])
             self.assertEqual(set(argv[3:]), set(diag.NETHACK_XLOG_PACKAGES))
@@ -311,6 +339,141 @@ class XlogProcessTests(unittest.TestCase):
         result = diag._collect_nethack_xlog(1790000000)['processes']
         self.assertEqual(result['count'], result['entries'].__len__())
         self.assertIsInstance(result['count'], int)
+
+
+class XlogLauncherTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+
+    def launcher(self, body=None, *, symlink_to=None):
+        path = self.root / 'nethack'
+        if symlink_to is not None:
+            path.symlink_to(symlink_to)
+        else:
+            path.write_text(body or '', encoding='utf-8')
+        return diag._nethack_xlog_launcher(path)
+
+    def test_symlink_target_is_projected(self):
+        target = self.root / 'real-nethack'
+        target.write_bytes(b'ELF')
+        entry = self.launcher(symlink_to=target)
+        self.assertIs(entry['stat']['symlink'], True)
+        self.assertEqual(entry['target'], str(target))
+        self.assertEqual(entry['vars'], {})
+
+    def test_script_vars_allowlist(self):
+        entry = self.launcher(
+            '#!/bin/sh\nHACKDIR=/usr/lib/games/nethack\n'
+            'export SECRET=/PRIVATE\nXLOGFILE=xlogfile\nWIZARDS=root\n')
+        self.assertEqual(entry['vars'], {'hackdir': '/usr/lib/games/nethack',
+                                         'xlogfile': 'xlogfile'})
+        self.assertNotIn('SECRET', json.dumps(entry))
+
+    def test_binary_launcher_has_no_vars(self):
+        entry = self.launcher()  # empty regular file
+        self.assertEqual(entry['vars'], {})
+
+
+class XlogBinariesTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+
+    def collect_binaries(self, dpkg_list_stdout=''):
+        def fake_run(argv, **_):
+            if argv[:2] == ['dpkg-query', '-L']:
+                self.assertEqual(set(argv[2:]), set(diag.NETHACK_XLOG_PACKAGES))
+                return subprocess.CompletedProcess(argv, 0, dpkg_list_stdout, '')
+            raise AssertionError('no exec: %r' % (argv,))
+        with mock.patch.object(diag.subprocess, 'run', side_effect=fake_run):
+            return diag._nethack_xlog_binaries([])
+
+    def test_dpkg_binary_containing_xlog_string(self):
+        binary = self.root / 'nethack'
+        binary.write_bytes(b'\x7fELF...xlogfile\x00...')
+        result = self.collect_binaries(f'{binary}\n/usr/share/doc/README\n')
+        self.assertIs(result['available'], True)
+        self.assertEqual(len(result['entries']), 1)
+        self.assertEqual(result['entries'][0]['origin'], 'dpkg')
+        self.assertIs(result['entries'][0]['xlog_string_present'], True)
+
+    def test_binary_without_string_reports_false(self):
+        binary = self.root / 'nethack'
+        binary.write_bytes(b'\x7fELF no xlog here')
+        result = self.collect_binaries(f'{binary}\n')
+        self.assertIs(result['entries'][0]['xlog_string_present'], False)
+
+    def test_missing_binary_is_skipped_and_unavailable(self):
+        result = self.collect_binaries('/nonexistent/nethack\n')
+        self.assertIs(result['available'], False)
+        self.assertEqual(result['entries'], [])
+
+
+class XlogSiblingsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.playground = self.root / 'nethack'
+        self.playground.mkdir()
+
+    def test_only_xlogfile_prefixed_siblings(self):
+        (self.playground / 'xlogfile').write_bytes(b'')
+        (self.playground / 'xlogfile.1').write_bytes(b'old')
+        (self.playground / 'xlogfile_lock').write_bytes(b'')
+        (self.playground / 'record').write_bytes(b'unrelated')
+        result = diag._nethack_xlog_siblings(self.playground)
+        self.assertIs(result['present'], True)
+        self.assertEqual([item['name'] for item in result['entries']],
+                         ['xlogfile', 'xlogfile.1', 'xlogfile_lock'])
+        self.assertEqual(result['entries'][1]['size'], 3)
+        self.assertIs(result['scan_complete'], True)
+
+    def test_missing_playground(self):
+        result = diag._nethack_xlog_siblings(self.root / 'absent')
+        self.assertIs(result['present'], False)
+        self.assertEqual(result['entries'], [])
+
+
+class XlogBudgetTests(unittest.TestCase):
+    def section(self):
+        return {
+            'schema_version': 1, 'collected_at': 1790000000,
+            'xlog': {'readable': True, 'last_record': {'points': 5}},
+            'binaries': {'available': True, 'entries': [{'origin': 'dpkg'}]},
+            'xlog_siblings': {'present': True, 'entries': [{'name': 'xlogfile.1'}]},
+            'processes': {'count': 1, 'entries': [{'pid': 7}]},
+            'sysconf': {'readable': True, 'values': {'xlogfile': 'xlogfile'}},
+        }
+
+    def test_budget_drops_optional_detail_only(self):
+        payload = {'nethack_xlog': self.section()}
+        diag._nethack_xlog_budget(payload)
+        section = payload['nethack_xlog']
+        self.assertIsNone(section['xlog']['last_record'])
+        self.assertIs(section['xlog']['last_record_omitted'], True)
+        self.assertEqual(section['binaries']['entries'], [])
+        self.assertIs(section['binaries']['entries_omitted'], True)
+        self.assertEqual(section['xlog_siblings']['entries'], [])
+        self.assertEqual(section['processes']['entries'], [])
+        self.assertEqual(section['sysconf']['values'], {})
+        self.assertIs(section['sysconf']['values_omitted'], True)
+
+    def test_drop_collapses_to_findings_stub(self):
+        payload = {'nethack_xlog': self.section()}
+        diag._nethack_xlog_drop(payload)
+        self.assertEqual(payload['nethack_xlog'], {
+            'schema_version': 1, 'collected_at': 1790000000,
+            'status': 'output_omitted'})
+
+    def test_budget_ignores_missing_section(self):
+        payload = {}
+        diag._nethack_xlog_budget(payload)
+        diag._nethack_xlog_drop(payload)
+        self.assertEqual(payload, {})
 
 
 class HistorySummaryTests(unittest.TestCase):
