@@ -30,3 +30,6 @@ games/roms/*
 
 # bench/jev_bench.py run artifacts (raw logs + CSVs) stay out of Git.
 /bench/runs/
+
+# Project-local npm cache used when the user cache has permission problems.
+/.npm-cache/

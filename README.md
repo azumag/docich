@@ -355,6 +355,7 @@ games/roms/                   ROM 置き場 (gitignore。自己吸い出し品�
 games/soviet_now/             submodule → azumag/soviet_now (sorengame 本体, main 追跡)
 games/hanjuku-sfc-speedrun/   submodule → azumag/hanjuku-sfc-speedrun (半熟英雄 RTA データ)
 native/ffmpeg/                docichcc source, pinned build, PoC, stress proof
+workers/                      Cloudflare Workers (tsuitate-bot / arena 参加型ゲーム)。配備はOwnerのみ、CI はビルド検証まで
 scripts/                      Ubuntu setup, smoke tests, systemd units, wiki publish
 tests/                        stdlib unittest suite
 wiki/                         GitHub wiki 原稿 (scripts/publish_wiki.sh で発行)
