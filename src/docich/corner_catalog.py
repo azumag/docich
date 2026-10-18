@@ -187,6 +187,28 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
+        elif item.adapter == "trpg":
+            # Participatory TRPG / murder-mystery view (Issue #684, PR-3).
+            # Default disabled and manual-only until the owner approves auto
+            # rotation; audio/fetch/live settings are out of scope for now.
+            if item.id != "trpg-corner" or item.game != "trpg-view":
+                raise CornerCatalogError(
+                    "trpg requires id=trpg-corner and game=trpg-view"
+                )
+            if item.fetch_on_start or item.audio_enabled:
+                raise CornerCatalogError(
+                    "trpg accepts neither audio_enabled nor fetch_on_start"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "trpg stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("trpg requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("trpg duration_minutes must be an integer 1-14")
         elif item.adapter == "mystery":
             # Participatory AI探偵ミステリー: one deterministic case per slot.
             # The duration is the whole-case budget (1-45 minutes; the manager's

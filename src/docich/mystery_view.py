@@ -258,13 +258,20 @@ def handler_for(path, runtime_id: str = "preview", *, generation=None, lease_id=
                 data = reader(path)
             except OSError:
                 data = None
-            status, ok = (200, True) if data is not None else (503, False)
+            # A missing payload is the view server's *normal* state right after
+            # the switch: the corner writes the first board only after the
+            # GameSwitch readiness gate passes. Reporting it as 503/ok:false
+            # would fail every first start (the production 2026-10-18 fire:
+            # mystery state interrupted / switch-terminal-before-corner-active
+            # with started_at=null). The readiness contract is therefore
+            # "server answers with the bound identity", and the board itself
+            # shows its preparing screen until the corner publishes the case.
             payload = dict(data) if isinstance(data, dict) else \
-                {"reason": "case-unavailable"}
-            payload.update(ok=ok, runtime_id=runtime_id, generation=generation,
+                {"case": None, "reason": "case-unavailable"}
+            payload.update(ok=True, runtime_id=runtime_id, generation=generation,
                            lease_id=lease_id)
-            self.reply(status, json.dumps(payload, ensure_ascii=False,
-                                          allow_nan=False).encode("utf-8"),
+            self.reply(200, json.dumps(payload, ensure_ascii=False,
+                                       allow_nan=False).encode("utf-8"),
                        "application/json; charset=utf-8")
 
     return Handler
