@@ -158,6 +158,70 @@ def test_parse_vote_and_accusation():
     assert tc.parse_accusation("!accuse") is None
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("!1", 1), ("3", 3), ("!vote 2", 2), ("!v 4", 4),
+    (" !VOTE ０２ ", 2), ("!٢", 2), ("!01", 1),
+])
+def test_parse_vote_preserves_supported_forms(text, expected):
+    assert tc.parse_vote(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "!²", "!vote ²", "!v ²", "!②", "!1²",
+    pytest.param("!" + "1" * 5000, id="oversized-integer"),
+    "!0", "!5", "!-1", "!+1", "!1_0", "!1 2", "", None,
+])
+def test_parse_vote_rejects_invalid_input(text):
+    assert tc.parse_vote(text) is None
+
+
+@pytest.mark.parametrize("text, expected_trick", [
+    ("!accuse B", ""), ("!accuse B   ", ""), ("!accuse B 毒を盛った", "毒を盛った"),
+])
+def test_parsed_accusation_can_be_recorded(text, expected_trick):
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    tc.open_choice(st)
+    tc.close_choice(st)
+    tc.open_climax(st)
+    parsed = tc.parse_accusation(text)
+    assert parsed == ("B", expected_trick)
+    tc.record_accusation(st, "u1", *parsed)
+    assert st["accusations"]["u1"]["trick"] == expected_trick
+    tc.close_climax(st)
+    assert st["climax_result"]["correct_users"] == ["u1"]
+    assert st["scores"] == {"u1": 10}
+
+
+@pytest.mark.parametrize("trick_args, expected_trick", [
+    ((), ""), (("",), ""), ((None,), ""),
+    (("毒" * tc.MAX_TRICK_TEXT,), "毒" * tc.MAX_TRICK_TEXT),
+])
+def test_record_accusation_optional_trick(trick_args, expected_trick):
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    tc.open_choice(st)
+    tc.close_choice(st)
+    tc.open_climax(st)
+    tc.record_accusation(st, "u1", "A", "前の推理")
+    tc.record_accusation(st, "u1", "B", *trick_args)
+    assert len(st["accusations"]) == 1
+    assert st["accusations"]["u1"]["suspect"] == "B"
+    assert st["accusations"]["u1"]["trick"] == expected_trick
+
+
+@pytest.mark.parametrize("trick", [False, 0, [], {}, "毒" * (tc.MAX_TRICK_TEXT + 1)])
+def test_record_accusation_rejects_invalid_trick(trick):
+    st = tc.new_state()
+    tc.start(st, make_scenario())
+    tc.open_choice(st)
+    tc.close_choice(st)
+    tc.open_climax(st)
+    with pytest.raises(tc.TrpgCornerError, match="invalid trick"):
+        tc.record_accusation(st, "u1", "B", trick)
+    assert st["accusations"] == {}
+
+
 def test_ledger_record_and_trim():
     ledger = tc.new_ledger()
     st = tc.new_state()
