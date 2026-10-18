@@ -106,20 +106,36 @@ def test_terrain_planner_and_bump_never_target_unreviewed_glyphs(glyph):
     assert act(brain(), text) == ["k"]  # only actual visible creature is eligible
 
 
-@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
-def test_severe_status_and_starvation_dominate_the_intent_and_still_wait(condition, hp):
-    # owner decision 2026-09-23: どんな状態でも完全なframeなら `.` を送る。
-    # 「dominate」は *movement* の意味で残る: 隣接creature+重症では退避/接触を
-    # 一切作らず、最後に1ターン待つだけ。
+def test_severe_status_dominates_movement_and_offers_the_reviewed_prayer(condition, hp):
+    # A severe status dominates *movement*: no retreat/bump is built beside a
+    # creature, and the only reviewed action is the prayer `#` (issue #759).
+    text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
+    agent = brain()
+    assert act(agent, text) == ["#"]
+    assert agent.last_decision.intent == "status_recovery"
+    assert agent.last_progress_decision.intent == "status_recovery"
+    # Helpers also guard the observation even if a caller supplies a misleading
+    # survival intent (the exact critical-HP masking regression): movement stays
+    # blocked while the explicit wait is still available on a severe-free hold.
+    obs = normalize_tty(text)
+    fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
+    assert step_out_of_hold(fake, obs, NethackExplorer()) is None
+    rest = rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition="Fainting")))
+    assert rest is not None
+    assert rest.text == "."
+
+
+@pytest.mark.parametrize("condition", ["Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
+def test_starvation_dominates_the_intent_and_still_waits(condition, hp):
+    # owner decision 2026-09-23: a complete frame may spend one `.` wait turn.
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
     agent = brain()
     assert act(agent, text) == ["."]
-    assert agent.last_decision.intent in {"status_emergency", "food_emergency"}
+    assert agent.last_decision.intent == "food_emergency"
     assert agent.last_progress_decision.intent == "rest_turn"
-    # Helpers also guard the observation even if a caller supplies a misleading
-    # survival intent (the exact critical-HP masking regression): movement stays
-    # blocked while a wait turn is allowed.
     obs = normalize_tty(text)
     fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
     assert step_out_of_hold(fake, obs, NethackExplorer()) is None
@@ -895,23 +911,6 @@ def test_welcome_banner_with_more_on_next_row_is_advanced():
     assert act(brain(), text) == [" "]
 
 
-def test_production_prayer_recovery_types_extended_command_over_fresh_frames():
-    agent = brain()
-    severe = frame(hp="4(16)", condition="Sick")
-
-    assert act(agent, severe) == ["#"]
-    assert agent.last_progress_decision.intent == "status_recovery"
-
-    # Each subsequent frame advances one character of `pray` + Enter.
-    typed = ""
-    for expected in ["p", "r", "a", "y", "\n"]:
-        prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? " + typed)
-        assert normalize_tty(prompt).prompt == "selection"
-        assert act(agent, prompt) == [expected]
-        assert agent.last_progress_decision.intent == "status_recovery"
-        typed += expected if expected != "\n" else ""
-
-
 def _obs(text):
     return Observation(game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=text)
 
@@ -932,41 +931,100 @@ def _send(agent, text, expected):
         agent.action_sent(actions[0])
 
 
-def test_rejected_recovery_continuation_keeps_the_unsent_key():
+def _getlin(typed):
+    return frame(hp="4(16)", condition="Sick", message="#" + ((" " + typed) if typed else ""))
+
+
+def test_production_prayer_recovery_types_the_command_and_confirms():
+    # The real NetHack 5.0.0 TTY sequence: '#' opens the extended-command getlin
+    # (top line is just "#"), `pray` + Enter asks "Are you sure you want to
+    # pray? [yn] (n)", and 'y' completes the prayer.
+    agent = brain()
+    assert act(agent, frame(hp="4(16)", condition="Sick")) == ["#"]
+    assert agent.last_progress_decision.intent == "status_recovery"
+
+    typed = ""
+    for expected in ["p", "r", "a", "y", "\n"]:
+        getlin = _getlin(typed)
+        assert normalize_tty(getlin).prompt == "none"
+        assert act(agent, getlin) == [expected]
+        assert agent.last_progress_decision.intent == "status_recovery"
+        typed += expected if expected != "\n" else ""
+
+    confirm = frame(hp="4(16)", condition="Sick", message="Are you sure you want to pray? [yn] (n)")
+    assert normalize_tty(confirm).prompt == "yes_no"
+    assert act(agent, confirm) == ["y"]
+    assert agent.last_progress_decision.intent == "status_recovery"
+
+
+def test_prayer_recovery_abandons_a_frame_that_is_not_its_prompt():
+    # A frame that is neither the getlin nor the confirmation abandons the
+    # half-typed command instead of inventing keystrokes.
+    agent = brain()
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+    stray = frame(hp="4(16)", condition="Sick", message="You feel a strange sensation.")
+    actions = agent.decide(_obs(stray))
+    assert [a.text for a in actions] == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+
+def test_rejected_prayer_continuation_keeps_the_unsent_key():
     # A fresh capture that no longer matches the planned frame rejects the send.
     # The peeked continuation key must not be consumed, or replanning skips it.
     agent = brain()
-    severe = frame(hp="4(16)", condition="Sick")
-    _send(agent, severe, ["#"])
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
 
-    prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? ")
-    planned = agent.decide(_obs(prompt))
+    getlin = _getlin("")
+    planned = agent.decide(_obs(getlin))
     assert [a.text for a in planned] == ["p"]
 
-    assert agent.validate_action(planned[0], _obs(_far_change(prompt))) is False
+    stale = frame(hp="4(16)", condition="Sick", message="#", turn=13)
+    assert agent.validate_action(planned[0], _obs(stale)) is False
     agent.discard_action_plan()
 
-    replanned = agent.decide(_obs(prompt))
+    replanned = agent.decide(_obs(getlin))
     assert [a.text for a in replanned] == ["p"]  # not "r": the key was never sent
 
 
-def test_recovery_attempt_bound_survives_an_unrelated_map_change():
+def test_prayer_budget_is_one_per_episode_and_survives_a_map_change():
     agent = brain()
     _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
-    for episode in range(3):
-        typed = ""
-        for expected in ["p", "r", "a", "y", "\n"]:
-            prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? " + typed)
-            _send(agent, prompt, [expected])
-            typed += expected if expected != "\n" else ""
-        if episode < 2:
-            _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+    typed = ""
+    for expected in ["p", "r", "a", "y", "\n"]:
+        _send(agent, _getlin(typed), [expected])
+        typed += expected if expected != "\n" else ""
+    _send(agent, frame(hp="4(16)", condition="Sick", message="Are you sure you want to pray? [yn] (n)"), ["y"])
 
-    # A distant-only map change must not lift the bound on the same episode.
+    # The prayer did not cure the status: the one-per-episode budget holds even
+    # though an unrelated map cell changed.
     held = agent.decide(_obs(_far_change(frame(hp="4(16)", condition="Sick"))))
     assert [a.text for a in held] == []
     assert agent.last_progress_decision.intent == "progress_blocked"
 
-    # A real status change starts a new episode and allows recovery again.
+    # A severe-free frame ends the episode and re-arms the budget.
+    agent.decide(_obs(frame(hp="4(16)", condition="")))
     resumed = agent.decide(_obs(frame(hp="4(16)", condition="FoodPois")))
     assert [a.text for a in resumed] == ["#"]
+
+
+def test_prayer_recovery_is_withheld_in_gehennom():
+    # Gehennom (deep levels) prayer cannot help and upsets the god, so the
+    # severe status stays fail-closed there.
+    agent = brain()
+    actions = agent.decide(_obs(frame(hp="4(16)", condition="Sick", depth=25)))
+    assert [a.text for a in actions] != ["#"]
+    assert agent.last_decision.intent == "status_emergency"
+
+
+def test_prayer_result_more_page_is_advanced_after_the_sequence():
+    agent = brain()
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+    typed = ""
+    for expected in ["p", "r", "a", "y", "\n"]:
+        _send(agent, _getlin(typed), [expected])
+        typed += expected if expected != "\n" else ""
+    _send(agent, frame(hp="4(16)", condition="Sick", message="Are you sure you want to pray? [yn] (n)"), ["y"])
+
+    result = frame(hp="4(16)", condition="Sick", message="You begin praying to Thoth.  You finish your prayer.--More--")
+    assert normalize_tty(result).prompt == "more"
+    assert act(agent, result) == [" "]

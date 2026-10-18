@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from .actions import Action
 from .nethack_exploration import MOVE_KEYS, NethackExplorer, visible_safe_step
@@ -110,19 +110,59 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
 
 SEVERE_RECOVERY_COMMAND = "#"
 
+# Reviewed prayer recovery (#759).  Verified against the production canary's
+# NetHack 5.0.0 TTY (same source and nethackrc as containers/nethack-canary):
+#   '#'            -> the extended-command getlin prompt (top line shows "#")
+#   'pray' + Enter -> "Are you sure you want to pray? [yn] (n)"
+#   'y'            -> "You begin praying ... --More--" then a 3-turn freeze
+# The plain 'p' key is #pay, not #pray, so the extended command is required.
+# NetHack 5.0.0 defaults paranoid_confirmation to "pray swim trap"
+# (options.c), so dopray() always asks for the confirmation (pray.c).
+PRAY_COMMAND_KEYS = "pray\n"
+PRAY_CONFIRM_KEY = "y"
+# Gehennom (deep levels) prayer cannot help and upsets the god (pray.c
+# prayer_done() Inhell branch); only known shallow levels are eligible.
+MAX_PRAY_DUNGEON_LEVEL = 20
+
+
+def at_extended_command_prompt(obs: NethackObservation) -> bool:
+    """The extended-command getlin: top line is ``#`` plus the word so far."""
+    return obs.prompt == "none" and re.match(r"^#[ ]?[a-z]*$", obs.message or "") is not None
+
+
+def at_pray_confirmation(obs: NethackObservation) -> bool:
+    """The paranoid_confirmation prayer prompt (a whole yes/no question)."""
+    return obs.prompt == "yes_no" and "are you sure you want to pray" in (obs.message or "").lower()
+
+
+# Each reviewed prayer key with the frame predicate that must hold before it is
+# sent.  A frame that does not match abandons the half-typed command rather
+# than inventing keystrokes.
+PRAY_RECOVERY_STEPS: tuple[tuple[str, Callable[[NethackObservation], bool]], ...] = (
+    ("p", at_extended_command_prompt),
+    ("r", at_extended_command_prompt),
+    ("a", at_extended_command_prompt),
+    ("y", at_extended_command_prompt),
+    ("\n", at_extended_command_prompt),
+    (PRAY_CONFIRM_KEY, at_pray_confirmation),
+)
+
 
 def severe_status_recovery_action(obs: NethackObservation) -> Action | None:
     """Return the reviewed prayer recovery action for a severe status, if safe.
 
     Prayer is the only recovery action on the reviewed surface so far.  It is
-    deliberately withheld when the frame is not a complete turn or when a
-    creature is adjacent: praying does not protect the hero from an attack.
-    Item-specific recovery is intentionally not guessed here; it requires a
-    confirmed inventory observation and is handled separately.
+    deliberately withheld when the frame is not a complete turn or when the
+    dungeon level is unknown/Gehennom.  The presence of an adjacent creature
+    does NOT change the treatment (issue #759: a severe status kills by time
+    alone, so threat avoidance is a separate decision).  Item-specific
+    recovery is intentionally not guessed here; it requires a confirmed
+    inventory observation and is handled separately.
     """
     if not turn_ready(obs):
         return None
-    if _visible_creature_contact(obs):
+    level = obs.vitals.dungeon_level
+    if level is None or level > MAX_PRAY_DUNGEON_LEVEL:
         return None
     if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
         return None

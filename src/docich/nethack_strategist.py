@@ -21,7 +21,7 @@ from . import procs
 from .actions import Action
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
-from .nethack_policy import NethackLayeredPolicy, SEVERE_RECOVERY_COMMAND, _has_any, _visible_creature_contact
+from .nethack_policy import MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, SEVERE_RECOVERY_COMMAND, _has_any, _visible_creature_contact
 from .nethack_strategy import (
     StrategicProposal,
     StrategicRequest,
@@ -312,16 +312,16 @@ def evaluate_proposal(
             or current_observation.prompt not in {"none", "more"}
             or current_observation.player is None
             or current_observation.vitals.dungeon_level is None
+            or current_observation.vitals.dungeon_level > MAX_PRAY_DUNGEON_LEVEL
             or current_observation.vitals.hp is None
             or current_observation.vitals.hp <= 0
             or current_observation.vitals.hp_max is None
             or current_observation.vitals.hp_max <= 0
-            or _visible_creature_contact(current_observation)
             or not _has_any(current_observation, NethackLayeredPolicy._SEVERE_CONDITIONS)
         ):
             return ProposalEvaluation(
                 status="rejected",
-                reason="prayer recovery requires a severe status on a complete frame without visible creature contact",
+                reason="prayer recovery requires a severe status on a complete, non-Gehennom frame",
                 proposal=proposal,
             )
 
