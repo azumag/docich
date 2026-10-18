@@ -477,6 +477,7 @@ class RetiredCornerObserver:
         "puyo": "puyo_program.json",
         "mystery": "mystery_corner.json",
         "lawsim": "lawsim_corner.json",
+        "trpg": "trpg_corner_state.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
