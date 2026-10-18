@@ -2983,6 +2983,7 @@ CORNER_STATE_FILES = {
     "tsuitate_corner": "tsuitate_corner.json",
     "yoso_corner": "yoso_corner.json",
     "doushi_corner": "doushi_corner.json",
+    "mystery_corner": "mystery_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -3005,7 +3006,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner",
+    "doushi_corner", "mystery_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -4007,6 +4008,8 @@ def _project_corner_state(data):
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
                            "operator-moved-during-doushi",
+                           "operator-moved-during-mystery",
+                           "case-completed", "case-error",
                            "duration",
                            "audio-complete",
                            "operator-moved-after-start",
@@ -4851,6 +4854,7 @@ def _collect_corner_files(state_dir, payload, now):
         "tsuitate_corner",
         "yoso_corner",
         "doushi_corner",
+        "mystery_corner",
         "soren91_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
@@ -5348,6 +5352,7 @@ def _collect_programs(state_dir, soren, now):
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
         "doushi_corner": {"present": False, "readable": False},
+        "mystery_corner": {"present": False, "readable": False},
         "soren91_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
@@ -7884,6 +7889,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'nethack': 'nethack_corner', 'paper': 'paper_corner', 'meriken': 'soren91_corner',
     'tsuitate': 'tsuitate_corner', 'weather': 'weather_corner',
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
+    'mystery': 'mystery_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',

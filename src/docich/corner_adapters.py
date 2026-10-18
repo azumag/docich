@@ -475,6 +475,7 @@ class RetiredCornerObserver:
         "yoso": "yoso_corner.json",
         "doushi": "doushi_corner.json",
         "puyo": "puyo_program.json",
+        "mystery": "mystery_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -811,6 +812,50 @@ class PuyoCornerAdapter:
         return self.manager.resources_released()
 
 
+class MysteryCornerAdapter:
+    """Bounded AI探偵ミステリー case session through the shared slot.
+
+    One deterministic case per slot: viewers pick investigation actions via
+    Twitch polls and wager on the culprit with a channel-point prediction.
+    The engine owns the solution; this adapter only owns the lifecycle.
+    """
+
+    def __init__(self, g, corner):
+        from .mystery_corner import DEFAULT_DURATION_MINUTES, MAX_DURATION_MINUTES, MysteryCornerManager
+        from .mystery_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Mystery identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = MysteryCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+            audio_enabled=corner.audio_enabled,
+        )
+        if self.manager.duration_minutes > MAX_DURATION_MINUTES:
+            raise CornerExecutionError("Mystery duration exceeds the reviewed bound")
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -821,6 +866,7 @@ ADAPTERS = {
     "yoso": YosoCornerAdapter,
     "doushi": DoushiCornerAdapter,
     "puyo": PuyoCornerAdapter,
+    "mystery": MysteryCornerAdapter,
 }
 
 
