@@ -2,6 +2,17 @@
   "schema_version": 1,
   "actions": [
     {
+      "id": "severe_status_recovery",
+      "priority": 5,
+      "enabled": false,
+      "risk_class": "prompt",
+      "effect": "keys",
+      "description": "Reviewed prayer recovery for a visible severe status (disabled until canary evidence promotes it).",
+      "preconditions": ["prompt:none", "condition_any:Sick|FoodPois|Ill|Slime|Strngl|Stone|TermIll"],
+      "key_pattern": ["#"],
+      "postconditions": ["always"]
+    },
+    {
       "id": "advance_message",
       "priority": 10,
       "enabled": true,
