@@ -118,3 +118,37 @@ brain / ネット対戦 / 本番起動. This slice adds, still fully offline:
   step.
 
 No chat input, no adapter, no catalog change and no VM touched in this slice.
+
+## Engine integration from PR #2491 (owner-approved merge, 2026-10-18)
+
+The owner directed merging the closed PR #2491 engine branch
+(`feat/698-puyo-puyo-clone-core`) into this PR so both implementations become
+one module. Integrated features, all still offline:
+
+* **Tsu-faithful scoring tables** — `_chain_score` is now
+  `(chain power + color bonus + connected-group bonus) x perPuyo x blocks`
+  with the published classic ("通") values: chain power 1連鎖=0, 2=8, 3=16,
+  4=32, 5=64, 6=96 ... 19=512 (clamped); color bonus 1色=0, 2色=3, 3色=6,
+  4色=12; connected-group bonus 4個=0, 5個=2, 6個=3 ... 11個以上=10 (the
+  ruleset's `simultaneousBonus` descriptor). A lone 1-chain scores 0 points
+  and sends no ojama, like the original. `perPuyo` stays ruleset-driven.
+* **Ojama (garbage) economy** — attack = `(carry + lock score) // 70` with
+  the remainder carried over; a 30-ojama reserve cap (overflow discarded);
+  at most 30 dropped per lock, filled flat bottom row first, left to right;
+  received ojama falls only after the lock's own chains resolve (it cannot
+  be popped by that lock); ojama pop when directly adjacent to a cleared
+  color cell (never ojama→ojama chains) and are never scored. Attacks move
+  to the opponent's reserve once per tick (`_exchange_ojama`).
+* **`greedy_policy(state, side)`** — the PR #2491 single-step control
+  contract: the first action of `plan_actions`' best script. The bounded
+  `plan_actions` brain stays the primary; both share one evaluation path.
+* **Bounded match time limit** — `MATCH_MAX_TICKS = 15000`. `play_match`
+  ends a match that reaches the tick limit (or the driver's step cap) by
+  score comparison (higher total wins, tie -> draw) via `ROUND_OVER`, so an
+  unattended match always finishes (試合完走). Budget exhaustion keeps the
+  existing bounded TIMEOUT path.
+
+All 48 offline contract tests (this PR's suite + the ported PR #2491 cases,
+with the two superseded score assertions updated to the Tsu tables) pass
+locally; adapter / catalog registration (既定 disabled / manual_only) is the
+next slice and stays owner-gated.
