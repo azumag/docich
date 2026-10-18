@@ -111,6 +111,13 @@ PYTHONPATH=src python3 -m pytest -q tests/test_mystery_case.py \
 
 ## 6. 運用メモと既知の限界
 
+- **readiness 契約（2026-10-18 本番初回発火の修正）**: view server は switch 直後の
+  正常状態（corner がまだ payload を書いていない）でも `/api/mystery` に
+  `200 + ok:true + case:null（reason=case-unavailable）` を返す。payload 不在を 503 で
+  返すと GameSwitch の readiness が必ずタイムアウトし、初回発火が必ず失敗する
+  （本番実測: mystery state = interrupted / switch-terminal-before-corner-active /
+  started_at=null。state は reconcile_failed_start が正しく受理し、背景の sorengame へ
+  復帰済み）。ボードは case が無い間「準備中」表示になる。
 - 配信ネイティブ全画面例外（天気・予想王のみ）には入れない。本viewは通常のゲーム領域
   （960×540 viewport）に投影する。
 - 予想の精算が連続失敗した場合、予想は LOCKED のまま残る。state の
