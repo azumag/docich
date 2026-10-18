@@ -204,6 +204,36 @@ class XlogPathTests(unittest.TestCase):
             'first_starttime': 1, 'last_endtime': 2, 'complete_lines': 1})
         self.assertEqual(result['xlog']['last_record']['points'], 7)
 
+    def test_fragment_starttime_never_leaks_into_span(self):
+        # Review 5561778413 follow-up: the truncated head fragment itself
+        # carries a plausible starttime. A naive tail read would parse the
+        # fragment as a line and report first_starttime=9999999999. The
+        # boundary must fall *inside* that straddling line (the window is
+        # the last 64 KiB), with its starttime text in the visible part.
+        line_p = b'x' * 264 + b'starttime=9999999999\tendtime=1\tname=docich\n'
+        first_complete = (b'version=3.6.6\tpoints=7\tname=docich\t'
+                          b'starttime=1789990100\tendtime=1789990200\n')
+        last_complete = (b'version=3.6.6\tpoints=8\tname=docich\t'
+                         b'starttime=1789990300\tendtime=1789990400\n')
+        # file = line_p + blob  =>  window_start = file_size - 64 KiB = 264,
+        # so the visible fragment is line_p[264:] = 'starttime=9999999999…'.
+        blob_bytes = 65536 + 264 - len(line_p)
+        filler_size = blob_bytes - len(first_complete) - len(last_complete)
+        self.assertGreater(filler_size, 2)
+        blob = first_complete + b'A' * (filler_size - 1) + b'\n' + last_complete
+        self.assertEqual(len(blob), blob_bytes)
+        (self.playground / 'xlogfile').write_bytes(line_p + blob)
+        result = self.collect()
+        self.assertIs(result['xlog']['tail_head_truncated'], True)
+        # Only the three complete lines survive; the fragment is not a line.
+        self.assertEqual(result['xlog']['tail_complete_lines'], 3)
+        self.assertEqual(result['xlog']['record_span'], {
+            'first_starttime': 1789990100, 'last_endtime': 1789990400,
+            'complete_lines': 3})
+        self.assertEqual(result['xlog']['first_record']['points'], 7)
+        self.assertNotIn('9999999999', json.dumps(result['xlog']['record_span']))
+        self.assertNotIn('9999999999', json.dumps(result['xlog']['first_record']))
+
     def test_save_entries_count_only_matching_regular_files(self):
         (self.save / '1000docich').write_bytes(b'save')
         (self.save / '1000docich.0').write_bytes(b'save2')
