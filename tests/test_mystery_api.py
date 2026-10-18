@@ -20,7 +20,6 @@ from docich.mystery_api import (
     PollHelix,
     configured_poll_client,
     poll_choice_votes,
-    poll_winning_index,
 )
 
 
@@ -132,12 +131,8 @@ def test_vote_helpers_are_total_and_deterministic():
                        {"title": "c", "votes": 5}]}
     votes = poll_choice_votes(row)
     assert votes == [0, 5, 5]
-    # First-max keeps ties deterministic in case order.
-    assert poll_winning_index(votes) == 1
-    assert poll_winning_index([0, 0]) == 0
+    # The winner tie-break itself lives in mystery_participation (trpg core).
     assert poll_choice_votes({"choices": []}) is None
     assert poll_choice_votes({"choices": [{"title": "a"}]}) is None
     assert poll_choice_votes({"choices": [{"title": "a", "votes": -1}]}) is None
     assert poll_choice_votes({"choices": [{"title": "a", "votes": True}]}) is None
-    assert poll_winning_index([]) is None
-    assert poll_winning_index(None) is None

@@ -33,6 +33,7 @@ from docich.mystery_corner import (
     MysteryCornerError,
     MysteryCornerManager,
 )
+from docich.mystery_participation import load_ledger
 from docich.mystery_view import PAYLOAD_FILENAME, VIEW_NAME, read_payload
 
 
@@ -150,10 +151,14 @@ class FakePredictionClient:
         if status == "LOCKED":
             row["status"] = "LOCKED"
             if self.lock_bets:
-                for outcome in row["outcomes"]:
+                for index, outcome in enumerate(row["outcomes"]):
                     points = self.bets.get(outcome["id"], 0)
                     outcome["channel_points"] = points
                     outcome["users"] = 1 if points else 0
+                    # Twitch exposes only the top predictors per outcome.
+                    outcome["top_predictors"] = (
+                        [{"user_login": f"viewer{index}", "channel_points": points}]
+                        if points else [])
         else:
             row["status"] = status
             # Real Twitch keeps outcomes[].channel_points as the amounts bet;
@@ -332,6 +337,14 @@ def test_mystery_corner_runs_a_solo_case_then_always_reveals_and_restores(tmp_pa
     assert kinds == ["intro", "investigate", "interrogate", "deduction", "reveal"]
     assert case.culprit.name in quiet_narration[-1]["overlay"]
 
+    # Zero participation still records one completed run (participants 0).
+    ledger = load_ledger(Path(g.state_dir) / "mystery_history.json")
+    assert len(ledger["entries"]) == 1
+    entry = ledger["entries"][0]
+    assert entry["outcome"] == "completed" and entry["participants"] == 0
+    assert entry["votes_total"] == 0 and entry["polls"] == 0
+    assert entry["prediction"]["status"] == "skipped"
+
 
 def test_mystery_corner_polls_drive_the_investigation(tmp_path, quiet_narration):
     g, now, _factory, store, switch = _setup(tmp_path, duration=30)
@@ -387,14 +400,24 @@ def test_mystery_corner_settles_a_contested_prediction_with_the_engine_answer(
     session = state["session"]
     case = mystery_case.generate(session["seed"])
     assert session["prediction"]["resolved"] is True
-    # The fake crowd bets o0=100 / o1=500 → the crowd's pick is outcome o1.
+    # The fake crowd bets o0=100 / o1=500 → the payoff winner (by points) is
+    # outcome o1; the user-count tally is a 1-1 tie → lowest index (o0).
     assert session["prediction"]["hit"] is (case.culprit_index == 1)
+    assert session["prediction"]["hit_by_users"] is (case.culprit_index == 0)
     end_calls = [call for call in prediction.calls if call[0] == "end"]
     assert ("end", "pred1", "LOCKED", None) in end_calls
     resolved = [call for call in end_calls if call[2] == "RESOLVED"]
     assert len(resolved) == 1
     payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
     assert payload["case"]["reveal"]["culprit"]["name"] == case.culprit.name
+
+    # The trpg-core run ledger recorded exactly one bounded entry.
+    ledger = load_ledger(Path(g.state_dir) / "mystery_history.json")
+    assert ledger["schema"] == 1 and len(ledger["entries"]) == 1
+    entry = ledger["entries"][0]
+    assert entry["outcome"] == "completed" and entry["seed"] == case.seed
+    assert entry["participants"] == 2 and entry["votes_total"] == 0 and entry["polls"] == 0
+    assert entry["prediction"]["hit_by_users"] is (case.culprit_index == 0)
 
 
 def test_mystery_corner_refunds_an_uncontested_prediction(tmp_path, quiet_narration):
@@ -414,6 +437,11 @@ def test_mystery_corner_refunds_an_uncontested_prediction(tmp_path, quiet_narrat
     assert session["prediction"]["resolved"] is False
     assert ("end", "pred1", "CANCELED", None) in prediction.calls
     assert not any(call[2] == "RESOLVED" for call in prediction.calls)
+    # Participation is still recorded for the refunded run (counts only).
+    ledger = load_ledger(Path(g.state_dir) / "mystery_history.json")
+    assert len(ledger["entries"]) == 1
+    assert ledger["entries"][0]["participants"] == 1
+    assert ledger["entries"][0]["prediction"]["hit_by_users"] is None
 
 
 def test_mystery_corner_manual_stop_still_reveals_and_restores(tmp_path, quiet_narration):

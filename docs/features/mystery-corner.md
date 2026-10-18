@@ -48,12 +48,35 @@ src/docich/
   mystery_case.py       # 決定論事件エンジン（純粋・seed再現可能・I/Oなし）
   mystery_api.py        # Helixクライアント（アンケート POST/GET /polls、予想は
                         # hanjuku_prediction_api の共有 Helix を再利用）
+  mystery_participation.py  # trpgコア(#2481)から統合した汎用ロジック:
+                        #   冪等投票集計（1人1票・最後の票が有効・同数は最低index）、
+                        #   実行台帳（500件/256KiBで古い順に間引き・atomic fsync書込）、
+                        #   fail-closed検証。参加者は件数のみ記録（表示名は保存しない）
   mystery_narration.py  # ナレーション（overlay + enqueue_audio_text、定型文フォールバック、
                         # [mystery_corner] narration_agents が非空のときだけLLM）
   mystery_view.py       # 配信HTML事件ボード（loopback 8807、payload読み取り専用）
   mystery_corner.py     # GameSwitch でのライフサイクル + フェーズ状態機械
   adapters/mystery_program.py  # view adapter（960x540 viewport、フルスクリーン例外の対象外）
 ```
+
+### 3.1 trpgオフラインコアとの統合（#2481 → #2492、2026-10-18 統合判断）
+
+#684 には trpg レーンのオフライン中核（`trpg_corner.py`、PR #2481）が先行 merge されていたが、
+2026-10-18 の統合判断により**汎用ロジック（投票・台帳・検証）を本コーナーへ取り込み、
+`trpg_corner.py` は削除して一本化**した。引き継いだ契約:
+
+- 投票集計: 1人1票・冪等（再投票は移動）・同数は最低index・0票は None（AI探偵 solo）。
+  チャンネルポイント予想の `top_predictors`（選択肢ごとに上位のみ公開）から参加者を集計し、
+  「票数による大勢」（`hit_by_users`）を「ポイントによる精算」（Twitchが払う `hit`）と別に記録する。
+- 実行台帳: `mystery_history.json`（0600・schema 1・500件/256KiB で古い順に間引き）。
+  1事件ごとに seed・commitment・outcome（completed/failed/timeout/aborted）・参加者数・
+  投票総数・アンケート回数・予想結果を記録。**視聴者名は保存しない**（件数のみ）。
+- 検証: 保存フィールドはすべて有界・fail-closed（trpgコアの検証契約を踏襲）。
+
+引き継がないもの: シナリオファイル方式（事件は seed から決定論生成するため不要）と
+チャット `!1`〜`!4` / `!accuse` パーサ（参加経路は Twitch ネイティブのアンケート/予想）。
+これらは将来のチャット参加レイヤとして再設計できる
+（`docs/features/participatory-trpg-murder-mystery-corner.md` に Superseded バナーで経緯を記録）。
 
 - catalog 行: `{ id = "mystery", adapter = "mystery", game = "mystery-view",
   enabled = true, duration_minutes = 30, audio_enabled = true }`（#684 2026-10-18 承認）。

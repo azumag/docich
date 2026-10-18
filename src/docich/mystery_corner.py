@@ -92,6 +92,24 @@ END_REASONS = frozenset({
     "operator-moved-before-restore", "operator-stopped-before-start",
 })
 
+#: Run-ledger outcome per end reason (the trpg core's outcome vocabulary,
+#: absorbed into this corner by the #684 unification ruling 2026-10-18).
+_OUTCOME_BY_END_REASON = {
+    "case-completed": "completed",
+    "manual": "aborted",
+    "case-error": "failed",
+    "duration": "timeout",
+    "operator-moved-during-mystery": "aborted",
+    "operator-moved-after-start": "aborted",
+    "operator-moved-before-restore": "aborted",
+    "operator-stopped-before-start": "aborted",
+    "switch-terminal-before-corner-active": "aborted",
+}
+
+
+def _outcome_for(end_reason):
+    return _OUTCOME_BY_END_REASON.get(end_reason, "failed")
+
 #: Fixed, non-sensitive session error codes.
 SESSION_ERRORS = frozenset({
     "case-generate-failed", "poll-create-failed", "poll-status-failed",
@@ -556,10 +574,12 @@ class MysteryCornerManager:
         except MysteryCornerError:
             state["last_error_code"] = "case-generate-failed"
             # Nothing was ever shown: end the slot without a reveal.
+            self._record_run_ledger(state, None, session, end_reason="case-error")
             return self._restore(state, end_reason="case-error")
 
         # Stop markers still own the exit; the session degrades to display-only.
         if self._stop_requested():
+            self._record_run_ledger(state, case, session, end_reason="manual")
             return self._restore(state, end_reason="manual")
 
         end_reason = "case-completed"
@@ -612,17 +632,60 @@ class MysteryCornerManager:
                 session["revealed"] = True
                 self._write_view(state, case, session, phase="reveal")
                 self._save(state)
+            self._record_run_ledger(state, case, session, end_reason="operator-moved-during-mystery")
             return self._mark_interrupted(state, "operator-moved-during-mystery")
         if not session.get("revealed"):
             try:
                 self._phase_reveal(state, case, session)
             except Exception:
                 pass
+        self._record_run_ledger(state, case, session, end_reason=end_reason)
         if interrupted == "draining":
             # Another owner's durable switch request is draining: hand the slot
             # back (the restore queues behind the drain like yoso's does).
             return self._restore(state, end_reason="manual")
         return self._restore(state, end_reason=end_reason)
+
+    def _record_run_ledger(self, state, case, session, *, end_reason):
+        """One bounded run-ledger entry per finished case (at-most-once).
+
+        The trpg core's run ledger semantics (#2481 → #684 unification):
+        bounded fields, count/size trim, atomic persistence. Viewer
+        identities never reach the ledger — counts only.
+        """
+        if session.get("ledger_recorded"):
+            return
+        session["ledger_recorded"] = True
+        self._save(state)
+        entry = {
+            "seed": case.seed if case is not None else None,
+            "commitment": case.commitment if case is not None else None,
+            "culprit_index": case.culprit_index if case is not None else None,
+            "started_at": state.get("started_at"),
+            "ended_at": self.clock(),
+            "outcome": _outcome_for(end_reason),
+            "participants": session.get("participants") or 0,
+            "votes_total": session.get("votes_total") or 0,
+            "polls": session.get("polls_held") or 0,
+            "prediction": (session.get("prediction")
+                           if isinstance(session.get("prediction"), dict) else None),
+            "end_reason": end_reason,
+            "error_code": state.get("last_error_code"),
+        }
+        try:
+            from .mystery_participation import (
+                LEDGER_FILENAME,
+                load_ledger,
+                record_run,
+                save_ledger,
+            )
+
+            path = Path(self.g.state_dir) / LEDGER_FILENAME
+            ledger = load_ledger(path)
+            record_run(ledger, entry)
+            save_ledger(path, ledger)
+        except Exception:
+            state["last_error_code"] = "ledger-record-failed"
 
     def _grace_display(self, state, seconds):
         remaining = self._remaining(state)
@@ -744,7 +807,8 @@ class MysteryCornerManager:
         if not isinstance(row, dict):
             return None, None
 
-        from .mystery_api import poll_choice_votes, poll_winning_index
+        from .mystery_api import poll_choice_votes
+        from .mystery_participation import winner as winning_choice
 
         deadline = self.clock() + POLL_DURATION_S + 15
         deadline = min(deadline, state["ends_at"] - SESSION_RESERVE_S)
@@ -766,7 +830,10 @@ class MysteryCornerManager:
         poll_view = self._poll_view(question, labels, values, row, votes)
         if votes is None or sum(votes) <= 0:
             return None, poll_view
-        winner = poll_winning_index(votes)
+        # Counters for the run ledger (trpg-core semantics, counts only).
+        session["polls_held"] = (session.get("polls_held") or 0) + 1
+        session["votes_total"] = (session.get("votes_total") or 0) + sum(votes)
+        winner = winning_choice(votes)
         if winner is None or not 0 <= winner < len(values):
             return None, poll_view
         return values[winner], poll_view
@@ -922,6 +989,7 @@ class MysteryCornerManager:
             except Exception:
                 return False
             resolved_row = rows[0] if rows else row
+            self._record_participants(session, resolved_row)
             self._record_prediction_result(state, case, session, resolved_row,
                                            resolved=False)
             return True
@@ -938,6 +1006,7 @@ class MysteryCornerManager:
             except Exception:
                 return False
             resolved_row = rows[0] if rows else row
+            self._record_participants(session, resolved_row)
             self._record_prediction_result(state, case, session, resolved_row,
                                            resolved=False)
             return True
@@ -949,17 +1018,47 @@ class MysteryCornerManager:
             return False
         resolved_row = rows[0] if rows else row
         crowd = _crowd_outcome_title(resolved_row)
+        crowd_index = self._record_participants(session, resolved_row)
         self._record_prediction_result(state, case, session, resolved_row,
-                                       resolved=True, hit=(crowd == culprit_label))
+                                       resolved=True, hit=(crowd == culprit_label),
+                                       hit_by_users=(None if crowd_index is None
+                                                     else crowd_index == case.culprit_index))
         return True
 
+    def _record_participants(self, session, row):
+        """Record the per-user participation tally (fail-open, counts only).
+
+        Twitch exposes only the top predictors per outcome; the ported trpg
+        aggregation semantics (idempotent per user, tie → lowest index) give
+        the crowd's pick by user count alongside the by-points payoff. The
+        result feeds the run ledger, never the settlement itself.
+        """
+        try:
+            from .mystery_participation import (
+                participants_from_prediction,
+                tally_votes,
+                winner,
+            )
+
+            votes, order = participants_from_prediction(row or {})
+            session["participants"] = len(order)
+            if not order:
+                return None
+            tally = tally_votes(votes, choice_count=len(session.get("prediction_row_titles") or []))
+            return winner(tally)
+        except Exception:
+            return None
+
     def _record_prediction_result(self, state, case, session, row, *, resolved=True,
-                                  hit=None):
+                                  hit=None, hit_by_users=None):
         session["prediction_done"] = True
         session["prediction"] = {
             "status": row.get("status") if isinstance(row, dict) else "unknown",
             "resolved": bool(resolved),
             "hit": hit if hit is None or isinstance(hit, bool) else None,
+            "hit_by_users": (hit_by_users
+                             if hit_by_users is None or isinstance(hit_by_users, bool)
+                             else None),
         }
         self._save(state)
 

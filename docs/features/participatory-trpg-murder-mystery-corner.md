@@ -1,6 +1,14 @@
 # 参加型 TRPG / マーダーミステリー コーナー — 設計提案
 
-- Status: **Proposal（起案）**。実装・配備は未着手。production の corner catalog は変更しない。
+> **⚠️ Superseded（2026-10-18 統合判断）**: 本提案のオフライン中核（`trpg_corner.py`、
+> PR #2481）は、#684 の統合判断により汎用ロジック（投票集計・実行台帳・fail-closed検証）が
+> `mystery_participation.py` / `mystery_corner.py` へ取り込まれ、**モジュールは削除済み**です。
+> 実装の正本は [`docs/features/mystery-corner.md`](mystery-corner.md)（決定論ケースエンジン＋
+> Twitchアンケート/チャンネルポイント予想）。本docは設計経緯の記録として保持します。
+> シナリオファイル方式やチャット `!1`〜`!4` / `!accuse` 参加は本番には未導入（将来の参加
+> レイヤ候補）。
+
+- Status: ~~Proposal（起案）~~ → **Superseded**（統合判断 2026-10-18）。production の corner catalog は変更しない。
 - 関連 Issue: [azumag/docich#684](https://github.com/azumag/docich/issues/684)（参加型？TRPGやマーダーミステリー）
 - 関連実装（既存の参加型・合成ビュー基盤）:
   - `src/docich/corner_catalog.py` / `corner_rotation.py` / `corner_adapters.py`（24時間ローテーション）

@@ -36,7 +36,6 @@ __all__ = [
     "configured_poll_client",
     "configured_prediction_client",
     "poll_choice_votes",
-    "poll_winning_index",
 ]
 
 POLL_KEYS = frozenset({'TWITCH_POLLS_ENABLED', 'TWITCH_POLLS_TOKEN',
@@ -176,7 +175,9 @@ def poll_choice_votes(row):
     """Bounded ``[votes, ...]`` per choice, or ``None`` when unreadable.
 
     A poll the channel-wide worker created is also visible here, so callers
-    must only interpret rows whose id they recorded at create time.
+    must only interpret rows whose id they recorded at create time. The
+    winner selection is the canonical trpg-core tie-break in
+    ``mystery_participation.winner`` (plurality, ties to the lowest index).
     """
     choices = row.get('choices') if isinstance(row, dict) else None
     if not isinstance(choices, list) or not choices:
@@ -188,14 +189,3 @@ def poll_choice_votes(row):
             return None
         votes.append(value)
     return votes
-
-
-def poll_winning_index(votes):
-    """First-max index (case order) so ties resolve deterministically."""
-    if not votes:
-        return None
-    best = 0
-    for index, value in enumerate(votes):
-        if isinstance(value, int) and not isinstance(value, bool) and value > votes[best]:
-            best = index
-    return best
