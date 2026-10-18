@@ -75,7 +75,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.live_eligible is False for c in catalog)
     # Issue #697: 法律シミュレーターは 2026-10-18 オーナー承認で自動抽選対象。
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
-    assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is False
+    assert lawsim.enabled and lawsim.manual_only and lawsim.audio_enabled is False
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
@@ -97,7 +97,7 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     puyo = next(c for c in catalog if c.id == "puyo-corner")
     assert puyo.enabled and puyo.manual_only and puyo.audio_enabled
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
-    assert lawsim.enabled and not lawsim.manual_only
+    assert lawsim.enabled and lawsim.manual_only
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -245,20 +245,21 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     })
     eligible, excluded = manager._eligible()
     # PR-4: puyo is enabled + manual_only -> manual-bookable but auto-excluded.
-    # mystery (#2492) and lawsim (#697) are auto-eligible.
-    assert len(eligible) == 15
+    # mystery (#2492) is auto-eligible. lawsim (#697) is manual_only -> excluded.
+    assert len(eligible) == 14
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
-            "yosou-oh", "doushi-card", "mystery",
-            "communist-law-simulator"} <= set(eligible)
-    assert excluded == {"puyo-corner": "manual-only", "trpg-corner": "manual-only"}
+            "yosou-oh", "doushi-card", "mystery"} <= set(eligible)
+    assert excluded == {"puyo-corner": "manual-only", "trpg-corner": "manual-only",
+                        "communist-law-simulator": "manual-only"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 14 and "tsuitate" not in eligible
+    assert len(eligible) == 13 and "tsuitate" not in eligible
     assert excluded == {"tsuitate": "adapter-unavailable",
                         "puyo-corner": "manual-only",
-                        "trpg-corner": "manual-only"}
+                        "trpg-corner": "manual-only",
+                        "communist-law-simulator": "manual-only"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
