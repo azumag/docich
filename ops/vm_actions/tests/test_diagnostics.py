@@ -33,6 +33,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         (self.soren / "tmp" / "state").mkdir(parents=True)
         for rel in (
             "ops/vm_actions/collect_diagnostics.py",
+            "ops/vm_actions/recover_soren_game.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
             "src/docich/pulse_volume.py",
@@ -133,6 +134,25 @@ class DiagnosticsGatewayTests(unittest.TestCase):
                 # The production checkout the gateway builds must contain it.
                 self.assertTrue((ROOT / relative).is_file())
 
+        # Dynamically exec_module'd files are collector code too: the import
+        # regex above cannot see importlib loads, so audit them separately.
+        # A load like this outside DIAGNOSTICS_FILES would run unverified
+        # code inside the read-only diagnostics operation (#2345 review).
+        dynamic = set()
+        for match in re.finditer(r"spec_from_file_location\(", source):
+            window = source[match.start():match.start() + 500]
+            names = re.findall(r'"([^"]+\.py)"', window)
+            if names:
+                dynamic.add(names[-1])
+        self.assertTrue(dynamic, "collector must load at least one reviewed file dynamically")
+        for name in sorted(dynamic):
+            with self.subTest(dynamic=name):
+                matches = sorted(p for p in verified if p.endswith("/" + name) or p == name)
+                self.assertTrue(
+                    matches, f"{name} is exec_module'd by the collector but not drift-verified"
+                )
+                self.assertTrue((ROOT / matches[0]).is_file())
+
     def test_preview_diagnostics_is_rejected(self):
         proc = self.call(f"diagnostics docich preview {'b' * 40}")
         self.assertNotEqual(proc.returncode, 0)
@@ -187,6 +207,27 @@ class DiagnosticsGatewayTests(unittest.TestCase):
                     self.assertEqual(self.snapshot(self.soren), before)
                 finally:
                     path.write_bytes(original)
+
+    def test_dynamic_recovery_helper_drift_is_refused_read_only(self):
+        # The collector exec_modules recover_soren_game.py to share the
+        # founding-marker rule, so the helper is collector code even though
+        # no `from docich...` import mentions it (#2345 review): drifting
+        # only the helper must refuse diagnostics, while the unmodified
+        # runtime keeps passing.
+        helper = self.doc / "ops" / "vm_actions" / "recover_soren_game.py"
+        self.assertTrue(helper.is_file())
+        proc = self.call(f"diagnostics docich production {'b' * 40}")
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        original = helper.read_bytes()
+        before = self.snapshot(self.soren)
+        try:
+            helper.write_bytes(original + b"\n# unreviewed helper drift\n")
+            proc = self.call(f"diagnostics docich production {'b' * 40}")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("VM operation rejected", proc.stderr.decode())
+            self.assertEqual(self.snapshot(self.soren), before)
+        finally:
+            helper.write_bytes(original)
 
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"
