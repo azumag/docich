@@ -356,13 +356,17 @@ def _summer_bonus_choice_band(screen: Screen) -> bool:
     """True while the 8月 prompt's own choice band can still be on screen.
 
     ``confirmation_planned`` only says A was sent; it is not evidence that the
-    menu went away. The band is denied by its own drawn rows (176-207, measured)
-    and by the choice cursor the prompt always shows: either one means the 3-choice
-    menu is still up, so an unread row (まとめて解雇 included) must not be confirmed.
+    menu went away. The band is denied by its own drawn rows and by the choice
+    cursor the prompt always shows: either one means the 3-choice menu is still
+    up, so an unread row (まとめて解雇 included) must not be confirmed.
+
+    The band covers the third choice row at y=208, not 207: the upper two rows
+    and the hand can be the only things that disappear, and a lone 208 row is
+    still the menu.
     """
     if screen.hand is not None:
         return True
-    return any(176 <= line.y <= 207 for line in screen.lines)
+    return any(176 <= line.y <= 208 for line in screen.lines)
 
 
 def summer_bonus_continue(screen: Screen, mem):

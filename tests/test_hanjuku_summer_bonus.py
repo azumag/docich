@@ -402,3 +402,24 @@ def test_a_planned_confirmation_alone_does_not_advance_a_menu_we_cannot_read(mon
     assert actions == [p.pad('up')]
     assert state['screen_kind'] == 'summer_bonus'
     assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_a_lone_third_choice_row_is_still_the_menu(monkeypatch):
+    """The band ends at the まとめて解雇 row (208), not at 207.
+
+    With the upper two rows and the cursor missing, only the third row can be
+    left on screen; that alone must not be read as the post-choice response.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    c = Canvas((16, 72, 57))
+    c.text(8, 8, '5ねん8のつき7572G')
+    c.text(24, 150, 'どちらにする')
+    c.tile(176, 208, 0x0123456789ABCDEF)      # まとめて解雇 row only
+    frame = c.frame()
+    assert [line.y for line in parse(frame).lines if line.y >= 176] == [208]
+    assert parse(frame).hand is None
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
