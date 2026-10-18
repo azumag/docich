@@ -813,6 +813,49 @@ class PuyoCornerAdapter:
         return self.manager.resources_released()
 
 
+class TrpgCornerAdapter:
+    """Bounded participatory TRPG / murder-mystery view through the shared slot.
+
+    Read-only display (Issue #684, default disabled and manual_only). No audio,
+    no fetch and no live_eligible run. Full overlay/TTS lands in PR-4.
+    """
+
+    def __init__(self, g, corner):
+        from .trpg_program import DEFAULT_DURATION_MINUTES, TrpgProgramManager
+        from .trpg_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Trpg identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = TrpgProgramManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 class MysteryCornerAdapter:
     """Bounded AI探偵ミステリー case session through the shared slot.
 
@@ -912,6 +955,7 @@ ADAPTERS = {
     "yoso": YosoCornerAdapter,
     "doushi": DoushiCornerAdapter,
     "puyo": PuyoCornerAdapter,
+    "trpg": TrpgCornerAdapter,
     "mystery": MysteryCornerAdapter,
     "lawsim": LawSimCornerAdapter,
 }
