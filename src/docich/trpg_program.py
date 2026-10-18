@@ -25,6 +25,7 @@ from .game_switch import (
     GameSwitchCoordinator,
     GameSwitchError,
     GameSwitchStore,
+    RequestConflictError,
     TERMINAL_RECEIPT_STATUSES,
     atomic_write_json,
 )
@@ -131,11 +132,9 @@ class TrpgProgramManager:
         return tick(self.g, path, identity, audio_enabled=self.audio_enabled,
                     now=self.clock(), stop_reason=stop_reason, owner_request_id=request_id)
 
-    def _adopt_rollback(self, state, canonical, previous, *, persist=True):
+    def _continued_session_owner(self, state, canonical, previous):
         from .naming import runtime_directory
         from .trpg_session import SESSION_FILE, load
-        if (canonical.get("last_result") or {}).get("status") != "rolled_back":
-            return None
         try:
             active = _identity(canonical.get("active"), expected_game=VIEW_NAME)
             if active is None:
@@ -147,6 +146,14 @@ class TrpgProgramManager:
                     or data["owner_request_id"] is None and data["state"]["phase"] != "IDLE"):
                 return None
         except (OSError, ValueError, TypeError, KeyError, TrpgProgramError):
+            return None
+        return active
+
+    def _adopt_rollback(self, state, canonical, previous, *, persist=True):
+        if (canonical.get("last_result") or {}).get("status") != "rolled_back":
+            return None
+        active = self._continued_session_owner(state, canonical, previous)
+        if active is None:
             return None
         state["trpg_program_runtime_identity"] = active
         if persist:
@@ -443,6 +450,47 @@ class TrpgProgramManager:
             return False
         return self._restored_owner_matches(state, canonical, result)
 
+    def _restore_source_identity(self, state, identity):
+        """Keep each request's source immutable, including a queued replay."""
+        source = state.get("restore_source_runtime_identity")
+        candidates = [_identity(source, expected_game=VIEW_NAME)] if source is not None else [identity]
+        request_id = state["restore_request_id"]
+        receipt = self.store.receipts.load(request_id)
+        if receipt is not None:
+            if source is None:
+                # Older lifecycle files may already have adopted a renewed
+                # owner. Recover only a recorded ancestor whose exact payload
+                # matches the immutable receipt through the public classifier.
+                from .naming import runtime_directory
+                from .trpg_session import SESSION_FILE, load
+                try:
+                    path = runtime_directory(self.g.state_dir, identity["runtime_id"]) / SESSION_FILE
+                    data = load(path, identity, related=True)
+                    if data["owner_request_id"] == state["rotation_request_id"]:
+                        candidates.extend(data["owners"][-32:])
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass
+            operation = "stop" if state.get("previous_game") is None else "switch"
+            for candidate in candidates:
+                candidate = _identity(candidate, expected_game=VIEW_NAME)
+                if candidate is None:
+                    continue
+                try:
+                    self.store.classify_request(request_id, operation, state.get("previous_game"),
+                                                {"expected_source": candidate})
+                except RequestConflictError:
+                    continue
+                source = candidate
+                break
+            else:
+                raise TrpgProgramError("restore request source binding cannot be verified")
+        else:
+            source = candidates[0]
+        if state.get("restore_source_runtime_identity") != source:
+            state["restore_source_runtime_identity"] = source
+            self._save(state)
+        return source
+
     def _retry_rolled_back_restore(self, state, canonical, identity):
         if not _stable(canonical):
             return False
@@ -452,16 +500,24 @@ class TrpgProgramManager:
         except Exception:
             return False
         result = receipt.get("result") if isinstance(receipt, dict) else None
-        if (not isinstance(result, dict) or receipt.get("status") != "rolled_back"
+        if not isinstance(result, dict):
+            return False
+        retryable = (receipt.get("status") == "rolled_back" or
+                     (receipt.get("status") == "failed" and result.get("error_code") == ERROR_SOURCE_FENCE_LOST))
+        active = self._continued_session_owner(state, canonical, state["restore_source_runtime_identity"])
+        if (not retryable
                 or receipt.get("request_id") != request_id or result.get("request_id") != request_id
-                or result.get("status") != "rolled_back" or result.get("from_game") != VIEW_NAME
+                or result.get("status") != receipt.get("status") or result.get("from_game") != VIEW_NAME
                 or result.get("to_game") != state.get("previous_game")
-                or self._adopt_rollback(state, canonical, identity, persist=False) is None):
+                or active is None
+                or (identity != state["restore_source_runtime_identity"]
+                    and self._continued_session_owner(state, canonical, identity) != active)):
             return False
         # Commit the rebound owner and fresh request together. Replaying the
         # old terminal request with a changed source payload would conflict.
         retry = str(uuid.uuid4())
         state.update(restore_request_id=retry, switch_request_id=retry,
+                     trpg_program_runtime_identity=active, restore_source_runtime_identity=active,
                      switch_status="queued", last_error_code=result.get("error_code"))
         self._save(state)
         return True
@@ -473,9 +529,15 @@ class TrpgProgramManager:
                 or identity.get("game") != VIEW_NAME):
             raise TrpgProgramError(" runtime owner identity is missing before restore")
         if state.get("status") != "restoring":
+            canonical = self._canonical()
+            if canonical is not None and _stable(canonical):
+                restored = self._adopt_rollback(state, canonical, identity)
+                if restored is not None:
+                    identity = restored
             state.update(status="restoring", restore_requested_at=self.clock(), end_reason=end_reason)
             state["restore_request_id"] = str(uuid.uuid4())
             state["switch_request_id"] = state["restore_request_id"]
+            state["restore_source_runtime_identity"] = identity
             self._save(state)
         else:
             end_reason = state.get("end_reason", end_reason)
@@ -496,6 +558,7 @@ class TrpgProgramManager:
             self._save(state)
             self._clear_stop_request()
             return "completed"
+        source = self._restore_source_identity(state, identity)
         if self._retry_rolled_back_restore(state, canonical, identity):
             return "queued"
         if _stable(canonical) and not self._matches_active(canonical, identity):
@@ -506,16 +569,22 @@ class TrpgProgramManager:
             pass  # GameSwitch accepts a durable request behind the active drain.
         elif not (_stable(canonical) and self._matches_active(canonical, identity)):
             if _stable(canonical):
-                return self._mark_interrupted(state, "operator-moved-before-restore")
-            raise TrpgProgramError(" restore source is not the owned runtime")
+                receipt = self.store.receipts.load(request_id)
+                if (receipt is None or receipt.get("status") != "queued"
+                        or self._matches_active(canonical, source)):
+                    return self._mark_interrupted(state, "operator-moved-before-restore")
+                # Replay the existing stale queued payload through its normal
+                # FIFO/source fence. It must terminate before we relinquish it.
+            else:
+                raise TrpgProgramError(" restore source is not the owned runtime")
 
-        if end_reason in {"manual", "duration"}:
+        if end_reason in {"manual", "duration"} and self._matches_active(canonical, identity):
             try:
                 self._session_tick(identity, stop_reason=end_reason, request_id=state["rotation_request_id"])
             except (OSError, ValueError, TypeError, KeyError):
                 state["last_error_code"] = "trpg-session-unavailable"
         previous = state.get("previous_game")
-        payload = {"expected_source": identity}
+        payload = {"expected_source": source}
         if previous is None:
             result = self.coordinator.stop(request_id=request_id, payload=payload)
         else:
@@ -525,12 +594,13 @@ class TrpgProgramManager:
             state.update(status="restoring", switch_status=status)
             self._save(state)
             return "queued"
-        if status == "failed" and getattr(result, "error_code", None) == ERROR_SOURCE_FENCE_LOST:
-            return self._mark_interrupted(state, "operator-moved-before-restore")
-        if status == "rolled_back":
+        fence_lost = status == "failed" and getattr(result, "error_code", None) == ERROR_SOURCE_FENCE_LOST
+        if status == "rolled_back" or fence_lost:
             canonical = self._canonical()
             if canonical is not None and self._retry_rolled_back_restore(state, canonical, identity):
                 return "queued"
+        if fence_lost:
+            return self._mark_interrupted(state, "operator-moved-before-restore")
         if status != "succeeded":
             state.update(status="restoring", last_error_code=getattr(result, "error_code", None))
             self._save(state)

@@ -561,6 +561,152 @@ def test_manager_can_adopt_rollback_before_first_activation(real_trpg_coordinato
     assert data['owner_request_id'] == state['rotation_request_id']
 
 
+@pytest.mark.parametrize('mode', ['live', 'fresh'])
+@pytest.mark.parametrize('resume', ['before-q', 'after-q', 'before-retry-save', 'after-retry-save',
+                                   'legacy-after-adopt'])
+def test_fifo_restore_keeps_payload_until_terminal_then_retries(real_trpg_coordinator, mode, resume, monkeypatch):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    g, store, switch = fixture.g, fixture.store, fixture.switch
+    observed = Mock(wraps=core.observe_chat)
+    monkeypatch.setattr(core, 'observe_chat', observed)
+    def manager():
+        return TrpgProgramManager(g, coordinator=switch, clock=lambda: fixture.now)
+    owner = manager()
+    assert switch.start('robots').status == 'succeeded'
+    state = owner._new_state(str(uuid.uuid4()))
+    assert owner._dispatch_start(state) is None
+    source = state['trpg_program_runtime_identity']
+    owner._session_tick(source, request_id=state['rotation_request_id'])
+    fixture.now = 3
+    owner._session_tick(source, request_id=state['rotation_request_id'])
+    append_chat(g, 'one-voter', '!2')
+    fixture.now = 4
+    owner._session_tick(source, request_id=state['rotation_request_id'])
+    speech_count = narration.publish.call_count
+    lifetime = (state['started_at'], state['ends_at'])
+    fixture.fault = mode
+    q = str(uuid.uuid4())
+    store.enqueue_request(q, 'switch', 'broken-target', {'expected_source': source})
+    attempts = []
+    original = switch.switch
+    def recording_switch(target, **kwargs):
+        result = original(target, **kwargs)
+        attempts.append((kwargs['request_id'], deepcopy(kwargs['payload']), result.status, result.error_code))
+        return result
+    monkeypatch.setattr(switch, 'switch', recording_switch)
+    assert owner._restore(state, end_reason='manual') == 'queued'
+    r = state['restore_request_id']
+    queued_hash = store.receipts.load(r)['payload_hash']
+    assert [receipt['request_id'] for receipt in store.receipts.queued()] == [q, r]
+    if resume == 'before-q':
+        owner = manager()
+        state = owner._read_state()
+        assert owner.run_rotation(state['rotation_request_id']) == 'queued'
+        state = owner._read_state()
+        assert [receipt['request_id'] for receipt in store.receipts.queued()] == [q, r]
+    assert switch.switch('broken-target', request_id=q, payload={'expected_source': source}).status == 'rolled_back'
+    canonical = store.canonical.load()[0]
+    active = {key: canonical['active'][key] for key in session.IDENTITY_KEYS}
+    assert active != source and store.receipts.load(r)['status'] == 'queued'
+    if resume == 'legacy-after-adopt':
+        # Persisted old-version state after the reported conflict lost A's
+        # explicit binding; its immutable receipt must prove the recovered A.
+        assert owner._adopt_rollback(state, canonical, source) == active
+        state.pop('restore_source_runtime_identity', None)
+        owner._save(state)
+    owner = manager()
+    state = owner._read_state()
+    if resume in {'before-retry-save', 'after-retry-save'}:
+        save = owner._save
+        def pause_retry(updated):
+            if updated.get('restore_request_id') != r:
+                if resume == 'after-retry-save':
+                    save(updated)
+                raise PauseManager
+            save(updated)
+        with monkeypatch.context() as interruption:
+            interruption.setattr(owner, '_save', pause_retry)
+            with pytest.raises(PauseManager):
+                owner.run_rotation(state['rotation_request_id'])
+        owner = manager()
+        state = owner._read_state()
+        if state['restore_request_id'] == r:
+            assert owner.run_rotation(state['rotation_request_id']) == 'queued'
+            state = owner._read_state()
+    else:
+        assert owner.run_rotation(state['rotation_request_id']) == 'queued'
+        state = owner._read_state()
+    old = store.receipts.load(r)
+    assert old['status'] == 'failed' and old['result']['error_code'] == 'source_fence_lost'
+    assert old['payload_hash'] == queued_hash
+    assert all(payload == {'expected_source': source} for req, payload, _, _ in attempts if req == r)
+    assert state['restore_request_id'] != r and state['restore_source_runtime_identity'] == active
+    assert state['trpg_program_runtime_identity'] == active and state['end_reason'] == 'manual'
+    assert store.canonical.load()[0]['active'] == canonical['active']
+    assert not store.receipts.queued()
+    assert owner.run_rotation(state['rotation_request_id']) == 'completed'
+    assert owner.run_rotation(state['rotation_request_id']) == 'completed'
+    assert store.canonical.load()[0]['active']['game'] == 'robots'
+    assert not store.receipts.queued()
+    assert all(status != 'request_conflict' for _, _, status, _ in attempts)
+    final = owner._read_state()
+    assert (final['started_at'], final['ends_at']) == lifetime
+    ledger = core.load_ledger(g.state_dir / 'trpg' / core.LEDGER_FILE)
+    assert len(ledger['entries']) == 1 and ledger['entries'][0]['outcome'] == 'aborted'
+    assert observed.call_count == 1 and narration.publish.call_count == speech_count
+
+
+def test_stale_queued_restore_finishes_without_touching_unrelated_owner(real_trpg_coordinator, monkeypatch):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    assert fixture.switch.start('robots').status == 'succeeded'
+    owner = TrpgProgramManager(fixture.g, coordinator=fixture.switch, clock=lambda: fixture.now)
+    state = owner._new_state(str(uuid.uuid4()))
+    assert owner._dispatch_start(state) is None
+    source = state['trpg_program_runtime_identity']
+    tick = Mock(wraps=owner._session_tick)
+    monkeypatch.setattr(owner, '_session_tick', tick)
+    q = str(uuid.uuid4())
+    fixture.store.enqueue_request(q, 'switch', 'operator-game', {'expected_source': source})
+    assert owner._restore(state, end_reason='manual') == 'queued'
+    r = state['restore_request_id']
+    old_hash = fixture.store.receipts.load(r)['payload_hash']
+    assert fixture.switch.switch('operator-game', request_id=q, payload={'expected_source': source}).status == 'succeeded'
+    active = deepcopy(fixture.store.canonical.load()[0]['active'])
+    tick_count, speech_count = tick.call_count, narration.publish.call_count
+    assert owner._restore(state) == 'completed'
+    assert state['status'] == 'interrupted' and state['restore_request_id'] == r
+    receipt = fixture.store.receipts.load(r)
+    assert receipt['status'] == 'failed' and receipt['result']['error_code'] == 'source_fence_lost'
+    assert receipt['payload_hash'] == old_hash and not fixture.store.receipts.queued()
+    assert fixture.store.canonical.load()[0]['active'] == active
+    assert tick.call_count == tick_count and narration.publish.call_count == speech_count
+
+
+def test_unverified_restore_binding_does_not_change_queued_receipt(real_trpg_coordinator):
+    from docich.trpg_program import TrpgProgramManager, TrpgProgramError
+    fixture = real_trpg_coordinator
+    assert fixture.switch.start('robots').status == 'succeeded'
+    owner = TrpgProgramManager(fixture.g, coordinator=fixture.switch, clock=lambda: fixture.now)
+    state = owner._new_state(str(uuid.uuid4()))
+    assert owner._dispatch_start(state) is None
+    source = state['trpg_program_runtime_identity']
+    q = str(uuid.uuid4())
+    fixture.store.enqueue_request(q, 'switch', 'broken-target', {'expected_source': source})
+    assert owner._restore(state, end_reason='manual') == 'queued'
+    r = state['restore_request_id']
+    before = deepcopy(fixture.store.receipts.load(r))
+    canonical = deepcopy(fixture.store.canonical.load()[0])
+    state['restore_source_runtime_identity'] = {**source, 'lease_id': str(uuid.uuid4())}
+    owner._save(state)
+    with pytest.raises(TrpgProgramError, match='source binding cannot be verified'):
+        owner._restore(state)
+    assert fixture.store.receipts.load(r) == before
+    assert fixture.store.canonical.load()[0] == canonical
+    assert [receipt['request_id'] for receipt in fixture.store.receipts.queued()] == [q, r]
+
+
 def test_webui_start_schedule_stop_and_state_projection(setup, monkeypatch):
     from docich.corner_rotation import CornerRotationManager
     g, _ = setup
