@@ -252,10 +252,12 @@ class NethackProgressResolver:
         self._door_result_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
-        if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
-            # A severe-free frame is the reviewed evidence that the prayer
-            # episode ended (cured or otherwise resolved); re-arm the
-            # one-prayer-per-episode budget.
+        if turn_ready(obs) and not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+            # Only a *complete* severe-free frame is reviewed evidence that the
+            # prayer episode ended (cured or otherwise resolved).  A frame
+            # whose status block is missing (a pager, a partial capture) also
+            # shows no condition; treating that as improvement would re-arm the
+            # budget and let the same status be prayed for again.
             self._pray_spent = False
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
@@ -314,11 +316,12 @@ class NethackProgressResolver:
             self._failed.clear()
             self._scene = scene
             self._pending = None
-            self._pray_step = None
-            self._pray_expected = None
-            # Keep ``_pray_spent``: an unrelated map change (a distant cell)
-            # must not re-arm the budget for the same unresolved episode.  It
-            # is re-armed only by a severe-free observation.
+            # Keep the prayer continuation (``_pray_step`` / ``_pray_expected``)
+            # and ``_pray_spent``: an unrelated map change (a distant cell, a
+            # rejected fresh capture) must not abandon a half-typed extended
+            # command or re-arm the one-prayer budget.  The step is dropped
+            # only when its expected prompt is gone (checked in ``_resolve``),
+            # and the budget only by a complete severe-free frame.
             return
         if self._pending is None:
             return
