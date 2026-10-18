@@ -1028,3 +1028,48 @@ def test_prayer_result_more_page_is_advanced_after_the_sequence():
     result = frame(hp="4(16)", condition="Sick", message="You begin praying to Thoth.  You finish your prayer.--More--")
     assert normalize_tty(result).prompt == "more"
     assert act(agent, result) == [" "]
+
+
+def _complete_prayer(agent):
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+    typed = ""
+    for expected in ["p", "r", "a", "y", "\n"]:
+        _send(agent, _getlin(typed), [expected])
+        typed += expected if expected != "\n" else ""
+    _send(agent, frame(hp="4(16)", condition="Sick", message="Are you sure you want to pray? [yn] (n)"), ["y"])
+
+
+def test_prayer_budget_is_not_re_armed_by_an_incomplete_status_read():
+    # A capture whose status block is missing (a pager, a partial frame) also
+    # shows no condition.  That is not evidence the status improved, so the
+    # budget must stay spent and the same Sick must not be prayed for again.
+    agent = brain()
+    _complete_prayer(agent)
+
+    lines = frame(hp="4(16)", condition="Sick").split("\n")
+    incomplete = "\n".join(lines[:-2])  # drop both status rows
+    assert normalize_tty(incomplete).conditions == ()
+    assert turn_ready(normalize_tty(incomplete)) is False
+    agent.decide(_obs(incomplete))
+
+    held = agent.decide(_obs(frame(hp="4(16)", condition="Sick")))
+    assert [a.text for a in held] == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+
+def test_prayer_continuation_survives_a_map_difference():
+    # A rejected fresh capture can carry a changed map; the half-typed extended
+    # command must not be abandoned just because the scene changed.
+    agent = brain()
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+
+    getlin = _getlin("")
+    planned = agent.decide(_obs(getlin))
+    assert [a.text for a in planned] == ["p"]
+
+    stale = _far_change(getlin)
+    assert agent.validate_action(planned[0], _obs(stale)) is False
+    agent.discard_action_plan()
+
+    replanned = agent.decide(_obs(_far_change(getlin)))
+    assert [a.text for a in replanned] == ["p"]
