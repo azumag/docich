@@ -518,3 +518,26 @@ def test_consume_inbox_keeps_discarding_across_eof_until_newline(tmp_path):
         stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
     live.consume_inbox()
     assert [row["user_id"] for row in live.engine["roster"]] == ["u1"]
+
+
+def test_consume_inbox_keeps_discarding_across_eof_for_multi_window_giant(tmp_path):
+    """Regression: a giant line spanning several read windows must keep its
+    discard state when it reaches EOF. Otherwise an appended continuation
+    (even a crafted valid join) is re-interpreted as a fresh chat line."""
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # two full windows of junk, no newline, ending exactly at EOF
+    inbox.write_bytes(b"x" * (INBOX_READ_BUDGET_BYTES * 2))
+    while live._offset < inbox.stat().st_size:
+        live.consume_inbox()
+    assert live._discarding is True
+    assert live._offset == inbox.stat().st_size
+    # a crafted join appended as a continuation of the same physical line
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []
