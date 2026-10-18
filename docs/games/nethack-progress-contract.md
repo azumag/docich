@@ -51,12 +51,15 @@ NetHack 5.0.0 は `paranoid_confirmation` の既定が `pray swim trap`（`optio
 - 隣接creatureの有無では**変えない**（issue #759: severe 状態自体が時間切れで致死。
   脅威回避は別判断）
 - **1エピソード1回**: severe が継続している間は2度目の祈りを生成しない。
-  severe の無い観測（治癒など）が来て初めて再許可する。神の立場
+  再許可は **完全な** severe-free frame（`turn_ready`、つまり prompt 無し・player 一意・
+  HP/HP最大値/階層が読める）を観測したときだけ行う。status 2行が欠落した不完全な frame
+  （pager・部分キャプチャ）は condition が空に見えるが改善の証拠ではない。神の立場
   （`ublesscnt`/`Luck`/`ugangr`）は TTY から観測できず、早すぎる祈りは
   `gods_upset`/`angrygods` を引くため
 - 祈りの途中で期待した prompt が消えた/変わった場合は、打ちかけの入力を破棄して
   fail-closed（推測でキーを足さない）。送信が ack されなかった継続キーは保持し、
-  再計画で同じキーを送り直す
+  再計画で同じキーを送り直す。map の差分（遠方1マス、却下された fresh capture）だけでは
+  継続状態も予算も失わない — 破棄は「期待した prompt が消えた」ときだけ
 
 採用しなかった回復手段: 治癒薬・ユニコーンの角・ユーカリ・cure sickness 呪文・polyself・
 `R` での首輪取り外しは、確定した inventory 観測か選択 prompt 契約が必要なため surface に
