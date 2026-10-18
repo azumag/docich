@@ -126,7 +126,10 @@ def test_handler_serves_html_and_the_generation_bound_payload(tmp_path):
         thread.join(timeout=2)
 
 
-def test_unavailable_payload_reports_503_not_disk_contents(tmp_path):
+def test_payload_absent_reports_preparing_not_an_error(tmp_path):
+    """The readiness contract: the server answers with its identity even when
+    the corner has not published the first case yet (the production first
+    fire failed exactly here — 503/ok:false timed out the GameSwitch gate)."""
     Handler = handler_for(payload_path(tmp_path), "g4-x")
     import json
     import socket
@@ -140,15 +143,12 @@ def test_unavailable_payload_reports_503_not_disk_contents(tmp_path):
                               daemon=True)
     thread.start()
     try:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/mystery",
-                                        timeout=5) as response:
-                body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 503
-            body = exc.read().decode("utf-8")
-        data = json.loads(body)
-        assert data["ok"] is False and data["reason"] == "case-unavailable"
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/mystery", timeout=5) as response:
+            assert response.status == 200
+            data = json.loads(response.read().decode("utf-8"))
+        assert data["ok"] is True
+        assert data["case"] is None and data["reason"] == "case-unavailable"
+        assert data["runtime_id"] == "g4-x"
     finally:
         server.shutdown()
         server.server_close()
