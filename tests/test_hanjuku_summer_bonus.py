@@ -320,3 +320,23 @@ def test_the_first_post_choice_line_can_advance_before_the_final_result(choice, 
     assert actions == [p.pad('a')]
     assert state['screen_kind'] == 'summer_bonus_message'
     assert 'summer_bonus_plan' not in state['policy']
+
+
+def test_unreadable_response_after_confirm_still_advances(monkeypatch):
+    """After A confirms a choice, if the menu disappears but the response
+    text is unreadable (no keywords), we still advance instead of pressing up
+    on an empty menu."""
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    # Response screen with no readable keywords (simulating OCR failure).
+    # Put text in PROSE_ROWS (135-175) to simulate dialogue area content.
+    response = Canvas((120, 120, 120))
+    response.text(24, 150, 'よめないてきすと')
+    actions, state = decide(response.frame(), state)
+    assert actions == [p.pad('a')]
+    assert state['screen_kind'] == 'summer_bonus_message'
+    assert 'summer_bonus_plan' not in state['policy']
+    # The record should note the response was unread
+    rec = state['_records'][-1]
+    assert rec['decision'] == 'summer_bonus_message'
+    assert '応答文は未読' in rec['reason']

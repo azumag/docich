@@ -378,6 +378,23 @@ def summer_bonus_continue(screen: Screen, mem):
             screen.kind = 'summer_bonus_message'
             _record(mem, 'summer_bonus_message', target=plan['target'],
                     reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
+        # If confirmation was planned (A was sent) and the menu is gone, check if
+        # this is a response screen (has dialogue content in PROSE_ROWS) or a
+        # menu with unreadable labels (no dialogue content). Only advance on
+        # response screens; for unreadable menus, return True to re-observe.
+        elif plan and plan.get('confirmation_planned') and not same_menu:
+            # Check for any content in the dialogue band (PROSE_ROWS 135-175).
+            # A response screen has text there; a menu with OCR failure does not.
+            has_dialogue_content = any(
+                line.y in PROSE_ROWS and (line.cells or line.spans())
+                for line in screen.lines
+            )
+            if has_dialogue_content:
+                screen.kind = 'summer_bonus_message'
+                _record(mem, 'summer_bonus_message', target=plan['target'],
+                        reason='夏イベントの選択確定後にメニューが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
+            else:
+                return True  # Menu still present but labels unreadable; re-observe
         elif plan or old_choice:
             return True
     # A different recognized screen or the observed post-choice response ends
