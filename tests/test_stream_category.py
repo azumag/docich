@@ -323,6 +323,13 @@ class TestRunningView(StreamCategoryTestBase):
         script = self.soren / SCRIPT_NAME
         shutil.copyfile(source, script)
         script.chmod(0o755)
+        # The updater composes public titles through lib/stream_title_public.py
+        # and fails closed when it is missing (docich#789). Mirror the deployed
+        # soren layout — script plus its lib/ — instead of a stripped copy.
+        helper = Path(__file__).resolve().parents[1] / "games/soviet_now/lib/stream_title_public.py"
+        self.assertTrue(helper.is_file(), "pinned soviet_now lacks the public title helper")
+        (self.soren / "lib").mkdir(exist_ok=True)
+        shutil.copyfile(helper, self.soren / "lib" / "stream_title_public.py")
         stub_dir = self.root / "stub-bin"
         stub_dir.mkdir()
         result = self.root / "patch.json"
