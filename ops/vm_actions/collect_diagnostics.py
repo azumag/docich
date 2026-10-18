@@ -735,6 +735,43 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    # Compact summary that survives output pressure: even when the per-row
+    # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
+    # visible (azumag/docich#970). The byte size is not a fixed cap: usually
+    # ~57B and up to ~216B when labels are long (labels are already bounded to
+    # 64 chars and sanitized by _cpu_profile_label).
+    cpu_top_parts = []
+    for row in components[:3]:
+        component = row.get("component")
+        pct = row.get("cpu_pct")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            cpu_top_parts.append(f"{component} {pct:.0f}%")
+        else:
+            cpu_top_parts.append(str(component))
+    cpu_top = " | ".join(cpu_top_parts)
+    if len(components) > 3:
+        # The aggregate tail is labeled `others` (plural) so it cannot be
+        # confused with a real `other` component row in the head.
+        others = 0.0
+        for row in components[3:]:
+            pct = row.get("cpu_pct")
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                others += pct
+        cpu_top = (cpu_top + f" | others {others:.0f}%") if cpu_top else f"others {others:.0f}%"
+
+    spawn_top_parts = []
+    for row in spawns[:3]:
+        component = row.get("component")
+        spawner = row.get("spawner")
+        if component is None or spawner is None:
+            continue
+        count = row.get("count")
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            spawn_top_parts.append(f"{component}<-{spawner} {count:.0f}")
+        else:
+            spawn_top_parts.append(f"{component}<-{spawner}")
+    spawn_top = " | ".join(spawn_top_parts)
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -747,6 +784,8 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "components_truncated": max(len(raw_components) - len(components), 0)
             if isinstance(raw_components, list) else 0,
         "spawns": spawns,
+        "cpu_top": cpu_top,
+        "spawn_top": spawn_top,
     }
 
 
