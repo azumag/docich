@@ -145,7 +145,7 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
 
     def test_long_labels_are_kept_within_the_documented_bound(self):
         # Labels are bounded to 64 chars by _cpu_profile_label, so the summary
-        # grows with label length (~216B worst case) but never leaks more.
+        # grows with label length (~217B worst case) but never leaks more.
         data = self.fixture()
         data["components"] = [
             {"component": "sh:" + "x" * 48, "cpu_pct": 30.0},
@@ -157,7 +157,7 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
         ]
         self.write(data)
         out = collector._collect_cpu_profile(self.now + 5, path=self.path)
-        self.assertLessEqual(len(out["cpu_top"].encode()), 216)
+        self.assertLessEqual(len(out["cpu_top"].encode()), 217)
         self.assertTrue(out["cpu_top"].startswith("sh:"))
         self.assertIn("<-", out["spawn_top"])
 

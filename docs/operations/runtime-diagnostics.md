@@ -525,7 +525,7 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   後に落とす優先順位）。omitted行数は `components_omitted`/`spawns_omitted`
   として累積し、既存 `components_truncated` は書き換えない。
   一方で1行要約 `cpu_top`/`spawn_top`（上位3 components / 上位3 spawn経路。
-  通常 ~57B、`_cpu_profile_label` の64文字上限により最大 ~216B）は
+  通常 ~57B、`_cpu_profile_label` の64文字上限により最大 ~217B）は
   この予算の全段階で削除対象外のため、lists が全削除されても上位消費と
   spawn 経路は読める（azumag/docich#970）。
   縮めても収まらない場合の最終形は budget を超えるが、
