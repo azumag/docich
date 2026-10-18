@@ -80,8 +80,7 @@ class XlogPathTests(unittest.TestCase):
                                                         'nlink': self.playground.stat().st_nlink})
         self.assertIs(result['findings']['xlog_lock_present'], False)
         self.assertIsNone(result['findings']['xlog_lock_shares_inode'])
-        self.assertIs(result['xlog']['readable'], False)
-        self.assertIsNone(result['xlog']['last_record'])
+        self.assertEqual(result['xlog'], {'readable': False})
 
     def test_fixed_alternates_and_launchers_are_reported(self):
         result = self.collect()
@@ -121,8 +120,7 @@ class XlogPathTests(unittest.TestCase):
         result = self.collect()
         self.assertIs(result['paths']['xlogfile']['symlink'], True)
         self.assertIs(result['paths']['xlogfile']['regular'], False)
-        self.assertIsNone(result['xlog']['size'])
-        self.assertIs(result['xlog']['readable'], False)
+        self.assertEqual(result['xlog'], {'readable': False})
         self.assertNotIn('SECRET', json.dumps(result))
 
     def test_xlog_tail_derives_numbers_without_content(self):
@@ -140,6 +138,13 @@ class XlogPathTests(unittest.TestCase):
                          len(record_own) + len(record_other) + len(incomplete))
         self.assertEqual(result['xlog']['tail_complete_lines'], 2)
         self.assertIs(result['xlog']['tail_head_truncated'], False)
+        first = result['xlog']['first_record']
+        self.assertIs(first['name_matches_player'], True)
+        self.assertEqual(first['points'], 123)
+        self.assertEqual(first['starttime'], 1789990000)
+        self.assertEqual(first['endtime'], 1789999999)
+        self.assertEqual(first['achieve'], 0x20)
+        self.assertNotIn('death', first)
         last = result['xlog']['last_record']
         self.assertIs(last['name_matches_player'], False)
         self.assertEqual(last['points'], 9)
@@ -149,20 +154,55 @@ class XlogPathTests(unittest.TestCase):
         self.assertEqual(last['endtime'], 1789990002)
         self.assertEqual(last['achieve'], 1)
         self.assertNotIn('death', last)
+        self.assertEqual(result['xlog']['record_span'], {
+            'first_starttime': 1789990000, 'last_endtime': 1789990002,
+            'complete_lines': 2})
         self.assertNotIn('SECRET', json.dumps(result))
         self.assertNotIn('docich', json.dumps(result['xlog']))
 
     def test_tail_over_cap_reports_truncated_head(self):
         big = b''.join(
-            b'version=3.6.6\tpoints=%020d\tname=docich\tturns=%d\n' % (value, value)
+            b'version=3.6.6\tpoints=%020d\tname=docich\tturns=%d\t'
+            b'starttime=%d\tendtime=%d\n'
+            % (value, value, 1790000000 + value, 1790000000 + value)
             for value in range(diag.NETHACK_XLOG_TAIL_BYTES // 64 + 8))
         self.assertGreater(len(big), diag.NETHACK_XLOG_TAIL_BYTES)
         (self.playground / 'xlogfile').write_bytes(big)
         result = self.collect()
         self.assertIs(result['xlog']['tail_head_truncated'], True)
         self.assertEqual(result['xlog']['size'], len(big))
+        # The window starts mid-line: the leading fragment is not a record,
+        # and lines entirely before the window are outside the bounded tail.
         self.assertGreater(result['xlog']['tail_complete_lines'], 0)
-        self.assertIs(result['xlog']['last_record']['name_matches_player'], True)
+        self.assertLess(result['xlog']['tail_complete_lines'],
+                        len(big.splitlines()))
+        span = result['xlog']['record_span']
+        self.assertEqual(span['complete_lines'], result['xlog']['tail_complete_lines'])
+        self.assertEqual(span['last_endtime'], 1790000000 + len(big.splitlines()) - 1)
+        # The first complete in-window record is a real record, but not the
+        # file's first one: earlier records exist beyond the truncated head.
+        self.assertIsNotNone(result['xlog']['first_record'])
+        self.assertGreater(span['first_starttime'], 1790000000)
+        self.assertLess(span['first_starttime'], span['last_endtime'])
+
+    def test_head_truncated_single_fragment_has_no_records(self):
+        (self.playground / 'xlogfile').write_bytes(b'x' * 65536 + b'\n')
+        result = self.collect()
+        self.assertIs(result['xlog']['tail_head_truncated'], True)
+        self.assertEqual(result['xlog']['tail_complete_lines'], 0)
+        self.assertIsNone(result['xlog']['record_span'])
+        self.assertIsNone(result['xlog']['first_record'])
+        self.assertIsNone(result['xlog']['last_record'])
+
+    def test_head_fragment_is_never_counted_as_a_record(self):
+        complete = b'version=3.6.6\tpoints=7\tname=docich\tstarttime=1\tendtime=2\n'
+        (self.playground / 'xlogfile').write_bytes(b'x' * 65536 + b'\n' + complete)
+        result = self.collect()
+        self.assertIs(result['xlog']['tail_head_truncated'], True)
+        self.assertEqual(result['xlog']['tail_complete_lines'], 1)
+        self.assertEqual(result['xlog']['record_span'], {
+            'first_starttime': 1, 'last_endtime': 2, 'complete_lines': 1})
+        self.assertEqual(result['xlog']['last_record']['points'], 7)
 
     def test_save_entries_count_only_matching_regular_files(self):
         (self.save / '1000docich').write_bytes(b'save')
@@ -399,12 +439,37 @@ class XlogBinariesTests(unittest.TestCase):
         self.assertEqual(len(result['entries']), 1)
         self.assertEqual(result['entries'][0]['origin'], 'dpkg')
         self.assertIs(result['entries'][0]['xlog_string_present'], True)
+        self.assertIs(result['entries'][0]['binary_scan_complete'], True)
 
     def test_binary_without_string_reports_false(self):
         binary = self.root / 'nethack'
         binary.write_bytes(b'\x7fELF no xlog here')
         result = self.collect_binaries(f'{binary}\n')
         self.assertIs(result['entries'][0]['xlog_string_present'], False)
+        self.assertIs(result['entries'][0]['binary_scan_complete'], True)
+
+    def test_cap_truncated_scan_reports_incomplete(self):
+        binary = self.root / 'nethack'
+        binary.write_bytes(b'A' * 32 + b'xlogfile' + b'B' * 24)
+        with mock.patch.object(
+                diag.subprocess, 'run',
+                return_value=subprocess.CompletedProcess([], 0, f'{binary}\n', '')), \
+             mock.patch.object(diag, 'NETHACK_XLOG_BINARY_BYTES', 16):
+            result = diag._nethack_xlog_binaries([])
+        self.assertEqual(result['entries'], [{'origin': 'dpkg',
+                                              'xlog_string_present': False,
+                                              'binary_scan_complete': False}])
+
+    def test_needle_spanning_read_boundary_is_found(self):
+        boundary = 256 * 1024
+        binary = self.root / 'nethack'
+        binary.write_bytes(b'A' * (boundary - 4) + b'xlogfile' + b'B' * 16)
+        with mock.patch.object(
+                diag.subprocess, 'run',
+                return_value=subprocess.CompletedProcess([], 0, f'{binary}\n', '')):
+            result = diag._nethack_xlog_binaries([])
+        self.assertIs(result['entries'][0]['xlog_string_present'], True)
+        self.assertIs(result['entries'][0]['binary_scan_complete'], True)
 
     def test_missing_binary_is_skipped_and_unavailable(self):
         result = self.collect_binaries('/nonexistent/nethack\n')
@@ -442,7 +507,10 @@ class XlogBudgetTests(unittest.TestCase):
     def section(self):
         return {
             'schema_version': 1, 'collected_at': 1790000000,
-            'xlog': {'readable': True, 'last_record': {'points': 5}},
+            'xlog': {'readable': True, 'record_span': {
+                         'first_starttime': 1789990000, 'last_endtime': 1789999999,
+                         'complete_lines': 2},
+                     'first_record': {'points': 5}, 'last_record': {'points': 5}},
             'binaries': {'available': True, 'entries': [{'origin': 'dpkg'}]},
             'xlog_siblings': {'present': True, 'entries': [{'name': 'xlogfile.1'}]},
             'processes': {'count': 1, 'entries': [{'pid': 7}]},
@@ -453,8 +521,14 @@ class XlogBudgetTests(unittest.TestCase):
         payload = {'nethack_xlog': self.section()}
         diag._nethack_xlog_budget(payload)
         section = payload['nethack_xlog']
+        self.assertIsNone(section['xlog']['first_record'])
+        self.assertIs(section['xlog']['first_record_omitted'], True)
         self.assertIsNone(section['xlog']['last_record'])
         self.assertIs(section['xlog']['last_record_omitted'], True)
+        # record_span is the #753 timeline evidence: it survives trimming.
+        self.assertEqual(section['xlog']['record_span'], {
+            'first_starttime': 1789990000, 'last_endtime': 1789999999,
+            'complete_lines': 2})
         self.assertEqual(section['binaries']['entries'], [])
         self.assertIs(section['binaries']['entries_omitted'], True)
         self.assertEqual(section['xlog_siblings']['entries'], [])
@@ -549,6 +623,28 @@ class HistorySummaryTests(unittest.TestCase):
         records = {record['expedition']: record for record in collected['records']}
         self.assertEqual(records[1]['analysis_error'], 'no-new-player-xlog-record')
         self.assertIsNone(records[2]['analysis_error'])
+
+    def test_analysis_error_unhashable_values_collapse_to_other(self):
+        # A hostile producer value (list/dict) must not kill the diagnostics
+        # scan with a TypeError from the frozenset membership test (#2515
+        # review); it is counted as the fixed token ``other`` instead.
+        self.run_record(1, status='ended_unknown', analysis_error=['x'])
+        self.run_record(2, status='ended_unknown', analysis_error={'a': 1})
+        self.run_record(3, status='ended_unknown', analysis_error=7)
+        collected = self.collect()['completed_runs']
+        self.assertEqual(collected['invalid_records'], 0)
+        records = {record['expedition']: record for record in collected['records']}
+        for expedition in (1, 2, 3):
+            self.assertEqual(records[expedition]['analysis_error'], 'other')
+        self.assertEqual(collected['summary']['analysis_error_counts']['other'], 3)
+
+    def test_type_error_is_isolated_to_invalid_records(self):
+        self.run_record(1, status='dead', score=5)
+        with mock.patch.object(diag, '_nethack_record', side_effect=TypeError('boom')):
+            collected = self.collect()['completed_runs']
+        self.assertEqual(collected['invalid_records'], 1)
+        self.assertEqual(collected['records'], [])
+        self.assertEqual(collected['summary']['terminal_status_counts']['dead'], 0)
 
     def test_daily_has_no_summary(self):
         daily = self.root / 'nethack' / 'daily-improvements'

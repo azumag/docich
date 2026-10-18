@@ -9011,11 +9011,13 @@ def _nethack_record(raw, daily):
             result[key] = _nethack_number(raw.get(key))
         # ``terminal.analysis_error`` is the run store's own fixed reason code
         # for "game ended but xlog evidence was missing" (#753). Reviewed codes
-        # are projected verbatim; unknown producer values collapse to the fixed
-        # token ``other`` so they are still countable without being exposed.
+        # are projected verbatim; any other producer value collapses to the
+        # fixed token ``other`` so it is still countable without being exposed.
+        # The type guard also keeps unhashable producer values (list/dict)
+        # away from the frozenset membership test (#2515 review).
         terminal = raw.get('terminal')
         error = terminal.get('analysis_error') if isinstance(terminal, dict) else None
-        if error in NETHACK_ANALYSIS_ERRORS:
+        if isinstance(error, str) and error in NETHACK_ANALYSIS_ERRORS:
             result['analysis_error'] = error
         else:
             result['analysis_error'] = 'other' if error else None
@@ -9086,7 +9088,9 @@ def _nethack_history(state_dir, daily):
                         error = record.get('analysis_error')
                         if error is not None:
                             summary['analysis_error_counts'][error] += 1
-                except (OSError, ValueError, UnicodeError, RecursionError):
+                except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+                    # A hostile run file must cost one invalid_records entry,
+                    # never the whole read-only diagnostics scan (#2515 review).
                     result['invalid_records'] += 1
             else:
                 result['scan_complete'] = True
@@ -9407,10 +9411,28 @@ def _nethack_xlog_int(record, key, base=10):
         return None
 
 
+def _nethack_xlog_record_fields(record, player):
+    """Allowlisted numeric projection of one parsed xlog record; no text."""
+    return {
+        "name_matches_player": (record.get("name") == player) if player else None,
+        "starttime": _nethack_xlog_int(record, "starttime"),
+        "endtime": _nethack_xlog_int(record, "endtime"),
+        "points": _nethack_xlog_int(record, "points"),
+        "turns": _nethack_xlog_int(record, "turns"),
+        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
+        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    }
+
+
 def _nethack_xlog_tail(xlogfile, player):
-    """Derived counters from the bounded xlog tail; content never leaves."""
-    result = {"readable": False, "size": None, "tail_complete_lines": 0,
-              "tail_head_truncated": False, "last_record": None}
+    """Derived counters from the bounded xlog tail; content never leaves.
+
+    ``record_span`` (oldest record's birth time, newest record's end time,
+    complete-line count) is the #753 timeline evidence and stays small enough
+    to survive the soft budget reductions. An unreadable xlogfile reports
+    only ``{"readable": false}`` so absence never spends envelope bytes.
+    """
+    result = {"readable": False}
     try:
         fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (FileNotFoundError, OSError):
@@ -9420,29 +9442,43 @@ def _nethack_xlog_tail(xlogfile, player):
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode):
                 return result
-            result["size"] = int(info.st_size)
-            start = max(0, result["size"] - NETHACK_XLOG_TAIL_BYTES)
+            size = int(info.st_size)
+            start = max(0, size - NETHACK_XLOG_TAIL_BYTES)
             if start:
                 stream.seek(start)
             raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
     except OSError:
         return result
+    result["size"] = size
+    result["tail_complete_lines"] = 0
+    result["tail_head_truncated"] = bool(start)
+    result["record_span"] = None
+    result["first_record"] = None
+    result["last_record"] = None
+    result["readable"] = True
     result["readable"] = True
     result["tail_head_truncated"] = bool(start)
+    if start:
+        # The window may begin mid-line; only bytes after the first newline
+        # are complete records (#2515 review). With no newline in the window
+        # there is no complete line at all.
+        newline = raw.find(b'\n')
+        raw = raw[newline + 1:] if newline != -1 else b''
     raw = raw[:raw.rfind(b'\n') + 1]
     lines = [line for line in raw.split(b'\n') if line]
     result["tail_complete_lines"] = len(lines)
     if not lines:
         return result
-    record = _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace'))
-    result["last_record"] = {
-        "name_matches_player": (record.get("name") == player) if player else None,
-        "starttime": _nethack_xlog_int(record, "starttime"),
-        "endtime": _nethack_xlog_int(record, "endtime"),
-        "points": _nethack_xlog_int(record, "points"),
-        "turns": _nethack_xlog_int(record, "turns"),
-        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
-        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    first = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[0].decode('utf-8', errors='replace')), player)
+    last = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace')), player)
+    result["first_record"] = first
+    result["last_record"] = last
+    result["record_span"] = {
+        "first_starttime": first["starttime"],
+        "last_endtime": last["endtime"],
+        "complete_lines": len(lines),
     }
     return result
 
@@ -9533,26 +9569,43 @@ def _nethack_xlog_siblings(playground):
 
 
 def _nethack_xlog_binary_has_xlog_string(path):
-    """Scan a fixed binary for the compiled-in ``xlogfile`` name (read-only)."""
+    """Scan a fixed binary for the compiled-in ``xlogfile`` name (read-only).
+
+    Reads at most ``NETHACK_XLOG_BINARY_BYTES`` bytes and reports whether the
+    scan was complete, so a capped probe is never mistaken for a full
+    negative (#2515 review). The needle is also matched across read-chunk
+    boundaries by carrying an overlap of ``len(needle) - 1`` bytes.
+    """
+    needle = b'xlogfile'
+    overlap = b''
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (FileNotFoundError, OSError):
         return None
     try:
-        with os.fdopen(fd, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                return None
-            size = min(int(info.st_size), NETHACK_XLOG_BINARY_BYTES)
-            needle = b'xlogfile'
-            while True:
-                chunk = stream.read(256 * 1024)
-                if not chunk:
-                    return False
-                if needle in chunk:
-                    return True
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        total = int(info.st_size)
+        planned = min(total, NETHACK_XLOG_BINARY_BYTES)
+        consumed = 0
+        while consumed < planned:
+            chunk = os.read(fd, min(256 * 1024, planned - consumed))
+            if not chunk:
+                # The file shrank under the plan; the scan did not complete.
+                break
+            consumed += len(chunk)
+            data = overlap + chunk
+            if needle in data:
+                return {"present": True, "complete_scan": True}
+            overlap = data[1 - len(needle):]
+        # ``complete_scan`` is true only when the whole file was examined;
+        # a capped or short probe is never a full negative (#2515 review).
+        return {"present": False, "complete_scan": consumed == planned == total}
     except OSError:
         return None
+    finally:
+        os.close(fd)
 
 
 def _nethack_xlog_binaries(launcher_targets):
@@ -9582,14 +9635,14 @@ def _nethack_xlog_binaries(launcher_targets):
         if path in seen:
             continue
         seen.add(path)
-        present = _nethack_xlog_binary_has_xlog_string(path)
-        if present is None:
+        probe = _nethack_xlog_binary_has_xlog_string(path)
+        if probe is None:
             continue
         result["available"] = True
         result["entries"].append({
             "origin": origin,
-            "size": None,
-            "xlog_string_present": present,
+            "xlog_string_present": probe["present"],
+            "binary_scan_complete": probe["complete_scan"],
         })
     return result
 
@@ -9650,18 +9703,21 @@ def _collect_nethack_xlog(now):
 def _nethack_xlog_budget(payload):
     """Yield the xlog projection's optional detail under envelope pressure.
 
-    The stat-level lock/permission evidence is the incident's first-order
-    proof, so it goes last. Optional detail (tail record, binaries, sibling
-    list, process entries, sysconf values) is dropped first, and each drop is
-    visible through an ``*_omitted`` marker.
+    The stat-level lock/permission evidence and the ``record_span`` timeline
+    (oldest birth time / newest end time / line count) are the incident's
+    first-order proof, so they go last. Optional detail (first/last record
+    field detail, binaries, sibling list, process entries, sysconf values) is
+    dropped first, and each drop is visible through an ``*_omitted`` marker.
     """
     section = payload.get("nethack_xlog")
     if not isinstance(section, dict):
         return payload
     xlog = section.get("xlog")
-    if isinstance(xlog, dict) and xlog.get("last_record") is not None:
-        xlog["last_record"] = None
-        xlog["last_record_omitted"] = True
+    if isinstance(xlog, dict):
+        for key in ("first_record", "last_record"):
+            if xlog.get(key) is not None:
+                xlog[key] = None
+                xlog[key + "_omitted"] = True
     for key in ("binaries", "processes", "xlog_siblings", "sysconf"):
         part = section.get(key)
         detail_key = "values" if key == "sysconf" else "entries"
