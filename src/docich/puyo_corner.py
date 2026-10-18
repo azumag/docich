@@ -80,6 +80,18 @@ SIDES = ("user", "ai")
 MAX_HISTORY_ENTRIES = 500
 MAX_BYTES = 256 * 1024
 
+# Chat participation (Issue #698 PR-4, offline core: no Twitch I/O here — the
+# production chat router on the VM feeds ``observe_chat``; the corner itself
+# stays bounded and fail-closed either way).
+CHAT_PREFIX = "!puyo"
+MAX_ROSTER = 16
+MAX_NAME_CHARS = 32
+MAX_USER_ID_CHARS = 64
+MAX_CHAT_QUEUE = 64
+MAX_PENDING_PER_USER = 2
+MAX_CHAT_ACTIONS_PER_STEP = 2
+MAX_ROSTER_DISPLAY = 4
+
 # Built-in ruleset: new/legacy states stay usable without an explicit config.
 # Only the section defaults are inherited; present values are never widened.
 DEFAULT_RULESET: dict[str, Any] = {
@@ -698,6 +710,8 @@ def new_state(config: Mapping[str, Any] | None = None, seed: int | None = None) 
         "failure_reason": None,
         "winner": None,
         "round_results": [],
+        "roster": [],
+        "chat_queue": [],
         "user_board": empty_board(),
         "user_pair": None,
         "user_next": None,
@@ -741,6 +755,7 @@ def start(state: Any, now: str | None = None) -> dict:
     state["pairs_spawned"] = 0
     state["winner"] = None
     state["round_results"] = []
+    state["chat_queue"] = []
     for side in SIDES:
         state[f"{side}_board"] = copy_board(state.get(f"{side}_board") or empty_board())
         pair = _refill_pair(state, side, ts)
@@ -796,12 +811,15 @@ def reset(state: Any, now: str | None = None) -> dict:
     if state.get("phase") not in ("FAILED", "TIMEOUT", "END"):
         raise PuyoCornerError("reset requires a terminal phase")
     seed = state.get("seed")
+    roster = state.get("roster")
     fresh = new_state({
         "ruleset": state.get("ruleset"),
         "ruleset_id": state.get("ruleset_id"),
         "gravity_ms": state.get("gravity_ms"),
         "gravity_pending": state.get("gravity_pending"),
     }, seed=seed)
+    # Participants stay joined across rounds; the queue is per-round state.
+    fresh["roster"] = roster if isinstance(roster, list) else []
     state.clear()
     state.update(fresh)
     return state
@@ -817,6 +835,147 @@ def require_live_ruleset(state: Any, ruleset_id: Any) -> dict:
             "ruleset_mismatch",
         )
     return state
+
+
+# ---------------------------------------------------------------------------
+# chat participation (Issue #698 PR-4)
+# ---------------------------------------------------------------------------
+
+
+def parse_chat(text: Any) -> tuple[str, str] | None:
+    """Parse one chat command into (kind, token). Fail-closed (None).
+
+    Accepted forms are exactly ``{CHAT_PREFIX} join``, ``{CHAT_PREFIX} leave``
+    and ``{CHAT_PREFIX} <action>`` with ``action`` in ``ACTIONS``. Anything
+    else — trailing words, unknown tokens, casing of the action token — is
+    ignored, never guessed.
+    """
+    if not isinstance(text, str):
+        return None
+    words = text.strip().split()
+    if len(words) != 2 or words[0].lower() != CHAT_PREFIX:
+        return None
+    command = words[1].lower()
+    if command in ("join", "leave"):
+        return (command, "")
+    if command in ACTIONS:
+        return ("action", command)
+    return None
+
+
+def observe_chat(state: Any, *, user_id: Any, display_name: Any,
+                 text: Any, now: str | None = None) -> str:
+    """Apply one chat message to the roster/queue. Returns the applied kind.
+
+    The production chat router (VM side) is the only caller in the live
+    runtime; offline callers are tests. Parsing is fail-closed: anything that
+    is not an exact ``{CHAT_PREFIX}`` command is ignored (returns
+    ``"ignored"``). Fail-closed errors carry fixed codes only.
+    """
+    parsed = parse_chat(text)
+    if parsed is None:
+        return "ignored"
+    kind, token = parsed
+    state = _dict(state, "state")
+    user_id = _text(user_id, "user id", limit=MAX_USER_ID_CHARS)
+    if not user_id:
+        raise PuyoCornerError("chat user id must not be empty", "invalid_user")
+    if kind == "join":
+        display_name = _text(display_name, "display name", limit=MAX_NAME_CHARS)
+        if not display_name:
+            raise PuyoCornerError("display name must not be empty", "invalid_user")
+        _record_join(state, user_id, display_name, now)
+        return "join"
+    if kind == "leave":
+        _record_leave(state, user_id)
+        return "leave"
+    # kind == "action": roster members only, bounded queue.
+    _record_chat_action(state, user_id, token, now)
+    return "action"
+
+
+def _roster(state) -> list[dict]:
+    roster = state.get("roster")
+    if not isinstance(roster, list):
+        roster = state["roster"] = []
+    for row in roster:
+        if (not isinstance(row, dict)
+                or not isinstance(row.get("user_id"), str)
+                or not isinstance(row.get("display_name"), str)):
+            raise PuyoCornerError("chat roster is invalid", "invalid_roster")
+    return roster
+
+
+def _record_join(state: dict, user_id: str, display_name: str, now) -> None:
+    roster = _roster(state)
+    for row in roster:
+        if row["user_id"] == user_id:
+            # Re-joining refreshes the display name only (bounded idempotent).
+            row["display_name"] = display_name
+            return
+    if len(roster) >= MAX_ROSTER:
+        raise PuyoCornerError("chat roster is full", "roster_full")
+    roster.append({
+        "user_id": user_id,
+        "display_name": display_name,
+        "joined_at": now or _now(),
+    })
+    state["roster"] = roster
+
+
+def _record_leave(state: dict, user_id: str) -> None:
+    roster = _roster(state)
+    state["roster"] = [row for row in roster if row["user_id"] != user_id]
+    # Queued actions of someone who left no longer belong to a participant.
+    queue = state.get("chat_queue")
+    if isinstance(queue, list):
+        state["chat_queue"] = [row for row in queue
+                               if not (isinstance(row, dict)
+                                       and row.get("user_id") == user_id)]
+
+
+def _record_chat_action(state: dict, user_id: str, action: str, now) -> None:
+    if state.get("phase") != "MATCH":
+        raise PuyoCornerError("chat actions require MATCH phase", "not_live")
+    known = any(row["user_id"] == user_id for row in _roster(state))
+    if not known:
+        raise PuyoCornerError("chat actions require roster membership",
+                              "not_in_roster")
+    queue = state.get("chat_queue")
+    if not isinstance(queue, list):
+        queue = state["chat_queue"] = []
+    if len(queue) >= MAX_CHAT_QUEUE:
+        raise PuyoCornerError("chat action queue is full", "chat_queue_full")
+    pending = sum(1 for row in queue
+                  if isinstance(row, dict) and row.get("user_id") == user_id)
+    if pending >= MAX_PENDING_PER_USER:
+        raise PuyoCornerError("chat action queue is full", "chat_queue_full")
+    queue.append({"user_id": user_id, "action": action,
+                  "at": now or _now()})
+    state["chat_queue"] = queue
+
+
+def _chat_script(state) -> list[str]:
+    """The user-side script for one step: queued chat actions first.
+
+    With no participant or an empty queue the bounded brain drives the side,
+    which keeps chat-free slots and idle matches inside the existing engine
+    budgets. At most ``MAX_CHAT_ACTIONS_PER_STEP`` queued actions apply per
+    step so one burst can never lock the pair out of order.
+    """
+    roster = state.get("roster")
+    queue = state.get("chat_queue")
+    if not isinstance(queue, list):
+        queue = []
+    if isinstance(roster, list) and roster:
+        script = []
+        while queue and len(script) < MAX_CHAT_ACTIONS_PER_STEP:
+            row = queue.pop(0)
+            if isinstance(row, dict) and row.get("action") in ACTIONS:
+                script.append(str(row["action"]))
+        if script:
+            return script
+    return plan_actions(state, "user")
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +1028,8 @@ def record_match(ledger: Any, state: Any, outcome: str | None = None,
         "ai_score": state.get("ai_score"),
         "winner": state.get("winner"),
         "failure_reason": state.get("failure_reason"),
+        "participants": [row.get("user_id") for row in
+                         _roster(state) if isinstance(row, dict)],
     }
     ledger["entries"].append(entry)
     _trim_ledger(ledger)
@@ -1101,11 +1262,14 @@ def plan_actions(state: Any, side: str) -> list[str]:
 
 
 def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
-    """Drive both sides with the bounded brain until the round ends.
+    """Drive both sides until the round ends, honoring queued chat actions.
 
-    Offline self-play only: no chat input, no adapter, no GameSwitch, no VM.
-    The engine's own bounded budgets stay authoritative; exhausting the
-    action/pair budget fails the round closed instead of looping forever.
+    Offline driver only: no Twitch I/O, no adapter, no GameSwitch, no VM.
+    When the roster is empty (or the queue is drained) the bounded brain
+    drives both sides, exactly as before; queued chat actions substitute the
+    user-side plan for that step. The engine's own bounded budgets stay
+    authoritative; exhausting the action/pair budget fails the round closed
+    instead of looping forever.
     """
     state = _dict(state, "state")
     steps = 0
@@ -1116,7 +1280,9 @@ def play_match(state: Any, *, max_steps: int = MAX_SELFPLAY_TICKS) -> dict:
             if state.get("phase") != "MATCH":
                 break
             try:
-                for action in plan_actions(state, side):
+                script = (plan_actions(state, side) if side == "ai"
+                          else _chat_script(state))
+                for action in script:
                     apply_action(state, side, action)
                 tick(state)
             except PuyoCornerError as exc:
@@ -1164,6 +1330,18 @@ def overlay_draft(state: Any) -> dict:
     winner = state.get("winner")
     if winner:
         sections.append({"key": "winner", "label": "result", "text": str(winner)})
+    roster = state.get("roster")
+    if isinstance(roster, list) and roster:
+        # Stafford: only the display names the caller provided; ids never
+        # reach the overlay.
+        names = [row.get("display_name") for row in roster[:MAX_ROSTER_DISPLAY]
+                 if isinstance(row, dict) and isinstance(row.get("display_name"), str)]
+        if names:
+            sections.append({
+                "key": "participants",
+                "label": "参加",
+                "text": "・".join(names[:MAX_ROSTER_DISPLAY]),
+            })
     return {
         "title": "ぷよぷよクローン",
         "phase": str(state.get("phase")),

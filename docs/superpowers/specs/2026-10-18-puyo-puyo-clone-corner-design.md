@@ -165,3 +165,77 @@ While `enabled = false` the corner can never be selected, not even manually
 チャット参加 (`!puyo join`), progression/成績記録, ネット対戦, TTS,
 自動ローテーション組入 (`enabled = true` / `manual_only = false`),
 本番起動 — each stays a separate explicitly approved slice.
+
+## PR-4: チャット参加 + 読み上げ + 有効化 (owner-approved 2026-10-18, Slack ts=1792288826)
+
+範囲: オーナーが Slack ボタンで承認した「チャット参加/TTS/有効化/本番起動」のうち、
+ローカルで実装・検証できる部分。本番 VM への配備・起動 (=「本番起動」) は本人/VM ops
+の段階で、この PR では未実施・未検証として明記する。
+
+### チャット参加 (オフラインコア)
+
+* `puyo_corner.py` に参加者名簿とチャット操作キューを追加 (引擎はインターネットも
+  Twitch も扱わない。入力は呼び出し側が供給する):
+  - `parse_chat(text)`: `!puyo join` / `!puyo leave` / `!puyo <action>`
+    (action は `ACTIONS` のトークン、大小文字は同一視)。それ以外は None (fail-closed)。
+  - `observe_chat(state, user_id=, display_name=, text=, now=)`:
+    講読 → 名簿更新/キュー投入。戻り値は `join` / `leave` / `action` / `ignored`。
+    エラーコードは固定語のみ: `invalid_user`, `roster_full`, `not_live`,
+    `not_in_roster`, `chat_queue_full`。
+  - 有界: `MAX_ROSTER=16` 名・display名32字・user_id64字・キュー `MAX_CHAT_QUEUE=64`・
+    1人あたり同時 `MAX_PENDING_PER_USER=2`・1ステップ消費 `MAX_CHAT_ACTIONS_PER_STEP=2`。
+  - 名簿はラウンドをまたいで保持 (`reset` で保存)、キューはラウンド毎に消去
+    (`start` で初期化)。離脱者は名簿から消え、そのユーザーの未再生分も消す。
+* `play_match`: 名簿が非空のとき user 側はキュー注入を優先 (FIFO、1ステップ最大2つ)、
+  キューが空なら内蔵 AI が代打 — 無人枠やチャット無しでも従来の予算内で完走する。
+  予算枯渇は従来どおり TIMEOUT で fail-closed。自己再演と等しく決定論的。
+* `record_match` 台帳項目に `participants` (user_id の有界リスト) を追加。
+  `overlay_draft` に `participants` 節 (表示名のみ・先頭4人・節上限12内) を追加。
+* 状態互換: `roster` / `chat_queue` は新規フィールドで、旧状態ファイルは
+  `load_state` が既定値 (空) を補完して引き続き読める。
+
+### 本番でのチャット入力の契約 (VM 側)
+
+* チャット取り出し router は、ビュー実行プロセスと同じ runtime directory の
+  `chat_inbox.jsonl` へ JSON 行 `{"user_id","display_name","text"}` を追記する。
+* 表示側 (`docich.puyo_view --live --inbox-file ...`) は 0.5 秒間隔で新着行だけ
+  消費し、字数上限 (text 200字) と JSON 検証で fail-closed、名簿/キュー上限超過は
+  固定コードで無視し、生のチャット文はどこにも出さない。
+* ビュー實行プロセスが引擎スレッドを持つ (`LiveMatch`): 1ステップ = `play_match(1)`、
+  スリップ体は gravity/override に依る 0.1 秒刻み。ラウンド終了時に (1) 台帳記録
+  (`puyo_corner_ledger.json`, flock)、(2) 端末スナップショット (`puyo_match.json`、
+  既存スキーマのまま) を書いて次ラウンドへ start。ラウンド数は表示窓 (2–14分) で有界。
+* `/api/puyo` は callable provider に対応し、ライブ本体は `phase` / `participants`
+  を返す。provider が失敗したら `{ok:false}` を返す (stale データを出さない)。
+* HTML: 参加者名と状態 (`対局中` / `対局終了`) を表示、案内タグ
+  「チャット参加 !puyo join」。
+
+### 読み上げ (opt-in)
+
+* `puyo_narration.py`: doushi_narration と同じ二つの検証済みシンク
+  (`overlay_queue.append_event`, category=game / `soren_output.enqueue_audio_text`)。
+  固定文のみ・数字有界・チャットの表示名は読まない。
+  - start: 対戦開始 + `!puyo join` 案内 (スロット開始時に1回)。
+  - result: 台帳の今枠内ラウンド記録 (`started_at-60s ≤ ended_at` かつ直近7日) から
+    勝者/得点/参加者数を1文で。検証できない記録は読まない (fail-closed)。
+* `PuyoProgramManager(audio_enabled=, announce=)`: at-most-once 記録を状態に残す
+  (`announce.start` / `announce.result`)。crash/再開後も同じ行を二度読まない。
+  シンク失敗は固定ステータス記録のみで、コーナーは落とさない。
+* カタログ `adapter == "puyo"`: `audio_enabled` を bool opt-in として許可
+  (`fetch_on_start` は引き続き拒否)。読み上げは `audio_enabled = true` のときだけ音声キューへ。
+
+### 有効化 (本番カタログ)
+
+* `config/docich.soren-live.toml` の puyo 行:
+  `enabled = true, audio_enabled = true, manual_only = true` (+ 承認コメント)。
+  自動抽選 (`manual_only = false`) は本番チャット取り出し配線の実測確認後の
+  別承認ステップへ残す — 既定値の変更なし (`enabled` は手動予約可能な意味での有効化)。
+* WebUI/rotation: puyo は `eligible` (手動予約可能) だが auto 抽選では
+  `manual-only` として除外される ( `test_real_adapters_derive_live_eligible_count`
+  で固定)。
+
+### 本番起動 (未実施)
+
+config マージ後の VM 配備・GameSwitch 経由の初回予約・`chat_inbox.jsonl` を
+生む chat router の配線は docich control plane (owner-only gateway) の手順であり、
+この PR の範囲では未実行・未検証。PR 本文と本節に事実として記録する。

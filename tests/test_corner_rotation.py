@@ -89,7 +89,7 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     # Issue #698: ぷよぷよクローン stays default-disabled and manual-only until
     # the owner approves the auto-rotation step.
     puyo = next(c for c in catalog if c.id == "puyo-corner")
-    assert not puyo.enabled and puyo.manual_only
+    assert puyo.enabled and puyo.manual_only and puyo.audio_enabled
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -236,17 +236,18 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "finished", "readyForNextRun": True,
     })
     eligible, excluded = manager._eligible()
+    # The enabled (+ manual_only) ぷよぷよクローン row is manual-bookable but
+    # never auto-selected (Issue #698 PR-4).
     assert len(eligible) == 13
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
             "yosou-oh", "doushi-card"} <= set(eligible)
-    # The disabled ぷよぷよクローン row is excluded, never suddenly auto-selected.
-    assert excluded == {"puyo-corner": "disabled-or-paused"}
+    assert excluded == {"puyo-corner": "manual-only"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
     assert len(eligible) == 12 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable", "puyo-corner": "disabled-or-paused"}
+    assert excluded == {"tsuitate": "adapter-unavailable", "puyo-corner": "manual-only"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

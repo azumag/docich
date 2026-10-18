@@ -92,10 +92,11 @@ corners = [
   # doushi_corner.DEFAULT_DURATION_MINUTES（2分。duration_minutes 未指定時）。
   # 読み上げ・overlay は出さない（doushi_narration.ANNOUNCEMENT_ENABLED）。
   { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true },
-  # ぷよぷよクローン (#698): オフライン自対戦1局の読み取り専用ビュー。
-  # 既定無効・WebUI手動予約のみ (manual_only)。音声・fetch・live は対象外。
-  # 24h自動抽選への組入は、オーナーの別承認ステップで行う。
-  { id = "puyo-corner", adapter = "puyo", game = "puyo-view", enabled = false, manual_only = true },
+  # ぷよぷよクローン (#698): チャット参加 (!puyo join) つきの読み取り専用ビュー。
+  # 2026-10-18 オーナー承認 (Slack ts=1792288826): PR-4 で有効化 (手動予約可能に)。
+  # 読み上げも承認済みのため audio_enabled = true。自動抽選 (manual_only 外し) は
+  # 本番のチャット取り出し配線確認後の別承認ステップ。
+  { id = "puyo-corner", adapter = "puyo", game = "puyo-view", enabled = true, audio_enabled = true, manual_only = true },
 ]
 
 [nethack_corner]

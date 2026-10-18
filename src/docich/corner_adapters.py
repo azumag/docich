@@ -787,6 +787,8 @@ class PuyoCornerAdapter:
             duration_minutes=(corner.duration_minutes
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
+            audio_enabled=(corner.audio_enabled if type(corner.audio_enabled) is bool
+                           else False),
         )
         self.state_path = self.manager.state_path
 

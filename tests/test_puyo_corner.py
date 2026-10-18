@@ -604,3 +604,165 @@ def test_overlay_draft_is_bounded_and_pure():
     win = seeded_state()
     win["winner"] = "user"
     assert pc.overlay_draft(win)["sections"][-1]["text"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# chat participation (PR-4)
+# ---------------------------------------------------------------------------
+
+
+def started(seed=11):
+    st = seeded_state(seed=seed)
+    pc.start(st, now="2026-10-18T01:00:00+00:00")
+    return st
+
+
+def chat(st, user_id, display_name, text, now=None):
+    return pc.observe_chat(st, user_id=user_id, display_name=display_name,
+                           text=text, now=now)
+
+
+def test_parse_chat_accepts_only_exact_commands():
+    # Chat verbs and action tokens are case-insensitive; the argument must be
+    # exactly one token.
+    assert pc.parse_chat("!puyo join") == ("join", "")
+    assert pc.parse_chat("!puyo JOIN") == ("join", "")
+    assert pc.parse_chat("!puyo leave") == ("leave", "")
+    assert pc.parse_chat("!puyo hard_drop") == ("action", "hard_drop")
+    assert pc.parse_chat("!puyo LEFT") == ("action", "left")
+    for bad in ("!puyo", "!puyo  join?extra", "!puyo unknown", "puyo join",
+                "!pujo join", "!puyo hard_drop now", None, 5,
+                "!puyo rotate_cw!!", "!choice 1"):
+        assert pc.parse_chat(bad) is None
+
+
+def test_join_roster_is_bounded_dedupe_and_idempotent(tmp_path):
+    st = seeded_state()
+    assert chat(st, "u1", "たろう", "!puyo join") == "join"
+    assert st["roster"] == [{
+        "user_id": "u1", "display_name": "たろう",
+        "joined_at": None if False else st["roster"][0]["joined_at"],
+    }] and len(st["roster"][0]["joined_at"]) > 0
+    # re-join refreshes the display name, never duplicates
+    pc.observe_chat(st, user_id="u1", display_name="じろう",
+                    text="!puyo join", now="2026-10-18T01:00:09+00:00")
+    assert len(st["roster"]) == 1 and st["roster"][0]["display_name"] == "じろう"
+    for i in range(2, pc.MAX_ROSTER + 2):
+        try:
+            chat(st, f"u{i}", f"n{i}", "!puyo join")
+        except pc.PuyoCornerError as exc:
+            assert exc.code == "roster_full"
+            assert len(st["roster"]) == pc.MAX_ROSTER
+            break
+    else:
+        pytest.fail("roster bound was not enforced")
+    # roster survives reset (new round, same participants), queue is per-round
+    st_run = started(seed=2)
+    pc.observe_chat(st_run, user_id="u1", display_name="たろう", text="!puyo join")
+    chat(st_run, "u1", "たろう", "!puyo right")
+    assert len(st_run["chat_queue"]) == 1
+    pc.timeout(st_run, now="2026-10-18T01:01:30+00:00")
+    pc.reset(st_run, now="2026-10-18T01:01:31+00:00")
+    assert st_run["chat_queue"] == []
+    assert [row["user_id"] for row in st_run["roster"]] == ["u1"]
+
+
+def test_leave_is_idempotent_and_purges_queued_actions():
+    st = started()
+    chat(st, "u1", "たろう", "!puyo join", now="2026-10-18T01:00:01+00:00")
+    assert chat(st, "u1", "たろう", "!puyo left") == "action"
+    assert len(st["chat_queue"]) == 1
+    assert chat(st, "u1", "たろう", "!puyo leave") == "leave"
+    assert st["roster"] == [] and st["chat_queue"] == []
+    assert chat(st, "u1", "たろう", "!puyo leave") == "leave"
+    assert st["roster"] == []
+
+
+def test_chat_actions_require_roster_match_phase_and_queue_bounds():
+    st = seeded_state()
+    with pytest.raises(pc.PuyoCornerError) as exc:
+        chat(st, "u1", "たろう", "!puyo left")
+    assert exc.value.code == "not_live"
+    st = started()
+    with pytest.raises(pc.PuyoCornerError) as exc:
+        chat(st, "ghost", "ばれ", "!puyo left")
+    assert exc.value.code == "not_in_roster"
+    chat(st, "u1", "たろう", "!puyo join")
+    for _ in range(pc.MAX_PENDING_PER_USER):
+        chat(st, "u1", "たろう", "!puyo right")
+    with pytest.raises(pc.PuyoCornerError) as exc:
+        chat(st, "u1", "たろう", "!puyo right")
+    assert exc.value.code == "chat_queue_full"
+    assert len(st["chat_queue"]) == pc.MAX_PENDING_PER_USER
+    # unknown actions are ignored before any roster check
+    assert chat(st, "u1", "たろう", "!puyo nonsense") == "ignored"
+
+
+def test_chat_driven_pair_replaces_the_user_plan_and_replays_deterministically():
+    st = started(seed=11)
+    chat(st, "u1", "たろう", "!puyo join")
+    pc.observe_chat(st, user_id="u1", display_name="たろう",
+                    text="!puyo left", now="2026-10-18T01:00:02+00:00")
+    pc.play_match(st, max_steps=1)
+    assert st["chat_queue"] == []  # queued action consumed
+    # deterministic replay: the same feed reproduces the same board
+    reference = json.dumps(
+        {"user_board": st["user_board"], "ai_board": st["ai_board"],
+         "scores": [st["user_score"], st["ai_score"]]},
+        sort_keys=True)
+    twin = started(seed=11)
+    pc.observe_chat(twin, user_id="u1", display_name="たろう",
+                    text="!puyo join", now=None)
+    pc.observe_chat(twin, user_id="u1", display_name="たろう",
+                    text="!puyo left", now="2026-10-18T01:00:02+00:00")
+    pc.play_match(twin, max_steps=1)
+    assert json.dumps(
+        {"user_board": twin["user_board"], "ai_board": twin["ai_board"],
+         "scores": [twin["user_score"], twin["ai_score"]]},
+        sort_keys=True) == reference
+
+
+def test_chat_run_round_still_tops_out_within_budgets():
+    st = started(seed=3)
+    chat(st, "u1", "たろう", "!puyo join")
+    chat(st, "u2", "じろう", "!puyo join")
+    pc.play_match(st)
+    # seed 3 ends as the bounded pair-budget TIMEOUT, exactly like the
+    # chat-free self-play drives
+    assert st["phase"] == "TIMEOUT"
+    assert st["outcome"] == "timeout"
+    # record_match carries the participant ids, bounded roster order
+    ledger = pc.new_ledger()
+    assert pc.record_match(ledger, st, now="2026-10-18T01:05:00+00:00")
+    entry = ledger["entries"][0]
+    assert entry["participants"] == ["u1", "u2"]
+    # a still-running MATCH state records nothing
+    assert pc.record_match(pc.new_ledger(), started(seed=3)) is False
+
+
+def test_overlay_draft_lists_participants_bounded_and_keeps_section_cap():
+    st = started()
+    chat(st, "u1", "たろう", "!puyo join")
+    chat(st, "u2", "じろう", "!puyo join")
+    draft = pc.overlay_draft(st)
+    keys = [s["key"] for s in draft["sections"]]
+    assert keys[:7] == [
+        "phase", "user_board", "user_score", "user_chain",
+        "ai_board", "ai_score", "ai_chain",
+    ]
+    assert keys[-1] == "participants"
+    participants = next(s for s in draft["sections"] if s["key"] == "participants")
+    assert participants["text"] == "たろう・じろう"
+    assert len(draft["sections"]) <= pc.MAX_OVERLAY_SECTIONS
+    assert pc.overlay_draft(seeded_state())["sections"][-1]["key"] != "participants"
+
+
+def test_load_state_defaults_chat_fields_for_legacy_states(tmp_path):
+    legacy = seeded_state()
+    legacy.pop("roster", None)
+    legacy.pop("chat_queue", None)
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = pc.load_state(path)
+    assert loaded["roster"] == [] and loaded["chat_queue"] == []
+    assert loaded["ruleset_id"] == legacy["ruleset_id"]

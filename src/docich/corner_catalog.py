@@ -173,9 +173,9 @@ def load_catalog(g) -> tuple[Corner, ...]:
             # audio/fetch/live settings are out of scope for this adapter.
             if item.id != "puyo-corner" or item.game != "puyo-view":
                 raise CornerCatalogError("puyo requires id=puyo-corner and game=puyo-view")
-            if item.fetch_on_start or item.audio_enabled:
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
                 raise CornerCatalogError(
-                    "puyo accepts neither audio_enabled nor fetch_on_start"
+                    "puyo accepts only a boolean audio_enabled (fetch_on_start requires weather)"
                 )
             if item.manual_only is not True:
                 raise CornerCatalogError(

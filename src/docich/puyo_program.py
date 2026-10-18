@@ -90,6 +90,7 @@ class PuyoProgramManager:
     """Run one bounded 同志カード大賞 display under the shared GameSwitch slot."""
 
     def __init__(self, g, *, duration_minutes=DEFAULT_DURATION_MINUTES, coordinator=None,
+                 audio_enabled=False, announce=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0):
         if (type(duration_minutes) is not int
                 or not 1 <= duration_minutes <= MAX_DURATION_MINUTES):
@@ -97,8 +98,14 @@ class PuyoProgramManager:
                 f"puyo program duration must be an integer from 1 to {MAX_DURATION_MINUTES} minutes")
         if type(poll_s) not in (int, float) or poll_s <= 0:
             raise PuyoProgramError("puyo program poll interval must be positive")
+        if type(audio_enabled) is not bool:
+            raise PuyoProgramError("puyo program audio setting must be boolean")
+        if announce is not None and not callable(announce):
+            raise PuyoProgramError("puyo program announcer must be callable")
         self.g = g
         self.duration_minutes = duration_minutes
+        self.audio_enabled = audio_enabled
+        self.announce = announce
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -307,7 +314,60 @@ class PuyoProgramManager:
             ends_at=started + self.duration_minutes * 60,
         )
         self._save(state)
+        self._announce_start(state)
         return "queued" if canonical.get("phase") == "draining" else None
+
+    def _announce(self, state, title, body, *, request_key):
+        """Publish one announcement once per request (best-effort, at-most-once).
+
+        The attempt is recorded before the side effect so a crash or a
+        resumed owner can never speak the same line twice. A sink failure is
+        stored as a fixed status for diagnostics and never fails the corner.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return
+        marker = state.get("announce")
+        recorded = marker if isinstance(marker, dict) else {}
+        if recorded.get(request_key) == request_id:
+            return
+        recorded[request_key] = request_id
+        state["announce"] = recorded
+        self._save(state)
+        if self.announce is None:
+            from .puyo_narration import announce as run
+        else:
+            run = self.announce
+        try:
+            result = run(self.g, title, body, request_id=request_id,
+                         audio_enabled=self.audio_enabled)
+        except Exception:
+            result = {"overlay": "failed", "speech": "failed"}
+        overlay = result.get("overlay") if isinstance(result, dict) else None
+        speech = result.get("speech") if isinstance(result, dict) else None
+        recorded[request_key] = {
+            "request_id": request_id,
+            "overlay": overlay if overlay in ("sent", "failed", "skipped") else "failed",
+            "speech": speech if speech in ("sent", "failed", "skipped") else "failed",
+        }
+        state["announce"] = recorded
+        self._save(state)
+
+    def _announce_start(self, state):
+        from .puyo_narration import START_BODY, START_TITLE
+
+        self._announce(state, START_TITLE, START_BODY, request_key="start")
+
+    def _announce_result(self, state):
+        from .puyo_narration import TITLE, load_result, result_text
+
+        entry = load_result(self.g, state.get("started_at"), now=self.clock())
+        if entry is None:
+            return
+        text = result_text(entry)
+        if text is None:
+            return
+        self._announce(state, TITLE, text, request_key="result")
 
     @staticmethod
     def _matches_active(canonical, identity):
@@ -476,6 +536,7 @@ class PuyoProgramManager:
         state.pop("switch_request_id", None)
         state.pop("switch_status", None)
         self._save(state)
+        self._announce_result(state)
         self._clear_stop_request()
         return "completed"
 
