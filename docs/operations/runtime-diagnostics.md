@@ -479,9 +479,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `encoder` はこの予算では削らない。`decision_plans` はこの soft 予算では削らず、
   gatewayのhard上限時のみ削る。残る最大要素が `cpu_profile` なので、
   ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
-  （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
-  `components_omitted`/`spawns_omitted` として残し、既存 `components_truncated` は
-  書き換えない。縮めても収まらない場合の最終形は budget を超えるが、
+  （producerはbusiest順に並べるので先頭が重い行）。さらに5行へ縮める
+  floor（`CPU_PROFILE_FLOOR_COMPONENTS`/`CPU_PROFILE_FLOOR_SPAWNS` = 5）を
+  適用する。NetHackの古い履歴を落としても収まらない場合は、
+  **latest NetHack結果より先に** `components`/`spawns` を全削除する
+  （`_cpu_profile_detail_drop`。latest結果は optional な CPU/audio 詳細より
+  後に落とす優先順位）。omitted行数は `components_omitted`/`spawns_omitted`
+  として累積し、既存 `components_truncated` は書き換えない。
+  一方で1行要約 `cpu_top`/`spawn_top`（上位3 components / 上位3 spawn経路。
+  通常 ~57B、`_cpu_profile_label` の64文字上限により最大 ~216B）は
+  この予算の全段階で削除対象外のため、lists が全削除されても上位消費と
+  spawn 経路は読める（azumag/docich#970）。
+  縮めても収まらない場合の最終形は budget を超えるが、
   gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
   profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
