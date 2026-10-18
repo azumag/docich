@@ -305,7 +305,9 @@ class NethackProgressResolver:
             self._pending = None
             self._recovery_pending = None
             self._recovery_expected = None
-            self._recovery_attempts = 0
+            # Keep ``_recovery_attempts``: an unrelated map change (a distant
+            # cell) must not lift the bound on the same unresolved recovery
+            # episode.  It is reset only when the visible status changes.
             self._recovery_last_conditions = tuple(obs.conditions)
             return
         if self._pending is None:
@@ -389,7 +391,10 @@ class NethackProgressResolver:
                 if self._recovery_last_conditions is None:
                     self._recovery_last_conditions = tuple(obs.conditions)
             elif decision.intent == "status_recovery" and self._recovery_expected is not None and key == self._recovery_expected:
+                # Transport acked: now consume the key we peeked in ``_resolve``.
                 self._recovery_expected = None
+                if self._recovery_pending:
+                    self._recovery_pending = self._recovery_pending[1:] or None
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
                 self._answered_prompt = obs.raw_text
             elif key in MOVE_KEYS:
@@ -419,9 +424,11 @@ class NethackProgressResolver:
                     self._recovery_pending = None
                     self._recovery_expected = None
                 else:
+                    # Peek only: the key is consumed once the send is acked
+                    # (``sent``).  A rejected/discarded plan must keep it so the
+                    # next replanning re-sends the same key instead of skipping.
                     ch = remaining[0]
                     self._recovery_expected = ch
-                    self._recovery_pending = remaining[1:] or None
                     return self._action("status_recovery", "continue the reviewed recovery command", ch)
             else:
                 # The extended command prompt we started is gone or changed:

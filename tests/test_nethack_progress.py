@@ -910,3 +910,63 @@ def test_production_prayer_recovery_types_extended_command_over_fresh_frames():
         assert act(agent, prompt) == [expected]
         assert agent.last_progress_decision.intent == "status_recovery"
         typed += expected if expected != "\n" else ""
+
+
+def _obs(text):
+    return Observation(game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=text)
+
+
+def _far_change(text):
+    """Change only a distant map cell (row 3), leaving status/HP/player intact."""
+    lines = text.split("\n")
+    row = lines[4]  # lines[0] is the message; map row 3 is lines[4]
+    lines[4] = "." + row[1:]
+    return "\n".join(lines)
+
+
+def _send(agent, text, expected):
+    actions = agent.decide(_obs(text))
+    assert [a.text for a in actions] == expected
+    if actions:
+        assert agent.validate_action(actions[0], _obs(text)) is True
+        agent.action_sent(actions[0])
+
+
+def test_rejected_recovery_continuation_keeps_the_unsent_key():
+    # A fresh capture that no longer matches the planned frame rejects the send.
+    # The peeked continuation key must not be consumed, or replanning skips it.
+    agent = brain()
+    severe = frame(hp="4(16)", condition="Sick")
+    _send(agent, severe, ["#"])
+
+    prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? ")
+    planned = agent.decide(_obs(prompt))
+    assert [a.text for a in planned] == ["p"]
+
+    assert agent.validate_action(planned[0], _obs(_far_change(prompt))) is False
+    agent.discard_action_plan()
+
+    replanned = agent.decide(_obs(prompt))
+    assert [a.text for a in replanned] == ["p"]  # not "r": the key was never sent
+
+
+def test_recovery_attempt_bound_survives_an_unrelated_map_change():
+    agent = brain()
+    _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+    for episode in range(3):
+        typed = ""
+        for expected in ["p", "r", "a", "y", "\n"]:
+            prompt = frame(hp="4(16)", condition="Sick", message="What do you want to do? " + typed)
+            _send(agent, prompt, [expected])
+            typed += expected if expected != "\n" else ""
+        if episode < 2:
+            _send(agent, frame(hp="4(16)", condition="Sick"), ["#"])
+
+    # A distant-only map change must not lift the bound on the same episode.
+    held = agent.decide(_obs(_far_change(frame(hp="4(16)", condition="Sick"))))
+    assert [a.text for a in held] == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+    # A real status change starts a new episode and allows recovery again.
+    resumed = agent.decide(_obs(frame(hp="4(16)", condition="FoodPois")))
+    assert [a.text for a in resumed] == ["#"]
