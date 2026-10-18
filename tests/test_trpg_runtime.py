@@ -326,7 +326,7 @@ def real_trpg_coordinator(setup, monkeypatch):
     helpers = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(helpers)
     processes, adapters, preflights = {}, {}, []
-    fixture = SimpleNamespace(g=g, fault=None, now=0)
+    fixture = SimpleNamespace(g=g, fault=None, fail_game='broken-target', now=0)
 
     class FakeTmux:
         def __init__(self, spec): self.spec = spec
@@ -367,7 +367,7 @@ def real_trpg_coordinator(setup, monkeypatch):
                     adapter.dashboard_port = processes[spec.runtime_id]['server'].server_port
             else:
                 adapter = helpers.FakeRuntimeAdapter(spec)
-                if spec.game == 'broken-target':
+                if spec.game == fixture.fail_game and fixture.fault is not None:
                     if fixture.fault == 'live': adapter.preflight = fail
                     else: adapter.materialize_runtime = fail
             adapters[key] = adapter
@@ -464,6 +464,8 @@ def test_real_rollback_preserves_session_and_manager_rebinds_identity(real_trpg_
     assert (state['started_at'], state['ends_at']) == lifetime
     assert manager._adopt_rollback(state, canonical, {**source, 'lease_id': 'foreign'}) is None
     assert manager._adopt_rollback({**state, 'rotation_request_id': str(uuid.uuid4())}, canonical, source) is None
+    foreign = {**canonical, 'active': {**canonical['active'], 'game': 'robots'}}
+    assert manager._adopt_rollback(state, foreign, source) is None
     # A stop immediately after another rollback must also adopt before restoring.
     result = switch.switch('broken-target')
     assert result.status == 'rolled_back'
@@ -492,6 +494,71 @@ def test_failed_live_rollback_can_retry_with_old_canonical_lease(real_trpg_coord
     assert active['runtime_id'] == source['runtime_id'] and active['lease_id'] != source['lease_id']
     path = fixture.g.state_dir / 'runtimes' / active['runtime_id'] / session.SESSION_FILE
     assert session.load(path, active)['state']['phase'] == 'IDLE'
+
+
+@pytest.mark.parametrize('mode', ['live', 'fresh'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_manager_retries_restoration_after_proven_rollback(real_trpg_coordinator, mode, resume, monkeypatch):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    assert fixture.switch.start('robots').status == 'succeeded'
+    manager = TrpgProgramManager(fixture.g, coordinator=fixture.switch, clock=lambda: fixture.now)
+    state = manager._new_state(str(uuid.uuid4()))
+    assert manager._dispatch_start(state) is None
+    source = state['trpg_program_runtime_identity']
+    manager._session_tick(source, request_id=state['rotation_request_id'])
+    fixture.fail_game, fixture.fault = 'robots', mode
+    if resume:
+        retry = manager._retry_rolled_back_restore
+        def pause_after_receipt(state, canonical, identity):
+            receipt = fixture.store.receipts.load(state['restore_request_id'])
+            if receipt and receipt['status'] == 'rolled_back':
+                raise PauseManager
+            return retry(state, canonical, identity)
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(manager, '_retry_rolled_back_restore', pause_after_receipt)
+            with pytest.raises(PauseManager):
+                manager._restore(state, end_reason='manual')
+        # Resume from the saved lifecycle file, not the interrupted call's dict.
+        state = manager._read_state()
+        assert manager.run_rotation(state['rotation_request_id']) == 'queued'
+        state = manager._read_state()
+    else:
+        assert manager._restore(state, end_reason='manual') == 'queued'
+    canonical = fixture.store.canonical.load()[0]
+    assert canonical['phase'] == 'ready' and canonical['active']['game'] == 'trpg-view'
+    assert state['status'] == 'restoring' and state['end_reason'] == 'manual'
+    assert state['trpg_program_runtime_identity'] != source
+    assert state['restore_request_id'] != canonical['last_result']['request_id']
+    fixture.fault = None
+    assert manager.run_rotation(state['rotation_request_id']) == 'completed'
+    assert fixture.store.canonical.load()[0]['active']['game'] == 'robots'
+    ledger = core.load_ledger(fixture.g.state_dir / 'trpg' / core.LEDGER_FILE)
+    assert len(ledger['entries']) == 1 and ledger['entries'][0]['outcome'] == 'aborted'
+
+
+@pytest.mark.parametrize('mode', ['live', 'fresh'])
+def test_manager_can_adopt_rollback_before_first_activation(real_trpg_coordinator, mode, monkeypatch):
+    from docich.trpg_program import TrpgProgramManager
+    fixture = real_trpg_coordinator
+    start = fixture.switch.start
+    def start_then_rollback(*args, **kwargs):
+        result = start(*args, **kwargs)
+        fixture.fault = mode
+        assert fixture.switch.switch('broken-target').status == 'rolled_back'
+        return result
+    monkeypatch.setattr(fixture.switch, 'start', start_then_rollback)
+    manager = TrpgProgramManager(fixture.g, coordinator=fixture.switch, clock=lambda: fixture.now,
+                                 sleep=pause_manager)
+    state = manager._new_state(str(uuid.uuid4()))
+    assert manager._dispatch_start(state) is None
+    with pytest.raises(PauseManager):
+        manager._wait_and_restore(state)
+    identity = state['trpg_program_runtime_identity']
+    path = fixture.g.state_dir / 'runtimes' / identity['runtime_id'] / session.SESSION_FILE
+    data = session.load(path, identity)
+    assert data['state']['phase'] == 'SCENE' and data['activated_at'] == 0
+    assert data['owner_request_id'] == state['rotation_request_id']
 
 
 def test_webui_start_schedule_stop_and_state_projection(setup, monkeypatch):
