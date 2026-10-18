@@ -35,7 +35,13 @@
 
 落下の証拠は `fast_chain` と同じ水準で、**「選択済み ＋ 選択後の敵HP低下 ＋ 敵が生還」の3点**。`_watch_egg_drop`（選択前HPを記憶）→ `_egg_drop_confirm` → `battle_egg_dropped` → `cur['enemy_egg_dropped']=True`。HP 0（倒れた）や根拠がない戦闘では確定しない（fail-closed）。`_survival_card_list` が救済で卵落札を選ぶ時も同じ監視を始める。
 
-`enemy_egg_dropped` が真の時だけ `_melee_step` の `safe` が成立し、`power_mash`（A 3 frames + release 50 ms を4回＝12 A frames）へ移る。reason に「敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む」を追記し `enemy_egg_dropped` を `battle_melee` に残す。`_unarmed_clash_risk` も同フラグで外す。**青バーそのものの画素検出は未実装**（実機計測待ち）で、現状は卵の脅威が消えた局面だけを予測で全力A連打する。これと出撃時の dropper 携行拡張は follow-up Issue に分離する。
+`enemy_egg_dropped` が真の時だけ `_melee_step` の `safe` が成立し、`power_mash`（A 3 frames + release 50 ms を4回＝12 A frames）へ移る。reason に「敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む」を追記し `enemy_egg_dropped` を `battle_melee` に残す。`_unarmed_clash_risk` も同フラグで外す。
+
+**青バーの画素検出 (follow-up #1553)**: `hanjuku_screen.py` に `BlueGauge` データクラス、`_detect_blue_gauge()` を実装。ぶつかり合い画面（`battle`/`battle_menu`/`battle_menu_pending`）で定常スキャンし、`fill`（充填率）と `confidence` を返す。未校正の pixel 閾値は出さない契約（#1180 Phase 1）のため、`_BLUE_GAUGE_CALIBRATED=False` でゲートし、校正完了まで `None` を返す（fail-closed）。校正後は実フレーム（`run/hanjuku_frames/`）で左右・中央接触帯の位置と色味を測定し、閾値を確定してから有効化する。
+
+**予測と実測の突き合わせ**: `confidence >= 0.6` の時のみ、`fill < 0.2` を「卵落ち／卵なし」、それ以外を「卵あり」と解釈し、予測 `enemy_egg_dropped` と比較。不一致時は `blue_gauge_discrepancy` decision として記録し、予測を優先して保留継続（fail-closed）。一致時は `battle_melee` に `blue_gauge_agrees=True` を残す。ASSIST_PULSE は未追加。
+
+出撃時の dropper 携行拡張 (follow-up #1553): `_sortie_enemy()` でボス出撃時の敵将軍（章ボス）を特定。敵が判明し `has_egg=True` なら最大HP合計から `threshold` を算出し、`_deploy_cards` で卵落札を1枠確保（ID合計 ≤ 47、携行枠 ≤ 3 の制約内）。敵未判明時は従来どおり fail-closed。
 
 ## ログと検証の境界
 

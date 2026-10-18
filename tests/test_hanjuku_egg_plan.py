@@ -269,3 +269,246 @@ def test_the_survival_rescue_picks_the_dropper_and_watches_it():
                            policy._egg_drop_evidence(cur, 'マグネガキン'))
     assert cur['egg_drop_watch'] == {'card': 'マグネガキン', 'hp': 30, 'value': 8,
                                      'threshold': 6, 'max_hp_sum': 117}
+
+
+# --- Sortie dropper carry tests (follow-up #1553) ---
+
+def mem_for_sortie(step, chapter=1, general='どうし', cards=(), stock=None):
+    """Create a mem dict for sortie testing."""
+    return {
+        'chapter': chapter,
+        'month': f'{chapter}-10',
+        'active': step,
+        'variant': 'chart',
+        'orders': {step: 'pending'},
+        'picked': [],
+        '_records': [],
+        'attack': {'general': general, 'castle': 'けっかい', 'side': 'attack', 'step': step},
+        'garrison': {},
+        'card_stock': stock or {},
+        'card_override': {},
+        'rare_card_kit': {},
+        'strong_card_kit': {},
+        'kit_spent': {},
+        'card_drop': {},
+    }
+
+
+def test_sortie_dropper_added_for_boss_order_with_hero():
+    # Adjusted order for boss castle with hero: enemy is chapter boss (クイーン HP=70)
+    # Hero max HP=90, sum=160, threshold=1. Many droppers available.
+    # イッテツーン (egg_drop=8, ID=0) should be added if slot and budget allow.
+    step = 'A:test123:1'
+    order = {'target': 'けっかい', 'general': 'どうし', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['ダイチスイム', 'ブラッキー']}
+    mem = mem_for_sortie(step, chapter=1, general='どうし', stock={'イッテツーン': 2, 'マグネガキン': 1})
+    cards = policy._deploy_cards(order, mem)
+    # Should add イッテツーン as dropper
+    assert 'イッテツーン' in cards, f'Expected イッテツーン in {cards}'
+    # ID sum should be < 48 (ダイチスイム=1, ブラッキー=2, イッテツーン=0 = 3)
+    id_sum = sum(policy.CARD_IDS.get(c, policy.ENEMY_EGG_CARD_ID_SUM) for c in cards)
+    assert id_sum < policy.ENEMY_EGG_CARD_ID_SUM, f'ID sum {id_sum} >= 48'
+    # Record should be created
+    rec = next((r for r in mem['_records'] if r['decision'] == 'sortie_dropper_added'), None)
+    assert rec is not None, 'sortie_dropper_added record not created'
+    assert rec['observed_metric']['enemy'] == 'クイーン'
+    assert rec['observed_metric']['ally'] == 'どうし'
+    assert rec['observed_metric']['max_hp_sum'] == 160
+    assert rec['observed_metric']['threshold'] == 1
+    assert rec['observed_metric']['dropper'] == 'イッテツーン'
+    assert rec['observed_metric']['dropper_egg_drop'] == 8
+    assert rec['observed_metric']['id_sum'] == 3
+
+
+def test_sortie_dropper_not_added_when_enemy_unknown():
+    # Non-boss order: enemy unknown at sortie time -> fail-closed, no dropper added
+    step = 'A:test123:2'
+    order = {'target': 'キカンドン', 'general': 'ココット', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['ダイチスイム', 'ブラッキー']}
+    mem = mem_for_sortie(step, chapter=1, general='ココット', stock={'イッテツーン': 2})
+    cards = policy._deploy_cards(order, mem)
+    # No dropper added
+    assert cards == ['ダイチスイム', 'ブラッキー'], f'Unexpected cards: {cards}'
+    # No sortie_dropper_added record
+    rec = next((r for r in mem['_records'] if r['decision'] == 'sortie_dropper_added'), None)
+    assert rec is None, 'sortie_dropper_added should not be created for unknown enemy'
+
+
+def test_sortie_dropper_respects_id_budget():
+    # If adding dropper would exceed ID budget (47), it should not be added
+    step = 'A:test123:3'
+    # ファバード ID=31, グルミー ID=19 -> sum=50 > 47 if we add another high-ID card
+    order = {'target': 'けっかい', 'general': 'どうし', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['ファバード', 'グルミー']}  # IDs 31+19=50, already over!
+    # But _cap_card_ids should cap it first. Let's use a case where current sum + dropper >= 48
+    order = {'target': 'けっかい', 'general': 'どうし', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['ファバード', 'クースカン']}  # IDs 31+13=44
+    mem = mem_for_sortie(step, chapter=1, general='どうし', stock={'マグネガキン': 1})  # ID=27, 44+27=71 >= 48
+    cards = policy._deploy_cards(order, mem)
+    # Dropper should not be added due to budget
+    assert 'マグネガキン' not in cards, f'Dropper added despite budget: {cards}'
+    id_sum = sum(policy.CARD_IDS.get(c, policy.ENEMY_EGG_CARD_ID_SUM) for c in cards)
+    assert id_sum < policy.ENEMY_EGG_CARD_ID_SUM
+
+
+def test_sortie_dropper_respects_carry_slots():
+    # CARRY_SLOTS=3, if already 3 cards, no dropper added
+    step = 'A:test123:4'
+    order = {'target': 'けっかい', 'general': 'どうし', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['ダイチスイム', 'ブラッキー', 'クースカン']}  # 3 cards already
+    mem = mem_for_sortie(step, chapter=1, general='どうし', stock={'イッテツーン': 2})
+    cards = policy._deploy_cards(order, mem)
+    assert len(cards) == 3, f'Should not exceed 3 slots: {cards}'
+    assert 'イッテツーン' not in cards
+
+
+def test_sortie_dropper_not_added_for_strict_boss_order():
+    # Strict boss order (1-B1) has fixed kit, dropper logic bypassed
+    step = '1-B1'
+    order = {'target': 'けっかい', 'general': 'どうし', 'step': step, 'purpose': 'attack',
+             'after': None, 'cards': ['クースカン', 'ノリウツール']}
+    mem = mem_for_sortie(step, chapter=1, general='どうし', stock={'イッテツーン': 2})
+    cards = policy._deploy_cards(order, mem)
+    assert cards == ['クースカン', 'ノリウツール'], f'Strict boss kit modified: {cards}'
+    rec = next((r for r in mem['_records'] if r['decision'] == 'sortie_dropper_added'), None)
+    assert rec is None
+
+
+def test_battle_egg_plan_max_hp_sum_computable_at_sortie_time():
+    # The max_hp_sum for a known enemy at sortie time should be computable
+    # using the ally's max HP (hero remembered full strength or general's max HP)
+    # and enemy's max HP from GENERAL_HP.
+    from docich.hanjuku_egg_reference import general_max_hp
+    from docich.hanjuku_reference import egg_drop_threshold
+    
+    # For hero (ref_ally_hp=90) vs クイーン (HP=70): sum=160, threshold=1
+    ally_max = 90  # hero remembered full strength
+    enemy_max = general_max_hp('クイーン')
+    assert enemy_max == 70
+    max_hp_sum = ally_max + enemy_max
+    assert max_hp_sum == 160
+    assert egg_drop_threshold(max_hp_sum) == 1
+    
+    # For ココット (HP=24) vs クミン (HP=27): sum=51, threshold=4
+    ally_max = general_max_hp('ココット')
+    enemy_max = general_max_hp('クミン')
+    assert ally_max == 24
+    assert enemy_max == 27
+    max_hp_sum = ally_max + enemy_max
+    assert max_hp_sum == 51
+    assert egg_drop_threshold(max_hp_sum) == 4
+    
+    # This demonstrates max_hp_sum is computable at sortie time when both
+    # ally and enemy max HPs are known (which is true for boss orders with hero).
+
+
+def test_blue_gauge_detection_gated_until_calibrated():
+    # Blue gauge detection returns None until _BLUE_GAUGE_CALIBRATED=True
+    from docich.hanjuku_screen import _detect_blue_gauge, Frame, _BLUE_GAUGE_CALIBRATED
+    assert _BLUE_GAUGE_CALIBRATED is False
+    
+    # Even with a clear blue gauge pattern, detection returns None
+    width, height = 256, 224
+    rgb = bytearray(width * height * 3)
+    for i in range(len(rgb)):
+        rgb[i] = 50
+    for x in range(48, 209):
+        y = 150
+        idx = (y * width + x) * 3
+        rgb[idx] = 0
+        rgb[idx+1] = 120
+        rgb[idx+2] = 200
+    frame = Frame(rgb=bytes(rgb), width=width, height=height)
+    result = _detect_blue_gauge(frame)
+    assert result is None, 'Detection should be gated until calibrated'
+
+
+def test_blue_gauge_cross_check_discrepancy_logged():
+    # When blue gauge is detected (mocked) and disagrees with prediction,
+    # discrepancy is logged but prediction is followed (fail-closed)
+    # Case 1: Prediction says egg dropped (True), gauge says not dropped (fill >= 0.2)
+    from docich.hanjuku_screen import BlueGauge
+    
+    state = {'_records': [], 'chapter': 1, 'variant': 'chart'}
+    cur = {'enemy': 'クミン', 'ally': 'しゅじんこう', 'step': '1-A1',
+           'enemy_hp': 62, 'ally_hp': 80, 'start_enemy_hp': 70, 'start_ally_hp': 80,
+           'clashed': True, 'planned_cards': [], 'enemy_egg_dropped': True,
+           'side': 'attack', 'castle': 'キカンドン',
+           'blue_gauge': {'fill': 0.8, 'confidence': 0.9, 'x0': 48, 'x1': 200}}
+    
+    # Mock _charted_melee to return False
+    import docich.hanjuku_policy as policy_module
+    original_charted = policy_module._charted_melee
+    policy_module._charted_melee = lambda mem, cur: False
+    
+    try:
+        policy._melee_step(state, cur)
+    finally:
+        policy_module._charted_melee = original_charted
+    
+    # Should log discrepancy
+    rec = next((r for r in state['_records'] if r['decision'] == 'blue_gauge_discrepancy'), None)
+    assert rec is not None, 'blue_gauge_discrepancy not logged'
+    assert rec['observed_metric']['blue_gauge_fill'] == 0.8
+    assert rec['observed_metric']['blue_gauge_confidence'] == 0.9
+    assert rec['observed_metric']['predicted_egg_dropped'] is True
+    assert rec['observed_metric']['gauge_says_dropped'] is False  # fill=0.8 >= 0.2
+    
+    # blue_gauge_agrees should be False in battle_melee record
+    melee_rec = next((r for r in state['_records'] if r['decision'] == 'battle_melee'), None)
+    assert melee_rec is not None
+    assert melee_rec['blue_gauge_agrees'] is False
+
+
+def test_blue_gauge_cross_check_agrees_when_both_say_dropped():
+    # Case 2: Prediction says egg dropped (True), gauge says dropped (fill < 0.2)
+    state = {'_records': [], 'chapter': 1, 'variant': 'chart'}
+    cur = {'enemy': 'クミン', 'ally': 'しゅじんこう', 'step': '1-A1',
+           'enemy_hp': 62, 'ally_hp': 80, 'start_enemy_hp': 70, 'start_ally_hp': 80,
+           'clashed': True, 'planned_cards': [], 'enemy_egg_dropped': True,
+           'side': 'attack', 'castle': 'キカンドン',
+           'blue_gauge': {'fill': 0.1, 'confidence': 0.9, 'x0': 48, 'x1': 100}}
+    
+    import docich.hanjuku_policy as policy_module
+    original_charted = policy_module._charted_melee
+    policy_module._charted_melee = lambda mem, cur: False
+    
+    try:
+        policy._melee_step(state, cur)
+    finally:
+        policy_module._charted_melee = original_charted
+    
+    # Should NOT log discrepancy (they agree)
+    rec = next((r for r in state['_records'] if r['decision'] == 'blue_gauge_discrepancy'), None)
+    assert rec is None, 'blue_gauge_discrepancy should not be logged when they agree'
+    
+    melee_rec = next((r for r in state['_records'] if r['decision'] == 'battle_melee'), None)
+    assert melee_rec is not None
+    assert melee_rec['blue_gauge_agrees'] is True
+
+
+def test_blue_gauge_cross_check_confidence_threshold():
+    # Confidence < 0.6 should not trigger cross-check
+    state = {'_records': [], 'chapter': 1, 'variant': 'chart'}
+    cur = {'enemy': 'クミン', 'ally': 'しゅじんこう', 'step': '1-A1',
+           'enemy_hp': 62, 'ally_hp': 80, 'start_enemy_hp': 70, 'start_ally_hp': 80,
+           'clashed': True, 'planned_cards': [], 'enemy_egg_dropped': True,
+           'side': 'attack', 'castle': 'キカンドン',
+           'blue_gauge': {'fill': 0.8, 'confidence': 0.5, 'x0': 48, 'x1': 200}}
+    
+    import docich.hanjuku_policy as policy_module
+    original_charted = policy_module._charted_melee
+    policy_module._charted_melee = lambda mem, cur: False
+    
+    try:
+        policy._melee_step(state, cur)
+    finally:
+        policy_module._charted_melee = original_charted
+    
+    # Should NOT log discrepancy (confidence too low)
+    rec = next((r for r in state['_records'] if r['decision'] == 'blue_gauge_discrepancy'), None)
+    assert rec is None, 'blue_gauge_discrepancy should not be logged when confidence < 0.6'
+    
+    melee_rec = next((r for r in state['_records'] if r['decision'] == 'battle_melee'), None)
+    assert melee_rec is not None
+    assert melee_rec['blue_gauge_agrees'] is None  # Not evaluated

@@ -297,6 +297,10 @@ GENERAL_HP: dict[str, int] = {
     'ココット': 24,  # 125
     'ヴィーナス': 82,  # 126
     'ゼウス': 85,  # 127
+    # Chapter 4-6 bosses (from gcgx BOSS_HP; not in SFC ID 0..127 roster)
+    'ハードマン': 500,   # ch4
+    'だいまおう': 1218,  # ch5
+    'ハードロボ': 1688,  # ch6
 }
 
 

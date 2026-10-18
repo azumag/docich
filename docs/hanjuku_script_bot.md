@@ -112,11 +112,13 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   開幕卵も抑止する。**チャートがその札を指す戦闘では発火せず**（HPゲート・after_clash を壊さない）、
   チャートに持たない卵落札だけを開幕に使い（`eggdrop:{step}:{card}`、同値は将軍ダメージが小さい札），
   選択後の敵HP低下と敵の生還を確認したら `battle_egg_dropped` を記録して `enemy_egg_dropped` を立てる
-  （倒れた・根拠なしでは確定しない）。出撃時の追加携行は敵の最大HPが未判明のため変更しない。
+  （倒れた・根拠なしでは確定しない）。
+  **出撃時の dropper 携行拡張 (follow-up #1553)**: `_sortie_enemy()` でボス出撃時の敵将軍（章ボス）を特定し、敵が判明し `has_egg=True` なら最大HP合計から `threshold` を算出し、`_deploy_cards` で卵落札を1枠確保（ID合計 ≤ 47、携行枠 ≤ 3）。敵未判明時は fail-closed。
 - `enemy_egg_dropped` のときだけ通常白兵を `power_mash` へ戻し、ぶつかり合いの**青ゲージのA連打を消費する**
   （12 A frames、reason に青ゲージ消費を追記し `enemy_egg_dropped` を `battle_melee` に残す）。
-  `egg_safe_hold` との判定も同フラグで切り替える。青バー自体の画素検出は未実装（実機計測待ち）で、
-  現状は「卵の脅威が消えた局面」を予測で判断する。出撃時の dropper 携行拡張と画素検出は follow-up Issue。
+  `egg_safe_hold` との判定も同フラグで切り替える。
+  **青バーの画素検出 (follow-up #1553)**: `hanjuku_screen.py` に `BlueGauge` データクラス、`_detect_blue_gauge()` を実装。ぶつかり合い画面で定常スキャンし `fill` と `confidence` を返す。未校正の pixel 閾値は出さない契約（#1180 Phase 1）のため `_BLUE_GAUGE_CALIBRATED=False` でゲートし、校正完了まで `None` を返す（fail-closed）。
+  **予測と実測の突き合わせ**: `confidence >= 0.6` の時のみ、`fill < 0.2` を「卵落ち／卵なし」と解釈し予測 `enemy_egg_dropped` と比較。不一致時は `blue_gauge_discrepancy` として記録し予測を優先（fail-closed）。一致時は `battle_melee` に `blue_gauge_agrees=True` を残す。ASSIST_PULSE は未追加。
 - 札の連鎖（`after_card`）は実使用告知が未校正のため、確認済み使用（`cards_used`）に加えて
   選択記録（`cards_selected`/`cards_unclassified`）でも継続する（`after_card_unconfirmed` として逸脱記録）。
   告知が未校正のままではチャートの2枚目（1-B1 ノリウツール）が永久に発火しないため。

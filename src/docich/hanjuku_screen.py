@@ -238,6 +238,92 @@ def own_camps(frame: Frame) -> list[dict]:
     return found
 
 
+# Blue gauge detection during melee clash (follow-up #1553).
+# The blue gauge appears as a horizontal blue bar during clashes.
+# GATED UNTIL CALIBRATED: #1180 Phase 1 contract prohibits shipping uncalibrated
+# pixel thresholds. Real-frame calibration of left/right/center contact band
+# (front_x) with confidence verification must complete first.
+# Constants below are PLACEHOLDERS only - detection returns None until calibrated.
+_BLUE_GAUGE_Y = 150
+_BLUE_GAUGE_X0 = 48
+_BLUE_GAUGE_X1 = 208
+_BLUE_GAUGE_COLOR = (0, 120, 200)
+_BLUE_GAUGE_TOLERANCE = 35
+_BLUE_GAUGE_MIN_WIDTH = 20  # minimum filled pixels to consider detected
+_BLUE_GAUGE_CALIBRATED = False  # Set True after #1180 Phase 1 calibration completes
+
+
+def _is_blue_gauge_pixel(p: tuple[int, int, int]) -> bool:
+    r, g, b = p
+    # Blue gauge pixels have high blue, low red, medium green
+    return (b >= 150 and r <= 60 and g <= 160 and
+            abs(b - _BLUE_GAUGE_COLOR[2]) <= _BLUE_GAUGE_TOLERANCE and
+            abs(g - _BLUE_GAUGE_COLOR[1]) <= _BLUE_GAUGE_TOLERANCE and
+            abs(r - _BLUE_GAUGE_COLOR[0]) <= _BLUE_GAUGE_TOLERANCE)
+
+
+def _detect_blue_gauge(frame: Frame) -> BlueGauge | None:
+    """Detect the blue gauge bar during melee clash.
+
+    Returns a BlueGauge with bounding box, fill level, and confidence,
+    or None when the gauge is not visible or detection is unreliable.
+
+    GATED: Returns None until real-frame calibration completes (#1180 Phase 1).
+    The constants (Y position, X range, color palette, fill direction) must be
+    measured from live frames in `run/hanjuku_frames/` with confidence verification.
+    """
+    # Fail-closed until calibration: do not ship uncalibrated pixel thresholds.
+    if not _BLUE_GAUGE_CALIBRATED:
+        return None
+
+    width = frame.width
+    y = _BLUE_GAUGE_Y
+    if y >= frame.height:
+        return None
+
+    # Scan the expected gauge region for blue pixels
+    blue_pixels = []
+    for x in range(_BLUE_GAUGE_X0, min(_BLUE_GAUGE_X1 + 1, width)):
+        if _is_blue_gauge_pixel(frame.pixel(x, y)):
+            blue_pixels.append(x)
+
+    if len(blue_pixels) < _BLUE_GAUGE_MIN_WIDTH:
+        return None
+
+    # The gauge should be a contiguous horizontal segment
+    x0 = min(blue_pixels)
+    x1 = max(blue_pixels)
+
+    # Verify contiguity (allow small gaps up to 2 pixels)
+    gaps = 0
+    for x in range(x0, x1):
+        if x not in blue_pixels:
+            gaps += 1
+    if gaps > 2:
+        return None
+
+    gauge_width = _BLUE_GAUGE_X1 - _BLUE_GAUGE_X0
+    fill = (x1 - x0) / gauge_width
+    fill = max(0.0, min(1.0, fill))
+
+    # Confidence based on fill consistency and expected width
+    expected_min_width = max(10, int(gauge_width * 0.1))
+    expected_max_width = int(gauge_width * 0.95)
+    actual_width = x1 - x0
+
+    confidence = 0.5
+    if expected_min_width <= actual_width <= expected_max_width:
+        confidence = 0.8
+    if len(blue_pixels) / max(1, actual_width) > 0.85:
+        confidence = min(1.0, confidence + 0.2)
+
+    # Only return when confidence is reasonable
+    if confidence < 0.5:
+        return None
+
+    return BlueGauge(x0=x0, y0=y - 2, x1=x1, y1=y + 2, fill=fill, confidence=confidence)
+
+
 @dataclass
 class Battle:
     enemy: str | None
@@ -252,6 +338,22 @@ class EggRow:
     hp: int
     side: str | None
     y: int
+
+
+@dataclass
+class BlueGauge:
+    """Detected blue gauge during melee clash.
+
+    x0, y0, x1, y1: bounding box of the gauge bar in screen pixels (256x224).
+    fill: fraction of the gauge that is filled with blue (0.0 to 1.0).
+    confidence: detection confidence (0.0 to 1.0). Below 0.5 is unreliable.
+    """
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    fill: float
+    confidence: float
 
 
 @dataclass
@@ -272,6 +374,8 @@ class Screen:
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
+    # Blue gauge detection during melee clash (follow-up #1553).
+    blue_gauge: BlueGauge | None = None
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -491,6 +595,10 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     screen.kind = classify_text(screen)
     if screen.kind == 'unknown' and is_world_map(frame):
         screen.kind = 'world_map'
+    # Blue gauge detection during melee clash (follow-up #1553).
+    # Only attempt on battle screens where clash occurs.
+    if screen.kind in ('battle', 'battle_menu', 'battle_menu_pending'):
+        screen.blue_gauge = _detect_blue_gauge(frame)
     return screen
 
 

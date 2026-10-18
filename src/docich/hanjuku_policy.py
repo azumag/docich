@@ -2372,6 +2372,40 @@ def _strict_boss_cards(order, mem) -> bool:
         o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0))
 
 
+def _sortie_enemy(order, mem):
+    """Determine the enemy general for a sortie order, if known.
+
+    Returns the enemy general name if known from:
+    - Boss castle's boss general (for boss orders)
+
+    Returns None when the enemy is not known at sortie time (fail-closed).
+    Chart tactics are NOT used because they specify enemies for specific
+    battle situations, not the castle's standing defender.
+    Garrison memory records OUR generals at our castles, not enemy defenders,
+    so it cannot reliably identify the enemy at a target castle.
+    """
+    chapter = mem.get('chapter') or 1
+
+    # For boss orders, the enemy is the chapter boss
+    if _is_boss_order(order, mem):
+        boss_generals = {
+            1: 'クイーン',
+            2: 'にせヒーロー',
+            3: 'プリンス',
+            4: 'ハードマン',
+            5: 'だいまおう',
+            6: 'ハードロボ',
+            # Chapters 7+: boss generals unknown in current data;
+            # returns None (fail-closed) until measured.
+        }
+        return boss_generals.get(chapter)
+
+    # Non-boss orders: enemy not known at sortie time (fail-closed).
+    # The sortie confirmation screen may show the opponent, but we don't
+    # currently parse that. Garrison records our generals, not enemies.
+    return None
+
+
 def _deploy_cards(order, mem):
     rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
     strong = (mem.get('strong_card_kit') or {}).get(order['step']) if rare_kit is None else None
@@ -2392,6 +2426,53 @@ def _deploy_cards(order, mem):
     for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
         if card in cards:
             cards.remove(card)
+
+    # Sortie dropper carry extension (follow-up #1553).
+    # When enemy general is known at sortie time, calculate the egg-drop
+    # threshold and reserve 1 slot for a dropper card while keeping ID sum < 48.
+    enemy = _sortie_enemy(order, mem)
+    if enemy is not None:
+        triggers = enemy_egg_triggers(enemy)
+        if triggers.has_egg is True:
+            # Determine ally max HP (hero's remembered full strength or general's max HP)
+            ally = _sortie_general(order, mem)
+            ally_max = general_max_hp('しゅじんこう' if ally == NAME else ally)
+            enemy_max = general_max_hp(enemy)
+            if ally_max is not None and enemy_max is not None:
+                max_hp_sum = ally_max + enemy_max
+                threshold = max_hp_sum % 16 + 1  # egg_drop_threshold
+                # Find dropper cards from current kit and available stock
+                available_cards = list(cards)
+                # Add cards from observed stock that we own
+                stock = mem.get('card_stock') or {}
+                for card_name, count in stock.items():
+                    if count > 0 and card_name not in available_cards:
+                        available_cards.append(card_name)
+                # Find droppers: cards with egg_drop > threshold
+                droppers = [c for c in available_cards
+                            if reference.can_drop_egg(c, max_hp_sum)]
+                if droppers:
+                    # Pick best dropper: highest egg_drop, then lowest general_damage
+                    best_dropper = min(droppers, key=lambda c: (
+                        -reference.egg_drop_value(c),
+                        reference.CARDS.get(c, {}).get('general_damage') or 0,
+                        reference.ALL_CARD_IDS.get(c, 99)))
+                    # Check if we can add it (slot available, ID budget allows)
+                    if len(cards) < CARRY_SLOTS:
+                        current_id_sum = sum(CARD_IDS.get(c, ENEMY_EGG_CARD_ID_SUM) for c in cards)
+                        dropper_id = CARD_IDS.get(best_dropper, ENEMY_EGG_CARD_ID_SUM)
+                        if current_id_sum + dropper_id < ENEMY_EGG_CARD_ID_SUM:
+                            if best_dropper not in cards:
+                                cards.append(best_dropper)
+                                _record(mem, 'sortie_dropper_added', chart_step=order['step'],
+                                        observed_metric={'enemy': enemy, 'ally': ally,
+                                                         'max_hp_sum': max_hp_sum,
+                                                         'threshold': threshold,
+                                                         'dropper': best_dropper,
+                                                         'dropper_egg_drop': reference.egg_drop_value(best_dropper),
+                                                         'id_sum': current_id_sum + dropper_id},
+                                        reason=f'出撃時敵将軍{enemy}が判明し、卵落{reference.egg_drop_value(best_dropper)}で卵を落とせるため{best_dropper}を携行')
+
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped
@@ -3925,6 +4006,14 @@ def battle_step(screen: Screen, mem):
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
             return [pad('b')]
+    # Capture blue gauge detection from screen for melee cross-check (follow-up #1553).
+    if hasattr(screen, 'blue_gauge') and screen.blue_gauge is not None:
+        cur['blue_gauge'] = {
+            'fill': screen.blue_gauge.fill,
+            'confidence': screen.blue_gauge.confidence,
+            'x0': screen.blue_gauge.x0,
+            'x1': screen.blue_gauge.x1,
+        }
     return _melee_step(mem, cur)
 
 
@@ -3983,6 +4072,33 @@ def _melee_step(mem, cur):
     # 敵の卵が落ちた（召喚不能）戦闘だけ、激突判定があっても青ゲージの A 連打を
     # 消費して押し込む。卵が落ちていない卵持ち敵では相変わらず保持する。
     egg_dropped = cur.get('enemy_egg_dropped') is True
+
+    # Blue gauge cross-check (follow-up #1553).
+    # When the blue gauge is detected with sufficient confidence, use its fill
+    # level to corroborate or contradict the predicted egg_dropped state.
+    # Blue gauge fill near 0 suggests no active egg clash (egg dropped or no egg).
+    # High fill suggests active clash with egg present.
+    blue_gauge = cur.get('blue_gauge')
+    blue_gauge_agrees = None
+    if blue_gauge is not None:
+        confidence = blue_gauge.get('confidence', 0)
+        fill = blue_gauge.get('fill', 0)
+        if confidence >= 0.6:
+            # Low fill (empty gauge) -> egg likely dropped or never present
+            # High fill (active gauge) -> egg likely present and not dropped
+            gauge_says_dropped = fill < 0.2
+            blue_gauge_agrees = (gauge_says_dropped == egg_dropped)
+            if not blue_gauge_agrees:
+                # Log discrepancy but follow prediction (fail-closed)
+                _record(mem, 'blue_gauge_discrepancy', **_battle_labels(cur),
+                        enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'),
+                        ally_hp=cur.get('ally_hp'),
+                        observed_metric={'blue_gauge_fill': fill,
+                                         'blue_gauge_confidence': confidence,
+                                         'predicted_egg_dropped': egg_dropped,
+                                         'gauge_says_dropped': gauge_says_dropped},
+                        reason='青ゲージの実測と予測(enemy_egg_dropped)が不一致。予測を優先し保留継続')
+
     safe = (egg_dropped or triggers.has_egg is False or triggers.clash_position is False
             or charted or forced)
     cur['melee_forced'] = forced
@@ -3997,6 +4113,7 @@ def _melee_step(mem, cur):
             enemy_egg_dropped=egg_dropped,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
+            blue_gauge_agrees=blue_gauge_agrees,
             reason=('チャートのぶつかり合いに向けて押し込む' if charted
                     else '敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む'
                     if egg_dropped
