@@ -8907,6 +8907,11 @@ def _collect_nethack_panes(state_dir, now):
 NETHACK_HISTORY_SCAN_LIMIT = 128
 NETHACK_HISTORY_FILE_BYTES = 65536
 NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+# Fixed producer codes from ``docich.nethack_run`` ``_terminal_records_since``;
+# duplicated here (see test_nethack_boundary_diag.py precedent) so the
+# diagnostics projection can aggregate them without importing game modules.
+NETHACK_ANALYSIS_ERRORS = frozenset({
+    'xlogfile-missing', 'xlogfile-truncated', 'no-new-player-xlog-record'})
 NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
                             'proposal_drift', 'evidence_gap', 'terminal_evidence',
                             'progress_stall'})
@@ -9004,6 +9009,16 @@ def _nethack_record(raw, daily):
                   'progress': _nethack_progress(retrospective.get('progress_evidence'))}
         for key in ('score', 'turns', 'max_depth'):
             result[key] = _nethack_number(raw.get(key))
+        # ``terminal.analysis_error`` is the run store's own fixed reason code
+        # for "game ended but xlog evidence was missing" (#753). Reviewed codes
+        # are projected verbatim; unknown producer values collapse to the fixed
+        # token ``other`` so they are still countable without being exposed.
+        terminal = raw.get('terminal')
+        error = terminal.get('analysis_error') if isinstance(terminal, dict) else None
+        if error in NETHACK_ANALYSIS_ERRORS:
+            result['analysis_error'] = error
+        else:
+            result['analysis_error'] = 'other' if error else None
     if timestamp is None:
         return None
     result['generated_at' if daily else 'ended_at'] = timestamp
@@ -9014,6 +9029,15 @@ def _nethack_history(state_dir, daily):
     """Open each directory relative to a pinned fd: no symlink traversal/races."""
     result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
               'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    # Summary counters cover every valid terminal record seen during the scan,
+    # not just the bounded ``records`` projection, so they survive the output
+    # budget reductions that trim old records away (#753).
+    summary = (None if daily else {
+        'terminal_status_counts': {status: 0 for status in sorted(NETHACK_TERMINAL)},
+        'score_present_count': 0,
+        'analysis_error_counts': {code: 0 for code in sorted(NETHACK_ANALYSIS_ERRORS)}
+        | {'other': 0},
+    })
     directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
     fd = None
     try:
@@ -9053,6 +9077,15 @@ def _nethack_history(state_dir, daily):
                         raise ValueError('invalid evidence')
                     record['file_mtime'] = info.st_mtime
                     records.append(record)
+                    if summary is not None:
+                        status = record.get('terminal_status')
+                        if status in summary['terminal_status_counts']:
+                            summary['terminal_status_counts'][status] += 1
+                        if type(record.get('score')) is int:
+                            summary['score_present_count'] += 1
+                        error = record.get('analysis_error')
+                        if error is not None:
+                            summary['analysis_error_counts'][error] += 1
                 except (OSError, ValueError, UnicodeError, RecursionError):
                     result['invalid_records'] += 1
             else:
@@ -9063,6 +9096,8 @@ def _nethack_history(state_dir, daily):
         result['records'] = records[:limit]
         result['omitted_records'] = max(0, len(records) - limit)
         result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+        if summary is not None:
+            result['summary'] = summary
     except FileNotFoundError:
         result['status'] = 'missing'
     except OSError:
@@ -9096,6 +9131,556 @@ def _nethack_history_budget(payload, *, keep_latest=False):
         history["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
+
+
+# ---------------------------------------------------------------------------
+# NetHack xlogfile writer diagnostics (#753, read-only).
+#
+# ``src/docich/nethack_run.py`` treats the machine-readable xlogfile as the
+# canonical source of terminal facts. NetHack 3.6.x on Linux appends a record
+# at game end only when ``link(xlogfile, xlogfile_lock)`` succeeds: the file
+# must already exist (ENOENT silently skips the write and never creates it)
+# and a leftover lock hard link (EEXIST) silently skips every later write
+# after 10 retries. Both failures are invisible to the run store, so this
+# projection stats the fixed contract files and derived counters only. It
+# never follows symlinks, never writes, never outputs xlog content, player
+# names, or death text, and resolves paths only from the reviewed production
+# game config.
+# ---------------------------------------------------------------------------
+
+NETHACK_XLOG_TAIL_BYTES = 65536
+NETHACK_XLOG_DIR_SCAN_LIMIT = 128
+NETHACK_XLOG_PROCESS_LIMIT = 4
+NETHACK_XLOG_SYSCONF_BYTES = 65536
+NETHACK_XLOG_SYSCONF_KEYS = frozenset({'xlogfile', 'logfile', 'dumplogfile'})
+NETHACK_XLOG_SYSCONF_PATH = Path('/etc/nethack/sysconf')
+NETHACK_XLOG_PACKAGES = frozenset({'nethack-common', 'nethack-console'})
+# Fixed launcher / alternate-path candidates from the #753 investigation
+# checklist; never discovered from the environment at runtime.
+NETHACK_XLOG_LAUNCHERS = (Path('/usr/games/nethack'), Path('/usr/local/bin/nethack'))
+NETHACK_XLOG_ALTERNATES = (Path('/var/lib/nethack/xlogfile'),
+                           Path('/usr/games/lib/nethackdir/xlogfile'))
+NETHACK_XLOG_LAUNCHER_BYTES = 4096
+NETHACK_XLOG_LAUNCHER_KEYS = frozenset({'hackdir', 'nethackplayground',
+                                        'playground', 'xlogfile'})
+NETHACK_XLOG_BINARY_BYTES = 8 * 1024 * 1024
+NETHACK_XLOG_SIBLING_LIMIT = 8
+
+
+def _nethack_xlog_stat(path):
+    """Bounded lstat projection of one fixed path; symlinks are never followed.
+
+    Missing paths stay minimal: absence is reported as ``{"exists": false}``
+    rather than a full dict of nulls, so the fixed envelope is spent on real
+    evidence.
+    """
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError:
+        return {"exists": None}
+    result = {
+        "exists": True,
+        "symlink": stat.S_ISLNK(info.st_mode),
+        "regular": stat.S_ISREG(info.st_mode),
+        "dir": stat.S_ISDIR(info.st_mode),
+        "size": int(info.st_size),
+        "mtime": info.st_mtime,
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": int(info.st_uid),
+        "gid": int(info.st_gid),
+        "nlink": int(info.st_nlink),
+    }
+    return result
+
+
+def _nethack_xlog_same_inode(path_a, path_b):
+    """True/False only when both fixed paths stat; otherwise None (unknown)."""
+    try:
+        info_a = os.stat(path_a, follow_symlinks=False)
+        info_b = os.stat(path_b, follow_symlinks=False)
+    except OSError:
+        return None
+    return (info_a.st_dev, info_a.st_ino) == (info_b.st_dev, info_b.st_ino)
+
+
+def _nethack_xlog_game_paths():
+    """Resolve the reviewed production game paths; never arbitrary input."""
+    resolved = {
+        "player": "docich",
+        "save_dir": Path("/var/games/nethack/save"),
+        "xlogfile": Path("/var/games/nethack/xlogfile"),
+        "dump_dir": Path("/var/games/nethack/dumps"),
+    }
+    try:
+        import tomllib
+        raw = _read_text_capped(
+            PROD_ROOT / "config" / "games" / "nethack.toml", 16384)
+        table = tomllib.loads(raw or "").get("nethack")
+    except (OSError, ValueError, TypeError, ImportError):
+        table = None
+    source = "defaults"
+    if isinstance(table, dict):
+        player = table.get("player_name")
+        if isinstance(player, str) and re.fullmatch(r"[A-Za-z0-9_]{1,31}", player):
+            resolved["player"] = player
+            source = "production-config"
+        for key in ("save_dir", "xlogfile", "dump_dir"):
+            value = table.get(key)
+            if (isinstance(value, str) and value.startswith("/")
+                    and 0 < len(value) <= 4096 and "\x00" not in value
+                    and ".." not in Path(value).parts):
+                resolved[key] = Path(value)
+                source = "production-config"
+    resolved["source"] = source
+    return resolved
+
+
+def _nethack_xlog_save_files(save_dir, player):
+    """Count the player's save files through a pinned dirfd; names stay local."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "player_saves": 0, "newest_player_save_mtime": None}
+    pattern = re.compile(
+        rf"\d+{re.escape(player)}(?:\.[A-Za-z0-9]+)?\Z", re.IGNORECASE)
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(save_dir).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                if pattern.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                result["player_saves"] += 1
+                newest = result["newest_player_save_mtime"]
+                if newest is None or info.st_mtime > newest:
+                    result["newest_player_save_mtime"] = info.st_mtime
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_processes():
+    """Effective uid/gid of live nethack processes; no argv is ever read."""
+    result = {"count": 0, "entries": []}
+    try:
+        candidates = [name for name in os.listdir('/proc') if name.isdigit()]
+    except OSError:
+        return result
+    for name in candidates[:256]:
+        if len(result["entries"]) >= NETHACK_XLOG_PROCESS_LIMIT:
+            break
+        base = Path('/proc') / name
+        try:
+            if base.joinpath('comm').read_text(
+                    encoding='utf-8', errors='replace').strip() != 'nethack':
+                continue
+            entry = {"pid": int(name), "euid": None, "egid": None, "start_ticks": None}
+            for line in base.joinpath('status').read_text(
+                    encoding='utf-8', errors='replace').splitlines():
+                if not (line.startswith('Uid:') or line.startswith('Gid:')):
+                    continue
+                fields = line.split()
+                if len(fields) >= 3 and fields[1].isdigit() and fields[2].isdigit():
+                    entry['euid' if line.startswith('Uid:') else 'egid'] = int(fields[2])
+            stat_text = base.joinpath('stat').read_text(
+                encoding='utf-8', errors='replace')
+            tail = stat_text[stat_text.rindex(')') + 2:].split()
+            if len(tail) > 19 and tail[19].isdigit():
+                entry["start_ticks"] = int(tail[19])
+            result["entries"].append(entry)
+            result["count"] += 1
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def _nethack_xlog_packages():
+    """dpkg metadata for the two fixed Debian package names; nothing else."""
+    result = {"available": False, "entries": []}
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Status}\n",
+             *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    for line in (proc.stdout or "").splitlines():
+        fields = (line.split("\t") + ["", "", ""])[:3]
+        package, version, status = fields
+        if package not in NETHACK_XLOG_PACKAGES:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "package": package,
+            "version": version[:64] if version else None,
+            "installed": status == "install ok installed",
+        })
+    return result
+
+
+def _nethack_xlog_sysconf():
+    """Project only the three allowlisted xlog-related sysconf keys."""
+    result = {"present": False, "readable": False, "configured": [], "values": {}}
+    try:
+        fd = os.open(NETHACK_XLOG_SYSCONF_PATH,
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["present"] = True
+        return result
+    result["present"] = True
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_XLOG_SYSCONF_BYTES:
+                return result
+            raw = stream.read(NETHACK_XLOG_SYSCONF_BYTES + 1)
+        if len(raw) > NETHACK_XLOG_SYSCONF_BYTES:
+            return result
+    except OSError:
+        return result
+    result["readable"] = True
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if not text or text.startswith('#'):
+            continue
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_SYSCONF_KEYS or name in result["values"]:
+            continue
+        result["configured"].append(name)
+        cleaned = value.strip().strip('"').strip()
+        if re.fullmatch(r"[A-Za-z0-9._/%{}-]{1,200}", cleaned or ""):
+            result["values"][name] = cleaned
+        else:
+            result["values"][name] = None
+    return result
+
+
+def _nethack_xlog_parse_line(line):
+    """Minimal copy of ``docich.nethack_run.parse_xlog_line`` (import-light)."""
+    record = {}
+    for fragment in line.rstrip("\r\n").split("\t"):
+        if "=" not in fragment:
+            continue
+        key, _, value = fragment.partition("=")
+        if key:
+            record[key] = value
+    return record
+
+
+def _nethack_xlog_int(record, key, base=10):
+    raw = record.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw, base)
+    except ValueError:
+        return None
+
+
+def _nethack_xlog_tail(xlogfile, player):
+    """Derived counters from the bounded xlog tail; content never leaves."""
+    result = {"readable": False, "size": None, "tail_complete_lines": 0,
+              "tail_head_truncated": False, "last_record": None}
+    try:
+        fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return result
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return result
+            result["size"] = int(info.st_size)
+            start = max(0, result["size"] - NETHACK_XLOG_TAIL_BYTES)
+            if start:
+                stream.seek(start)
+            raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
+    except OSError:
+        return result
+    result["readable"] = True
+    result["tail_head_truncated"] = bool(start)
+    raw = raw[:raw.rfind(b'\n') + 1]
+    lines = [line for line in raw.split(b'\n') if line]
+    result["tail_complete_lines"] = len(lines)
+    if not lines:
+        return result
+    record = _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace'))
+    result["last_record"] = {
+        "name_matches_player": (record.get("name") == player) if player else None,
+        "starttime": _nethack_xlog_int(record, "starttime"),
+        "endtime": _nethack_xlog_int(record, "endtime"),
+        "points": _nethack_xlog_int(record, "points"),
+        "turns": _nethack_xlog_int(record, "turns"),
+        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
+        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    }
+    return result
+
+
+def _nethack_xlog_safe_value(text, cap=200):
+    """Project a config-derived value only when it is plain path-like text."""
+    if not isinstance(text, str) or not text:
+        return None
+    cleaned = text.strip().strip('"').strip()
+    pattern = r"[A-Za-z0-9._/{}%+-]{1," + str(int(cap)) + "}"
+    if re.fullmatch(pattern, cleaned or ""):
+        return cleaned
+    return None
+
+
+def _nethack_xlog_launcher(path):
+    """Stat one fixed launcher and project only allowlisted playground vars."""
+    entry = {"stat": _nethack_xlog_stat(path), "target": None, "vars": {}}
+    if not entry["stat"]["exists"]:
+        return entry
+    if entry["stat"]["symlink"]:
+        try:
+            entry["target"] = _nethack_xlog_safe_value(os.readlink(path))
+        except OSError:
+            entry["target"] = None
+        return entry
+    if not entry["stat"]["regular"] or entry["stat"]["size"] > 16384:
+        return entry
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            raw = stream.read(NETHACK_XLOG_LAUNCHER_BYTES)
+    except OSError:
+        return entry
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if text.startswith('export '):
+            text = text[len('export '):].strip()
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_LAUNCHER_KEYS or name in entry["vars"]:
+            continue
+        entry["vars"][name] = _nethack_xlog_safe_value(value)
+    return entry
+
+
+def _nethack_xlog_siblings(playground):
+    """Names/size/mtime of bounded xlogfile* siblings; no other entries."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "entries": []}
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(playground).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            matched = []
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                name = entry.name
+                if not name.startswith('xlogfile'):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                matched.append({
+                    "name": _nethack_xlog_safe_value(name, cap=64) or 'xlogfile',
+                    "size": int(info.st_size), "mtime": info.st_mtime,
+                })
+        matched.sort(key=lambda item: item["name"])
+        result["entries"] = matched[:NETHACK_XLOG_SIBLING_LIMIT]
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_binary_has_xlog_string(path):
+    """Scan a fixed binary for the compiled-in ``xlogfile`` name (read-only)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            size = min(int(info.st_size), NETHACK_XLOG_BINARY_BYTES)
+            needle = b'xlogfile'
+            while True:
+                chunk = stream.read(256 * 1024)
+                if not chunk:
+                    return False
+                if needle in chunk:
+                    return True
+    except OSError:
+        return None
+
+
+def _nethack_xlog_binaries(launcher_targets):
+    """Locate the real nethack binaries via dpkg -L and fixed launcher targets."""
+    result = {"available": False, "complete_scan": True, "entries": []}
+    candidates = []
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-L", *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None:
+        for line in (proc.stdout or "").splitlines():
+            path = line.strip()
+            if path.startswith('/') and path.rpartition('/')[2] == 'nethack':
+                candidates.append(("dpkg", path))
+    for launcher, target in launcher_targets:
+        if target and target.startswith('/'):
+            candidates.append((launcher, target))
+    seen = set()
+    for origin, path in candidates:
+        if len(result["entries"]) >= 2:
+            result["complete_scan"] = False
+            break
+        if path in seen:
+            continue
+        seen.add(path)
+        present = _nethack_xlog_binary_has_xlog_string(path)
+        if present is None:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "origin": origin,
+            "size": None,
+            "xlog_string_present": present,
+        })
+    return result
+
+
+def _collect_nethack_xlog(now):
+    settings = _nethack_xlog_game_paths()
+    xlogfile = settings["xlogfile"]
+    playground = settings["save_dir"].parent
+    xlog_lock = xlogfile.parent / (xlogfile.name + "_lock")
+    logfile = playground / "logfile"
+    logfile_lock = playground / (logfile.name + "_lock")
+    record = playground / "record"
+    launchers = {str(path): _nethack_xlog_launcher(path)
+                 for path in NETHACK_XLOG_LAUNCHERS}
+    launcher_targets = [(origin, entry["target"]) for origin, entry in launchers.items()
+                        if entry["target"]]
+    paths = {
+        "xlogfile": _nethack_xlog_stat(xlogfile),
+        "xlogfile_lock": _nethack_xlog_stat(xlog_lock),
+        "logfile": _nethack_xlog_stat(logfile),
+        "logfile_lock": _nethack_xlog_stat(logfile_lock),
+        "record": _nethack_xlog_stat(record),
+    }
+    paths["xlogfile_lock"]["same_inode_as_xlogfile"] = _nethack_xlog_same_inode(
+        xlogfile, xlog_lock)
+    paths["logfile_lock"]["same_inode_as_logfile"] = _nethack_xlog_same_inode(
+        logfile, logfile_lock)
+    nlink = paths["xlogfile"].get("nlink")
+    return {
+        "schema_version": 1,
+        "collected_at": now,
+        "config": {"source": settings["source"], "player": settings["player"]},
+        "paths": paths,
+        "dirs": {
+            "playground": _nethack_xlog_stat(playground),
+            "save_dir": _nethack_xlog_stat(settings["save_dir"]),
+            "dump_dir": _nethack_xlog_stat(settings["dump_dir"]),
+        },
+        "launchers": launchers,
+        "alternates": {str(path): _nethack_xlog_stat(path)
+                       for path in NETHACK_XLOG_ALTERNATES},
+        "xlog_siblings": _nethack_xlog_siblings(playground),
+        "binaries": _nethack_xlog_binaries(launcher_targets),
+        "save_dir_entries": _nethack_xlog_save_files(
+            settings["save_dir"], settings["player"]),
+        "processes": _nethack_xlog_processes(),
+        "packages": _nethack_xlog_packages(),
+        "sysconf": _nethack_xlog_sysconf(),
+        "xlog": _nethack_xlog_tail(xlogfile, settings["player"]),
+        "findings": {
+            "xlog_lock_present": paths["xlogfile_lock"]["exists"] is True,
+            "xlog_lock_shares_inode": paths["xlogfile_lock"]["same_inode_as_xlogfile"],
+            "xlog_file_shared_hardlink": (nlink > 1) if nlink is not None else None,
+        },
+    }
+
+
+def _nethack_xlog_budget(payload):
+    """Yield the xlog projection's optional detail under envelope pressure.
+
+    The stat-level lock/permission evidence is the incident's first-order
+    proof, so it goes last. Optional detail (tail record, binaries, sibling
+    list, process entries, sysconf values) is dropped first, and each drop is
+    visible through an ``*_omitted`` marker.
+    """
+    section = payload.get("nethack_xlog")
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    if isinstance(xlog, dict) and xlog.get("last_record") is not None:
+        xlog["last_record"] = None
+        xlog["last_record_omitted"] = True
+    for key in ("binaries", "processes", "xlog_siblings", "sysconf"):
+        part = section.get(key)
+        detail_key = "values" if key == "sysconf" else "entries"
+        if isinstance(part, dict) and part.get(detail_key):
+            part["values_omitted" if key == "sysconf" else "entries_omitted"] = True
+            part[detail_key] = {} if key == "sysconf" else []
+    return payload
+
+
+def _nethack_xlog_drop(payload):
+    """Collapse the whole xlog projection to its findings as the last resort."""
+    section = payload.get("nethack_xlog")
+    if isinstance(section, dict):
+        payload["nethack_xlog"] = {
+            "schema_version": section.get("schema_version"),
+            "collected_at": section.get("collected_at"),
+            "status": "output_omitted",
+        }
+    return payload
 
 
 def _cpu_profile_budget(payload):
@@ -9228,6 +9813,12 @@ def _diagnostics_budget(payload):
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload = _cpu_profile_detail_budget(payload)
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The #753 xlog projection is small and is the incident's first-order
+    # evidence, but its optional detail still yields with the other optional
+    # details before any history record goes.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _nethack_xlog_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Old history is still the first part of the NetHack projection to go. The
     # latest result is allowed to go only after optional CPU/audio detail.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
@@ -9260,6 +9851,11 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict)
             and "retro_scores" in corners):
         corners["retro_scores"] = {"status": "output_omitted"}
+    # The xlog stat evidence is the last NetHack projection to go, and only
+    # against the hard ceiling: collapsing it hides the lock/permission facts
+    # that #753 needs, so it must survive every softer reduction.
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        payload = _nethack_xlog_drop(payload)
     return _nethack_history_budget(payload)
 
 
@@ -9410,6 +10006,7 @@ def main(argv):
         "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
+        "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
