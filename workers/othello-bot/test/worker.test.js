@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 
 import worker from "../src/worker.js";
+import * as workerModule from "../src/worker.js";
 import { OthelloRoom } from "../src/room.js";
 
 function memoryStorage() {
@@ -96,6 +97,10 @@ test("room-level errors surface as one 409 safe code", async () => {
   const again = await worker.fetch(POST("/room/open-room", { roomId: "r1", viewer: "again" }), env);
   assert.equal(again.status, 409);
   assert.deepEqual(await again.json(), { error: "room_not_idle" });
+});
+
+test("worker re-exports OthelloRoom for the DO binding", () => {
+  assert.equal(workerModule.OthelloRoom, OthelloRoom);
 });
 
 test("a missing DO binding degrades to a fixed 503", async () => {

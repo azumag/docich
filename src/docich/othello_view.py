@@ -111,7 +111,7 @@ function render(data){
  }else{result.classList.remove('on');document.getElementById('outcome').textContent='-';document.getElementById('finalscore').textContent='-';}
  const log=document.getElementById('log');
  log.textContent=(data.movesPlayed?Math.floor(data.movesPlayed/2)+' 手完了':'')||'スタート記録がここに出ます';
- showUnavailable(false);
+ showUnavailable(true);
 }
 function showUnavailable(hidden){document.getElementById('unavailable').hidden=!!hidden;}
 async function refresh(){
@@ -121,7 +121,7 @@ async function refresh(){
   const data=await r.json();
   if(data.ok!==true)throw new Error('unavailable');
   render(data);
- }catch(e){showUnavailable(true);document.getElementById('state').textContent='ルームを再確認中';}
+ }catch(e){showUnavailable(false);document.getElementById('state').textContent='ルームを再確認中';}
 }
 refresh();setInterval(refresh,__POLL_MS__);
 </script></html>'''.replace("__POLL_MS__", str(POLL_MILLISECONDS))
@@ -132,8 +132,8 @@ class OthelloViewError(ValueError):
 
 
 _ALLOWED_URL = re.compile(
-    r"^https://[A-Za-z0-9.-]+(:\d+)?/room/snapshot/?$"
-    r"|^http://127\.0\.0\.1(:\d+)?/room/snapshot/?$"
+    r"^https://[A-Za-z0-9.-]+(:\d+)?/room/snapshot/?(\?id=[a-z0-9][a-z0-9_-]{0,63})?$"
+    r"|^http://127\.0\.0\.1(:\d+)?/room/snapshot/?(\?id=[a-z0-9][a-z0-9_-]{0,63})?$"
 )
 
 

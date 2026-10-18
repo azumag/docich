@@ -21,6 +21,8 @@
  */
 import { OthelloRoom, OthelloRoomError } from "./room.js";
 
+export { OthelloRoom };
+
 const MAX_BODY_BYTES = 4096;
 const DO_BUDGET_MS = 2500;
 const ROOM_PATH_PREFIX = "/room/";

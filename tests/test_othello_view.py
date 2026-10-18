@@ -45,9 +45,13 @@ def test_japanese_page_declares_notranslate_markers():
 def test_control_url_validation_is_fail_closed():
     assert ov.validate_control_url("http://127.0.0.1:8800/room/snapshot")
     assert ov.validate_control_url("https://othello.example.workers.dev/room/snapshot")
+    # The room snapshot requires an id query; the view must accept it (issue #699 review).
+    assert ov.validate_control_url("http://127.0.0.1:8800/room/snapshot?id=room-1")
+    assert ov.validate_control_url("https://othello.example.workers.dev/room/snapshot?id=room_1")
     for bad in ("", "ftp://x/", "http://example.com/other/path",
                 "http://127.0.0.1:8800/room/../../admin",
-                "https://host/snapshot?token=secret"):
+                "https://host/snapshot?token=secret",
+                "https://host/room/snapshot?id=BAD ID"):
         try:
             ov.validate_control_url(bad)
         except ov.OthelloViewError:
