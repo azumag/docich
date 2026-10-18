@@ -410,7 +410,7 @@ def record_accusation(state: Any, user_id: Any, suspect: Any, trick: Any = "", n
     suspect = _text(suspect, "suspect", limit=MAX_TEXT)
     if suspect not in suspects:
         raise TrpgCornerError("invalid suspect")
-    trick_text = "" if trick is None else _text(trick, "trick", limit=MAX_TRICK_TEXT)
+    trick_text = "" if trick is None or trick == "" else _text(trick, "trick", limit=MAX_TRICK_TEXT)
     state["accusations"][uid] = {"suspect": suspect, "trick": trick_text, "at": now or _now()}
     if len(state["accusations"]) > MAX_PARTICIPANTS:
         raise TrpgCornerError("too many participants")
@@ -512,8 +512,13 @@ def parse_vote(text: Any) -> int | None:
         t = parts[1]
     elif len(parts) > 1:
         return None
-    if t.isdigit() and 1 <= int(t) <= MAX_CHOICES:
-        return int(t)
+    if t.isdigit():
+        try:
+            choice = int(t)
+        except ValueError:
+            return None
+        if 1 <= choice <= MAX_CHOICES:
+            return choice
     return None
 
 

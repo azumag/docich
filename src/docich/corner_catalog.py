@@ -167,6 +167,26 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("doushi duration_minutes must be an integer 1-14")
+        elif item.adapter == "puyo":
+            # ぷよぷよクローン offline self-play view (Issue #698). Default
+            # disabled and manual-only until the owner approves auto rotation;
+            # audio/fetch/live settings are out of scope for this adapter.
+            if item.id != "puyo-corner" or item.game != "puyo-view":
+                raise CornerCatalogError("puyo requires id=puyo-corner and game=puyo-view")
+            if item.fetch_on_start or item.audio_enabled:
+                raise CornerCatalogError(
+                    "puyo accepts neither audio_enabled nor fetch_on_start"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "puyo stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("puyo requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (
