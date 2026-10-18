@@ -464,3 +464,30 @@ def test_snapshot_body_overlays_the_falling_pair():
     assert board[ay][ax] == pair["axis"] and board[sy][sx] == pair["satellite"]
     # the previously occupied satellite cell is clear again as the pair moved
     assert board[old_satellite[1]][old_satellite[0]] is None
+
+
+def test_consume_inbox_discards_an_oversized_line_through_its_newline(tmp_path):
+    """Regression: after dropping an oversized line's first window, the line's
+    tail — even a crafted valid join — must never be applied as a fresh line.
+    The drop keeps discarding until the line's newline."""
+    from docich import puyo_corner as pc
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # one giant line (no newline inside) whose tail is a crafted valid join
+    giant = b"x" * (INBOX_READ_BUDGET_BYTES * 2 + 100) \
+        + b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}'
+    inbox.write_bytes(giant + b"\n")
+    live.consume_inbox()  # window 1: full of the fragment -> drop, keep discarding
+    live.consume_inbox()  # window 2: same
+    while live._offset < inbox.stat().st_size:
+        live.consume_inbox()  # discard until the line's newline
+    assert live.engine["roster"] == []  # the crafted tail was never applied
+    assert live._offset == inbox.stat().st_size
+    # after the discard completes, a real join on the next line still works
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert [row["user_id"] for row in live.engine["roster"]] == ["u1"]
