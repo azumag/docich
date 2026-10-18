@@ -16,6 +16,7 @@ from urllib.request import urlopen
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
 from ..trpg_view import DEFAULT_PORT, VIEW_NAME
+from ..trpg_session import SESSION_FILE, prepare
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
 from .program import (
@@ -24,7 +25,7 @@ from .program import (
     broadcast_view_session_env,
 )
 
-READY_PATH = "/"
+READY_PATH = "/api/trpg"
 
 
 def trpg_view_game_config() -> GameConfig:
@@ -54,6 +55,7 @@ class TrpgProgramViewAdapter(ProgramViewAdapter):
             "--runtime-id", self.spec.runtime_id,
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
+            "--session-file", str(self.spec.runtime_dir / SESSION_FILE),
         ]
 
     def _game_session_env(self) -> dict[str, str]:
@@ -82,6 +84,11 @@ class TrpgProgramViewAdapter(ProgramViewAdapter):
             ]
         return browser
 
+    def preflight(self, deadline: float, cancel) -> None:
+        self._check_active(deadline, cancel)
+        prepare(self.g, self.spec)
+        super().preflight(deadline, cancel)
+
     def readiness(self, deadline: float, cancel) -> None:
         CliCoordinatorAdapter.readiness(self, deadline, cancel)
         url = f"http://127.0.0.1:{self.dashboard_port}{READY_PATH}"
@@ -89,7 +96,14 @@ class TrpgProgramViewAdapter(ProgramViewAdapter):
             self._check_active(deadline, cancel)
             try:
                 with urlopen(url, timeout=min(2.0, max(0.05, deadline - monotonic()))) as response:
-                    if response.status == 200:
+                    data = json.loads(response.read(64 * 1024))
+                    if (response.status == 200 and isinstance(data, dict)
+                            and data.get("ok") is True
+                            and data.get("game") == self.spec.game
+                            and data.get("runtime_id") == self.spec.runtime_id
+                            and type(data.get("generation")) is int
+                            and data.get("generation") == self.spec.generation
+                            and data.get("lease_id") == self.spec.lease_id):
                         return
             except (OSError, ValueError, URLError):
                 pass

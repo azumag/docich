@@ -75,7 +75,10 @@ def accusation_text() -> str:
 
 
 def reveal_text(culprit: str, method: str, motive: str) -> str:
-    return _REVEAL_TEXT.format(culprit=culprit, method=method, motive=motive)[:MAX_SPEECH]
+    text = f"答えの開示です。犯人は{culprit}でした。手法は{method}。"
+    if motive:
+        text += f"動機は{motive}。"
+    return text[:MAX_SPEECH]
 
 
 def _counts(total, *, skipped=0):
@@ -89,7 +92,7 @@ def publish(g, *, kind: str, title: str, overlay_body: str, speech_text: str,
               "speech": _counts(1, skipped=0 if audio_enabled else 1)}
     event = {
         "ts": int(now()),
-        "category": "trpg",
+        "category": "game",
         "level": "info",
         "title": title[:OVERLAY_TITLE_LIMIT],
         "body": overlay_body[:OVERLAY_BODY_LIMIT],

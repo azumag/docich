@@ -1,19 +1,8 @@
-"""Bounded lifecycle owner for the read-only ぷよぷよクローン program view.
+"""Manual TRPG lifecycle and core driver under the shared GameSwitch slot.
 
-Scheduling and shared program-slot arbitration stay in corner_rotation and
-corner_adapters. GameSwitch owns boundary waits, runtime teardown, rollback and
-restoration; this module only persists the corner's request, the full runtime
-identity and a fixed end time. It never fetches during the display window (the
-program adapter plays the bounded offline self-play through ``trpg_corner``
-before the switch commits), never talks to Twitch and never writes the match
-payload into persistent state.
-
-The catalog row stays default-disabled and manual-only (Issue #698, owner
-approval 2026-10-18): the owner can reserve it from the WebUI; enabling the
-24h auto rotation is a later, explicitly reviewed step. It always ends on the
-reviewed duration bound or an explicit stop.
-
-Precedent: ``_corner.py`` (same read-only synthetic view lifecycle).
+GameSwitch owns runtime teardown, rollback and restoration. Only the manager
+of the matching active generation advances the session and emits narration.
+Chat is consumed read-only; the existing manual-only scheduling is preserved.
 """
 from __future__ import annotations
 
@@ -42,7 +31,7 @@ from .game_switch import (
 from .trpg_view import VIEW_NAME
 
 STATE_FILENAME = "trpg_corner_state.json"
-DEFAULT_DURATION_MINUTES = 2
+DEFAULT_DURATION_MINUTES = 8
 MAX_DURATION_MINUTES = 14
 RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
@@ -60,7 +49,7 @@ ROLLBACK_ERROR_CODES = frozenset({
 
 
 class TrpgProgramError(RuntimeError):
-    """A fixed, non-sensitive 同志カード大賞 corner lifecycle failure."""
+    """A fixed, non-sensitive TRPG corner lifecycle failure."""
 
 
 def _identity(runtime, *, expected_game=None):
@@ -87,10 +76,10 @@ def _stable(canonical):
 
 
 class TrpgProgramManager:
-    """Run one bounded 同志カード大賞 display under the shared GameSwitch slot."""
+    """Run one reviewed scenario and restore the displaced runtime."""
 
     def __init__(self, g, *, duration_minutes=DEFAULT_DURATION_MINUTES, coordinator=None,
-                 clock=time.time, sleep=time.sleep, poll_s=1.0):
+                 clock=time.time, sleep=time.sleep, poll_s=1.0, audio_enabled=False):
         if (type(duration_minutes) is not int
                 or not 1 <= duration_minutes <= MAX_DURATION_MINUTES):
             raise TrpgProgramError(
@@ -99,6 +88,9 @@ class TrpgProgramManager:
             raise TrpgProgramError("trpg program poll interval must be positive")
         self.g = g
         self.duration_minutes = duration_minutes
+        if type(audio_enabled) is not bool:
+            raise TrpgProgramError("trpg audio_enabled must be boolean")
+        self.audio_enabled = audio_enabled
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -124,7 +116,20 @@ class TrpgProgramManager:
         self.coordinator = coordinator
 
     def eligible(self):
-        return self.duration_minutes is not None
+        from .trpg_session import scenario, chat_path
+        try:
+            scenario(self.g)
+            chat_path(self.g)
+            return True
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return False
+
+    def _session_tick(self, identity, *, stop_reason=None):
+        from .naming import runtime_directory
+        from .trpg_session import SESSION_FILE, tick
+        path = runtime_directory(self.g.state_dir, identity["runtime_id"]) / SESSION_FILE
+        return tick(self.g, path, identity, audio_enabled=self.audio_enabled,
+                    now=self.clock(), stop_reason=stop_reason)
 
     def _read_state(self):
         if not self.path.exists():
@@ -360,6 +365,11 @@ class TrpgProgramManager:
             remaining = ends_at - self.clock()
             if remaining <= 0:
                 return self._restore(state, end_reason="duration")
+            try:
+                if self._session_tick(identity):
+                    return self._restore(state, end_reason="game-completed")
+            except (OSError, ValueError, TypeError, KeyError):
+                return self._restore(state, end_reason="session-unavailable")
             self.sleep(min(self.poll_s, remaining))
 
     def _restored_owner_matches(self, state, canonical, result):
@@ -441,6 +451,11 @@ class TrpgProgramManager:
                 return self._mark_interrupted(state, "operator-moved-before-restore")
             raise TrpgProgramError(" restore source is not the owned runtime")
 
+        if end_reason in {"manual", "duration"}:
+            try:
+                self._session_tick(identity, stop_reason=end_reason)
+            except (OSError, ValueError, TypeError, KeyError):
+                state["last_error_code"] = "trpg-session-unavailable"
         previous = state.get("previous_game")
         payload = {"expected_source": identity}
         if previous is None:

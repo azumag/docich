@@ -99,7 +99,7 @@ corners = [
   { id = "puyo-corner", adapter = "puyo", game = "puyo-view", enabled = true, audio_enabled = true, manual_only = true },
   # TRPG / マーダーミステリー (#684): PR-4 で有効化 (手動予約可能)。
   # 読み上げを承認済みのため audio_enabled = true。自動抽選は別承認ステップ。
-  { id = "trpg-corner", adapter = "trpg", game = "trpg-view", enabled = true, audio_enabled = true, manual_only = true },
+  { id = "trpg-corner", adapter = "trpg", game = "trpg-view", enabled = true, audio_enabled = true, manual_only = true, duration_minutes = 8 },
   # AI探偵ミステリー: 視聴者参加型の1話完結推理コーナー（docich#684、2026-10-18
   # オーナー承認の案A＋統合判断）。事件の答え（犯人・手法・動機）は決定論エンジンが
   # 開始時にseed確定し、コミットメント（SHA-256）を配信ボードへ表示。調査の行動選択は

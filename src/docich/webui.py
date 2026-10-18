@@ -1838,7 +1838,7 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
-_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo"})
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg"})
 # adapter -> (fixed WebUI error-code prefix, operator-facing label).
 _CORNER_QUEUED_MANUAL_LABELS = {
     "weather": ("weather", "天気"),
@@ -1846,6 +1846,7 @@ _CORNER_QUEUED_MANUAL_LABELS = {
     "yoso": ("yoso", "予想王"),
     "doushi": ("doushi", "同志カード"),
     "puyo": ("puyo", "ぷよぷよクローン"),
+    "trpg": ("trpg", "TRPG"),
     "mystery": ("mystery", "AI探偵ミステリー"),
 }
 _MANUAL_RESERVATION_CORNERS = frozenset({
@@ -1854,6 +1855,7 @@ _MANUAL_RESERVATION_CORNERS = frozenset({
     "yosou-oh",
     "doushi-card",
     "puyo-corner",
+    "trpg-corner",
     "mystery",
 })
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
@@ -2258,7 +2260,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                              "operator-moved-during-yosou",
                              "operator-moved-during-doushi",
                              "duration",
-                             "audio-complete",
+                             "audio-complete", "session-unavailable",
                              "operator-moved-after-start",
                              "operator-moved-before-restore",
                              "operator-stopped-before-start"} else None),
@@ -2294,6 +2296,7 @@ _CORNER_STATE_FILE_BY_ADAPTER = {
     "yoso": "yoso_corner",
     "doushi": "doushi_corner",
     "puyo": "puyo_program",
+    "trpg": "trpg_corner_state",
     "mystery": "mystery_corner",
 }
 
@@ -5063,6 +5066,7 @@ class _Handler(BaseHTTPRequestHandler):
             DoushiCornerAdapter,
             MysteryCornerAdapter,
             PuyoCornerAdapter,
+            TrpgCornerAdapter,
             TsuitateCornerAdapter,
             WeatherCornerAdapter,
             YosoCornerAdapter,
@@ -5073,6 +5077,7 @@ class _Handler(BaseHTTPRequestHandler):
         from .doushi_corner import DoushiCornerError
         from .mystery_corner import MysteryCornerError
         from .puyo_program import PuyoProgramError
+        from .trpg_program import TrpgProgramError
 
         adapter_types = {
             "weather": WeatherCornerAdapter,
@@ -5080,6 +5085,7 @@ class _Handler(BaseHTTPRequestHandler):
             "yoso": YosoCornerAdapter,
             "doushi": DoushiCornerAdapter,
             "puyo": PuyoCornerAdapter,
+            "trpg": TrpgCornerAdapter,
             "mystery": MysteryCornerAdapter,
         }
         code_prefix, label = _CORNER_QUEUED_MANUAL_LABELS[row.adapter]
@@ -5113,7 +5119,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 409
         except (OSError, ValueError, WeatherCornerError, TsuitateCornerError,
                 YosoCornerError, DoushiCornerError, PuyoProgramError,
-                MysteryCornerError):
+                MysteryCornerError, TrpgProgramError):
             self._send_error_json(409, f"{code_prefix}_manual_unavailable",
                                   f"{label}の設定または所有者の状態を確認できません")
             return 409

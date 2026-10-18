@@ -819,8 +819,7 @@ class PuyoCornerAdapter:
 class TrpgCornerAdapter:
     """Bounded participatory TRPG / murder-mystery view through the shared slot.
 
-    Read-only display (Issue #684, default disabled and manual_only). No audio,
-    no fetch and no live_eligible run. Full overlay/TTS lands in PR-4.
+    Manual-only; the catalog's audio opt-in is passed to the lifecycle owner.
     """
 
     def __init__(self, g, corner):
@@ -835,6 +834,7 @@ class TrpgCornerAdapter:
             duration_minutes=(corner.duration_minutes
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
+            audio_enabled=corner.audio_enabled,
         )
         self.state_path = self.manager.state_path
 
