@@ -118,3 +118,50 @@ brain / ネット対戦 / 本番起動. This slice adds, still fully offline:
   step.
 
 No chat input, no adapter, no catalog change and no VM touched in this slice.
+
+## Adapter + catalog 登記 (owner-approved PR-3, 既定 disabled / manual_only)
+
+Owner approval (2026-10-18 thread): PR-3 = `puyo` adapter + catalog row,
+default disabled. Merging PR #2485 happens after PR-3 is done. The slice
+follows the read-only synthetic-view precedent (`doushi_corner.py` /
+`doushi_view.py` / `adapters/doushi_program.py`) minus audio and narration:
+
+* `src/docich/puyo_view.py` — loopback-only HTTP view (port 8807,
+  ``VIEW_NAME = "puyo-view"``) showing one already-played offline match
+  summary at the fixed 960x540 frame. It never fetches and never starts a
+  match itself: the program adapter plays one bounded self-play through
+  ``puyo_corner`` before the switch commits and hands over a validated
+  transient payload file; a missing or invalid payload keeps the process
+  from serving at all (fail-closed, no stale board).
+* `src/docich/adapters/puyo_program.py` — GameSwitch program-view adapter
+  (`make_puyo_view_adapter`, registered for `game == "puyo-view"`). The
+  preflight plays exactly one bounded offline match (fresh 64-bit seed,
+  engine budget `MAX_STEPS` bound) and writes `puyo_match.json` into the
+  transient runtime directory only.
+* `src/docich/puyo_program.py` — `PuyoProgramManager` bounds the slot: fixed
+  duration (default 2, max 14 minutes), full runtime identity persistence,
+  stop/interrupt/restore receipts identical to the doushi lifecycle. No
+  audio, no narration, no fetch during display.
+* `corner_adapters.PuyoCornerAdapter` + `ADAPTERS["puyo"]` — identity
+  contract: `game` must be `puyo-view` and `live_eligible` false, otherwise
+  `CornerExecutionError`.
+* `corner_catalog` validation for `adapter == "puyo"`: id must be
+  `puyo-corner`, game `puyo-view`, `manual_only` must stay true,
+  `audio_enabled`/`fetch_on_start` rejected, `live_eligible` false,
+  duration 1–14 when present. Nothing is widened or defaulted on.
+* Production catalog row (config/docich.soren-live.toml):
+  `{ id = "puyo-corner", adapter = "puyo", game = "puyo-view",
+  enabled = false, manual_only = true }` — inert until the owner flips
+  `enabled = true`, and even then manual-queue-only until a later approved
+  step drops `manual_only`.
+* WebUI: the row is visible in manual diagnostics and can be queued/stopped
+  (`("puyo", "ぷよぷよクローン")` label) once enabled.
+
+While `enabled = false` the corner can never be selected, not even manually
+(`disabled-or-paused`); enabling is an explicit owner action on the VM.
+
+## 明示的に後回し (not in PR-3)
+
+チャット参加 (`!puyo join`), progression/成績記録, ネット対戦, TTS,
+自動ローテーション組入 (`enabled = true` / `manual_only = false`),
+本番起動 — each stays a separate explicitly approved slice.

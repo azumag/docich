@@ -1802,6 +1802,7 @@ CORNER_MANUAL_STATE_FILES = (
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
     "weather_corner", "tsuitate_corner", "yoso_corner",
     "doushi_corner",
+    "puyo_program",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({
@@ -1835,19 +1836,21 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
-_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi"})
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo"})
 # adapter -> (fixed WebUI error-code prefix, operator-facing label).
 _CORNER_QUEUED_MANUAL_LABELS = {
     "weather": ("weather", "天気"),
     "tsuitate": ("tsuitate", "衝立将棋"),
     "yoso": ("yoso", "予想王"),
     "doushi": ("doushi", "同志カード"),
+    "puyo": ("puyo", "ぷよぷよクローン"),
 }
 _MANUAL_RESERVATION_CORNERS = frozenset({
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91", "paper", "meriken", "tsuitate",
     "yosou-oh",
     "doushi-card",
+    "puyo-corner",
 })
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
 # paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
@@ -2286,6 +2289,7 @@ _CORNER_STATE_FILE_BY_ADAPTER = {
     "tsuitate": "tsuitate_corner",
     "yoso": "yoso_corner",
     "doushi": "doushi_corner",
+    "puyo": "puyo_program",
 }
 
 
@@ -5052,6 +5056,7 @@ class _Handler(BaseHTTPRequestHandler):
         from .corner_rotation import CornerRotationManager, RotationError
         from .corner_adapters import (
             DoushiCornerAdapter,
+            PuyoCornerAdapter,
             TsuitateCornerAdapter,
             WeatherCornerAdapter,
             YosoCornerAdapter,
@@ -5060,12 +5065,14 @@ class _Handler(BaseHTTPRequestHandler):
         from .weather_corner import WeatherCornerError
         from .yoso_corner import YosoCornerError
         from .doushi_corner import DoushiCornerError
+        from .puyo_program import PuyoProgramError
 
         adapter_types = {
             "weather": WeatherCornerAdapter,
             "tsuitate": TsuitateCornerAdapter,
             "yoso": YosoCornerAdapter,
             "doushi": DoushiCornerAdapter,
+            "puyo": PuyoCornerAdapter,
         }
         code_prefix, label = _CORNER_QUEUED_MANUAL_LABELS[row.adapter]
         if action == "start" and row.adapter == "weather" and "duration_minutes" in data:
@@ -5097,7 +5104,7 @@ class _Handler(BaseHTTPRequestHandler):
                                   reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
             return 409
         except (OSError, ValueError, WeatherCornerError, TsuitateCornerError,
-                YosoCornerError, DoushiCornerError):
+                YosoCornerError, DoushiCornerError, PuyoProgramError):
             self._send_error_json(409, f"{code_prefix}_manual_unavailable",
                                   f"{label}の設定または所有者の状態を確認できません")
             return 409

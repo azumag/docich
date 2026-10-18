@@ -70,7 +70,7 @@ def test_flat_live_catalog_and_financial_boundary():
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
                                      "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
-                                     "yosou-oh", "doushi-card"}
+                                     "yosou-oh", "doushi-card", "puyo-corner"}
     assert all(c.live_eligible is False for c in catalog)
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
@@ -85,7 +85,11 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    assert len(catalog) == 13
+    assert len(catalog) == 14
+    # Issue #698: ぷよぷよクローン stays default-disabled and manual-only until
+    # the owner approves the auto-rotation step.
+    puyo = next(c for c in catalog if c.id == "puyo-corner")
+    assert not puyo.enabled and puyo.manual_only
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -235,13 +239,14 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     assert len(eligible) == 13
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
             "yosou-oh", "doushi-card"} <= set(eligible)
-    assert excluded == {}
+    # The disabled ぷよぷよクローン row is excluded, never suddenly auto-selected.
+    assert excluded == {"puyo-corner": "disabled-or-paused"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
     assert len(eligible) == 12 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable"}
+    assert excluded == {"tsuitate": "adapter-unavailable", "puyo-corner": "disabled-or-paused"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
