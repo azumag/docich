@@ -9437,6 +9437,7 @@ def _nethack_xlog_tail(xlogfile, player):
         fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (FileNotFoundError, OSError):
         return result
+    head_trimmed = False
     try:
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
@@ -9445,8 +9446,15 @@ def _nethack_xlog_tail(xlogfile, player):
             size = int(info.st_size)
             start = max(0, size - NETHACK_XLOG_TAIL_BYTES)
             if start:
-                stream.seek(start)
-            raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
+                # Peek one byte back: when the window happens to start on a
+                # line boundary the first line is complete and must survive
+                # (#753 review). Only a real mid-line cut is trimmed below.
+                stream.seek(start - 1)
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES + 1)
+                head_trimmed = raw[:1] != b'\n'
+                raw = raw[1:]
+            else:
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
     except OSError:
         return result
     result["size"] = size
@@ -9456,9 +9464,7 @@ def _nethack_xlog_tail(xlogfile, player):
     result["first_record"] = None
     result["last_record"] = None
     result["readable"] = True
-    result["readable"] = True
-    result["tail_head_truncated"] = bool(start)
-    if start:
+    if head_trimmed:
         # The window may begin mid-line; only bytes after the first newline
         # are complete records (#2515 review). With no newline in the window
         # there is no complete line at all.

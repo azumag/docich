@@ -234,6 +234,30 @@ class XlogPathTests(unittest.TestCase):
         self.assertNotIn('9999999999', json.dumps(result['xlog']['record_span']))
         self.assertNotIn('9999999999', json.dumps(result['xlog']['first_record']))
 
+    def test_window_starting_on_line_boundary_keeps_first_line(self):
+        # Review follow-up: when size - 64KiB lands exactly on a line
+        # boundary, the first line in the window is complete and must not be
+        # dropped. The peek-back byte proves the boundary is a line start.
+        line_a = b'A' * 100 + b'\n'
+
+        def padded_line(points, start, end):
+            base = (b'version=3.6.6\tpoints=%d\tname=docich\tstarttime=%d\t'
+                    b'endtime=%d\tpad=' % (points, start, end))
+            return base + b'P' * (32768 - len(base) - 1) + b'\n'
+
+        line_b = padded_line(7, 1789990100, 1789990200)
+        line_c = padded_line(8, 1789990300, 1789990400)
+        self.assertEqual(len(line_b) + len(line_c), diag.NETHACK_XLOG_TAIL_BYTES)
+        (self.playground / 'xlogfile').write_bytes(line_a + line_b + line_c)
+        result = self.collect()
+        self.assertIs(result['xlog']['tail_head_truncated'], True)
+        self.assertEqual(result['xlog']['tail_complete_lines'], 2)
+        self.assertEqual(result['xlog']['record_span'], {
+            'first_starttime': 1789990100, 'last_endtime': 1789990400,
+            'complete_lines': 2})
+        self.assertEqual(result['xlog']['first_record']['points'], 7)
+        self.assertEqual(result['xlog']['last_record']['points'], 8)
+
     def test_save_entries_count_only_matching_regular_files(self):
         (self.save / '1000docich').write_bytes(b'save')
         (self.save / '1000docich.0').write_bytes(b'save2')
