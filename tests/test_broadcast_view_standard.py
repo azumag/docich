@@ -35,7 +35,6 @@ from docich.game_switch import RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.trading.markets import program as market_program  # noqa: E402
 from docich import doushi_view, lawsim_view, mystery_view, othello_view, puyo_view, tsuitate_view, weather_view, yoso_view  # noqa: E402
->>>>>>> 361f6ba0 (feat(lawsim): #697 共産主義法律シミュレーターの production 配線)
 
 #: Every docich HTML broadcast view, by the game name its adapter is registered
 #: under.  A new view must be added here and must use the shared standard.

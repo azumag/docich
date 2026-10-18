@@ -72,7 +72,6 @@ def test_flat_live_catalog_and_financial_boundary():
                                      "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
                                      "yosou-oh", "doushi-card", "puyo-corner", "mystery",
                                      "communist-law-simulator"}
->>>>>>> 361f6ba0 (feat(lawsim): #697 共産主義法律シミュレーターの production 配線)
     assert all(c.live_eligible is False for c in catalog)
     # Issue #697: 法律シミュレーターは 2026-10-18 オーナー承認で自動抽選対象。
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
@@ -256,7 +255,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 13 and "tsuitate" not in eligible
+    assert len(eligible) == 14 and "tsuitate" not in eligible
     assert excluded == {"tsuitate": "adapter-unavailable", "puyo-corner": "disabled-or-paused"}
 
 
