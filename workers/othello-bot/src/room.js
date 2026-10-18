@@ -260,7 +260,8 @@ export function makeRoomOperations({ storage, windowDefaultS = 45, windowMaxS = 
 let DurableObject;
 try {
   ({ DurableObject } = await import("cloudflare:workers"));
-} catch {
+} catch (error) {
+  if (error?.code !== "ERR_UNSUPPORTED_ESM_URL_SCHEME") throw error;
   DurableObject = class {
     constructor(state, env) { this.state = state; this.env = env; }
   };
