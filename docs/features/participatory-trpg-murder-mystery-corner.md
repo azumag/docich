@@ -159,7 +159,7 @@ IDLE -> SCENE (描写) -> CHOICE (選択肢提示・投票受付) -> RESOLVE (�
 - [ ] シナリオ 1 本（`config/trpg/scenarios/murder-001.json`）
 - [ ] チャット投票の集計（構造化入力 `!1`〜`!4`）
 - [ ] 推理提出 `!accuse` の集計・正解判定
-- [ ] `trpg` adapter ＋ 合成ビュー
+- [x] `trpg` adapter ＋ 合成ビュー (PR-3)
 - [ ] ローテーション登録（既定無効）
 - [ ] 読み上げ原稿（Soren GM ナレーション）
 - [ ] overlay / Twica 表示

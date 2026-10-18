@@ -476,6 +476,7 @@ class RetiredCornerObserver:
         "doushi": "doushi_corner.json",
         "puyo": "puyo_program.json",
         "mystery": "mystery_corner.json",
+        "trpg": "trpg_corner.json",
         "lawsim": "lawsim_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
@@ -813,6 +814,42 @@ class PuyoCornerAdapter:
         return self.manager.resources_released()
 
 
+class TrpgCornerAdapter:
+    """Bounded TRPG / murder-mystery display through the shared slot (default disabled, manual only)."""
+
+    def __init__(self, g, corner):
+        from .trpg_program import DEFAULT_DURATION_MINUTES, TrpgCornerManager
+        from .trpg_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Trpg identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = TrpgCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 class MysteryCornerAdapter:
     """Bounded AI探偵ミステリー case session through the shared slot.
 
@@ -914,6 +951,7 @@ ADAPTERS = {
     "puyo": PuyoCornerAdapter,
     "mystery": MysteryCornerAdapter,
     "lawsim": LawSimCornerAdapter,
+    "trpg": TrpgCornerAdapter,
 }
 
 

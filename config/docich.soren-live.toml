@@ -105,6 +105,9 @@ corners = [
   # 約13分の進行＋余裕で、終了時に必ず答えを開示してから復帰する。
   # trpgオフラインコア(#2481)の汎用ロジック（投票・台帳・検証）を統合済み。
   { id = "mystery", adapter = "mystery", game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = true },
+  # TRPG / マーダーミステリー (#684, PR-3): 既定無効・WebUI手動予約のみ。
+  # 既存 weather/paper/tsuitate と同じ合成 view 方式。有効化・VM反映はオーナー承認後。
+  { id = "trpg-corner", adapter = "trpg", game = "trpg-view", enabled = false, manual_only = true },
   # 2026-10-18 オーナー承認（#697 スレッドの承認ボタン）で #697 共産主義法律シミュレーター
   # の production 配線を有効化する。決定論セッションバンク（LLMなし・読み上げなし）を
   # lawsim_corner.DEFAULT_DURATION_MINUTES（3分。duration_minutes 未指定時）で1回転。
