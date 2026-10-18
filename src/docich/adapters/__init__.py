@@ -89,6 +89,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "doushi-view":
         from .doushi_program import make_doushi_view_adapter
         return make_doushi_view_adapter(g, spec)
+    if spec.game == "othello-view":
+        from .othello_program import make_othello_view_adapter
+        return make_othello_view_adapter(g, spec)
     if spec.game == "puyo-view":
         from .puyo_program import make_puyo_view_adapter
         return make_puyo_view_adapter(g, spec)
