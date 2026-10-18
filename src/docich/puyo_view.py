@@ -357,7 +357,9 @@ class LiveMatch:
         An oversized single line that fills the whole window is dropped, and
         the drop keeps discarding until the line's newline: a crafted tail
         after the dropped bytes must never be re-interpreted as a fresh chat
-        line. An unterminated line at EOF ends the discard as well.
+        line. The discard also persists across EOF — an unterminated line can
+        still be appended to, and its continuation is part of the same line —
+        so only a newline (or a rotation) ends the drop.
         """
         if self.inbox_file is None:
             return
@@ -380,11 +382,11 @@ class LiveMatch:
             return
         newline = raw.find(b"\n")
         if self._discarding:
-            # inside an oversized line: drop everything up to its newline
+            # inside an oversized line: drop everything up to its newline.
+            # EOF does not end the drop: the line can still be appended to,
+            # and its continuation is part of the same line.
             if newline == -1:
                 self._offset += len(raw)
-                if self._offset >= size:
-                    self._discarding = False  # the unterminated line ends here
                 return
             self._offset += newline + 1
             self._discarding = False

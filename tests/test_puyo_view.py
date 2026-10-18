@@ -467,26 +467,53 @@ def test_snapshot_body_overlays_the_falling_pair():
 
 
 def test_consume_inbox_discards_an_oversized_line_through_its_newline(tmp_path):
-    """Regression: after dropping an oversized line's first window, the line's
-    tail — even a crafted valid join — must never be applied as a fresh line.
-    The drop keeps discarding until the line's newline."""
-    from docich import puyo_corner as pc
+    """Regression: an oversized line whose prefix is an exact multiple of the
+    read window is dropped window by window; the offset lands exactly on the
+    crafted tail, which the old code then applied as a fresh line. The fix
+    keeps discarding through the line's newline instead."""
     from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
 
     inbox = tmp_path / "chat_inbox.jsonl"
     live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
                      seed=7, sleep=lambda _s: None)
-    # one giant line (no newline inside) whose tail is a crafted valid join
-    giant = b"x" * (INBOX_READ_BUDGET_BYTES * 2 + 100) \
+    # prefix exactly 2 windows: after the second drop the offset lands at the
+    # crafted tail, so the old code parsed and applied it on the next poll
+    giant = b"x" * (INBOX_READ_BUDGET_BYTES * 2) \
         + b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}'
     inbox.write_bytes(giant + b"\n")
-    live.consume_inbox()  # window 1: full of the fragment -> drop, keep discarding
-    live.consume_inbox()  # window 2: same
     while live._offset < inbox.stat().st_size:
-        live.consume_inbox()  # discard until the line's newline
+        live.consume_inbox()
     assert live.engine["roster"] == []  # the crafted tail was never applied
     assert live._offset == inbox.stat().st_size
-    # after the discard completes, a real join on the next line still works
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert [row["user_id"] for row in live.engine["roster"]] == ["u1"]
+
+
+def test_consume_inbox_keeps_discarding_across_eof_until_newline(tmp_path):
+    """Regression: EOF does not end the discard. An unterminated line can
+    still be appended to; its continuation — even a crafted valid join — is
+    part of the same line and must stay discarded until the newline."""
+    from docich.puyo_view import INBOX_READ_BUDGET_BYTES, LiveMatch
+
+    inbox = tmp_path / "chat_inbox.jsonl"
+    live = LiveMatch(tmp_path / "puyo_match.json", inbox_file=inbox,
+                     seed=7, sleep=lambda _s: None)
+    # prefix exactly one window, then a crafted join with NO trailing newline
+    inbox.write_bytes(b"x" * INBOX_READ_BUDGET_BYTES
+                      + b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}')
+    live.consume_inbox()  # window full of the prefix: drop, enter discard
+    live.consume_inbox()  # EOF: the crafted tail is skipped, discard persists
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []
+    # the line is appended to: the continuation is still the same line
+    with inbox.open("ab") as stream:
+        stream.write(b'{"user_id":"u9","display_name":"P9","text":"!puyo join"}\n')
+    live.consume_inbox()
+    assert live._offset == inbox.stat().st_size
+    assert live.engine["roster"] == []  # discarded through the newline
+    # a real new line after that newline applies normally
     with inbox.open("ab") as stream:
         stream.write(b'{"user_id":"u1","display_name":"P1","text":"!puyo join"}\n')
     live.consume_inbox()
