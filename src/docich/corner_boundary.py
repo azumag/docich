@@ -21,6 +21,7 @@ RECOVERED_FAILURE_OWNER_TARGETS = {
     'paper_corner.json': 'paper-view',
     'paper_corner_manual.json': 'paper-view',
     'doushi_corner.json': 'doushi-view',
+    'mystery_corner.json': 'mystery-view',
 }
 
 

@@ -738,3 +738,28 @@ crash / resume で同じランキングを二度読まない。sink 失敗は `o
 視聴者名・overlay 本文は出さない。音声は opt-in なので、既定（`audio_enabled` 未設定）では
 overlay のみが出る。TwiCa 前景への表示は TwiCa 側の配信フィードが必要なため docich 単独では
 行わない。
+
+### AI探偵ミステリーコーナー（`mystery` adapter、視聴者参加型・#684）
+
+`config/docich.soren-live.toml` の catalog に `{ id = "mystery", adapter = "mystery",
+game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = true }` を登録した
+（2026-10-18 オーナー承認）。1 slot で1事件が完結する参加型マーダーミステリーで、
+事件の答え（犯人・手法・動機・手がかり配置）は決定論エンジン `mystery_case.py` が開始時に
+seed から確定し、コミットメント（SHA-256）を配信ボードへ常時表示する。終了時に seed を
+開示し、誰でも公開コードで再計算・照合できる。LLM 出力はゲーム状態・答えにならない。
+
+進行は intro → 調査アンケート（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問アンケート →
+推理タイム → 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
+`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示 の順。アンケート・予想が
+使えない場合や票が0件の場合は seeded なAI探偵が進行する展示モードで、視聴者0人でも完走する。
+予想は作成後必ず精算または返金する（不成立は #933 の 2026-10-15 オーナー方針どおり
+CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
+差し引いた予算内にクランプする。
+
+表示は 960×540 viewport の読み取り専用 view（loopback 8807、配信ネイティブ全画面例外の
+対象外）。view は corner が書く `mystery_view.json`（0600・256KiB上限・atomic）だけを
+読み、generation 束縛で別世代には出ない。ナレーションは `[mystery_corner].narration_agents`
+が非空のときだけ共有 LLM dispatch を使い、失敗時は定型文へ fallback する。reveal は常に定型文。
+セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
+interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
+`docs/features/mystery-corner.md`。

@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c8d9896c3ab097130250cec338f88e47259ed1dba062b970011d253183c7aae8",
+  "output_sha256": "5152a13b571fbdebf6e502f61a6a46abc7b7193e9db7b2e5720586ab49fdafad",
   "schema": 1,
   "source": "ops/runtime_context/ops_brief_source.md",
-  "source_sha256": "0cfa01b74c6def86d6b0fa8623c02a5cbe02c52becd0207258e183183715cb44",
+  "source_sha256": "e89b4a0a41f3fff707d6d6ff23fa6fa3d5e1391ee26702f35c2731fbe6e17c21",
   "topics": [
+    "視聴者参加のAI探偵ミステリーコーナーを追加",
     "ゲーム再開時の文字ページ処理と表示を検証",
-    "PAPERコーナーの設定読み込みを統一",
-    "公開用の運用情報を専用ファイルで管理"
+    "PAPERコーナーの設定読み込みを統一"
   ]
 }

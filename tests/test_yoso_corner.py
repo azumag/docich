@@ -140,7 +140,8 @@ def _yoso_adapter(g, corner, switch, now, sleep):
 def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
-    assert len(catalog) == 14
+    # 2026-10-18 #684: mystery 追加 → 15本（13+ぷよ+mystery）。
+    assert len(catalog) == 15
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
     # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。
