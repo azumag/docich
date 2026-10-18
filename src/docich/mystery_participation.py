@@ -100,11 +100,19 @@ def record_vote(votes: dict[str, list[str]], order: dict[str, str], user: Any,
 
     Mutates ``votes`` (``{bucket_key: [user, ...]}``) and ``order``
     (``{user: bucket_key}``) in place, mirroring the trpg core's tally.
+
+    The participant bound is checked **before any write**: a rejected
+    newcomer must leave the state byte-identical (the trpg core's original
+    post-write check let an over-limit user's vote linger in state and even
+    score — owner-verified 2026-10-18; this port fixes the order). Existing
+    participants may always re-submit.
     """
     uid = _user(user)
     if not isinstance(votes, dict) or not isinstance(order, dict):
         raise ParticipationError("invalid vote containers")
     key = choice_key(index)
+    if uid not in order and len(order) >= MAX_PARTICIPANTS:
+        raise ParticipationError("too many participants")
     prev = order.get(uid)
     if prev is not None and prev in votes:
         votes[prev] = [u for u in votes[prev] if u != uid]
@@ -114,8 +122,6 @@ def record_vote(votes: dict[str, list[str]], order: dict[str, str], user: Any,
     votes.setdefault(key, [])
     if uid not in votes[key]:
         votes[key].append(uid)
-    if len(order) > MAX_PARTICIPANTS:
-        raise ParticipationError("too many participants")
 
 
 def tally_votes(votes: Mapping[str, list[str]], *, choice_count: int) -> list[int]:
