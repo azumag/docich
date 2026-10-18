@@ -257,14 +257,24 @@ export function makeRoomOperations({ storage, windowDefaultS = 45, windowMaxS = 
   };
 }
 
+let DurableObject;
+try {
+  ({ DurableObject } = await import("cloudflare:workers"));
+} catch {
+  DurableObject = class {
+    constructor(state, env) { this.state = state; this.env = env; }
+  };
+}
+
 const DISPATCH_ROUTES = new Set(["snapshot", "openRoom", "startMatch", "viewerMove", "fail", "timeout"]);
 
 /**
  * The Cloudflare Durable Object class: routes one dispatch per request and
  * serializes concurrent operations on this instance with a promise tail.
  */
-export class OthelloRoom {
+export class OthelloRoom extends DurableObject {
   constructor(state, env) {
+    super(state, env);
     this.state = state;
     this.env = env;
     this.ops = makeRoomOperations({ storage: state.storage });
