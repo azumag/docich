@@ -1,13 +1,15 @@
-# 共産主義法律シミュレーター — 非本番 offline runtime slice（#697）
+# 共産主義法律シミュレーター — 仕様と配線（#697）
 
 ## この作業の範囲
 
 Issue #697「共産主義法律シミュレーター」（2026-09-18 起票のゲーム案、本文なし）について、
-**企画の仕様固定と、決定論シミュレーションエンジンの非本番 offline slice** を実装する。
+**企画の仕様固定、決定論シミュレーションエンジン、production 配線** を扱う。
+
+- offline slice（決定論エンジン＋fixture＋契約テスト）は PR #2486 として main に統合済み（merge commit `0772bbda`、2026-10-18）。
+- production 配線（corner adapter / view / config / rotation 登録）は 2026-10-18 のオーナー承認（#697 スレッドの承認ボタン）で実装した。
 
 - 実装したもの: 合成 fixture 1本、決定論エンジン、overlay payload、有界な start → 法案ごとの frame → end 進行、status overlay 整合検証、回帰テスト（変異で落ちることを実測）。
-- 実装していないもの（本カードの境界）: 配信 overlay への配線、`config/` と `src/docich/corner_adapters.py` への adapter 登録、corner rotation への登録、GameSwitch 切替、LLM による法案提出 brain、視聴者参加（チャネルポイントでの法案提出等）、本番配備・実機受入。
-- 従って **production の挙動はこのPRでは一切変わらない**。配備・有効化・実機受入は owner-only の別ゲートである。
+- この doc の残りは offline slice 当時の記録を保持する（対象 HEAD は当時のもの）。
 
 対象 HEAD: `azumag/docich` `origin/main` `4c555712be84095389d8efe0db0d196ac7121f01`。
 
@@ -118,6 +120,28 @@ Issue #697「共産主義法律シミュレーター」（2026-09-18 起票の�
 ```sh
 PYTHONPATH=src python3 -m pytest -q tests/test_communist_law_simulator_contract.py
 ```
+
+## production 配線（2026-10-18 オーナー承認分）
+
+決定論セッションバンク（LLMなし）を GameSwitch 経由の bounded 表示コーナーとして配線する。
+doushi（2026-10-15 オーナー承認の auto-rotation 対象）をライフサイクルの正本テンプレートとし、
+receipt identity 検査・write-ahead state・復帰契約を同一に保つ。
+
+| コンポーネント | 役割 |
+|---|---|
+| `src/docich/lawsim_sessions.py` | 著作済みセッションバンク（3本: 計画達成 / 支持崩壊 / 計画未達）。generation ごとに1ステップ回転する決定論選択。LLM brain は別承認のため存在しない |
+| `src/docich/lawsim_view.py` | loopback 専用 HTML view（port 8808）。payload は**セッションのみ**を保持し、表示時にエンジンで完全再導出する fail-closed 構成。改ざんファイルは配信へ出ない |
+| `src/docich/lawsim_corner.py` | GameSwitch 統合ライフサイクル（state `lawsim_corner.json`、既定3分・上限14分、手動停止・interrupted・settle 契約） |
+| `src/docich/adapters/lawsim_program.py` | program view adapter。preflight でセッションを構築・エンジン検証・payload 書き出し、readiness で `/api/lawsim` の identity 一致を確認 |
+| `src/docich/corner_adapters.py` | `LawSimCornerAdapter`（`ADAPTERS["lawsim"]`、audio_enabled は fail-closed で拒否）＋ `RetiredCornerObserver.STATE_FILES` |
+| `src/docich/corner_catalog.py` | `lawsim` 分岐（id=`communist-law-simulator` / game=`lawsim-view`、duration 1–14、fetch_on_start・audio_enabled 拒否） |
+| `src/docich/adapters/__init__.py` | `make_coordinator_adapter` へ `lawsim-view` を登録 |
+| `src/docich/webui.py` | `CORNER_MANUAL_STATE_FILES` へ `lawsim_corner` を追加（WebUI 手動予約・停止経路） |
+| `config/docich.soren-live.toml` | `[corner_rotation].corners` へ `enabled = true` で登録（自動抽選対象） |
+
+- 表示: 960×540 標準ゲーム領域（全画面例外の weather/yosou 型には**しない**）。1 frame 12秒で start → 法案 → end を回転。合成シミュレーションマークと model caveat を常時表示。
+- 読み上げ（narration/TTS）は未配線。`audio_enabled=true` は catalog・adapter の両方で拒否する（follow-up）。
+- 本番配備は canonical 経路（protected main → VM operations）のみ。実機受入（起動・表示・枠整合・バナー/音声）は owner 側の実行レーンで実施する。
 
 ## 後続カード（このPRでは実施しない）
 
