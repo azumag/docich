@@ -34,6 +34,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
         (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
+        (self.doc / "ops" / "audio_priority").mkdir(parents=True, exist_ok=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
         for rel in (
@@ -53,6 +54,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "ops/audio_priority/priority.py",
         ):
             src = ROOT / rel
             if src.is_file():
@@ -237,6 +239,23 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         finally:
             helper.write_bytes(original)
 
+    def test_audio_priority_priority_py_drift_is_refused_read_only(self):
+        # priority.py is loaded via exec_module() in collect_diagnostics, not via
+        # a `from docich...` import, so the generic import-drift guard does not
+        # cover it. It must be listed in DIAGNOSTICS_FILES so a modified copy is
+        # treated as tracked drift and the collector/runtime are never executed.
+        path = self.doc / "ops" / "audio_priority" / "priority.py"
+        original = path.read_bytes()
+        before = self.snapshot(self.soren)
+        try:
+            path.write_bytes(original + b"\n# unreviewed audio-priority drift\n")
+            proc = self.call(f"diagnostics docich production {'b' * 40}")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("VM operation rejected", proc.stderr.decode())
+            self.assertEqual(self.snapshot(self.soren), before)
+        finally:
+            path.write_bytes(original)
+
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"
         stats.mkdir(parents=True, exist_ok=True)
@@ -368,6 +387,19 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_REF="feature").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
 
+    def test_audio_gap_measure_is_owner_only_production_main_without_extra_confirm(self):
+        # Bounded read-only 92s broadcast-audio measurement (docich #1811):
+        # same gating shape as cpu_profile/diagnostics -- owner-only dispatch
+        # on production/main, and never a confirm=production operation.
+        proc = self.run_auth(INPUT_OPERATION="audio_gap_measure")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("audio_gap_measure", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
     def test_loop_pause_release_is_owner_only_production_main_with_confirm(self):
         base = {"INPUT_OPERATION": "release_soren_loop_pause", "INPUT_CONFIRM": "production"}
         proc = self.run_auth(**base)
@@ -401,7 +433,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-            "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
+            "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, "
             "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
