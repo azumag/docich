@@ -84,6 +84,21 @@ class EvaluationManifest:
             violations.append("min_coverage_fraction must be in [0, 1]")
         if self.llm_cost_per_call_usd < 0 or self.api_cost_per_call_usd < 0:
             violations.append("cost_per_call_usd must be >= 0")
+        # Required version fields must be non-empty for primary evaluation
+        required_versions = [
+            ("ledger_revision", self.ledger_revision),
+            ("evidence_digest", self.evidence_digest),
+            ("classification_version", self.classification_version),
+            ("price_version", self.price_version),
+            ("risk_version", self.risk_version),
+            ("cost_version", self.cost_version),
+            ("execution_version", self.execution_version),
+            ("policy_version", self.policy_version),
+            ("model_version", self.model_version),
+        ]
+        for name, val in required_versions:
+            if not val:
+                violations.append(f"required version field missing: {name}")
         return violations
 
 
@@ -435,7 +450,6 @@ def compute_latency_breakdown(events: list[dict]) -> LatencyBreakdown:
 
     for ev in events:
         event_missing = False
-        event_total = None
         for name, start_k, end_k in stages:
             if start_k in ev and end_k in ev and ev[start_k] is not None and ev[end_k] is not None:
                 stage_durations[name].append((ev[end_k] - ev[start_k]) * 1000)
@@ -445,10 +459,11 @@ def compute_latency_breakdown(events: list[dict]) -> LatencyBreakdown:
         # Compute event-level total latency (published_at to filled_at)
         if "published_at" in ev and "filled_at" in ev and ev["published_at"] is not None and ev["filled_at"] is not None:
             total_durations.append((ev["filled_at"] - ev["published_at"]) * 1000)
-        elif not event_missing and "published_at" not in ev:
-            missing.add("published_at")
-        elif not event_missing and "filled_at" not in ev:
-            missing.add("filled_at")
+        elif not event_missing:
+            if "published_at" not in ev or ev["published_at"] is None:
+                missing.add("published_at")
+            if "filled_at" not in ev or ev["filled_at"] is None:
+                missing.add("filled_at")
 
     stage_median = {}
     stage_p95 = {}
@@ -476,75 +491,102 @@ def compute_latency_breakdown(events: list[dict]) -> LatencyBreakdown:
 def _build_episodes_from_fills(fills: list[FillRecord]) -> list[PositionEpisode]:
     """Build completed position episodes from fills.
 
-    Only counts fully closed positions (total closed qty == total open qty).
-    Partial closes do not create completed episodes.
+    Processes fills chronologically per symbol/side. Accumulates net position
+    and cumulative PnL. Only creates episode when position fully closes (qty=0).
     """
     episodes = []
-    # Group fills by symbol and side
     from collections import defaultdict
-    opens_by_symbol_side = defaultdict(list)
-    closes_by_symbol_side = defaultdict(list)
 
+    # Group all fills by symbol and side, sorted by timestamp
+    fills_by_key = defaultdict(list)
     for f in fills:
         key = (f.symbol, f.side)
-        if f.kind == "open":
-            opens_by_symbol_side[key].append(f)
-        elif f.kind == "close":
-            closes_by_symbol_side[key].append(f)
+        fills_by_key[key].append(f)
 
-    for key, opens in opens_by_symbol_side.items():
-        closes = closes_by_symbol_side.get(key, [])
-        if not closes:
-            continue
+    for key, key_fills in fills_by_key.items():
+        symbol, side = key
+        key_fills.sort(key=lambda f: f.ts)
 
-        # Sort by timestamp
-        opens.sort(key=lambda f: f.ts)
-        closes.sort(key=lambda f: f.ts)
+        # Track open position: remaining_qty, cumulative_pnl, first_open_ts, first_open_price
+        remaining_qty = D("0")
+        cum_pnl = D("0")
+        first_open_ts = 0.0
+        first_open_price = D("0")
+        open_fee_total = D("0")
+        financing_total = D("0")
+        close_fee_total = D("0")
+        position_opened = False
 
-        # Track remaining open quantity per open fill
-        open_queue = []
-        for o in opens:
-            open_queue.append({"fill": o, "remaining_qty": o.qty})
+        for f in key_fills:
+            if f.kind == "open":
+                if not position_opened:
+                    # New episode starts
+                    first_open_ts = f.ts
+                    first_open_price = f.price
+                    open_fee_total = f.fee
+                    position_opened = True
+                remaining_qty += f.qty
+            elif f.kind == "close":
+                if remaining_qty <= 0:
+                    # Close without matching open - skip
+                    continue
+                close_qty = min(f.qty, remaining_qty)
+                # Accumulate PnL and fees
+                cum_pnl += f.net_pnl_jpy
+                close_fee_total += f.fee
+                financing_total += f.financing
+                remaining_qty -= close_qty
 
-        # Process closes in order
-        for c in closes:
-            close_qty = c.qty
-            # Match against earliest opens first (FIFO)
-            while close_qty > 0 and open_queue:
-                open_entry = open_queue[0]
-                match_qty = min(close_qty, open_entry["remaining_qty"])
-
-                # If this close fully closes the open, create episode
-                if match_qty == open_entry["remaining_qty"] and close_qty == match_qty and len(open_queue) == 1:
-                    # Only create episode if this close fully resolves the position
-                    # (i.e., no other open fills and this close matches exactly)
-                    open_f = open_entry["fill"]
+                # If position fully closed, record episode
+                if remaining_qty == 0 and position_opened:
                     episodes.append(PositionEpisode(
-                        symbol=c.symbol,
-                        side=c.side,
-                        open_ts=open_f.ts,
-                        close_ts=c.ts,
-                        open_price=open_f.price,
-                        close_price=c.price,
-                        qty=match_qty,
-                        open_fee=open_f.fee,
-                        close_fee=c.fee,
-                        financing=c.financing,
-                        net_pnl_jpy=c.net_pnl_jpy,
-                        hold_seconds=c.ts - open_f.ts,
-                        win=c.net_pnl_jpy > 0
+                        symbol=symbol,
+                        side=side,
+                        open_ts=first_open_ts,
+                        close_ts=f.ts,
+                        open_price=first_open_price,
+                        close_price=f.price,
+                        qty=close_qty,  # This is the final close qty; total qty was accumulated
+                        open_fee=open_fee_total,
+                        close_fee=close_fee_total,
+                        financing=financing_total,
+                        net_pnl_jpy=cum_pnl,
+                        hold_seconds=f.ts - first_open_ts,
+                        win=cum_pnl > 0
                     ))
-
-                open_entry["remaining_qty"] -= match_qty
-                close_qty -= match_qty
-
-                if open_entry["remaining_qty"] == 0:
-                    open_queue.pop(0)
-
-        # After processing all closes, if any open remains, position is unresolved
-        # (handled by unresolved_positions tracking)
+                    # Reset for next episode
+                    position_opened = False
+                    cum_pnl = D("0")
+                    close_fee_total = D("0")
+                    financing_total = D("0")
+                    open_fee_total = D("0")
+                    first_open_ts = 0.0
+                    first_open_price = D("0")
 
     return episodes
+
+
+def _compute_eval_digest(
+    fills: list[FillRecord],
+    equity_series: list[tuple[float, Decimal]],
+    positions: dict[str, dict],
+    news_events: list[dict],
+    arm: ArmMetrics,
+) -> str:
+    """Compute evaluation result digest."""
+    eval_data = {
+        "equity": str(arm.equity_jpy),
+        "realized": str(arm.realized_pnl_jpy),
+        "unrealized": str(arm.unrealized_pnl_jpy) if arm.unrealized_pnl_jpy is not None else None,
+        "exit_cost": str(arm.estimated_exit_cost_jpy) if arm.estimated_exit_cost_jpy is not None else None,
+        "dd": str(arm.max_drawdown_fraction),
+        "episodes": arm.completed_episodes,
+        "wins": arm.wins,
+        "turnover": arm.turnover,
+    }
+    return hashlib.sha256(
+        json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
 
 
 def build_arm_metrics(
@@ -559,12 +601,15 @@ def build_arm_metrics(
     avg_equity: Decimal,
 ) -> ArmMetrics:
     """Build ArmMetrics from raw evaluation data."""
-    # Position episodes - only fully closed positions
+    # Position episodes - only fully closed positions with chronological accumulation
     episodes = _build_episodes_from_fills(fills)
 
     completed_episodes, wins, win_rate = compute_win_rate(episodes)
 
     # Drawdown
+    if not equity_series:
+        # Track as limitation: empty equity series is unverifiable
+        pass
     max_dd, dd_peak_ts, dd_trough_ts = compute_drawdown(equity_series)
 
     # Turnover
@@ -574,13 +619,16 @@ def build_arm_metrics(
     latency = compute_latency_breakdown(latency_events)
 
     # News utilization - deduplicate by event_id for rates
+    # Denominator: unique eligible event IDs
     unique_eligible = {e.get("event_id") for e in news_events if e.get("eligible", False) and e.get("event_id")}
-    used_signal = {e.get("event_id") for e in news_events if e.get("used_for_signal", False) and e.get("event_id")}
-    used_decision = {e.get("event_id") for e in news_events if e.get("used_for_decision", False) and e.get("event_id")}
-    held_events = {e.get("event_id") for e in news_events if e.get("held", False) and e.get("event_id")}
-    rejected_events = {e.get("event_id") for e in news_events if e.get("rejected", False) and e.get("event_id")}
-
     unique_eligible_count = len(unique_eligible)
+
+    # Numerators: intersect with eligible set
+    used_signal = {e.get("event_id") for e in news_events if e.get("used_for_signal", False) and e.get("event_id")} & unique_eligible
+    used_decision = {e.get("event_id") for e in news_events if e.get("used_for_decision", False) and e.get("event_id")} & unique_eligible
+    held_events = {e.get("event_id") for e in news_events if e.get("held", False) and e.get("event_id")} & unique_eligible
+    rejected_events = {e.get("event_id") for e in news_events if e.get("rejected", False) and e.get("event_id")} & unique_eligible
+
     raw = len(news_events)
     invalid = len([e for e in news_events if not e.get("valid", True)])
     duplicate = len([e for e in news_events if e.get("duplicate", False)])
@@ -598,8 +646,11 @@ def build_arm_metrics(
     max_exposure = D("0")
     for pos in positions.values():
         if "mark" in pos and "qty" in pos:
-            exposure = decimal(pos["mark"]) * decimal(pos["qty"])
-            max_exposure = max(max_exposure, exposure)
+            try:
+                exposure = decimal(pos["mark"]) * decimal(pos["qty"])
+                max_exposure = max(max_exposure, exposure)
+            except (ValueError, ArithmeticError):
+                pass  # Skip invalid mark
 
     news_util = NewsUtilization(
         unique_eligible_events=unique_eligible_count,
@@ -625,7 +676,7 @@ def build_arm_metrics(
     unresolved = len(positions)
     data_gaps = sum(e.get("data_gap_seconds", 0) for e in news_events)
 
-    # Unrealized PnL - None if any position missing mark
+    # Unrealized PnL - None if any position missing mark or invalid
     unrealized_pnl = None
     estimated_exit_cost = None
     has_missing_mark = False
@@ -633,21 +684,49 @@ def build_arm_metrics(
         if "mark" not in pos or "qty" not in pos or "entry" not in pos:
             has_missing_mark = True
             break
+        if pos.get("mark") is None:
+            has_missing_mark = True
+            break
+        try:
+            decimal(pos["mark"])
+            decimal(pos["qty"])
+            decimal(pos["entry"])
+        except (ValueError, ArithmeticError, Exception):
+            has_missing_mark = True
+            break
 
     if not has_missing_mark and positions:
-        unrealized_pnl = sum(
-            (decimal(pos["mark"]) - decimal(pos["entry"])) * decimal(pos["qty"])
-            for pos in positions.values()
-        )
-        # Estimated exit cost using explicit bps rates from cost_breakdown
-        exit_comm_bps = cost_breakdown.exit_commission_bps
-        exit_slippage_bps = cost_breakdown.exit_slippage_bps
-        if exit_comm_bps > 0 or exit_slippage_bps > 0:
-            estimated_exit_cost = sum(
-                decimal(pos["qty"]) * decimal(pos["mark"]) *
-                (exit_comm_bps + exit_slippage_bps) / 10000
+        try:
+            unrealized_pnl = sum(
+                (decimal(pos["mark"]) - decimal(pos["entry"])) * decimal(pos["qty"]) * Decimal(pos.get("side", "1"))
                 for pos in positions.values()
             )
+            # Estimated exit cost using explicit bps rates from cost_breakdown
+            exit_comm_bps = cost_breakdown.exit_commission_bps
+            exit_slippage_bps = cost_breakdown.exit_slippage_bps
+            if exit_comm_bps > 0 or exit_slippage_bps > 0:
+                estimated_exit_cost = sum(
+                    decimal(pos["qty"]) * decimal(pos["mark"]) *
+                    (exit_comm_bps + exit_slippage_bps) / 10000
+                    for pos in positions.values()
+                )
+        except (ValueError, ArithmeticError):
+            unrealized_pnl = None
+            estimated_exit_cost = None
+
+    # Compute evaluation digest for reproducibility
+    eval_digest = _compute_eval_digest(fills, equity_series, positions, news_events, 
+        ArmMetrics(label=label, equity_jpy=equity_series[-1][1] if equity_series else D("0"),
+                   realized_pnl_jpy=sum(f.net_pnl_jpy for f in fills if f.kind == "close"),
+                   unrealized_pnl_jpy=unrealized_pnl,
+                   estimated_exit_cost_jpy=estimated_exit_cost,
+                   max_drawdown_fraction=max_dd,
+                   completed_episodes=completed_episodes,
+                   wins=wins,
+                   win_rate=win_rate,
+                   open_positions=len(positions),
+                   turnover=turnover,
+                   avg_equity_jpy=avg_equity))
 
     metrics = ArmMetrics(
         label=label,
@@ -672,6 +751,7 @@ def build_arm_metrics(
         partial_fills=partial_fills,
         unresolved_positions=unresolved,
         data_gaps_seconds=data_gaps,
+        evaluation_digest=eval_digest,
     )
     return metrics
 
@@ -680,6 +760,8 @@ def _compute_digests(
     fills: list[FillRecord],
     equity_series: list[tuple[float, Decimal]],
     positions: dict[str, dict],
+    news_events: list[dict],
+    result_arm: ArmMetrics,
 ) -> dict[str, str]:
     """Compute normalized digests for reproducibility verification."""
     # Normalize fills
@@ -703,10 +785,38 @@ def _compute_digests(
         json.dumps(pos_data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
 
+    # Normalize news events (sorted by event_id then timestamp)
+    news_data = []
+    for e in sorted(news_events, key=lambda x: (x.get("event_id", ""), x.get("observed_at", 0))):
+        news_data.append({k: str(v) for k, v in e.items()})
+    news_digest = hashlib.sha256(
+        json.dumps(news_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+    # Evaluation result digest
+    eval_data = {
+        "equity": str(result_arm.equity_jpy),
+        "realized": str(result_arm.realized_pnl_jpy),
+        "unrealized": str(result_arm.unrealized_pnl_jpy) if result_arm.unrealized_pnl_jpy is not None else None,
+        "exit_cost": str(result_arm.estimated_exit_cost_jpy) if result_arm.estimated_exit_cost_jpy is not None else None,
+        "dd": str(result_arm.max_drawdown_fraction),
+        "episodes": result_arm.completed_episodes,
+        "wins": result_arm.wins,
+        "turnover": result_arm.turnover,
+        "held_rate": result_arm.news_util.held_rate,
+        "rejected_rate": result_arm.news_util.rejected_rate,
+        "unique_eligible": result_arm.news_util.unique_eligible_events,
+    }
+    eval_digest = hashlib.sha256(
+        json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
     return {
         "fill_digest": fill_digest,
         "equity_digest": equity_digest,
         "position_digest": position_digest,
+        "news_digest": news_digest,
+        "evaluation_digest": eval_digest,
     }
 
 
@@ -771,21 +881,45 @@ def run_evaluation(
     limitations = ["primary_evidence_only", "live_eligible_false", "no_existing_policy_writes"]
     limitations += comparison_gate.violations or []
 
-    # Check min_independent_events
-    arm_a_events = arm_a.news_util.unique_eligible_events
-    arm_b_events = arm_b.news_util.unique_eligible_events
+    # Check min_independent_events against PolicyTracking.independent_events (not unique_eligible)
+    tracked_independent = policy_tracking.independent_events
     if manifest.min_independent_events > 0:
-        if arm_a_events < manifest.min_independent_events:
+        if tracked_independent < manifest.min_independent_events:
             remaining_items += 1
-            limitations.append(f"arm_a independent_events ({arm_a_events}) < min ({manifest.min_independent_events})")
-        if arm_b_events < manifest.min_independent_events:
-            remaining_items += 1
-            limitations.append(f"arm_b independent_events ({arm_b_events}) < min ({manifest.min_independent_events})")
+            limitations.append(f"policy_tracking.independent_events ({tracked_independent}) < min ({manifest.min_independent_events})")
 
-    # Check min_coverage_fraction (simplified - would need actual coverage data)
-    # For now, track if we have any data gaps
-    if arm_a.data_gaps_seconds > 0 or arm_b.data_gaps_seconds > 0:
-        limitations.append("data_gaps_present")
+    # Check empty equity series (unverifiable)
+    if not arm_a_equity_series or not arm_b_equity_series:
+        remaining_items += 1
+        limitations.append("empty_equity_series_unverifiable")
+
+    # Check min_coverage_fraction - if we can't compute coverage, mark as unknown/remaining
+    # Coverage requires actual observation window data; here we use data_gaps as proxy
+    # If coverage fraction is required but we have gaps, it's a remaining item
+    if manifest.min_coverage_fraction > 0:
+        # We can't compute actual coverage without full observation data
+        # Mark as unknown/remaining unless we have explicit coverage data
+        has_coverage_data = (arm_a.news_util.observation_missing_seconds == 0 and arm_b.news_util.observation_missing_seconds == 0)
+        if not has_coverage_data:
+            remaining_items += 1
+            limitations.append("coverage_fraction_unverifiable (missing observation data)")
+
+    # Check for empty required version fields in manifest (already validated but double-check)
+    required_fields = [
+        ("ledger_revision", manifest.ledger_revision),
+        ("evidence_digest", manifest.evidence_digest),
+        ("classification_version", manifest.classification_version),
+        ("price_version", manifest.price_version),
+        ("risk_version", manifest.risk_version),
+        ("cost_version", manifest.cost_version),
+        ("execution_version", manifest.execution_version),
+        ("policy_version", manifest.policy_version),
+        ("model_version", manifest.model_version),
+    ]
+    for name, val in required_fields:
+        if not val:
+            remaining_items += 1
+            limitations.append(f"manifest missing required version: {name}")
 
     manifest_digest = manifest.digest()
     evaluated_at = __import__("time").time()
@@ -819,21 +953,32 @@ def verify_reproducibility(
     arm_a_fills_prev: list[FillRecord],
     arm_a_equity_prev: list[tuple[float, Decimal]],
     arm_a_positions_prev: dict[str, dict],
+    arm_a_news_prev: list[dict],
+    arm_a_arm_metrics_prev: ArmMetrics,
     arm_a_fills_curr: list[FillRecord],
     arm_a_equity_curr: list[tuple[float, Decimal]],
     arm_a_positions_curr: dict[str, dict],
+    arm_a_news_curr: list[dict],
+    arm_a_arm_metrics_curr: ArmMetrics,
     arm_b_fills_prev: list[FillRecord],
     arm_b_equity_prev: list[tuple[float, Decimal]],
     arm_b_positions_prev: dict[str, dict],
+    arm_b_news_prev: list[dict],
+    arm_b_arm_metrics_prev: ArmMetrics,
     arm_b_fills_curr: list[FillRecord],
     arm_b_equity_curr: list[tuple[float, Decimal]],
     arm_b_positions_curr: dict[str, dict],
+    arm_b_news_curr: list[dict],
+    arm_b_arm_metrics_curr: ArmMetrics,
 ) -> dict:
-    """Verify that re-run with same manifest produces identical digests."""
-    prev_a = _compute_digests(arm_a_fills_prev, arm_a_equity_prev, arm_a_positions_prev)
-    curr_a = _compute_digests(arm_a_fills_curr, arm_a_equity_curr, arm_a_positions_curr)
-    prev_b = _compute_digests(arm_b_fills_prev, arm_b_equity_prev, arm_b_positions_prev)
-    curr_b = _compute_digests(arm_b_fills_curr, arm_b_equity_curr, arm_b_positions_curr)
+    """Verify that re-run with same manifest produces identical digests.
+
+    Includes fills, equity, positions, news events, and evaluation results.
+    """
+    prev_a = _compute_digests(arm_a_fills_prev, arm_a_equity_prev, arm_a_positions_prev, arm_a_news_prev, arm_a_arm_metrics_prev)
+    curr_a = _compute_digests(arm_a_fills_curr, arm_a_equity_curr, arm_a_positions_curr, arm_a_news_curr, arm_a_arm_metrics_curr)
+    prev_b = _compute_digests(arm_b_fills_prev, arm_b_equity_prev, arm_b_positions_prev, arm_b_news_prev, arm_b_arm_metrics_prev)
+    curr_b = _compute_digests(arm_b_fills_curr, arm_b_equity_curr, arm_b_positions_curr, arm_b_news_curr, arm_b_arm_metrics_curr)
 
     return {
         "manifest_digest": manifest.digest(),
@@ -841,18 +986,27 @@ def verify_reproducibility(
             "fill_digest_match": prev_a["fill_digest"] == curr_a["fill_digest"],
             "equity_digest_match": prev_a["equity_digest"] == curr_a["equity_digest"],
             "position_digest_match": prev_a["position_digest"] == curr_a["position_digest"],
+            "news_digest_match": prev_a["news_digest"] == curr_a["news_digest"],
+            "evaluation_digest_match": prev_a["evaluation_digest"] == curr_a["evaluation_digest"],
         },
         "arm_b": {
             "fill_digest_match": prev_b["fill_digest"] == curr_b["fill_digest"],
             "equity_digest_match": prev_b["equity_digest"] == curr_b["equity_digest"],
             "position_digest_match": prev_b["position_digest"] == curr_b["position_digest"],
+            "news_digest_match": prev_b["news_digest"] == curr_b["news_digest"],
+            "evaluation_digest_match": prev_b["evaluation_digest"] == curr_b["evaluation_digest"],
         },
         "reproducible": (
             prev_a["fill_digest"] == curr_a["fill_digest"] and
             prev_a["equity_digest"] == curr_a["equity_digest"] and
             prev_a["position_digest"] == curr_a["position_digest"] and
+            prev_a["news_digest"] == curr_a["news_digest"] and
+            prev_a["evaluation_digest"] == curr_a["evaluation_digest"] and
             prev_b["fill_digest"] == curr_b["fill_digest"] and
             prev_b["equity_digest"] == curr_b["equity_digest"] and
-            prev_b["position_digest"] == curr_b["position_digest"]
+            prev_b["position_digest"] == curr_b["position_digest"] and
+            prev_b["news_digest"] == curr_b["news_digest"] and
+            prev_b["evaluation_digest"] == curr_b["evaluation_digest"]
         ),
+        "scope": "full (ledger + news + evaluation)"
     }

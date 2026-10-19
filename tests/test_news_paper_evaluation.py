@@ -259,6 +259,15 @@ class TestRunEvaluation(unittest.TestCase):
             arm_a_label="price_only",
             arm_b_label="news_plus_price",
             rng_seed=42,
+            ledger_revision="rev1",
+            evidence_digest="evi1",
+            classification_version="cls1",
+            price_version="prc1",
+            risk_version="risk1",
+            cost_version="cst1",
+            execution_version="exe1",
+            policy_version="pol1",
+            model_version="mdl1",
         )
 
         fills_a = [
@@ -288,6 +297,27 @@ class TestRunEvaluation(unittest.TestCase):
         pt = PolicyTracking(policies_tested=1, train_events=10, val_events=5,
                            holdout_events=5, independent_events=15)
 
+
+        # min_independent_events set via constructor below is not possible (frozen),
+        # so recreate manifest with min_independent_events=5
+        manifest = EvaluationManifest(
+            eval_start_ts=self.now,
+            eval_end_ts=self.now + 3600,
+            arm_a_label="price_only",
+            arm_b_label="news_plus_price",
+            rng_seed=42,
+            ledger_revision="rev1",
+            evidence_digest="evi1",
+            classification_version="cls1",
+            price_version="prc1",
+            risk_version="risk1",
+            cost_version="cst1",
+            execution_version="exe1",
+            policy_version="pol1",
+            model_version="mdl1",
+            min_independent_events=5,
+        )
+
         result = run_evaluation(
             manifest, fills_a, equity_a, positions, latency, news,
             fills_b, equity_b, positions, latency, news,
@@ -315,13 +345,23 @@ class TestExportEvaluation(unittest.TestCase):
     def test_export_evaluation(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "eval.json"
-            manifest = EvaluationManifest(eval_end_ts=self.now + 3600, rng_seed=1)
+            manifest = EvaluationManifest(
+                eval_end_ts=self.now + 3600, rng_seed=1,
+                ledger_revision="rev1", evidence_digest="evi1",
+                classification_version="cls1", price_version="prc1",
+                risk_version="risk1", cost_version="cst1",
+                execution_version="exe1", policy_version="pol1",
+                model_version="mdl1", min_independent_events=0
+            )
             fills = [self.make_fill("open", "TEST", 1, 10, 100, 1, self.now)]
             equity = [(self.now, D("1000"))]
             latency = []
             news = []
-            cb = CostBreakdown(cost_allocation_method="pro_rata")
-            pt = PolicyTracking()
+            cb = CostBreakdown(
+                cost_allocation_method="pro_rata",
+                exit_commission_bps=D("1"), exit_slippage_bps=D("1")
+            )
+            pt = PolicyTracking(independent_events=1)
 
             result = run_evaluation(
                 manifest, fills, equity, {}, latency, news,
@@ -342,31 +382,39 @@ class TestExportEvaluation(unittest.TestCase):
 
 class TestVerifyReproducibility(unittest.TestCase):
     def test_verify_reproducibility_match(self):
-        manifest = EvaluationManifest(rng_seed=42)
+        manifest = EvaluationManifest(rng_seed=42, ledger_revision="r", evidence_digest="e",
+            classification_version="c", price_version="p", risk_version="r", cost_version="c",
+            execution_version="e", policy_version="p", model_version="m")
         fills = [FillRecord("open", "TEST", 1, D("10"), D("100"), D("1"), ts=1000.0)]
         equity = [(1000.0, D("1000"))]
         positions = {"TEST": {"side": "1", "qty": "10", "entry": "100", "mark": "100", "mark_ts": "1000.0"}}
+        news = [{"event_id": "evt1", "eligible": True, "observed_at": 1000.0}]
+        arm_metrics = ArmMetrics(label="test", equity_jpy=D("1000"))
         result = verify_reproducibility(
             manifest,
-            fills, equity, positions,
-            fills, equity, positions,
-            fills, equity, positions,
-            fills, equity, positions,
+            fills, equity, positions, news, arm_metrics,
+            fills, equity, positions, news, arm_metrics,
+            fills, equity, positions, news, arm_metrics,
+            fills, equity, positions, news, arm_metrics,
         )
         self.assertTrue(result["reproducible"])
 
     def test_verify_reproducibility_mismatch(self):
-        manifest = EvaluationManifest(rng_seed=42)
+        manifest = EvaluationManifest(rng_seed=42, ledger_revision="r", evidence_digest="e",
+            classification_version="c", price_version="p", risk_version="r", cost_version="c",
+            execution_version="e", policy_version="p", model_version="m")
         fills1 = [FillRecord("open", "TEST", 1, D("10"), D("100"), D("1"), ts=1000.0)]
         fills2 = [FillRecord("open", "TEST", 1, D("10"), D("101"), D("1"), ts=1000.0)]
         equity = [(1000.0, D("1000"))]
         positions = {"TEST": {"side": "1", "qty": "10", "entry": "100", "mark": "100", "mark_ts": "1000.0"}}
+        news = [{"event_id": "evt1", "eligible": True, "observed_at": 1000.0}]
+        arm_metrics = ArmMetrics(label="test", equity_jpy=D("1000"))
         result = verify_reproducibility(
             manifest,
-            fills1, equity, positions,
-            fills2, equity, positions,
-            fills1, equity, positions,
-            fills1, equity, positions,
+            fills1, equity, positions, news, arm_metrics,
+            fills2, equity, positions, news, arm_metrics,
+            fills1, equity, positions, news, arm_metrics,
+            fills1, equity, positions, news, arm_metrics,
         )
         self.assertFalse(result["reproducible"])
 
