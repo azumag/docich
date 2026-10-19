@@ -21,7 +21,8 @@ from ..os_layer.world import NAME, _en_route, _owned
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
-                            _deploy_cards, _is_boss_order, _observe_card_stock, _strict_boss_cards)
+                            _deploy_cards, _extra_card_name, _is_boss_order, _observe_card_stock,
+                            _sortie_defender, _strict_boss_cards)
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                _continue_transit_sorties, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
@@ -188,6 +189,61 @@ def _rare_card_inventory(screen, mem, order, inventory):
             observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
     return [pad('down')]
+
+
+def _dropper_card_inventory(mem, order, inventory, wanted) -> bool:
+    """Reserve one carry slot for an egg-dropper when the defender is measured.
+
+    #1553: 出撃前の画面に対戦相手の表示は無い。判明の根拠はその城での前回戦闘
+    パネル (``castle_defenders``、flows.battle が記録) だけなので、未判明の出撃
+    は現状どおり (fail-closed)。判明している時だけ、出撃将軍と敵将軍の最大HP
+    合計から ``卵落 > (最大HP合計) mod 16`` の札を実在庫から1枚選び、携行枠と
+    ID合計48未満を守って加える。予定札は外さず、レア札キットには割り込まない。
+    戦闘側 (``battle_egg_plan``) は実測した敵で同じ算出を行い、記録した守備将軍
+    と一致しなければこの計画を使わない。強い切り札より先に1枠を確保する。
+    """
+    step = order['step']
+    if (mem.get('dropper_card_kit') or {}).get(step) is not None:
+        return False
+    if (mem.get('rare_card_kit') or {}).get(step) is not None:
+        return False                     # レア札キットが携行札の主導権を持つ
+    # 1枚でも選ぶ前 (予定札の内訳がまだ揃っている時点) だけ決める。
+    if mem.get('picked') or inventory['remaining'] - len(wanted) < 1:
+        return False                     # 残り枠は予定札で埋まる
+    enemy = _sortie_defender(mem, order)
+    if enemy is None:
+        return False
+    enemy_max = general_max_hp(enemy)
+    general = _sortie_general(order, mem)
+    ally_max = general_max_hp('しゅじんこう' if general == NAME else general)
+    if type(enemy_max) is not int or enemy_max <= 0 or type(ally_max) is not int or ally_max <= 0:
+        return False
+    plan = reference.egg_drop_plan(enemy_max, ally_max)
+    stock = mem.get('card_stock') or {}
+    used = sum(CARD_IDS[c] for c in wanted)
+    candidates = [name for name in reference.CARDS
+                  if int(stock.get(name, 0) or 0) > 0
+                  and name not in wanted
+                  and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
+                  and len(wanted) + 1 <= CARRY_SLOTS
+                  and not boss_card_reserved(mem, order, name)]
+    droppers = reference.egg_droppers(candidates, plan['max_hp_sum'])
+    if not droppers:
+        return False
+    card = droppers[0]          # 卵落の強い順・同値はIDが小さい札 (reference.egg_droppers)
+    mem.setdefault('dropper_card_kit', {})[step] = {
+        'card': card, 'defender': enemy, 'defender_evidence': 'castle_defenders',
+        'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold']}
+    carried = _deploy_cards(order, mem)
+    _record(mem, 'dropper_card_kit', **_deploy_context(order, mem), chart_step=step, card=card,
+            observed_metric={'stock': int(stock.get(card, 0) or 0), 'planned': list(wanted),
+                             'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
+                             'remaining': inventory['remaining'], 'defender': enemy,
+                             'defender_evidence': 'castle_defenders',
+                             'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold']},
+            reason='実測した守備将軍の最大HPから卵落の閾値を算出し、卵落札を1枠に加えて開幕の卵ディニアルに備える')
+    return True
+
 
 def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
     """Add one held strong card to a sortie that still has a carry slot free.
@@ -925,6 +981,12 @@ def deploy_step(screen: Screen, mem):
         rare_actions = _rare_card_inventory(screen, mem, order, inventory)
         if rare_actions is not None:
             return rare_actions
+        if _dropper_card_inventory(mem, order, inventory, wanted):
+            # 卵落札を1枠に加えた: この観測の選択対象も並べ直す(予定札が先頭)。
+            wanted = _deploy_cards(order, mem)
+            for card in picked:
+                if card in wanted:
+                    wanted.remove(card)
         if _strong_card_inventory(mem, order, inventory, wanted):
             # 携行枠に1枚追加した: この観測の選択対象も並べ直す(予定札が先頭)。
             wanted = _deploy_cards(order, mem)
@@ -936,9 +998,12 @@ def deploy_step(screen: Screen, mem):
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         # Pick what is on screen first: a full 4-row panel scrolls, and a card
         # below it (g421 13:27: クースカン, bought x4) is reached by scrolling.
-        # 予定札(チャート/調整)が残っている間は、追加携行の強い切り札を先に選ばない:
-        # 空き枠に足した札が予定札より先に消費されるのを避ける。
-        planned = [c for c in wanted if c != strong] or wanted
+        # 予定札(チャート/調整)が残っている間は、追加携行の強い切り札・卵落札を
+        # 先に選ばない: 空き枠に足した札が予定札より先に消費されるのを避ける。
+        extra = {card for card in (
+            strong,
+            _extra_card_name((mem.get('dropper_card_kit') or {}).get(order['step']))) if card}
+        planned = [c for c in wanted if c not in extra] or wanted
         shown = {r['card'] for r in inventory['rows'] if r['stock'] > 0}
         card = next((c for c in planned if c in shown), planned[0])
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
