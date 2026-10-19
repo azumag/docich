@@ -38,7 +38,7 @@ BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
 
-# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜207
+# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜208
 # （_trade_choice_pair と同じ帯）。本文の内側列だけを読み、パネル外枠のタイルは除く。
 PROSE_ROWS = range(135, 176)
 PROSE_COLUMNS = (24, 232)
@@ -55,28 +55,31 @@ def readable_prose_screen(screen: Screen) -> bool:
     実際に読める本文が1つ以上あり、かつ部分的にしか読めなかった行が無い時だけ真を返す。
 
     帯に本文が無い（所持金ヘッダだけ）頁と、全部が未読の頁はどちらも偽になる。
-    外枠が作る欠字だけの行は本文の証拠に数えない（読めた行が別にあれば解除できる）。
+    外枠は本文の内側列に含めない。濁点等はparseが原画像で付随markと確認したセル
+    だけを除き、内側の全UNKNOWN行も終了を示す証拠にはしない。
     """
     if screen.kind != 'text' or screen.hand is not None:
         return False
-    if any(176 <= line.y <= 207 for line in screen.lines):
-        return False
     x0, x1 = PROSE_COLUMNS
+    if any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+           for line in screen.lines):
+        return False
     readable = False
     for line in screen.lines:
         if line.y not in PROSE_ROWS:
             continue
-        cells = [ch for x, ch in line.cells if x0 <= x < x1]
+        cells = [ch for x, ch in line.cells if x0 <= x < x1
+                 and (x, line.y) not in screen.prose_attached_marks]
         known = [ch for ch in cells if ch != UNKNOWN and ch != ' ']
-        if known and UNKNOWN in cells:
-            return False   # 行頭・行末を欠いた本文は終了証拠にしない
+        if UNKNOWN in cells:
+            return False   # 行頭・行末の欠字も全未読本文行も終了証拠にしない
         if known:
             readable = True
     return readable
 
 
 def _trade_choice_pair(options):
-    band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
+    band = [(x, y, word) for x, y, word in options if 176 <= y <= 208]
     pairs = []
     for yes, no in TRADE_CHOICE_PAIRS:
         accepts = [row for row in band if row[2] == yes]
@@ -144,7 +147,9 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if screen.kind not in ('text', 'unknown'):
         return None
     options = _options(screen)
-    pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
+    pair = (None if any(ch == UNKNOWN for line in screen.lines
+                      if 176 <= line.y <= 208
+                      for x, ch in line.cells if PROSE_COLUMNS[0] <= x <= PROSE_COLUMNS[1])
             else _trade_choice_pair(options))
     labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
     if (guard.get('choice_seen') and readable_prose_screen(screen)
@@ -155,7 +160,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
         return None
     suspect_choice = (screen.hand is not None or pair is not None
                       or any(word in labels for _, _, word in options)
-                      or any(176 <= y <= 207 and not (
+                      or any(176 <= y <= 208 and not (
                           _trade_named_general(word) or any(tok in word for tok in TRADE_GUARD_TOKENS))
                              for _, y, word in options))
     if suspect_choice:
@@ -270,7 +275,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
                         reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
             return []
         return None
-    band = [word for _, y, word in _options(screen) if 176 <= y <= 207 and word]
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 208 and word]
     if screen.hand is None and not band:
         return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
     guard['choice_seen'] = True
