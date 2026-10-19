@@ -489,6 +489,7 @@ def run_worker_cycle(
                         symbol, fetched_at=None, data_as_of=None, timeframe_s=None,
                         last_bar_start=None, now=now, error="fetch_error",
                     ).payload()
+                    frame_error_count += 1
         save_cache((state_dir / "market_cache.json"), market_cache)
 
         with experiment_lock(state_dir):
