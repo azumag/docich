@@ -631,6 +631,59 @@ def test_optional_concert_exits_instead_of_selecting_the_same_track():
     assert decide(Frame(256,224,bytes(rgb)),{})[0][0]['buttons']==['b']
 
 
+def test_concert_picker_b_loop_escapes_to_confirm_instead_of_riding_the_stall():
+    # #1996 (2026-10-10 17:41-17:46 UTC): the picker gold stayed detected on a
+    # frozen concert screen and B was pressed 128 consecutive times
+    # (trailing_repeat period 1, screen_unchanged 216-285 s) until the 300 s
+    # screen_stall terminal ended the corner. Reconstruct the measured
+    # signature without storing game images: identical picker frames escape
+    # to confirm once B is proven ineffective on this exact frame.
+    rgb=bytearray(frame((160,110,60)).rgb)
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((200,0,0))
+    for x in range(200,240):
+        i=(184*256+x)*3
+        rgb[i:i+3]=bytes((197,141,74))
+    picker=Frame(256,224,bytes(rgb))
+    assert classify(picker)=='concert'
+    state={}
+    for _ in range(7):
+        actions,state=decide(picker,state)
+        assert actions[0]['buttons']==['b']
+    actions,state=decide(picker,state)
+    assert actions[0]['buttons']==['a']
+    # Confirm persists while the screen stays frozen; B is not retried.
+    assert decide(picker,state)[0][0]['buttons']==['a']
+    # A picker that really closed changes the frame: the reviewed close rule
+    # resumes instead of confirming track 00 on a live picker.
+    closed=bytearray(picker.rgb)
+    i=(40*256+8)*3
+    closed[i:i+3]=bytes((190,0,0))
+    assert classify(Frame(256,224,bytes(closed)))=='concert'
+    assert decide(Frame(256,224,bytes(closed)),state)[0][0]['buttons']==['b']
+    # The no-picker concert rule clears the loop state as before.
+    nogold=bytearray(frame((160,110,60)).rgb)
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            nogold[i:i+3]=bytes((16,72,57))
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            nogold[i:i+3]=bytes((200,0,0))
+    concert=Frame(256,224,bytes(nogold))
+    assert classify(concert)=='concert'
+    actions,state=decide(concert,state)
+    assert actions[0]['buttons']==['a']
+    assert decide(picker,state)[0][0]['buttons']==['b']
+
+
 def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(128):

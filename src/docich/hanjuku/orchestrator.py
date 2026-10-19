@@ -34,6 +34,16 @@ from .version import BOT_VERSION
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
 
+# Owner issue #1996 (2026-10-10 17:41-17:46 UTC): a red-curtain screen whose
+# picker gold stayed detected pressed B 128 consecutive times over 216-285 s
+# (diagnostics trailing_repeat period 1) and only the 300 s screen-stall
+# terminal ended the corner. NO_INPUT_HOLD_MAX never sees this loop because
+# the plan is never empty. Eight identical observations (~12 s at the 1.5 s
+# interval) prove this exact frame does not answer B; confirming then gives
+# the escape the reviewed "close the picker" rule denies, while a picker that
+# really closed changes the digest and resumes the ordinary rule.
+CONCERT_PICKER_B_ESCAPE = 8
+
 
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
@@ -45,6 +55,10 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     The v1 blind field route (confirm/left/right/up) is removed: map input
     now comes only from the chart policy with a measured cursor. A map
     without a detected cursor waits instead of confirming at an unknown cell.
+
+    The concert picker rule is the one stateful exception (#1996): it counts
+    consecutive identical picker frames in ``state['concert_picker_b']`` and
+    switches to confirm once B is proven ineffective on this exact frame.
     """
     phase_step=int(state.get('phase_step',1))
     if phase=='transition':
@@ -56,7 +70,21 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='concert':
         gold=lambda r,g,b:r>150 and 80<g<180 and 30<b<120
         picker=any(frame.fraction((200,y,239,y+1),gold)>.8 for y in range(178,196))
-        return [pad('b' if picker else 'a')]
+        if not picker:
+            state.pop('concert_picker_b',None)
+            return [pad('a')]
+        # #1996: B on an unchanged picker frame is tracked so a screen whose
+        # gold never clears (picker residue, an overlapping dialog, or a
+        # misread merchant variant) escapes to confirm instead of riding the
+        # 300 s stall terminal. A changed digest restarts the count, so a
+        # picker that really closed returns to the reviewed close rule.
+        digest=frame.digest()
+        loop=state.get('concert_picker_b')
+        count=(loop['count']+1 if isinstance(loop,dict)
+               and loop.get('sha256')==digest and type(loop.get('count')) is int
+               and 0<=loop['count']<1000000 else 1)
+        state['concert_picker_b']={'sha256':digest,'count':count}
+        return [pad('a' if count>=CONCERT_PICKER_B_ESCAPE else 'b')]
     if phase=='shop':
         return [pad('a' if shop_exit_confirmation(frame) else 'b')]
     if phase=='title':
