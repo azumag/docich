@@ -34,9 +34,73 @@ from .version import BOT_VERSION
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
 
+# Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
+# command box the game draws the menu over several frames. The panel reads
+# 'unknown' while the coarse phase can still be 'event', so the generic
+# scene-confirm A fired on every one of those frames (UID16229 sent the default
+# A on a mid-draw panel). A press from that window can be accepted as soon as
+# the box starts taking input and confirm the top row (たまごをつかう) the bot
+# never chose, before any cursor evidence exists. Hold this draw window a
+# bounded number of observations instead: a box that finishes drawing reads as
+# battle_menu and its own owner takes over, and a frame that stays unreadable
+# still falls through to the phase default after the hold.
+BATTLE_DRAW_HOLD_MAX = 3
+# Kinds that prove the previous observation was inside an actual battle
+# foreground. A 'text' conversation or an unreadable frame never qualifies.
+BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
+                                'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
+                                'monster_menu'})
+
 
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
+
+
+def _battle_draw_scope(mem):
+    """Identity of the live battle whose panel/menu transition is unreadable."""
+    cur = mem.get('battle') or {}
+    return [mem.get('chapter'), cur.get('ally'), cur.get('enemy'),
+            cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
+
+
+def battle_draw_hold_step(screen, mem, previous_kind, generic):
+    """Withhold a generic confirm on an unreadable battle draw, boundedly.
+
+    Only a phase default that would confirm (a single A) is replaced. A default
+    that already plans no input keeps its reviewed meaning untouched.
+    """
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    scope = _battle_draw_scope(mem)
+    cur = mem.get('battle')
+    held = mem.get('battle_draw_hold')
+    live = isinstance(held, dict) and held.get('scope') == scope
+    if not confirms or screen.kind != 'unknown':
+        mem.pop('battle_draw_hold', None)
+        return None
+    # A hold episode owns its own continuation: after the first held frame the
+    # previous observation is 'unknown', not the battle foreground that opened
+    # the window. The bounded counter, not that kind, ends the episode.
+    if (not isinstance(cur, dict) or not cur.get('ally') or not cur.get('enemy')
+            or (previous_kind not in BATTLE_OWNED_KINDS and not live)):
+        mem.pop('battle_draw_hold', None)
+        return None
+    if (live and type(held.get('held')) is int and held['held'] >= BATTLE_DRAW_HOLD_MAX):
+        # The window is over without a readable box. Hand the frame back to the
+        # ordinary phase default instead of holding a real scene forever.
+        mem.pop('battle_draw_hold', None)
+        return None
+    if (not live or type(held.get('held')) is not int
+            or not 0 <= held['held'] < BATTLE_DRAW_HOLD_MAX):
+        held = mem['battle_draw_hold'] = {'scope': scope, 'held': 0}
+    held['held'] += 1
+    decision_log._record(mem, 'battle_draw_hold', screen=screen.kind,
+                         observed_metric={'held': held['held'], 'limit': BATTLE_DRAW_HOLD_MAX,
+                                          'previous_screen': previous_kind,
+                                          'ally': cur.get('ally'), 'enemy': cur.get('enemy')},
+                         reason='戦闘パネルとメニューの描画途中を読めないため、未確認の最上段を確定しないよう既定Aを保留する')
+    return [{'type': 'wait', 'ms': 50}]
 
 
 def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
@@ -384,6 +448,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=[pad('b')]
     if actions is None:
         actions=legacy_actions(frame,phase,updated)
+        draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
+        if draw_hold is not None:
+            actions = draw_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
