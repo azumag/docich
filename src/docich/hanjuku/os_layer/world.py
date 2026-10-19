@@ -296,6 +296,10 @@ def _apply_world_flags(mem, flags):
         # still treated it as ours and fell back to it.
         # A successful retake can also put home in captured. Remove that old
         # receipt even when a hotloaded state already has home_lost=True.
+        if home in captured or home not in (mem.get('lost') or []):
+            # A completed defense loss already recorded the current capturer.
+            # Only a new ownership loss invalidates that defender evidence.
+            (mem.get('castle_defenders') or {}).pop(home, None)
         mem['captured'] = captured = [c for c in captured if c != home]
         if not mem.get('home_lost'):
             changed.append(('lost', home))
@@ -304,7 +308,6 @@ def _apply_world_flags(mem, flags):
         if home not in lost:
             lost.insert(0, home)
         (mem.get('garrison') or {}).pop(home, None)
-        (mem.get('castle_defenders') or {}).pop(home, None)
     elif home_owner == 'own' and mem.get('home_lost'):
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
