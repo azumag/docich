@@ -38,28 +38,31 @@ def _fake_overlay(root, event):
 
 
 def _make_fake_speech(captured):
-    def fake_speech(g, text, *, context, speaker="", runtime_fence=None):
+    def fake_speech(g, text, *, context, speaker="", runtime_fence=None, dedup_scope=""):
         captured["text"] = text
         captured["context"] = context
         captured["speaker"] = speaker
         captured["runtime_fence"] = runtime_fence
+        captured["dedup_scope"] = dedup_scope
     return fake_speech
 
 
 def test_publish_forwards_runtime_fence():
     captured = {}
     fence = {
-        "game": "trpg", "runtime_id": "rt-1", "generation": 1,
-        "lease_id": "lease-1", "expires_at": 9999999999,
+        "game": "trpg-view", "runtime_id": "g7-abcdef12", "generation": 4,
+        "lease_id": "lease-4", "expires_at": 9999999999,
     }
     result = tn.publish(
         _FakeG(), kind="scene", title="T", overlay_body="b", speech_text="hello",
-        request_id="rt-1:123", audio_enabled=True, speaker="spk",
-        runtime_fence=fence, overlay=_fake_overlay, speech=_make_fake_speech(captured),
+        request_id="g7-abcdef12:123", audio_enabled=True, speaker="spk",
+        runtime_fence=fence, dedup_scope="trpg:g7-abcdef12:4:SCENE:123",
+        overlay=_fake_overlay, speech=_make_fake_speech(captured),
     )
     assert result["speech"]["sent"] == 1
     assert result["overlay"]["sent"] == 1
     assert captured["runtime_fence"] == fence
+    assert captured["dedup_scope"] == "trpg:g7-abcdef12:4:SCENE:123"
     assert captured["text"] == "hello"
     assert captured["context"] == "trpg:scene"
     assert captured["speaker"] == "spk"
@@ -74,6 +77,7 @@ def test_publish_without_runtime_fence_is_default_none():
     )
     assert result["speech"]["sent"] == 1
     assert captured["runtime_fence"] is None
+    assert captured["dedup_scope"] == ""
 
 
 def test_publish_audio_disabled_skips_speech():
