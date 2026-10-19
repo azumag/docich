@@ -1113,7 +1113,7 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 lambda c: c.update(retiring=[self._runtime("nethack", 3)]),
                 "failed"),
             "canonical recovery outstanding": (
-                lambda c: c.update(phase="recovery_required"), "noop"),
+                lambda c: c.update(phase="recovery_required"), "failed"),
         }
         for name, (patch, expected) in cases.items():
             with self.subTest(case=name):
@@ -1177,8 +1177,8 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
             switch_request_id=str(uuid.uuid4()),
             started_at=self.now_value.isoformat(),
             completed_at=self.now_value.isoformat(),
-            last_error="test error",
-            last_error_code="execution-error",
+            last_error="canonical stateの復旧が必要です",
+            last_error_code="recovery_required",
         )
         mgr._write_state(state)
         canonical = mgr.store.initialize()
