@@ -1165,16 +1165,15 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         canonical phase is 'recovery_required', so that the
         recover_corner_rotation.sh script proceeds to step 2 (corner-rotation
         recover) which actually clears the rotation latch."""
-        from unittest.mock import patch
-
         mgr, coordinator = self.manager(["sorengame"])
+        request_id = str(uuid.uuid4())
         state = mgr._default_state()
         state.update(
             status="failed",
             game="robots",
             previous_game="sorengame",
-            rotation_request_id=str(uuid.uuid4()),
-            switch_request_id=str(uuid.uuid4()),
+            rotation_request_id=request_id,
+            switch_request_id=request_id,
             started_at=self.now_value.isoformat(),
             completed_at=self.now_value.isoformat(),
             last_error="canonical stateの復旧が必要です",
@@ -1182,6 +1181,27 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         )
         mgr._write_state(state)
         canonical = mgr.store.initialize()
+        canonical.update(
+            phase="ready",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+        # Create a correlated receipt so _restore_failure_candidate returns False
+        # and the test actually reaches the recovery_required branch
+        accepted = mgr.store.accept_request(request_id, "switch", "robots")
+        result = {
+            "request_id": request_id, "operation": "switch", "status": "failed",
+            "from_game": "sorengame", "to_game": "robots",
+            "generation": accepted.generation, "error_code": "recovery_required",
+            "detail": "canonical stateの復旧が必要です",
+        }
+        mgr.store.finish_request(request_id, "failed", result)
+        # Now set canonical to recovery_required to test the target branch
+        canonical, _ = mgr.store.canonical.load()
         canonical.update(
             phase="recovery_required",
             next_generation=2,
