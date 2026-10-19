@@ -30,7 +30,7 @@ class RestartSorenBgmTest(unittest.TestCase):
         self.assertIn("restart_soren_bgm.sh", text)
         self.assertIn('"exec docich production $SHA"', text)
 
-    def _run(self, *, same_pid=False, exec_ok=True):
+    def _run(self, *, same_pid=False, exec_ok=True, pulseaudio_pids=(), cgroups=None, proc_root_missing=False, pulseaudio_appears_after_restart=False):
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             bindir = d / "bin"
@@ -63,23 +63,56 @@ class RestartSorenBgmTest(unittest.TestCase):
                 [[ "$1" == "-n" ]]
                 shift
                 [[ "$1" == "systemctl" && "$2" == "restart" && "$3" == "soren-bgm.service" ]]
+                printf 'restart\\n' >>"$FAKE_SUDO_LOG"
                 {'true' if same_pid else 'printf "222\\n" >"$FAKE_PID_STATE"'}
             """), encoding="utf-8")
             sudo.chmod(0o755)
             pgrep = bindir / "pgrep"
-            pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            if pulseaudio_appears_after_restart:
+                # Models the new unit generation spawning a private server:
+                # absent before the restart, present once sudo restarted it.
+                pgrep.write_text(
+                    "#!/usr/bin/env bash\n"
+                    '[[ -f "$FAKE_SUDO_LOG" ]] || exit 1\n'
+                    "printf '%s\\n' "
+                    + " ".join(str(pid) for pid in pulseaudio_pids)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            elif pulseaudio_pids:
+                pgrep.write_text(
+                    "#!/usr/bin/env bash\nprintf '%s\\n' "
+                    + " ".join(str(pid) for pid in pulseaudio_pids)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
             pgrep.chmod(0o755)
+            proc_root = d / "proc"
+            if not proc_root_missing:
+                for pid, content in (cgroups or {}).items():
+                    entry = proc_root / str(pid)
+                    entry.mkdir(parents=True)
+                    (entry / "cgroup").write_text(content, encoding="utf-8")
+                proc_root.mkdir(parents=True, exist_ok=True)
+            sudo_log = d / "sudo.log"
             env = {
                 **os.environ,
                 "PATH": f"{bindir}:/usr/bin:/bin",
                 "FAKE_PID_STATE": str(state),
+                "FAKE_SUDO_LOG": str(sudo_log),
+                "SOREN_BGM_PROC_ROOT": str(proc_root),
             }
-            return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
+            result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
+            result.sudo_log = sudo_log.read_text(encoding="utf-8") if sudo_log.exists() else ""
+            return result
 
     def test_success_restarts_only_fixed_service(self):
         result = self._run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pid=222", result.stdout)
+        self.assertEqual(result.sudo_log, "restart\n")
 
     def test_unchanged_pid_is_rejected(self):
         result = self._run(same_pid=True)
@@ -88,6 +121,60 @@ class RestartSorenBgmTest(unittest.TestCase):
     def test_unexpected_execstart_is_rejected_before_restart(self):
         result = self._run(exec_ok=False)
         self.assertEqual(result.returncode, 12)
+
+    # ---- docich #2008: never restart over a shared PulseAudio server -------
+
+    def test_pulseaudio_in_the_unit_cgroup_blocks_the_restart(self):
+        result = self._run(
+            pulseaudio_pids=(4242,),
+            cgroups={4242: "0::/system.slice/soren-bgm.service\n"},
+        )
+        self.assertEqual(result.returncode, 15)
+        self.assertIn("inside the soren-bgm.service cgroup", result.stderr)
+        self.assertEqual(result.sudo_log, "")
+
+    def test_unverifiable_pulseaudio_cgroup_blocks_the_restart(self):
+        result = self._run(pulseaudio_pids=(4242,), cgroups={})
+        self.assertEqual(result.returncode, 15)
+        self.assertIn("cannot verify the cgroup", result.stderr)
+        self.assertEqual(result.sudo_log, "")
+
+    def test_pulseaudio_in_another_cgroup_does_not_block(self):
+        result = self._run(
+            pulseaudio_pids=(4242,),
+            cgroups={4242: "0::/user.slice/user-1001.slice/session.slice/pulseaudio.service\n"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.sudo_log, "restart\n")
+
+    def test_restart_that_spawns_a_private_pulseaudio_fails_closed(self):
+        result = self._run(
+            pulseaudio_pids=(4242,),
+            cgroups={4242: "0::/system.slice/soren-bgm.service\n"},
+            pulseaudio_appears_after_restart=True,
+        )
+        self.assertEqual(result.returncode, 16)
+        self.assertIn("spawned a private PulseAudio", result.stderr)
+        # The restart itself already ran, so the deploy must stay red.
+        self.assertEqual(result.sudo_log, "restart\n")
+
+    def test_script_checks_the_cgroup_before_and_after_the_restart(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("pulseaudio_in_bgm_cgroup", text)
+        self.assertIn('[[ "$cgroup" == *"/$unit"* ]]', text)
+        self.assertIn('pgrep -u "$(id -un)" -x pulseaudio', text)
+        self.assertEqual(text.count("if pulseaudio_in_bgm_cgroup; then"), 2)
+        self.assertIn("exit 15", text)
+        self.assertIn("exit 16", text)
+        self.assertNotIn("pkill", text)
+        self.assertNotIn("killall", text)
+        self.assertNotIn("systemctl restart pulseaudio", text)
+        self.assertLess(
+            text.index("exit 15"), text.index("sudo -n systemctl restart")
+        )
+        self.assertGreater(
+            text.index("exit 16"), text.index("sudo -n systemctl restart")
+        )
 
 
 if __name__ == "__main__":
