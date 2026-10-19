@@ -406,6 +406,7 @@ def run_worker_cycle(
         frame_error_count = 0
         attempted = 0
         budget_exceeded = False
+        retry_symbols: list[str] = []
         for symbol in ordered:
             if float(monotonic_fn()) >= fetch_deadline:
                 budget_exceeded = True
@@ -438,8 +439,43 @@ def run_worker_cycle(
                     timestamps=frame.timestamps, now=now,
                 )
             except Exception:
-                # A bad public market is isolated; cached values are never
-                # reused for trading decisions, only for display/history.
+                # A transient public fetch failure is retried once below; the
+                # symbol is counted only if the retry also fails.
+                retry_symbols.append(symbol)
+        # One bounded retry pass for symbols whose first fetch raised. A
+        # transient gateway/HTTP hiccup is the common case; a symbol that keeps
+        # failing is isolated (cached values are never reused for trading).
+        for symbol in retry_symbols:
+            if float(monotonic_fn()) >= fetch_deadline:
+                budget_exceeded = True
+                break
+            try:
+                batch = gateway.fetch_market_frames(
+                    [symbol], timeframe=TIMEFRAME, limit=HISTORY_LIMIT, now=now
+                )
+                fetched_at = float(observation_now_fn())
+                frame = batch.get(symbol) if isinstance(batch, dict) else None
+                if not isinstance(frame, MarketFrame) or frame.symbol != symbol:
+                    raise ValueError("public frame missing or mismatched")
+                assessment = assess_market_freshness(
+                    symbol, fetched_at=fetched_at, data_as_of=frame.as_of,
+                    timeframe_s=frame.timeframe_seconds,
+                    last_bar_start=frame.timestamps[-1] if frame.timestamps else None,
+                    now=now,
+                )
+                freshness[symbol] = assessment.payload()
+                if assessment.quality != QUALITY_FRESH:
+                    frame_error_count += 1
+                    continue
+                frames[symbol] = frame
+                store_frames(
+                    market_cache, symbol, fetched_at=fetched_at, data_as_of=frame.as_of,
+                    last_bar_start=frame.timestamps[-1] if frame.timestamps else None,
+                    timeframe_s=frame.timeframe_seconds, last_close=str(frame.last_price),
+                    closes=[str(value) for value in frame.closes],
+                    timestamps=frame.timestamps, now=now,
+                )
+            except Exception:
                 frame_error_count += 1
                 freshness[symbol] = assess_market_freshness(
                     symbol, fetched_at=None, data_as_of=None, timeframe_s=None,
@@ -451,6 +487,13 @@ def run_worker_cycle(
                     symbol, fetched_at=None, data_as_of=None, timeframe_s=None,
                     last_bar_start=None, now=now, attempted=False,
                 ).payload()
+            for symbol in retry_symbols:
+                if symbol not in freshness:
+                    freshness[symbol] = assess_market_freshness(
+                        symbol, fetched_at=None, data_as_of=None, timeframe_s=None,
+                        last_bar_start=None, now=now, error="fetch_error",
+                    ).payload()
+                    frame_error_count += 1
         save_cache((state_dir / "market_cache.json"), market_cache)
 
         with experiment_lock(state_dir):
