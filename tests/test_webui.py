@@ -1640,6 +1640,26 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_hanjuku_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        """#2024: hanjuku-hero is a non-CLI game started through the common queue."""
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}}}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
+            encoding="utf-8",
+        )
+
     def _write_weather_catalog_config(self, *, enabled=True, paused=False, rotation=True):
         path = Path(self.g.config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2466,46 +2486,184 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/corners", {"action": "recover"})
         self.assertEqual(status, 428, data)
 
-    def test_post_corners_start_refuses_non_cli_game_without_dispatch(self):
-        # 2026-10-11: the one-off runner is CLI-only. Starting hanjuku-hero
-        # (retroarch) dispatched a runner that always failed and latched the
-        # rotation; refuse here and point to the fixed Hanjuku operator.
-        path = Path(self.g.config_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
-            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero"}]\n',
-            encoding="utf-8",
-        )
-        games = Path(self.g.games_dir)
-        games.mkdir(parents=True, exist_ok=True)
-        (games / "hanjuku-hero.toml").write_text(
-            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
-            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
-            encoding="utf-8",
-        )
-        with mock.patch("docich.webui.subprocess.Popen") as popen:
+    def test_post_corners_start_queues_hanjuku_through_common_coordinator(self):
+        # #2024: 2026-10-11 に one-off runner が hanjuku-hero (retroarch) を
+        # CLI 専用として拒否し、予約後に拒否したため rotation がラッチした。
+        # Start は docich.hanjuku_corner / start-hanjuku と同じ
+        # CornerRotationManager.queue_manual 経路で予約し、runner は起動しない。
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        ledger_path = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger_path.read_bytes()
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.retro_corner.RetroCornerManager.run_rotation") as run, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
             status, data = self._request(
                 "POST", "/api/corners",
                 {"action": "start", "corner": "hanjuku-hero", "duration_minutes": 5,
                  "confirm": True},
             )
-        self.assertEqual(status, 400, data)
-        self.assertIn("start-hanjuku", data["detail"])
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["duration_minutes"], None)
+        self.assertEqual(data["corner"], {
+            "id": "hanjuku-hero", "adapter": "game", "game": "hanjuku-hero",
+            "target": "rotation",
+        })
+        self.assertNotIn("pid", data)
+        self.assertNotIn("log", data)
+        run.assert_not_called()
         popen.assert_not_called()
+        inbox = json.loads((Path(self.g.state_dir) / "corner_manual_queue.json").read_text())
+        self.assertEqual(inbox["corner"], "hanjuku-hero")
+        self.assertIsNone(inbox.get("trigger_at"))
+        # 予約は queue_manual の durable write だけで、ledger の実行予約は
+        # 次の tick が行う (ここで pending を作らない)。
+        self.assertEqual(ledger_path.read_bytes(), before)
 
-        # The read-only catalog keeps this corner selectable for Stop while
-        # explaining that Start must retain the owner-only workflow gates.
-        with mock.patch("docich.corner_rotation.CornerRotationManager") as manager:
-            status, view = self._request("GET", "/api/corners")
+        status, view = self._request("GET", "/api/corners")
         self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "hanjuku-hero")
         row = view["catalog"][0]
         self.assertTrue(row["manual"])
-        self.assertFalse(row["manual_start"])
+        self.assertTrue(row["manual_start"])
         self.assertTrue(row["manual_stop"])
-        self.assertEqual(row["manual_start_reason"], "operator-workflow-required")
-        self.assertEqual(row["manual_mode"], "runner")
-        manager.assert_not_called()
+        self.assertIsNone(row["manual_start_reason"])
+        self.assertEqual(row["manual_mode"], "queue")
+        # private request id は投影に出さない
+        self.assertNotIn(inbox["request_id"], json.dumps(view))
+
+    def test_hanjuku_start_is_idempotent_while_the_same_reservation_waits(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            first, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+            owner = inbox.read_bytes()
+            second, replay = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual((first, second), (200, 200), (data, replay))
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(replay["status"], "queued")
+        # 同じ予約の再送は書き換えない (request id も時刻も変わらない)
+        self.assertEqual(inbox.read_bytes(), owner)
+        popen.assert_not_called()
+
+    def test_hanjuku_start_refusal_never_latches_the_rotation(self):
+        # 予約前検証 (#2024): 拒否は reservation を書く前に起き、rotation の
+        # ledger を変更しない。ここが runner 方式の退行 (予約後拒否→ラッチ) の
+        # 回帰テスト。
+        cases = (
+            ("recovery-required",
+             {"status": "recovery_required", "pending": None}, {}, 409),
+            ("rotation-disabled",
+             {"status": "ready", "pending": None}, {"rotation": False}, 409),
+            ("corner-disabled",
+             {"status": "ready", "pending": None}, {"enabled": False}, 409),
+        )
+        for name, state, config_kwargs, expected in cases:
+            with self.subTest(case=name):
+                self._write_hanjuku_catalog_config(**config_kwargs)
+                self._write_rotation_state(**state)
+                ledger_path = Path(self.g.state_dir) / "corner_rotation.json"
+                before = ledger_path.read_bytes()
+                inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+                self.assertFalse(inbox.exists())
+                with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                                return_value=["hanjuku-hero"]), \
+                        mock.patch("docich.webui.subprocess.Popen") as popen:
+                    status, data = self._request("POST", "/api/corners", {
+                        "action": "start", "corner": "hanjuku-hero", "confirm": True})
+                self.assertEqual(status, expected, data)
+                self.assertEqual(data["error"], "hanjuku_manual_refused")
+                self.assertNotIn("request_id", json.dumps(data))
+                popen.assert_not_called()
+                # 拒否は durable な予約も rotation の latch も作らない
+                self.assertEqual(ledger_path.read_bytes(), before)
+                self.assertFalse(inbox.exists())
+                persisted = json.loads(before)
+                self.assertEqual(persisted["status"], state["status"])
+                self.assertIsNone(persisted.get("manual_pending"))
+                self.assertIsNone(persisted.get("queued_manual"))
+
+    def test_hanjuku_start_conflicting_reservation_is_refused_unchanged(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        inbox.write_text(json.dumps({
+            "corner": "weather", "selected_at": time.time(),
+            "request_id": "11111111-1111-4111-8111-111111111111",
+        }), encoding="utf-8")
+        before = inbox.read_bytes()
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "hanjuku_manual_refused")
+        popen.assert_not_called()
+        self.assertEqual(inbox.read_bytes(), before)
+
+    def test_hanjuku_start_reports_unverified_without_a_durable_reservation(self):
+        # ok は「試した」ではなく状態ファイルで決める (recover と同じ契約)。
+        # coordinator が成功を返しても予約が実在しなければ成功にしない。
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+
+        class LyingManager:
+            def queue_manual(self, game):
+                return {"status": "queued", "corner": "hanjuku-hero",
+                        "request_id": "PRIVATE-REQUEST"}
+
+        with mock.patch("docich.corner_rotation.CornerRotationManager",
+                        return_value=LyingManager()) as manager:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "hanjuku_start_unverified")
+        self.assertNotIn("PRIVATE-REQUEST", json.dumps(data))
+        manager.assert_called_once()
+
+    def test_post_corners_start_refuses_other_non_cli_game_without_dispatch(self):
+        # hanjuku-hero 以外の非CLIゲームは従来どおり runner へ dispatch しない
+        # (予約前拒否)。hanjuku の queue 経路へ巻き込まないことを固定する。
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
+            'corners = [{id = "retro-other", adapter = "game", game = "retro-other"}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "retro-other.toml").write_text(
+            '[game]\nname = "retro-other"\ntitle = "Retro Other"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/retro-other.sfc"\n',
+            encoding="utf-8",
+        )
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "start", "corner": "retro-other", "duration_minutes": 5,
+                 "confirm": True},
+            )
+        self.assertEqual(status, 400, data)
+        popen.assert_not_called()
+        self.assertFalse((Path(self.g.state_dir) / "corner_manual_queue.json").exists())
+
+    def test_hanjuku_start_is_never_handed_to_the_cli_one_off_runner(self):
+        # #2024 の二重防御: POST 経路は queue へ行くが、argv builder 自体も
+        # 非CLIゲームを one-off runner へ渡さない。予約後に拒否してラッチする
+        # 退行 (2026-10-11) を将来の呼び出し元でも閉じる。
+        self._write_hanjuku_catalog_config()
+        with self.assertRaisesRegex(ValueError, "one-off runner では手動開始できません"):
+            webui._corner_manual_argv(self.g, "hanjuku-hero", "start", 5)
 
     def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
         self._write_catalog_config()
@@ -3410,7 +3568,9 @@ class TestCornerManualCapabilities(unittest.TestCase):
     def test_game_start_capability_requires_cli_and_preserves_stop(self):
         for game, adapter, allowed, reason in (
             ("nsnake", "cli", True, None),
-            ("hanjuku-hero", "retroarch", False, "operator-workflow-required"),
+            # #2024: hanjuku-hero starts through the common coordinator queue,
+            # so the CLI-only rule no longer disables its Start button.
+            ("hanjuku-hero", "retroarch", True, None),
             ("other-game", "retroarch", False, "non-cli-manual-unsupported"),
         ):
             with self.subTest(game=game), mock.patch(
@@ -3421,6 +3581,16 @@ class TestCornerManualCapabilities(unittest.TestCase):
                     "manual_start": allowed, "manual_stop": True,
                     "manual_start_reason": reason,
                 })
+
+    def test_hanjuku_start_needs_a_readable_game_configuration(self):
+        # 予約は coordinator が検証するが、ゲーム設定そのものが読めない場合は
+        # 開始を出さない (既存の fail-closed を hanjuku でも維持する)。
+        with mock.patch("docich.config.load_game", side_effect=ValueError("PRIVATE-CONFIG")):
+            result = webui._corner_manual_capabilities(
+                mock.Mock(), mock.Mock(adapter="game", game="hanjuku-hero"))
+        self.assertEqual(result, {"manual_start": False, "manual_stop": True,
+                                  "manual_start_reason": "game-configuration-unavailable"})
+        self.assertNotIn("PRIVATE-CONFIG", json.dumps(result))
 
     def test_unknown_game_configuration_fails_closed_without_error_text(self):
         with mock.patch("docich.config.load_game", side_effect=ValueError("PRIVATE-CONFIG")):
@@ -3463,50 +3633,58 @@ const fmtTime=x=>x?String(x):'-';
             "document.getElementById('corners-select').value=" + json.dumps(select_after)
             + ";updateCornerButtons();\n" if select_after is not None else ""
         ) + '''
-const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration','corners-start-operator'])out[id]=elements[id];
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def test_hanjuku_disables_direct_start_but_keeps_stop_and_owner_guidance(self):
+    def test_hanjuku_queues_start_without_duration_and_keeps_stop(self):
+        # #2024: 半熟英雄は分数を使わない queue 方式。開始は予約ボタンとして
+        # 有効で、分数欄は無効、停止は従来どおり状態に応じて有効。
         row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
-               "manual": True, "manual_start": False, "manual_stop": True,
-               "manual_start_reason": "operator-workflow-required", "manual_mode": "runner",
+               "manual": True, "manual_start": True, "manual_stop": True,
+               "manual_start_reason": None, "manual_mode": "queue",
                "enabled": True, "paused": False, "state_file": "retro_corner"}
         for state, can_stop in (("completed", False), ("active", True), ("restoring", True)):
             with self.subTest(state=state):
                 out = self._render({"status": "ready"}, catalog=[row], selected=row["id"],
                                    corners={"retro_corner": {"present": True,
                                             "status": state, "game": "hanjuku-hero"}})
-                self.assertTrue(out["corners-start"]["disabled"])
                 self.assertTrue(out["corners-duration"]["disabled"])
                 self.assertEqual(out["corners-stop"]["disabled"], not can_stop)
-                self.assertEqual(out["corners-start-operator"]["style"]["display"], "")
-                self.assertIn("operation=start-hanjuku", out["corners-hint"]["textContent"])
-                self.assertIn("confirm=production", out["corners-hint"]["textContent"])
-        self.assertIn('href="https://github.com/azumag/docich/actions/workflows/corner-rotation-operator.yml"',
-                      webui.INDEX_HTML)
+                self.assertIn("ゲームオーバー", out["corners-hint"]["textContent"])
+        # 予約が無く停止対象も無いときだけ開始できる
+        out = self._render({"status": "ready"}, catalog=[row], selected=row["id"], corners={})
+        self.assertFalse(out["corners-start"]["disabled"])
+        self.assertEqual(out["corners-start"]["textContent"], "開始予約")
+        # 予約済み・要復旧では開始できない
+        out = self._render({"status": "ready", "queued_manual": {"corner": "hanjuku-hero"}},
+                           catalog=[row], selected=row["id"], corners={})
+        self.assertTrue(out["corners-start"]["disabled"])
+        out = self._render({"status": "recovery_required", "latch": True}, catalog=[row],
+                           selected=row["id"], corners={})
+        self.assertTrue(out["corners-start"]["disabled"])
+        self.assertIn("要復旧", out["corners-hint"]["textContent"])
 
-    def test_selection_change_clears_operator_guidance_and_legacy_rows_still_start(self):
+    def test_selection_change_keeps_queue_rows_startable(self):
         catalog = [
             {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
-             "manual": True, "manual_start": False, "manual_stop": True,
-             "manual_start_reason": "operator-workflow-required", "state_file": "retro_corner"},
+             "manual": True, "manual_start": True, "manual_stop": True,
+             "manual_start_reason": None, "manual_mode": "queue",
+             "enabled": True, "paused": False, "state_file": "retro_corner"},
             {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,
-             "manual_mode": "runner", "state_file": "retro_corner"},
+             "manual_start": True, "manual_mode": "runner",
+             "enabled": True, "paused": False, "state_file": "retro_corner"},
         ]
-        for selected, changed, can_start in (("hanjuku-hero", "nsnake", True),
-                                             ("nsnake", "hanjuku-hero", False)):
+        for selected, changed in (("hanjuku-hero", "nsnake"), ("nsnake", "hanjuku-hero")):
             with self.subTest(selected=selected):
                 out = self._render({"status": "ready"}, catalog=catalog, corners={},
                                    selected=selected, select_after=changed)
-                self.assertEqual(out["corners-start"]["disabled"], not can_start)
-                self.assertEqual(out["corners-duration"]["disabled"], not can_start)
-                self.assertEqual(out["corners-start-operator"]["style"]["display"],
-                                 "none" if can_start else "")
-                self.assertEqual("start-hanjuku" in out["corners-hint"]["textContent"], not can_start)
+                self.assertFalse(out["corners-start"]["disabled"])
+                # queue 方式の半熟英雄だけ分数欄が無効
+                self.assertEqual(out["corners-duration"]["disabled"], changed == "hanjuku-hero")
 
     def test_explicit_stop_capability_is_independent_of_start(self):
         row = {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,

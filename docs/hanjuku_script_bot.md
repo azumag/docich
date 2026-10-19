@@ -625,6 +625,23 @@ production SHA一致を再検証し、同じ固定scriptだけを引数なしで
 要求の受理とゲームの実起動は別であり、`retro_corner.json`と世代別botログで実起動を確認する。
 他のコーナーが稼働中の場合に強制停止したり、cooldown/stateを削除したりしない。
 
+### WebUI（Corners タブ）からの開始予約（#2024）
+
+ownerは`Corner rotation operator`と同じく、WebUIのCornersタブから半熟英雄の開始を予約できる。
+`start-hanjuku`と同じ固定経路（`CornerRotationManager.queue_manual('hanjuku-hero')`）を
+webuiと同じconfig/stateで実行するだけで、任意のargv・unit・パスは受け付けない。
+
+- 分数は使わない。終了はゲームオーバー（またはゲーム画面が300秒不変）。
+- 既存コーナーのkill/restartはしない。予約は常時受付で、実起動は現在のコーナー終了後の
+  次のtick（1分以内）に共通coordinatorが行う。重複要求はcoordinatorが拒否し、
+  同一要求の再送は冪等（予約を書き換えない）。
+- 起動の成否は「試した」ことではなく状態ファイル（`corner_manual_queue.json`または
+  ledgerの`queued_manual`/`manual_pending`）で確定し、確認できなければ失敗として返す。
+- 拒否（要復旧latch・無効/休止・既存予約との競合）は予約書き込みの前に返り、
+  rotationをラッチさせない。既存の`start-hanjuku`経路はfallbackとして残る。
+- 開始後は手動停止で終了できる。実起動の確認は従来どおり`retro_corner.json`、
+  canonical（`game_switch.json`）、世代別botログ、配信フレームで別々に行う。
+
 ### 死んだruntimeの正規復旧（`recover-runtime`）
 
 tmuxサーバ消滅などでgame/agentペインが死に、canonicalは`hanjuku-hero`をready/activeの

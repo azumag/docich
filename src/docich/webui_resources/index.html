@@ -202,12 +202,12 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div class="card"><h2>手動操作</h2>
 <p class="desc">使い方:<br/>
-① <b>手動開始</b>: コーナーと分数を選んで1回だけ実行します。天気・衝立将棋は共通キューへ予約し、現在のコーナー終了後に開始します。衝立将棋は1局だけ対戦します。予約中は開始後に停止できます。実行中はローテーションの自動起動が待機します。<br/>
+① <b>手動開始</b>: コーナーと分数を選んで1回だけ実行します。天気・衝立将棋・半熟英雄は共通キューへ予約し、現在のコーナー終了後に開始します。衝立将棋は1局だけ対戦します。半熟英雄は分数を使わずゲームオーバーまで動きます。予約中は開始後に停止できます。実行中はローテーションの自動起動が待機します。<br/>
 ② <b>時刻指定</b>: ブラウザのローカル日時で1回だけ予約します。指定時刻より前には開始せず、時刻到達後に安全な空き枠で開始します。指定したコーナー以外の自動ローテーションは時刻前も継続します。<br/>
 ③ <b>手動停止</b>: 手動開始・ローテーション自動起動のどちらで動いているコーナーでも、停止可能な状態なら途中で終わらせ、元のゲームへ戻します。<br/>
 ④ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
 <div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
-<div><label>分数 (1-60、PAPER は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div>
+<div><label>分数 (1-60、PAPER と半熟英雄は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div>
 <div><label>時刻指定（ローカル時刻）</label><input id="corners-schedule-at" type="datetime-local" step="60"/></div></div>
 <div class="actions">
 <button class="btn primary" id="corners-start">手動開始</button>
@@ -218,7 +218,6 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn" id="corners-refresh">更新</button>
 </div>
 <div id="corners-hint" class="help"></div>
-<a id="corners-start-operator" class="help" href="https://github.com/azumag/docich/actions/workflows/corner-rotation-operator.yml" target="_blank" rel="noopener noreferrer" style="display:none">GitHub Actions の Corner rotation operator を開く</a>
 <div id="corners-msg" class="help"></div>
 </div>
 <div class="card"><h2>メリケンAI 描画ホスト</h2>
@@ -2395,7 +2394,6 @@ function updateCornerButtons(){
   const hints=[];
   const queuedMode=!!c&&c.manual_mode==="queue";
   const directStart=!!c&&c.manual_start!==false;
-  const operatorStart=!!c&&c.manual_start_reason==="operator-workflow-required";
   const canStart=directStart && (queuedMode||!switching) && !r.latch && !busy
     && (!queuedMode||(c.enabled&&!c.paused&&r.enabled!==false&&!r.queued_manual));
   const durationInput=document.getElementById("corners-duration");
@@ -2412,17 +2410,15 @@ function updateCornerButtons(){
   }
   else if(r.pending) hints.push(`${r.pending.corner} は${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}です。手動開始すると、現在のコーナーが終わってから始まります。`);
   if(queuedMode){
-    if(c.adapter==="weather") hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
+    if(c.game==="hanjuku-hero") hints.push("半熟英雄は分数を使わず、ゲームオーバーまで（ゲーム画面が300秒変わらない場合はその時点まで）動きます。開始は現在のコーナー終了後、次の tick で行われます。");
+    else if(c.adapter==="weather") hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
     else if(c.adapter==="tsuitate") hints.push("衝立将棋は1局だけ対戦し、終局後に元の画面へ戻ります。結果未確定時はreconcileまで次のコーナーを待たせます。");
     if(!c.enabled||c.paused||r.enabled===false) hints.push("コーナーまたはローテーションが無効・休止中のため予約できません。");
     if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約は受付済みです。${r.reason==="manual-request-needs-resume-or-recovery"?"未精算の手動要求があり開始待ちです。":"予約は実行中のコーナー終了後に処理されます。"}`);
   }
-  if(operatorStart) hints.push("半熟英雄の開始は owner が GitHub Actions の Corner rotation operator で main・operation=start-hanjuku・confirm=production を指定してください。受理後は現在のコーナー終了を待ちます。");
-  else if(c&&!directStart) hints.push(c.manual_start_reason==="game-configuration-unavailable"
+  if(c&&!directStart) hints.push(c.manual_start_reason==="game-configuration-unavailable"
     ? "ゲーム設定を確認できないため、この画面から開始できません。停止可能な実行は手動停止できます。"
     : "このゲームは one-off runner で開始できません。停止可能な実行は手動停止できます。");
-  const operatorLink=document.getElementById("corners-start-operator");
-  if(operatorLink) operatorLink.style.display=operatorStart?"":"none";
   const startBtn=document.getElementById("corners-start");
   const scheduleBtn=document.getElementById("corners-schedule");
   const cancelScheduleBtn=document.getElementById("corners-cancel-schedule");
@@ -2456,11 +2452,13 @@ async function cornerAction(payload, confirmText){
       else if(r.action==="schedule") t=`${r.corner&&r.corner.id||"-"} を ${fmtTime(r.trigger_at)} 以降に1回だけ開始するよう予約しました。`;
       else if(r.action==="cancel-schedule") t=`${r.corner&&r.corner.id||"-"} の時刻指定予約を取り消しました。`;
       else if(r.corner&&r.corner.target==="rotation") {
-        const name=r.corner.adapter==="tsuitate"?"衝立将棋":"天気";
+        const name=r.corner.adapter==="tsuitate"?"衝立将棋":(r.corner.game==="hanjuku-hero"?"半熟英雄":"天気");
         t=r.action==="start"
-          ? (r.corner.adapter==="tsuitate"
-              ? "衝立将棋1局の開始を予約しました。現在のコーナー終了後、次の tick で開始します。"
-              : `天気の開始を予約しました（最大${r.duration_minutes}分）。現在のコーナー終了後、次の tick で開始します。`)
+          ? (r.corner.game==="hanjuku-hero"
+              ? "半熟英雄の開始を予約しました。現在のコーナー終了後、次の tick で開始し、ゲームオーバーまで（ゲーム画面が300秒変わらない場合はその時点まで）動きます。"
+              : (r.corner.adapter==="tsuitate"
+                  ? "衝立将棋1局の開始を予約しました。現在のコーナー終了後、次の tick で開始します。"
+                  : `天気の開始を予約しました（最大${r.duration_minutes}分）。現在のコーナー終了後、次の tick で開始します。`))
           : `${name}の停止を要求しました。元のゲームへ復帰するまで状態欄で確認してください。`;
       }
       else {
@@ -3160,9 +3158,11 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(!corner){ toast("コーナーを選択してください"); return; }
     const row=CORNERS_DATA&&(CORNERS_DATA.catalog||[]).find(c=>c.id===corner);
     if(row&&row.manual_mode==="queue"){
-      const text=row.adapter==="tsuitate"
-        ? "衝立将棋を1局開始予約しますか？（現在のコーナー終了後に開始し、終局後は元画面へ復帰します）"
-        : `天気を開始予約しますか？（現在のコーナー終了後・最大${row.duration_minutes}分・音声と予報取得は設定に従います）`;
+      const text=row.game==="hanjuku-hero"
+        ? "半熟英雄を開始予約しますか？（現在のコーナー終了後に開始し、分数は使わずゲームオーバーまで動きます。既存コーナーの停止・再起動はしません）"
+        : (row.adapter==="tsuitate"
+            ? "衝立将棋を1局開始予約しますか？（現在のコーナー終了後に開始し、終局後は元画面へ復帰します）"
+            : `天気を開始予約しますか？（現在のコーナー終了後・最大${row.duration_minutes}分・音声と予報取得は設定に従います）`);
       cornerAction({action:"start",corner},text);
       return;
     }
