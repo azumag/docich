@@ -1115,14 +1115,18 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
             ("script", script_path, deployed_script),
             ("unit", unit_file, deployed_unit)):
         installed_sha = _audio_priority_sha256(installed)
+        if installed_sha is None:
+            # An absent copy carries its whole fact in present=false; the
+            # huge-telemetry envelope has no room for null padding.
+            files[label] = {"present": False}
+            continue
         deployed_sha = _audio_priority_sha256(deployed)
         files[label] = {
-            "present": installed_sha is not None,
+            "present": True,
             # 16-hex prefix + the boolean verdict is the evidence; the full
             # digest of the deployed side is reproducible from the repo.
-            "sha256_16": installed_sha[:16] if installed_sha else None,
-            "matches_deployed": (installed_sha is not None
-                                 and installed_sha == deployed_sha),
+            "sha256_16": installed_sha[:16],
+            "matches_deployed": installed_sha == deployed_sha,
         }
 
     service = {}
@@ -1150,31 +1154,38 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
     targets, keeper, mirror = _audio_priority_scan(
         proc_root, uid, module if module is not None else None)
 
-    journal = {
-        "available": False,
-        "reniced_24h": 0,
-        "reniced_by_kind": {},
-        "warnings_24h": 0,
-        "scan_failures_24h": 0,
-        "restarts_24h": 0,
-    }
+    # Zero counters and empty breakdowns are omitted (absence means zero) so
+    # the idle shape stays byte-cheap under the huge-telemetry envelope.
+    journal = {"available": False}
+    reniced_by_kind = {}
     text = _audio_priority_journal_tail()
     if text is not None:
         journal["available"] = True
+        reniced = warnings = scan_failures = restarts = 0
         for line in text.splitlines():
             if line.startswith("audio-priority: reniced "):
-                journal["reniced_24h"] += 1
+                reniced += 1
                 match = re.search(r"kind=([a-z-]+)", line)
                 kind = match.group(1) if match else "other"
                 if kind not in AUDIO_PRIORITY_KINDS:
                     kind = "other"
-                journal["reniced_by_kind"][kind] = journal["reniced_by_kind"].get(kind, 0) + 1
+                reniced_by_kind[kind] = reniced_by_kind.get(kind, 0) + 1
             elif line.startswith("audio-priority: warning"):
-                journal["warnings_24h"] += 1
+                warnings += 1
             elif line.startswith("audio-priority: scan failed"):
-                journal["scan_failures_24h"] += 1
+                scan_failures += 1
             elif line.startswith("audio-priority: started "):
-                journal["restarts_24h"] += 1
+                restarts += 1
+        if reniced:
+            journal["reniced_24h"] = reniced
+        if warnings:
+            journal["warnings_24h"] = warnings
+        if scan_failures:
+            journal["scan_failures_24h"] = scan_failures
+        if restarts:
+            journal["restarts_24h"] = restarts
+    if reniced_by_kind:
+        journal["reniced_by_kind"] = reniced_by_kind
 
     enabled = service.get("enabled")
     if enabled == "not-found":
@@ -1182,26 +1193,32 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
     elif enabled is None and "active" not in service:
         status = "unknown"
     elif (service.get("active") is True and keeper["present"]
-          and files["script"]["matches_deployed"] and files["unit"]["matches_deployed"]):
+          and files["script"].get("matches_deployed") is True
+          and files["unit"].get("matches_deployed") is True):
         status = "ok"
     else:
         status = "degraded"
 
     # Absent targets/kinds and unknown service fields are omitted rather than
     # serialized as null so the fixed section stays small under the envelope.
-    return {
+    section = {
         "schema_version": 1,
         "status": status,
         "uid": uid,
-        "classification": "priority.py" if module is not None else "unavailable",
         "service": service,
         "files": files,
-        "keeper": keeper if keeper["present"] else {"present": False},
         "targets": {kind: summary for kind, summary in targets.items()
                     if summary["present"]},
-        "mirror": mirror if mirror["present"] else {"present": False},
         "journal": journal,
     }
+    if module is None:
+        # The classification is worth its bytes only when it broke.
+        section["classification"] = "unavailable"
+    if keeper["present"]:
+        section["keeper"] = keeper
+    if mirror["present"]:
+        section["mirror"] = mirror
+    return section
 
 
 def _empty_opencode_attribution_bucket():

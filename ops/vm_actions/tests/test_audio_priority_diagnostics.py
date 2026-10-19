@@ -257,7 +257,8 @@ class AudioPriorityKeeperTests(unittest.TestCase):
             "audio-priority: scan failed: OSError\n"
         ))
         self.assertEqual(out["status"], "ok")
-        self.assertEqual(out["classification"], "priority.py")
+        # The classification only spends bytes when it is broken.
+        self.assertNotIn("classification", out)
         targets = out["targets"]
         self.assertEqual(targets["retroarch"],
                          {"present": True, "processes": 1, "threads": 1,
@@ -323,19 +324,25 @@ class AudioPriorityKeeperTests(unittest.TestCase):
     def test_keeper_absent_or_systemd_blind_is_not_ok(self):
         empty = self.collect()
         self.assertEqual(empty["status"], "degraded")
-        self.assertEqual(empty["keeper"], {"present": False})
-        self.assertEqual(empty["mirror"], {"present": False})
+        # Absent keeper/mirror are omitted entirely (absence = not present),
+        # keeping the idle section byte-cheap for the huge-telemetry envelope.
+        self.assertNotIn("keeper", empty)
+        self.assertNotIn("mirror", empty)
         self.assertEqual(empty["targets"], {})
+        self.assertEqual(empty["journal"], {"available": False})
         blind = self.collect(is_enabled=None, is_active=None, show=None)
         self.assertEqual(blind["status"], "unknown")
         self.assertEqual(blind["service"], {})
-        blind = self.collect(is_enabled=None, is_active=None, show=None)
-        self.assertEqual(blind["status"], "unknown")
 
     def test_journal_unavailable_fails_open(self):
         out = self.collect(journal_text=None)
-        self.assertFalse(out["journal"]["available"])
-        self.assertEqual(out["journal"]["reniced_24h"], 0)
+        self.assertEqual(out["journal"], {"available": False})
+
+    def test_idle_journal_omits_zero_counters(self):
+        out = self.collect(journal_text="audio-priority: started uid=1001 nice=-10 interval=5 dry_run=False\n")
+        self.assertEqual(out["journal"], {"available": True, "restarts_24h": 1})
+        idle = self.collect(journal_text="")
+        self.assertEqual(idle["journal"], {"available": True})
 
     def test_absent_installed_files_report_present_false(self):
         out = self.collect()
@@ -345,9 +352,9 @@ class AudioPriorityKeeperTests(unittest.TestCase):
             proc_root=self.proc.root, uid=self.uid,
             script_path=gone, unit_file=self.unit,
             deployed_script=self.script, deployed_unit=self.unit)
-        self.assertFalse(out["files"]["script"]["present"])
-        self.assertIsNone(out["files"]["script"]["sha256_16"])
-        self.assertFalse(out["files"]["script"]["matches_deployed"])
+        # The absent copy carries its whole fact; no null padding is emitted.
+        self.assertEqual(out["files"]["script"], {"present": False})
+        self.assertTrue(out["files"]["unit"]["matches_deployed"])
 
     def test_unloadable_classification_is_reported_not_guessed(self):
         with mock.patch.object(collector, "_audio_priority_module",
