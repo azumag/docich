@@ -806,6 +806,18 @@ def _compute_digests(
         "held_rate": result_arm.news_util.held_rate,
         "rejected_rate": result_arm.news_util.rejected_rate,
         "unique_eligible": result_arm.news_util.unique_eligible_events,
+        # Cost breakdown (explicit rates for reproducibility)
+        "exit_commission_bps": str(result_arm.cost_breakdown.exit_commission_bps),
+        "exit_slippage_bps": str(result_arm.cost_breakdown.exit_slippage_bps),
+        "total_trading_cost": str(result_arm.cost_breakdown.total_trading_cost_jpy),
+        "total_operating_cost": str(result_arm.cost_breakdown.total_operating_cost_jpy),
+        "llm_api_cost": str(result_arm.cost_breakdown.llm_api_cost_jpy),
+        "data_api_cost": str(result_arm.cost_breakdown.data_api_cost_jpy),
+        # Latency (stage medians and totals)
+        "latency_total_median_ms": result_arm.latency.total_ms_median,
+        "latency_total_p95_ms": result_arm.latency.total_ms_p95,
+        "latency_stage_medians": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_median_ms.items()},
+        "latency_stage_p95": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_p95_ms.items()},
     }
     eval_digest = hashlib.sha256(
         json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
@@ -899,10 +911,17 @@ def run_evaluation(
     if manifest.min_coverage_fraction > 0:
         # We can't compute actual coverage without full observation data
         # Mark as unknown/remaining unless we have explicit coverage data
-        has_coverage_data = (arm_a.news_util.observation_missing_seconds == 0 and arm_b.news_util.observation_missing_seconds == 0)
+        # Need actual observation data: unique_eligible_events > 0 AND data_gaps_seconds < window_duration
+        window_duration = manifest.eval_end_ts - manifest.eval_start_ts
+        has_coverage_data = (
+            arm_a.news_util.unique_eligible_events > 0 and
+            arm_b.news_util.unique_eligible_events > 0 and
+            arm_a.data_gaps_seconds < window_duration and
+            arm_b.data_gaps_seconds < window_duration
+        )
         if not has_coverage_data:
             remaining_items += 1
-            limitations.append("coverage_fraction_unverifiable (missing observation data)")
+            limitations.append("coverage_fraction_unverifiable (missing observation data or full window gaps)")
 
     # Check for empty required version fields in manifest (already validated but double-check)
     required_fields = [
