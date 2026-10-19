@@ -126,7 +126,50 @@ class FakeTriangleGateway:
         return {symbol: all_books[symbol] for symbol in symbols}
 
 
+class FlakyStrategyGateway(FakeStrategyGateway):
+    """Fails the first fetch for a symbol, then succeeds (transient hiccup)."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail_once = {"BAD/JPY"}
+
+    def fetch_market_frames(self, symbols, *, timeframe, limit, now):
+        symbol = list(symbols)[0]
+        if symbol in self.fail_once:
+            self.fail_once.discard(symbol)
+            raise RuntimeError("transient public history failure")
+        return {symbol: self.frames.get(symbol, _frame(symbol))}
+
+
 class TestPaperWorkerCycle(unittest.TestCase):
+    def test_cycle_retries_a_transient_fetch_failure_and_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            gateway = FlakyStrategyGateway()
+            gateway.frames["BAD/JPY"] = _frame("BAD/JPY")
+            result = run_worker_cycle(
+                g,
+                gateway=gateway,
+                cycle_index=1,
+                now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.frame_error_count, 0)
+            self.assertNotIn("frame_fetch_error", result.error_codes)
+
+    def test_cycle_counts_a_symbol_that_keeps_failing_only_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            result = run_worker_cycle(
+                g,
+                gateway=FakeStrategyGateway(one_bad_symbol=True),
+                cycle_index=1,
+                now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.frame_error_count, 1)
+            self.assertIn("frame_fetch_error", result.error_codes)
+
     def test_cycle_isolates_bad_frame_and_reuses_thirty_percent_allocator(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp), capital=10000)
