@@ -134,7 +134,11 @@ class TestComputeLatencyBreakdown(unittest.TestCase):
         self.assertAlmostEqual(latency.available_to_classification_ms, 100, places=0)
         self.assertAlmostEqual(latency.classification_to_decision_ms, 100, places=0)
         self.assertAlmostEqual(latency.decision_to_fill_ms, 100, places=0)
-        self.assertAlmostEqual(latency.total_ms, 500, places=0)
+        # Event-level total latency
+        self.assertAlmostEqual(latency.total_ms_median, 500, places=0)
+        self.assertAlmostEqual(latency.total_ms_p95, 500, places=0)
+        # Stage-level p95
+        self.assertAlmostEqual(latency.stage_p95_ms["published_to_fetched_ms"], 100, places=0)
 
     def test_latency_partial_missing(self):
         events = [
@@ -144,6 +148,11 @@ class TestComputeLatencyBreakdown(unittest.TestCase):
         self.assertAlmostEqual(latency.published_to_fetched_ms, 100, places=0)
         self.assertIsNone(latency.fetched_to_available_ms)
         self.assertIn("fetched_to_available_ms", latency.missing_stages)
+        self.assertIn("available_to_classification_ms", latency.missing_stages)
+        self.assertIn("classification_to_decision_ms", latency.missing_stages)
+        self.assertIn("decision_to_fill_ms", latency.missing_stages)
+        # Total latency should be None since filled_at missing
+        self.assertIsNone(latency.total_ms_median)
 
 
 class TestBuildArmMetrics(unittest.TestCase):
@@ -334,14 +343,31 @@ class TestExportEvaluation(unittest.TestCase):
 class TestVerifyReproducibility(unittest.TestCase):
     def test_verify_reproducibility_match(self):
         manifest = EvaluationManifest(rng_seed=42)
-        prev = manifest.digest()
-        curr = manifest.digest()
-        result = verify_reproducibility(manifest, prev, curr)
+        fills = [FillRecord("open", "TEST", 1, D("10"), D("100"), D("1"), ts=1000.0)]
+        equity = [(1000.0, D("1000"))]
+        positions = {"TEST": {"side": "1", "qty": "10", "entry": "100", "mark": "100", "mark_ts": "1000.0"}}
+        result = verify_reproducibility(
+            manifest,
+            fills, equity, positions,
+            fills, equity, positions,
+            fills, equity, positions,
+            fills, equity, positions,
+        )
         self.assertTrue(result["reproducible"])
 
     def test_verify_reproducibility_mismatch(self):
         manifest = EvaluationManifest(rng_seed=42)
-        result = verify_reproducibility(manifest, "abc", "def")
+        fills1 = [FillRecord("open", "TEST", 1, D("10"), D("100"), D("1"), ts=1000.0)]
+        fills2 = [FillRecord("open", "TEST", 1, D("10"), D("101"), D("1"), ts=1000.0)]
+        equity = [(1000.0, D("1000"))]
+        positions = {"TEST": {"side": "1", "qty": "10", "entry": "100", "mark": "100", "mark_ts": "1000.0"}}
+        result = verify_reproducibility(
+            manifest,
+            fills1, equity, positions,
+            fills2, equity, positions,
+            fills1, equity, positions,
+            fills1, equity, positions,
+        )
         self.assertFalse(result["reproducible"])
 
 
@@ -397,10 +423,14 @@ class TestFixturesHandCalculation(unittest.TestCase):
 
         metrics = build_arm_metrics(fills, equity, positions, latency, news, cb, pt, "price_only", D("10148"))
 
-        # Partial close creates episode but with partial qty
-        self.assertEqual(metrics.completed_episodes, 1)
+        # Partial close does NOT create completed episode (only full close does)
+        self.assertEqual(metrics.completed_episodes, 0)
+        self.assertEqual(metrics.wins, 0)
+        self.assertEqual(metrics.win_rate, 0.0)
         self.assertEqual(metrics.partial_fills, 0)  # fill itself not marked partial
         self.assertEqual(metrics.unresolved_positions, 1)
+        # But partial_fills tracking counts partial fills
+        self.assertEqual(metrics.partial_fills, 0)  # fill not marked partial=True
 
     def test_loss_episode(self):
         """Loss episode - win_rate should reflect loss."""

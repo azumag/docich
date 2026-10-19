@@ -73,6 +73,19 @@ class EvaluationManifest:
     def from_dict(cls, data: dict) -> "EvaluationManifest":
         return cls(**data)
 
+    def validate(self) -> list[str]:
+        """Validate manifest constraints. Returns list of violations."""
+        violations = []
+        if self.eval_end_ts <= self.eval_start_ts:
+            violations.append("eval_end_ts must be > eval_start_ts")
+        if self.min_independent_events < 0:
+            violations.append("min_independent_events must be >= 0")
+        if not 0 <= self.min_coverage_fraction <= 1:
+            violations.append("min_coverage_fraction must be in [0, 1]")
+        if self.llm_cost_per_call_usd < 0 or self.api_cost_per_call_usd < 0:
+            violations.append("cost_per_call_usd must be >= 0")
+        return violations
+
 
 @dataclass(frozen=True)
 class FillRecord:
@@ -107,7 +120,7 @@ class FillRecord:
 
 @dataclass(frozen=True)
 class PositionEpisode:
-    """Completed position episode (open + close)."""
+    """Completed position episode (open + full close)."""
     symbol: str
     side: int
     open_ts: float
@@ -138,7 +151,12 @@ class LatencyBreakdown:
     available_to_classification_ms: Optional[float] = None
     classification_to_decision_ms: Optional[float] = None
     decision_to_fill_ms: Optional[float] = None
-    total_ms: Optional[float] = None
+    # Event-level total latency (published_at to filled_at)
+    total_ms_median: Optional[float] = None
+    total_ms_p95: Optional[float] = None
+    # Stage-level percentiles
+    stage_median_ms: dict[str, Optional[float]] = field(default_factory=dict)
+    stage_p95_ms: dict[str, Optional[float]] = field(default_factory=dict)
     missing_stages: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -181,13 +199,17 @@ class CostBreakdown:
     data_api_cost_jpy: Decimal = D("0")
     total_trading_cost_jpy: Decimal = D("0")
     total_operating_cost_jpy: Decimal = D("0")
+    # Exit cost parameters (explicit rates, not total JPY)
+    exit_commission_bps: Decimal = D("0")
+    exit_slippage_bps: Decimal = D("0")
     cost_allocation_method: str = "pro_rata"
 
     def to_dict(self) -> dict:
         d = asdict(self)
         for k in ("commission_jpy", "slippage_jpy", "financing_jpy",
                   "llm_api_cost_jpy", "data_api_cost_jpy",
-                  "total_trading_cost_jpy", "total_operating_cost_jpy"):
+                  "total_trading_cost_jpy", "total_operating_cost_jpy",
+                  "exit_commission_bps", "exit_slippage_bps"):
             d[k] = str(d[k])
         return d
 
@@ -215,8 +237,8 @@ class ArmMetrics:
     # Equity & PnL
     equity_jpy: Decimal = D("0")
     realized_pnl_jpy: Decimal = D("0")
-    unrealized_pnl_jpy: Decimal = D("0")
-    estimated_exit_cost_jpy: Decimal = D("0")
+    unrealized_pnl_jpy: Optional[Decimal] = None
+    estimated_exit_cost_jpy: Optional[Decimal] = None
     # Risk
     max_drawdown_fraction: Decimal = D("0")
     max_drawdown_peak_ts: float = 0.0
@@ -249,8 +271,8 @@ class ArmMetrics:
         d = asdict(self)
         d["equity_jpy"] = str(self.equity_jpy)
         d["realized_pnl_jpy"] = str(self.realized_pnl_jpy)
-        d["unrealized_pnl_jpy"] = str(self.unrealized_pnl_jpy)
-        d["estimated_exit_cost_jpy"] = str(self.estimated_exit_cost_jpy)
+        d["unrealized_pnl_jpy"] = str(self.unrealized_pnl_jpy) if self.unrealized_pnl_jpy is not None else None
+        d["estimated_exit_cost_jpy"] = str(self.estimated_exit_cost_jpy) if self.estimated_exit_cost_jpy is not None else None
         d["max_drawdown_fraction"] = str(self.max_drawdown_fraction)
         d["avg_equity_jpy"] = str(self.avg_equity_jpy)
         # Convert nested objects
@@ -384,6 +406,15 @@ def compute_turnover(fills: list[FillRecord], avg_equity: Decimal) -> Optional[f
     return float(notional / avg_equity)
 
 
+def _percentile(vals: list[float], p: float) -> Optional[float]:
+    """Compute percentile p (0-1) from sorted values."""
+    if not vals:
+        return None
+    vals = sorted(vals)
+    idx = int(len(vals) * p)
+    return vals[min(idx, len(vals) - 1)]
+
+
 def compute_latency_breakdown(events: list[dict]) -> LatencyBreakdown:
     """Compute median/p95 latency breakdown from event timestamps.
 
@@ -398,40 +429,122 @@ def compute_latency_breakdown(events: list[dict]) -> LatencyBreakdown:
         ("decision_to_fill_ms", "decided_at", "filled_at"),
     ]
 
-    missing = []
-    durations = {name: [] for name, _, _ in stages}
+    missing = set()
+    stage_durations = {name: [] for name, _, _ in stages}
+    total_durations = []
 
     for ev in events:
+        event_missing = False
+        event_total = None
         for name, start_k, end_k in stages:
             if start_k in ev and end_k in ev and ev[start_k] is not None and ev[end_k] is not None:
-                durations[name].append((ev[end_k] - ev[start_k]) * 1000)
-            elif end_k not in ev or ev[end_k] is None:
-                missing.append(name)
+                stage_durations[name].append((ev[end_k] - ev[start_k]) * 1000)
+            else:
+                missing.add(name)
+                event_missing = True
+        # Compute event-level total latency (published_at to filled_at)
+        if "published_at" in ev and "filled_at" in ev and ev["published_at"] is not None and ev["filled_at"] is not None:
+            total_durations.append((ev["filled_at"] - ev["published_at"]) * 1000)
+        elif not event_missing and "published_at" not in ev:
+            missing.add("published_at")
+        elif not event_missing and "filled_at" not in ev:
+            missing.add("filled_at")
 
-    def pct(vals: list[float], p: float) -> Optional[float]:
-        if not vals:
-            return None
-        vals = sorted(vals)
-        idx = int(len(vals) * p)
-        return vals[min(idx, len(vals) - 1)]
-
-    result = {}
-    total_ms = None
+    stage_median = {}
+    stage_p95 = {}
     for name, _, _ in stages:
-        result[name] = pct(durations[name], 0.5)  # median
+        stage_median[name] = _percentile(stage_durations[name], 0.5)
+        stage_p95[name] = _percentile(stage_durations[name], 0.95)
 
-    if all(v is not None for v in result.values()):
-        total_ms = sum(v for v in result.values() if v is not None)
+    total_ms_median = _percentile(total_durations, 0.5)
+    total_ms_p95 = _percentile(total_durations, 0.95)
 
     return LatencyBreakdown(
-        published_to_fetched_ms=result.get("published_to_fetched_ms"),
-        fetched_to_available_ms=result.get("fetched_to_available_ms"),
-        available_to_classification_ms=result.get("available_to_classification_ms"),
-        classification_to_decision_ms=result.get("classification_to_decision_ms"),
-        decision_to_fill_ms=result.get("decision_to_fill_ms"),
-        total_ms=total_ms,
-        missing_stages=list(set(missing))
+        published_to_fetched_ms=stage_median.get("published_to_fetched_ms"),
+        fetched_to_available_ms=stage_median.get("fetched_to_available_ms"),
+        available_to_classification_ms=stage_median.get("available_to_classification_ms"),
+        classification_to_decision_ms=stage_median.get("classification_to_decision_ms"),
+        decision_to_fill_ms=stage_median.get("decision_to_fill_ms"),
+        total_ms_median=total_ms_median,
+        total_ms_p95=total_ms_p95,
+        stage_median_ms=stage_median,
+        stage_p95_ms=stage_p95,
+        missing_stages=sorted(list(missing))
     )
+
+
+def _build_episodes_from_fills(fills: list[FillRecord]) -> list[PositionEpisode]:
+    """Build completed position episodes from fills.
+
+    Only counts fully closed positions (total closed qty == total open qty).
+    Partial closes do not create completed episodes.
+    """
+    episodes = []
+    # Group fills by symbol and side
+    from collections import defaultdict
+    opens_by_symbol_side = defaultdict(list)
+    closes_by_symbol_side = defaultdict(list)
+
+    for f in fills:
+        key = (f.symbol, f.side)
+        if f.kind == "open":
+            opens_by_symbol_side[key].append(f)
+        elif f.kind == "close":
+            closes_by_symbol_side[key].append(f)
+
+    for key, opens in opens_by_symbol_side.items():
+        closes = closes_by_symbol_side.get(key, [])
+        if not closes:
+            continue
+
+        # Sort by timestamp
+        opens.sort(key=lambda f: f.ts)
+        closes.sort(key=lambda f: f.ts)
+
+        # Track remaining open quantity per open fill
+        open_queue = []
+        for o in opens:
+            open_queue.append({"fill": o, "remaining_qty": o.qty})
+
+        # Process closes in order
+        for c in closes:
+            close_qty = c.qty
+            # Match against earliest opens first (FIFO)
+            while close_qty > 0 and open_queue:
+                open_entry = open_queue[0]
+                match_qty = min(close_qty, open_entry["remaining_qty"])
+
+                # If this close fully closes the open, create episode
+                if match_qty == open_entry["remaining_qty"] and close_qty == match_qty and len(open_queue) == 1:
+                    # Only create episode if this close fully resolves the position
+                    # (i.e., no other open fills and this close matches exactly)
+                    open_f = open_entry["fill"]
+                    episodes.append(PositionEpisode(
+                        symbol=c.symbol,
+                        side=c.side,
+                        open_ts=open_f.ts,
+                        close_ts=c.ts,
+                        open_price=open_f.price,
+                        close_price=c.price,
+                        qty=match_qty,
+                        open_fee=open_f.fee,
+                        close_fee=c.fee,
+                        financing=c.financing,
+                        net_pnl_jpy=c.net_pnl_jpy,
+                        hold_seconds=c.ts - open_f.ts,
+                        win=c.net_pnl_jpy > 0
+                    ))
+
+                open_entry["remaining_qty"] -= match_qty
+                close_qty -= match_qty
+
+                if open_entry["remaining_qty"] == 0:
+                    open_queue.pop(0)
+
+        # After processing all closes, if any open remains, position is unresolved
+        # (handled by unresolved_positions tracking)
+
+    return episodes
 
 
 def build_arm_metrics(
@@ -446,30 +559,8 @@ def build_arm_metrics(
     avg_equity: Decimal,
 ) -> ArmMetrics:
     """Build ArmMetrics from raw evaluation data."""
-    # Position episodes
-    episodes = []
-    for fill in fills:
-        if fill.kind == "close":
-            # Find matching open
-            open_fills = [f for f in fills if f.kind == "open" and f.symbol == fill.symbol
-                          and f.ts < fill.ts and f.side == fill.side]
-            if open_fills:
-                open_f = max(open_fills, key=lambda f: f.ts)
-                episodes.append(PositionEpisode(
-                    symbol=fill.symbol,
-                    side=fill.side,
-                    open_ts=open_f.ts,
-                    close_ts=fill.ts,
-                    open_price=open_f.price,
-                    close_price=fill.price,
-                    qty=fill.qty,
-                    open_fee=open_f.fee,
-                    close_fee=fill.fee,
-                    financing=fill.financing,
-                    net_pnl_jpy=fill.net_pnl_jpy,
-                    hold_seconds=fill.ts - open_f.ts,
-                    win=fill.net_pnl_jpy > 0
-                ))
+    # Position episodes - only fully closed positions
+    episodes = _build_episodes_from_fills(fills)
 
     completed_episodes, wins, win_rate = compute_win_rate(episodes)
 
@@ -482,15 +573,18 @@ def build_arm_metrics(
     # Latency
     latency = compute_latency_breakdown(latency_events)
 
-    # News utilization
-    unique_eligible = len({e.get("event_id") for e in news_events if e.get("eligible", False)})
-    used_signal = len({e.get("event_id") for e in news_events if e.get("used_for_signal", False)})
-    used_decision = len({e.get("event_id") for e in news_events if e.get("used_for_decision", False)})
+    # News utilization - deduplicate by event_id for rates
+    unique_eligible = {e.get("event_id") for e in news_events if e.get("eligible", False) and e.get("event_id")}
+    used_signal = {e.get("event_id") for e in news_events if e.get("used_for_signal", False) and e.get("event_id")}
+    used_decision = {e.get("event_id") for e in news_events if e.get("used_for_decision", False) and e.get("event_id")}
+    held_events = {e.get("event_id") for e in news_events if e.get("held", False) and e.get("event_id")}
+    rejected_events = {e.get("event_id") for e in news_events if e.get("rejected", False) and e.get("event_id")}
+
+    unique_eligible_count = len(unique_eligible)
     raw = len(news_events)
     invalid = len([e for e in news_events if not e.get("valid", True)])
     duplicate = len([e for e in news_events if e.get("duplicate", False)])
-    held = len([e for e in news_events if e.get("held", False)])
-    rejected = len([e for e in news_events if e.get("rejected", False)])
+
     rejection_reasons = {}
     for e in news_events:
         if e.get("rejected", False):
@@ -508,14 +602,14 @@ def build_arm_metrics(
             max_exposure = max(max_exposure, exposure)
 
     news_util = NewsUtilization(
-        unique_eligible_events=unique_eligible,
-        events_used_for_signal=used_signal,
-        events_used_for_decision=used_decision,
+        unique_eligible_events=unique_eligible_count,
+        events_used_for_signal=len(used_signal),
+        events_used_for_decision=len(used_decision),
         raw_events=raw,
         invalid_events=invalid,
         duplicate_events=duplicate,
-        held_rate=held / unique_eligible if unique_eligible > 0 else 0.0,
-        rejected_rate=rejected / unique_eligible if unique_eligible > 0 else 0.0,
+        held_rate=len(held_events) / unique_eligible_count if unique_eligible_count > 0 else 0.0,
+        rejected_rate=len(rejected_events) / unique_eligible_count if unique_eligible_count > 0 else 0.0,
         rejection_reasons=rejection_reasons,
         observation_missing_seconds=obs_missing,
         unknown_match=unknown_match,
@@ -531,19 +625,36 @@ def build_arm_metrics(
     unresolved = len(positions)
     data_gaps = sum(e.get("data_gap_seconds", 0) for e in news_events)
 
+    # Unrealized PnL - None if any position missing mark
+    unrealized_pnl = None
+    estimated_exit_cost = None
+    has_missing_mark = False
+    for pos in positions.values():
+        if "mark" not in pos or "qty" not in pos or "entry" not in pos:
+            has_missing_mark = True
+            break
+
+    if not has_missing_mark and positions:
+        unrealized_pnl = sum(
+            (decimal(pos["mark"]) - decimal(pos["entry"])) * decimal(pos["qty"])
+            for pos in positions.values()
+        )
+        # Estimated exit cost using explicit bps rates from cost_breakdown
+        exit_comm_bps = cost_breakdown.exit_commission_bps
+        exit_slippage_bps = cost_breakdown.exit_slippage_bps
+        if exit_comm_bps > 0 or exit_slippage_bps > 0:
+            estimated_exit_cost = sum(
+                decimal(pos["qty"]) * decimal(pos["mark"]) *
+                (exit_comm_bps + exit_slippage_bps) / 10000
+                for pos in positions.values()
+            )
+
     metrics = ArmMetrics(
         label=label,
         equity_jpy=equity_series[-1][1] if equity_series else D("0"),
         realized_pnl_jpy=sum(f.net_pnl_jpy for f in fills if f.kind == "close"),
-        unrealized_pnl_jpy=sum(
-            decimal(pos.get("mark", "0")) * decimal(pos.get("qty", "0")) - decimal(pos.get("entry", "0")) * decimal(pos.get("qty", "0"))
-            for pos in positions.values()
-        ),
-        estimated_exit_cost_jpy=sum(
-            decimal(pos.get("qty", "0")) * decimal(pos.get("mark", "0")) *
-            (D(cost_breakdown.commission_jpy) + D(cost_breakdown.slippage_jpy)) / 10000
-            for pos in positions.values()
-        ),
+        unrealized_pnl_jpy=unrealized_pnl,
+        estimated_exit_cost_jpy=estimated_exit_cost,
         max_drawdown_fraction=max_dd,
         max_drawdown_peak_ts=dd_peak_ts,
         max_drawdown_trough_ts=dd_trough_ts,
@@ -563,6 +674,40 @@ def build_arm_metrics(
         data_gaps_seconds=data_gaps,
     )
     return metrics
+
+
+def _compute_digests(
+    fills: list[FillRecord],
+    equity_series: list[tuple[float, Decimal]],
+    positions: dict[str, dict],
+) -> dict[str, str]:
+    """Compute normalized digests for reproducibility verification."""
+    # Normalize fills
+    fill_data = [f.to_dict() for f in sorted(fills, key=lambda x: (x.ts, x.symbol, x.kind))]
+    fill_digest = hashlib.sha256(
+        json.dumps(fill_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+    # Normalize equity series
+    equity_data = [[str(ts), str(eq)] for ts, eq in sorted(equity_series)]
+    equity_digest = hashlib.sha256(
+        json.dumps(equity_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+    # Normalize positions (sorted by symbol)
+    pos_data = []
+    for symbol in sorted(positions.keys()):
+        pos = positions[symbol]
+        pos_data.append({symbol: {k: str(v) for k, v in pos.items()}})
+    position_digest = hashlib.sha256(
+        json.dumps(pos_data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+    return {
+        "fill_digest": fill_digest,
+        "equity_digest": equity_digest,
+        "position_digest": position_digest,
+    }
 
 
 def run_evaluation(
@@ -585,6 +730,29 @@ def run_evaluation(
     run_command: str,
 ) -> EvaluationResult:
     """Run complete evaluation and produce result."""
+    # Validate manifest first
+    manifest_violations = manifest.validate()
+    if manifest_violations:
+        # Return early with skip and violations recorded
+        arm_a = ArmMetrics(label=manifest.arm_a_label)
+        arm_b = ArmMetrics(label=manifest.arm_b_label)
+        comparison_gate = ComparisonGate()
+        return EvaluationResult(
+            manifest=manifest,
+            arm_a=arm_a,
+            arm_b=arm_b,
+            comparison_gate=comparison_gate,
+            live_eligible=False,
+            review_due_ts=manifest.eval_end_ts,
+            evaluated_at=__import__("time").time(),
+            manifest_digest=manifest.digest(),
+            run_command=run_command,
+            pass_fail_skip="skip",
+            remaining_items=len(manifest_violations),
+            limitations=["primary_evidence_only", "live_eligible_false", "no_existing_policy_writes"]
+            + manifest_violations
+        )
+
     arm_a = build_arm_metrics(
         arm_a_fills, arm_a_equity_series, arm_a_positions,
         arm_a_latency_events, arm_a_news_events, cost_breakdown_a,
@@ -597,6 +765,27 @@ def run_evaluation(
     )
 
     comparison_gate = ComparisonGate().check(arm_a, arm_b)
+
+    # Check manifest constraints against actual data
+    remaining_items = 0
+    limitations = ["primary_evidence_only", "live_eligible_false", "no_existing_policy_writes"]
+    limitations += comparison_gate.violations or []
+
+    # Check min_independent_events
+    arm_a_events = arm_a.news_util.unique_eligible_events
+    arm_b_events = arm_b.news_util.unique_eligible_events
+    if manifest.min_independent_events > 0:
+        if arm_a_events < manifest.min_independent_events:
+            remaining_items += 1
+            limitations.append(f"arm_a independent_events ({arm_a_events}) < min ({manifest.min_independent_events})")
+        if arm_b_events < manifest.min_independent_events:
+            remaining_items += 1
+            limitations.append(f"arm_b independent_events ({arm_b_events}) < min ({manifest.min_independent_events})")
+
+    # Check min_coverage_fraction (simplified - would need actual coverage data)
+    # For now, track if we have any data gaps
+    if arm_a.data_gaps_seconds > 0 or arm_b.data_gaps_seconds > 0:
+        limitations.append("data_gaps_present")
 
     manifest_digest = manifest.digest()
     evaluated_at = __import__("time").time()
@@ -611,10 +800,9 @@ def run_evaluation(
         evaluated_at=evaluated_at,
         manifest_digest=manifest_digest,
         run_command=run_command,
-        pass_fail_skip="pass" if comparison_gate.cost_risk_fill_match else "fail",
-        remaining_items=0,
-        limitations=["primary_evidence_only", "live_eligible_false", "no_existing_policy_writes"]
-        + (comparison_gate.violations or [])
+        pass_fail_skip="pass" if comparison_gate.cost_risk_fill_match and remaining_items == 0 else "fail",
+        remaining_items=remaining_items,
+        limitations=limitations
     )
     return result
 
@@ -628,16 +816,43 @@ def export_evaluation(result: EvaluationResult, output_path: Path) -> None:
 
 def verify_reproducibility(
     manifest: EvaluationManifest,
-    previous_digest: str,
-    current_digest: str,
+    arm_a_fills_prev: list[FillRecord],
+    arm_a_equity_prev: list[tuple[float, Decimal]],
+    arm_a_positions_prev: dict[str, dict],
+    arm_a_fills_curr: list[FillRecord],
+    arm_a_equity_curr: list[tuple[float, Decimal]],
+    arm_a_positions_curr: dict[str, dict],
+    arm_b_fills_prev: list[FillRecord],
+    arm_b_equity_prev: list[tuple[float, Decimal]],
+    arm_b_positions_prev: dict[str, dict],
+    arm_b_fills_curr: list[FillRecord],
+    arm_b_equity_curr: list[tuple[float, Decimal]],
+    arm_b_positions_curr: dict[str, dict],
 ) -> dict:
     """Verify that re-run with same manifest produces identical digests."""
+    prev_a = _compute_digests(arm_a_fills_prev, arm_a_equity_prev, arm_a_positions_prev)
+    curr_a = _compute_digests(arm_a_fills_curr, arm_a_equity_curr, arm_a_positions_curr)
+    prev_b = _compute_digests(arm_b_fills_prev, arm_b_equity_prev, arm_b_positions_prev)
+    curr_b = _compute_digests(arm_b_fills_curr, arm_b_equity_curr, arm_b_positions_curr)
+
     return {
         "manifest_digest": manifest.digest(),
-        "previous_account_digest": previous_digest,
-        "current_account_digest": current_digest,
-        "reproducible": previous_digest == current_digest,
-        "decision_digest_match": True,  # Placeholder - would compare decision digests
-        "fill_digest_match": True,
-        "evaluation_digest_match": True,
+        "arm_a": {
+            "fill_digest_match": prev_a["fill_digest"] == curr_a["fill_digest"],
+            "equity_digest_match": prev_a["equity_digest"] == curr_a["equity_digest"],
+            "position_digest_match": prev_a["position_digest"] == curr_a["position_digest"],
+        },
+        "arm_b": {
+            "fill_digest_match": prev_b["fill_digest"] == curr_b["fill_digest"],
+            "equity_digest_match": prev_b["equity_digest"] == curr_b["equity_digest"],
+            "position_digest_match": prev_b["position_digest"] == curr_b["position_digest"],
+        },
+        "reproducible": (
+            prev_a["fill_digest"] == curr_a["fill_digest"] and
+            prev_a["equity_digest"] == curr_a["equity_digest"] and
+            prev_a["position_digest"] == curr_a["position_digest"] and
+            prev_b["fill_digest"] == curr_b["fill_digest"] and
+            prev_b["equity_digest"] == curr_b["equity_digest"] and
+            prev_b["position_digest"] == curr_b["position_digest"]
+        ),
     }
