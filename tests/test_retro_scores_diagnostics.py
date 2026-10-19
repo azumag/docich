@@ -182,7 +182,12 @@ def test_retro_scores_is_omitted_only_at_the_hard_ceiling(monkeypatch):
 
     collect_diagnostics._diagnostics_budget(payload)
 
-    assert payload["corners"]["retro_scores"] == {"status": "output_omitted"}
+    # Current contract (#2533 hard-ceiling guarantee): the still-oversized
+    # envelope is cut by _HARD_DROP_ORDER, whose first entry is the whole
+    # ``corners`` section, so its marker replaces the retro_scores sub-marker.
+    assert payload["corners"] == {"status": "output_omitted", "reason": "hard_ceiling"}
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    assert len(text.encode("utf-8")) <= collect_diagnostics.HARD_JSON_BYTES
 
 
 def test_retro_scores_survives_when_dropping_decision_plans_restores_the_ceiling(monkeypatch):

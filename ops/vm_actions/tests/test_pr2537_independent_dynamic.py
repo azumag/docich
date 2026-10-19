@@ -3,8 +3,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -37,6 +39,19 @@ def payload_of_final_size(wanted):
     return data
 
 
+def clean_production_root():
+    """A clean worktree of this checkout, so the gateway's drift check passes.
+
+    The gateway refuses ``diagnostics collector drift`` before it runs the
+    collector, so a fixture pointed at a dirty working tree never reaches the
+    collector under test. Ported from #2546.
+    """
+    root = Path(tempfile.mkdtemp(prefix='independent-gateway-'))
+    subprocess.run(['git', 'worktree', 'add', '-q', '--detach', str(root), 'HEAD'],
+                   check=True)
+    return root
+
+
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location('independent_gateway', ROOT / 'ops/vm_actions/gateway.py')
@@ -44,8 +59,13 @@ def harness(tmp_path, monkeypatch):
     spec.loader.exec_module(gw)
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
+    # The gateway's collector-drift gate runs ``git status`` on the production
+    # root and refuses before it ever runs the collector, so a fixture pointed at
+    # a dirty working tree never reaches the collector under test. Use a clean
+    # worktree of this checkout instead (ported from #2546).
+    production = clean_production_root()
     cfg = {'state': str(tmp_path / 'state'), 'repos': {'docich': {
-        'production': str(ROOT), 'mode': 'git',
+        'production': str(production), 'mode': 'git',
         'projections': {'games/soviet_now': str(runtime)}}}}
     config = tmp_path / 'config.json'
     config.write_text(json.dumps(cfg))
@@ -53,7 +73,7 @@ def harness(tmp_path, monkeypatch):
     calls = []
 
     def collector_only(argv, *args, **kwargs):
-        if len(argv) > 1 and argv[1] == str(ROOT / 'ops/vm_actions/collect_diagnostics.py'):
+        if len(argv) > 1 and argv[1] == str(production / 'ops/vm_actions/collect_diagnostics.py'):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, output['returncode'], output['stdout'], b'')
         return REAL_RUN(argv, *args, **kwargs)
@@ -65,7 +85,10 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setenv('VMOPS_TESTING', '1')
     monkeypatch.setenv('SSH_ORIGINAL_COMMAND', f'diagnostics docich production {SHA}')
     monkeypatch.setattr(sys, 'argv', [str(ROOT / 'ops/vm_actions/gateway.py'), str(config)])
-    return gw, cfg, output, calls
+    yield gw, cfg, output, calls
+    shutil.rmtree(production, ignore_errors=True)
+    subprocess.run(['git', '-C', str(ROOT), 'worktree', 'prune'],
+                   check=False, capture_output=True)
 
 
 @pytest.mark.parametrize('size', [49153, 50139, 65535, 65536])

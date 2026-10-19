@@ -530,8 +530,11 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   長ラベル条件375B（JSONキー等の増分は別）。これらはpayload全体の本番上限
   保証ではないため、lists が全削除されても上位消費と spawn 経路は読める
   （azumag/docich#970）。
-  縮めても収まらない場合の最終形は budget を超えるが、
-  gatewayのstdout 64KiB・sanitize後64KiB capが仍然として最終防御となる。
+  縮めても収まらない場合、`HARD_JSON_BYTES`（56KiB）を超えたまま返すと gateway が
+  診断操作ごと closed で拒否するため、最後に `corners` を先頭とする
+  `_HARD_DROP_ORDER` の順にセクション単位で `status=output_omitted` へ落とす
+  （#2533）。それでも収まらない場合は残りの top-level セクションを大きい順に
+  落とす（`meta` は残す）。
   profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの

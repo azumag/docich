@@ -189,8 +189,7 @@ def load_catalog(g) -> tuple[Corner, ...]:
                 raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
         elif item.adapter == "trpg":
             # Participatory TRPG / murder-mystery view (Issue #684, PR-3).
-            # Default disabled and manual-only until the owner approves auto
-            # rotation; audio/fetch/live settings are out of scope for now.
+            # Automatic rotation stays disabled; audio is the separate opt-in.
             if item.id != "trpg-corner" or item.game != "trpg-view":
                 raise CornerCatalogError(
                     "trpg requires id=trpg-corner and game=trpg-view"
@@ -199,10 +198,7 @@ def load_catalog(g) -> tuple[Corner, ...]:
                 raise CornerCatalogError(
                     "trpg accepts no fetch_on_start"
                 )
-            if type(item.audio_enabled) not in (bool,) and item.audio_enabled is not False:
-                # allow boolean or unset (defaults to False)
-                pass
-            if item.audio_enabled not in (False, True):
+            if type(item.audio_enabled) is not bool:
                 raise CornerCatalogError(
                     "trpg accepts only a boolean audio_enabled"
                 )
