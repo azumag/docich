@@ -1113,7 +1113,7 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 lambda c: c.update(retiring=[self._runtime("nethack", 3)]),
                 "failed"),
             "canonical recovery outstanding": (
-                lambda c: c.update(phase="recovery_required"), "failed"),
+                lambda c: c.update(phase="recovery_required"), "noop"),
         }
         for name, (patch, expected) in cases.items():
             with self.subTest(case=name):
@@ -1158,6 +1158,49 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 self.assertEqual(result.status, "noop")
                 self.assertEqual(mgr._read_state()["status"], "failed")
                 self.assertEqual(coordinator.calls, [])
+
+
+    def test_recover_failed_returns_noop_when_canonical_is_recovery_required(self):
+        """#1983: recover_failed() must return 'noop' (not 'failed') when the
+        canonical phase is 'recovery_required', so that the
+        recover_corner_rotation.sh script proceeds to step 2 (corner-rotation
+        recover) which actually clears the rotation latch."""
+        from unittest.mock import patch
+
+        mgr, coordinator = self.manager(["sorengame"])
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=str(uuid.uuid4()),
+            switch_request_id=str(uuid.uuid4()),
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            last_error="test error",
+            last_error_code="execution-error",
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(
+            phase="recovery_required",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed()
+
+        # Must return "noop" so the script proceeds to step 2
+        self.assertEqual(result.status, "noop")
+        # Corner-side recovery must be skipped (no coordinator calls)
+        self.assertEqual(coordinator.calls, [])
+        # State must remain "failed" (latch is not cleared by corner-side)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
 
     def test_other_failed_error_codes_keep_the_existing_recovery_path(self):
         mgr, coordinator, _rid = self._setup_quiesce_failed(
