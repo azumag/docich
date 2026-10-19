@@ -14,3 +14,6 @@
 9. ローカルでは変更に関係するテストファイルだけを実行し、フルスイートは CI に任せる（§13）。
 
 詳細・理由は [`AGENTS.md`](./AGENTS.md) を参照。
+
+Code Modernization の導入・小さな範囲での初回評価は
+[`docs/code-modernization.md`](./docs/code-modernization.md) を参照。

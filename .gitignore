@@ -30,3 +30,10 @@ games/roms/*
 
 # bench/jev_bench.py run artifacts (raw logs + CSVs) stay out of Git.
 /bench/runs/
+
+# Code Modernization: raw analysis and local settings stay out of public Git.
+# Prefer an isolated workspace outside this checkout; see docs/code-modernization.md.
+/.claude/settings.local.json
+/legacy/
+/analysis/
+/modernized/
