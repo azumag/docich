@@ -352,6 +352,39 @@ def yes_no_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _summer_bonus_choice_band(screen: Screen) -> bool:
+    """True while the 8月 prompt's own choice band can still be on screen.
+
+    ``confirmation_planned`` only says A was sent; it is not evidence that the
+    menu went away. The band is denied by its own drawn rows and by the choice
+    cursor the prompt always shows: either one means the 3-choice menu is still
+    up, so an unread row (まとめて解雇 included) must not be confirmed.
+
+    The band covers the third choice row at y=208, not 207: the upper two rows
+    and the hand can be the only things that disappear, and a lone 208 row is
+    still the menu.
+
+    Measured dialogue window (g825 evidence, 2ねん8がつ): every response page
+    keeps the panel's outer frame tiles — a single unknown cell at x=248 on
+    the band rows — so an edge-only row is a response page, not a choice row
+    (tests/fixtures/hanjuku/g825-summer-response.png). Only cells inside the
+    panel's inner columns (PROSE_COLUMNS) keep the menu alive: the label rows
+    (x=176) and the post-A fade (inner tiles at x=32..224,
+    g825-summer-post-a-fade.png) still re-observe; the border-only response
+    page does not.
+    """
+    if screen.hand is not None:
+        return True
+    x0, x1 = PROSE_COLUMNS
+    # The choice label's tail can land exactly on the inner column boundary
+    # (x=232): the tail is a real choice label cell, so the inner check must
+    # include it. The response page's outer frame stays at x=248 and is still
+    # denied. The x=232 case comes from a synthetic reproduction; the x=248
+    # outer-frame case comes from the measured g825 fixture.
+    return any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+               for line in screen.lines)
+
+
 def summer_bonus_continue(screen: Screen, mem):
     """Keep a known choice episode through partial text or cursor loss."""
     if screen.kind == 'summer_bonus':
@@ -378,6 +411,23 @@ def summer_bonus_continue(screen: Screen, mem):
             screen.kind = 'summer_bonus_message'
             _record(mem, 'summer_bonus_message', target=plan['target'],
                     reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
+        # A planned A is not evidence that the menu went away: the prompt's own
+        # question and a single unread tile both live in the prose band, so the
+        # band alone cannot distinguish the response page from the prompt. Only
+        # advance when the choice band itself is denied (see
+        # ``_summer_bonus_choice_band``): while the band or its hand can still be
+        # on screen, re-observe instead of confirming an unread choice.
+        elif plan and plan.get('confirmation_planned') and not same_menu:
+            band_gone = not _summer_bonus_choice_band(screen)
+            has_dialogue_content = any(
+                line.y in PROSE_ROWS and (line.cells or line.spans())
+                for line in screen.lines)
+            if band_gone and has_dialogue_content:
+                screen.kind = 'summer_bonus_message'
+                _record(mem, 'summer_bonus_message', target=plan['target'],
+                        reason='夏イベントの選択確定後に選択肢帯とカーソルが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
+            else:
+                return True  # the choice band cannot be denied; re-observe
         elif plan or old_choice:
             return True
     # A different recognized screen or the observed post-choice response ends
