@@ -370,10 +370,33 @@ class AudioPriorityKeeperTests(unittest.TestCase):
         self.assertEqual(out["classification"], "unavailable")
         self.assertEqual(out["targets"], {})
 
-    def test_sections_yield_to_explicit_stubs_under_envelope_pressure(self):
-        # Under the hardest output pressure both fixed sections reduce to an
-        # explicit output_omitted stub (docich#1811): they never silently
-        # vanish and never push the envelope over the gateway ceiling.
+    def test_sections_survive_the_soft_budget_under_pressure(self):
+        # The production envelope routinely sits above MAX_JSON_BYTES, so a
+        # soft-level stub would blank the keeper summary from every run and
+        # break audio_gap_measure's read-back. Both sections must come through
+        # the soft cascade untouched (docich#1811).
+        audio_priority = {"status": "ok", "uid": 1001, "targets": {}}
+        audio_gaps = {"status": "ok", "gaps": {"count": 0}}
+        payload = {
+            "cpu_profile": {"status": "stale", "meta": {}, "host": {}},
+            "corners": {"retro_corner": {}},
+            "hanjuku_tactical": {"status": "ok"},
+            "ai": {"recent_events": [], "anomalous_components": {}},
+            "workers": {"details": {}},
+            "nethack_history": {"daily": {"records": []}, "completed_runs": {"records": []}},
+            "soren91_drop_profile": {"profileStatus": "missing"},
+            "pulse_sink_inputs": {"streams": []},
+            "audio_priority": audio_priority,
+            "audio_gaps": audio_gaps,
+        }
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 100):
+            collector._diagnostics_budget(payload)
+        self.assertEqual(payload["audio_priority"], audio_priority)
+        self.assertEqual(payload["audio_gaps"], audio_gaps)
+
+    def test_sections_yield_to_marked_stubs_at_the_hard_ceiling(self):
+        # Only the hard ceiling may drop them, via the reviewed largest-first
+        # fallback, and the drop is an explicit marked stub.
         payload = {
             "cpu_profile": {"status": "stale", "meta": {}, "host": {}},
             "corners": {"retro_corner": {}},
@@ -386,10 +409,13 @@ class AudioPriorityKeeperTests(unittest.TestCase):
             "audio_priority": {"status": "ok", "uid": 1001},
             "audio_gaps": {"status": "ok", "gaps": {"count": 0}},
         }
-        with mock.patch.object(collector, "MAX_JSON_BYTES", 100):
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 100), \
+             mock.patch.object(collector, "HARD_JSON_BYTES", 100):
             collector._diagnostics_budget(payload)
-        self.assertEqual(payload["audio_priority"], {"status": "output_omitted"})
-        self.assertEqual(payload["audio_gaps"], {"status": "output_omitted"})
+        self.assertEqual(payload["audio_priority"],
+                         {"status": "output_omitted", "reason": "hard_ceiling"})
+        self.assertEqual(payload["audio_gaps"],
+                         {"status": "output_omitted", "reason": "hard_ceiling"})
 
 
 class AudioPriorityOperationContractTests(unittest.TestCase):

@@ -10401,17 +10401,12 @@ def _diagnostics_budget(payload):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload)
-    # The audio keeper summary and the audio-gap projection (docich#1811) are
-    # fixed evidence but not incident telemetry; when every optional detail
-    # above has already yielded, they reduce to an explicit output_omitted
-    # stub rather than push the envelope over the gateway ceiling. A dropped
-    # measurement therefore surfaces as a stub, never as missing-because-broken.
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        for key in ("audio_priority", "audio_gaps"):
-            section = payload.get(key)
-            if isinstance(section, dict) and section.get("status") != "output_omitted":
-                payload[key] = {"status": "output_omitted"}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The audio keeper summary and the audio-gap projection (docich#1811)
+    # deliberately survive the soft budget: the production envelope routinely
+    # sits above MAX_JSON_BYTES, so a soft-level stub here would blank them
+    # from every run and break the audio_gap_measure operation's read-back.
+    # Both sections are compact (a few hundred bytes) and yield only at the
+    # hard ceiling below, where the largest-first fallback drops them last.
     # The repeated-operation projection deliberately survives the soft budget.
     # It is bounded well under 1 KiB and is the only evidence that separates
     # "corner alive and looping" from "corner progressing" -- the chart
