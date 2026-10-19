@@ -9,12 +9,14 @@ from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
+from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
@@ -96,7 +98,7 @@ def command_open_pending_step(screen, mem):
 def _hero_retreat_menu(screen, mem, cur):
     # A castle defense cannot retreat (owner 2026-09-29; the menu has no
     # たいきゃく row there), so never try to select it.
-    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
     if _egg_rescue_pending(cur):
         return []
@@ -192,10 +194,18 @@ def _survival_menu(screen, mem, cur):
     # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     # At critical HP do not spend more live melee frames scouting an unknown
     # card inventory when a usable egg is already on the current menu.
+    # Three selections whose announcements all stayed unclassified are not a
+    # reading of an empty list (g839 4214-4272: 59/59 vs 40 retreated with
+    # きりふだ still on the menu). Read the real list once more; its own
+    # rules use a card, keep cards_uncertain, or find it empty.
+    attempted = rescue.get('cards_attempted') or []
+    final_read = ('きりふだ' in labels and rescue['cards_checked'] >= 3
+                  and not rescue.get('cards_exhausted') and not rescue.get('final_card_read')
+                  and attempted and attempted[-1] in (cur.get('cards_unclassified') or []))
     if (critical or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
-            and rescue['cards_checked'] < 3):
+            and rescue['cards_checked'] < 3) or final_read:
         label = 'きりふだ'
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
           and not _own_egg_empty(mem, cur)):
@@ -210,6 +220,8 @@ def _survival_menu(screen, mem, cur):
     if move != 'here':
         return [move] if move else []  # no blind A on a missing cursor
     if label == 'きりふだ':
+        if rescue['cards_checked'] >= 3:
+            rescue['final_card_read'] = True
         rescue['cards_checked'] += 1
         cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
     else:
@@ -602,10 +614,23 @@ def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
         return []
+    from . import okunote
+    pending = okunote.menu_pending(screen, mem, cur)
+    if pending is not None:
+        return pending
     flow = cur.setdefault('okunote_flow', {'ticks': 0})
     flow['ticks'] += 1
     if screen.kind == 'battle_menu':
         hp = cur.get('ally_hp')
+        summon = None
+        if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
+            summon = okunote.summon_reading(screen, mem, cur)
+            if summon is None:
+                _record(mem, 'battle_okunote_summon_unconfirmed', **_battle_labels(cur),
+                        reason='現在の本人HP・敵召喚獣・自軍コマンドを同じ戦闘に照合できず奥の手を開かない')
+                return [pad('b')]
+            _egg_general_reading(screen, mem, cur)
+            hp = summon['ally_hp']
         # g482: パプリカ34 entered the irreversible random choices and chose
         # しんだフリ (28..48 self damage), then lost at HP0. Before opening
         # the candidates, require enough *current* HP to survive even the
@@ -644,7 +669,8 @@ def okunote_step(screen, mem):
                         observed_metric={**egg_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                         resulting_event='irreversible_risk_accepted',
                         reason='敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る')
-        last_resort = _defender_last_resort(mem, cur)
+        last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
+                       else _defender_last_resort(mem, cur))
         if last_resort and not cur.get('okunote_last_resort_recorded'):
             cur['okunote_last_resort_recorded'] = True
             _record(mem, 'battle_okunote_last_resort', **_battle_labels(cur),
@@ -696,6 +722,7 @@ def okunote_step(screen, mem):
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
+    okunote.selected(mem, cur, candidate=label != 'おくのて')
     return [pad('a')]
 
 
@@ -950,6 +977,26 @@ def _partial_enemy_general_command(screen):
     return enemy
 
 
+def _egg_retreat_return(screen, mem, battle):
+    """Reuse the finite return-to-human-command route; B is not a receipt."""
+    attempts = int(battle.get('egg_retreat_attempts') or 0)
+    battle['egg_retreat_needed'] = True
+    battle['egg_retreat_tried'] = True
+    if attempts < 3:
+        battle['egg_retreat_attempts'] = attempts + 1
+        _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
+                observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
+                                 'enemy_hp': battle.get('enemy_hp'), 'attempt': attempts + 1},
+                reason='卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する')
+        return [pad('b')]
+    if not battle.get('egg_retreat_unavailable_recorded'):
+        battle['egg_retreat_unavailable_recorded'] = True
+        _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
+                observed_metric={'attempts': attempts, 'screen': screen.kind},
+                reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
+    return None
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -1014,10 +1061,17 @@ def egg_battle_step(screen: Screen, mem):
     mem.pop('enemy_general_menu', None)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
+    from . import okunote
+    summon = okunote.summon_reading(screen, mem, battle)
+    okunote.combat_return(screen, mem, battle, summon=summon)
     if battle:
         battle['card_summon_observed'] = True
         battle['card_context_unclassified'] = False
     general_reading = _egg_general_reading(screen, mem, battle)
+    if egg_bait.observe_summon(screen, mem, battle):
+        returning = _egg_retreat_return(screen, mem, battle)
+        if returning is not None:
+            return returning
     wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
     # g684: アルテミス 49/49 saved her egg against ヘーゼル's old HP11,
     # while the actual opponent was ダークエルフ HP240. A live monster
@@ -1148,21 +1202,9 @@ def egg_battle_step(screen: Screen, mem):
         # たまごを温存している間は、まず白兵で戦う (退却しない)。
         if (not cards_left and battle.get('side') != 'defense'
                 and (wants_egg or empty_egg or 'たまごをつかう' not in screen.text)):
-            attempts = int(battle.get('egg_retreat_attempts') or 0)
-            battle['egg_retreat_needed'] = True
-            battle['egg_retreat_tried'] = True  # legacy hotloaded state
-            if attempts < 3:
-                battle['egg_retreat_attempts'] = attempts + 1
-                _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
-                        observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
-                                         'enemy_hp': battle.get('enemy_hp'), 'attempt': attempts + 1},
-                        reason='卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する')
-                return [pad('b')]
-            if not battle.get('egg_retreat_unavailable_recorded'):
-                battle['egg_retreat_unavailable_recorded'] = True
-                _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
-                        observed_metric={'attempts': attempts, 'screen': screen.kind},
-                        reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
+            returning = _egg_retreat_return(screen, mem, battle)
+            if returning is not None:
+                return returning
         # g508: after Excalibur fell, stale general HP82 concealed the
         # wounded Venus while blind A kept choosing the weakest attack.
         # Fierce attack adds lost HP to damage, but can miss/lose initiative;

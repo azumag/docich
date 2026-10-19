@@ -50,8 +50,9 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
 
 
 def memory():
-    # These contracts start after the separate rare-inventory discovery pass.
+    # These kit/actor contracts start after boss unlock and rare discovery.
     return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
+            'captured': list(set(policy.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
             'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'ゼウス'}}
 
 
@@ -109,12 +110,14 @@ def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
     assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
 
 
-def test_a_base_boss_sortie_keeps_its_strict_hold_on_unreadable_panels():
+def test_a_base_boss_sortie_cancels_after_bounded_reads_without_dropping_required_cards():
     mem = memory()                       # active 1-B1, the base boss order
     screen = menu('card_select', ['クースカン1'], True)
-    for _ in range(policy.CARD_UNREADABLE_LIMIT + 2):
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-B1'] == 'pending' and mem['active'] is None
+    assert not mem.get('card_drop') and not mem.get('kit_spent')
 
 
 def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
@@ -916,13 +919,20 @@ def test_no_carry_slot_left_drops_every_remaining_card():
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
 
 
-def test_boss_kit_is_never_dropped():
+def test_boss_kit_is_never_dropped_while_a_card_may_be_hidden():
+    # A full panel whose IDs end below クースカン(13)/ノリウツール(11) does not
+    # prove them out of stock. Proven absence: test_hanjuku_boss_card_proven_absent.
     mem = memory()
-    screen = measured_card_select(('イッテツーン', 'ブラッキー'), stocks=('3', '1'))
-    for _ in range(policy.CARD_MISS_LIMIT * 2):
+    mem['card_scroll'] = {'1-B1': policy.CARD_SCROLL_LIMIT}
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'グリンボー'),
+                                  stocks=('3', '1', '1', '1'))
+    order = policy._order(mem)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert not mem.get('card_drop')
-    assert policy._deploy_cards(policy._order(mem), mem) == ['クースカン', 'ノリウツール']
+    assert policy._deploy_cards(order, mem) == ['クースカン', 'ノリウツール']
+    assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
 
 
 def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_ones():

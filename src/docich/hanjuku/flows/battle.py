@@ -11,9 +11,11 @@ import time
 from dataclasses import asdict
 
 from ..judgment.battle import _general_egg_rescue_recheck
+from . import egg_bait
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
+from ... import hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
 from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
@@ -230,6 +232,8 @@ def _card_battle_reading(screen, cur, mem=None):
         cur['card_hp_unread'] = True
         cur['card_context_unclassified'] = True
         cur['card_soldiers_current'] = False
+        if mem is not None:
+            egg_bait.cancel(mem, cur, '本人HPまたは戦闘パネルが未確認になったため召喚待ちを終了')
         return
     previous = cur.get('enemy_hp')
     maximum = general_max_hp(cur.get('enemy'))
@@ -265,6 +269,69 @@ def _card_gate_close(mem, cur, names):
     rescue['cards_exhausted'] = True
     rescue['cards_uncertain'] = False
     return [pad('b')]
+
+
+def _observe_clash_gauge(mem, cur, screen):
+    """Keep the measured 連打ゲージ beside the battle, and contrast it with
+    the predicted egg state the first time a calibrated blue window appears.
+
+    対比は記録だけ (docich#1553): 青窓と卵落予測の一致・矛盾の判定は、青の
+    実機校正が済むまで 'unclassified' に留める。測定が予測を書き換えることは
+    なく、power_mash / egg_safe_hold の切替も ASSIST_PULSE も追加しない
+    (#1180 Phase 1 の契約)。confidence 基準: state 'blue' は校正済み
+    CLASH_GAUGE_BLUE のパレットが枠内の最頻色であることだけを根拠にする。
+    未校正 (表が空) の間は blue は一度も立たない。
+    """
+    gauges = getattr(screen, 'clash_gauges', None) or []
+    cur['clash_gauge'] = ({g.side: {'state': g.state, 'filled': g.filled,
+                                    'box': list(g.box), 'tones': [list(t) for t in g.tones]}
+                           for g in gauges} or None)
+    blue = next((g for g in gauges if g.state == 'blue'), None)
+    if blue is None or cur.get('clash_gauge_blue_seen'):
+        return
+    cur['clash_gauge_blue_seen'] = True
+    _record(mem, 'battle_clash_gauge_cross_check', **_battle_labels(cur),
+            enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+            observed_metric={'clash_gauge': cur['clash_gauge'], 'blue_side': blue.side},
+            expected_metric={'enemy_egg_drop_expected': cur.get('enemy_egg_drop_expected') is True,
+                             'egg_drop_watch': cur.get('egg_drop_watch'),
+                             'dropper_plan': (cur.get('plan') or {}).get('egg_drop')},
+            verdict='unclassified',
+            reason='接触の青ゲージを実測した。卵落予測との一致・矛盾は青の校正後に判定し、制御は変更しない')
+
+
+def _observe_defender(mem, cur):
+    """Remember who a castle's battle panel showed defending it (#1553).
+
+    The sortie menus never display the opponent, so the only measured way a
+    sortie can know its defender is a previous battle's panel at the same
+    castle — typically the retry after a failed attack. Recording is
+    display-only evidence for the deploy layer; the battle layer still
+    decides from the enemy it observes (a mismatch just leaves the sortie
+    plan unused and the record refreshed by this battle).
+    """
+    if (cur.get('side') != 'attack' or not cur.get('castle')
+            or not isinstance(cur.get('enemy'), str)
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('enemy') in chart.BOSSES.values()
+            or general_max_hp(cur.get('enemy')) is None
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)):
+        return
+    record = {'general': cur['enemy'], 'chapter': mem.get('chapter') or 0,
+              'evidence': 'battle_panel', 'step': cur.get('step')}
+    defenders = mem.setdefault('castle_defenders', {})
+    if defenders.get(cur['castle']) != record:
+        defenders[cur['castle']] = record
+        _record(mem, 'castle_defender_seen', **_battle_labels(cur), castle=cur['castle'],
+                observed_metric=record,
+                reason='戦闘パネルの対戦相手をこの城の守備将軍として記録し、再出撃の卵落計画に使う')
+
+
+def _drop_defender_record(mem, castles):
+    """Capture or loss makes a castle's remembered defender stale."""
+    defenders = mem.get('castle_defenders') or {}
+    for castle in castles:
+        defenders.pop(castle, None)
 
 
 def battle_step(screen: Screen, mem):
@@ -371,6 +438,10 @@ def battle_step(screen: Screen, mem):
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
+    _observe_clash_gauge(mem, cur, screen)
+    _observe_defender(mem, cur)
+    from . import okunote
+    okunote.combat_return(screen, mem, cur)
     cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
     preempt_guard = cur.get('okunote_egg_preempt') or {}
     if preempt_guard.get('selected'):
@@ -404,6 +475,7 @@ def battle_step(screen: Screen, mem):
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
     _card_damage_recheck_resources(mem, cur)
+    egg_bait.observe_melee(screen, mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
@@ -681,6 +753,7 @@ def _melee_step(mem, cur):
             enemy_egg_dropped=None,
             enemy_egg_drop_expected=cur.get('enemy_egg_drop_expected') is True,
             a_frames_sent=taps * 3 if safe else 0,
+            clash_gauge=cur.get('clash_gauge'),
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
@@ -721,7 +794,7 @@ def note_duel_event(screen, mem):
 
 
 def _hero_retreat_open(mem, cur):
-    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
     if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
@@ -828,6 +901,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         # The winner occupies the castle it took.
         mem.setdefault('garrison', {})[castle] = []
         _garrison_move(mem, cur.get('ally'), target=castle)
+        # Our own general stands there now: the remembered defender is stale.
+        _drop_defender_record(mem, [castle])
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
@@ -837,6 +912,15 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
+        # The attacking enemy general moved into the castle he took, so a
+        # retake sortie can plan against the panel we just saw (#1553).
+        if (isinstance(cur.get('enemy'), str) and cur['enemy'] not in reference.BOSS_GENERALS
+                and cur['enemy'] not in chart.BOSSES.values()
+                and general_max_hp(cur['enemy']) is not None
+                and castle in chart.castles(mem.get('chapter') or 0)):
+            mem.setdefault('castle_defenders', {})[castle] = {
+                'general': cur['enemy'], 'chapter': mem.get('chapter') or 0,
+                'evidence': 'defense_loss_capture', 'step': cur.get('step')}
     if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained or actor_continues) and cur.get('ally'):
         general = cur['ally']
         for source in list(mem.get('garrison') or {}):
@@ -873,7 +957,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
@@ -1067,7 +1151,11 @@ def message_step(screen: Screen, mem):
         step, match = _match_sortie(mem, castle, general)
         if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
             return [pad('a')]              # same entry text still on screen
-        ours = step is not None or match == 'ambiguous' or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+        # 'legacy' is our own launched record for this general and castle; it
+        # may carry no step (g839 step 4210: アマンディーヌ read as side='enemy',
+        # which switched off the value-aware retreat policy).
+        ours = (step is not None or match in ('ambiguous', 'legacy')
+                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス'))
         side = 'attack' if ours else 'enemy'
         _bind_sortie(mem, step, castle)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,

@@ -92,6 +92,31 @@ corners = [
   # doushi_corner.DEFAULT_DURATION_MINUTES（2分。duration_minutes 未指定時）。
   # 読み上げ・overlay は出さない（doushi_narration.ANNOUNCEMENT_ENABLED）。
   { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true },
+  # ぷよぷよクローン (#698): チャット参加 (!puyo join) つきの読み取り専用ビュー。
+  # 2026-10-18 オーナー承認 (Slack ts=1792288826): PR-4 で有効化 (手動予約可能に)。
+  # 読み上げも承認済みのため audio_enabled = true。自動抽選 (manual_only 外し) は
+  # 本番のチャット取り出し配線確認後の別承認ステップ。
+  { id = "puyo-corner", adapter = "puyo", game = "puyo-view", enabled = true, audio_enabled = true, manual_only = true },
+  # TRPG / マーダーミステリー (#684): PR-4 で有効化 (手動予約可能)。
+  # 読み上げを承認済みのため audio_enabled = true。自動抽選は別承認ステップ。
+  { id = "trpg-corner", adapter = "trpg", game = "trpg-view", enabled = true, audio_enabled = true, manual_only = true, duration_minutes = 8 },
+  # AI探偵ミステリー: 視聴者参加型の1話完結推理コーナー（docich#684、2026-10-18
+  # オーナー承認の案A＋統合判断）。事件の答え（犯人・手法・動機）は決定論エンジンが
+  # 開始時にseed確定し、コミットメント（SHA-256）を配信ボードへ表示。調査の行動選択は
+  # Twitchアンケート（TWITCH_POLLS_ENABLED=1 のとき）、最終「犯人は誰？」は
+  # チャンネルポイント予想（TWITCH_PREDICTIONS_ENABLED=1 のとき）。どちらも
+  # 無効・失敗時は seeded のAI探偵が進行する展示モードで完走する。30分枠は
+  # 約13分の進行＋余裕で、終了時に必ず答えを開示してから復帰する。
+  # trpgオフラインコア(#2481)の汎用ロジック（投票・台帳・検証）を統合済み。
+  { id = "mystery", adapter = "mystery", game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = true },
+  # 2026-10-18 オーナー承認（#697 スレッドの承認ボタン）で #697 共産主義法律シミュレーター
+  # の production 配線を実施。決定論セッションバンク（LLMなし・読み上げなし）を
+  # lawsim_corner.DEFAULT_DURATION_MINUTES（3分。duration_minutes 未指定時）で1回転。
+  # 初回実走（slot 290・自動抽選・duration 完了・Soren 復帰）は 2026-10-18 に実測済み。
+  # overlay の目視受入が完了するまでの間、manual_only=true で自動抽選から外す
+  # （2026-10-18 clarify タイムアウトのための技術判断 (b)。オーナーが (a) 手動予約即時 /
+  # (c) 抽選委ねる を選んだ場合はこの1行を変更する）。
+  { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true, manual_only = true },
 ]
 
 [nethack_corner]
@@ -171,6 +196,13 @@ timezone = "Asia/Tokyo"
 # 入力は公開リプレイから検証済みの事実だけで、盤面・駒種・捕獲は渡さない。
 [tsuitate_corner]
 review_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,amd:DeepSeek-V4-Flash"
+
+# AI探偵ミステリーのナレーション。空（既定）なら決定論テンプレートだけを読む
+# （課金LLM実行なし）。非空のchainは課金LLM実行の合意（DOCICH_ALLOW_REAL_AI=1）。
+# 入力は決定論エンジンが確定させた事件の事実だけで、LLM出力は読み上げにしか
+# 使われない（ゲーム状態・答えには一切ならない）。開示フェーズは常に定型文。
+[mystery_corner]
+narration_agents = ""
 
 [webui]
 soren_root = "/home/ubuntu/soren"

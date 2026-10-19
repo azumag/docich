@@ -32,7 +32,8 @@ class Soren91SoftwareRenderTests(unittest.TestCase):
             name=":99", viewport_x=0, viewport_y=90,
             viewport_width=width, viewport_height=height,
         ))
-        spec = SimpleNamespace(runtime_id="g3-sdl-test")
+        spec = SimpleNamespace(runtime_id="g3-sdl-test",
+                               runtime_dir=Path("/run/runtimes/g3-sdl-test"))
         # Construction is isolated from tmux and filesystem setup. The real
         # Soren91 constructor and command methods still execute unchanged.
         with mock.patch.object(CliCoordinatorAdapter, "__init__", return_value=None):

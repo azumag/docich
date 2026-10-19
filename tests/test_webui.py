@@ -19,6 +19,17 @@ from docich import config  # noqa: E402
 from docich import speech  # noqa: E402
 from docich import webui  # noqa: E402
 
+# 実 HTTP fixture の共有ヘルパー (issue #2346)。PR #2340 で本ファイルに入れた
+# 追跡つき server と後片付けの待ちを ``tests/_webui_http_fixture.py`` へ移した。
+from _webui_http_fixture import (  # noqa: E402
+    assert_no_stuck_handlers as _assert_no_stuck_handlers,
+    shutdown_test_server as _shutdown_test_server,
+    tracking_server_class as _tracking_server_class,
+)
+
+# Node の起動と JS 評価には CI の並列負荷を見込む。停止時の上限は維持する。
+_NODE_TEST_TIMEOUT = 30
+
 
 def _make_global(repo_root: Path) -> config.GlobalConfig:
     return config.load_global(repo_root)
@@ -740,74 +751,6 @@ class TestRunWebuiStartsWithoutSorenRoot(unittest.TestCase):
             self.assertIn("soviet_now 未配置として起動します", out.getvalue())
 
 
-def _tracking_server_class():
-    """handler thread を追跡して明示的に待てる ThreadingHTTPServer を作る。
-
-    ``http.server.ThreadingHTTPServer`` は ``daemon_threads = True`` で、
-    ``ThreadingMixIn`` の ``_Threads`` は daemon thread を join 対象にしない。
-    そのため ``server_close()`` は「応答送信後も書込みを続けている handler」
-    (例: ``_guard_mutation`` の audit event、webui.log) を待たない。受け付けた
-    request をここで追跡し、tmp を消す前に完了を待てるようにする。
-
-    conftest が ``webui.ThreadingHTTPServer`` を poll interval 短縮版へ
-    monkeypatch するため、基底クラスは import 時ではなく呼び出し時に取得する
-    (追跡は fixture 用サーバーにだけ入れ、production の設定は変えない)。
-    """
-
-    base = webui.ThreadingHTTPServer
-
-    class _TrackingHTTPServer(base):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._handler_threads = []
-            self._handler_threads_lock = threading.Lock()
-
-        def process_request(self, request, client_address):
-            thread = threading.Thread(
-                target=self.process_request_thread,
-                args=(request, client_address),
-                daemon=True,
-                name="test-webui-handler",
-            )
-            with self._handler_threads_lock:
-                self._handler_threads.append(thread)
-            thread.start()
-
-        def wait_for_handlers(self, timeout=5.0):
-            """accept 済み request の handler が終わるまで待つ。
-
-            期限内に終わらなかった thread を返す (空 list なら全て完了)。
-            """
-            deadline = time.monotonic() + timeout
-            while True:
-                with self._handler_threads_lock:
-                    pending = [t for t in self._handler_threads if t.is_alive()]
-                    self._handler_threads = pending
-                if not pending:
-                    return []
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return pending
-                for thread in pending:
-                    thread.join(max(0.0, deadline - time.monotonic()))
-
-    return _TrackingHTTPServer
-
-
-def _shutdown_test_server(server, serve_thread, *, timeout=5.0):
-    """実 HTTP fixture の server を止め、in-flight handler の完了まで待つ。
-
-    戻り値は期限内に終わらなかった handler thread (空 list なら全て完了)。
-    ``shutdown()`` は accept loop しか止めず、daemon handler は ``server_close()``
-    でも join されないため、この待ちを挟まずに ``TemporaryDirectory.cleanup()``
-    すると rmtree と応答後の書込みが競合する (``OSError [Errno 39]``)。
-    """
-    server.shutdown()
-    server.server_close()
-    serve_thread.join(timeout=timeout)
-    return server.wait_for_handlers(timeout=timeout)
-
-
 class TestHttpHandlers(unittest.TestCase):
     """実サーバー (ThreadingHTTPServer) を起動して API を叩く。"""
 
@@ -852,7 +795,7 @@ class TestHttpHandlers(unittest.TestCase):
         # ``OSError [Errno 39] Directory not empty``.  Wait for the tracked
         # handlers explicitly before cleanup.
         stuck = _shutdown_test_server(self.server, self.thread)
-        self.assertEqual([], stuck, "in-flight handler did not finish before cleanup")
+        _assert_no_stuck_handlers(self, stuck)
         self.tmp.cleanup()
 
     def _fetch_csrf(self):
@@ -1017,6 +960,145 @@ class TestHttpHandlers(unittest.TestCase):
     def test_put_config_body_too_large(self):
         status, data = self._request("PUT", "/api/config", body="x" * (webui.MAX_BODY_BYTES + 1))
         self.assertEqual(status, 413)
+
+    def test_put_config_body_too_large_no_body_returns_413_within_deadline(self):
+        # 生ソケットで巨大 Content-Length を宣言し本文を送らない。
+        # drain に deadline が無いと 413 が返らずハングする (review P2)。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_partial_body_returns_413_within_deadline(self):
+        # 本文を一部だけ送って停止するケースでも deadline 内に 413 を返す。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 262145\r\n"
+                 "Connection: close\r\n\r\n" + "x" * 17).encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_slow_trickle_is_bounded(self):
+        # per-read timeout より短い間隔で送り続ける slow-trickle。
+        # 総時間 deadline が実装されていないと read が制御を返さず handler が
+        # 占有され続ける (read(n) は n バイト揃うまで内部で recv を繰り返すため)。
+        # 「413 を読める」か「RST/EOF で接続が終わる」のどちらかが期限までに
+        # 起きること = handler が期限付きで解放されることを固定する。413 の
+        # 受信自体は RST で失われ得るので、このケースでは必須にしない
+        # (DoS 保護を優先し、413 の契約は送信の速い既存テストで固定する)。
+        import socket as _socket
+        import threading as _threading
+        import time as _time
+
+        # 送信間隔 < per-read timeout にして「無通信 timeout では抜けない」状況を作る。
+        # (per-read timeout は 0.1s。実装定数に依存させず literal で固定する。)
+        trickle_interval = 0.02
+        recv_timeout = 4.0
+        release_deadline = 2.0  # 総時間 deadline (0.5s) + 十分な余裕
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        stop = _threading.Event()
+        sent = [0]
+
+        def trickle():
+            end = _time.monotonic() + recv_timeout + 2.0
+            while not stop.is_set() and _time.monotonic() < end:
+                try:
+                    sock.sendall(b"x")
+                    sent[0] += 1
+                except OSError:
+                    return
+                stop.wait(trickle_interval)
+
+        sender = _threading.Thread(target=trickle, daemon=True)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sender.start()
+            sock.settimeout(recv_timeout)
+            t0 = _time.monotonic()
+            buf = b""
+            closed = False
+            while b"\r\n\r\n" not in buf:
+                try:
+                    chunk = sock.recv(4096)
+                except _socket.timeout:
+                    break
+                except ConnectionResetError:
+                    closed = True
+                    break
+                if not chunk:
+                    closed = True
+                    break
+                buf += chunk
+            elapsed = _time.monotonic() - t0
+            first_status = buf.split(b"\r\n", 1)[0] if buf else b""
+            self.assertLess(
+                elapsed,
+                release_deadline,
+                "slow-trickle で handler が deadline 内に解放されなかった: elapsed=%.2fs sent=%d"
+                % (elapsed, sent[0]),
+            )
+            self.assertTrue(buf or closed, "応答も接続終了も観測できなかった")
+            # 413 以外の HTTP 応答を返してはいけない (RST/EOF は許容)。
+            if first_status:
+                self.assertIn(b"413", first_status)
+        finally:
+            stop.set()
+            try:
+                sock.close()
+            except OSError:
+                pass
+            sender.join(timeout=1.0)
 
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
@@ -1473,14 +1555,24 @@ class TestHttpHandlers(unittest.TestCase):
     def test_access_log_does_not_contain_token(self):
         self.g.webui.token = "supersecret123"
         try:
-            self._request("GET", "/api/health?token=supersecret123")
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            status, _ = self._request("GET", "/api/health?token=supersecret123")
+            self.assertEqual(status, 401)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
+            self.assertEqual(status, 200)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            self.assertEqual(status, 401)
         finally:
             self.g.webui.token = ""
+        # 応答の受信だけでは handler の finally にあるログ書込みは完了しない。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         self.assertTrue(log_file.is_file())
         content = log_file.read_text(encoding="utf-8")
+        records = [json.loads(line) for line in content.splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
         self.assertNotIn("supersecret123", content)
         self.assertNotIn("wrongtoken", content)
 
@@ -2664,6 +2756,70 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertTrue(data["latch_resolved"])
 
 
+class TestAccessLogSynchronization(unittest.TestCase):
+    def test_token_check_waits_for_post_response_access_logs(self):
+        case = TestHttpHandlers("test_access_log_does_not_contain_token")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+        # setup の CSRF ログがあっても、対象リクエストの完了待ちは省略できない。
+        setup_log = log_file.read_text(encoding="utf-8")
+        self.assertIn('"path": "/api/csrf"', setup_log)
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_request
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, status, latency_ms, extra=""):
+            if path == "/api/health":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, status, latency_ms, extra)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_tokens():
+            try:
+                case.test_access_log_does_not_contain_token()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_tokens, daemon=True)
+        with mock.patch.object(webui, "_log_request", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # 待ちへ到達するか検査が終了するまで待つ。sleep による競合再現ではない。
+                self.assertTrue(checkpoint.wait(timeout=5), "token check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "health access logs were not held after the response")
+                self.assertFalse(finished.is_set(), "token check finished before the access logs were written")
+                self.assertEqual(setup_log, log_file.read_text(encoding="utf-8"))
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "token check thread did not finish")
+        self.assertEqual([], log_timeouts, "access log hold timed out before release")
+        self.assertEqual([], errors, "token check failed after releasing the access logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
+
+
 class _PostResponseWriterHandler(webui._Handler):
     """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
 
@@ -3247,7 +3403,7 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
                 conn.close()
             finally:
                 # 応答後に書く handler を残したまま tmp を消さない (PR #2340)。
-                self.assertEqual([], _shutdown_test_server(server, th))
+                _assert_no_stuck_handlers(self, _shutdown_test_server(server, th))
 
 
 class TestCornerManualCapabilities(unittest.TestCase):
@@ -3310,7 +3466,7 @@ const fmtTime=x=>x?String(x):'-';
 const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration','corners-start-operator'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -3429,7 +3585,7 @@ class TestPredictionWorkerDisplay(unittest.TestCase):
         self.assertIn(end_marker, html)
         source = html.split(start_marker, 1)[1].split(end_marker, 1)[0]
         script = source + "\nconst out=predictionWorkerDisplay(" + json.dumps(row, ensure_ascii=False) + "," + json.dumps(prediction, ensure_ascii=False) + "); process.stdout.write(JSON.stringify(out));"
-        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5, check=False)
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 

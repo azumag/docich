@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from .actions import Action
 from .nethack_exploration import MOVE_KEYS, NethackExplorer, visible_safe_step
@@ -106,6 +106,68 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
     return any(condition in names for condition in obs.conditions)
 
 
+
+
+SEVERE_RECOVERY_COMMAND = "#"
+
+# Reviewed prayer recovery (#759).  Verified against the production canary's
+# NetHack 5.0.0 TTY (same source and nethackrc as containers/nethack-canary):
+#   '#'            -> the extended-command getlin prompt (top line shows "#")
+#   'pray' + Enter -> "Are you sure you want to pray? [yn] (n)"
+#   'y'            -> "You begin praying ... --More--" then a 3-turn freeze
+# The plain 'p' key is #pay, not #pray, so the extended command is required.
+# NetHack 5.0.0 defaults paranoid_confirmation to "pray swim trap"
+# (options.c), so dopray() always asks for the confirmation (pray.c).
+PRAY_COMMAND_KEYS = "pray\n"
+PRAY_CONFIRM_KEY = "y"
+# Gehennom (deep levels) prayer cannot help and upsets the god (pray.c
+# prayer_done() Inhell branch); only known shallow levels are eligible.
+MAX_PRAY_DUNGEON_LEVEL = 20
+
+
+def at_extended_command_prompt(obs: NethackObservation) -> bool:
+    """The extended-command getlin: top line is ``#`` plus the word so far."""
+    return obs.prompt == "none" and re.match(r"^#[ ]?[a-z]*$", obs.message or "") is not None
+
+
+def at_pray_confirmation(obs: NethackObservation) -> bool:
+    """The paranoid_confirmation prayer prompt (a whole yes/no question)."""
+    return obs.prompt == "yes_no" and "are you sure you want to pray" in (obs.message or "").lower()
+
+
+# Each reviewed prayer key with the frame predicate that must hold before it is
+# sent.  A frame that does not match abandons the half-typed command rather
+# than inventing keystrokes.
+PRAY_RECOVERY_STEPS: tuple[tuple[str, Callable[[NethackObservation], bool]], ...] = (
+    ("p", at_extended_command_prompt),
+    ("r", at_extended_command_prompt),
+    ("a", at_extended_command_prompt),
+    ("y", at_extended_command_prompt),
+    ("\n", at_extended_command_prompt),
+    (PRAY_CONFIRM_KEY, at_pray_confirmation),
+)
+
+
+def severe_status_recovery_action(obs: NethackObservation) -> Action | None:
+    """Return the reviewed prayer recovery action for a severe status, if safe.
+
+    Prayer is the only recovery action on the reviewed surface so far.  It is
+    deliberately withheld when the frame is not a complete turn or when the
+    dungeon level is unknown/Gehennom.  The presence of an adjacent creature
+    does NOT change the treatment (issue #759: a severe status kills by time
+    alone, so threat avoidance is a separate decision).  Item-specific
+    recovery is intentionally not guessed here; it requires a confirmed
+    inventory observation and is handled separately.
+    """
+    if not turn_ready(obs):
+        return None
+    level = obs.vitals.dungeon_level
+    if level is None or level > MAX_PRAY_DUNGEON_LEVEL:
+        return None
+    if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+        return None
+    return Action(type="text", text=SEVERE_RECOVERY_COMMAND)
+
 class NethackLayeredPolicy:
     """Fail-closed layered policy over normalized public observation."""
 
@@ -146,6 +208,15 @@ class NethackLayeredPolicy:
         # Fatal status/hunger must dominate low HP; otherwise critical HP
         # silently turns their fail-closed holds into generic rest/movement.
         if _has_any(obs, self._SEVERE_CONDITIONS):
+            recovery = severe_status_recovery_action(obs)
+            if recovery is not None:
+                return PolicyDecision(
+                    layer="strategic",
+                    intent="status_recovery",
+                    reason="visible severe status condition has a reviewed prayer recovery action",
+                    actions=(recovery,),
+                    requires_llm=True,
+                )
             return PolicyDecision(
                 layer="strategic",
                 intent="status_emergency",
@@ -254,6 +325,14 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
         and decision.actions[0].text in MOVE_KEYS
     ):
         return
+    if (
+        decision.layer == "strategic"
+        and decision.intent == "status_recovery"
+        and len(decision.actions) == 1
+        and decision.actions[0].type == "text"
+        and decision.actions[0].text == SEVERE_RECOVERY_COMMAND
+    ):
+        return
     raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
 
 
@@ -294,7 +373,7 @@ def rest_action_for_hold(
     The only fail-closed cases are frames where a literal key could answer a
     question instead of waiting (prompt, unknown screen, player-less frame,
     all rejected by ``turn_ready``) and decisions that already carry a
-    reviewed action. Severe status, every hunger tier and an adjacent
+    reviewed action. Severe status, food_emergency, and an adjacent
     creature may all spend one wait turn (owner decision 2026-09-23).
     """
     if decision.actions or not turn_ready(obs):
@@ -319,7 +398,9 @@ def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer
     action, with a uniquely visible player and no prompt, where the explorer
     can still name a safe step.  ``food_emergency`` and
     ``inspect_screen`` are excluded -- moving cannot help hunger, and without a
-    unique player glyph there is nothing to plan from.
+    unique player glyph there is nothing to plan from.  Severe status
+    (``status_emergency``/``status_recovery``) is also excluded -- it has
+    its own reviewed recovery action.
     """
     if (
         decision.actions

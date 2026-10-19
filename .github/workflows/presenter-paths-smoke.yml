@@ -1,0 +1,260 @@
+name: Presenter path smoke (isolated)
+
+# Isolated, real-binary presenter-path smokes for azumag/docich#1236 acceptance
+# item 4. These scripts previously had no CI wiring, so the only record of the
+# CLI / RetroArch presenter paths was manual runs on a machine that also hosts
+# production.
+#
+# Scope and limits:
+#   - Nothing here touches production. No secrets, no VM gateway, no network
+#     egress to docich services. Each script writes its own temp config, uses
+#     display :96 and a throwaway state dir, and drives the real binaries.
+#   - scripts/smoke_cli.sh: NetHack through docich's `cli` adapter
+#     (Xvfb + tmux + xterm + ffmpeg + xdotool), up -> obs -> send -> snap ->
+#     file stream -> switch -> down.
+#   - scripts/smoke_brain.sh: hanjuku-hero observation + fake brain fixture,
+#     then a ROM-less RetroArch menu with real key injection when the
+#     `retroarch` binary and `dbus-run-session` are present.
+#   - scripts/retro_smoke/run.sh: real retro CLI games (bastet, moon-buggy,
+#     pacman4console, ninvaders, nsnake) inside a throwaway `--network none`
+#     container, driven through the real CliGameAdapter and CommandBrain.
+#   - tests/test_paper_view_presenter.py: the production `paper-view` presenter
+#     path (dashboard-server -> presentation.py -> chromium -> ffplay
+#     projection) against a fixed fixture, asserted from the final X11 frame.
+#   - tests/test_soren91_presenter.py: the production Soren91 (Meriken)
+#     remote-renderer presenter shape (stub /v1/status agent on a
+#     100.64.0.0/10 address, ffmpeg testsrc SRT caller -> ffplay SRT listener
+#     -> presentation.py projection), asserted from the final X11 frame. No
+#     remote host, Tailscale peer, CDP proxy or Node bot is involved.
+#   - This does NOT prove TwiCa foreground compositing over those presenters in
+#     the final stream frame; that remains the real-pixel contracts job plus a
+#     production observation window. Do not read a green run here as card
+#     visibility.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/presenter-paths-smoke.yml'
+      - 'scripts/smoke_cli.sh'
+      - 'scripts/smoke_brain.sh'
+      - 'bin/docich'
+      - 'brains/**'
+      - 'config/games/**'
+      - 'scripts/retro_smoke/**'
+      - 'tests/fixtures/hanjuku_fake_brain.jsonl'
+      - 'src/docich/adapters/**'
+      - 'src/docich/cli.py'
+      - 'src/docich/config.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/broadcast_view.py'
+      - 'src/docich/presentation.py'
+      - 'src/docich/procs.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/soren91_renderer.py'
+      - 'src/docich/trading/**'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/xkit.py'
+      - 'tests/test_broadcast_view_standard.py'
+      - 'tests/test_paper_view_presenter.py'
+      - 'tests/test_soren91_presenter.py'
+      - 'requirements-test.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/presenter-paths-smoke.yml'
+      - 'scripts/smoke_cli.sh'
+      - 'scripts/smoke_brain.sh'
+      - 'bin/docich'
+      - 'brains/**'
+      - 'config/games/**'
+      - 'scripts/retro_smoke/**'
+      - 'tests/fixtures/hanjuku_fake_brain.jsonl'
+      - 'src/docich/adapters/**'
+      - 'src/docich/cli.py'
+      - 'src/docich/config.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/broadcast_view.py'
+      - 'src/docich/presentation.py'
+      - 'src/docich/procs.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/soren91_renderer.py'
+      - 'src/docich/trading/**'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/xkit.py'
+      - 'tests/test_broadcast_view_standard.py'
+      - 'tests/test_paper_view_presenter.py'
+      - 'tests/test_soren91_presenter.py'
+      - 'requirements-test.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: presenter-paths-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cli-nethack-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 and CLI presenter dependencies
+        run: |
+          sudo apt-get update
+          # x11-utils provides xdpyinfo, which `docich up` uses to wait for the display.
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console
+          # smoke_cli.sh resolves nethack from PATH or /usr/games.
+          command -v nethack || test -x /usr/games/nethack
+          command -v xdpyinfo
+      - name: Run the NetHack CLI presenter smoke
+        run: bash scripts/smoke_cli.sh
+
+  retroarch-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 and RetroArch presenter dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch
+      - name: Require the RetroArch presenter to be exercisable
+        run: |
+          # Fail loudly instead of silently skipping step 4 of smoke_brain.sh.
+          command -v retroarch
+          command -v dbus-run-session
+          retroarch --version || true
+      - name: Run the hanjuku brain and RetroArch input smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/smoke_brain.sh 2>&1 | tee /tmp/smoke_brain.log
+          grep -q 'retroarch 入力到達 OK' /tmp/smoke_brain.log
+
+  retro-cli-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build the throwaway offline retro game image
+        run: docker build -q -t docich-retro-smoke:local scripts/retro_smoke >/dev/null
+      - name: Run real CLI retro games through the adapter and the brain
+        env:
+          OUT: ${{ runner.temp }}/retro-smoke
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          # bastet and nsnake have [agent] enabled = true, so the real
+          # CommandBrain drives the real wrapper through the CliGameAdapter.
+          # run.sh uses `--network none` and a read-only copy of the checkout.
+          for game in bastet nsnake; do
+            scripts/retro_smoke/run.sh "$game" 90
+          done
+      - name: Assert the games rendered and the brain acted
+        env:
+          OUT: ${{ runner.temp }}/retro-smoke
+        run: |
+          python3 - "$OUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          problems = []
+          for game in ("bastet", "nsnake"):
+              path = root / game / "summary.json"
+              if not path.is_file():
+                  problems.append(f"{game}: summary.json missing")
+                  continue
+              summary = json.loads(path.read_text(encoding="utf-8"))
+              print(f"{game}: {json.dumps(summary, ensure_ascii=False)}")
+              if summary["iteration_errors"] != 0:
+                  problems.append(f"{game}: iteration_errors={summary['iteration_errors']}")
+              if summary["cycles"] <= 0:
+                  problems.append(f"{game}: the agent loop never observed")
+              if summary["actions_total"] <= 0:
+                  problems.append(f"{game}: the brain sent no action")
+              if summary["pane_changes"] <= 0:
+                  problems.append(f"{game}: the pane never changed")
+              if not summary["session_alive_at_end"]:
+                  problems.append(f"{game}: the game session died")
+          if problems:
+              raise SystemExit("retro smoke failed: " + "; ".join(problems))
+          print("retro smoke OK")
+          PY
+
+  soren91-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 and SRT presenter dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof
+      - name: Bind a 100.64.0.0/10 address for the renderer-agent contract
+        run: |
+          # is_tailscale_ipv4 accepts only 100.64.0.0/10. The test binds its stub
+          # agent and its SRT listener there, so the address must exist locally.
+          sudo ip addr add 100.64.0.1/32 dev lo
+          ip -brief addr show dev lo
+      - name: Require SRT support in ffplay
+        run: |
+          # The corner's preflight fails closed without SRT; do not let the job
+          # pass by skipping the only thing it exists to exercise.
+          ffplay -protocols 2>&1 | grep -iw srt
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Run the isolated Soren91 remote-renderer presenter
+        env:
+          PYTHONPATH: src
+          DOCICH_SOREN91_PRESENTER_TESTS: '1'
+        run: python3 -m pytest -q tests/test_soren91_presenter.py
+
+  paper-view-presenter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 presenter dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils
+      - name: Require a real Chromium-family browser
+        run: |
+          for name in google-chrome-stable google-chrome chromium chromium-browser; do
+            if command -v "$name" >/dev/null 2>&1; then browser="$(command -v "$name")"; break; fi
+          done
+          test -n "${browser:-}" || { echo "Chromium-family browser is required" >&2; exit 1; }
+          printf 'Selected browser: %s\n' "$browser"
+          "$browser" --version
+      - name: Allow Chromium's user-namespace sandbox on this disposable runner
+        run: |
+          # Ubuntu 23.10+ restricts unprivileged user namespaces through
+          # AppArmor, so Chromium aborts with "No usable sandbox!" unless it is
+          # started with --no-sandbox. The production command must not be
+          # weakened for CI, so lift the restriction on the throwaway runner
+          # instead:
+          # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Run the isolated PAPER dashboard presenter
+        env:
+          PYTHONPATH: src
+          DOCICH_PAPER_VIEW_TESTS: '1'
+        run: python3 -m pytest -q tests/test_paper_view_presenter.py

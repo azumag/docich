@@ -29,7 +29,8 @@ Observed sources (all read-only):
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
-    yoso_corner.json, doushi_corner.json, retro_corner.json, paper_corner.json,
+    yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
+    paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
     trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
@@ -177,11 +178,19 @@ MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
 # The gateway reads this document over SSH with a 64 KiB stdout cap and then
-# re-serializes it under a 48 KiB cap after adding its own metadata; exceeding
+# re-serializes it under a 64 KiB cap after adding its own metadata; exceeding
 # either fails the whole diagnostics operation closed. Detail reductions aim at
 # the softer MAX_JSON_BYTES target, and only the last-resort reductions below
-# fall back to this hard ceiling.
+# fall back to this hard ceiling. The ceiling is a guarantee, not a target: the
+# final step of ``_diagnostics_budget`` drops whole sections until the envelope
+# is under it, so the collector never returns a document the gateway rejects.
 HARD_JSON_BYTES = 56 * 1024
+# Heaviest-first drop order for the hard ceiling. ``corners`` is the largest
+# remaining block (measured 23,374 B of a 50,280 B production envelope, #2533),
+# so it goes first; the later entries only matter for a payload that is still
+# over the ceiling once the corner projections are gone.
+_HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
+                    "soren91_drop_profile")
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -598,6 +607,11 @@ CPU_PROFILE_MAX_SPAWNS = 30
 # so only the tail is dropped, and the omitted counts stay visible.
 CPU_PROFILE_BUDGET_COMPONENTS = 10
 CPU_PROFILE_BUDGET_SPAWNS = 10
+# Last-resort floor. Even under the hardest output pressure the busiest rows
+# stay, so the projection can still name the top consumers / spawn paths
+# (azumag/docich#970) rather than showing host totals only.
+CPU_PROFILE_FLOOR_COMPONENTS = 5
+CPU_PROFILE_FLOOR_SPAWNS = 5
 CPU_PROFILE_FRESH_SEC = 900
 
 
@@ -751,6 +765,44 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    # Compact summary that survives output pressure: even when the per-row
+    # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
+    # visible (azumag/docich#970). The byte size is not a fixed cap: in the
+    # synthetic fixture the value part is 58B usually (217B with long labels)
+    # for cpu_top and 75B usually (375B with long labels) for spawn_top; labels
+    # are already bounded to 64 chars and sanitized by _cpu_profile_label.
+    cpu_top_parts = []
+    for row in components[:3]:
+        component = row.get("component")
+        pct = row.get("cpu_pct")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            cpu_top_parts.append(f"{component} {pct:.0f}%")
+        else:
+            cpu_top_parts.append(str(component))
+    cpu_top = " | ".join(cpu_top_parts)
+    if len(components) > 3:
+        # The aggregate tail is labeled `others` (plural) so it cannot be
+        # confused with a real `other` component row in the head.
+        others = 0.0
+        for row in components[3:]:
+            pct = row.get("cpu_pct")
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                others += pct
+        cpu_top = (cpu_top + f" | others {others:.0f}%") if cpu_top else f"others {others:.0f}%"
+
+    spawn_top_parts = []
+    for row in spawns[:3]:
+        component = row.get("component")
+        spawner = row.get("spawner")
+        if component is None or spawner is None:
+            continue
+        count = row.get("count")
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            spawn_top_parts.append(f"{component}<-{spawner} {count:.0f}")
+        else:
+            spawn_top_parts.append(f"{component}<-{spawner}")
+    spawn_top = " | ".join(spawn_top_parts)
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -763,6 +815,8 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "components_truncated": max(len(raw_components) - len(components), 0)
             if isinstance(raw_components, list) else 0,
         "spawns": spawns,
+        "cpu_top": cpu_top,
+        "spawn_top": spawn_top,
     }
 
 
@@ -996,6 +1050,8 @@ LIFECYCLE_PAUSE_RECORDS = {
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
 LIFECYCLE_DEADLINE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
     "boundary",
     "stop_requested",
     "stopping",
@@ -1034,6 +1090,17 @@ LIFECYCLE_WAITING_FOR = (
     "lifecycle_handover",
     "fresh_launch",
     "operator_action",
+    # An accepted/waiting handover whose request deadline has already passed
+    # while its lifecycle pause markers survive (docich #2061).  The broker
+    # only rewrites such an ack to ``timeout`` when something polls
+    # ``boundary``, so a wedged cleanup keeps reporting ``waiting``; this enum
+    # identifies the expired cleanup instead of reading as a live handover.
+    "expired_waiting",
+    # A pause marker whose ownership record proves a lifecycle request created
+    # it, while that request is gone from the broker (consumed).  The #2061 fix
+    # deliberately preserves this proof, so the residue the fixed operator
+    # releases must not read as an unprovable "unknown" pause.
+    "orphaned_lifecycle_pause",
     "unknown",
 )
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
@@ -1275,6 +1342,37 @@ def _lifecycle_request_active(state_dir, request_id, now):
     return math.isfinite(deadline) and deadline > float(now)
 
 
+def _pause_record_owner(state_dir, name):
+    """The request a pause marker names, when its record proves creation.
+
+    Deliberately independent of whether that request is still live.  This is
+    the durable proof the #2061 fix preserves, so an orphaned lifecycle pause
+    can be told apart from an operator pause or an unprovable residue.
+    Never returns anything but the request id to internal callers; no caller
+    emits it.
+    """
+    marker = state_dir / f"{name}.paused"
+    raw = _read_text_capped(marker, 512)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value.startswith("lifecycle:"):
+        return None
+    request_id = value[len("lifecycle:"):].strip()
+    spec = LIFECYCLE_PAUSE_RECORDS.get(name)
+    if not request_id or spec is None:
+        return None
+    record_name, owner_field = spec
+    record = _read_json(state_dir / "game_lifecycle" / record_name)
+    if (
+        isinstance(record, dict)
+        and record.get("request_id") == request_id
+        and record.get(owner_field) is True
+    ):
+        return request_id
+    return None
+
+
 def _pause_owner(state_dir, name, now):
     """Classify one existing pause marker without exposing marker contents."""
     marker = state_dir / f"{name}.paused"
@@ -1283,18 +1381,8 @@ def _pause_owner(state_dir, name, now):
         return "unknown"
     value = raw.strip()
     if value.startswith("lifecycle:"):
-        request_id = value[len("lifecycle:"):].strip()
-        spec = LIFECYCLE_PAUSE_RECORDS.get(name)
-        if not request_id or spec is None:
-            return "unknown"
-        record_name, owner_field = spec
-        record = _read_json(state_dir / "game_lifecycle" / record_name)
-        if (
-            isinstance(record, dict)
-            and record.get("request_id") == request_id
-            and record.get(owner_field) is True
-            and _lifecycle_request_active(state_dir, request_id, now)
-        ):
+        request_id = _pause_record_owner(state_dir, name)
+        if request_id and _lifecycle_request_active(state_dir, request_id, now):
             return "lifecycle_owned"
         return "unknown"
     try:
@@ -1362,6 +1450,7 @@ def _collect_lifecycle_pause(soren, now, workers=None):
     if isinstance(workers, dict):
         details = workers.get("details") or {}
     owned = []
+    orphaned = []
     operator_paused = False
     any_paused = False
     for name in LIFECYCLE_PAUSE_RECORDS:
@@ -1378,8 +1467,14 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             operator_paused = True
         if is_paused and owner == "lifecycle_owned":
             owned.append(name)
+        elif is_paused and _pause_record_owner(state_dir, name):
+            # The record proves a lifecycle request created this marker, but
+            # that request is not live: the residue #2061's fix preserves.
+            orphaned.append(name)
     owned = sorted(owned)
+    orphaned = sorted(orphaned)
     active = False
+    expired_waiting = False
     if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
         if ack_status == "stopped":
             # Terminal park: the bridge intentionally waits for a fresh
@@ -1390,18 +1485,33 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
             if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
                 active = bool(float(deadline_raw) > float(now))
+                expired_waiting = bool(
+                    not active and ack_status in {"accepted", "waiting"}
+                )
             else:
                 active = False
         else:
-            # accepted/waiting/boundary: handover accepted but the broker has
-            # not parked a deadline-bound phase yet; still governed.
-            active = True
+            # Any remaining live status is deadline-bound too; fail closed
+            # rather than report an unproven handover as active.
+            active = False
     if active and ack_status == "stopped" and owned:
         waiting_for = "fresh_launch"
     elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
         waiting_for = "lifecycle_handover"
     elif operator_paused:
         waiting_for = "operator_action"
+    elif expired_waiting and any_paused:
+        # docich #2061: an accepted/waiting handover past its deadline left
+        # lifecycle pause markers behind.  Reporting this as
+        # "lifecycle_handover" hid the exact cleanup the operator has to
+        # cancel, so it gets its own enum (see LIFECYCLE_WAITING_FOR).
+        waiting_for = "expired_waiting"
+    elif request_status == "absent" and orphaned:
+        # The broker has no request at all, yet a pause record still proves a
+        # lifecycle request created its marker: the residue a consumed switch
+        # left behind, which the fixed operator releases (docich #2061).  It
+        # must not read as an unprovable "unknown" pause.
+        waiting_for = "orphaned_lifecycle_pause"
     elif any_paused:
         # Paused markers exist but none prove an active lifecycle handover
         # nor an operator webui pause: stale, expired or mismatched.
@@ -2943,12 +3053,18 @@ CORNER_STATE_FILES = {
     "tsuitate_corner": "tsuitate_corner.json",
     "yoso_corner": "yoso_corner.json",
     "doushi_corner": "doushi_corner.json",
+    "mystery_corner": "mystery_corner.json",
+    "lawsim_corner": "lawsim_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
     "nethack_corner": "nethack_corner.json",
     "nethack_corner_manual": "nethack_corner_manual.json",
+    "soren91_corner": "soren91_corner.json",
 }
+
+# Fixed enum of the switch result a corner recorded in its own state file.
+SWITCH_STATUSES = frozenset({"queued", "succeeded", "failed", "rolled_back"})
 
 # These are the remaining sources consulted by rotation's live and retired
 # adapters. Do not derive filenames from state, catalog rows or request IDs.
@@ -2961,7 +3077,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -3026,7 +3142,12 @@ ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
 # manual-only corner is `manual-only`; a disabled or paused one is
 # `disabled-or-paused`, so the map distinguishes "enabled for manual reservation"
 # from "not enabled at all" without needing a reservation.
-ROTATION_EXCLUDED_REASONS = frozenset({"disabled-or-paused", "manual-only", "adapter-unavailable"})
+ROTATION_EXCLUDED_REASONS = frozenset({
+    "disabled-or-paused", "manual-only", "adapter-unavailable",
+    # A released owner on this corner's shared state file could not be retired
+    # yet, so only that state file waits for the retry (#2354 review).
+    "released-owner-unretired",
+})
 ROTATION_EXCLUDED_LIMIT = 32
 # Fixed resolutions of the `failed_corners` ledger rows (#2187). `released`
 # means the scheduler settled the failed corner and kept rotating; the other
@@ -3741,6 +3862,128 @@ def _collect_ab(soren, now):
     return entry
 
 
+# Fixed game set whose match-end records back the broadcast score-stats panel.
+# Paths are always derived from this tuple, never from state input (#2392).
+RETRO_SCORELOG_GAMES = (
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
+)
+RETRO_SCORELOG_TAIL_BYTES = 64 * 1024
+# Safety cap for pathological (very short) lines; the byte bound is the real
+# window.  A real match record is ~70-90 bytes, so production logs stay well
+# inside both and are scanned in full (`truncated=false`).
+RETRO_SCORELOG_MAX_LINES = 2000
+RETRO_SCORELOG_LAST = 5
+# Producers today: the CLI wrappers, the resolver brain and the corner-recorded
+# live scores. Anything else is counted as "other" instead of echoed.
+RETRO_SCORELOG_SOURCES = ("agent", "live", "wrapper")
+RETRO_SCORELOG_MAX_SCORE = 10**9
+
+
+def _collect_retro_scores(state_dir, now):
+    """Bounded, sanitized tail of each game's match-end scorelog (#2392).
+
+    A CLI wrapper appends one record per finished match.  The regression this
+    evidence exists for is a wrapper that keeps treating a lingering game-over
+    pane as "in play" and therefore appends the same confirmed score every
+    poll, so the projection has to answer "how many records, and how long is
+    the longest run of one repeated score" without exposing the raw log.
+
+    Only the fixed game names are read, only the file tail is scanned, and
+    only bounded integers, the enumerated producers and the duplicate-run
+    length are emitted.  Other record fields (clip ids, hashes, paths, free
+    text) are never projected.
+
+    ``records`` and ``max_same_score_run`` are window-scoped.  While
+    ``truncated=false`` the whole log was scanned, so the ``records`` delta
+    across a corner run is the exact number of appended records; with
+    ``truncated=true`` the count only lower-bounds the log, and acceptance
+    reads ``last`` and ``max_same_score_run`` (the repeated-poll signature)
+    instead.  ``last`` is oldest-first.
+    """
+    scores_dir = Path(state_dir) / "scores"
+    result = {
+        "present": False,
+        "game_count": len(RETRO_SCORELOG_GAMES),
+        "games": {},
+    }
+    for game in RETRO_SCORELOG_GAMES:
+        entry = {
+            "present": False,
+            "readable": False,
+            "records": 0,
+            "invalid": 0,
+            "truncated": False,
+            "sources": {name: 0 for name in (*RETRO_SCORELOG_SOURCES, "other")},
+            "max_same_score_run": 0,
+            "last": [],
+            "age_sec": -1,
+        }
+        path = scores_dir / f"{game}.jsonl"
+        try:
+            if path.is_symlink() or not path.is_file():
+                result["games"][game] = entry
+                continue
+            st = path.stat()
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["present"] = True
+        result["present"] = True
+        entry["age_sec"] = _file_age_sec(path, now)
+        tail = st.st_size > RETRO_SCORELOG_TAIL_BYTES
+        try:
+            with open(path, "rb") as handle:
+                if tail:
+                    handle.seek(st.st_size - RETRO_SCORELOG_TAIL_BYTES)
+                raw = handle.read(RETRO_SCORELOG_TAIL_BYTES)
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["readable"] = True
+        entry["truncated"] = tail
+        lines = raw.split(b"\n")
+        if tail:
+            lines = lines[1:]  # drop the partial line the seek landed inside
+        lines = [line for line in lines if line.strip()]
+        if len(lines) > RETRO_SCORELOG_MAX_LINES:
+            lines = lines[-RETRO_SCORELOG_MAX_LINES:]
+            entry["truncated"] = True
+        scores = []
+        last = []
+        for line in lines:
+            try:
+                row = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                row = None
+            if not isinstance(row, dict):
+                entry["invalid"] += 1
+                continue
+            score = row.get("score")
+            if type(score) is not int or not 0 <= score <= RETRO_SCORELOG_MAX_SCORE:
+                entry["invalid"] += 1
+                continue
+            producer = row.get("source")
+            name = producer if producer in RETRO_SCORELOG_SOURCES else "other"
+            entry["sources"][name] += 1
+            entry["records"] += 1
+            scores.append(score)
+            last.append({
+                "ts": _bounded_time(row.get("ts")),
+                "score": score,
+                "source": name,
+            })
+        run = 0
+        previous = None
+        for score in scores:
+            run = run + 1 if score == previous else 1
+            previous = score
+            if run > entry["max_same_score_run"]:
+                entry["max_same_score_run"] = run
+        entry["last"] = last[-RETRO_SCORELOG_LAST:]
+        result["games"][game] = entry
+    return result
+
+
 _HOTLOAD_STATES = frozenset({"consistent", "mixed", "partial", "unestablished"})
 _HOTLOAD_ROLES = ("agent", "corner")
 _HOTLOAD_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
@@ -3836,6 +4079,9 @@ def _project_corner_state(data):
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
                            "operator-moved-during-doushi",
+                           "operator-moved-during-mystery",
+                           "operator-moved-during-lawsim",
+                           "case-completed", "case-error",
                            "duration",
                            "audio-complete",
                            "operator-moved-after-start",
@@ -3857,6 +4103,12 @@ def _project_corner_state(data):
             "hanjuku-chart-v227-healthy-egg-margin",
             "hanjuku-chart-v228-bijin-request-decline",
             "hanjuku-chart-v229-bijin-hold-release",
+            "hanjuku-chart-v232-low-army-refill-first",
+            "hanjuku-chart-v233-boss-card-proven-absent",
+            "hanjuku-chart-v234-refill-outcome",
+            "hanjuku-chart-v235-boss-card-rebuy",
+            "hanjuku-chart-v236-readable-prose-boundary",
+            "hanjuku-chart-v237-clash-gauge-dropper-carry",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -3895,6 +4147,25 @@ def _project_corner_state(data):
         "game_audio": _project_game_audio(data.get("game_audio")),
         "hotload": _project_hotload(data.get("hotload")),
     }
+
+
+def _project_soren91_corner(data):
+    """Meriken/soren91 corner lifecycle plus why its last switch ended.
+
+    The corner keeps the propagated switch error in its own state file. That
+    is the only durable evidence for a ``readiness_timeout``: the presenter
+    pane dies with its tmux window, so without this the operator sees only
+    "failed" and has to reproduce the failure to learn the cause (docich#1221).
+    ``switch_status`` stays a fixed enum; the recorded switch error code is a
+    bounded token and the detail is redacted and length-capped.
+    """
+    entry = _project_corner_state(data)
+    status = data.get("switch_status")
+    entry["switch_status"] = (
+        status if isinstance(status, str) and status in SWITCH_STATUSES else None
+    )
+    entry["switch_error_code"] = _bounded_str(data.get("last_error_code"), 64)
+    return entry
 
 
 def _project_review(value):
@@ -4656,11 +4927,17 @@ def _collect_corner_files(state_dir, payload, now):
         "tsuitate_corner",
         "yoso_corner",
         "doushi_corner",
+        "mystery_corner",
+        "lawsim_corner",
+        "soren91_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
-            entry.update(_project_corner_state(data))
+            if name == "soren91_corner":
+                entry.update(_project_soren91_corner(data))
+            else:
+                entry.update(_project_corner_state(data))
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
@@ -4701,7 +4978,7 @@ def _collect_external_video(state_dir, now):
     """Fixed enums/health only: no IP, request, PID, file body or argv output."""
     entry = {"receiver_present": False, "receiver_readable": False,
              "receiver_status": "absent", "receiver_alive": None,
-             "frame_fresh": None, "audio_present": None,
+             "frame_fresh": None, "frame_age_sec": None, "audio_present": None,
              "corner_status": "absent", "recovery_required": None}
     present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
     if present:
@@ -4732,11 +5009,134 @@ def _collect_external_video(state_dir, now):
         age = None
     fresh = (alive and receiver.get("status") == "receiving" and now < expiry
              and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    if age is not None and math.isfinite(age) and age >= 0:
+        entry["frame_age_sec"] = min(int(age), _REG.EXTERNAL_VIDEO["frame_age_max_sec"])
     entry.update(receiver_readable=True, receiver_alive=alive,
                  frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
     if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
         entry["receiver_status"] = receiver["status"]
     return entry
+
+
+# Encoder heartbeat projection (#AV projection). Only fixed numeric/enum keys
+# are copied: the source records also carry stream configuration and the
+# reconnect channel name, which must never cross this boundary.
+_ENCODER_STATES = frozenset({"running", "stopped", "failed"})
+_ENCODER_MAX_FRAMES = 2 ** 53 - 1
+
+
+def _encoder_count(value):
+    if type(value) is not int or not 0 <= value <= _ENCODER_MAX_FRAMES:
+        return None
+    return value
+
+
+def _normalize_encoder(kind, data):
+    """Return the fixed projection of one heartbeat record, or None."""
+    normalized = {
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "out_time_sec": None,
+    }
+    if kind == "twica":
+        if (type(data.get("schema")) is not int
+                or data["schema"] != _REG.ENCODER["schema_version"]):
+            return None
+        ready = data.get("ready")
+        normalized["ready"] = ready if isinstance(ready, bool) else None
+        normalized["frames_sent"] = _encoder_count(data.get("frames_sent"))
+        fps = data.get("fps")
+        if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+            normalized["fps"] = round(float(fps), 2)
+        if normalized["ready"] is True:
+            normalized["state"] = "running"
+        elif data.get("frame_state") == "closed":
+            normalized["state"] = "stopped"
+        return normalized
+    # Soren direct_stream writes the parsed ffmpeg progress record.
+    state = data.get("state")
+    if isinstance(state, str) and state in _ENCODER_STATES:
+        normalized["state"] = state
+    elif data.get("running") is True:
+        normalized["state"] = "running"
+    elif data.get("running") is False:
+        normalized["state"] = "stopped"
+    normalized["ready"] = data.get("running") if isinstance(data.get("running"), bool) else None
+    normalized["frames_sent"] = _encoder_count(data.get("frame"))
+    fps = data.get("fps")
+    if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+        normalized["fps"] = round(float(fps), 2)
+    out_time_us = data.get("out_time_us")
+    if type(out_time_us) is int and 0 <= out_time_us <= 10 ** 15:
+        normalized["out_time_sec"] = out_time_us // 1_000_000
+    return normalized
+
+
+def _collect_encoder(state_dir, soren, now):
+    """Read-only encoder heartbeat from the two existing producer paths.
+
+    TwiCa's common adapter owns ``run/twica-common/pipeline.json`` only while
+    it holds the output; Soren's ``direct_stream`` owns its own progress record.
+    Whichever is fresh wins, and a stale record is reported as ``stale`` rather
+    than as a healthy encoder.
+    """
+    result = {
+        "schema_version": _REG.ENCODER["schema_version"],
+        "present": False,
+        "readable": False,
+        "source": "none",
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "progress_age_sec": None,
+        "out_time_sec": None,
+        "reason": "absent",
+    }
+    candidates = (
+        ("twica_common", Path(state_dir) / _REG.ENCODER["twica_subpath"],
+         _REG.ENCODER["twica_stale_sec"], "twica"),
+        ("direct_stream", Path(soren) / _REG.ENCODER["direct_stream_subpath"],
+         _REG.ENCODER["direct_stream_stale_sec"], "direct"),
+    )
+    stale = None
+    invalid = None
+    for source, path, stale_sec, kind in candidates:
+        present, readable, data = _load_state_file(path)
+        if not present:
+            continue
+        if not readable or not isinstance(data, dict):
+            invalid = invalid or (source, "unreadable")
+            continue
+        normalized = _normalize_encoder(kind, data)
+        if normalized is None:
+            invalid = invalid or (source, "invalid_schema")
+            continue
+        try:
+            raw_age = now - path.stat().st_mtime
+            # A clock jump must not make an old record look fresh; an mtime far
+            # in the future is treated as stale rather than as age 0.
+            age = None if raw_age < -300 else max(0, int(raw_age))
+        except OSError:
+            age = None
+        if age is None or age > stale_sec:
+            stale = stale or (source, normalized, age)
+            continue
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="ok")
+        return result
+    if stale is not None:
+        source, normalized, age = stale
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="stale")
+        return result
+    if invalid is not None:
+        result.update(source=invalid[0], present=True, readable=False, reason=invalid[1])
+    return result
 
 
 _HANJUKU_PREDICTION_RECORD_LIMIT = 16384
@@ -4957,7 +5357,7 @@ def _collect_prediction_leaderboard(state_dir):
         data = json.loads(raw) if raw is not None else None
     except ValueError:
         data = None
-    if (not isinstance(data, dict) or data.get("schema") != 1
+    if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
     viewers = set()
@@ -5026,6 +5426,9 @@ def _collect_programs(state_dir, soren, now):
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
         "doushi_corner": {"present": False, "readable": False},
+        "mystery_corner": {"present": False, "readable": False},
+        "lawsim_corner": {"present": False, "readable": False},
+        "soren91_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
                               "handoff_oversized": False, "cursor_present": False},
@@ -5068,6 +5471,7 @@ def _collect_programs(state_dir, soren, now):
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["retro_program_queues"] = _collect_retro_program_queues(soren)
     payload["ab"] = _collect_ab(soren, now)
+    payload["retro_scores"] = _collect_retro_scores(state_dir, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
     return payload
 
@@ -6909,7 +7313,9 @@ PULSE_SINK_INPUTS_TIMEOUT = 5
 # Bounded so the projection cannot crowd the 36 KiB diagnostics envelope; the
 # production session has far fewer streams than this, and the omitted remainder
 # is reported rather than silently dropped.
-PULSE_SINK_INPUTS_MAX = 32
+# Bounded detail list; the attribution summary carries the ownership signal
+# when this cap (or the output budget) drops the per-stream rows.
+PULSE_SINK_INPUTS_MAX = 8
 PULSE_SINK_INPUTS_OUTPUT_MAX = 256 * 1024
 # ``application.name`` is an externally supplied free-form string, so it is
 # never emitted verbatim. These fixed categories still separate the bridge's
@@ -7009,6 +7415,34 @@ def _project_pulse_stream(item, names, roles):
     }
 
 
+PULSE_PLAYER_CATEGORY_KEYS = tuple(
+    dict.fromkeys(category for _needle, category in PULSE_PLAYER_CATEGORIES)
+) + ("other", "unknown")
+
+
+def _pulse_attribution(items, roles):
+    """Fixed-axis attribution that survives the output budget.
+
+    ``media.role`` is rarely set by the players, so ``by_player`` is the useful
+    axis: it separates the BGM bridge (``bridge-ffplay``), game audio
+    (``retroarch``), overlay audio (``browser``) and the encoder's monitor
+    capture (``stream-capture``). ``by_role`` keeps only the roles that are
+    actually present plus an explicit ``unattributed`` count, so the projection
+    stays small and never looks like a role was assumed.
+    """
+    by_player = {key: 0 for key in PULSE_PLAYER_CATEGORY_KEYS}
+    by_role = {"unattributed": 0}
+    for item in items:
+        category = _pulse_player_category(item.get("application")) or "unknown"
+        by_player[category] = by_player.get(category, 0) + 1
+        role = item.get("role")
+        if isinstance(role, str) and role in roles:
+            by_role[role] = by_role.get(role, 0) + 1
+        else:
+            by_role["unattributed"] += 1
+    return {"by_player": by_player, "by_role": by_role}
+
+
 def _collect_pulse_sink_inputs():
     """Read-only PulseAudio sink-input projection (#968).
 
@@ -7028,7 +7462,7 @@ def _collect_pulse_sink_inputs():
     listing, failure = _pulse_listing('list', 'sink-inputs')
     if failure is not None:
         return {'schema_version': 1, 'readable': False, 'reason': failure,
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     # ``list sink-inputs`` reports the sink by index; the name is what makes a
     # muted shared stream recognizable, so the fixed short listing is read too.
     # A missing name mapping is not a failure: mute is still readable.
@@ -7043,7 +7477,7 @@ def _collect_pulse_sink_inputs():
         names = sink_names(short or '')
     except (TypeError, ValueError):
         return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     streams = [_project_pulse_stream(item, names, MEDIA_ROLES)
                for item in items[:PULSE_SINK_INPUTS_MAX]]
     return {
@@ -7057,7 +7491,74 @@ def _collect_pulse_sink_inputs():
         # never mistaken for a complete one.
         'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
         'streams': streams,
+        # Kept even when the budget drops ``streams`` (#AV projection).
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
     }
+
+
+def _collect_pulse_source_outputs():
+    """Read-only PulseAudio source-output (capture/recording) projection (#1964).
+
+    Playback can be audible while the stream capture (encoder input) is
+    missing: the encoder's source output may be absent, corked, or pointing at
+    the wrong source. This projection makes the capture side independently
+    observable, mirroring ``_collect_pulse_sink_inputs`` but for source
+    outputs (recording streams). An unreachable daemon is reported as
+    unreadable rather than as "no capture streams".
+    """
+    from docich.pulse_volume import MEDIA_ROLES, parse_source_outputs, sink_names
+
+    listing, failure = _pulse_listing('list', 'source-outputs')
+    if failure is not None:
+        return {'schema_version': 1, 'readable': False, 'reason': failure,
+                'total': None, 'streams': [], 'attribution': None}
+    # ``list source-outputs`` reports the source by index; resolve names via
+    # the short source listing. A missing name mapping is not a failure.
+    short, _short_failure = _pulse_listing('list', 'short', 'sources')
+    try:
+        items = parse_source_outputs(listing)
+        if listing.strip() and not items:
+            raise ValueError('unrecognized source-output listing')
+        names = sink_names(short or '')
+    except (TypeError, ValueError):
+        return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
+                'total': None, 'streams': [], 'attribution': None}
+
+    def _project(item):
+        source = item.get('source')
+        percents = item.get('volume_percent')
+        if not isinstance(percents, list):
+            percents = None
+        else:
+            percents = [p for p in percents if type(p) is int and 0 <= p <= 200] or None
+        role = item.get('role')
+        return {
+            'index': item.get('index') if type(item.get('index')) is int else None,
+            'source': names.get(source) if isinstance(source, str) else None,
+            'role': role if role in MEDIA_ROLES else None,
+            'mute': item.get('mute') if isinstance(item.get('mute'), bool) else None,
+            'corked': item.get('corked') if isinstance(item.get('corked'), bool) else None,
+            'volume_percent': percents,
+            'player': _pulse_player_category(item.get('application')),
+        }
+
+    streams = [_project(item) for item in items[:PULSE_SINK_INPUTS_MAX]]
+    return {
+        'schema_version': 1,
+        'readable': True,
+        'reason': None,
+        'total': len(items),
+        'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
+        'streams': streams,
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
+    }
+
+
+# Aliases for alternate naming used by callers/tests.
+_collect_pulse_capture = _collect_pulse_source_outputs
+_collect_pulse_source_output = _collect_pulse_source_outputs
+_collect_capture = _collect_pulse_source_outputs
+_collect_stream_capture = _collect_pulse_source_outputs
 
 
 BGM_REASONS = frozenset({
@@ -7536,6 +8037,8 @@ PROGRAM_ADMISSION_OWNERS = {
     'nethack': 'nethack_corner', 'paper': 'paper_corner', 'meriken': 'soren91_corner',
     'tsuitate': 'tsuitate_corner', 'weather': 'weather_corner',
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
+    'mystery': 'mystery_corner',
+    'communist-law-simulator': 'lawsim_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',
@@ -7726,6 +8229,9 @@ def _program_admission_owner_free(runtime, owners, expected):
         return None
     # These views have a canonical restoration exception. Do not reproduce it
     # incompletely or call them occupied/free without its additional evidence.
+    # lawsim は例外集合に入れない: 実行側（rotation/admission）は failed の
+    # lawsim を「占有中（要回収）」と判定するため、診断だけ unknown にすると
+    # 不一致になる（PR #2502 の独立検証で再現）。mystery と同じ扱い。
     if status == 'failed' and name in {'paper_corner', 'paper_corner_manual', 'doushi_corner'}:
         return None
     return status not in {'starting', 'active', 'restoring', 'recovery_required', 'failed'}
@@ -8392,6 +8898,7 @@ def _collect_runtime_presentation(state_dir, now):
     result = {
         "present": False,
         "readable": False,
+        "reason": None,
         "active_runtime": False,
         "status": None,
         "display": None,
@@ -8404,24 +8911,33 @@ def _collect_runtime_presentation(state_dir, now):
         Path(state_dir) / "game_switch.json"
     )
     if not readable:
+        result["reason"] = "active_unreadable"
         return result
     active = data.get("active")
     if not isinstance(active, dict):
+        result["reason"] = "no_active_runtime"
         return result
     runtime_id = active.get("runtime_id")
     if (not isinstance(runtime_id, str) or runtime_id in (".", "..")
             or not _RUNTIME_ID_RE.fullmatch(runtime_id)):
+        result["reason"] = "runtime_id_invalid"
         return result
     result["active_runtime"] = True
     path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
     present, readable, state, modified = _presentation_record_nofollow(path)
     result["present"] = present
     result["readable"] = readable
+    if not present:
+        result["reason"] = "record_absent"
+        return result
     if not readable or not isinstance(state, dict):
+        result["reason"] = "record_unreadable"
         return result
     status = state.get("status")
+    result["reason"] = "status_unknown"
     if isinstance(status, str) and status in _PRESENTATION_STATUSES:
         result["status"] = status
+        result["reason"] = "ok"
     display = state.get("display")
     if isinstance(display, str) and re.fullmatch(r":[0-9]{1,3}", display):
         result["display"] = display
@@ -8494,6 +9010,11 @@ def _collect_nethack_panes(state_dir, now):
 NETHACK_HISTORY_SCAN_LIMIT = 128
 NETHACK_HISTORY_FILE_BYTES = 65536
 NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+# Fixed producer codes from ``docich.nethack_run`` ``_terminal_records_since``;
+# duplicated here (see test_nethack_boundary_diag.py precedent) so the
+# diagnostics projection can aggregate them without importing game modules.
+NETHACK_ANALYSIS_ERRORS = frozenset({
+    'xlogfile-missing', 'xlogfile-truncated', 'no-new-player-xlog-record'})
 NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
                             'proposal_drift', 'evidence_gap', 'terminal_evidence',
                             'progress_stall'})
@@ -8591,6 +9112,18 @@ def _nethack_record(raw, daily):
                   'progress': _nethack_progress(retrospective.get('progress_evidence'))}
         for key in ('score', 'turns', 'max_depth'):
             result[key] = _nethack_number(raw.get(key))
+        # ``terminal.analysis_error`` is the run store's own fixed reason code
+        # for "game ended but xlog evidence was missing" (#753). Reviewed codes
+        # are projected verbatim; any other producer value collapses to the
+        # fixed token ``other`` so it is still countable without being exposed.
+        # The type guard also keeps unhashable producer values (list/dict)
+        # away from the frozenset membership test (#2515 review).
+        terminal = raw.get('terminal')
+        error = terminal.get('analysis_error') if isinstance(terminal, dict) else None
+        if isinstance(error, str) and error in NETHACK_ANALYSIS_ERRORS:
+            result['analysis_error'] = error
+        else:
+            result['analysis_error'] = 'other' if error else None
     if timestamp is None:
         return None
     result['generated_at' if daily else 'ended_at'] = timestamp
@@ -8601,6 +9134,15 @@ def _nethack_history(state_dir, daily):
     """Open each directory relative to a pinned fd: no symlink traversal/races."""
     result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
               'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    # Summary counters cover every valid terminal record seen during the scan,
+    # not just the bounded ``records`` projection, so they survive the output
+    # budget reductions that trim old records away (#753).
+    summary = (None if daily else {
+        'terminal_status_counts': {status: 0 for status in sorted(NETHACK_TERMINAL)},
+        'score_present_count': 0,
+        'analysis_error_counts': {code: 0 for code in sorted(NETHACK_ANALYSIS_ERRORS)}
+        | {'other': 0},
+    })
     directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
     fd = None
     try:
@@ -8640,7 +9182,18 @@ def _nethack_history(state_dir, daily):
                         raise ValueError('invalid evidence')
                     record['file_mtime'] = info.st_mtime
                     records.append(record)
-                except (OSError, ValueError, UnicodeError, RecursionError):
+                    if summary is not None:
+                        status = record.get('terminal_status')
+                        if status in summary['terminal_status_counts']:
+                            summary['terminal_status_counts'][status] += 1
+                        if type(record.get('score')) is int:
+                            summary['score_present_count'] += 1
+                        error = record.get('analysis_error')
+                        if error is not None:
+                            summary['analysis_error_counts'][error] += 1
+                except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+                    # A hostile run file must cost one invalid_records entry,
+                    # never the whole read-only diagnostics scan (#2515 review).
                     result['invalid_records'] += 1
             else:
                 result['scan_complete'] = True
@@ -8650,6 +9203,8 @@ def _nethack_history(state_dir, daily):
         result['records'] = records[:limit]
         result['omitted_records'] = max(0, len(records) - limit)
         result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+        if summary is not None:
+            result['summary'] = summary
     except FileNotFoundError:
         result['status'] = 'missing'
     except OSError:
@@ -8669,20 +9224,634 @@ def _collect_nethack_history(state_dir, now):
 def _nethack_history_budget(payload, *, keep_latest=False):
     """Trim oldest history first, keeping the latest of each source if possible."""
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    history = payload.get("nethack_history")
+    if not isinstance(history, dict):
+        # A section the hard ceiling already dropped has nothing to trim. Return
+        # the envelope unchanged so the drop order stays total instead of
+        # raising on the next pass (#2533).
+        return text
     while len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        sources = [payload["nethack_history"][name]
-                   for name in ("daily", "completed_runs")
-                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
+        sources = [history[name] for name in ("daily", "completed_runs")
+                   if isinstance(history.get(name), dict)
+                   and len(history[name].get("records") or []) > int(keep_latest)]
         if not sources:
             break  # Existing diagnostics retain their original budget handling.
         # Each source is newest-first. Exhaust older records before removing
         # either source's latest record; never mark an empty/missing source.
-        history = max(sources, key=lambda item: len(item["records"]))
-        history["records"].pop()
-        history["omitted_records"] += 1
-        history["output_omitted"] = True
+        heaviest = max(sources, key=lambda item: len(item["records"]))
+        heaviest["records"].pop()
+        heaviest["omitted_records"] = heaviest.get("omitted_records", 0) + 1
+        heaviest["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
+
+
+# ---------------------------------------------------------------------------
+# NetHack xlogfile writer diagnostics (#753, read-only).
+#
+# ``src/docich/nethack_run.py`` treats the machine-readable xlogfile as the
+# canonical source of terminal facts. NetHack 3.6.x on Linux appends a record
+# at game end only when ``link(xlogfile, xlogfile_lock)`` succeeds: the file
+# must already exist (ENOENT silently skips the write and never creates it)
+# and a leftover lock hard link (EEXIST) silently skips every later write
+# after 10 retries. Both failures are invisible to the run store, so this
+# projection stats the fixed contract files and derived counters only. It
+# never follows symlinks, never writes, never outputs xlog content, player
+# names, or death text, and resolves paths only from the reviewed production
+# game config.
+# ---------------------------------------------------------------------------
+
+NETHACK_XLOG_TAIL_BYTES = 65536
+NETHACK_XLOG_DIR_SCAN_LIMIT = 128
+NETHACK_XLOG_PROCESS_LIMIT = 4
+NETHACK_XLOG_SYSCONF_BYTES = 65536
+NETHACK_XLOG_SYSCONF_KEYS = frozenset({'xlogfile', 'logfile', 'dumplogfile'})
+NETHACK_XLOG_SYSCONF_PATH = Path('/etc/nethack/sysconf')
+NETHACK_XLOG_PACKAGES = frozenset({'nethack-common', 'nethack-console'})
+# Fixed launcher / alternate-path candidates from the #753 investigation
+# checklist; never discovered from the environment at runtime.
+NETHACK_XLOG_LAUNCHERS = (Path('/usr/games/nethack'), Path('/usr/local/bin/nethack'))
+NETHACK_XLOG_ALTERNATES = (Path('/var/lib/nethack/xlogfile'),
+                           Path('/usr/games/lib/nethackdir/xlogfile'))
+NETHACK_XLOG_LAUNCHER_BYTES = 4096
+NETHACK_XLOG_LAUNCHER_KEYS = frozenset({'hackdir', 'nethackplayground',
+                                        'playground', 'xlogfile'})
+NETHACK_XLOG_BINARY_BYTES = 8 * 1024 * 1024
+NETHACK_XLOG_SIBLING_LIMIT = 8
+
+
+def _nethack_xlog_stat(path):
+    """Bounded lstat projection of one fixed path; symlinks are never followed.
+
+    Missing paths stay minimal: absence is reported as ``{"exists": false}``
+    rather than a full dict of nulls, so the fixed envelope is spent on real
+    evidence.
+    """
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError:
+        return {"exists": None}
+    result = {
+        "exists": True,
+        "symlink": stat.S_ISLNK(info.st_mode),
+        "regular": stat.S_ISREG(info.st_mode),
+        "dir": stat.S_ISDIR(info.st_mode),
+        "size": int(info.st_size),
+        "mtime": info.st_mtime,
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": int(info.st_uid),
+        "gid": int(info.st_gid),
+        "nlink": int(info.st_nlink),
+    }
+    return result
+
+
+def _nethack_xlog_same_inode(path_a, path_b):
+    """True/False only when both fixed paths stat; otherwise None (unknown)."""
+    try:
+        info_a = os.stat(path_a, follow_symlinks=False)
+        info_b = os.stat(path_b, follow_symlinks=False)
+    except OSError:
+        return None
+    return (info_a.st_dev, info_a.st_ino) == (info_b.st_dev, info_b.st_ino)
+
+
+def _nethack_xlog_game_paths():
+    """Resolve the reviewed production game paths; never arbitrary input."""
+    resolved = {
+        "player": "docich",
+        "save_dir": Path("/var/games/nethack/save"),
+        "xlogfile": Path("/var/games/nethack/xlogfile"),
+        "dump_dir": Path("/var/games/nethack/dumps"),
+    }
+    try:
+        import tomllib
+        raw = _read_text_capped(
+            PROD_ROOT / "config" / "games" / "nethack.toml", 16384)
+        table = tomllib.loads(raw or "").get("nethack")
+    except (OSError, ValueError, TypeError, ImportError):
+        table = None
+    source = "defaults"
+    if isinstance(table, dict):
+        player = table.get("player_name")
+        if isinstance(player, str) and re.fullmatch(r"[A-Za-z0-9_]{1,31}", player):
+            resolved["player"] = player
+            source = "production-config"
+        for key in ("save_dir", "xlogfile", "dump_dir"):
+            value = table.get(key)
+            if (isinstance(value, str) and value.startswith("/")
+                    and 0 < len(value) <= 4096 and "\x00" not in value
+                    and ".." not in Path(value).parts):
+                resolved[key] = Path(value)
+                source = "production-config"
+    resolved["source"] = source
+    return resolved
+
+
+def _nethack_xlog_save_files(save_dir, player):
+    """Count the player's save files through a pinned dirfd; names stay local."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "player_saves": 0, "newest_player_save_mtime": None}
+    pattern = re.compile(
+        rf"\d+{re.escape(player)}(?:\.[A-Za-z0-9]+)?\Z", re.IGNORECASE)
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(save_dir).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                if pattern.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                result["player_saves"] += 1
+                newest = result["newest_player_save_mtime"]
+                if newest is None or info.st_mtime > newest:
+                    result["newest_player_save_mtime"] = info.st_mtime
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_processes():
+    """Effective uid/gid of live nethack processes; no argv is ever read."""
+    result = {"count": 0, "entries": []}
+    try:
+        candidates = [name for name in os.listdir('/proc') if name.isdigit()]
+    except OSError:
+        return result
+    for name in candidates[:256]:
+        if len(result["entries"]) >= NETHACK_XLOG_PROCESS_LIMIT:
+            break
+        base = Path('/proc') / name
+        try:
+            if base.joinpath('comm').read_text(
+                    encoding='utf-8', errors='replace').strip() != 'nethack':
+                continue
+            entry = {"pid": int(name), "euid": None, "egid": None, "start_ticks": None}
+            for line in base.joinpath('status').read_text(
+                    encoding='utf-8', errors='replace').splitlines():
+                if not (line.startswith('Uid:') or line.startswith('Gid:')):
+                    continue
+                fields = line.split()
+                if len(fields) >= 3 and fields[1].isdigit() and fields[2].isdigit():
+                    entry['euid' if line.startswith('Uid:') else 'egid'] = int(fields[2])
+            stat_text = base.joinpath('stat').read_text(
+                encoding='utf-8', errors='replace')
+            tail = stat_text[stat_text.rindex(')') + 2:].split()
+            if len(tail) > 19 and tail[19].isdigit():
+                entry["start_ticks"] = int(tail[19])
+            result["entries"].append(entry)
+            result["count"] += 1
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def _nethack_xlog_packages():
+    """dpkg metadata for the two fixed Debian package names; nothing else."""
+    result = {"available": False, "entries": []}
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Status}\n",
+             *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    for line in (proc.stdout or "").splitlines():
+        fields = (line.split("\t") + ["", "", ""])[:3]
+        package, version, status = fields
+        if package not in NETHACK_XLOG_PACKAGES:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "package": package,
+            "version": version[:64] if version else None,
+            "installed": status == "install ok installed",
+        })
+    return result
+
+
+def _nethack_xlog_sysconf():
+    """Project only the three allowlisted xlog-related sysconf keys."""
+    result = {"present": False, "readable": False, "configured": [], "values": {}}
+    try:
+        fd = os.open(NETHACK_XLOG_SYSCONF_PATH,
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["present"] = True
+        return result
+    result["present"] = True
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_XLOG_SYSCONF_BYTES:
+                return result
+            raw = stream.read(NETHACK_XLOG_SYSCONF_BYTES + 1)
+        if len(raw) > NETHACK_XLOG_SYSCONF_BYTES:
+            return result
+    except OSError:
+        return result
+    result["readable"] = True
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if not text or text.startswith('#'):
+            continue
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_SYSCONF_KEYS or name in result["values"]:
+            continue
+        result["configured"].append(name)
+        cleaned = value.strip().strip('"').strip()
+        if re.fullmatch(r"[A-Za-z0-9._/%{}-]{1,200}", cleaned or ""):
+            result["values"][name] = cleaned
+        else:
+            result["values"][name] = None
+    return result
+
+
+def _nethack_xlog_parse_line(line):
+    """Minimal copy of ``docich.nethack_run.parse_xlog_line`` (import-light)."""
+    record = {}
+    for fragment in line.rstrip("\r\n").split("\t"):
+        if "=" not in fragment:
+            continue
+        key, _, value = fragment.partition("=")
+        if key:
+            record[key] = value
+    return record
+
+
+def _nethack_xlog_int(record, key, base=10):
+    raw = record.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw, base)
+    except ValueError:
+        return None
+
+
+def _nethack_xlog_record_fields(record, player):
+    """Allowlisted numeric projection of one parsed xlog record; no text."""
+    return {
+        "name_matches_player": (record.get("name") == player) if player else None,
+        "starttime": _nethack_xlog_int(record, "starttime"),
+        "endtime": _nethack_xlog_int(record, "endtime"),
+        "points": _nethack_xlog_int(record, "points"),
+        "turns": _nethack_xlog_int(record, "turns"),
+        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
+        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    }
+
+
+def _nethack_xlog_tail(xlogfile, player):
+    """Derived counters from the bounded xlog tail; content never leaves.
+
+    ``record_span`` (oldest record's birth time, newest record's end time,
+    complete-line count) is the #753 timeline evidence and stays small enough
+    to survive the soft budget reductions. An unreadable xlogfile reports
+    only ``{"readable": false}`` so absence never spends envelope bytes.
+    """
+    result = {"readable": False}
+    try:
+        fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return result
+    head_trimmed = False
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return result
+            size = int(info.st_size)
+            start = max(0, size - NETHACK_XLOG_TAIL_BYTES)
+            if start:
+                # Peek one byte back: when the window happens to start on a
+                # line boundary the first line is complete and must survive
+                # (#753 review). Only a real mid-line cut is trimmed below.
+                stream.seek(start - 1)
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES + 1)
+                head_trimmed = raw[:1] != b'\n'
+                raw = raw[1:]
+            else:
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
+    except OSError:
+        return result
+    result["size"] = size
+    result["tail_complete_lines"] = 0
+    result["tail_head_truncated"] = bool(start)
+    result["record_span"] = None
+    result["first_record"] = None
+    result["last_record"] = None
+    result["readable"] = True
+    if head_trimmed:
+        # The window may begin mid-line; only bytes after the first newline
+        # are complete records (#2515 review). With no newline in the window
+        # there is no complete line at all.
+        newline = raw.find(b'\n')
+        raw = raw[newline + 1:] if newline != -1 else b''
+    raw = raw[:raw.rfind(b'\n') + 1]
+    lines = [line for line in raw.split(b'\n') if line]
+    result["tail_complete_lines"] = len(lines)
+    if not lines:
+        return result
+    first = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[0].decode('utf-8', errors='replace')), player)
+    last = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace')), player)
+    result["first_record"] = first
+    result["last_record"] = last
+    result["record_span"] = {
+        "first_starttime": first["starttime"],
+        "last_endtime": last["endtime"],
+        "complete_lines": len(lines),
+    }
+    return result
+
+
+def _nethack_xlog_safe_value(text, cap=200):
+    """Project a config-derived value only when it is plain path-like text."""
+    if not isinstance(text, str) or not text:
+        return None
+    cleaned = text.strip().strip('"').strip()
+    pattern = r"[A-Za-z0-9._/{}%+-]{1," + str(int(cap)) + "}"
+    if re.fullmatch(pattern, cleaned or ""):
+        return cleaned
+    return None
+
+
+def _nethack_xlog_launcher(path):
+    """Stat one fixed launcher and project only allowlisted playground vars."""
+    entry = {"stat": _nethack_xlog_stat(path), "target": None, "vars": {}}
+    if not entry["stat"]["exists"]:
+        return entry
+    if entry["stat"]["symlink"]:
+        try:
+            entry["target"] = _nethack_xlog_safe_value(os.readlink(path))
+        except OSError:
+            entry["target"] = None
+        return entry
+    if not entry["stat"]["regular"] or entry["stat"]["size"] > 16384:
+        return entry
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            raw = stream.read(NETHACK_XLOG_LAUNCHER_BYTES)
+    except OSError:
+        return entry
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if text.startswith('export '):
+            text = text[len('export '):].strip()
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_LAUNCHER_KEYS or name in entry["vars"]:
+            continue
+        entry["vars"][name] = _nethack_xlog_safe_value(value)
+    return entry
+
+
+def _nethack_xlog_siblings(playground):
+    """Names/size/mtime of bounded xlogfile* siblings; no other entries."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "entries": []}
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(playground).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            matched = []
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                name = entry.name
+                if not name.startswith('xlogfile'):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                matched.append({
+                    "name": _nethack_xlog_safe_value(name, cap=64) or 'xlogfile',
+                    "size": int(info.st_size), "mtime": info.st_mtime,
+                })
+        matched.sort(key=lambda item: item["name"])
+        result["entries"] = matched[:NETHACK_XLOG_SIBLING_LIMIT]
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_binary_has_xlog_string(path):
+    """Scan a fixed binary for the compiled-in ``xlogfile`` name (read-only).
+
+    Reads at most ``NETHACK_XLOG_BINARY_BYTES`` bytes and reports whether the
+    scan was complete, so a capped probe is never mistaken for a full
+    negative (#2515 review). The needle is also matched across read-chunk
+    boundaries by carrying an overlap of ``len(needle) - 1`` bytes.
+    """
+    needle = b'xlogfile'
+    overlap = b''
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        total = int(info.st_size)
+        planned = min(total, NETHACK_XLOG_BINARY_BYTES)
+        consumed = 0
+        while consumed < planned:
+            chunk = os.read(fd, min(256 * 1024, planned - consumed))
+            if not chunk:
+                # The file shrank under the plan; the scan did not complete.
+                break
+            consumed += len(chunk)
+            data = overlap + chunk
+            if needle in data:
+                return {"present": True, "complete_scan": True}
+            overlap = data[1 - len(needle):]
+        # ``complete_scan`` is true only when the whole file was examined;
+        # a capped or short probe is never a full negative (#2515 review).
+        return {"present": False, "complete_scan": consumed == planned == total}
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _nethack_xlog_binaries(launcher_targets):
+    """Locate the real nethack binaries via dpkg -L and fixed launcher targets."""
+    result = {"available": False, "complete_scan": True, "entries": []}
+    candidates = []
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-L", *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None:
+        for line in (proc.stdout or "").splitlines():
+            path = line.strip()
+            if path.startswith('/') and path.rpartition('/')[2] == 'nethack':
+                candidates.append(("dpkg", path))
+    for launcher, target in launcher_targets:
+        if target and target.startswith('/'):
+            candidates.append((launcher, target))
+    seen = set()
+    for origin, path in candidates:
+        if len(result["entries"]) >= 2:
+            result["complete_scan"] = False
+            break
+        if path in seen:
+            continue
+        seen.add(path)
+        probe = _nethack_xlog_binary_has_xlog_string(path)
+        if probe is None:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "origin": origin,
+            "xlog_string_present": probe["present"],
+            "binary_scan_complete": probe["complete_scan"],
+        })
+    return result
+
+
+def _collect_nethack_xlog(now):
+    settings = _nethack_xlog_game_paths()
+    xlogfile = settings["xlogfile"]
+    playground = settings["save_dir"].parent
+    xlog_lock = xlogfile.parent / (xlogfile.name + "_lock")
+    logfile = playground / "logfile"
+    logfile_lock = playground / (logfile.name + "_lock")
+    record = playground / "record"
+    launchers = {str(path): _nethack_xlog_launcher(path)
+                 for path in NETHACK_XLOG_LAUNCHERS}
+    launcher_targets = [(origin, entry["target"]) for origin, entry in launchers.items()
+                        if entry["target"]]
+    paths = {
+        "xlogfile": _nethack_xlog_stat(xlogfile),
+        "xlogfile_lock": _nethack_xlog_stat(xlog_lock),
+        "logfile": _nethack_xlog_stat(logfile),
+        "logfile_lock": _nethack_xlog_stat(logfile_lock),
+        "record": _nethack_xlog_stat(record),
+    }
+    paths["xlogfile_lock"]["same_inode_as_xlogfile"] = _nethack_xlog_same_inode(
+        xlogfile, xlog_lock)
+    paths["logfile_lock"]["same_inode_as_logfile"] = _nethack_xlog_same_inode(
+        logfile, logfile_lock)
+    nlink = paths["xlogfile"].get("nlink")
+    return {
+        "schema_version": 1,
+        "collected_at": now,
+        "config": {"source": settings["source"], "player": settings["player"]},
+        "paths": paths,
+        "dirs": {
+            "playground": _nethack_xlog_stat(playground),
+            "save_dir": _nethack_xlog_stat(settings["save_dir"]),
+            "dump_dir": _nethack_xlog_stat(settings["dump_dir"]),
+        },
+        "launchers": launchers,
+        "alternates": {str(path): _nethack_xlog_stat(path)
+                       for path in NETHACK_XLOG_ALTERNATES},
+        "xlog_siblings": _nethack_xlog_siblings(playground),
+        "binaries": _nethack_xlog_binaries(launcher_targets),
+        "save_dir_entries": _nethack_xlog_save_files(
+            settings["save_dir"], settings["player"]),
+        "processes": _nethack_xlog_processes(),
+        "packages": _nethack_xlog_packages(),
+        "sysconf": _nethack_xlog_sysconf(),
+        "xlog": _nethack_xlog_tail(xlogfile, settings["player"]),
+        "findings": {
+            "xlog_lock_present": paths["xlogfile_lock"]["exists"] is True,
+            "xlog_lock_shares_inode": paths["xlogfile_lock"]["same_inode_as_xlogfile"],
+            "xlog_file_shared_hardlink": (nlink > 1) if nlink is not None else None,
+        },
+    }
+
+
+def _nethack_xlog_budget(payload):
+    """Yield the xlog projection's optional detail under envelope pressure.
+
+    The stat-level lock/permission evidence and the ``record_span`` timeline
+    (oldest birth time / newest end time / line count) are the incident's
+    first-order proof, so they go last. Optional detail (first/last record
+    field detail, binaries, sibling list, process entries, sysconf values) is
+    dropped first, and each drop is visible through an ``*_omitted`` marker.
+    """
+    section = payload.get("nethack_xlog")
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    if isinstance(xlog, dict):
+        for key in ("first_record", "last_record"):
+            if xlog.get(key) is not None:
+                xlog[key] = None
+                xlog[key + "_omitted"] = True
+    for key in ("binaries", "processes", "xlog_siblings", "sysconf"):
+        part = section.get(key)
+        detail_key = "values" if key == "sysconf" else "entries"
+        if isinstance(part, dict) and part.get(detail_key):
+            part["values_omitted" if key == "sysconf" else "entries_omitted"] = True
+            part[detail_key] = {} if key == "sysconf" else []
+    return payload
+
+
+def _nethack_xlog_drop(payload):
+    """Collapse the whole xlog projection to its findings as the last resort."""
+    section = payload.get("nethack_xlog")
+    if isinstance(section, dict):
+        payload["nethack_xlog"] = {
+            "schema_version": section.get("schema_version"),
+            "collected_at": section.get("collected_at"),
+            "status": "output_omitted",
+        }
+    return payload
 
 
 def _cpu_profile_budget(payload):
@@ -8707,7 +9876,43 @@ def _cpu_profile_budget(payload):
 
 
 def _cpu_profile_detail_budget(payload):
-    """Omit per-component rows under pressure while retaining CPU totals."""
+    """Trim per-component rows to a small floor under pressure.
+
+    Host totals are always retained; the busiest few rows survive too, so the
+    sanitized projection can still name the top CPU consumers and spawn paths
+    (azumag/docich#970) instead of degrading to host totals only. The producer
+    already orders both lists busiest-first, and the dropped-row counts stay
+    visible in ``*_omitted``.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key, floor in (("components", CPU_PROFILE_FLOOR_COMPONENTS),
+                       ("spawns", CPU_PROFILE_FLOOR_SPAWNS)):
+        rows = profile.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        kept = rows[:floor]
+        dropped = len(rows) - len(kept)
+        profile[key] = kept
+        if not dropped:
+            continue
+        omitted_key = f"{key}_omitted"
+        previous = profile.get(omitted_key, 0)
+        if type(previous) is not int or previous < 0:
+            previous = 0
+        profile[omitted_key] = previous + dropped
+    return payload
+
+
+def _cpu_profile_detail_drop(payload):
+    """Drop the remaining per-component rows as the last optional detail.
+
+    The floor kept by ``_cpu_profile_detail_budget`` is still optional detail:
+    it must go before the latest NetHack result, which the reviewed priority
+    order ranks above CPU/audio detail. Host totals survive, and the dropped
+    rows move into ``*_omitted`` so an omitted row is never reported as absent.
+    """
     profile = payload.get("cpu_profile")
     if not isinstance(profile, dict):
         return payload
@@ -8764,6 +9969,10 @@ def _diagnostics_budget(payload):
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
     # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
     # their per-component/per-stream details and the latest NetHack result.
+    # ``encoder`` and ``pulse_sink_inputs.attribution`` are never reduced here
+    # (#AV projection): they are the only read-only evidence for "is the encoder
+    # still sending" and "which player owns this stream", and each is bounded
+    # well under 1 KiB. Only ``streams`` yields below.
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     pulse = payload.get("pulse_sink_inputs")
     if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse, dict)
@@ -8772,13 +9981,31 @@ def _diagnostics_budget(payload):
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    pulse2 = payload.get("pulse_source_outputs")
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse2, dict)
+            and isinstance(pulse2.get("streams"), list) and pulse2["streams"]):
+        payload["pulse_source_outputs"] = {
+            key: value for key, value in pulse2.items() if key != 'streams'
+        } | {'streams': [], 'truncated': True, 'output_omitted': True}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload = _cpu_profile_detail_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The #753 xlog projection is small and is the incident's first-order
+    # evidence, but its optional detail still yields with the other optional
+    # details before any history record goes.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _nethack_xlog_budget(payload)
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Old history is still the first part of the NetHack projection to go. The
     # latest result is allowed to go only after optional CPU/audio detail.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload, keep_latest=True)
+    # The CPU floor is still optional detail: drop it entirely before the latest
+    # NetHack result, preserving the reviewed priority order (review of #2406).
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_detail_drop(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload)
     # The repeated-operation projection deliberately survives the soft budget.
@@ -8791,7 +10018,54 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
-    return _nethack_history_budget(payload)
+        # Re-measure: the omission above may already bring the envelope back
+        # under the hard ceiling, and the retro_scores branch below must not
+        # decide on a stale size.
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The scorelog tail is the only read-only evidence for "one score record per
+    # match" (#2392). It stays under a few KiB, so it yields only against the
+    # gateway's hard ceiling rather than the softer budget, and only if the
+    # envelope is still over that ceiling after the reductions above.
+    if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict)
+            and "retro_scores" in corners):
+        corners["retro_scores"] = {"status": "output_omitted"}
+    # The xlog stat evidence is the last NetHack projection to go, and only
+    # against the hard ceiling: collapsing it hides the lock/permission facts
+    # that #753 needs, so it must survive every softer reduction.
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        payload = _nethack_xlog_drop(payload)
+    text = _nethack_history_budget(payload)
+    # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
+    # preserves the evidence its own incident review depends on, but none of them
+    # is unconditional: a payload that was still over the ceiling after them was
+    # returned as-is, and the gateway rejected the whole diagnostics operation
+    # closed ("diagnostics output too large") -- which is exactly how #2533 took
+    # the read-only diagnostics path down. Drop whole sections heaviest-first
+    # until the envelope fits, so the collector never hands the gateway a
+    # document it must reject. Each dropped section is marked, so the omission is
+    # visible in the envelope instead of looking like absent data.
+    for key in _HARD_DROP_ORDER:
+        if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+            break
+        if not isinstance(payload.get(key), dict):
+            continue
+        payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+        text = _nethack_history_budget(payload)
+    # Pathological fallback: a payload whose surviving sections are individually
+    # small but numerous. Drop the remaining top-level sections largest-first,
+    # keeping ``meta`` (the deployed SHA and collection status) so the envelope
+    # still identifies what it came from.
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        for key, value in sorted(
+                payload.items(),
+                key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
+            if key == "meta" or not isinstance(value, dict):
+                continue
+            payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+            text = _nethack_history_budget(payload)
+            if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+                break
+    return text
 
 
 def _collect_nethack_tiles(state_dir, now):
@@ -8937,9 +10211,12 @@ def main(argv):
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "pulse_source_outputs": _collect_pulse_source_outputs(),
+        "encoder": _collect_encoder(_program_state_dir(), soren, now),
         "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
+        "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),

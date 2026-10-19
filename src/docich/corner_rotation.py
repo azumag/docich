@@ -33,6 +33,10 @@ from .game_switch import TERMINAL_RECEIPT_STATUSES, atomic_write_json
 DAY = 86400.0
 MANUAL_CAPTURE_PROFILE_TTL = 60.0
 STOP_REQUEST_DIR = "corner-stop-requests"
+# Durable rotation ledger file name inside ``state_dir``. Adapters that must
+# re-read the release record of their own failed owner import this constant
+# instead of duplicating the path (#2352).
+LEDGER_FILE = "corner_rotation.json"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 
@@ -178,7 +182,7 @@ class CornerRotationManager:
         self.cooldown_seconds = cooldown_seconds(g)
         # Fixed interval-mode cadence, or None for the 24h/N target.
         self.configured_interval = configured_interval_seconds(g)
-        self.path = Path(g.state_dir) / "corner_rotation.json"
+        self.path = Path(g.state_dir) / LEDGER_FILE
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
 
     @contextmanager
@@ -570,10 +574,17 @@ class CornerRotationManager:
 
     def _observe(self, state, now):
         """Import manual usage; unknown or orphaned execution blocks selection."""
+
         pending = state.get("pending")
         rows = state.get("released_requests")
         released_requests = rows if isinstance(rows, dict) else {}
         busy = False
+        # State files whose released owner could not be retired this tick. The
+        # shared state file keeps an older request alive, so dispatching another
+        # corner on the same file would only fail again and push that request's
+        # release evidence out of the bounded audit (#2354 review).
+        self._unretired_released_paths = set()
+        unretired = self._unretired_released_paths
         for corner_id, adapter in self._observers(state).items():
             reconcile = getattr(adapter, "reconcile_terminal_failures", None)
             if callable(reconcile) and reconcile() is False:
@@ -601,23 +612,41 @@ class CornerRotationManager:
                         and row.get("resolution") == "released-unverified"
                         for row in (state.get("failed_corners") or [])
                     )
+                    # A deferred retirement pins its verified release record in
+                    # the corner state, which the bounded audit cannot evict.
+                    # Without it the last proof for a deferred request would be
+                    # lost while other corners keep failing (#2354 review).
+                    pinned = raw.get("released_settle_pending")
+                    pinned_release = (isinstance(pinned, dict)
+                                      and pinned.get("request_id") == request_id
+                                      and pinned.get("corner_id") == corner_id)
                     released = (isinstance(request_id, str)
                                 and ((isinstance(entry, dict)
                                       and entry.get("request_id") == request_id)
-                                     or audited_release)
+                                     or audited_release or pinned_release)
                                 and self._slot_reusable(adapter, {"request_id": request_id,
                                                                   "corner": corner_id}))
                     if not released:
                         busy = True
                     else:
-                        self._settle_released_failure(adapter, request_id)
-                        # The same proof also retires the registry row this
-                        # corner left behind, so the skip is real at the shared
-                        # program slot and not only in this ledger. Re-running
-                        # it every tick is what clears a row written before the
-                        # release learned to do it, without an SSH recovery
-                        # (#2282).
-                        self._release_program_owner(adapter)
+                        outcome = self._settle_released_failure(adapter, request_id)
+                        if outcome is None:
+                            # The adapter proved the release but cannot retire
+                            # the owner yet (for example its durable stop
+                            # request could not be removed). Keep that shared
+                            # state file out of selection and keep the registry
+                            # row so the same settle is retried until it works.
+                            path = getattr(adapter, "state_path", None)
+                            if path is not None:
+                                unretired.add(Path(path))
+                        else:
+                            # The same proof also retires the registry row this
+                            # corner left behind, so the skip is real at the
+                            # shared program slot and not only in this ledger.
+                            # Re-running it every tick is what clears a row
+                            # written before the release learned to do it,
+                            # without an SSH recovery (#2282).
+                            self._release_program_owner(adapter)
                 # Use actual start AND completion; a delayed queued start can
                 # never become eligible 24h after its much earlier selection.
                 stamps = [timestamp(raw[key]) for key in ("started_at", "completed_at") if raw.get(key) is not None]
@@ -631,6 +660,16 @@ class CornerRotationManager:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
         return busy
 
+    def _state_path_blocked(self, corner_id):
+        """True while this corner's shared state file holds an unretired owner."""
+
+        unretired = getattr(self, "_unretired_released_paths", None)
+        if not unretired:
+            return False
+        adapter = self.adapters.get(corner_id)
+        path = getattr(adapter, "state_path", None)
+        return path is not None and Path(path) in unretired
+
     def _target_interval(self, eligible):
         """Interval-mode target cadence: configured value, else 24h/N (or None)."""
 
@@ -643,6 +682,12 @@ class CornerRotationManager:
         for corner in sorted(self.catalog, key=lambda c: c.id):
             if not corner.enabled or corner.paused or (Path(self.g.state_dir) / "corners" / f"{corner.id}.paused").exists():
                 excluded[corner.id] = "disabled-or-paused"
+                continue
+            if self._state_path_blocked(corner.id):
+                # A released owner on this shared state file could not be
+                # retired yet; starting another corner on the same file would
+                # fail again and evict its release evidence (#2354 review).
+                excluded[corner.id] = "released-owner-unretired"
                 continue
             if corner.manual_only and not include_manual_only:
                 excluded[corner.id] = "manual-only"
@@ -989,13 +1034,26 @@ class CornerRotationManager:
 
     @staticmethod
     def _settle_released_failure(adapter, request_id):
+        """Ask the adapter to retire a released owner and read its answer.
+
+        ``True`` means the owner is retired. ``None`` means the adapter proved
+        the release but cannot retire the owner yet, so the shared state file
+        must stay out of selection and the same settle is retried. ``False``
+        (also for an adapter without the hook, or a raising one) keeps the
+        previous behaviour: the released failure is skipped and other corners
+        keep rotating.
+        """
+
         settle = getattr(adapter, "settle_released_failure", None)
         if not callable(settle):
             return False
         try:
-            return settle(request_id) is True
+            outcome = settle(request_id)
         except Exception:
             return False
+        if outcome is True or outcome is False or outcome is None:
+            return outcome
+        return False
 
     def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
                                base_unrestored=False):
@@ -1773,7 +1831,11 @@ def run_manual(g, manager, games):
         else:
             if rotation._observe(state, now):
                 raise RotationError("pending corner must finish or recover before manual start")
-            choices = [c for c in rotation.catalog if c.game in games and c.id in eligible]
+            choices = [
+                c for c in rotation.catalog
+                if c.game in games and c.id in eligible
+                and not rotation._state_path_blocked(c.id)
+            ]
             if not choices:
                 raise RotationError("no eligible manual corner")
             chosen = min(choices, key=lambda c: hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{c.id}'.encode()).digest())

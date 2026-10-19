@@ -203,26 +203,12 @@ def _observe_recall_origin(screen, mem, frame, state):
     cursor = _cursor(screen)
     if screen.kind != 'map' or not isinstance(frame, Frame) or cursor is None:
         return
-    cells = chart.castles(mem.get('chapter') or 0)
-    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
-    candidates = {}
-    for roof in roofs:
-        for x, y in cells.values():
-            cam = (x - roof['target'][0], y - roof['target'][1])
-            support = sum(any(abs(r['target'][0] + cam[0] - cx)
-                              + abs(r['target'][1] + cam[1] - cy) <= 12
-                              for cx, cy in cells.values()) for r in roofs)
-            candidates[cam] = support
-    if not candidates or max(candidates.values()) < 2:
+    from ..os_layer.world import observed_cursor_cell
+    origin = observed_cursor_cell(screen, mem, frame)
+    if origin is None:
         state.pop('origin', None)
-        return
-    best = [cam for cam, support in candidates.items() if support == max(candidates.values())]
-    # Roof cells differ by a few pixels; equivalent translations are one
-    # location, but two far-away constellations leave the origin unknown.
-    if any(abs(cam[0] - best[0][0]) + abs(cam[1] - best[0][1]) > 24 for cam in best):
-        state.pop('origin', None)
-        return
-    state['origin'] = [cursor[0] + best[0][0], cursor[1] + best[0][1]]
+    else:
+        state['origin'] = origin
 
 
 def _finish_hero_recall(mem, state, goal):

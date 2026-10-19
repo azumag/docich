@@ -51,21 +51,17 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertTrue(decision.requires_llm)
         self.assertEqual(decision.actions, ())
 
-    def test_severe_status_still_spends_one_wait_turn(self) -> None:
-        # owner decision 2026-09-23: `.` はどんな時でも可。policy の判断
-        # (strategic/requires_llm/no-action) は変わらず rest だけが許可される。
+    def test_severe_status_uses_reviewed_prayer_recovery_when_safe(self) -> None:
         self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
                 observation = normalize_tty(frame(condition=condition), cols=80, rows=5)
                 decision = self.policy.decide(observation)
                 self.assertEqual(decision.layer, "strategic")
-                self.assertEqual(decision.intent, "status_emergency")
+                self.assertEqual(decision.intent, "status_recovery")
                 self.assertTrue(decision.requires_llm)
-                self.assertEqual(decision.actions, ())
-                action = rest_action_for_hold(decision, observation)
-                self.assertIsNotNone(action)
-                self.assertEqual(action.text, ".")
+                self.assertEqual([a.text for a in decision.actions], ["#"])
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_prompt_escalates_without_guessing_answer(self) -> None:
         decision = self.decide(frame("Really quit? [yn]"))
@@ -173,8 +169,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
         self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
         self.assertEqual(brain.last_decision.intent, "explore_step")
 
-    def test_brain_rests_one_turn_on_severe_status(self) -> None:
-        # owner decision 2026-09-23: 入力なしで永久凍結しない。
+    def test_brain_uses_reviewed_prayer_recovery_on_severe_status(self) -> None:
         brain = build_brain(SimpleNamespace(), self._game())
         obs = Observation(
             game="nethack",
@@ -184,8 +179,8 @@ class TestNethackPolicyBrain(unittest.TestCase):
             kind="text",
             text=frame(condition="Sick"),
         )
-        self.assertEqual([a.text for a in brain.decide(obs)], ["."])
-        self.assertEqual(brain.last_decision.intent, "status_emergency")
+        self.assertEqual([a.text for a in brain.decide(obs)], ["#"])
+        self.assertEqual(brain.last_decision.intent, "status_recovery")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:
         from docich.adapters import AdapterError
@@ -198,3 +193,4 @@ class TestNethackPolicyBrain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

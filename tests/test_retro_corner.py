@@ -1159,6 +1159,69 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 self.assertEqual(mgr._read_state()["status"], "failed")
                 self.assertEqual(coordinator.calls, [])
 
+
+    def test_recover_failed_returns_noop_when_canonical_is_recovery_required(self):
+        """#1983: recover_failed() must return 'noop' (not 'failed') when the
+        canonical phase is 'recovery_required', so that the
+        recover_corner_rotation.sh script proceeds to step 2 (corner-rotation
+        recover) which allows rotation-side recovery assessment."""
+        mgr, coordinator = self.manager(["sorengame"])
+        request_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=request_id,
+            switch_request_id=request_id,
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            last_error="canonical stateの復旧が必要です",
+            last_error_code="recovery_required",
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(
+            phase="ready",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+        # Create a correlated receipt so _restore_failure_candidate returns False
+        # and the test actually reaches the recovery_required branch
+        accepted = mgr.store.accept_request(request_id, "switch", "robots")
+        result = {
+            "request_id": request_id, "operation": "switch", "status": "failed",
+            "from_game": "sorengame", "to_game": "robots",
+            "generation": accepted.generation, "error_code": "recovery_required",
+            "detail": "canonical stateの復旧が必要です",
+        }
+        mgr.store.finish_request(request_id, "failed", result)
+        # Now set canonical to recovery_required to test the target branch
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(
+            phase="recovery_required",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed()
+
+        # Must return "noop" so the script proceeds to step 2
+        self.assertEqual(result.status, "noop")
+        # Corner-side recovery must be skipped (no coordinator calls)
+        self.assertEqual(coordinator.calls, [])
+        # State must remain "failed" (latch is not cleared by corner-side)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+
     def test_other_failed_error_codes_keep_the_existing_recovery_path(self):
         mgr, coordinator, _rid = self._setup_quiesce_failed(
             error_code="recovery_required", receipt_error="recovery_required")
@@ -1192,6 +1255,421 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         self.assertIsNone(mgr._retry_failed_tick(self.now_value))
 
         self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+    def _released_ledger(self, mgr, request_id, *, corner="robots", adapter="game",
+                         game="robots", pointer_request=None, audit_resolution="released-unverified",
+                         write=True, known=True, released=True, audit=True):
+        """Write the durable rotation ledger the settle must re-read (#2352).
+
+        ``pointer_request`` defaults to the request being retired; pass a newer
+        one to model the per-corner pointer having moved on while only the
+        bounded audit row still proves the original request's release (#2282).
+        """
+        if not write:
+            return None
+        ledger = {
+            "schema": 1,
+            "status": "waiting",
+            "known_corners": (
+                {corner: {"id": corner, "adapter": adapter, "game": game}}
+                if known else {}
+            ),
+            "released_requests": (
+                {corner: {"request_id": pointer_request or request_id, "at": 1.0}}
+                if released else {}
+            ),
+            "failed_corners": (
+                [{"corner": corner, "request_id": request_id, "at": 1.0,
+                  "resolution": audit_resolution,
+                  "reason_code": "failed-corner-slot-released",
+                  "error_kind": "execution-error"}]
+                if audit else []
+            ),
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+        return ledger
+
+    def test_settle_released_failure_terminalizes_the_exact_released_request(self):
+        # #2352: the common rotation released this reservation after proving the
+        # shared program slot holds nothing from it. The adapter hook must
+        # retire that same request, otherwise run_rotation refuses every later
+        # `game` corner with "rotation execution owner mismatch".
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "switch-terminal-before-corner-active")
+        self.assertIsNone(state["last_error"])
+        self.assertIsNone(state["last_error_code"])
+        self.assertNotIn("switch_status", state)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_accepts_the_timeout_shape_the_switch_reports(self):
+        # A draining boundary that dies on the request deadline finishes with
+        # error_code "timeout" and a terminal `failed` receipt (#1681).
+        mgr, coordinator, request_id = self._setup_quiesce_failed(
+            error_code="timeout", receipt_error="timeout")
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_uses_the_audit_row_when_the_pointer_moved_on(self):
+        # The per-corner pointer already names the NEXT request; only the
+        # bounded audit row still proves the original request's own release.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id, pointer_request=str(uuid.uuid4()))
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_rejects_a_newer_requests_release_record(self):
+        # Independent review of #2352: a release record for the NEW Hanjuku
+        # request must never clear the OLDER moon-buggy owner. The request that
+        # owns the state is the only one that can be retired.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        newer = str(uuid.uuid4())
+        self._released_ledger(mgr, request_id, pointer_request=newer, audit=False)
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(newer, corner_id="robots"), False)
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_refuses_another_released_request(self):
+        mgr, coordinator, _rid = self._setup_quiesce_failed()
+        before = mgr._read_state()
+
+        self.assertIs(
+            mgr.settle_released_failure(str(uuid.uuid4()), corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_refuses_a_foreign_adapter_record(self):
+        # The widening for NetHack (#490) must not leak back: a ``nethack``
+        # release record never retires a retro ``game`` owner.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id, adapter="nethack")
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_requires_the_rotation_owner_to_match(self):
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        state = mgr._read_state()
+        state["rotation_request_id"] = str(uuid.uuid4())
+        mgr._write_state(state)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_never_touches_a_live_owner(self):
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        state = mgr._read_state()
+        # A live owner is never terminalized, whether or not it is active yet.
+        state["status"] = "starting"
+        mgr._write_state(state)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state()["status"], "starting")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_requires_a_durable_release_record(self):
+        cases = {
+            "no ledger": dict(write=False),
+            "no release row for this request": dict(released=False, audit=False),
+            "audit row is not a release": dict(
+                released=False, audit_resolution="recovery-required"),
+            "corner is not in known_corners": dict(known=False),
+            "release row belongs to another game": dict(game="nsnake"),
+            "corner is not the game adapter": dict(adapter="paper"),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                mgr, coordinator, request_id = self._setup_quiesce_failed()
+                self._released_ledger(mgr, request_id, **kwargs)
+
+                self.assertIs(
+                    mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+                self.assertEqual(mgr._read_state()["status"], "failed")
+                self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_keeps_every_unproven_slot_failed(self):
+        def in_flight(phase):
+            return lambda canonical: canonical.update(
+                phase=phase, operation="switch", request_id=str(uuid.uuid4()),
+                deadline_at="2026-09-06T21:00:00+09:00")
+
+        cases = {
+            "receipt pruned": (dict(keep_receipt=False), False),
+            "receipt error code differs": (dict(receipt_error="start_failed"), False),
+            "receipt is not terminal failed": (dict(receipt_status="rolled_back"), False),
+            "receipt from_game differs": (dict(from_game="nethack"), False),
+            "start-side readiness code is not a prelaunch proof": (
+                dict(error_code="readiness_timeout", receipt_error="readiness_timeout"),
+                False),
+            "canonical still owns the target": (
+                dict(canonical_patch=lambda canonical: canonical.update(
+                    active=self._runtime("robots", 1))), False),
+            "canonical keeps a retiring runtime": (
+                dict(canonical_patch=lambda canonical: canonical.update(
+                    retiring=[self._runtime("robots", 2)])), False),
+            # A live switch is waited out and retried instead of a permanent
+            # refusal, so its family keeps waiting (#2354 review).
+            "canonical is still draining": (
+                dict(canonical_patch=in_flight("draining")), None),
+            "canonical still has an in-flight switch": (
+                dict(canonical_patch=in_flight("quiescing")), None),
+        }
+        for name, (kwargs, expected) in cases.items():
+            with self.subTest(case=name):
+                mgr, coordinator, request_id = self._setup_quiesce_failed(**kwargs)
+                # The release record is present, so each refusal below is the
+                # receipt/canonical/resource proof and not a missing ledger.
+                self._released_ledger(mgr, request_id)
+
+                self.assertIs(
+                    mgr.settle_released_failure(request_id, corner_id="robots"), expected)
+
+                self.assertEqual(mgr._read_state()["status"], "failed")
+                self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_defers_on_a_busy_store_lock(self):
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+
+        with mgr.store.lock(exclusive=True):
+            settled = mgr.settle_released_failure(request_id, corner_id="robots")
+
+        # A busy writer is transient: wait and retry instead of giving up.
+        self.assertIsNone(settled)
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
+        self.assertEqual(coordinator.calls, [])
+
+    def _stop_request_path(self, mgr):
+        return (Path(mgr.g.state_dir) / "corner-stop-requests"
+                / Path(mgr.state_path).name)
+
+    def _write_stop_request(self, mgr):
+        """Model the durable marker ``stop_manual()`` writes for a starting owner."""
+
+        path = self._stop_request_path(mgr)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(
+            json.dumps({"state_file": Path(mgr.state_path).name, "requested_at": 1.0}),
+            encoding="utf-8")
+        return path
+
+    def test_a_stale_stop_request_would_stop_the_next_owner_before_the_settle(self):
+        # Control case for the hazard: while the old failed owner still holds
+        # the durable stop request, the next owner's stop check reads it and
+        # returns a stop result instead of running.
+        from docich.corner_rotation import rotation_stop_requested
+
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        self._write_stop_request(mgr)
+        state = mgr._read_state()
+        state["status"] = "starting"
+        mgr._write_state(state)
+
+        self.assertTrue(rotation_stop_requested(mgr.g, mgr.state_path))
+        self.assertIsNotNone(mgr._rotation_stop_result())
+        # Nothing is consumed while the owner is unproven: the marker stays.
+        self.assertTrue(self._stop_request_path(mgr).exists())
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_clears_the_previous_owners_stop_request(self):
+        # Sequence: the previous start left a durable stop request -> the
+        # rotation released that request -> the settle retires the same request
+        # -> the NEXT start must not read the old stop request.
+        from docich.corner_rotation import rotation_stop_requested
+
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        self.assertFalse(marker.exists())
+        self.assertFalse(rotation_stop_requested(mgr.g, mgr.state_path))
+        state = mgr._read_state()
+        state["status"] = "starting"
+        mgr._write_state(state)
+        self.assertIsNone(mgr._rotation_stop_result())
+        self.assertEqual(coordinator.calls, [])
+
+    def test_a_new_request_started_after_the_settle_is_not_immediately_stopped(self):
+        from docich.corner_rotation import rotation_stop_requested
+
+        mgr, coordinator, old_request = self._setup_quiesce_failed()
+        self._released_ledger(mgr, old_request)
+        self._write_stop_request(mgr)
+        self.assertIs(
+            mgr.settle_released_failure(old_request, corner_id="robots"), True)
+        # The real switch establishes the new owner in the canonical ledger.
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(active=self._runtime("robots", 1))
+        mgr.store.canonical.save(canonical)
+        mgr._target_reached = lambda state: True
+
+        new_request = str(uuid.uuid4())
+        result = mgr.run_rotation(new_request, "robots")
+
+        self.assertEqual(result.status, "completed")
+        state = mgr._read_state()
+        self.assertEqual(state.get("rotation_request_id"), new_request)
+        self.assertNotEqual(state.get("status"), "interrupted")
+        self.assertFalse(rotation_stop_requested(mgr.g, mgr.state_path))
+
+    def test_settle_released_failure_keeps_the_stop_request_when_unproven(self):
+        # Termination conditions not met: the durable stop request is kept and
+        # the failed slot is untouched, so nothing is silently dropped.
+        mgr, coordinator, request_id = self._setup_quiesce_failed(
+            receipt_error="start_failed")
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertTrue(marker.exists())
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_defers_when_the_stop_request_cannot_be_removed(self):
+        # #2354 review: a failed removal must never be reported as a settled
+        # owner. A real deletion failure (the marker path is a directory) keeps
+        # the slot `failed` and answers "retry later" (``None``), so the next
+        # game corner is still refused and the settle can be retried.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._stop_request_path(mgr)
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.mkdir()
+
+        self.assertIsNone(
+            mgr.settle_released_failure(request_id, corner_id="robots"))
+
+        self.assertTrue(marker.is_dir())
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        # The deferral pins the verified release record for the retry.
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
+        # The un-retired owner keeps refusing the next start.
+        with self.assertRaises(RetroCornerError) as caught:
+            mgr.run_rotation(str(uuid.uuid4()), "robots")
+        self.assertIn("owner mismatch", str(caught.exception))
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_retries_after_a_failed_stop_request_removal(self):
+        # First removal fails, the retry (what the next tick's released
+        # observation does) must complete and only then retire the owner.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+        original = Path.unlink
+
+        def fail_once(path, *args, **kwargs):
+            if path == marker:
+                raise OSError("stop request removal failed")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_once):
+            self.assertIsNone(
+                mgr.settle_released_failure(request_id, corner_id="robots"))
+
+        self.assertTrue(marker.exists())
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        self.assertFalse(marker.exists())
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_a_deferred_release_is_pinned_and_survives_audit_eviction(self):
+        # #2354 review: the release record of a deferred request can be evicted
+        # from the bounded audit while other corners keep failing. The pin in
+        # the corner state keeps the retry provable until the owner is retired.
+        from docich.corner_rotation import LEDGER_FILE
+
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id)
+        marker = self._write_stop_request(mgr)
+        original = Path.unlink
+
+        def fail_once(path, *args, **kwargs):
+            if path == marker:
+                raise OSError("stop request removal failed")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_once):
+            self.assertIsNone(
+                mgr.settle_released_failure(request_id, corner_id="robots"))
+
+        pinned = mgr._read_state()["released_settle_pending"]
+        self.assertEqual(pinned["request_id"], request_id)
+        self.assertEqual(pinned["corner_id"], "robots")
+        self.assertEqual(pinned["game"], "robots")
+
+        # The bounded audit rolls over: the per-corner pointer names a newer
+        # request and the original request's audit row is gone.
+        (Path(mgr.g.state_dir) / LEDGER_FILE).write_text(json.dumps({
+            "known_corners": {"robots": {"id": "robots", "adapter": "game",
+                                         "game": "robots"}},
+            "released_requests": {"robots": {"request_id": str(uuid.uuid4()),
+                                             "at": 2.0}},
+            "failed_corners": [],
+        }), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertNotIn("released_settle_pending", state)
+        self.assertFalse(marker.exists())
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_ignores_a_pin_for_another_request(self):
+        # A pin is evidence for exactly one request; a foreign one must not
+        # grant the retirement on its own.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id, write=False)
+        state = mgr._read_state()
+        state["released_settle_pending"] = {
+            "request_id": str(uuid.uuid4()), "corner_id": "robots",
+            "game": "robots", "at": "2026-09-06T20:00:00+09:00",
+        }
+        mgr._write_state(state)
+        before = mgr._read_state()
+
+        self.assertIs(
+            mgr.settle_released_failure(request_id, corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])
 
 

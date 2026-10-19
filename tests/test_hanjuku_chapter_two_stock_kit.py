@@ -20,6 +20,7 @@ def order():
 
 def memory():
     return {'chapter': 2, 'active': '2-B1', 'tick': 5000,
+            'captured': list(set(chart.CASTLE_NAMES[2]) - {'アルマムーン', 'ボス'}),
             'sortie_general': {'2-B1': 'ゼウス'}, 'picked': [],
             'garrison': {'スペランザ': [p.NAME]}}
 

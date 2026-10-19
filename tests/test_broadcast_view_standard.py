@@ -34,12 +34,14 @@ from docich.broadcast_view import (  # noqa: E402
 from docich.game_switch import RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.trading.markets import program as market_program  # noqa: E402
-from docich import doushi_view, tsuitate_view, weather_view, yoso_view  # noqa: E402
+from docich import doushi_view, lawsim_view, mystery_view, othello_view, puyo_view, trpg_view, tsuitate_view, weather_view, yoso_view  # noqa: E402
 
 #: Every docich HTML broadcast view, by the game name its adapter is registered
 #: under.  A new view must be added here and must use the shared standard.
 BROADCAST_VIEWS = (
     "paper-view", "weather-view", "tsuitate-view", "yosou-view", "doushi-view",
+    "othello-view", "puyo-view",
+    "mystery-view", "lawsim-view", "trpg-view",
 )
 
 #: The PAPER dashboard ships as a static asset rather than a template constant.
@@ -96,7 +98,12 @@ def test_served_japanese_pages_declare_notranslate():
         "weather-view": weather_view.HTML,
         "yosou-view": yoso_view.HTML,
         "doushi-view": doushi_view.HTML,
+        "othello-view": othello_view.HTML,
+        "mystery-view": mystery_view.HTML,
+        "lawsim-view": lawsim_view.HTML,
         "market-view": market_program.HTML,
+        "puyo-view": puyo_view.HTML,
+        "trpg-view": trpg_view.HTML,
         "paper-view": PAPER_DASHBOARD.read_text(encoding="utf-8"),
     }
     for name, html in pages.items():

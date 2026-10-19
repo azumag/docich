@@ -1,6 +1,12 @@
 name: TwiCa common overlay contracts
 
 on:
+  # On-demand re-run of the real-pixel contracts (real Chromium + actual X11
+  # stacking + FFmpeg output) against the current default branch. The push
+  # trigger only fires when a relevant path changes, and soren-gitlink-gate
+  # fails open to `contracts` when the before-SHA is unknown, so a manual
+  # dispatch always executes the contracts job. See azumag/docich#1236.
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/twica-common*.yml'

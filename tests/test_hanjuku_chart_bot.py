@@ -280,7 +280,7 @@ def test_month_plan_commentary_follows_the_actual_plan():
         'decision': 'month_plan', 'month': '1-5', 'gold': 171,
         'deviation_reason': '所持金171Gがチャート想定214G未満',
         'plan': {'cards': [['クースカン', 1], ['イッテツーン', 6]], 'soldiers': 40}})
-    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充します' in text
+    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充する予定です' in text
     assert '優先順で買える分' in text
     # A chart-uncovered month must not claim it buys the boss kit (g460 1年6月:
     # the commentary said it would buy クースカン/ノリウツール with an empty plan).
@@ -431,8 +431,8 @@ def test_decline_the_general_trade_prompt():
 def _goninja_offer(gold, hand_y=177):
     """The measured monthly-event offer (gcgx img/ninja.png):
 
-    「5ねん 10のつき 7572G / 50Gで てきの ティピオカしょうぐんで /
-    うちとおすか? いかがかな!? / うむッ! / いかんッ!」
+    「5ねん 10のつき 7572G / 50Gで てきの タピオカしょうぐんを /
+    うちとってみせるが いかがかな!? / うむッ! / いかんッ!」
 
     ``gold=None`` draws the same offer without a readable status header,
     ``hand_y=193`` the cursor already moved down onto いかんッ!.
@@ -440,8 +440,8 @@ def _goninja_offer(gold, hand_y=177):
     c = Canvas()
     if gold is not None:
         c.text(16, 15, f'5ねん 10のつき {gold}G')
-    c.text(24, 151, '50Gで てきの ティピオカ')
-    c.text(24, 183, 'うちとおすか?')
+    c.text(24, 151, '50Gで てきの タピオカ')
+    c.text(24, 183, 'うちとってみせるが')
     c.text(184, 183, 'うむッ!')
     c.text(184, 199, 'いかんッ!')
     c.hand(162, hand_y)
@@ -449,7 +449,7 @@ def _goninja_offer(gold, hand_y=177):
 
 
 def test_goninja_is_ordered_only_at_the_owner_cash_floor():
-    # Owner rule 2026-10-06: 所持金1000G以上なら依頼、未満・不明なら拒否。
+    # Owner rule 2026-10-17: 所持金300G以上なら依頼、未満・不明なら拒否。
     screen = parse(_goninja_offer(7572).frame())
     assert screen.kind == 'yes_no'
     assert screen.header == {'chapter': None, 'year': 5, 'month': 10, 'gold': 7572}
@@ -458,9 +458,9 @@ def test_goninja_is_ordered_only_at_the_owner_cash_floor():
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'accept_goninja'
     assert rec['choice'] == 'うむッ!'
-    assert rec['observed_metric'] == {'gold': 7572, 'minimum_gold': 1000}
+    assert rec['observed_metric'] == {'gold': 7572, 'minimum_gold': 300}
 
-    # 依頼料50Gがあっても1000G未満なら断る。
+    # 依頼料50Gがあっても300G未満なら断る。
     mem2 = {'chapter': 3, '_records': []}
     assert policy.yes_no_step(parse(_goninja_offer(60).frame()), mem2)[0]['buttons'] == ['down']
     low = _goninja_offer(60, hand_y=193)                 # うむッ! -> いかんッ! へ移動済み
@@ -482,18 +482,18 @@ def test_goninja_is_ordered_only_at_the_owner_cash_floor():
 
 def test_goninja_uses_cash_not_the_old_monthly_spare_budget():
     assert policy.GONINJA_COST == 50
-    assert policy.GONINJA_MIN_GOLD == 1000
+    assert policy.GONINJA_MIN_GOLD == 300
     mem = {'chapter': 1, '_records': []}
     header = {'chapter': None, 'year': 1, 'month': 5, 'gold': 999}
     # The old 214G purchase and 30G wage reserve no longer define "余裕".
-    assert policy._goninja_budget(mem, header) == {'gold': 999, 'minimum_gold': 1000}
-    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
-        'gold': 1000, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, header) == {'gold': 999, 'minimum_gold': 300}
+    assert policy._goninja_budget(mem, dict(header, gold=300)) == {
+        'gold': 300, 'minimum_gold': 300}
     # An unpriced adjusted chart cannot veto the explicit readable cash floor.
     mem['chart_plan'] = {'purchases': {'month': (1, 5),
                                       'cards': (('デッドガン', 1),)}}
-    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
-        'gold': 1000, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, dict(header, gold=300)) == {
+        'gold': 300, 'minimum_gold': 300}
     assert policy._goninja_budget(mem, None) is None
 
 
@@ -748,13 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v229-bijin-hold-release'
+    assert state['bot_version'] == 'hanjuku-chart-v237-clash-gauge-dropper-carry'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_the_finishing_resource_policy():
+def test_bot_version_marks_the_clash_gauge_and_dropper_carry_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v229-bijin-hold-release'
+    assert BOT_VERSION == 'hanjuku-chart-v237-clash-gauge-dropper-carry'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -4278,7 +4278,8 @@ def test_native_list_hero_priority_waits_for_companion_cursor_before_a():
         c.text(144, 55, 'ゼウス')
         c.hand(122, 33 + 16*selected)
         return parse(c.frame())
-    mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'}}
+    mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'},
+           'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})}
     assert policy.deploy_step(frame(0), mem) == [policy.pad('down')]
     assert not mem.get('sortie_general')
     assert policy.deploy_step(frame(1), mem) == [policy.pad('a')]

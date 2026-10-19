@@ -10,7 +10,7 @@ from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
-                            _hold_guarded_sortie)
+                            _hold_guarded_sortie, _hold_locked_boss)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import pad
@@ -33,6 +33,8 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     A hotloaded old policy has no attempt marker; its verified confirmation
     context and previous map_target observation provide the same evidence.
     """
+    from .camp_recheck import observe_departure_return
+    observe_departure_return(screen, mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
     if (mem.get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
@@ -299,6 +301,7 @@ def map_step(screen: Screen, mem, frame):
         mem['picked'] = []
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
         mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
+        mem.setdefault('dropper_card_kit', {}).pop(order['step'], None)
         mem.pop('rare_scan', None)
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
@@ -373,6 +376,9 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    locked = _hold_locked_boss(mem, order)
+    if locked is not None:
+        return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         mem.pop('sortie_attempt', None)
@@ -446,6 +452,8 @@ def target_step(screen: Screen, mem, frame):
             **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
                if 'departure_binding' in snapshot else {})}
         ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+        from .camp_recheck import departure_requested
+        departure_requested(mem, general, snapshot.get('departure_binding', {}).get('confirm_tick'))
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 

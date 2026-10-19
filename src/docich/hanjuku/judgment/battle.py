@@ -733,7 +733,24 @@ def _egg_plan(mem, cur):
             'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
             'deny_opening_egg': None,
             'max_hp_sum': None, 'threshold': None, 'droppers': [], 'dropper': None,
-            'egg_drop': None, 'triggers': asdict(triggers)}
+            'egg_drop': None, 'sortie_dropper': None, 'triggers': asdict(triggers)}
+    # 出撃時の卵落計画 (#1553): 守備将軍の実測記録から出撃時に加えた卵落札。
+    # 実測した敵が記録と一致する時だけ計画を残し、同じ算出 (max_hp_sum /
+    # threshold) になったことを 'agreement' で残す。一致しない戦闘では計画を
+    # 使わず (fail-closed)、矛盾を戦闘ごとに1回だけ記録する。
+    sortie_kit = (mem.get('dropper_card_kit') or {}).get(cur.get('step'))
+    if isinstance(sortie_kit, dict) and isinstance(sortie_kit.get('card'), str):
+        if kit is not None and sortie_kit['card'] in kit and sortie_kit.get('defender') == enemy:
+            plan['sortie_dropper'] = {'card': sortie_kit['card'], 'defender': enemy,
+                                      'max_hp_sum': sortie_kit.get('max_hp_sum'),
+                                      'threshold': sortie_kit.get('threshold')}
+        elif kit is not None and sortie_kit.get('defender') not in (None, enemy) and not cur.get('sortie_dropper_mismatch_seen'):
+            cur['sortie_dropper_mismatch_seen'] = True
+            _record(mem, 'sortie_dropper_mismatch', **_battle_labels(cur), enemy=enemy,
+                    expected_metric={'defender': sortie_kit.get('defender'),
+                                     'card': sortie_kit['card']},
+                    observed_metric={'battle_enemy': enemy},
+                    reason='出撃時の卵落計画は別の守備将軍向けのため、この戦闘では計画を使わず実測した敵で算出する')
     if kit is None:
         return plan
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
@@ -745,6 +762,11 @@ def _egg_plan(mem, cur):
     plan['max_hp_sum'] = known['max_hp_sum']
     plan['threshold'] = known['threshold']
     plan['droppers'] = reference.egg_droppers(kit, known['max_hp_sum'])
+    if isinstance(plan['sortie_dropper'], dict):
+        # 出撃時と戦闘時で同じ対戦相手なら同じ算出になるはず (#1553)。
+        plan['sortie_dropper']['agreement'] = (
+            plan['sortie_dropper'].get('max_hp_sum') == plan['max_hp_sum']
+            and plan['sortie_dropper'].get('threshold') == plan['threshold'])
     if not (plan['threat'] and plan['droppers']):
         return plan
     # チャートがこの札を指す戦闘はチャートのタイミングを優先し、指していない札だけを
@@ -1397,7 +1419,7 @@ def _default_retreat_needed(cur):
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')
-            and not _healthy_melee_advantage(cur)):
+            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -1412,6 +1434,33 @@ def _hero_retreat_needed(cur):
     """Value-aware ordinary retreat with the existing special-case guards."""
     from .retreat import retreat_needed
     return retreat_needed(cur)
+
+
+def _pre_summon_hp_advantage(cur):
+    """Owner policy: a clear HP lead can keep melee after a resource probe.
+
+    Reverse the existing 70%-HP disadvantage boundary. This is a willingness
+    to continue before a summon, not a combat estimate or a promise of a win.
+    Unknown armies stay unknown; no soldier count is needed or manufactured.
+    """
+    from .retreat import _resources_exhausted, _strength, retreat_profile, STRONG_RETREAT_HP
+
+    profile, enemy_stats = retreat_profile(cur), _strength(cur.get('enemy'))
+    if (profile['class'] in ('hero', 'unknown') or enemy_stats is None
+            or cur.get('side') != 'attack'
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_damage_rescue_needed') or cur.get('event_duel')
+            or (cur.get('hero_retreat') or {}).get('selected')
+            or not _resources_exhausted(cur)):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    floor = STRONG_RETREAT_HP if profile['class'] == 'strong' else GENERAL_CRITICAL_RETREAT_HP
+    return (type(hp) is int and floor < hp <= profile['max_hp']
+            and type(enemy) is int and 0 < enemy <= enemy_stats[0]
+            and enemy * 10 <= hp * BEHIND_EGG_RATIO_TENTHS)
 
 
 def _healthy_melee_advantage(cur):
@@ -1559,6 +1608,26 @@ def _defender_last_resort(mem, cur):
         return False
     return (hp <= start <= ally_max and enemy <= enemy_start <= enemy_max
             and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
+
+
+def _defender_summon_last_resort(mem, cur, reading):
+    """The current exposed defender can take the same risky last chance.
+
+    Monster HP is kept separate from both generals' ordinary HP. This uses
+    a current bound reading, never the stale opponent HP from before summon.
+    """
+    if (not reading or not cur.get('okunote_only_observed')
+            or cur.get('side') != 'defense' or cur.get('ally') in (None, 'だいじん')
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values() or cur.get('planned_cards') or cur.get('card_flow')):
+        return False
+    hp, enemy = reading.get('ally_hp'), reading.get('enemy_monster_hp')
+    starts = (cur.get('start_ally_hp'), cur.get('start_enemy_hp'))
+    return (type(hp) is int and type(enemy) is int and 0 < hp <= OKUNOTE_MAX_SELF_DAMAGE
+            and all(type(v) is int and v > 0 for v in starts)
+            and type(general_max_hp(cur.get('enemy'))) is int
+            and 0 < enemy <= 999 and reading.get('enemy_monster') in reference.MONSTER_SKILLS
+            and (reading['enemy_monster'] == 'ダークエルフ' or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS))
 
 
 def _hold_general_loss_metric(mem):

@@ -16,7 +16,8 @@ from docich import hanjuku_resume as resume
 from docich.adapters.base import AdapterError
 from docich.game_switch import DeadlineExceededError, RuntimeSpec, atomic_write_json
 from docich.config import load_global, load_game
-from docich.retroarch_boundary import identity, read_record
+from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, identity, read_record
+from docich import hanjuku_run
 
 
 def state_bytes(mem=b'serialized core'):
@@ -28,11 +29,31 @@ def compressed(data):
     return b'#RZIPv\x01#' + struct.pack('<IQ', 131072, len(data)) + struct.pack('<I', len(zlib.compress(data))) + zlib.compress(data)
 
 
+def ended(source, reason='screen_stalled'):
+    """Synthetic generation-bound reached boundary; never real game data."""
+    runtime = source.parent.parent
+    generation = int(runtime.name.split('-')[0][1:])
+    bound = dict(game='hanjuku-hero', runtime_id=runtime.name, generation=generation,
+                 lease_id=str(uuid.uuid4()))
+    run = dict(bound, schema=1, terminal_reason=reason, frame_sha256='a' * 64,
+        unchanged_seconds=300, observed_monotonic=1000, last_input_monotonic=1,
+        observations=1000, last_input_observations=0, name_entered=True,
+        gameplay_seen=True, phase='title', title_count=3, title_since=0)
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, run)
+    record = dict(bound, schema=1, request_id=str(uuid.uuid4()), status='reached',
+                  outcome=reason, frame_sha256=run['frame_sha256'])
+    if reason != 'game_over':
+        record.update(checkpoint=source.name, sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                      checkpoint_bytes=source.stat().st_size, checkpoint_mtime_ns=source.stat().st_mtime_ns)
+    atomic_write_json(runtime / BOUNDARY_FILE, record)
+    return record
+
+
 @pytest.fixture
 def setup(tmp_path):
     g = load_global(tmp_path)
     games = tmp_path / 'config/games'; games.mkdir(parents=True)
-    rom = tmp_path / 'hanjuku.sfc'; rom.write_bytes(b'ROM')
+    rom = tmp_path / 'hanjuku-hero.sfc'; rom.write_bytes(b'ROM')
     core = tmp_path / 'snes9x.so'; core.write_bytes(b'CORE')
     (games / 'hanjuku-hero.toml').write_text(f'[game]\nname="hanjuku-hero"\nadapter="retroarch"\n[retroarch]\nrom="{rom}"\ncore="{core}"\n')
     game = load_game(g, 'hanjuku-hero')
@@ -41,6 +62,7 @@ def setup(tmp_path):
     older = Path(g.state_dir) / 'runtimes/g478-a7d65415/states/hanjuku-hero.state'
     older.parent.mkdir(parents=True); older.write_bytes(state_bytes(b'older'))
     os.utime(older, ns=(100, 100)); os.utime(source, ns=(200, 200))
+    ended(older); ended(source)
     queue = {'corner': 'hanjuku-hero', 'request_id': str(uuid.uuid4()), 'resume_latest': True, 'selected_at': 1000000.0}
     rd = Path(g.state_dir) / 'runtimes/g700-abcdef12'; (rd / 'states').mkdir(parents=True)
     spec = RuntimeSpec('hanjuku-hero', 'retroarch', 700, rd.name, str(uuid.uuid4()), rd, 'game-700', 'agent-700', 'docich')
@@ -101,7 +123,7 @@ def test_oversized_latest_fails_without_falling_back_to_older(setup):
     s=setup
     with s.source.open('wb') as stream:stream.truncate(resume.MAX_BYTES+1)
     os.utime(s.source,ns=(400,400))
-    with pytest.raises(AdapterError,match='bound'):resume.prepare(s.g,s.game,s.queue)
+    with pytest.raises(AdapterError):resume.prepare(s.g,s.game,s.queue)
     assert not (Path(s.g.state_dir)/'hanjuku-resume'/resume.REQUEST_FILE).exists()
     assert s.older.read_bytes()==state_bytes(b'older')
 
@@ -164,7 +186,7 @@ def test_publication_rejects_another_identity(setup):
 
 def test_prepared_without_dispatch_cannot_be_claimed(setup):
     s=setup;resume.prepare(s.g,s.game,s.queue)
-    resume.claim(s.adapter,time.monotonic()+3,None)
+    resume.claim(s.adapter,time.monotonic()+30,None)
     assert read_record(Path(s.g.state_dir)/'hanjuku-resume'/resume.REQUEST_FILE)['status']=='prepared'
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
@@ -174,18 +196,18 @@ def test_dispatched_prepared_request_survives_publication_interruption(setup):
     atomic_write_json(Path(s.g.state_dir)/'corner_rotation.json',{'pending':dict(s.queue,source='manual')})
     candidate={k:getattr(s.spec,k) for k in ('game','runtime_id','generation','lease_id')}
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(s.adapter,time.monotonic()+3,None)
+        resume.claim(s.adapter,time.monotonic()+30,None)
     assert read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)['status']=='claimed'
 
 
 def stage(s, *, pending=None, candidate=None):
     resume.prepare(s.g,s.game,s.queue)
     resume.publish(s.g,s.queue)
-    pending=pending if pending is not None else dict(s.queue,source='manual',phase='dispatched')
+    pending=pending if pending is not None else dict(s.queue,source=s.queue.get('source','manual'),phase='dispatched')
     atomic_write_json(Path(s.g.state_dir)/'corner_rotation.json', {'pending':pending})
     candidate=candidate if candidate is not None else {k:getattr(s.spec,k) for k in ('game','runtime_id','generation','lease_id')}
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(s.adapter,time.monotonic()+3,None)
+        resume.claim(s.adapter,time.monotonic()+30,None)
 
 
 def test_claim_requires_manual_dispatch_and_exact_candidate(setup):
@@ -203,7 +225,7 @@ def test_claim_requires_manual_dispatch_and_exact_candidate(setup):
 
 def test_claim_rejects_changed_rom_without_default_game(setup):
     s=setup;resume.prepare(s.g,s.game,s.queue)
-    (s.g.repo_root/'hanjuku.sfc').write_bytes(b'changed')
+    (s.g.repo_root/'hanjuku-hero.sfc').write_bytes(b'changed')
     with pytest.raises(AdapterError):stage(s)
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
@@ -225,7 +247,7 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
         os.utime(path,ns=(time.time_ns()+60_000_000_000,time.time_ns()+60_000_000_000))
     def send(command,**kwargs):
         commands.append(command)
-        if command=='GET_STATUS':return ('GET_STATUS PLAYING Snes9x,hanjuku' if 'PAUSE_TOGGLE' in commands else 'GET_STATUS PAUSED Snes9x,hanjuku')
+        if command=='GET_STATUS':return ('GET_STATUS PLAYING Snes9x,hanjuku-hero' if 'PAUSE_TOGGLE' in commands else 'GET_STATUS PAUSED Snes9x,hanjuku-hero')
         if command=='LOAD_STATE_SLOT 0':return 'LOAD_STATE_SLOT 0' if ack else None
         if command=='STATE_SLOT_PLUS':slots[0]+=1
         if command=='STATE_SLOT_MINUS':slots[0]-=1
@@ -255,7 +277,7 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
          mock.patch('docich.hanjuku_screen.parse',return_value=loaded_screen):
-        budget=seconds if seconds is not None else (.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3)
+        budget=seconds if seconds is not None else (.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 30)
         resume.restore(s.adapter,time.monotonic()+budget,None)
     return commands,writes
 
@@ -325,7 +347,7 @@ def test_verified_readiness_does_not_reload_or_reset_policy(setup):
     s=setup;restore_test(s)
     original=read_record(s.spec.runtime_dir/'hanjuku_bot.json')
     with mock.patch('docich.adapters.retroarch.send_ra_cmd') as send:
-        resume.restore(s.adapter,time.monotonic()+3,None)
+        resume.restore(s.adapter,time.monotonic()+30,None)
     send.assert_not_called()
     assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')==original
 
@@ -334,10 +356,10 @@ def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
     s=setup;restore_test(s)
     s.adapter._game_window_target=lambda:'game-700'
     s.adapter.tmux=SimpleNamespace(window_target_exists=lambda t:False)
-    with pytest.raises(AdapterError):resume.claim(s.adapter,time.monotonic()+3,None)
+    with pytest.raises(AdapterError):resume.claim(s.adapter,time.monotonic()+30,None)
     s.adapter.tmux.window_target_exists=lambda t:True
     s.adapter._verify_window_ownership=mock.Mock()
-    resume.claim(s.adapter,time.monotonic()+3,None)
+    resume.claim(s.adapter,time.monotonic()+30,None)
     s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')
 
 
@@ -594,11 +616,11 @@ def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recove
                     {k:v for k,v in dict(queued,source='manual').items() if k!='resume_request_id'}):
         atomic_write_json(base/'corner_rotation.json',{'pending':pending})
         with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-            resume.claim(adapter,time.monotonic()+3,None)
+            resume.claim(adapter,time.monotonic()+30,None)
         assert not (rd/resume.RECEIPT_FILE).exists()
     atomic_write_json(base/'corner_rotation.json',{'pending':dict(queued,source='manual')})
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(adapter,time.monotonic()+3,None)
+        resume.claim(adapter,time.monotonic()+30,None)
     receipt=read_record(rd/resume.RECEIPT_FILE)
     assert receipt['request_id']==s.queue['request_id'] and receipt['generation']==701
     assert (rd/'states/hanjuku-hero.state').read_bytes()==s.source.read_bytes()

@@ -10,7 +10,8 @@ OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct',
      'configure_jev_route_clef','configure_jev_route_clef_reuse',
      'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
      'restart_chat_kick_workers','restart_webui',
-     'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection'}
+     'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection',
+     'release_soren_loop_pause'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -78,6 +79,8 @@ def main():
             fail('recover_hanjuku_projection requires production/main')
         if op=='recover_bgm_mute' and (target!='production' or ref!='main'):
             fail('recover_bgm_mute requires production/main')
+        if op=='release_soren_loop_pause' and (target!='production' or ref!='main'):
+            fail('release_soren_loop_pause requires production/main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
@@ -91,7 +94,8 @@ def main():
                                             'configure_jev_route_clef_reuse','disable_jev_route','bootstrap',
                                             'reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable','restart_webui',
                                             'restart_chat_kick_workers',
-                                            'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection'} and confirm!='production':
+                                            'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection',
+                                            'release_soren_loop_pause'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics and cpu_profile are bounded read-only operations, so they
         # need owner-only gating (above) but no separate confirmation.

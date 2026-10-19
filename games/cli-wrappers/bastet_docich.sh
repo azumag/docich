@@ -68,17 +68,25 @@ driver() {
     sleep 2
     [ -n "$PANE" ] || continue
     text="$(tmux capture-pane -p -t "$PANE" 2>/dev/null)" || continue
+    # Dialogs can retain the Score HUD without a running match (#2392).
+    in_play=0
+    case "$text" in
+      *"Try again!"*|*"Please enter your name"*|*"difficulty"*|*"Play! (normal version)"*) ;;
+      *"Score:"*) in_play=1 ;;
+    esac
     # The score is right-aligned ("Score:      0"), so allow any run of spaces.
+    # Accept the final HUD while the match is unrecorded, but never re-seed
+    # max_score from a finished pane after recording it.
     cur="$(printf '%s' "$text" | grep -oE 'Score: *[0-9]+' | tail -1 | grep -oE '[0-9]+')"
-    if [ -n "$cur" ]; then
+    if [ -n "$cur" ] && { [ "$in_play" = "1" ] || [ "$seen_game" = "1" ]; }; then
       cur="$(dec "$cur")"
       if [ "$cur" -gt "$max_score" ]; then
         max_score="$cur"
       fi
     fi
-    case "$text" in
-      *"Score:"*) seen_game=1 ;;
-    esac
+    if [ "$in_play" = "1" ]; then
+      seen_game=1
+    fi
     case "$text" in
       *"Please enter your name"*)
         if [ "$name_entry_pending" -eq 0 ]; then

@@ -464,6 +464,13 @@ class RetroCornerManager:
     # 終了告知を finish 直後に呼ぶため、それぞれで無効化する。
     announce_end_result = True
 
+    # Catalog adapters whose durable rotation records ``settle_released_failure``
+    # may retire for this manager family (#2352). The retro ``game`` manager
+    # settles only ``game`` records; ``NethackCornerManager`` widens the set to
+    # its own ``nethack`` records. A record naming any other adapter never
+    # becomes permission here.
+    _released_owner_adapters = frozenset({"game"})
+
     def __init__(
         self,
         g: GlobalConfig,
@@ -914,7 +921,9 @@ class RetroCornerManager:
             # the next timer tick, without replaying the switch.
             return False
 
-    def _prelaunch_quiesce_failure_proved(self, state: dict[str, object]) -> bool:
+    def _prelaunch_quiesce_failure_proved(
+        self, state: dict[str, object], *, expected_request_id: str | None = None
+    ) -> bool:
         """Prove a failed boundary wait never reached the corner (#1044, #1681).
 
         ``reconcile_failed_rotation_start`` only accepts a ``rolled_back``
@@ -930,7 +939,10 @@ class RetroCornerManager:
         reviewed prelaunch codes for the exact ``from_game``/``to_game`` pair.
         If the corner preserved an error code it must match the receipt. A
         missing, pruned, non-terminal or differently-shaped receipt leaves the
-        ``failed`` state latched.
+        ``failed`` state latched. When ``expected_request_id`` is given the
+        proof is additionally bound to that exact request, so a caller acting
+        on one released reservation can never terminalize another request's
+        slot (#2352).
         """
 
         state_error = state.get("last_error_code")
@@ -945,7 +957,9 @@ class RetroCornerManager:
         if (not isinstance(target, str) or not target
                 or not isinstance(previous, str) or not previous
                 or target == previous
-                or not isinstance(request_id, str) or not request_id):
+                or not isinstance(request_id, str) or not request_id
+                or (expected_request_id is not None
+                    and request_id != expected_request_id)):
             return False
         try:
             receipt = self.store.receipts.load(request_id)
@@ -996,7 +1010,11 @@ class RetroCornerManager:
         return isinstance(active, dict) and active.get("game") != target
 
     def _terminalize_prelaunch_quiesce_failure(
-        self, state: dict[str, object]
+        self,
+        state: dict[str, object],
+        *,
+        expected_request_id: str | None = None,
+        precommit=None,
     ) -> CornerResult | None:
         """Settle a slot whose switch failed before launch, else ``None``.
 
@@ -1005,6 +1023,13 @@ class RetroCornerManager:
         coordinator writer therefore cannot begin after canonical verification
         and before the corner is terminalized.  Lock contention leaves the
         failed slot untouched and asks the operator to retry later.
+
+        ``precommit`` is an optional zero-argument check that runs after every
+        proof and before the corner write.  Returning falsy from it leaves the
+        slot ``failed`` and reports ``queued`` so the caller retries the same
+        settle on the next tick.  The rotation's released-owner retry uses it
+        for the durable stop request: the owner is not retired until that
+        request is gone (#2352 review).
 
         On success the corner is recorded as ``interrupted`` with the same
         terminal vocabulary as ``reconcile_failed_rotation_start`` so the
@@ -1039,7 +1064,9 @@ class RetroCornerManager:
                 # Keep receipt proof, canonical verification, and the corner
                 # commit in the same lock interval.  Game-switch writers take
                 # this store lock exclusively.
-                if not self._prelaunch_quiesce_failure_proved(state):
+                if not self._prelaunch_quiesce_failure_proved(
+                    state, expected_request_id=expected_request_id
+                ):
                     return None
                 try:
                     canonical, missing = self.store.canonical.load()
@@ -1063,6 +1090,13 @@ class RetroCornerManager:
                         "failed", game=target, previous_game=previous,
                         detail="canonical がtargetを所有中のため確定しません",
                     )
+                if precommit is not None and not precommit():
+                    # The caller may not retire the owner yet; nothing is
+                    # written, so the same settle is retried on the next tick.
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail="released stop request removal failed",
+                    )
                 state.update(
                     status="interrupted",
                     end_reason="switch-terminal-before-corner-active",
@@ -1070,6 +1104,9 @@ class RetroCornerManager:
                     last_error_code=None,
                 )
                 state.pop("switch_status", None)
+                # The owner is retired: the pinned release record has done its
+                # job and must not outlive the slot it described.
+                state.pop("released_settle_pending", None)
                 self._write_state(state)
         except GameSwitchBusyError:
             return CornerResult(
@@ -1081,6 +1118,163 @@ class RetroCornerManager:
             game=target,
             previous_game=previous,
             detail="起動前に失敗した手動起動をinterruptedとして確定",
+        )
+
+    def settle_released_failure(self, request_id: str, *, corner_id: str) -> bool | None:
+        """Retire this corner's exact released pre-start failure (#2352).
+
+        The common rotation releases an unproven automatic failure only after
+        it proves the shared program slot holds nothing from that request, and
+        then asks the adapter to retire its own failed owner. PAPER and Doushi
+        implement that hook; the retro ``game`` state had no equivalent, so the
+        shared ``retro_corner.json`` stayed ``failed``. ``run_rotation`` then
+        refused every later ``game`` corner with "rotation execution owner
+        mismatch", and the fixed operator could not clear it either: the
+        released ledger stays ``waiting`` while ``recover-failed`` only accepts
+        ``recovery_required`` (#2352).
+
+        Three facts must belong to the *same* request before anything is
+        written, and all of them are re-checked here under the corner tick lock
+        (the shared game-switch store lock is taken inside the terminalization):
+
+        * the durable release record of that exact request for this corner,
+          re-read from the ledger — never taken from the caller or from memory,
+        * the terminal switch result that proves the corner never became active,
+        * the resource state (canonical owner) that proves the slot was
+          released.
+
+        A released record for a *newer* request of the same corner names a
+        different request and is never permission to retire an older owner.
+        ``started_at`` is not an activation proof: a retro start writes it when
+        the reservation is made, before the switch runs. Nothing is replayed
+        and no new owner is selected.
+
+        ``stop_manual()`` writes a durable stop request while the owner is
+        still ``starting``. It is removed as a *precommit* step of the
+        terminalization: when the removal fails, the owner stays ``failed`` and
+        the next start is still refused, so the same settle is retried on the
+        next tick instead of letting the old stop carry over (#2352 review).
+
+        Returns ``True`` when the owner was retired, ``None`` when it is proved
+        but not retired yet and the caller must keep this shared state file out
+        of selection and retry, and ``False`` when this hook does not apply or
+        can never retire the owner.
+        """
+
+        if not isinstance(request_id, str) or not request_id:
+            return False
+        if not isinstance(corner_id, str) or not corner_id:
+            return False
+        try:
+            with self._locked():
+                state = self._read_state()
+                if (state.get("status") != "failed"
+                        or state.get("rotation_request_id") != request_id
+                        or state.get("switch_request_id") != request_id):
+                    return False
+                if not self._released_record_proved(state, corner_id, request_id):
+                    return False
+                result = self._terminalize_prelaunch_quiesce_failure(
+                    state, expected_request_id=request_id,
+                    precommit=self._clear_released_stop_request,
+                )
+                status = getattr(result, "status", None)
+                if status == "queued":
+                    # Pin the verified release record before answering "retry".
+                    # Other corners keep failing while this owner waits, and the
+                    # bounded audit can evict this request's last row; the pin
+                    # lives in the state being retired, so the retry stays
+                    # provable once the blocking cause is fixed (#2354 review).
+                    self._record_released_settle_pending(state, corner_id, request_id)
+        except (RetroCornerError, GameSwitchBusyError):
+            return False
+        status = getattr(result, "status", None)
+        if status == "succeeded":
+            return True
+        if status == "queued":
+            # The owner is proved but not retired yet (the stop request could
+            # not be removed, or the store lock is held). ``None`` tells the
+            # rotation to keep this shared state file out of selection and
+            # retry, so the release evidence cannot be evicted before it works.
+            return None
+        return False
+
+    def _record_released_settle_pending(self, state, corner_id, request_id) -> None:
+        """Pin the verified release record until this owner is retired."""
+
+        state["released_settle_pending"] = {
+            "request_id": request_id,
+            "corner_id": corner_id,
+            "game": state.get("game"),
+            "at": self._local_now().isoformat(),
+        }
+        self._write_state(state)
+
+    def _clear_released_stop_request(self) -> bool:
+        """Clear the retired owner's durable stop request for this state file."""
+
+        from .corner_rotation import (
+            clear_rotation_stop_request,
+            rotation_stop_requested,
+        )
+
+        if not rotation_stop_requested(self.g, self.state_path):
+            return True
+        return clear_rotation_stop_request(self.g, self.state_path)
+
+    def _released_record_proved(self, state, corner_id, request_id) -> bool:
+        """Require the durable rotation record that names THIS request (#2352).
+
+        The rotation's release decision and this corner write are separate
+        operations, so the ledger is re-read and matched to the exact request
+        that owns the failed state. The per-corner pointer may already name a
+        later request; the bounded audit row is what keeps the original
+        request's release provable (#2282). Anything unreadable, a different
+        corner, a different game, or an adapter outside this manager family's
+        ``_released_owner_adapters`` refuses.
+
+        ``released_settle_pending`` is accepted as well: it is written into this
+        corner state (never the evictable bounded audit) at the moment the
+        ledger proof above held, so a deferred retirement stays provable while
+        other corners keep filling the audit (#2354 review).
+        """
+
+        game = state.get("game")
+        if not isinstance(game, str) or not game:
+            return False
+        pin = state.get("released_settle_pending")
+        if (isinstance(pin, dict)
+                and pin.get("request_id") == request_id
+                and pin.get("corner_id") == corner_id
+                and pin.get("game") == game):
+            return True
+        from .corner_rotation import LEDGER_FILE
+
+        try:
+            ledger = json.loads(
+                (Path(self.g.state_dir) / LEDGER_FILE).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False
+        if not isinstance(ledger, dict):
+            return False
+        known = ledger.get("known_corners")
+        record = known.get(corner_id) if isinstance(known, dict) else None
+        if (not isinstance(record, dict)
+                or record.get("adapter") not in self._released_owner_adapters
+                or record.get("game") != game):
+            return False
+        released = ledger.get("released_requests")
+        pointer = released.get(corner_id) if isinstance(released, dict) else None
+        if isinstance(pointer, dict) and pointer.get("request_id") == request_id:
+            return True
+        audit = ledger.get("failed_corners")
+        return isinstance(audit, list) and any(
+            isinstance(row, dict)
+            and row.get("corner") == corner_id
+            and row.get("request_id") == request_id
+            and row.get("resolution") == "released-unverified"
+            for row in audit
         )
 
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
@@ -3328,9 +3522,9 @@ class RetroCornerManager:
                 )
             if phase == "recovery_required":
                 return CornerResult(
-                    "failed",
+                    "noop",
                     game=target,
-                    detail="canonical stateがrecovery_requiredのため自動復旧を停止しました",
+                    detail="canonical stateがrecovery_requiredのためcorner-side復旧はスキップします。rotation側で復旧可否を判定します",
                 )
             if phase == "failed":
                 recovered = self._recover_canonical_failure()

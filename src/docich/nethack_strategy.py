@@ -25,6 +25,7 @@ ProposalKind = Literal[
     "consume",
     "equip",
     "use",
+    "pray",
     "answer_prompt",
 ]
 _ALLOWED_KINDS = frozenset(
@@ -37,6 +38,7 @@ _ALLOWED_KINDS = frozenset(
         "consume",
         "equip",
         "use",
+        "pray",
         "answer_prompt",
     }
 )

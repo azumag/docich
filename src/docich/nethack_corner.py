@@ -197,6 +197,16 @@ class NethackCornerManager(RetroCornerManager):
     # 独自の終了告知を finish 直後に呼ぶため、ベースの結果まとめ投稿は使わない。
     announce_end_result = False
 
+    # The automatic NetHack slot owns ``nethack_corner.json`` and its durable
+    # rotation records carry adapter ``nethack``. When the common rotation
+    # releases a failed start as unverified, only this manager may retire
+    # that released owner: the dedicated ``recover-failed-rotation`` entry
+    # is gated on the ``recovery_required`` latch and cannot see the released
+    # ledger, so without this widening every later NetHack dispatch keeps
+    # failing run_rotation's owner inspection (#2352 scope, production
+    # 2026-10-16 slot: released at 23:55 JST, never dispatched again).
+    _released_owner_adapters = frozenset({"nethack"})
+
     def __init__(
         self,
         g: GlobalConfig,

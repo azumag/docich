@@ -11,7 +11,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: vm-storage-monitor-${{ github.repository }}
+  # #2376: the previous name `vm-storage-monitor-<repo>` is the group state
+  # that stopped starting runs. Until 2026-10-15 it was shared with the owner
+  # evidence workflows (#1922 / #2272); after those moved to their own groups
+  # the monitor alone kept arriving in that wedged group, so its scheduled runs
+  # stayed `pending` / `cancelled` with no job ever created while the evidence
+  # paths recovered. Bumping the lane name is the same remediation used for the
+  # production control lane (`vm-operations-v2-<repo>`, #1875). The group stays
+  # a second layer of defense over the gateway's fixed `vm-operations.lock`.
+  group: vm-storage-monitor-v2-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

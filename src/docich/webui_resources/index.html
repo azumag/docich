@@ -1766,12 +1766,14 @@ function renderStream(d){
   if(cStart) cStart.disabled=(!d.chat_paused)||READ_ONLY;
   if(cStop) cStop.disabled=(!!d.chat_paused)||READ_ONLY;
 }
+// webui-loader:loadStream:start
 async function loadStream(){
   try{
     const data=await api("/api/stream");
     renderStream(data);
   }catch(e){ console.warn("loadStream",e); toast(String(e),4000); }
 }
+// webui-loader:loadStream:end
 async function streamAction(action){
   if(READ_ONLY){ toast("read-only"); return; }
   const confirmMsg=action==="stop"?"配信を停止しますか？視聴者には配信終了として見えます。":"配信を開始しますか？";
@@ -1902,6 +1904,7 @@ async function loadPredictionWorkerStatus(force=false){
     .finally(()=>{ predictionWorkerStatusInFlight=null; });
   return predictionWorkerStatusInFlight;
 }
+// webui-loader:loadWorkersControl:start
 async function loadWorkersControl(forcePrediction=false){
   try{
     const data=await api("/api/workers");
@@ -1910,6 +1913,7 @@ async function loadWorkersControl(forcePrediction=false){
     if(prediction) renderWorkersControl(data.workers,prediction);
   }catch(e){ console.warn("loadWorkersControl",e); }
 }
+// webui-loader:loadWorkersControl:end
 async function workerControl(worker,action){
   if(READ_ONLY){ toast("read-only"); return; }
   let confirmMsg;
@@ -2028,6 +2032,7 @@ function renderScCategory(){
   const el=document.getElementById("sc-category");
   if(el) el.textContent=SC_CATEGORY?`${SC_CATEGORY.name}（ID ${SC_CATEGORY.id}）`:"未選択";
 }
+// webui-loader:loadSpecialSettings:start
 async function loadSpecialSettings(force){
   // Do not overwrite what the operator is typing on the 10-second refresh.
   if(SC_LOADED && !force) return;
@@ -2045,6 +2050,7 @@ async function loadSpecialSettings(force){
     SC_LOADED=true;
   }catch(e){ if(note) note.textContent="設定を取得できません。"; }
 }
+// webui-loader:loadSpecialSettings:end
 async function searchScCategory(){
   const q=($("#sc-category-query").value||"").trim();
   const sel=document.getElementById("sc-category-candidates");
@@ -2074,9 +2080,13 @@ async function saveSpecialSettings(){
   }catch(e){ toast("保存できませんでした: "+String(e.message||e)); }
   finally{ b.disabled=false; }
 }
+// webui-loader:loadSpecial:start
 async function loadSpecial(){
   const el=document.getElementById("special-status"), b=document.getElementById("special-end");
-  loadSpecialSettings(false);
+  // #970 (review of #2395): settings is a child request of this panel. Await it
+  // as well, so a settings fetch that is still pending keeps the presentation
+  // poll guard held (loadCorners already awaits loadSpecial).
+  const settings = loadSpecialSettings(false);
   try{
     const r=await api("/api/special-corner");
     const t0=document.getElementById("special-title"); if(t0) t0.textContent=r.title||"-";
@@ -2088,7 +2098,9 @@ async function loadSpecial(){
     }
     if(b) b.disabled=!r.can_end;
   }catch(e){ if(el) el.textContent="状態を取得できません。"; if(b) b.disabled=true; }
+  await Promise.allSettled([settings]);
 }
+// webui-loader:loadSpecial:end
 const RECEIVER_LABELS={none:"未準備",stopped:"停止中",launching:"起動中…",waiting:"受付中（OBS 未接続）",receiving:"受信中（音声なし）",receiving_audio:"受信中（音声あり）",stale:"映像が途切れています"};
 function renderSpecialControl(c){
   const el=document.getElementById("special-receiver");
@@ -2118,10 +2130,12 @@ async function endSpecial(){
   catch(e){ toast("終了を依頼できませんでした。状態更新後に確認してください。"); }
   finally{ await loadSpecial(); }
 }
+// webui-loader:loadCorners:start
 async function loadCorners(){
-  loadSpecial();
-  loadBetaStatus();
-  loadRenderer();
+  // #970 (review of #2395): the child panels keep their own requests in flight.
+  // Await them before resolving so the presentation poll guard is not released
+  // while a child request is still running.
+  const children = Promise.allSettled([loadSpecial(), loadBetaStatus(), loadRenderer()]);
   try{
     renderCorners(await api("/api/corners"));
   }catch(e){
@@ -2129,7 +2143,9 @@ async function loadCorners(){
     if(el) el.textContent="コーナー情報を取得できません。WebUI/API の接続を確認してください。";
     renderCornerCatalogMessage("コーナー情報の取得に失敗しました。WebUI/API の接続を確認してください。");
   }
+  await children;
 }
+// webui-loader:loadCorners:end
 function renderCornerCatalogMessage(message){
   const cat=document.getElementById("corners-catalog");
   if(cat) cat.innerHTML=`<tr><td colspan="6" class="help">${esc(message)}</td></tr>`;
@@ -2952,6 +2968,60 @@ function updateAudioTextCount(){
   const cnt=$("#audio-text-count");
   if(el && cnt) cnt.textContent=`${el.value.length}/1000`;
 }
+// #970: presentation-only polling. Browser-side read-only refreshes pause while
+// the tab is hidden and a slow response never stacks another request. The
+// server API contract, trading decision/risk/fill paths and all writes are
+// untouched. The trading dashboard already uses this pattern.
+// webui-poll-visibility:start
+const pollInFlight = new Set();
+function pollGate(key, fn){
+  if(document.hidden) return;
+  if(pollInFlight.has(key)) return;
+  pollInFlight.add(key);
+  // fn must return a promise that settles only after every request it started
+  // has settled. Resolving early (or returning undefined) frees the guard while
+  // a child request is still running, so the next tick stacks a duplicate.
+  Promise.resolve().then(fn).catch(()=>{}).finally(()=>pollInFlight.delete(key));
+}
+function clearTabTimers(){
+  if(statusTimer){ clearInterval(statusTimer); statusTimer=null; }
+  if(cornersTimer){ clearInterval(cornersTimer); cornersTimer=null; }
+  if(streamTimer){ clearInterval(streamTimer); streamTimer=null; }
+  if(audioTimer){ clearInterval(audioTimer); audioTimer=null; }
+}
+function activeTabName(){
+  const btn=document.querySelector("#tabs button.active");
+  return btn? btn.getAttribute("data-tab") : "dashboard";
+}
+function startTabPolling(tab, opts){
+  const refresh=!!(opts && opts.refresh);
+  clearTabTimers();
+  if(document.hidden) return;
+  if(tab==="status"){ if(refresh) pollGate("status",loadStatus); statusTimer=setInterval(()=>pollGate("status",loadStatus),10000); }
+  else if(tab==="corners"){ if(refresh) pollGate("corners",loadCorners); cornersTimer=setInterval(()=>pollGate("corners",loadCorners),10000); }
+  // A single tab refresh can start more than one request (stream = stream +
+  // workers, corners = rotation + child panels). allSettled keeps the guard
+  // until every child settles and never rejects when only one side fails.
+  else if(tab==="stream"){ const load=()=>Promise.allSettled([loadStream(), loadWorkersControl()]); if(refresh) pollGate("stream",load); streamTimer=setInterval(()=>pollGate("stream",load),10000); }
+  else if(tab==="audio"){ if(refresh) pollGate("audio",loadVoiceChain); audioTimer=setInterval(()=>pollGate("audio",loadVoiceChain),10000); }
+}
+function startDashboardPolling(opts){
+  const refresh=!!(opts && opts.refresh);
+  if(dashTimer){ clearInterval(dashTimer); dashTimer=null; }
+  if(document.hidden) return;
+  if(refresh) pollGate("dashboard",loadDashboard);
+  dashTimer=setInterval(()=>pollGate("dashboard",loadDashboard),10000);
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){
+    if(dashTimer){ clearInterval(dashTimer); dashTimer=null; }
+    clearTabTimers();
+  }else{
+    startDashboardPolling({refresh:true});
+    startTabPolling(activeTabName(), {refresh:true});
+  }
+});
+// webui-poll-visibility:end
 document.addEventListener("DOMContentLoaded",()=>{
   // ログインフォーム: token 入力→sessionStorage 保存 (URL query token は廃止: issue #41)
   const loginInput = $("#login-token-input");
@@ -2975,17 +3045,14 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="stats") loadStats();
     if(tab==="health") loadHealth();
     if(tab==="dashboard") loadDashboard();
-    if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
-    else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
-    if(tab==="corners") { loadCorners(); if(cornersTimer) clearInterval(cornersTimer); cornersTimer=setInterval(loadCorners,10000); }
-    else { if(cornersTimer) { clearInterval(cornersTimer); cornersTimer=null; } }
-    if(tab==="stream") { loadStream(); loadWorkersControl(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(()=>{ loadStream(); loadWorkersControl(); },10000); }
-    else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
+    if(tab==="status") loadStatus();
+    if(tab==="corners") loadCorners();
+    if(tab==="stream") { loadStream(); loadWorkersControl(); }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
-    if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); if(audioTimer) clearInterval(audioTimer); audioTimer=setInterval(()=>{ loadVoiceChain(); },10000); }
-    else { if(audioTimer) { clearInterval(audioTimer); audioTimer=null; } }
+    if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); }
     if(tab==="predictions") loadPredictions();
     if(tab==="prompts") loadPrompts();
+    startTabPolling(tab);
   });
   // overlay sub tabs
   $$("[data-overlay-sub]").forEach(btn=>btn.onclick=()=>{
@@ -3011,8 +3078,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   // initial load
   loadConfig().catch(e=>toast(String(e),5000));
   loadBackoffs().catch(()=>{});
-  loadDashboard();
-  dashTimer=setInterval(loadDashboard,10000);
+  startDashboardPolling({refresh:true});
   // handlers
   $("#chains-save").onclick=saveChains;
   $("#chains-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));

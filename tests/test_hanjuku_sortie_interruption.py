@@ -111,6 +111,8 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert mem['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
     # The same order runs again, now from the castle he actually stopped in.
+    # A new leg to the boss must also satisfy the current unlock prerequisite.
+    mem['captured'] = list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})
     assert p.next_order(mem) == order
 
 

@@ -10,9 +10,10 @@ from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
 from ..strategy.bargains import merchant_card_spendable, plan_bargains
+from ..strategy.boss_cards import note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
-                                _soldier_count_current, _soldier_count_scope, _soldiers_enough)
+                                _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
 
 
 def _merchant_quote_decline(screen, mem, shop, want, reason):
@@ -149,6 +150,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
             # A prior inspection is not authority to pay after its actual
             # total becomes unreadable. Preserve the exhausted read budget.
             state.update(stage='closing', result='unverified')
+            refill_outcome(mem, shop, 'unverified', reason='確認後の実兵数が未読になったため補充を確定せず中止')
             shop['soldiers_done'] = True
             _record(mem, 'army_count_unverified', month=scope[-1],
                     reason='確認後の実兵数が未読になったため補充を確定せず戻る。確認予算を増やさない')
@@ -160,6 +162,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
                 and state.get('stage') == 'unverified'
                 and not _soldier_count_current(mem, screen.header)):
+            refill_outcome(mem, shop, 'unverified', reason='実兵数を確認できない補充画面では数量を確定せず中止')
             shop['soldiers_done'] = True
             state.update(stage='closing', result='unverified')
             return [pad('b')]  # a reopened unread editor still cannot authorize payment
@@ -174,6 +177,8 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 return [pad('b')]
             if _army_count_increment(state, 'quantity_reads', 4) >= 4:
                 state.update(stage='closing', result='unverified')
+                refill_outcome(mem, shop, 'unverified', reads=state['quantity_reads'],
+                               reason='補充画面で実人数を有限回読めないため数量を確定せず中止')
                 _record(mem, 'army_count_unverified', month=scope[-1],
                         reason='実人数を読み取れないため補充の確定をせず戻る。兵数は未確認のまま保持')
                 return [pad('b')]
@@ -213,6 +218,8 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 waits = receipt.get('quantity_waits', 0)
                 if type(waits) is not int or not 0 <= waits < 3:
                     receipt['status'] = 'unverified'
+                    refill_outcome(mem, shop, 'unverified', qty=receipt.get('qty'),
+                                   reason='確定入力後も数量画面が残り支払いを照合できない。補充できたとは扱わない')
                     shop['soldiers_done'] = True
                     return [pad('b')]
                 receipt['quantity_waits'] = waits + 1
@@ -261,6 +268,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                             strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
                             reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
                                     if extra else 'チャート/予算計画どおりの個数を確認して購入'))
+                    note_card_purchase(mem, want[0], value)  # a boss card returns to its kit
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
                     shop['want'] = None

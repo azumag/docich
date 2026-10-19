@@ -197,21 +197,16 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertEqual((action.type, action.text), ("text", "."))
         assert_rest_safe([action])
 
-    def test_severe_status_still_spends_one_wait_turn(self):
-        # owner decision 2026-09-23: `.` はどんな時でも可。policy の判断は
-        # (strategic / requires_llm) のまま変わらず、rest だけが許可される。
+    def test_severe_status_uses_reviewed_recovery_when_safe(self):
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
                 observation, decision = self._decide(self.FREE, condition=condition)
-                self.assertEqual(decision.intent, "status_emergency")
+                self.assertEqual(decision.intent, "status_recovery")
                 self.assertTrue(decision.requires_llm)
-                self.assertEqual(decision.actions, ())
-                action = rest_action_for_hold(decision, observation)
-                self.assertIsNotNone(action)
-                self.assertEqual(action.text, ".")
-                assert_rest_safe([action])
+                self.assertEqual([a.text for a in decision.actions], ["#"])
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
-    def test_a_critical_or_severe_hero_may_wait_even_beside_a_creature(self):
+    def test_a_critical_hero_may_wait_even_beside_a_creature(self):
         # owner decision 2026-09-23: 退避/接触を試した後の最後の手段として
         # `.` を送れる（resolver 側が順序を維持する）。
         observation, decision = self._decide(
@@ -221,12 +216,15 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertIn(decision.intent, REST_EMERGENCY_INTENTS)
         self.assertEqual(rest_action_for_hold(decision, observation).text, ".")
 
+        # A severe status is treated the same beside a creature (issue #759):
+        # it offers the reviewed prayer, never a generic rest.
         sick_observation, sick_decision = self._decide(
             ("##@d.      ", "            "), condition="Sick"
         )
-        self.assertEqual(sick_decision.intent, "status_emergency")
+        self.assertEqual(sick_decision.intent, "status_recovery")
         self.assertNotIn(sick_decision.intent, REST_EMERGENCY_INTENTS)
-        self.assertEqual(rest_action_for_hold(sick_decision, sick_observation).text, ".")
+        self.assertEqual([a.text for a in sick_decision.actions], ["#"])
+        self.assertIsNone(rest_action_for_hold(sick_decision, sick_observation))
 
     def test_no_rest_on_a_prompt_or_without_a_visible_player(self):
         observation = obs(self.FREE)
@@ -319,21 +317,21 @@ class TestStepOutOfDeadlock(unittest.TestCase):
                 self.assertEqual(rest.text, ".")
                 assert_rest_safe([rest])
 
-    def test_severe_status_blocks_movement_beside_a_creature_but_may_rest(self):
+    def test_severe_status_uses_the_reviewed_prayer_beside_a_creature(self):
         rows = ("##@d.      ", "...........")
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
                 observation, decision, policy = self._decide(rows, condition=condition)
-                self.assertEqual(decision.intent, "status_emergency")
+                self.assertEqual(decision.intent, "status_recovery")
                 self.assertTrue(decision.requires_llm)
                 self.assertNotIn(decision.intent, REST_EMERGENCY_INTENTS)
                 self.assertNotIn(decision.intent, STEP_OUT_INTENTS)
-                # movement/step-out stays fail-closed ...
+                # A severe status is never a movement decision beside a
+                # creature (issue #759 keeps threat avoidance separate)...
                 self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
-                # ... but the wait itself is allowed (owner decision 2026-09-23)
-                rest = rest_action_for_hold(decision, observation)
-                self.assertIsNotNone(rest)
-                self.assertEqual(rest.text, ".")
+                # ...and never a generic rest: the reviewed prayer carries its
+                # own action.
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_no_step_is_invented_when_nothing_safe_is_reachable(self):
         # Walls on every side but the creature: no safe step exists, so the

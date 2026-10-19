@@ -669,6 +669,18 @@ def egg_drop_threshold(max_hp_sum: int) -> int:
     return max_hp_sum % EGG_DROP_MOD + 1
 
 
+def egg_drop_plan(enemy_max_hp: int, ally_max_hp: int) -> dict:
+    """The egg-drop arithmetic the sortie and battle layers share (#1553).
+
+    ``卵落 > (敵・味方将軍の最大HP合計) mod 16`` で敵の卵が落ちる (gcgx
+    kirihuda)。出撃時の携行選択と戦闘時の ``battle_egg_plan`` が同じ
+    ``max_hp_sum`` / ``threshold`` を算出できるように一括する。最大HPが読め
+    ない側がある時は呼び出し側が fail-closed で使わない。
+    """
+    total = enemy_max_hp + ally_max_hp
+    return {'max_hp_sum': total, 'threshold': egg_drop_threshold(total)}
+
+
 def egg_drop_value(card: str) -> int | None:
     """The card's 卵落 value, or None when it is outside the measured table."""
     return EGG_DROP_VALUES.get(card)

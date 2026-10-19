@@ -28,6 +28,9 @@ KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカ
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
 SOLDIER_ENOUGH = 50   # owner 2026-10-11: with this many on hand, buy no more soldiers
+# Owner 2026-10-17: 兵士がこの人数以下の月は、卵・将軍・切り札より補充を最優先する。
+LOW_ARMY = 20
+LOW_ARMY_KEY = 'low_army_refill'
 
 
 def _soldier_count_scope(mem, header):
@@ -55,39 +58,77 @@ def _army_count_increment(state, field, limit):
     return value
 
 
-def _zero_army_refill(mem, shop, header):
-    """A measured empty army takes spare cash before a new recruitment fee."""
+def low_army_first(shop):
+    """This month's measured low army is refilled before eggs, recruits and cards."""
+    state = shop.get(LOW_ARMY_KEY) if isinstance(shop, dict) else None
+    return (isinstance(state, dict) and type(state.get('version')) is int
+            and state['version'] == 1 and state.get('active') is True)
+
+
+def _low_army_planned(mem, shop, header):
+    """A low-army refill was planned for this run/chapter/month's measured count."""
+    state = shop.get(LOW_ARMY_KEY) if isinstance(shop, dict) else None
+    return (isinstance(state, dict) and _soldier_count_current(mem, header)
+            and mem['soldiers_seen'] <= LOW_ARMY
+            and state.get('scope') == _soldier_count_scope(mem, header))
+
+
+def _low_army_refill(mem, shop, header):
+    """A measured army of LOW_ARMY or fewer takes the month's cash first.
+
+    Owner (2026-10-17): 兵士が20人以下の時は卵や将軍、切り札より補充を最優先。
+    Only the wage shortfall floor and the house repair money stay in hand; the
+    egg recovery hold, the hiring fee and unbought merchant cards wait for what
+    the refill leaves (the merchant visit waits until the refill is settled).
+    Recruitment waits for next month, as an empty army's always did. This is
+    revalidated on every month observation; payment, receipts and attempt
+    limits stay with the quantity editor and the free count inspection.
+    """
+    state = shop.get(LOW_ARMY_KEY) if isinstance(shop, dict) else None
+    if isinstance(state, dict):
+        state['active'] = False  # revalidate even on a faded/stale observation
+    scope = _soldier_count_scope(mem, header)
     check = mem.get('army_count_check')
-    if (isinstance(check, dict) and check.get('scope') == _soldier_count_scope(mem, header)
+    if (isinstance(check, dict) and check.get('scope') == scope
             and (check.get('stage') == 'unverified'
                  or (check.get('stage') == 'closing' and check.get('result') == 'unverified'))):
         return  # an aborted inspection/refill cannot renew its monthly budget
-    if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] != 0
+    if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] > LOW_ARMY
             or not shop or shop.get('key') != _month_key(header)
             or shop.get('soldier_receipt') or mem.get('month_sub')
             or shop.get('recruit') in ('opened', 'unverified')
-            or _egg_before_soldiers(shop) or egg_deferred_for_soldiers(shop)):
+            or egg_deferred_for_soldiers(shop)):
         return
     gold = (header or {}).get('gold')
-    available = _soldier_spendable(mem, shop, header, recruit=False)
+    proposal = dict(shop, reserve=0, recruit_reserve=0, merchant_done=True)
+    available = _soldier_spendable(mem, proposal, header, recruit=False)
     if available is None:
         return
-    target = min(SOLDIER_CAP, _soldier_target(mem, shop, header))
+    count = mem['soldiers_seen']
+    total = _soldier_target(mem, shop, header)
+    target = min(SOLDIER_CAP, max(0, total - count))
     amount = min(target, available)
     if amount <= 0:
-        return  # no permission to spend wages, recovery or repair money
+        return  # no permission to spend wages or repair money
     if shop.get('recruit') != 'done':
         shop['recruit'] = 'deferred_army'
     shop.update(recruit_priority=False, recruit_reserve=0)
-    previous = shop.get('soldiers')
+    previous = state if isinstance(state, dict) else {}
+    shop[LOW_ARMY_KEY] = {'version': 1, 'scope': scope, 'count': count,
+                          'amount': amount, 'active': True}
     shop.update(soldiers=amount, soldiers_done=False, soldiers_target=target, closed=False,
-                soldier_total_target=target)
-    if previous != amount or not shop.get('zero_army_refill_recorded'):
-        shop['zero_army_refill_recorded'] = True
-        _record(mem, 'zero_army_refill_plan', month=shop['key'],
-                observed_metric={'soldiers': 0, 'gold': gold, 'refill': amount,
-                                 'target': target, 'held': gold - available},
-                reason='実人数0のため調整チャートの補充0を見直し、卵・修理・全賃金を残した資金で兵士を先に補充する')
+                soldier_total_target=total)
+    if (previous.get('scope') != scope or previous.get('count') != count
+            or previous.get('amount') != amount):
+        cards = [] if shop.get('merchant_done') else shop.get('items') or []
+        _record(mem, 'low_army_refill_plan', month=shop['key'],
+                observed_metric={'soldiers': count, 'gold': gold, 'refill': amount,
+                                 'target': target, 'held': gold - available,
+                                 'egg_reserve_after': shop.get('reserve', 0),
+                                 'cards_after': [row[0] for row in cards
+                                                 if isinstance(row, (list, tuple)) and row]
+                                                if isinstance(cards, (list, tuple)) else None},
+                reason='実兵数が20人以下のため、卵回復・将軍募集・切り札購入より先に、賃金予備と修理費だけを残した資金で兵士を補充する')
 
 
 def _soldier_target(mem, shop, header):
@@ -144,13 +185,16 @@ def _soldier_spendable(mem, shop, header, *, recruit=True):
         return None
     repair = _house_repair_reserve(shop)
     egg, hiring = shop.get('reserve', 0), shop.get('recruit_reserve', 0) if recruit else 0
-    cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    first = low_army_first(shop)
+    cards = [] if shop.get('merchant_done') or first else shop.get('items') or []
     if (repair is None or any(type(v) is not int or v < 0 for v in (egg, hiring))
             or not isinstance(cards, (list, tuple))
             or any(not isinstance(row, (list, tuple)) or len(row) != 2
                    or not isinstance(row[0], str) or row[0] not in KNOWN_PRICES
                    or type(row[1]) is not int or row[1] < 0 for row in cards)):
         return None
+    if first:
+        egg = hiring = 0  # a low army is refilled before eggs, recruits and cards
     return max(0, header['gold'] - _soldier_wage_hold(mem) - egg - repair - hiring
                - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
 
@@ -177,8 +221,10 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
     elif payroll > WAGE_RESERVE and type(gold) is int:
         # A large payroll reserves the documented shortfall floor, not its own
         # full sum: the plan must not starve the army the same way payment would.
-        cap = min(cap, max(0, gold - _soldier_wage_hold(mem) - _month_held_reserve(shop)
-                           - shop.get('recruit_reserve', 0)))
+        held = _month_held_reserve(shop) + shop.get('recruit_reserve', 0)
+        if low_army_first(shop):
+            held -= shop.get('reserve', 0)  # the egg hold waits behind a low army
+        cap = min(cap, max(0, gold - _soldier_wage_hold(mem) - held))
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
         value = shop.get(field)
         if type(value) is int and value >= 0:
@@ -190,6 +236,28 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
                     observed_metric={'soldiers': count, 'enough': target},
                     reason='当月の実兵士数が予算に応じた目標人数を満たすため資金を残す')
     shop['soldier_total_target'] = target
+
+
+# Issue #2366: how a month's refill ended when no payment was matched. Only a
+# paid soldier_refill_receipt is a purchase; an A press, a planned count or a
+# control "done" flag never is.
+REFILL_OUTCOMES = frozenset({'cancelled', 'insufficient_funds', 'unverified',
+                             'attempt_limit', 'not_attempted'})
+
+
+def refill_outcome(mem, shop, outcome, reason, **detail):
+    """Record once per month why the soldier refill ended unpaid."""
+    if (not isinstance(shop, dict) or outcome not in REFILL_OUTCOMES or shop.get('refill_outcome')
+            or (shop.get('soldier_receipt') or {}).get('status') == 'paid'):
+        return
+    shop['refill_outcome'] = outcome
+    key, count = shop.get('key'), mem.get('soldiers_seen')
+    current = key is not None and mem.get('soldiers_seen_key') == key and type(count) is int
+    planned = shop.get('soldiers')
+    _record(mem, 'soldier_refill_outcome', month=key, resulting_event=outcome,
+            observed_metric={'outcome': outcome, 'planned': planned if type(planned) is int else None,
+                             'soldiers': count if current else None, 'gold': mem.get('gold'), **detail},
+            reason=reason)
 
 
 def _soldiers_enough(mem, shop, header):
@@ -208,8 +276,8 @@ RECRUIT_COST = 50
 # 月イチイベント「ゴニンジャー」(gcgx event.html: 50Gで敵将軍の暗殺を依頼できる。
 # 成功率は低い)。隠密戦隊ごにんじゃーへの依頼料。
 GONINJA_COST = 50
-# Owner (2026-10-06): 1000G以上ある時だけ依頼する。募集の閾値には使わない。
-GONINJA_MIN_GOLD = 1000
+# Owner (2026-10-17): 300G未満なら断る。募集の閾値には使わない。
+GONINJA_MIN_GOLD = 300
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
 # The month menu stays on screen for a few observations after the A press that
 # opens a sub (g462 18:06:02-05); only that stale frame may not end the sub.
@@ -291,6 +359,8 @@ def _extras_reserve(mem, header):
     # including armies below fifty. An unknown count cannot waive recovery.
     # Owner (2026-10-15): a known skip may release this hold for a measured
     # insufficient army, once, through refresh_soldier_egg_deferral.
+    # Owner (2026-10-17): a measured army of LOW_ARMY or fewer is refilled
+    # ahead of this hold (_low_army_refill); the hold itself is kept.
     if type(gold) is not int or gold < 0 or not cost:
         reserve = 0
     else:
@@ -350,7 +420,7 @@ def _refresh_egg_priority(mem, shop, header):
 def _egg_before_soldiers(shop):
     return bool((shop.get('egg_priority') or shop.get('egg_before_recruit'))
                 and shop.get('egg') not in ('done', 'not_needed')
-                and not egg_deferred_for_soldiers(shop))
+                and not egg_deferred_for_soldiers(shop) and not low_army_first(shop))
 
 
 def _prepare_recruit_egg_check(mem, shop, gold):
@@ -603,7 +673,8 @@ def _reserve_general_repair(mem, shop, gold):
     changed = (shop.get('general_repair_reserve', 0) != reserve
                or shop.get('general_repair_targets', []) != targets)
     shop.update(general_repair_reserve=reserve, general_repair_targets=targets)
-    if reserve and not shop.get('soldiers_done') and type(gold) is int:
+    # A low army's refill already keeps the repair money (_soldier_spendable).
+    if reserve and not shop.get('soldiers_done') and type(gold) is int and not low_army_first(shop):
         cards = [] if shop.get('merchant_done') else shop.get('items') or []
         if all(n in KNOWN_PRICES for n, _ in cards):
             card_cost = sum(KNOWN_PRICES[n] * qty for n, qty in cards)
@@ -624,7 +695,8 @@ def _reserve_hero_repair(mem, shop, gold):
     items = [] if shop.get('merchant_done') else shop.get('items') or []
     card_cost = (sum(KNOWN_PRICES[n] * qty for n, qty in items)
                  if all(n in KNOWN_PRICES for n, _ in items) else None)
-    if not shop.get('soldiers_done') and type(gold) is int and card_cost is not None:
+    if (not shop.get('soldiers_done') and type(gold) is int and card_cost is not None
+            and not low_army_first(shop)):
         shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
                                - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
                                - shop.get('recruit_reserve', 0)))
@@ -700,6 +772,9 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
     _reserve_general_repair(mem, shop, shop.get('gold_start'))
+    # A short base boss card is bought before the hiring fee and soldiers are sized.
+    from .boss_cards import plan_boss_card_rebuy
+    plan_boss_card_rebuy(mem, shop)
     _prioritise_recruit(mem, shop, shop.get('gold_start'))
     _limit_soldier_refill(mem, shop, {'year': int(shop['key'].split('-')[0]),
         'month': int(shop['key'].split('-')[1]), 'gold': shop.get('gold_start')})
@@ -792,7 +867,7 @@ def _base_month_plan(mem, header):
     ahead = _charted_purchase_ahead(mem, header)
     if not spec:
         if ahead:
-            if _soldier_count_current(mem, header) and mem['soldiers_seen'] == 0:
+            if _soldier_count_current(mem, header) and mem['soldiers_seen'] <= LOW_ARMY:
                 return _soldier_refill_plan(mem, header, key)
             reserve, _ = _extras_reserve(mem, header)
             if not reserve and not _recruit_shortage(mem):
@@ -858,7 +933,8 @@ def _soldier_refill_plan(mem, header, key):
                           'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step=month_chart_step(mem), strategy_variant='soldier_refill_only',
-            month=key, gold=gold, plan={'cards': [], 'soldiers': shop['soldiers']},
+            month=key, gold=gold,
+            plan={'cards': [list(row) for row in shop['items']], 'soldiers': shop['soldiers']},
             deviation_reason='chart_month_uncovered',
             expected_metric={'soldier_cap': SOLDIER_CAP},
             reason='チャートに当月の購入計画がないため残金で兵士を補充')
@@ -1030,7 +1106,7 @@ def _merchant_spendable(mem, shop, header):
 def _goninja_budget(mem, header):
     """Readable cash and the owner's explicit floor, else None.
 
-    Owner (2026-10-06): 所持金1000G以上なら依頼し、未満・読取不明は断る。
+    Owner (2026-10-17): 所持金300G未満・読取不明は断る。
     This supersedes the old chart-purchase/reserve-based spare calculation.
     Never substitute remembered funds or borrow this floor for recruitment.
     """

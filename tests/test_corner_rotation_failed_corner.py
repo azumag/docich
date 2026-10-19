@@ -290,6 +290,159 @@ def test_older_released_owner_is_settled_after_a_later_failed_request(tmp_path):
     assert settled == [old_request]
 
 
+def test_a_deferred_release_settlement_keeps_the_family_out_of_selection(tmp_path):
+    """#2354 review: keep the shared state file out of selection while the
+    released owner cannot be retired.
+
+    Dispatching another corner on the same state file only fails again and
+    pushes the original request's release evidence out of the bounded audit, so
+    the retirement would become impossible once its cause is fixed.
+    """
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    other = "b" if corner == "a" else "a"
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    adapter.state_path = tmp_path / "shared_corner.json"
+    manager.adapters[other].state_path = tmp_path / "other_corner.json"
+    calls = []
+    adapter.settle_released_failure = lambda owner: calls.append(owner) or None
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert calls == [old_request]
+    # The unrelated corner still runs; only the shared game state file waits.
+    assert result["corner"] == other
+    assert result["status"] == "ready"
+    state = ledger(manager)
+    assert state["excluded"][corner] == "released-owner-unretired"
+    # No new failed request was written, so the original release evidence stays.
+    assert len(state["failed_corners"]) == 1
+
+
+def test_the_family_returns_to_selection_once_the_owner_is_retired(tmp_path):
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    adapter.state_path = tmp_path / "shared_corner.json"
+    outcomes = [None, True]
+    adapter.settle_released_failure = lambda owner: outcomes.pop(0)
+
+    manager.tick()
+    assert ledger(manager)["excluded"][corner] == "released-owner-unretired"
+
+    manager.tick()
+
+    assert ledger(manager)["excluded"].get(corner) != "released-owner-unretired"
+
+
+def test_the_pinned_release_record_survives_the_bounded_audit(tmp_path):
+    """#2354 review: a deferred request keeps its release proof through the pin.
+
+    The per-corner pointer has moved to a newer request and the original
+    request's audit row was evicted, so only ``released_settle_pending`` in the
+    corner state still proves that this exact owner was released. The settle
+    must still be reached instead of the whole rotation losing the evidence.
+    """
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.state_path = tmp_path / "shared_corner.json"
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    state["failed_corners"] = [
+        row for row in state["failed_corners"]
+        if not (row["corner"] == corner and row["request_id"] == old_request)
+    ]
+    manager.save(state)
+    adapter.states = [{
+        "status": "failed",
+        "rotation_request_id": old_request,
+        "released_settle_pending": {"request_id": old_request, "corner_id": corner},
+    }]
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+    executor.result = "completed"
+
+    result = manager.tick()
+
+    assert settled == [old_request]
+    assert result["status"] == "ready"
+
+
+def test_a_newer_release_record_never_settles_the_older_failed_owner(tmp_path):
+    """#2352 review: only the original request's own release record counts.
+
+    The per-corner pointer names the NEW request, and the bounded audit row for
+    the OLDER request is gone. Nothing then proves that the owner still in the
+    corner state was released, so it must stay busy and keep blocking the
+    rotation instead of being retired by the newer request's record.
+    """
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner = old["corner"]
+    old_request = old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    state["failed_corners"] = [
+        row for row in state["failed_corners"]
+        if not (row["corner"] == corner and row["request_id"] == old_request)
+    ]
+    manager.save(state)
+    executor.result = "completed"
+    dispatched = list(executor.calls)
+
+    result = manager.tick()
+
+    assert settled == []
+    assert result["status"] == "waiting"
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+    # The unproven owner keeps blocking: no new corner is dispatched.
+    assert executor.calls == dispatched
+    assert ledger(manager)["pending"] is None
+
+
 def test_released_failure_skip_survives_audit_list_rollover(tmp_path):
     manager, _clock, executor, _adapters = build(
         tmp_path,
