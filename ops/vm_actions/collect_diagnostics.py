@@ -7458,6 +7458,71 @@ def _collect_pulse_sink_inputs():
     }
 
 
+def _collect_pulse_source_outputs():
+    """Read-only PulseAudio source-output (capture/recording) projection (#1964).
+
+    Playback can be audible while the stream capture (encoder input) is
+    missing: the encoder's source output may be absent, corked, or pointing at
+    the wrong source. This projection makes the capture side independently
+    observable, mirroring ``_collect_pulse_sink_inputs`` but for source
+    outputs (recording streams). An unreachable daemon is reported as
+    unreadable rather than as "no capture streams".
+    """
+    from docich.pulse_volume import MEDIA_ROLES, parse_source_outputs, sink_names
+
+    listing, failure = _pulse_listing('list', 'source-outputs')
+    if failure is not None:
+        return {'schema_version': 1, 'readable': False, 'reason': failure,
+                'total': None, 'streams': [], 'attribution': None}
+    # ``list source-outputs`` reports the source by index; resolve names via
+    # the short source listing. A missing name mapping is not a failure.
+    short, _short_failure = _pulse_listing('list', 'short', 'sources')
+    try:
+        items = parse_source_outputs(listing)
+        if listing.strip() and not items:
+            raise ValueError('unrecognized source-output listing')
+        names = sink_names(short or '')
+    except (TypeError, ValueError):
+        return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
+                'total': None, 'streams': [], 'attribution': None}
+
+    def _project(item):
+        source = item.get('source')
+        percents = item.get('volume_percent')
+        if not isinstance(percents, list):
+            percents = None
+        else:
+            percents = [p for p in percents if type(p) is int and 0 <= p <= 200] or None
+        role = item.get('role')
+        return {
+            'index': item.get('index') if type(item.get('index')) is int else None,
+            'source': names.get(source) if isinstance(source, str) else None,
+            'role': role if role in MEDIA_ROLES else None,
+            'mute': item.get('mute') if isinstance(item.get('mute'), bool) else None,
+            'corked': item.get('corked') if isinstance(item.get('corked'), bool) else None,
+            'volume_percent': percents,
+            'player': _pulse_player_category(item.get('application')),
+        }
+
+    streams = [_project(item) for item in items[:PULSE_SINK_INPUTS_MAX]]
+    return {
+        'schema_version': 1,
+        'readable': True,
+        'reason': None,
+        'total': len(items),
+        'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
+        'streams': streams,
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
+    }
+
+
+# Aliases for alternate naming used by callers/tests.
+_collect_pulse_capture = _collect_pulse_source_outputs
+_collect_pulse_source_output = _collect_pulse_source_outputs
+_collect_capture = _collect_pulse_source_outputs
+_collect_stream_capture = _collect_pulse_source_outputs
+
+
 BGM_REASONS = frozenset({
     'eligible', 'audio_missing', 'canonical_unreadable', 'request_unreadable',
     'ack_unreadable', 'pause_unreadable', 'invalid_state', 'switch_not_ready',
@@ -9872,6 +9937,13 @@ def _diagnostics_budget(payload):
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    pulse2 = payload.get("pulse_source_outputs")
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse2, dict)
+            and isinstance(pulse2.get("streams"), list) and pulse2["streams"]):
+        payload["pulse_source_outputs"] = {
+            key: value for key, value in pulse2.items() if key != 'streams'
+        } | {'streams': [], 'truncated': True, 'output_omitted': True}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload = _cpu_profile_detail_budget(payload)
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
@@ -10064,6 +10136,7 @@ def main(argv):
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "pulse_source_outputs": _collect_pulse_source_outputs(),
         "encoder": _collect_encoder(_program_state_dir(), soren, now),
         "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
