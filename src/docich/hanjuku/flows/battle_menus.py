@@ -95,6 +95,59 @@ def command_open_pending_step(screen, mem):
     return None
 
 
+BATTLE_MENU_STALL_WAIT = 4      # unchanged observations held before re-pressing
+BATTLE_MENU_STALL_RETRIES = 2   # further identical presses before closing the menu
+
+
+def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
+    """One command-box step that never repeats a press on an identical frame.
+
+    g713 UID16230..16232: the same command box came back byte-identical after
+    each down and the cursor stayed on y176 while the panel was not yet taking
+    input. Repeating the direction there either does nothing or is buffered
+    into several row moves, so the next A could land on a row the bot never
+    chose. An unchanged frame is the only evidence available that the previous
+    press was not accepted: hold, retry the same single press a bounded number
+    of times, then close the menu instead of confirming anything.
+    """
+    move = _battle_menu_to(screen, label)
+    if not isinstance(move, dict):
+        mem.pop(key, None)
+        return move
+    sha = getattr(screen, 'frame_sha256', None)
+    buttons = move.get('buttons')
+    direction = buttons[0] if isinstance(buttons, list) and buttons else None
+    if not isinstance(sha, str) or direction is None:
+        mem.pop(key, None)
+        return move
+    cur = mem.get('battle') or {}
+    context = [mem.get('chapter'), cur.get('ally'), cur.get('enemy'),
+               screen.kind, screen.menu_cursor, label, direction]
+    state = mem.get(key)
+    if not (isinstance(state, dict) and state.get('context') == context
+            and type(state.get('waits')) is int and type(state.get('retries')) is int):
+        state = mem[key] = {'context': context, 'sha': None, 'waits': 0, 'retries': 0}
+    if state.get('sha') == sha:
+        if state['waits'] < BATTLE_MENU_STALL_WAIT:
+            state['waits'] += 1
+            return []
+        if state['retries'] < BATTLE_MENU_STALL_RETRIES:
+            state.update(waits=0, retries=state['retries'] + 1)
+            _record(mem, 'battle_menu_nav_retry', screen=screen.kind, choice=label,
+                    observed_metric={'direction': direction, 'retry': state['retries'],
+                                     'frame_sha256': sha},
+                    reason='同一画面が続くため同じ方向入力を待ってから再試行する')
+            return move
+        mem.pop(key, None)
+        _record(mem, 'battle_menu_nav_unaccepted', screen=screen.kind, choice=label,
+                observed_metric={'direction': direction, 'retries': state['retries'],
+                                 'frame_sha256': sha},
+                reason='同一画面のまま方向入力が受け付けられないため、確定せずメニューを閉じる')
+        return [pad('b')]
+    state.update(sha=sha, waits=0)
+    return move
+
+
 def _hero_retreat_menu(screen, mem, cur):
     # A castle defense cannot retreat (owner 2026-09-29; the menu has no
     # たいきゃく row there), so never try to select it.
@@ -133,7 +186,7 @@ def _hero_retreat_menu(screen, mem, cur):
     if flow['menu_ticks'] > 8:
         flow['exhausted'] = True
         return [pad('b')]
-    move = _battle_menu_to(screen, 'たいきゃく')
+    move = _battle_menu_move(screen, mem, 'たいきゃく')
     if move != 'here':
         return [move] if move else []
     if (cur.get('card_flow') or {}).get('selection_planned'):
@@ -216,7 +269,7 @@ def _survival_menu(screen, mem, cur):
                 observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
                 reason='読み取れる未試行の救済手段がないため白兵へ戻る')
         return [pad('b')]
-    move = _battle_menu_to(screen, label)
+    move = _battle_menu_move(screen, mem, label)
     if move != 'here':
         return [move] if move else []  # no blind A on a missing cursor
     if label == 'きりふだ':
@@ -485,7 +538,7 @@ def battle_menu_step(screen: Screen, mem):
         if flow['command_menu_ticks'] > 8:
             _card_use_unclassified(mem, cur, '切り札行とカーソルの確認が観測上限に達したため保留')
             return [pad('b')]
-        move = _battle_menu_to(screen, 'きりふだ')
+        move = _battle_menu_move(screen, mem, 'きりふだ')
         if move != 'here':
             if move:
                 flow['stage'] = 'down'
@@ -494,7 +547,9 @@ def battle_menu_step(screen: Screen, mem):
         return [pad('a')]
     if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
         rare = _available_rare_tactic(mem, cur)
-        move = _battle_menu_to(screen, 'きりふだ') if rare else None
+        move = _battle_menu_move(screen, mem, 'きりふだ') if rare else None
+        if move == []:
+            return []  # an identical frame is still not the card row
         if move is not None:
             tid = rare['tactic_id']
             cur.setdefault('tactics_done', []).append(tid)
@@ -567,7 +622,7 @@ def battle_menu_step(screen: Screen, mem):
                             'たまごをつかうが使えない表示のため卵を諦めて白兵へ戻る'))
         return [pad('b')]
     if action == 'use_egg':
-        move = _battle_menu_to(screen, 'たまごをつかう')
+        move = _battle_menu_move(screen, mem, 'たまごをつかう')
         if move != 'here':
             return [move] if move else []
         _egg_recheck(mem)
