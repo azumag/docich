@@ -42,3 +42,9 @@ python3 /usr/local/libexec/azumag-vm-ops/audio_priority/priority.py --once --dry
   同じ操作・errnoの警告は初回と60秒ごとまでに抑える。警告には引数や配信先を含めない。`--once` はこれらのエラーがある場合に終了コード1を返す。
 - 効果: `parec -d soren_null.monitor --rate=48000 --channels=2 --format=s16le --raw` を録り、前後が鳴っている無音(2ms〜300ms)を数える。
   PulseAudioの `q overrun` ログ件数は間引かれ、音の欠落とも限らないので指標にしない。
+- 正規の観測経路(§10): read-only `diagnostics` の `audio_priority` セクションが、root所有コピーと配備ツリーのSHA-256一致、
+  service の enabled/active、keeper プロセス、対象スレッドのnice、journal要約(24hの reniced/warning件数)、
+  半熟ミラーの実効 framerate を返す。`audio_gaps` セクションは固定ヘルパーによる92秒測定の投影を返す。
+- 92秒測定の実行: owner-only workflow「VM operations」の `operation=audio_gap_measure`, `target=production` が
+  `ops/vm_actions/run_audio_gap_measure_once.sh` を実行し、collector の `audio_gaps` 投影だけを返す
+  (生録音やコマンド出力はVM外に出ない。モニターに音が流れていない場合は0件ではなく測定失敗になる)。

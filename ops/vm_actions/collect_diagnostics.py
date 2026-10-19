@@ -594,6 +594,31 @@ CPU_PROFILE_FLOOR_SPAWNS = 5
 CPU_PROFILE_FRESH_SEC = 900
 
 
+# Fixed broadcast-audio gap measurement (docich#1811). The one-shot reviewed
+# helper writes this bounded report; the collector projects only fixed fields.
+AUDIO_GAP_REPORT = Path("/tmp/docich-audio-gap-latest.json")
+AUDIO_GAP_MAX_BYTES = 32768
+AUDIO_GAP_FRESH_SEC = 900
+AUDIO_GAP_MAX_ITEMS = 50
+
+# Read-only projection of the audio-priority keeper (docich#1811): the
+# root-owned installed copies vs the deployed tree, the systemd unit state,
+# the keeper process, per-target thread priorities, and the hanjuku mirror's
+# effective capture framerate. Nothing here mutates the VM.
+AUDIO_PRIORITY_SCRIPT = Path("/usr/local/libexec/azumag-vm-ops/audio_priority/priority.py")
+AUDIO_PRIORITY_UNIT_FILE = Path("/etc/systemd/system/docich-audio-priority.service")
+AUDIO_PRIORITY_SERVICE = "docich-audio-priority"
+AUDIO_PRIORITY_MAX_FILE_BYTES = 262144
+AUDIO_PRIORITY_TARGET_NICE = -10
+AUDIO_PRIORITY_KINDS = ("retroarch", "pulseaudio", "encoder-ffmpeg", "twica-feeder")
+AUDIO_PRIORITY_MAX_PIDS_PER_KIND = 8
+AUDIO_PRIORITY_JOURNAL_LINES = 400
+AUDIO_PRIORITY_ENABLED_STATES = frozenset({
+    "enabled", "enabled-runtime", "disabled", "masked", "masked-runtime",
+    "not-found", "static", "alias", "linked", "linked-runtime", "indirect", "bad",
+})
+
+
 def _cpu_profile_number(value, *, maximum=10**12):
     if type(value) not in (int, float) or not math.isfinite(value):
         return None
@@ -797,6 +822,403 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "cpu_top": cpu_top,
         "spawn_top": spawn_top,
     }
+
+
+def _collect_audio_gaps(now, path=AUDIO_GAP_REPORT):
+    """Project one fixed broadcast-audio gap measurement (docich#1811) without
+    exposing arbitrary /tmp JSON. The helper only records the encoder input
+    monitor and counts digital-zero runs, so this projection carries the fixed
+    counters and never raw audio or paths."""
+    result = {
+        "schema_version": 1,
+        "status": "missing",
+        "present": False,
+        "readable": False,
+    }
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= AUDIO_GAP_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        raw = os.read(fd, AUDIO_GAP_MAX_BYTES + 1)
+        if len(raw) > AUDIO_GAP_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return result
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {**result, "present": True, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    if not isinstance(data, dict) or data.get("schema") != "docich.audio_gap.v1":
+        return {**result, "present": True, "status": "invalid"}
+    meta = data.get("meta")
+    gaps = data.get("gaps")
+    if not isinstance(meta, dict) or not isinstance(gaps, dict):
+        return {**result, "present": True, "status": "invalid"}
+
+    generated_at = _cpu_profile_number(meta.get("generated_at"), maximum=253402300799)
+    # The methodology (#1811) is the encoder input monitor at 48kHz stereo,
+    # so anything else is not this measurement.
+    if (meta.get("monitor") != "soren_null.monitor"
+            or meta.get("rate") != 48000 or meta.get("channels") != 2
+            or generated_at is None):
+        return {**result, "present": True, "status": "invalid"}
+    duration = _cpu_profile_number(meta.get("duration_sec"), maximum=10000)
+    if duration is None or not 80 <= duration <= 120:
+        return {**result, "present": True, "status": "invalid"}
+    ratio = meta.get("nonzero_frame_ratio")
+    if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+            or not math.isfinite(ratio) or not 0 <= ratio <= 1):
+        return {**result, "present": True, "status": "invalid"}
+
+    age_sec = int(now - generated_at)
+    if age_sec < -5:
+        return {**result, "present": True, "status": "invalid"}
+
+    count = _cpu_profile_number(gaps.get("count"), maximum=10000)
+    total_ms = _cpu_profile_number(gaps.get("total_ms"), maximum=10_000_000)
+    max_ms = _cpu_profile_number(gaps.get("max_ms"), maximum=1000)
+    long_silences = _cpu_profile_number(gaps.get("long_silences"), maximum=100_000)
+    if count is None or total_ms is None or max_ms is None or long_silences is None:
+        return {**result, "present": True, "status": "invalid"}
+
+    raw_items = gaps.get("items")
+    items = []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if len(items) >= AUDIO_GAP_MAX_ITEMS:
+                break
+            if not isinstance(item, dict):
+                continue
+            start_ms = _cpu_profile_number(item.get("start_ms"), maximum=10_000_000)
+            ms = _cpu_profile_number(item.get("ms"), maximum=1000)
+            if start_ms is None or ms is None:
+                continue
+            items.append({"start_ms": start_ms, "ms": ms})
+
+    return {
+        "schema_version": 1,
+        "status": "ok" if age_sec <= AUDIO_GAP_FRESH_SEC else "stale",
+        "present": True,
+        "readable": True,
+        "age_sec": age_sec,
+        "meta": {
+            "generated_at": int(generated_at),
+            "monitor": "soren_null.monitor",
+            "rate": 48000,
+            "channels": 2,
+            "duration_sec": round(duration, 2),
+            "nonzero_frame_ratio": round(ratio, 4),
+        },
+        "gaps": {
+            "count": count,
+            "total_ms": total_ms,
+            "max_ms": max_ms,
+            "long_silences": long_silences,
+            "items": items,
+        },
+    }
+
+
+def _audio_priority_sha256(path, limit=AUDIO_PRIORITY_MAX_FILE_BYTES):
+    """Hash one installed copy without following symlinks; None when the
+    file is absent, oversized, or not a regular file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    digest = hashlib.sha256()
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+            return None
+        remaining = info.st_size
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    return digest.hexdigest()
+
+
+def _audio_priority_module():
+    """Load the keeper's own classification from the deployed tree so the
+    target summary can never drift from priority.py's matching rules.
+    Returns None whenever the reviewed module cannot be loaded; the summary
+    then degrades to `classification: unavailable` instead of guessing."""
+    path = PROD_ROOT / "ops" / "audio_priority" / "priority.py"
+    name = "docich_ops_audio_priority"
+    try:
+        spec = _importlib_util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        module = _importlib_util.module_from_spec(spec)
+        # dataclassの型解決はsys.modulesを参照するため、実行前に登録する。
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+    except Exception:
+        return None
+    return module if hasattr(module, "wanted") and hasattr(module, "Proc") else None
+
+
+def _audio_priority_thread_nice(proc_root, pid, tid):
+    """Read one task's current nice from /proc/<pid>/task/<tid>/stat. The comm
+    field may contain spaces or ')', so split after the last ')' like the
+    keeper's own _thread() parser."""
+    text = _read_text_capped(proc_root / str(pid) / "task" / str(tid) / "stat", limit=2048)
+    if not text:
+        return None
+    rest = text.rsplit(")", 1)
+    if len(rest) != 2:
+        return None
+    fields = rest[1].split()
+    try:
+        return int(fields[16])
+    except (IndexError, ValueError):
+        return None
+
+
+def _audio_priority_scan(proc_root, uid, module):
+    """One bounded /proc pass. Returns (targets, keeper, mirror):
+    targets maps each keeper kind to a bounded summary, keeper is the keeper
+    process dict, mirror is the hanjuku mirror ffplay summary."""
+    targets = {
+        kind: {"present": False, "processes": 0, "threads": 0,
+               "max_nice": None, "at_target": 0}
+        for kind in AUDIO_PRIORITY_KINDS
+    }
+    keeper = {"present": False, "pid": None, "threads": 0}
+    mirror = {"present": False, "framerate": None}
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return targets, keeper, mirror
+    try:
+        pids = sorted(int(name) for name in names if name.isdigit())
+    except ValueError:
+        return targets, keeper, mirror
+    wanted = getattr(module, "wanted", None)
+    proc_cls = getattr(module, "Proc", None)
+    for pid in pids[:4000]:
+        base = proc_root / str(pid)
+        comm = _read_text_capped(base / "comm", limit=64)
+        if not comm:
+            continue
+        comm = comm.strip()
+        cmdline = _read_text_capped(base / "cmdline", limit=4096)
+        argv = tuple(part for part in (cmdline or "").split("\0") if part)
+        try:
+            owner = os.stat(base).st_uid
+        except OSError:
+            continue
+        if comm.startswith("python") and any(
+                arg.endswith("audio_priority/priority.py") for arg in argv):
+            try:
+                threads = len(os.listdir(base / "task"))
+            except OSError:
+                threads = 0
+            keeper = {"present": True, "pid": pid, "threads": threads}
+            continue
+        if comm == "ffplay" and "x11grab" in argv:
+            for index, arg in enumerate(argv):
+                if arg == "--framerate" and index + 1 < len(argv):
+                    try:
+                        mirror = {"present": True,
+                                  "framerate": min(max(int(argv[index + 1]), 0), 240)}
+                    except ValueError:
+                        mirror = {"present": True, "framerate": None}
+                    break
+            else:
+                mirror = {"present": True, "framerate": None}
+            continue
+        if wanted is None or proc_cls is None or owner != uid:
+            continue
+        try:
+            proc = proc_cls(pid=pid, uid=owner, comm=comm, argv=argv)
+        except TypeError:
+            # The deployed keeper's Proc grew required fields; never guess.
+            continue
+        kind = wanted(proc, uid)
+        if kind not in targets:
+            continue
+        summary = targets[kind]
+        summary["present"] = True
+        if summary["processes"] < AUDIO_PRIORITY_MAX_PIDS_PER_KIND:
+            summary["processes"] += 1
+        try:
+            tids = os.listdir(base / "task")
+        except OSError:
+            continue
+        for tid in tids:
+            nice = _audio_priority_thread_nice(proc_root, pid, tid)
+            if nice is None:
+                continue
+            summary["threads"] += 1
+            summary["max_nice"] = nice if summary["max_nice"] is None else max(summary["max_nice"], nice)
+            if nice <= AUDIO_PRIORITY_TARGET_NICE:
+                summary["at_target"] += 1
+    return targets, keeper, mirror
+
+
+def _audio_priority_journal_tail(timeout=5):
+    """Bounded recent keeper journal text, or None when journalctl is
+    unavailable or refuses the reader (e.g. no membership). Output never
+    leaves this collector; only fixed counters are projected."""
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    try:
+        proc = subprocess.run(
+            ["journalctl", "-u", f"{AUDIO_PRIORITY_SERVICE}.service",
+             "--since", "-24h", "-n", str(AUDIO_PRIORITY_JOURNAL_LINES),
+             "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or ""
+
+
+def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
+                            script_path=None, unit_file=None,
+                            deployed_script=None, deployed_unit=None):
+    """Read-only projection of the audio-priority keeper state (docich#1811).
+
+    Every sub-part fails open: a missing file, an unreadable journal, or an
+    unavailable systemd query degrades to `None`/`unknown` and never raises,
+    so one broken probe cannot blank the rest of diagnostics. The section
+    never mutates the VM and never affects the top-level payload status; the
+    owner reads the composite `status` to see whether the installed root-owned
+    copies still match the deployed reviewed tree."""
+    if uid is None:
+        uid = os.getuid()
+    script_path = Path(script_path) if script_path is not None else AUDIO_PRIORITY_SCRIPT
+    unit_file = Path(unit_file) if unit_file is not None else AUDIO_PRIORITY_UNIT_FILE
+    deployed_script = (Path(deployed_script) if deployed_script is not None
+                       else PROD_ROOT / "ops" / "audio_priority" / "priority.py")
+    deployed_unit = (Path(deployed_unit) if deployed_unit is not None
+                     else PROD_ROOT / "ops" / "audio_priority" / "docich-audio-priority.service")
+
+    files = {}
+    for label, installed, deployed in (
+            ("script", script_path, deployed_script),
+            ("unit", unit_file, deployed_unit)):
+        installed_sha = _audio_priority_sha256(installed)
+        if installed_sha is None:
+            # An absent copy carries its whole fact in present=false; the
+            # huge-telemetry envelope has no room for null padding.
+            files[label] = {"present": False}
+            continue
+        deployed_sha = _audio_priority_sha256(deployed)
+        files[label] = {
+            "present": True,
+            # 16-hex prefix + the boolean verdict is the evidence; the full
+            # digest of the deployed side is reproducible from the repo.
+            "sha256_16": installed_sha[:16],
+            "matches_deployed": installed_sha == deployed_sha,
+        }
+
+    service = {}
+    result = _systemctl_system(["is-enabled", AUDIO_PRIORITY_SERVICE])
+    if result is not None and result[1] in AUDIO_PRIORITY_ENABLED_STATES:
+        service["enabled"] = result[1]
+    active = _unit_is_active(AUDIO_PRIORITY_SERVICE, scope="system")
+    if active is not None:
+        service["active"] = active
+    result = _systemctl_system(
+        ["show", AUDIO_PRIORITY_SERVICE, "--property=SubState",
+         "--property=NRestarts", "--property=ExecMainStartTimestamp", "--value"])
+    if result is not None:
+        lines = [line.strip() for line in result[1].splitlines()]
+        if len(lines) >= 3:
+            if re.fullmatch(r"[a-z]+", lines[0]):
+                service["sub_state"] = lines[0]
+            # systemctl --value prints text; NRestarts is a plain counter.
+            if re.fullmatch(r"\d{1,7}", lines[1]):
+                service["n_restarts"] = int(lines[1])
+            if 0 < len(lines[2]) <= 64 and re.fullmatch(r"[0-9A-Za-z:+\- ]+", lines[2]):
+                service["started_at"] = lines[2]
+
+    module = _audio_priority_module()
+    targets, keeper, mirror = _audio_priority_scan(
+        proc_root, uid, module if module is not None else None)
+
+    # Zero counters and empty breakdowns are omitted (absence means zero) so
+    # the idle shape stays byte-cheap under the huge-telemetry envelope.
+    journal = {"available": False}
+    reniced_by_kind = {}
+    text = _audio_priority_journal_tail()
+    if text is not None:
+        journal["available"] = True
+        reniced = warnings = scan_failures = restarts = 0
+        for line in text.splitlines():
+            if line.startswith("audio-priority: reniced "):
+                reniced += 1
+                match = re.search(r"kind=([a-z-]+)", line)
+                kind = match.group(1) if match else "other"
+                if kind not in AUDIO_PRIORITY_KINDS:
+                    kind = "other"
+                reniced_by_kind[kind] = reniced_by_kind.get(kind, 0) + 1
+            elif line.startswith("audio-priority: warning"):
+                warnings += 1
+            elif line.startswith("audio-priority: scan failed"):
+                scan_failures += 1
+            elif line.startswith("audio-priority: started "):
+                restarts += 1
+        if reniced:
+            journal["reniced_24h"] = reniced
+        if warnings:
+            journal["warnings_24h"] = warnings
+        if scan_failures:
+            journal["scan_failures_24h"] = scan_failures
+        if restarts:
+            journal["restarts_24h"] = restarts
+    if reniced_by_kind:
+        journal["reniced_by_kind"] = reniced_by_kind
+
+    enabled = service.get("enabled")
+    if enabled == "not-found":
+        status = "missing"
+    elif enabled is None and "active" not in service:
+        status = "unknown"
+    elif (service.get("active") is True and keeper["present"]
+          and files["script"].get("matches_deployed") is True
+          and files["unit"].get("matches_deployed") is True):
+        status = "ok"
+    else:
+        status = "degraded"
+
+    # Absent targets/kinds and unknown service fields are omitted rather than
+    # serialized as null so the fixed section stays small under the envelope.
+    section = {
+        "schema_version": 1,
+        "status": status,
+        "uid": uid,
+        "service": service,
+        "files": files,
+        "targets": {kind: summary for kind, summary in targets.items()
+                    if summary["present"]},
+        "journal": journal,
+    }
+    if module is None:
+        # The classification is worth its bytes only when it broke.
+        section["classification"] = "unavailable"
+    if keeper["present"]:
+        section["keeper"] = keeper
+    if mirror["present"]:
+        section["mirror"] = mirror
+    return section
 
 
 def _empty_opencode_attribution_bucket():
@@ -9979,6 +10401,17 @@ def _diagnostics_budget(payload):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         text = _nethack_history_budget(payload)
+    # The audio keeper summary and the audio-gap projection (docich#1811) are
+    # fixed evidence but not incident telemetry; when every optional detail
+    # above has already yielded, they reduce to an explicit output_omitted
+    # stub rather than push the envelope over the gateway ceiling. A dropped
+    # measurement therefore surfaces as a stub, never as missing-because-broken.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        for key in ("audio_priority", "audio_gaps"):
+            section = payload.get(key)
+            if isinstance(section, dict) and section.get("status") != "output_omitted":
+                payload[key] = {"status": "output_omitted"}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # The repeated-operation projection deliberately survives the soft budget.
     # It is bounded well under 1 KiB and is the only evidence that separates
     # "corner alive and looping" from "corner progressing" -- the chart
@@ -10200,6 +10633,8 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "cpu_profile": _collect_cpu_profile(now),
+        "audio_priority": _collect_audio_priority(),
+        "audio_gaps": _collect_audio_gaps(now),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",

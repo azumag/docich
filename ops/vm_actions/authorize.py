@@ -8,7 +8,7 @@ REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
      'configure_jev_route_clef','configure_jev_route_clef_reuse',
-     'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
+     'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','audio_gap_measure','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
      'restart_chat_kick_workers','restart_webui',
      'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection',
      'release_soren_loop_pause'}
@@ -56,6 +56,8 @@ def main():
         if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
         if op=='cpu_profile' and (target!='production' or ref!='main'):
             fail('cpu_profile requires production/main')
+        if op=='audio_gap_measure' and (target!='production' or ref!='main'):
+            fail('audio_gap_measure requires production/main')
         if op=='reclaim' and target!='production': fail('reclaim is production-only')
         if op=='reclaim' and ref!='main': fail('reclaim must run from main')
         if op=='rebaseline' and target!='production': fail('rebaseline is production-only')
@@ -97,7 +99,8 @@ def main():
                                             'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection',
                                             'release_soren_loop_pause'} and confirm!='production':
             fail('production confirmation required')
-        # diagnostics and cpu_profile are bounded read-only operations, so they
+        # diagnostics, cpu_profile and audio_gap_measure are bounded read-only
+        # operations, so they
         # need owner-only gating (above) but no separate confirmation.
         if op=='deploy' and target=='production' and ref!='main': fail('production deploy must use main')
         result={'operation':op,'target':target,'ref':ref,'confirm':confirm}
