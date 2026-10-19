@@ -301,6 +301,7 @@ def map_step(screen: Screen, mem, frame):
         mem['picked'] = []
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
         mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
+        mem.setdefault('dropper_card_kit', {}).pop(order['step'], None)
         mem.pop('rare_scan', None)
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}

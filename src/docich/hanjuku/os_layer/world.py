@@ -218,6 +218,8 @@ def observe_owners(mem, roofs, cam):
             if castle not in lost:
                 lost.append(castle)
             (mem.get('garrison') or {}).pop(castle, None)
+            # Ownership changed hands: the remembered defender is stale.
+            (mem.get('castle_defenders') or {}).pop(castle, None)
             _record(mem, 'castle_lost_observed', castle=castle,
                     observed_metric={'roof': kind, 'readings': count},
                     resulting_event=f'lost:{castle}',
@@ -302,6 +304,7 @@ def _apply_world_flags(mem, flags):
         if home not in lost:
             lost.insert(0, home)
         (mem.get('garrison') or {}).pop(home, None)
+        (mem.get('castle_defenders') or {}).pop(home, None)
     elif home_owner == 'own' and mem.get('home_lost'):
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
@@ -315,6 +318,8 @@ def _apply_world_flags(mem, flags):
             if castle not in lost:
                 lost.append(castle)
             (mem.get('garrison') or {}).pop(castle, None)
+            # Ownership changed hands: the remembered defender is stale.
+            (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
         elif owner == 'own' and castle not in captured:
             captured.append(castle)

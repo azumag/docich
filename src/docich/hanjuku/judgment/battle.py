@@ -733,7 +733,24 @@ def _egg_plan(mem, cur):
             'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
             'deny_opening_egg': None,
             'max_hp_sum': None, 'threshold': None, 'droppers': [], 'dropper': None,
-            'egg_drop': None, 'triggers': asdict(triggers)}
+            'egg_drop': None, 'sortie_dropper': None, 'triggers': asdict(triggers)}
+    # 出撃時の卵落計画 (#1553): 守備将軍の実測記録から出撃時に加えた卵落札。
+    # 実測した敵が記録と一致する時だけ計画を残し、同じ算出 (max_hp_sum /
+    # threshold) になったことを 'agreement' で残す。一致しない戦闘では計画を
+    # 使わず (fail-closed)、矛盾を戦闘ごとに1回だけ記録する。
+    sortie_kit = (mem.get('dropper_card_kit') or {}).get(cur.get('step'))
+    if isinstance(sortie_kit, dict) and isinstance(sortie_kit.get('card'), str):
+        if kit is not None and sortie_kit['card'] in kit and sortie_kit.get('defender') == enemy:
+            plan['sortie_dropper'] = {'card': sortie_kit['card'], 'defender': enemy,
+                                      'max_hp_sum': sortie_kit.get('max_hp_sum'),
+                                      'threshold': sortie_kit.get('threshold')}
+        elif kit is not None and sortie_kit.get('defender') not in (None, enemy) and not cur.get('sortie_dropper_mismatch_seen'):
+            cur['sortie_dropper_mismatch_seen'] = True
+            _record(mem, 'sortie_dropper_mismatch', **_battle_labels(cur), enemy=enemy,
+                    expected_metric={'defender': sortie_kit.get('defender'),
+                                     'card': sortie_kit['card']},
+                    observed_metric={'battle_enemy': enemy},
+                    reason='出撃時の卵落計画は別の守備将軍向けのため、この戦闘では計画を使わず実測した敵で算出する')
     if kit is None:
         return plan
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
@@ -745,6 +762,11 @@ def _egg_plan(mem, cur):
     plan['max_hp_sum'] = known['max_hp_sum']
     plan['threshold'] = known['threshold']
     plan['droppers'] = reference.egg_droppers(kit, known['max_hp_sum'])
+    if isinstance(plan['sortie_dropper'], dict):
+        # 出撃時と戦闘時で同じ対戦相手なら同じ算出になるはず (#1553)。
+        plan['sortie_dropper']['agreement'] = (
+            plan['sortie_dropper'].get('max_hp_sum') == plan['max_hp_sum']
+            and plan['sortie_dropper'].get('threshold') == plan['threshold'])
     if not (plan['threat'] and plan['droppers']):
         return plan
     # チャートがこの札を指す戦闘はチャートのタイミングを優先し、指していない札だけを
