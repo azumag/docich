@@ -237,10 +237,12 @@ def announce(g, data, audio_enabled, path):
     messages = ([('intro', narration.intro_text())] if intro else [])
     if state["phase"] in texts:
         messages.append(texts[state["phase"]])
+    identity = {k: data.get(k) for k in IDENTITY_KEYS}
+    fence = {**identity, "expires_at": time.time() + 3600}
     for kind, text in messages:
         narration.publish(g, kind=kind, title=narration.TITLE, overlay_body=text,
                           speech_text=text, request_id=f"{data['runtime_id']}:{data['phase_at']}",
-                          audio_enabled=audio_enabled)
+                          audio_enabled=audio_enabled, runtime_fence=fence)
 
 
 def tick(g, path, expected, *, audio_enabled=False, now=None, stop_reason=None, owner_request_id=None):

@@ -30,3 +30,4 @@ games/roms/*
 
 # bench/jev_bench.py run artifacts (raw logs + CSVs) stay out of Git.
 /bench/runs/
+.venv/
