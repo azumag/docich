@@ -51,6 +51,41 @@ class RecoverSorenGameTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not the match runner"):
                     module.eligible(soren, docich, proc, now=1100)
 
+    def test_stale_founding_marker_does_not_refuse_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            soren, docich, proc = fixture(Path(directory))
+            marker = soren / "tmp/markers/.soviet_created"
+            observation = soren / "tmp/state/game_observation.json"
+            with mock.patch.object(module, "_birth_time", return_value=899):
+                # Marker left by an earlier match while the bridge already
+                # observes another one: it must not block the only recovery
+                # (docich#2345).
+                marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
+                observation.write_text(json.dumps({
+                    "schema": 1, "game_id": "22222222-2222-4222-8222-222222222222"}))
+                self.assertEqual(module.eligible(soren, docich, proc, now=1100), (1234, 899))
+
+                # The same match still holds its founding board: refuse.
+                observation.write_text(json.dumps({
+                    "schema": 1, "game_id": "11111111-1111-4111-8111-111111111111"}))
+                with self.assertRaisesRegex(ValueError, "founding"):
+                    module.eligible(soren, docich, proc, now=1100)
+
+                # Legacy marker older than the board it is read next to: refuse.
+                marker.write_text("189\n")
+                observation.unlink()
+                os.utime(marker, (900, 900))
+                self.assertEqual(module.eligible(soren, docich, proc, now=1100), (1234, 899))
+
+                # Legacy marker written together with the board: refuse.
+                os.utime(marker, (1000, 1000))
+                with self.assertRaisesRegex(ValueError, "founding"):
+                    module.eligible(soren, docich, proc, now=1100)
+
+                # A missing marker is not a founding marker.
+                marker.unlink()
+                self.assertEqual(module.eligible(soren, docich, proc, now=1100), (1234, 899))
+
     def test_draining_requires_cancelled_ack_and_unpaused_loop(self):
         with tempfile.TemporaryDirectory() as directory:
             soren, docich, proc = fixture(Path(directory))
