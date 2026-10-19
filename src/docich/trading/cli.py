@@ -208,7 +208,8 @@ def _safe_existing_status(path: Path) -> dict[str, Any]:
     )
     summary = data.get("freshness_summary", {})
     safe["freshness_summary"] = (
-        dict(summary) if isinstance(summary, dict) else freshness_summary_payload(safe["market_freshness"])
+        dict(summary) if (isinstance(summary, dict) and "total" in summary)
+        else freshness_summary_payload(safe["market_freshness"])
     )
     coverage = data.get("coverage", {})
     safe["coverage"] = dict(coverage) if isinstance(coverage, dict) else {}
