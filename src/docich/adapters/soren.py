@@ -961,7 +961,20 @@ class SorenCoordinatorAdapter:
                         expected = None
                 if expected:
                     self._recover_resumed_loop(str(expected))
-            if not self._ack(payload):
+            ack = self._ack(payload)
+            should_proceed = False
+            if not ack:
+                # No broker request at all: verify live processes and HTTP.
+                should_proceed = True
+            elif self._is_expired_timeout_ack(ack):
+                # Broker has rewritten an expired request to ack=timeout (RC_EXPIRED).
+                # The deadline has passed; proceed to verify live processes and HTTP.
+                should_proceed = True
+            # else: active request (accepted/waiting/stopping/stopped) or cancelled:
+            # do not bypass the normal lifecycle flow. Cancelled requests
+            # must be settled through adopt_failed_candidate which cancels
+            # and archives them before readiness is called.
+            if should_proceed:
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
                         with urllib.request.urlopen("http://127.0.0.1:8080/", timeout=1.0) as response:
@@ -970,6 +983,21 @@ class SorenCoordinatorAdapter:
                     except (urllib.error.URLError, OSError):
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+    @staticmethod
+    def _is_expired_timeout_ack(ack: dict) -> bool:
+        """True when the ack is an expired timeout (broker rewrote it due to deadline expiry).
+
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED) when
+        polled. Only when the broker's own ``deadline_epoch`` has passed is this a
+        proven expired cleanup (#2061). A still-valid request must not be mislabelled.
+        """
+        if not isinstance(ack, dict):
+            return False
+        status = str(ack.get("status") or "")
+        if status != "timeout":
+            return False
+        return _request_deadline_passed(ack)
 
     def _paused_loop_identity(self) -> tuple[int, int] | None:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
