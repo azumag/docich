@@ -966,9 +966,12 @@ class SorenCoordinatorAdapter:
             if not ack:
                 # No broker request at all: verify live processes and HTTP.
                 should_proceed = True
-            elif self._is_expired_timeout_ack(payload):
-                # Broker has rewritten an expired request to ack=timeout (RC_EXPIRED).
-                # The deadline has passed; proceed to verify live processes and HTTP.
+            elif self._is_expired_timeout_cleanup(payload):
+                # The broker rewrote its own expired cleanup request to
+                # ack=timeout (RC_EXPIRED): the request/ack identity still
+                # matches completely, no resource or control is held, and the
+                # broker's own deadline has passed. Proceed to verify live
+                # processes and HTTP.
                 should_proceed = True
             # else: active request (accepted/waiting/stopping/stopped) or cancelled:
             # do not bypass the normal lifecycle flow. Cancelled requests
@@ -985,63 +988,44 @@ class SorenCoordinatorAdapter:
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
     @staticmethod
-    def _is_expired_timeout_ack(payload: dict) -> bool:
-        """True when the ack is an expired timeout (broker rewrote it due to deadline expiry).
+    def _is_expired_timeout_cleanup(payload: dict) -> bool:
+        """True only for the broker's own fully-matched expired cleanup residue.
 
-        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED) when
-        polled. Only when the broker's own ``deadline_epoch`` has passed is this a
-        proven expired cleanup (#2061). A still-valid request must not be mislabelled.
-
-        Additionally, the request and ack must have matching identity (request_id,
-        game, generation) and the broker must not hold any resource or control
-        for a different operation (e.g., player_change). If the request and ack
-        are mismatched, or if resource/control indicate an incomplete operation,
-        this is NOT treated as an expired timeout and readiness must not proceed.
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED)
+        when polled. Request and ack are stored separately, so the ack alone
+        proves nothing: the request must still exist and both records must
+        carry the complete, identical boundary identity — the same
+        ``_round_boundary_identity`` contract the stop path pins (schema,
+        request_id, game, generation, deadline_epoch, deadline_at, and
+        ``operation`` unset, so a player_change request can never pose as a
+        plain cleanup). The residue must also hold nothing else: any resource
+        or control record means a runtime is held or a stop is in progress
+        and readiness must not bypass it (#1969 review; cf.
+        ``_failed_candidate_broker_state``). A still-valid request must not be
+        mislabelled: only the broker's own expired ``deadline_epoch`` is a
+        proven expired cleanup (#2061). A normal old cleanup may carry a
+        generation different from the current spec, so the match is
+        request-to-ack only — a spec-generation match is never substituted.
+        Any mismatched, extra, or malformed shape fails closed.
         """
         if not isinstance(payload, dict):
             return False
-        ack = payload.get("ack")
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload for key in ("request", "ack", "resource", "control"))):
+            return False
         request = payload.get("request")
-        resource = payload.get("resource")
-        control = payload.get("control")
-        if not isinstance(ack, dict):
+        ack = payload.get("ack")
+        if payload.get("resource") is not None or payload.get("control") is not None:
             return False
-        status = str(ack.get("status") or "")
-        if status != "timeout":
-            return False
-        # Broker's own deadline must have passed (proven expired cleanup).
-        if not _request_deadline_passed(ack):
-            return False
-        # Request and ACK must have matching identity (request_id, game, generation).
-        if not isinstance(request, dict):
+        if not isinstance(ack, dict) or str(ack.get("status") or "") != "timeout":
             return False
         try:
-            if (request.get("request_id") != ack.get("request_id")
-                    or request.get("game") != ack.get("game")
-                    or request.get("generation") != ack.get("generation")):
+            identity = SorenCoordinatorAdapter._round_boundary_identity(request)
+            if SorenCoordinatorAdapter._round_boundary_identity(ack) != identity:
                 return False
-        except (TypeError, AttributeError):
+        except AdapterError:
             return False
-        # No resource held: resource must be None for an expired cleanup.
-        if resource is not None:
-            return False
-        # No control record, or control matches the same request (not a different operation).
-        if control is not None:
-            if not isinstance(control, dict):
-                return False
-            try:
-                if (control.get("request_id") != ack.get("request_id")
-                        or control.get("game") != ack.get("game")
-                        or control.get("generation") != ack.get("generation")):
-                    return False
-                # If control has an operation (e.g., player_change), this is NOT
-                # a simple expired cleanup. The pause marker remains and the
-                # operation is incomplete. Fail closed.
-                if control.get("operation") is not None:
-                    return False
-            except (TypeError, AttributeError):
-                return False
-        return True
+        return _request_deadline_passed(ack)
 
     def _paused_loop_identity(self) -> tuple[int, int] | None:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
