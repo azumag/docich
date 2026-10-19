@@ -34,6 +34,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
         (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
+        (self.doc / "ops" / "audio_priority").mkdir(parents=True, exist_ok=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
         for rel in (
@@ -52,6 +53,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "ops/audio_priority/priority.py",
         ):
             src = ROOT / rel
             if src.is_file():
@@ -195,6 +197,23 @@ class DiagnosticsGatewayTests(unittest.TestCase):
                     self.assertEqual(self.snapshot(self.soren), before)
                 finally:
                     path.write_bytes(original)
+
+    def test_audio_priority_priority_py_drift_is_refused_read_only(self):
+        # priority.py is loaded via exec_module() in collect_diagnostics, not via
+        # a `from docich...` import, so the generic import-drift guard does not
+        # cover it. It must be listed in DIAGNOSTICS_FILES so a modified copy is
+        # treated as tracked drift and the collector/runtime are never executed.
+        path = self.doc / "ops" / "audio_priority" / "priority.py"
+        original = path.read_bytes()
+        before = self.snapshot(self.soren)
+        try:
+            path.write_bytes(original + b"\n# unreviewed audio-priority drift\n")
+            proc = self.call(f"diagnostics docich production {'b' * 40}")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("VM operation rejected", proc.stderr.decode())
+            self.assertEqual(self.snapshot(self.soren), before)
+        finally:
+            path.write_bytes(original)
 
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"

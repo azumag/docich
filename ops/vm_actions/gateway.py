@@ -23,7 +23,8 @@ DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runti
                    'src/docich/hanjuku_manual_evidence.py',
                    'src/docich/naming.py','src/docich/tmux.py','src/docich/procs.py',
                    'src/docich/hanjuku_screen.py','src/docich/hanjuku_policy.py',
-                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py')
+                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py',
+                   'ops/audio_priority/priority.py')
 DIAGNOSTICS_TIMEOUT=60
 DIAGNOSTICS_STDOUT_MAX=65536
 DIAGNOSTICS_JSON_MAX=65536
