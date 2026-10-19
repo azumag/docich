@@ -439,15 +439,19 @@ class MysteryCornerManager:
         per source. The intent is persisted *before* the attempts — a crash
         in between can only re-show an already visible rail — and a source
         whose hide failed is dropped from the obligation instead of assuming
-        the whole call changed nothing.
+        the whole call changed nothing.  A source already owed a restore
+        (carried over from an earlier request, review P2) stays as it is and
+        is not hidden a second time.
         """
-        pending = state.get("status_overlay_hidden_sources")
-        if isinstance(pending, list) and pending:
+        carried = state.get("status_overlay_hidden_sources")
+        carried = list(carried) if isinstance(carried, list) else []
+        sources = [source for source in _status_overlay_sources()
+                   if source not in carried]
+        if not sources:
             return
-        sources = list(_status_overlay_sources())
-        state["status_overlay_hidden_sources"] = list(sources)
+        state["status_overlay_hidden_sources"] = carried + list(sources)
         self._save(state)
-        hidden = []
+        hidden = list(carried)
         for source in sources:
             try:
                 applied = bool(self.status_overlay_control("hide", source))
@@ -1439,9 +1443,16 @@ class MysteryCornerManager:
         else:
             if state.get("status") not in {"idle", "completed", "interrupted"}:
                 raise MysteryCornerError("another mystery execution owns the state")
+            # A restore the previous run still owes survives the state
+            # replacement: the next run keeps the obligation and retries it
+            # on its exit paths even if OBS was down when the old run ended
+            # (review P2).
+            pending = state.get("status_overlay_hidden_sources")
             state = self._new_state(request_id)
             if state is None:
                 return "queued"
+            if isinstance(pending, list) and pending:
+                state["status_overlay_hidden_sources"] = list(pending)
             if self._stop_requested():
                 return self._mark_interrupted(state, "operator-stopped-before-start")
             self._save(state)

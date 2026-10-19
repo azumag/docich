@@ -701,6 +701,80 @@ def test_mystery_corner_retries_the_pending_restore_on_re_entry(
     assert len(shows) == 4
 
 
+def test_mystery_corner_carries_the_pending_restore_across_requests(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("show", "statsOverlay"),
+                                            ("show", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    first = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(first) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+
+    # A new request starts while OBS is still down: the state replacement must
+    # not wipe the old restore obligation (review P2), and the rails already
+    # hidden for this corner are not hidden a second time.
+    second = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(second) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert state["rotation_request_id"] == second
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+    hides = [call for call in control.calls if call[0] == "hide"]
+    assert hides == [("hide", "statsOverlay"), ("hide", "opsOverlay")]
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 6      # failed re-shows: run 1 exit, run 2 entry + exit
+
+    # OBS recovers: the next entry restores each rail exactly once.
+    control.fail.clear()
+    assert adapter.manager.run_rotation(second) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 8
+
+    # ...and a further entry does not restore anything again.
+    assert adapter.manager.run_rotation(second) == "completed"
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 8
+
+
+def test_mystery_corner_carries_only_the_owed_rail_and_hides_the_other(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("hide", "opsOverlay"),
+                                            ("show", "statsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    # statsOverlay hid but its re-show failed; opsOverlay never hid.
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay"]
+
+    # The next request keeps the unpaid statsOverlay restore and still hides
+    # the rail it does not owe (opsOverlay).
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+    hides = [call for call in control.calls if call[0] == "hide"]
+    assert hides == [("hide", "statsOverlay"), ("hide", "opsOverlay"),
+                     ("hide", "opsOverlay")]
+
+    # Once OBS recovers, only the owed rail is restored — exactly once.
+    control.fail.clear()
+    request_id = json.loads(adapter.state_path.read_text())["rotation_request_id"]
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert shows == [("show", "statsOverlay")] * 4
+
+
 def test_mystery_corner_never_shows_rails_it_did_not_hide(
         tmp_path, quiet_narration):
     g, now, _factory, store, switch = _setup(tmp_path)
