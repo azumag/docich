@@ -397,11 +397,13 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(Path(temp))
             past = time.time() - 3600  # deadline long passed
             expired_timeout_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
                             "generation": 7, "deadline_epoch": past,
                             "deadline_at": "2020-01-01T00:00:00Z"},
                 "ack": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
-                        "generation": 7, "status": "timeout", "deadline_epoch": past},
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
                 "resource": None,
                 "control": None,
             }
@@ -431,11 +433,13 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(Path(temp))
             future = time.time() + 3600  # deadline still valid
             valid_timeout_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-valid", "game": "sorengame",
                             "generation": 7, "deadline_epoch": future,
                             "deadline_at": "2030-01-01T00:00:00Z"},
                 "ack": {"schema": 1, "request_id": "req-valid", "game": "sorengame",
-                        "generation": 7, "status": "timeout", "deadline_epoch": future},
+                        "generation": 7, "status": "timeout", "deadline_epoch": future,
+                        "deadline_at": "2030-01-01T00:00:00Z"},
                 "resource": None,
                 "control": None,
             }
@@ -466,11 +470,13 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(Path(temp))
             past = time.time() - 3600
             cancelled_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
                             "generation": 7, "deadline_epoch": past,
                             "deadline_at": "2020-01-01T00:00:00Z"},
                 "ack": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
-                        "generation": 7, "status": "cancelled", "deadline_epoch": past},
+                        "generation": 7, "status": "cancelled", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
                 "resource": None,
                 "control": None,
             }
@@ -495,11 +501,13 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(Path(temp))
             future = time.time() + 3600
             cancelled_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
                             "generation": 7, "deadline_epoch": future,
                             "deadline_at": "2030-01-01T00:00:00Z"},
                 "ack": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
-                        "generation": 7, "status": "cancelled", "deadline_epoch": future},
+                        "generation": 7, "status": "cancelled", "deadline_epoch": future,
+                        "deadline_at": "2030-01-01T00:00:00Z"},
                 "resource": None,
                 "control": None,
             }
@@ -522,19 +530,22 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         """#1969: new request + old expired timeout ack must NOT be treated as expired.
 
         If broker ACK write fails after a new request is created, the payload
-        may contain a new request but an old expired timeout ack. The identity
-        (request_id, game, generation) must match, otherwise readiness must
-        not proceed (fail-closed).
+        may contain a new request but an old expired timeout ack. The complete
+        identity (schema, request_id, game, generation, deadline) must match
+        between request and ack, otherwise readiness must not proceed
+        (fail-closed).
         """
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
             past = time.time() - 3600
             mismatched_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-new", "game": "sorengame",
                             "generation": 7, "deadline_epoch": time.time() + 3600,
                             "deadline_at": "2030-01-01T00:00:00Z"},
                 "ack": {"schema": 1, "request_id": "req-old", "game": "sorengame",
-                        "generation": 7, "status": "timeout", "deadline_epoch": past},
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
                 "resource": None,
                 "control": None,
             }
@@ -553,37 +564,36 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     adapter.readiness(time.monotonic() + 0.05, None)
             mock_urlopen.assert_not_called()
 
-    def test_readiness_blocks_on_player_change_expiry_with_pause(self):
-        """#1969: player_change expiry with pause marker must NOT be treated as expired.
+    def test_readiness_blocks_on_player_change_request_expiry(self):
+        """#1969: an expired player_change request is not a launchable expired cleanup.
 
-        When player_change expires, the broker returns timeout (RC_EXPIRED)
-        but the shell side returns non-zero before clearing the pause marker.
-        The loop remains paused. Readiness must detect the pause marker and
-        not proceed, even if the ack is an expired timeout.
+        The broker rewrites any expired request to ack=timeout (RC_EXPIRED),
+        including a player_change request. The player_change operation rides on
+        the request record itself, so the full boundary identity (operation
+        unset) must reject it even when no control record exists and no pause
+        marker remains: the uncleared player_change transaction must never be
+        identified with the plain expired cleanup (#1969 review).
         """
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
             past = time.time() - 3600
             player_change_expired_payload = {
+                "schema": 1,
                 "request": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
                             "generation": 7, "deadline_epoch": past,
-                            "deadline_at": "2020-01-01T00:00:00Z"},
+                            "deadline_at": "2020-01-01T00:00:00Z",
+                            "operation": "player_change"},
                 "ack": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
-                        "generation": 7, "status": "timeout", "deadline_epoch": past},
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
                 "resource": None,
-                "control": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
-                            "generation": 7, "operation": "player_change"},
+                "control": None,
             }
             adapter._singleton_process_identity = Mock(
                 side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
             adapter._process_matches = Mock(
                 side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
                 else [(time.time() - 100, 124, 1001)])
-
-            # Create the pause marker file
-            pause_dir = Path(temp) / "tmp/state"
-            pause_dir.mkdir(parents=True, exist_ok=True)
-            (pause_dir / "soren_loop.paused").write_text("lifecycle:req-pc")
 
             with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
                     returncode=0, stdout=json.dumps(player_change_expired_payload), stderr="")), \
@@ -593,6 +603,125 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 with self.assertRaises(DeadlineExceededError):
                     adapter.readiness(time.monotonic() + 0.05, None)
             mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_uncleared_pause_marker(self):
+        """#1969: an uncleared pause marker is not a launchable state.
+
+        A parked soren_loop still shows a live process, and readiness's
+        live-process check alone cannot tell a running loop from a parked
+        one. When the lifecycle pause marker remains (for example after an
+        interrupted player_change or stop), readiness must not succeed even
+        over a fully-matched expired cleanup (#1969 review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            past = time.time() - 3600
+            expired_cleanup_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            pause_dir = root / "tmp/state"
+            pause_dir.mkdir(parents=True, exist_ok=True)
+            (pause_dir / "soren_loop.paused").write_text("lifecycle:req-expired")
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(expired_cleanup_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_in_progress_stop_control(self):
+        """#1969: any control record means a stop is in progress; fail closed.
+
+        Even a control record that matches the expired request's identity is
+        an in-progress stop-after-boundary, the same residue
+        ``_failed_candidate_broker_state`` refuses as "timeout with control".
+        The readiness bypass must refuse it too instead of accepting a
+        matching control (#1969 review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            control_in_progress_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                            "generation": 7},
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(control_in_progress_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_proceeds_for_old_cleanup_generation(self):
+        """#1969: a normal old cleanup may carry a generation other than the spec's.
+
+        The expired residue belongs to the request that created it, which can
+        be an older switch attempt. The identity match is request-to-ack only;
+        a spec-generation match must never be substituted for it (#1969
+        review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            self.assertNotEqual(adapter.spec.generation, 6)
+            past = time.time() - 3600
+            old_cleanup_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-old-cleanup", "game": "sorengame",
+                            "generation": 6, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-old-cleanup", "game": "sorengame",
+                        "generation": 6, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(old_cleanup_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                adapter.readiness(time.monotonic() + 0.1, None)
+            mock_urlopen.assert_called_once()
 
     def test_materialize_fresh_starts_only_matching_stopped_request(self):
         with tempfile.TemporaryDirectory() as temp:
