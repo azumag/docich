@@ -389,5 +389,24 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertNotIn("exec docich production $SHA\" 2>", text)
 
 
+    def test_workflow_distinguishes_cap_overflow_from_stale_gateway(self):
+        text = WF.read_text(encoding="utf-8")
+        # Known size-overflow case gets a distinct, fixed message (not the
+        # stale-gateway guidance) so operators do not misread a data-volume
+        # problem as an unactivated gateway.
+        self.assertIn("diagnostics_output_too_large", text)
+        self.assertIn("Diagnostics collector output exceeds the reviewed gateway JSON cap", text)
+        # The specific check must come before the generic rejection so the
+        # boundary is preserved: overflow -> fixed message, everything else ->
+        # the existing stale-gateway guidance (which still stops the run).
+        specific_idx = text.find("diagnostics_output_too_large")
+        generic_idx = text.find("Installed VM gateway does not accept diagnostics")
+        self.assertGreaterEqual(specific_idx, 0)
+        self.assertGreaterEqual(generic_idx, 0)
+        self.assertLess(specific_idx, generic_idx)
+        # General rejection still stops the run (no exec bypass).
+        self.assertIn("diagnostics-gateway.err", text)
+        self.assertNotIn("exec docich production $SHA\" 2>", text)
+
 if __name__ == "__main__":
     unittest.main()
