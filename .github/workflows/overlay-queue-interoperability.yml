@@ -22,6 +22,7 @@ on:
       - 'tests/test_audio_delivery.py'
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
+      - 'tests/test_trpg_audio_bridge_sink.py'
       - 'requirements-test.txt'
       - 'conftest.py'
   push:
@@ -46,6 +47,7 @@ on:
       - 'tests/test_audio_delivery.py'
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
+      - 'tests/test_trpg_audio_bridge_sink.py'
       - 'requirements-test.txt'
       - 'conftest.py'
 
@@ -96,6 +98,7 @@ jobs:
             --root-path 'tests/test_audio_delivery.py' \
             --root-path 'tests/test_hanjuku_end_chat_interop.py' \
             --root-path 'tests/test_trading_soren_output.py' \
+            --root-path 'tests/test_trpg_audio_bridge_sink.py' \
             --root-path 'requirements-test.txt' \
             --root-path 'conftest.py' \
             --soren-path 'overlay_notify.sh' \
