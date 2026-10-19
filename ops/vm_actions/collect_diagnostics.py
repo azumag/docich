@@ -161,7 +161,15 @@ MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
 # either fails the whole diagnostics operation closed. Detail reductions aim at
 # the softer MAX_JSON_BYTES target, and only the last-resort reductions below
 # fall back to this hard ceiling.
-HARD_JSON_BYTES = 56 * 1024
+#
+# The hard ceiling must stay strictly below the gateway's sanitized-JSON cap
+# (gateway.DIAGNOSTICS_JSON_MAX), or the envelope can exceed it without any
+# reduction branch firing and the whole diagnostics operation is rejected
+# fail-closed. #2533: a 56 KiB ceiling sat above the then-48 KiB gateway cap,
+# so a 50,280 byte envelope passed every branch here and the gateway rejected
+# it as "diagnostics output too large". #2535 keeps the two constants bound
+# together so a future cap change cannot recreate that gap.
+HARD_JSON_BYTES = 47 * 1024
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -9991,6 +9999,16 @@ def _diagnostics_budget(payload):
     # that #753 needs, so it must survive every softer reduction.
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         payload = _nethack_xlog_drop(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The ``corners`` section is the largest remaining block (production
+    # measured 23,093 of a 49,809 byte envelope) and is the only thing left
+    # that can still push the envelope past the gateway's sanitized-JSON cap.
+    # Nothing below is optional detail, so the whole section yields rather
+    # than failing the entire diagnostics operation (#2533).
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict):
+        corners.clear()
+        corners["status"] = "output_omitted"
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return _nethack_history_budget(payload)
 
 

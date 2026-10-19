@@ -3,8 +3,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -44,8 +46,12 @@ def harness(tmp_path, monkeypatch):
     spec.loader.exec_module(gw)
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
+    # Point the gateway at a clean worktree: its collector-drift gate runs
+    # ``git status`` on this path and refuses before reaching the collector,
+    # so a fixture pointed at a dirty working tree never reaches it.
+    production = clean_production_root()
     cfg = {'state': str(tmp_path / 'state'), 'repos': {'docich': {
-        'production': str(ROOT), 'mode': 'git',
+        'production': str(production), 'mode': 'git',
         'projections': {'games/soviet_now': str(runtime)}}}}
     config = tmp_path / 'config.json'
     config.write_text(json.dumps(cfg))
@@ -53,7 +59,7 @@ def harness(tmp_path, monkeypatch):
     calls = []
 
     def collector_only(argv, *args, **kwargs):
-        if len(argv) > 1 and argv[1] == str(ROOT / 'ops/vm_actions/collect_diagnostics.py'):
+        if len(argv) > 1 and argv[1] == str(production / 'ops/vm_actions/collect_diagnostics.py'):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, output['returncode'], output['stdout'], b'')
         return REAL_RUN(argv, *args, **kwargs)
@@ -65,7 +71,8 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setenv('VMOPS_TESTING', '1')
     monkeypatch.setenv('SSH_ORIGINAL_COMMAND', f'diagnostics docich production {SHA}')
     monkeypatch.setattr(sys, 'argv', [str(ROOT / 'ops/vm_actions/gateway.py'), str(config)])
-    return gw, cfg, output, calls
+    yield gw, cfg, output, calls
+    shutil.rmtree(production, ignore_errors=True)
 
 
 @pytest.mark.parametrize('size', [49153, 50139, 65535, 65536])
@@ -106,6 +113,11 @@ def test_main_failures_exit_one_and_never_print_payload(harness, monkeypatch, ca
     gw, cfg, output, calls = harness
     expected = 'operation_rejected'
     if failure == 'size':
+        # Above the reviewed collector hard ceiling, so the collector's own
+        # budget reductions bring the document back under the gateway cap and
+        # the gateway still succeeds. Pick a size that exercises the gateway
+        # cap directly instead (the boundary is the gateway's job, not the
+        # collector's).
         output['stdout'] = encode(payload_of_final_size(65537))
         expected = 'diagnostics_output_too_large'
     elif failure == 'collector':
@@ -132,6 +144,16 @@ def workflow_run_script():
             return '\n'.join(line[10:] if line.startswith('          ') else line
                              for line in run.splitlines()) + '\n'
     raise AssertionError('diagnostics run step missing')
+
+
+def clean_production_root():
+    """A git worktree of this checkout at HEAD, so the gateway's drift check sees
+    a clean tree. The gateway refuses ``diagnostics collector drift`` before it
+    runs the collector, so a fixture that points at a dirty working tree can
+    never reach the collector under test."""
+    root = tempfile.mkdtemp(prefix='independent-gateway-')
+    subprocess.run(['git', 'worktree', 'add', '-q', '--detach', root, 'HEAD'], check=True)
+    return Path(root)
 
 
 @pytest.mark.parametrize('reason', ['diagnostics_output_too_large', 'operation_rejected', 'future_unknown_reason'])

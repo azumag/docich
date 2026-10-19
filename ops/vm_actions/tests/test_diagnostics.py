@@ -408,5 +408,92 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn("diagnostics-gateway.err", text)
         self.assertNotIn("exec docich production $SHA\" 2>", text)
 
+
+class DiagnosticsEnvelopeBudgetTests(unittest.TestCase):
+    """The collector envelope must never outgrow the gateway's sanitized cap.
+
+    #2533: ``HARD_JSON_BYTES`` sat at 56 KiB while the gateway cap was 48 KiB,
+    so a 50,280 byte envelope passed every reduction branch and the gateway
+    rejected it as ``diagnostics output too large`` -- the whole diagnostics
+    operation failed closed instead of losing one section.
+    """
+
+    @staticmethod
+    def _load_collector():
+        spec = importlib.util.spec_from_file_location(
+            "envelope_collector", ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _gateway():
+        return load_gateway()
+
+    def test_hard_ceiling_stays_below_the_gateway_sanitized_cap(self):
+        collector = self._load_collector()
+        gateway = self._gateway()
+        # Strictly below: the gateway adds its own metadata after sanitizing.
+        self.assertLess(collector.HARD_JSON_BYTES, gateway.DIAGNOSTICS_JSON_MAX)
+
+    def test_soft_target_stays_below_the_hard_ceiling(self):
+        collector = self._load_collector()
+        self.assertLess(collector.MAX_JSON_BYTES, collector.HARD_JSON_BYTES)
+
+    def _budget_payload(self, *, corner_children=32, corner_bytes=1500, extra_ai_events=0):
+        corners = {
+            f"corner_{i:02}": {"status": "ok", "detail": "x" * corner_bytes}
+            for i in range(corner_children)
+        }
+        corners["retro_corner"] = {"status": "active", "decision_plans": {"window_plans": 1}}
+        payload = {
+            "status": "ok",
+            "corners": corners,
+            "nethack_history": {
+                "daily": {"records": [], "omitted_records": 0, "output_omitted": False},
+                "completed_runs": {"records": [], "omitted_records": 0, "output_omitted": False},
+            },
+            "ai": {"recent_events": [], "anomalous_components": {}},
+            "workers": {"details": {}},
+            "soren91_drop_profile": {"profileStatus": "missing"},
+            "pulse_sink_inputs": {"streams": []},
+            "pulse_source_outputs": {"streams": []},
+            "cpu_profile": {"profileStatus": "unavailable"},
+            "nethack_xlog": {"status": "ok"},
+        }
+        if extra_ai_events:
+            payload["ai"]["recent_events"] = [{"ts": 1, "event": "ok"}] * extra_ai_events
+        return payload
+
+    def test_hard_ceiling_left_the_envelope_under_the_gateway_cap(self):
+        collector = self._load_collector()
+        gateway = self._gateway()
+        # The production envelope that triggered #2533 measured 50,280 bytes on
+        # the collector side with 23,093 of it in ``corners``. Reproduce that
+        # shape and assert the reviewed hard ceiling brings it back under the
+        # gateway's sanitized cap instead of leaving it to the gateway.
+        payload = self._budget_payload()
+        before = len(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+        self.assertGreater(before, collector.HARD_JSON_BYTES)
+        text = collector._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")), collector.HARD_JSON_BYTES)
+        # The envelope also fits the gateway cap that actually rejects it.
+        self.assertLessEqual(len(text.encode("utf-8")), gateway.DIAGNOSTICS_JSON_MAX)
+        # The section that had no reduction branch yields explicitly.
+        self.assertEqual(payload["corners"]["status"], "output_omitted")
+
+    def test_oversized_corners_section_yields_instead_of_failing_closed(self):
+        collector = self._load_collector()
+        # A production-shaped envelope just over the hard ceiling: the corners
+        # section is the last thing that can bring it back under.
+        payload = self._budget_payload(extra_ai_events=40)
+        before = len(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+        self.assertGreater(before, collector.HARD_JSON_BYTES)
+        text = collector._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")), collector.HARD_JSON_BYTES)
+        self.assertEqual(payload["corners"]["status"], "output_omitted")
+
+
 if __name__ == "__main__":
     unittest.main()
