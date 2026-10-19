@@ -189,7 +189,7 @@ class AudioPriorityKeeperTests(unittest.TestCase):
         self.systemctl_calls = []
 
     def systemctl(self, is_enabled="enabled", is_active="active",
-                  show="running\n0\nSun 2026-10-19 14:00:00 JST"):
+                  show="ExecMainStartTimestamp=Sun 2026-10-19 14:00:00 JST\nSubState=running\nNRestarts=0"):
         def fake(args, timeout=5):
             self.systemctl_calls.append(list(args))
             if args[0] == "is-enabled":
@@ -203,7 +203,7 @@ class AudioPriorityKeeperTests(unittest.TestCase):
 
     def collect(self, journal_text=None, deployed_script=None, deployed_unit=None,
                 is_enabled="enabled", is_active="active",
-                show="running\n0\nSun 2026-10-19 14:00:00 JST"):
+                show="ExecMainStartTimestamp=Sun 2026-10-19 14:00:00 JST\nSubState=running\nNRestarts=0"):
         if deployed_script is None:
             deployed_script = self.script
         if deployed_unit is None:
@@ -307,13 +307,17 @@ class AudioPriorityKeeperTests(unittest.TestCase):
         self.assertEqual(len(out["files"]["script"]["sha256_16"]), 16)
 
     def test_missing_unit_is_missing_and_queries_are_read_only(self):
+        # Dead unit: ExecMainStartTimestamp is empty and must be omitted,
+        # SubState still projects. systemd prints Key=Value lines in its own
+        # property order, so the parse must never rely on positions.
         out = self.collect(is_enabled="not-found", is_active="inactive",
-                           show="dead\n0\n")
+                           show="NRestarts=0\nSubState=dead\nExecMainStartTimestamp=")
         self.assertEqual(out["status"], "missing")
         self.assertEqual(out["service"]["enabled"], "not-found")
         self.assertFalse(out["service"]["active"])
+        self.assertEqual(out["service"]["sub_state"], "dead")
+        self.assertEqual(out["service"]["n_restarts"], 0)
         self.assertNotIn("started_at", out["service"])
-        self.assertNotIn("sub_state", out["service"])
         for args in self.systemctl_calls:
             self.assertTrue(args[0] in ("is-enabled", "is-active", "show"),
                             args)
