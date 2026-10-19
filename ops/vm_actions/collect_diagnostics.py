@@ -1159,17 +1159,24 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
         service["active"] = active
     result = _systemctl_system(
         ["show", AUDIO_PRIORITY_SERVICE, "--property=SubState",
-         "--property=NRestarts", "--property=ExecMainStartTimestamp", "--value"])
-    if result is not None:
-        lines = [line.strip() for line in result[1].splitlines()]
-        if len(lines) >= 3:
-            if re.fullmatch(r"[a-z]+", lines[0]):
-                service["sub_state"] = lines[0]
-            # systemctl --value prints text; NRestarts is a plain counter.
-            if re.fullmatch(r"\d{1,7}", lines[1]):
-                service["n_restarts"] = int(lines[1])
-            if 0 < len(lines[2]) <= 64 and re.fullmatch(r"[0-9A-Za-z:+\- ]+", lines[2]):
-                service["started_at"] = lines[2]
+         "--property=NRestarts", "--property=ExecMainStartTimestamp"])
+    if result is not None and result[0] == 0:
+        # systemctl show prints Key=Value lines in its own property order,
+        # never the request order, so parse by label -- the positional read
+        # mis-assigned SubState ("running") into started_at in production.
+        for line in result[1].splitlines():
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key == "SubState" and re.fullmatch(r"[a-z]+", value):
+                service["sub_state"] = value
+            elif key == "NRestarts" and re.fullmatch(r"\d{1,7}", value):
+                service["n_restarts"] = int(value)
+            elif (key == "ExecMainStartTimestamp" and 0 < len(value) <= 64
+                  and re.fullmatch(r"[0-9A-Za-z:+\- ]+", value)):
+                service["started_at"] = value
 
     module = _audio_priority_module()
     targets, keeper, mirror = _audio_priority_scan(
