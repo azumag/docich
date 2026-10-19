@@ -6,7 +6,7 @@ from decimal import Decimal
 import math
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from ..config import GlobalConfig
 from .arbitrage import TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
@@ -25,7 +25,7 @@ from .paper import PaperBroker
 from .performance import build_performance
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
-from .status import build_public_status, write_public_status
+from .status import build_public_status, freshness_summary_payload, write_public_status
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
 from .strategy_runtime import get_active_experiment, pop_reason_context
@@ -214,6 +214,7 @@ def _status_payload(
     error_codes=(),
     last_success_at: float | None = None,
     performance_summary=None,
+    market_freshness: Mapping[str, Mapping[str, object]] | None = None,
 ):
     capital = D(str(g.trading.paper_capital_jpy))
     if signal_summary is None:
@@ -249,6 +250,7 @@ def _status_payload(
         signal_summary=signal_summary,
         worker_summary=worker_summary,
         performance_summary=performance_summary,
+        market_freshness=market_freshness,
     )
 
 
@@ -334,6 +336,7 @@ def _carry_snapshot(
     payload["snapshot_generated_at"] = generated
     payload["market_freshness"] = freshness
     payload["coverage"] = coverage
+    payload["freshness_summary"] = freshness_summary_payload(freshness)
 
 
 def run_worker_cycle(
@@ -384,6 +387,7 @@ def run_worker_cycle(
                 worker_summary=prev_worker_summary,
                 error_codes=("market_discovery_error",), last_success_at=last_success_at,
                 performance_summary=_preserved_summary(previous, "performance_summary") or None,
+                market_freshness=prev_freshness,
             )
             _carry_snapshot(payload, prev_seq, prev_generated, prev_freshness, prev_coverage)
             payload["heartbeat_at"] = float(now)
@@ -624,6 +628,7 @@ def run_worker_cycle(
                 now=now,
                 fallback=_preserved_summary(previous, "performance_summary"),
             ),
+            market_freshness=freshness,
         )
         payload["worker_summary"].update({
             "experiment_status": experiment_step.status,
@@ -635,6 +640,7 @@ def run_worker_cycle(
         payload["snapshot_generated_at"] = snapshot_generated
         payload["market_freshness"] = freshness
         payload["coverage"] = coverage
+        payload["freshness_summary"] = freshness_summary_payload(freshness)
         write_public_status(status_path, payload)
         return WorkerCycleResult(
             cycle_index=cycle_index,
@@ -671,6 +677,7 @@ def _write_cycle_failure_status(
             error_codes=("worker_cycle_error",),
             last_success_at=last_success_at,
             performance_summary=_preserved_summary(previous, "performance_summary") or None,
+            market_freshness=freshness,
         )
         _carry_snapshot(payload, seq, generated, freshness, {})
         payload["heartbeat_at"] = float(now)
