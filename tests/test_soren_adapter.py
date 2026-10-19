@@ -518,6 +518,82 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     adapter.readiness(time.monotonic() + 0.05, None)
             mock_urlopen.assert_not_called()
 
+    def test_readiness_blocks_on_mismatched_request_and_timeout_ack(self):
+        """#1969: new request + old expired timeout ack must NOT be treated as expired.
+
+        If broker ACK write fails after a new request is created, the payload
+        may contain a new request but an old expired timeout ack. The identity
+        (request_id, game, generation) must match, otherwise readiness must
+        not proceed (fail-closed).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            mismatched_payload = {
+                "request": {"schema": 1, "request_id": "req-new", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": time.time() + 3600,
+                            "deadline_at": "2030-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-old", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(mismatched_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_player_change_expiry_with_pause(self):
+        """#1969: player_change expiry with pause marker must NOT be treated as expired.
+
+        When player_change expires, the broker returns timeout (RC_EXPIRED)
+        but the shell side returns non-zero before clearing the pause marker.
+        The loop remains paused. Readiness must detect the pause marker and
+        not proceed, even if the ack is an expired timeout.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            player_change_expired_payload = {
+                "request": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past},
+                "resource": None,
+                "control": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
+                            "generation": 7, "operation": "player_change"},
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            # Create the pause marker file
+            pause_dir = Path(temp) / "tmp/state"
+            pause_dir.mkdir(parents=True, exist_ok=True)
+            (pause_dir / "soren_loop.paused").write_text("lifecycle:req-pc")
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(player_change_expired_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
     def test_materialize_fresh_starts_only_matching_stopped_request(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
