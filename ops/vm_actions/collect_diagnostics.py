@@ -160,8 +160,16 @@ MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
 # re-serializes it under a 64 KiB cap after adding its own metadata; exceeding
 # either fails the whole diagnostics operation closed. Detail reductions aim at
 # the softer MAX_JSON_BYTES target, and only the last-resort reductions below
-# fall back to this hard ceiling.
+# fall back to this hard ceiling. The ceiling is a guarantee, not a target: the
+# final step of ``_diagnostics_budget`` drops whole sections until the envelope
+# is under it, so the collector never returns a document the gateway rejects.
 HARD_JSON_BYTES = 56 * 1024
+# Heaviest-first drop order for the hard ceiling. ``corners`` is the largest
+# remaining block (measured 23,374 B of a 50,280 B production envelope, #2533),
+# so it goes first; the later entries only matter for a payload that is still
+# over the ceiling once the corner projections are gone.
+_HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
+                    "soren91_drop_profile")
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -9187,18 +9195,24 @@ def _collect_nethack_history(state_dir, now):
 def _nethack_history_budget(payload, *, keep_latest=False):
     """Trim oldest history first, keeping the latest of each source if possible."""
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    history = payload.get("nethack_history")
+    if not isinstance(history, dict):
+        # A section the hard ceiling already dropped has nothing to trim. Return
+        # the envelope unchanged so the drop order stays total instead of
+        # raising on the next pass (#2533).
+        return text
     while len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        sources = [payload["nethack_history"][name]
-                   for name in ("daily", "completed_runs")
-                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
+        sources = [history[name] for name in ("daily", "completed_runs")
+                   if isinstance(history.get(name), dict)
+                   and len(history[name].get("records") or []) > int(keep_latest)]
         if not sources:
             break  # Existing diagnostics retain their original budget handling.
         # Each source is newest-first. Exhaust older records before removing
         # either source's latest record; never mark an empty/missing source.
-        history = max(sources, key=lambda item: len(item["records"]))
-        history["records"].pop()
-        history["omitted_records"] += 1
-        history["output_omitted"] = True
+        heaviest = max(sources, key=lambda item: len(item["records"]))
+        heaviest["records"].pop()
+        heaviest["omitted_records"] = heaviest.get("omitted_records", 0) + 1
+        heaviest["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
 
@@ -9991,7 +10005,38 @@ def _diagnostics_budget(payload):
     # that #753 needs, so it must survive every softer reduction.
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         payload = _nethack_xlog_drop(payload)
-    return _nethack_history_budget(payload)
+    text = _nethack_history_budget(payload)
+    # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
+    # preserves the evidence its own incident review depends on, but none of them
+    # is unconditional: a payload that was still over the ceiling after them was
+    # returned as-is, and the gateway rejected the whole diagnostics operation
+    # closed ("diagnostics output too large") -- which is exactly how #2533 took
+    # the read-only diagnostics path down. Drop whole sections heaviest-first
+    # until the envelope fits, so the collector never hands the gateway a
+    # document it must reject. Each dropped section is marked, so the omission is
+    # visible in the envelope instead of looking like absent data.
+    for key in _HARD_DROP_ORDER:
+        if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+            break
+        if not isinstance(payload.get(key), dict):
+            continue
+        payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+        text = _nethack_history_budget(payload)
+    # Pathological fallback: a payload whose surviving sections are individually
+    # small but numerous. Drop the remaining top-level sections largest-first,
+    # keeping ``meta`` (the deployed SHA and collection status) so the envelope
+    # still identifies what it came from.
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        for key, value in sorted(
+                payload.items(),
+                key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
+            if key == "meta" or not isinstance(value, dict):
+                continue
+            payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+            text = _nethack_history_budget(payload)
+            if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+                break
+    return text
 
 
 def _collect_nethack_tiles(state_dir, now):
