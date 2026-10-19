@@ -137,7 +137,7 @@ receipt identity 検査・write-ahead state・復帰契約を同一に保つ。
 | `src/docich/corner_catalog.py` | `lawsim` 分岐（id=`communist-law-simulator` / game=`lawsim-view`、duration 1–14、fetch_on_start・audio_enabled 拒否） |
 | `src/docich/adapters/__init__.py` | `make_coordinator_adapter` へ `lawsim-view` を登録 |
 | `src/docich/webui.py` | `CORNER_MANUAL_STATE_FILES` へ `lawsim_corner` を追加（WebUI 手動予約・停止経路） |
-| `config/docich.soren-live.toml` | `[corner_rotation].corners` へ `enabled = true` で登録（自動抽選対象） |
+| `config/docich.soren-live.toml` | `[corner_rotation].corners` へ `enabled = true, manual_only = true` で登録（初回実走 slot 290 は 2026-10-18 実測。overlay の目視受入完了まで手動予約のみ。オーナー判断で自動抽選へ復帰可能） |
 
 - 表示: 960×540 標準ゲーム領域（全画面例外の weather/yosou 型には**しない**）。1 frame 12秒で start → 法案 → end を回転。合成シミュレーションマークと model caveat を常時表示。
 - 読み上げ（narration/TTS）は未配線。`audio_enabled=true` は catalog・adapter の両方で拒否する（follow-up）。

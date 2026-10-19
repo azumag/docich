@@ -109,7 +109,7 @@ DUPLICATES_FRESH_SEC = 600
 
 # Output bounds. The collector needs enough room for one 24 KiB manual
 # Soren91 evidence chunk after base64/JSON expansion; the gateway still applies
-# the stricter outer 48 KiB sanitized-JSON cap after adding its own metadata.
+# the stricter outer 64 KiB sanitized-JSON cap after adding its own metadata.
 MAX_RECENT_EVENTS = 20
 MAX_ERROR_PREVIEW_LEN = 200
 MAX_COMPONENTS = 10

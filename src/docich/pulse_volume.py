@@ -100,6 +100,53 @@ def parse_sink_inputs(text: str) -> list[dict]:
     return items
 
 
+
+def parse_source_outputs(text: str) -> list[dict]:
+    """Parse ``pactl list source-outputs`` output (recording/capture streams).
+
+    Mirrors :func:`parse_sink_inputs` but for source outputs: the header is
+    ``Source Output #N`` and the attached source is reported as ``Source:``.
+    The same sanitization rules apply (fixed role vocabulary, corked stays
+    absent when the daemon omits it, no pid/application passthrough beyond
+    the fixed application name).
+    """
+    items, cur = [], None
+    for line in text.splitlines():
+        m = re.match(r'^Source Output #(\d+)', line)
+        if m:
+            cur = {'index': int(m.group(1))}
+            items.append(cur)
+            continue
+        if cur is None:
+            continue
+        s = line.strip()
+        if s.startswith('Source:'):
+            cur['source'] = s.split(':', 1)[1].strip()
+        elif s.startswith('Mute:'):
+            cur['mute'] = s.split(':', 1)[1].strip() == 'yes'
+        elif s.startswith('Volume:'):
+            percents = [int(p) for p in re.findall(r'(\d+)%', s)]
+            if percents:
+                cur['volume_percent'] = percents
+        elif s.startswith('Corked:'):
+            value = s.split(':', 1)[1].strip()
+            if value in {'yes', 'no'}:
+                cur['corked'] = value == 'yes'
+        else:
+            m = re.match(r'application\.process\.id = "(\d+)"', s)
+            if m:
+                cur['pid'] = int(m.group(1))
+                continue
+            m = re.match(r'application\.name = "([^"\n]{1,48})"', s)
+            if m:
+                cur['application'] = m.group(1)
+                continue
+            m = re.match(r'media\.role = "([a-z]+)"', s)
+            if m and m.group(1) in MEDIA_ROLES:
+                cur['role'] = m.group(1)
+                continue
+    return items
+
 def sink_names(text: str) -> dict:
     out = {}
     for line in text.splitlines():

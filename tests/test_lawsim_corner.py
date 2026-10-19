@@ -106,12 +106,14 @@ def test_session_selection_rotates_deterministically_by_generation():
 # --- catalog and adapter identity contracts ---------------------------------
 
 
-def test_production_catalog_enables_lawsim_in_auto_rotation():
+def test_production_catalog_keeps_lawsim_manual_only_until_visual_acceptance():
+    # 2026-10-18 技術判断 (b): overlay の目視受入が完了するまで自動抽選から外し、
+    # WebUI 手動予約のみで実行する（初回実走 slot 290 は 2026-10-18 に実測済み）。
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     row = next(c for c in catalog if c.id == "communist-law-simulator")
     assert (row.adapter, row.game) == ("lawsim", VIEW_NAME)
-    assert row.enabled is True and row.manual_only is False
+    assert row.enabled is True and row.manual_only is True
     assert row.live_eligible is False and row.paused is False
     # duration_minutes 未指定 = lawsim_corner.DEFAULT_DURATION_MINUTES(3分) を使う。
     assert row.duration_minutes is None and row.audio_enabled is False
