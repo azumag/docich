@@ -1,10 +1,12 @@
 """Record Soren's settled 12-game predictions in the 予想王 leaderboard.
 
-Soren's ``twitch_predictions.sh resolve`` appends every settled Helix row to
+Soren's ``twitch_predictions.sh`` appends every settled Helix row to
 ``<soren_root>/tmp/state/prediction_resolved.jsonl`` (bounded, append-only, see
-``tools/prediction_resolved.py``). This module is the ledger side: the common
+``tools/prediction_resolved.py``): a ``RESOLVED`` row, and a ``CANCELED`` row
+that Soren annotated with the fixed ``no-contest`` refund reason when the
+prediction never formed a contest. This module is the ledger side: the common
 rotation timer reads that handoff and records new rounds through
-``prediction_leaderboard.record_resolved``, which owns the shared lock, the
+``prediction_leaderboard.record_settled``, which owns the shared lock, the
 atomic replace and the per-prediction idempotency.
 
 The module is read-only towards Soren: it never writes, starts or stops a Soren
@@ -18,7 +20,12 @@ from pathlib import Path
 import time
 
 from .game_switch import atomic_write_json
-from .prediction_leaderboard import LeaderboardError, extract, record_resolved
+from .prediction_leaderboard import (
+    CANCEL_REASONS,
+    LeaderboardError,
+    extract,
+    record_settled,
+)
 from .trading.soren_output import resolve_soren_root
 
 HANDOFF = Path("tmp/state/prediction_resolved.jsonl")
@@ -71,8 +78,19 @@ def read_handoff(path) -> list:
             row = json.loads(line)
         except ValueError:
             raise SorenPredictionError("handoff-invalid") from None
-        if (not isinstance(row, dict) or row.get("status") != "RESOLVED"
+        if (not isinstance(row, dict)
                 or not isinstance(row.get("id"), str) or not 1 <= len(row["id"]) <= MAX_TEXT):
+            raise SorenPredictionError("handoff-invalid")
+        if row.get("status") == "RESOLVED":
+            # A graded round must never carry a refund reason.
+            if row.get("cancel_reason") is not None:
+                raise SorenPredictionError("handoff-invalid")
+        elif row.get("status") == "CANCELED":
+            # 不成立キャンセルだけを参加実績として受け取る。理由は所有者 (Soren) が
+            # キャンセル時に固定語彙で主張したものだけ (Issue #933 §2.1)。
+            if row.get("cancel_reason") not in CANCEL_REASONS:
+                raise SorenPredictionError("handoff-invalid")
+        else:
             raise SorenPredictionError("handoff-invalid")
         try:
             extract(row)
@@ -127,7 +145,8 @@ def _record_new_rows(g, *, clock) -> dict:
     recorded = 0
     try:
         for row in rows:
-            if record_resolved(g.state_dir, row, corner="soren", now=int(clock())):
+            if record_settled(g.state_dir, row, corner="soren", now=int(clock()),
+                               cancel_reason=row.get("cancel_reason")):
                 recorded += 1
     except (LeaderboardError, OSError):
         # The handoff is untouched and the cursor does not advance, so the same
