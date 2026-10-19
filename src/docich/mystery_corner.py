@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import random
 import time
 import uuid
@@ -115,6 +116,60 @@ SESSION_ERRORS = frozenset({
     "case-generate-failed", "poll-create-failed", "poll-status-failed",
     "prediction-create-failed", "prediction-settle-failed", "view-write-failed",
 })
+
+#: Mystery-only display scope (#2494, owner approval 2026-10-20): while the
+#: case board owns the shared slot the OBS status rails are hidden, and every
+#: exit path shows them again. The notice overlay and all other corners keep
+#: their behavior; the control is best-effort and never fails the corner.
+STATUS_OVERLAY_SCENE = "soren"
+STATUS_OVERLAY_CONTROL_TIMEOUT_S = 10.0
+
+
+def _status_overlay_sources():
+    """OBS status-rail source names (soviet_now defaults, env-overridable)."""
+    return (
+        os.environ.get("STATUS_OVERLAY_SOURCE", "statsOverlay"),
+        os.environ.get("SHOW_STATUS_OVERLAY_SOURCE", "opsOverlay"),
+    )
+
+
+def _noop_status_overlay_control(_action, _source):
+    """Unwired default: direct construction and offline runs stay inert."""
+    return False
+
+
+def default_status_overlay_control(g):
+    """Best-effort ``control(action, source) -> bool`` via soviet_now's obs_control.
+
+    One reviewed OBS WebSocket wrapper call per source: the wrapper applies
+    sources sequentially and never rolls back an earlier one, so the caller
+    owns the per-source restore obligation (review P2-3).  The wrapper is a
+    no-op under ``EXPLORE_MODE=1`` on its own; no credential crosses this
+    boundary, and a failure is a display degradation only — never a corner
+    failure.
+    """
+    from .trading.soren_output import resolve_soren_root
+
+    def control(action, source):
+        if action not in ("hide", "show") or not source:
+            return False
+        import subprocess
+
+        try:
+            root = resolve_soren_root(g)
+            if not (Path(root) / "obs_control.sh").is_file():
+                return False
+            completed = subprocess.run(
+                ("./obs_control.sh", action, STATUS_OVERLAY_SCENE, source),
+                cwd=str(root),
+                timeout=STATUS_OVERLAY_CONTROL_TIMEOUT_S,
+                capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
+
+    return control
 
 
 class MysteryCornerError(RuntimeError):
@@ -206,7 +261,8 @@ class MysteryCornerManager:
                  audio_enabled=False, poll_client_factory=None,
                  prediction_client_factory=None, agents_fn=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0,
-                 poll_wait_poll_s=POLL_WAIT_POLL_S):
+                 poll_wait_poll_s=POLL_WAIT_POLL_S,
+                 status_overlay_control=None):
         if (type(duration_minutes) is not int
                 or not 1 <= duration_minutes <= MAX_DURATION_MINUTES):
             raise MysteryCornerError(
@@ -225,6 +281,12 @@ class MysteryCornerManager:
         self.prediction_client_factory = (
             prediction_client_factory or self._default_prediction_factory)
         self.agents_fn = agents_fn
+        if status_overlay_control is None:
+            status_overlay_control = _noop_status_overlay_control
+        if not callable(status_overlay_control):
+            raise MysteryCornerError(
+                "mystery status overlay control must be callable")
+        self.status_overlay_control = status_overlay_control
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
         self.store = GameSwitchStore(g.state_dir)
@@ -347,6 +409,9 @@ class MysteryCornerManager:
         }
 
     def _mark_interrupted(self, state, reason):
+        # Interrupted exits still hand the shared display back: show the
+        # status rails this corner hid before marking the state terminal.
+        self._release_status_overlays(state)
         state.update(status="interrupted", completed_at=self.clock(), end_reason=reason)
         state.pop("switch_request_id", None)
         state.pop("switch_status", None)
@@ -363,6 +428,67 @@ class MysteryCornerManager:
         from .corner_rotation import rotation_stop_requested
 
         return rotation_stop_requested(self.g, self.path)
+
+    # --- Status rails (mystery-only display scope, #2494) -------------------
+
+    def _hide_status_overlays(self, state):
+        """Hide the OBS status rails while the case board owns the slot.
+
+        Per-source and idempotent (review P2-3): the wrapper applies sources
+        sequentially without rollback, so the restore obligation is recorded
+        per source. The intent is persisted *before* the attempts — a crash
+        in between can only re-show an already visible rail — and a source
+        whose hide failed is dropped from the obligation instead of assuming
+        the whole call changed nothing.  A source already owed a restore
+        (carried over from an earlier request, review P2) stays as it is and
+        is not hidden a second time.
+        """
+        carried = state.get("status_overlay_hidden_sources")
+        carried = list(carried) if isinstance(carried, list) else []
+        sources = [source for source in _status_overlay_sources()
+                   if source not in carried]
+        if not sources:
+            return
+        state["status_overlay_hidden_sources"] = carried + list(sources)
+        self._save(state)
+        hidden = list(carried)
+        for source in sources:
+            try:
+                applied = bool(self.status_overlay_control("hide", source))
+            except Exception:
+                applied = False
+            if applied:
+                hidden.append(source)
+        if hidden:
+            state["status_overlay_hidden_sources"] = hidden
+        else:
+            state.pop("status_overlay_hidden_sources", None)
+        self._save(state)
+
+    def _release_status_overlays(self, state):
+        """Show the OBS status rails this corner still owes a restore for.
+
+        Per-source: every recorded source is shown once and dropped from the
+        obligation on success; a failed show stays recorded so a later entry
+        (terminal re-entry, recovery, or the next rotation) retries it
+        (review P2-1). Never raises.
+        """
+        pending = state.get("status_overlay_hidden_sources")
+        if not isinstance(pending, list) or not pending:
+            return
+        remaining = []
+        for source in pending:
+            try:
+                shown = bool(self.status_overlay_control("show", source))
+            except Exception:
+                shown = False
+            if not shown:
+                remaining.append(source)
+        if remaining:
+            state["status_overlay_hidden_sources"] = remaining
+        else:
+            state.pop("status_overlay_hidden_sources", None)
+        self._save(state)
 
     # --- Start dispatch (yoso shape) ---------------------------------------
 
@@ -568,6 +694,18 @@ class MysteryCornerManager:
                 or set(identity) != set(RUNTIME_IDENTITY_KEYS)
                 or identity.get("game") != VIEW_NAME):
             raise MysteryCornerError("mystery runtime owner identity is missing")
+        # The case board owns the shared slot for this run: hide the OBS
+        # status rails for the mystery corner only (#2494). Every exit path
+        # (restore completion or interruption) shows them again.  The hide
+        # is gated on the canonical ownership: re-opening a session whose
+        # slot was already moved away must not touch the next corner's rails
+        # (review P2-2) — a restore obligation recorded earlier is still
+        # released on the exit paths regardless.
+        canonical = self._canonical()
+        slot_lost = (canonical is not None and _stable(canonical)
+                     and not self._matches_active(canonical, identity))
+        if not slot_lost:
+            self._hide_status_overlays(state)
         session = self._session(state)
         try:
             case = self._case(session)
@@ -827,28 +965,37 @@ class MysteryCornerManager:
                 break
             row = next((item for item in fresh if item.get("id") == poll_id), row)
         votes = poll_choice_votes(row)
-        poll_view = self._poll_view(question, labels, values, row, votes)
-        if votes is None or sum(votes) <= 0:
+        # Decide the winner before building the final board payload so the
+        # audience sees which choice carried the vote (#2494 display path);
+        # a zero-vote poll still degrades to the seeded solo detective.
+        decided = votes is not None and sum(votes) > 0
+        winner = winning_choice(votes) if decided else None
+        if winner is not None and not 0 <= winner < len(values):
+            winner = None
+        poll_view = self._poll_view(question, labels, values, row, votes, winner=winner)
+        if not decided:
             return None, poll_view
         # Counters for the run ledger (trpg-core semantics, counts only).
         session["polls_held"] = (session.get("polls_held") or 0) + 1
         session["votes_total"] = (session.get("votes_total") or 0) + sum(votes)
-        winner = winning_choice(votes)
-        if winner is None or not 0 <= winner < len(values):
+        if winner is None:
             return None, poll_view
         return values[winner], poll_view
 
     @staticmethod
-    def _poll_view(question, labels, values, row, votes):
+    def _poll_view(question, labels, values, row, votes, *, winner=None):
         if votes is None:
             votes = []
         status = row.get("status") if isinstance(row, dict) else None
+        active = status == "ACTIVE"
         return {
             "question": question,
             "status": status if isinstance(status, str) else "unknown",
             "choices": [
                 {"label": label, "value": value,
-                 "votes": votes[index] if index < len(votes) else None}
+                 "votes": votes[index] if index < len(votes) else None,
+                 "active": active,
+                 "winner": winner is not None and index == winner}
                 for index, (value, label) in enumerate(zip(values, labels))
             ],
         }
@@ -1179,6 +1326,7 @@ class MysteryCornerManager:
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
             self._save(state)
+            self._release_status_overlays(state)
             self._clear_stop_request()
             return "completed"
         if canonical.get("phase") == "draining" and self._matches_active(canonical, identity):
@@ -1227,6 +1375,7 @@ class MysteryCornerManager:
         state.pop("switch_request_id", None)
         state.pop("switch_status", None)
         self._save(state)
+        self._release_status_overlays(state)
         self._clear_stop_request()
         return "completed"
 
@@ -1260,6 +1409,12 @@ class MysteryCornerManager:
     def run_rotation(self, request_id):
         request_id = self._request_id(request_id)
         state = self._read_state()
+        if state.get("status") in {"completed", "interrupted", "failed", "idle"}:
+            # A re-show that failed at a previous exit is retried on any
+            # entry over a terminal state — same-request re-entry, recovery,
+            # or the next rotation over this state file; once cleared, the
+            # later entries call nothing again (review P2-1).
+            self._release_status_overlays(state)
         if state.get("rotation_request_id") == request_id:
             status = state.get("status")
             if status in {"completed", "interrupted"}:
@@ -1288,9 +1443,16 @@ class MysteryCornerManager:
         else:
             if state.get("status") not in {"idle", "completed", "interrupted"}:
                 raise MysteryCornerError("another mystery execution owns the state")
+            # A restore the previous run still owes survives the state
+            # replacement: the next run keeps the obligation and retries it
+            # on its exit paths even if OBS was down when the old run ended
+            # (review P2).
+            pending = state.get("status_overlay_hidden_sources")
             state = self._new_state(request_id)
             if state is None:
                 return "queued"
+            if isinstance(pending, list) and pending:
+                state["status_overlay_hidden_sources"] = list(pending)
             if self._stop_requested():
                 return self._mark_interrupted(state, "operator-stopped-before-start")
             self._save(state)

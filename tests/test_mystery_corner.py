@@ -32,6 +32,7 @@ from docich.mystery_corner import (
     MAX_DURATION_MINUTES,
     MysteryCornerError,
     MysteryCornerManager,
+    _noop_status_overlay_control,
 )
 from docich.mystery_participation import load_ledger
 from docich.mystery_view import PAYLOAD_FILENAME, VIEW_NAME, read_payload
@@ -124,6 +125,22 @@ class FakePollClient:
         return [row] if row else []
 
 
+class ActiveThenCompletedPoll(FakePollClient):
+    """Helix-shaped poll fake: create → ACTIVE, the 2nd list() closes it."""
+
+    def __init__(self, votes):
+        super().__init__(votes=votes, status="ACTIVE")
+        self._listed = 0
+
+    def list(self, poll_id=None):
+        row = self.row
+        if poll_id and row and row.get("id") == poll_id:
+            self._listed += 1
+            if self._listed > 1:
+                row["status"] = "COMPLETED"
+        return super().list(poll_id)
+
+
 class FakePredictionClient:
     """Create → ACTIVE; end("LOCKED") simulates the crowd's bets landing."""
 
@@ -206,7 +223,8 @@ def _corner(duration=1, **overrides):
     return Corner("mystery", "mystery", VIEW_NAME, duration_minutes=duration, **overrides)
 
 
-def _adapter(g, corner, switch, now, sleep, *, poll_factory=None, prediction_factory=None):
+def _adapter(g, corner, switch, now, sleep, *, poll_factory=None, prediction_factory=None,
+             overlay_control=None):
     adapter = MysteryCornerAdapter(g, corner)
     manager = adapter.manager
     manager.coordinator = switch
@@ -214,6 +232,11 @@ def _adapter(g, corner, switch, now, sleep, *, poll_factory=None, prediction_fac
     manager.sleep = sleep
     manager.poll_s = 1.0
     manager.poll_wait_poll_s = 1.0
+    # Offline tests never drive OBS: the status-rail control stays inert
+    # unless a test injects a recording fake (#2494).
+    manager.status_overlay_control = (
+        overlay_control if overlay_control is not None
+        else _noop_status_overlay_control)
     if poll_factory is not None:
         manager.poll_client_factory = lambda _g: (poll_factory, None)
     else:
@@ -531,3 +554,347 @@ def test_mystery_session_persists_only_the_seed_and_publishes_a_verified_reveal(
     assert session.get("seed") == case.seed
     reveal_payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
     assert mystery_case.verify_reveal(reveal_payload["case"]["reveal"], case)
+
+
+# --- #2494: mystery-only status-rail scope + poll display path ---------------
+
+
+class RecordingOverlayControl:
+    """Offline stand-in for the per-source OBS rail control (records calls)."""
+
+    def __init__(self, fail=None):
+        self.calls = []
+        self.fail = set(fail or ())
+
+    def __call__(self, action, source):
+        self.calls.append((action, source))
+        return (action, source) not in self.fail
+
+
+def test_mystery_corner_hides_the_status_rails_only_while_the_board_is_live(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl()
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    # One hide per rail when the session takes the slot, one show per rail
+    # when the restore finishes; the durable obligation is cleared again.
+    assert control.calls == [("hide", "statsOverlay"), ("hide", "opsOverlay"),
+                             ("show", "statsOverlay"), ("show", "opsOverlay")]
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status"] == "completed"
+    assert "status_overlay_hidden_sources" not in state
+
+
+def test_mystery_corner_never_hides_the_rails_when_the_slot_was_already_moved(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl()
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    view_identity = state["mystery_runtime_identity"]
+
+    # An operator moves the shared slot away before the session re-enters.
+    moved = switch.switch("nsnake", payload={"expected_source": view_identity})
+    assert moved.status == "succeeded"
+
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    saved = json.loads(adapter.state_path.read_text())
+    assert saved["status"] == "interrupted"
+    assert saved["end_reason"] == "operator-moved-during-mystery"
+    # Review P2-2: mystery no longer owns the display, so the next corner's
+    # rails are never hidden and no restore obligation is created.
+    assert control.calls == []
+    assert "status_overlay_hidden_sources" not in saved
+
+
+def test_mystery_corner_restores_the_rails_when_the_operator_moves_mid_session(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl()
+    adapter = _adapter(g, _corner(), switch, now, lambda seconds: None,
+                       overlay_control=control)
+    request_id = str(uuid.uuid4())
+    state = adapter.manager._new_state(request_id)
+    adapter.manager._save(state)
+    assert adapter.manager._dispatch_start(state) is None
+    view_identity = state["mystery_runtime_identity"]
+
+    # The move lands while mystery still owns the display (between phases).
+    moves = {"done": False}
+
+    def sleep(seconds):
+        now[0] += seconds
+        if not moves["done"]:
+            moves["done"] = True
+            moved = switch.switch("nsnake", payload={"expected_source": view_identity})
+            assert moved.status == "succeeded"
+
+    adapter.manager.sleep = sleep
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    saved = json.loads(adapter.state_path.read_text())
+    assert saved["status"] == "interrupted"
+    assert saved["end_reason"] == "operator-moved-during-mystery"
+    # The rails hidden while mystery owned the display are handed back.
+    assert control.calls == [("hide", "statsOverlay"), ("hide", "opsOverlay"),
+                             ("show", "statsOverlay"), ("show", "opsOverlay")]
+    assert "status_overlay_hidden_sources" not in saved
+
+
+def test_mystery_corner_keeps_the_pending_sources_while_the_show_fails(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("show", "statsOverlay"),
+                                            ("show", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    # A failed re-show keeps the durable per-source obligation for a retry.
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status"] == "completed"
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+
+
+def test_mystery_corner_retries_the_pending_restore_on_re_entry(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("show", "statsOverlay"),
+                                            ("show", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    request_id = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+
+    # The same request re-enters (rotation retry / recovery): the pending
+    # restore is retried and cleared on success (review P2-1)...
+    control.fail.clear()
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 4      # two failed + two retried
+
+    # ...and once cleared, a later entry calls nothing again.
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 4
+
+
+def test_mystery_corner_carries_the_pending_restore_across_requests(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("show", "statsOverlay"),
+                                            ("show", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    first = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(first) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+
+    # A new request starts while OBS is still down: the state replacement must
+    # not wipe the old restore obligation (review P2), and the rails already
+    # hidden for this corner are not hidden a second time.
+    second = str(uuid.uuid4())
+    assert adapter.manager.run_rotation(second) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert state["rotation_request_id"] == second
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay", "opsOverlay"]
+    hides = [call for call in control.calls if call[0] == "hide"]
+    assert hides == [("hide", "statsOverlay"), ("hide", "opsOverlay")]
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 6      # failed re-shows: run 1 exit, run 2 entry + exit
+
+    # OBS recovers: the next entry restores each rail exactly once.
+    control.fail.clear()
+    assert adapter.manager.run_rotation(second) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 8
+
+    # ...and a further entry does not restore anything again.
+    assert adapter.manager.run_rotation(second) == "completed"
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert len(shows) == 8
+
+
+def test_mystery_corner_carries_only_the_owed_rail_and_hides_the_other(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("hide", "opsOverlay"),
+                                            ("show", "statsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    # statsOverlay hid but its re-show failed; opsOverlay never hid.
+    assert state["status_overlay_hidden_sources"] == ["statsOverlay"]
+
+    # The next request keeps the unpaid statsOverlay restore and still hides
+    # the rail it does not owe (opsOverlay).
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+    hides = [call for call in control.calls if call[0] == "hide"]
+    assert hides == [("hide", "statsOverlay"), ("hide", "opsOverlay"),
+                     ("hide", "opsOverlay")]
+
+    # Once OBS recovers, only the owed rail is restored — exactly once.
+    control.fail.clear()
+    request_id = json.loads(adapter.state_path.read_text())["rotation_request_id"]
+    assert adapter.manager.run_rotation(request_id) == "completed"
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+    shows = [call for call in control.calls if call[0] == "show"]
+    assert shows == [("show", "statsOverlay")] * 4
+
+
+def test_mystery_corner_never_shows_rails_it_did_not_hide(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("hide", "statsOverlay"),
+                                            ("hide", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    # Both hide attempts failed, so the obligation is dropped and no exit
+    # path shows rails this corner never hid.
+    assert control.calls == [("hide", "statsOverlay"), ("hide", "opsOverlay")]
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+
+
+def test_mystery_corner_keeps_partial_hide_obligation_per_source(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl(fail={("hide", "opsOverlay")})
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    # statsOverlay hid, opsOverlay failed: the exit restores exactly the
+    # source this corner actually changed (review P2-3) — the failed one is
+    # not assumed hidden, the successful one is not abandoned.
+    assert control.calls == [("hide", "statsOverlay"), ("hide", "opsOverlay"),
+                             ("show", "statsOverlay")]
+    state = json.loads(adapter.state_path.read_text())
+    assert "status_overlay_hidden_sources" not in state
+
+
+def test_mystery_corner_never_touches_the_status_rails_before_the_board_is_live(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    control = RecordingOverlayControl()
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep, overlay_control=control)
+    path = Path(g.state_dir) / STOP_REQUEST_DIR / "mystery_corner.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"state_file": "mystery_corner.json", "requested_at": now[0]}))
+
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    # A stop before the board ever went live never touches the rails.
+    assert control.calls == []
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status"] == "interrupted"
+
+
+def test_mystery_adapter_wires_the_real_status_rail_control(tmp_path):
+    g, _now, _factory, _store, _switch = _setup(tmp_path)
+    adapter = MysteryCornerAdapter(g, _corner(duration=5))
+    # The production adapter binds the obs_control-backed control; the no-op
+    # default only applies to direct manager construction (offline runs).
+    assert adapter.manager.status_overlay_control is not _noop_status_overlay_control
+
+
+def test_mystery_corner_displays_the_live_poll_and_its_winner_to_viewers(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path, duration=30)
+    poll = ActiveThenCompletedPoll(votes=[5, 1, 0, 0])
+    payloads = []
+
+    def sleep(seconds):
+        payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
+        if payload is not None:
+            payloads.append(payload)
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(duration=30), switch, now, sleep,
+                       poll_factory=poll)
+    adapter.manager.poll_wait_poll_s = 30.0
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    polls = [p["poll"] for p in payloads if p.get("poll")]
+    # While the vote is open the board shows the live poll (the viewers'
+    # participation line); after it closes the carried choice is marked.
+    assert any(p["status"] == "ACTIVE" and all(c["active"] for c in p["choices"])
+               for p in polls)
+    closed = [p for p in polls if p["status"] == "COMPLETED"]
+    assert closed
+    final = closed[-1]
+    assert final["choices"][0]["winner"] is True and final["choices"][0]["votes"] == 5
+    assert not any(choice["winner"] for choice in final["choices"][1:])
+    # The participation counters reach the run ledger (counts only).
+    ledger = load_ledger(Path(g.state_dir) / "mystery_history.json")
+    entry = ledger["entries"][0]
+    assert entry["polls"] == 2 and entry["votes_total"] == 12
+
+
+def test_mystery_corner_flags_off_shows_the_designed_solo_poll_state(
+        tmp_path, quiet_narration):
+    g, now, _factory, store, switch = _setup(tmp_path)
+    payloads = []
+
+    def sleep(seconds):
+        payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
+        if payload is not None:
+            payloads.append(payload)
+        now[0] += seconds
+
+    # poll/prediction factories stay disabled, the production-observed state.
+    adapter = _adapter(g, _corner(), switch, now, sleep)
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    polls = [p["poll"] for p in payloads if p.get("poll")]
+    # The "アンケートも予想も出ていない" run is the designed degradation: the
+    # board shows the solo state and keeps no poll identity in the session.
+    assert polls and all(p["status"] == "solo" for p in polls)
+    session = json.loads(adapter.state_path.read_text())["session"]
+    assert "investigate_poll_id" not in session
+    assert "interrogate_poll_id" not in session

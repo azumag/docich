@@ -868,7 +868,12 @@ class MysteryCornerAdapter:
     """
 
     def __init__(self, g, corner):
-        from .mystery_corner import DEFAULT_DURATION_MINUTES, MAX_DURATION_MINUTES, MysteryCornerManager
+        from .mystery_corner import (
+            DEFAULT_DURATION_MINUTES,
+            MAX_DURATION_MINUTES,
+            MysteryCornerManager,
+            default_status_overlay_control,
+        )
         from .mystery_view import VIEW_NAME
 
         if corner.game != VIEW_NAME or corner.live_eligible is not False:
@@ -880,6 +885,7 @@ class MysteryCornerAdapter:
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
             audio_enabled=corner.audio_enabled,
+            status_overlay_control=default_status_overlay_control(g),
         )
         if self.manager.duration_minutes > MAX_DURATION_MINUTES:
             raise CornerExecutionError("Mystery duration exceeds the reviewed bound")
