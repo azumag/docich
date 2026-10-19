@@ -377,9 +377,10 @@ def _summer_bonus_choice_band(screen: Screen) -> bool:
         return True
     x0, x1 = PROSE_COLUMNS
     # The choice label's tail can land exactly on the inner column boundary
-    # (x=232, measured g825 2ねん8がつ): the valid choice column runs through
-    # that cell, so the upper bound is inclusive. The response page's outer
-    # frame stays at x=248 and is still denied.
+    # (x=232): the tail is a real choice label cell, so the inner check must
+    # include it. The response page's outer frame stays at x=248 and is still
+    # denied. The x=232 case comes from a synthetic reproduction; the x=248
+    # outer-frame case comes from the measured g825 fixture.
     return any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
                for line in screen.lines)
 
