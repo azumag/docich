@@ -92,6 +92,33 @@ class HardCeilingTests(unittest.TestCase):
         ))
         self.assertEqual(payload["storage_artifacts"]["status"], "output_omitted")
 
+    def test_the_cheapest_evidence_yields_before_the_corner_projections(self):
+        # The guarantee must not be a blunt instrument: the reviewed cascade
+        # yields the cheapest evidence first, and the corner projections are the
+        # largest block, so they are the last thing to go. Build an envelope
+        # just over the ceiling -- dropping retro_scores alone brings it back
+        # under, so the corner projections have to survive.
+        payload = production_scale_payload(
+            corners={
+                "retro_corner": {"scene_narration": {"status": "ok"}},
+                "rotation_evidence": {"corners": [
+                    {"corner": f"corner-{index}", "detail": "x" * 64}
+                    for index in range(520)
+                ]},
+                "retro_scores": {"games": {"bastet": {"records": [
+                    {"score": index, "detail": "x" * 64} for index in range(40)
+                ]}}},
+            },
+        )
+        before = len(json.dumps(payload, sort_keys=True,
+                                ensure_ascii=False).encode("utf-8"))
+        self.assertGreater(before, self.module.HARD_JSON_BYTES)
+        text = self.module._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")), self.module.HARD_JSON_BYTES)
+        self.assertEqual(payload["corners"]["retro_scores"],
+                         {"status": "output_omitted"})
+        self.assertIn("rotation_evidence", payload["corners"])
+
     def test_a_normal_envelope_is_left_alone(self):
         # The guarantee must not fire on the production envelope: measured
         # 50,280 B, it sits under the 56 KiB ceiling and every corner
