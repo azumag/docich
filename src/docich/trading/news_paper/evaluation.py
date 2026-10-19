@@ -818,6 +818,7 @@ def _compute_digests(
         "latency_total_p95_ms": result_arm.latency.total_ms_p95,
         "latency_stage_medians": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_median_ms.items()},
         "latency_stage_p95": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_p95_ms.items()},
+        "latency_missing_stages": sorted(result_arm.latency.missing_stages),
     }
     eval_digest = hashlib.sha256(
         json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
@@ -906,19 +907,34 @@ def run_evaluation(
         limitations.append("empty_equity_series_unverifiable")
 
     # Check min_coverage_fraction - if we can't compute coverage, mark as unknown/remaining
-    # Coverage requires actual observation window data; here we use data_gaps as proxy
+    # Coverage requires actual observation window data; here we use data_gaps/observation_missing as proxy
     # If coverage fraction is required but we have gaps, it's a remaining item
     if manifest.min_coverage_fraction > 0:
         # We can't compute actual coverage without full observation data
         # Mark as unknown/remaining unless we have explicit coverage data
         # Need actual observation data: unique_eligible_events > 0 AND data_gaps_seconds < window_duration
+        # For min_coverage_fraction >= 1.0 (100%), any gap (observation_missing or data_gaps) should fail
         window_duration = manifest.eval_end_ts - manifest.eval_start_ts
-        has_coverage_data = (
-            arm_a.news_util.unique_eligible_events > 0 and
-            arm_b.news_util.unique_eligible_events > 0 and
-            arm_a.data_gaps_seconds < window_duration and
-            arm_b.data_gaps_seconds < window_duration
-        )
+        if manifest.min_coverage_fraction >= 1.0:
+            # 100% coverage requires zero gaps
+            has_coverage_data = (
+                arm_a.news_util.unique_eligible_events > 0 and
+                arm_b.news_util.unique_eligible_events > 0 and
+                arm_a.data_gaps_seconds == 0 and
+                arm_b.data_gaps_seconds == 0 and
+                arm_a.news_util.observation_missing_seconds == 0 and
+                arm_b.news_util.observation_missing_seconds == 0
+            )
+        else:
+            # Partial coverage allows some gaps but less than window duration
+            has_coverage_data = (
+                arm_a.news_util.unique_eligible_events > 0 and
+                arm_b.news_util.unique_eligible_events > 0 and
+                arm_a.data_gaps_seconds < window_duration and
+                arm_b.data_gaps_seconds < window_duration and
+                arm_a.news_util.observation_missing_seconds == 0 and
+                arm_b.news_util.observation_missing_seconds == 0
+            )
         if not has_coverage_data:
             remaining_items += 1
             limitations.append("coverage_fraction_unverifiable (missing observation data or full window gaps)")
