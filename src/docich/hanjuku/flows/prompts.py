@@ -59,9 +59,10 @@ def readable_prose_screen(screen: Screen) -> bool:
     """
     if screen.kind != 'text' or screen.hand is not None:
         return False
-    if any(176 <= line.y <= 207 for line in screen.lines):
-        return False
     x0, x1 = PROSE_COLUMNS
+    if any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+           for line in screen.lines):
+        return False
     readable = False
     for line in screen.lines:
         if line.y not in PROSE_ROWS:
@@ -76,7 +77,7 @@ def readable_prose_screen(screen: Screen) -> bool:
 
 
 def _trade_choice_pair(options):
-    band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
+    band = [(x, y, word) for x, y, word in options if 176 <= y <= 208]
     pairs = []
     for yes, no in TRADE_CHOICE_PAIRS:
         accepts = [row for row in band if row[2] == yes]
@@ -144,7 +145,9 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if screen.kind not in ('text', 'unknown'):
         return None
     options = _options(screen)
-    pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
+    pair = (None if any(UNKNOWN in line.text for line in screen.lines
+                      if 176 <= line.y <= 208
+                      and any(PROSE_COLUMNS[0] <= x <= PROSE_COLUMNS[1] for x, _ in line.cells))
             else _trade_choice_pair(options))
     labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
     if (guard.get('choice_seen') and readable_prose_screen(screen)
@@ -155,7 +158,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
         return None
     suspect_choice = (screen.hand is not None or pair is not None
                       or any(word in labels for _, _, word in options)
-                      or any(176 <= y <= 207 and not (
+                      or any(176 <= y <= 208 and not (
                           _trade_named_general(word) or any(tok in word for tok in TRADE_GUARD_TOKENS))
                              for _, y, word in options))
     if suspect_choice:
@@ -270,7 +273,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
                         reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
             return []
         return None
-    band = [word for _, y, word in _options(screen) if 176 <= y <= 207 and word]
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 208 and word]
     if screen.hand is None and not band:
         return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
     guard['choice_seen'] = True
