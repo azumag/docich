@@ -269,6 +269,19 @@ class DiagnosticsSanitizerTests(unittest.TestCase):
             gateway._sanitize_diagnostics({"status": "ok", "bad": object()})
 
 
+class DiagnosticsJsonCapTests(unittest.TestCase):
+    def test_cap_raised_to_64kib_and_reason_code_mapped(self):
+        gateway = load_gateway()
+        self.assertEqual(gateway.DIAGNOSTICS_JSON_MAX, 65536)
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics output too large")),
+            "diagnostics_output_too_large",
+        )
+        # Boundary: the cap is exclusive on the > side.
+        self.assertFalse(65536 > gateway.DIAGNOSTICS_JSON_MAX)
+        self.assertTrue(65537 > gateway.DIAGNOSTICS_JSON_MAX)
+
+
 class DiagnosticsAuthorizeTests(unittest.TestCase):
     def run_auth(self, **overrides):
         env = {

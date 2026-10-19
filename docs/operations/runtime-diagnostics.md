@@ -506,10 +506,10 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
   本projectionは固定の出力予算（36KiB）を超えても保持する。1KiB未満で固定・
   自動利用無く、「進んでいるcornerか同じ操作のループか」だけを区別できる唯一の
-  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後48KiB）に近づく場合
+  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後64KiB）に近づく場合
   のみstatus=output_omittedへ置き換える（`HARD_JSON_BYTES` = 56KiB）。
 - 出力予算とcpu_profile: 固定envelope（`runtime_registry.MAX_JSON_BYTES` = 36KiB）は
-  gatewayの48KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
+  gatewayの64KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
   base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
   予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
   `cpu_profile`の行・Soren91のgroup・`scene_narration`・`hanjuku_tactical`・
@@ -531,7 +531,7 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   保証ではないため、lists が全削除されても上位消費と spawn 経路は読める
   （azumag/docich#970）。
   縮めても収まらない場合の最終形は budget を超えるが、
-  gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
+  gatewayのstdout 64KiB・sanitize後64KiB capが仍然として最終防御となる。
   profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
