@@ -164,6 +164,7 @@ def freshness_summary_payload(
 ) -> dict[str, object]:
     """Aggregate per-market freshness into a compact, allowlisted summary."""
     counts = {"fresh": 0, "stale": 0, "missing": 0, "invalid": 0}
+    reason_counts: dict[str, int] = {}
     stale_symbols: list[str] = []
     missing_symbols: list[str] = []
     for symbol, entry in (market_freshness or {}).items():
@@ -173,6 +174,9 @@ def freshness_summary_payload(
         if quality not in counts:
             quality = "invalid"
         counts[quality] += 1
+        reason = str(entry.get("reason_code") or "").strip()
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
         if quality == "stale":
             stale_symbols.append(str(symbol))
         elif quality in {"missing", "invalid"}:
@@ -184,6 +188,7 @@ def freshness_summary_payload(
         "stale": counts["stale"],
         "missing": counts["missing"],
         "invalid": counts["invalid"],
+        "reason_counts": dict(sorted(reason_counts.items())),
         "stale_symbols": sorted(stale_symbols),
         "unavailable_symbols": sorted(missing_symbols),
     }
