@@ -14,9 +14,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
 
+# The gateway adds its own metadata (bundle_storage, projection review, ops
+# brief projection) on top of the collector's envelope. Production measured
+# +465 B; the allowance is deliberately generous so that future metadata growth
+# does not silently invert the two caps (#2533).
+GATEWAY_METADATA_ALLOWANCE = 4096
+
 
 def load_collector():
     spec = importlib.util.spec_from_file_location("collect_diagnostics", str(COLLECTOR))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_gateway():
+    spec = importlib.util.spec_from_file_location(
+        "gateway", str(ROOT / "ops" / "vm_actions" / "gateway.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -90,6 +104,20 @@ class HardCeilingTests(unittest.TestCase):
         self.assertLessEqual(len(text.encode("utf-8")), self.module.HARD_JSON_BYTES)
         self.assertNotIn("status", payload["corners"])
         self.assertEqual(payload["corners"]["rotation_evidence"], {"corners": []})
+
+    def test_hard_ceiling_leaves_headroom_for_gateway_metadata(self):
+        # ``HARD_JSON_BYTES`` (collector) and ``DIAGNOSTICS_JSON_MAX`` (gateway)
+        # are independent constants in different files, and #2533 was caused by
+        # exactly that gap: the gateway re-serializes this envelope after adding
+        # its own metadata, so a ceiling at or above the gateway cap fails the
+        # whole operation closed. Guard the ordering mechanically instead of
+        # relying on both sides being edited together.
+        gateway = load_gateway()
+        self.assertLessEqual(
+            self.module.HARD_JSON_BYTES + GATEWAY_METADATA_ALLOWANCE,
+            gateway.DIAGNOSTICS_JSON_MAX,
+            "collector hard ceiling plus gateway metadata must stay under "
+            "DIAGNOSTICS_JSON_MAX; #2533 recurred when the two drifted apart")
 
 
 if __name__ == "__main__":
