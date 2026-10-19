@@ -11,7 +11,7 @@ import collections
 import hashlib
 import re
 
-from .font import UNKNOWN, TextLine, dark, joined, light, read_lines, row_masks
+from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks
 from .pixels import Frame
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
@@ -291,6 +291,8 @@ class Screen:
     disabled_item_box: bool = False
     priest_ritual_scene: bool = False
     priest_ritual_dialogue: bool = False
+    # Positive pixel evidence only; raw lines retain all unknown message cells.
+    prose_attached_marks: frozenset[tuple[int, int]] = frozenset()
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -716,6 +718,9 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'text':
+        screen.prose_attached_marks = attached_mark_cells(
+            frame, screen.lines, rect=(24, 135, 232, 176), masks=masks)
     if screen.kind not in _KNIGHT_MENU_KINDS and not _card_picker_rows(screen):
         # Palette pixels beside dialogue words are not a command cursor
         # (g745: the God's dialogue contributed nine knight-colour pixels).
