@@ -3,4 +3,4 @@
 Bump it with every behaviour change so production logs show which policy
 produced a decision (the bot is hot-loaded per observation).
 """
-BOT_VERSION = 'hanjuku-chart-v239-map-bootstrap-source-guard'
+BOT_VERSION = 'hanjuku-chart-v240-map-identity-hold'

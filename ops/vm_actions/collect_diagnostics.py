@@ -4082,6 +4082,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v237-clash-gauge-dropper-carry",
             "hanjuku-chart-v238-native-map-registration",
             "hanjuku-chart-v239-map-bootstrap-source-guard",
+            "hanjuku-chart-v240-map-identity-hold",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

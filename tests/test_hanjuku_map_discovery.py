@@ -13,7 +13,7 @@ from docich.hanjuku.flows import map_registration as survey
 from docich.hanjuku.orchestrator import decide, NO_INPUT_HOLD_MAX
 from docich.hanjuku.strategy import campaign
 from docich.hanjuku_pixels import read_png
-from docich.hanjuku_screen import parse, castle_roofs
+from docich.hanjuku_screen import Screen, parse, castle_roofs
 from test_hanjuku_chart_bot import Canvas
 
 IDENTITY = {'game': 'hanjuku-hero', 'generation': 900,
@@ -97,6 +97,67 @@ def initial_route_receipt():
     feed(mem, status('グリン')); feed(mem, status('グリン'))
     feed(mem, field(GRIN))  # close the inspection transaction
     return mem
+
+
+def caller_adopted_interim():
+    """Use the real request/adoption path; plant geography, never an order."""
+    mem = home_receipt()
+    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    proof = mem['map_registration']['castles']['アルマムーン']
+    positions = {n: (400+64*i, 400+48*i) for i, n in enumerate(SOURCE_CASTLES[3])}
+    positions.update(アルマムーン=HOME, グリン=GRIN)
+    mem['map_registration']['castles'] = {
+        n: {**proof, 'name': n, 'position': list(p)} for n, p in positions.items()}
+    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
+    _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
+    pending = state['policy']['chart_adjust']
+    assert pending['interim_wanted'] is True
+    with chart.map_context(state['policy']):
+        candidates = policy.interim_candidates(state['policy'])
+    label = next(k for k, o in candidates.items() if o['target'] == 'グリン')
+    answer = {'request_id': pending['request_id'], 'seq': pending.get('interim_count', 0),
+              'status': 'ok', 'choice': label, 'confidence': 1.0}
+    _, state = decide(field(), state, run_identity=IDENTITY, interim=answer)
+    active = state['policy']['active']
+    assert active.startswith('I:')
+    assert state['policy']['chart_adjust']['interim_order']['step'] == active
+    assert any(r['decision'] == 'chart_interim_order' for r in state['_records'])
+    return state, active
+
+
+@pytest.mark.parametrize('identity', [None, {}, {**IDENTITY, 'game': 'other'},
+                                     {**IDENTITY, 'lease_id': ''}])
+def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(identity):
+    state, active = caller_adopted_interim()
+    actions, updated = decide(field(), state, run_identity=identity)
+    assert actions == []
+    assert updated['policy'].get('active') is None
+    assert updated['policy']['orders'].get(active) in (None, 'pending')
+    assert not updated['policy'].get('sorties')
+    with chart.map_context(updated['policy']):
+        assert not chart.castles(3)
+
+
+def test_real_interim_caller_keeps_registered_order_with_the_same_valid_identity():
+    state, active = caller_adopted_interim()
+    _, updated = decide(field(), state, run_identity=IDENTITY)
+    assert updated['policy']['active'] == active
+    with chart.map_context(updated['policy']):
+        assert len(chart.castles(3)) == 9
+
+
+def test_adopted_interim_target_never_indexes_an_identity_invalidated_map():
+    state, active = caller_adopted_interim()
+    mem = state['policy']
+    mem['_run_identity'] = None
+    screen = Screen([], None, '', kind='map_target', marker=GRIN)
+    with chart.map_context(mem):
+        assert policy.target_step(screen, mem, field()) == []
+    assert mem['active'] is None and mem['_map_registration_hold'] is True
+    assert mem['orders'].get(active) in (None, 'pending')
+    assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'
 
 
 def test_follow_general_never_overrides_to_an_unregistered_observed_castle():

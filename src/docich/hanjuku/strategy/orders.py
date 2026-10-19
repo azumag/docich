@@ -140,9 +140,10 @@ def _boss_target_unlocked(order, mem):
 
 
 def _ready(order, mem) -> bool:
-    if mem.get('_run_identity') is not None:
+    if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
+        # decide() always supplies this key: None must not opt out of checks.
         cells = chart.castles(mem.get('chapter') or 0)
         if _source(order, mem) not in cells or order.get('target') not in cells:
             return False
