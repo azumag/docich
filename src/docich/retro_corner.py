@@ -3524,7 +3524,7 @@ class RetroCornerManager:
                 return CornerResult(
                     "noop",
                     game=target,
-                    detail="canonical stateがrecovery_requiredのためcorner-side復旧はスキップします。rotation側がlatchを解除します",
+                    detail="canonical stateがrecovery_requiredのためcorner-side復旧はスキップします。rotation側で復旧可否を判定します",
                 )
             if phase == "failed":
                 recovered = self._recover_canonical_failure()

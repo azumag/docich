@@ -1164,7 +1164,7 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         """#1983: recover_failed() must return 'noop' (not 'failed') when the
         canonical phase is 'recovery_required', so that the
         recover_corner_rotation.sh script proceeds to step 2 (corner-rotation
-        recover) which actually clears the rotation latch."""
+        recover) which allows rotation-side recovery assessment."""
         mgr, coordinator = self.manager(["sorengame"])
         request_id = str(uuid.uuid4())
         state = mgr._default_state()
