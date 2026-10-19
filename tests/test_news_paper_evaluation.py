@@ -573,5 +573,118 @@ class TestFixturesHandCalculation(unittest.TestCase):
         self.assertEqual(metrics.data_gaps_seconds, 900)
 
 
+class TestReviewResiduals(unittest.TestCase):
+    """Regression tests for review residuals: coverage evidence, digest scope, export consistency."""
+
+    def setUp(self):
+        self.now = dt.datetime.fromisoformat("2026-09-16T09:30:00+09:00").timestamp()
+
+    def _manifest(self, **kw):
+        base = dict(
+            eval_start_ts=self.now, eval_end_ts=self.now + 100,
+            min_coverage_fraction=0.8,
+            ledger_revision="rev1", evidence_digest="evi1",
+            classification_version="cls1", price_version="prc1",
+            risk_version="risk1", cost_version="cst1",
+            execution_version="exe1", policy_version="pol1",
+            model_version="mdl1",
+        )
+        base.update(kw)
+        return EvaluationManifest(**base)
+
+    def _news(self, **extra):
+        ev = {"event_id": "evt1", "eligible": True, "used_for_signal": True,
+              "used_for_decision": True, "valid": True, "duplicate": False,
+              "held": False, "rejected": False, "match_type": "human",
+              "data_gap_seconds": 0, "observation_gap_seconds": 0}
+        ev.update(extra)
+        return ev
+
+    def test_observation_field_missing_fails_closed(self):
+        """Missing observation_gap_seconds key must NOT be treated as zero observation."""
+        news = [self._news()]
+        del news[0]["observation_gap_seconds"]
+        r = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        self.assertEqual(r.pass_fail_skip, "fail")
+        self.assertGreaterEqual(r.remaining_items, 1)
+
+    def test_observation_field_present_passes(self):
+        """Normal case with explicit zero observation evidence passes."""
+        news = [self._news()]
+        r = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        self.assertEqual(r.pass_fail_skip, "pass")
+        self.assertEqual(r.remaining_items, 0)
+
+    def test_coverage_100_with_gaps_fails(self):
+        """min_coverage=1.0 with any gap fails."""
+        news = [self._news(observation_gap_seconds=1)]
+        r = run_evaluation(
+            self._manifest(min_coverage_fraction=1.0), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        self.assertEqual(r.pass_fail_skip, "fail")
+
+    def test_cost_change_changes_eval_digest(self):
+        """Cost parameter change must change evaluation_digest."""
+        news = [self._news()]
+        cb_a = CostBreakdown(total_operating_cost_jpy=D("0"))
+        cb_b = CostBreakdown(total_operating_cost_jpy=D("100"))
+        r_a = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            cb_a, cb_a, PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        r_b = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            cb_b, cb_b, PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        self.assertNotEqual(r_a.arm_a.evaluation_digest, r_b.arm_a.evaluation_digest)
+
+    def test_latency_change_changes_eval_digest(self):
+        """Latency change must change evaluation_digest."""
+        news = [self._news()]
+        lat_a = [{"published_at": self.now, "fetched_at": self.now + 0.01,
+                  "available_at": self.now + 0.02, "classified_at": self.now + 0.03,
+                  "decided_at": self.now + 0.04, "filled_at": self.now + 0.05}]
+        lat_b = [{"published_at": self.now, "fetched_at": self.now + 0.02,
+                  "available_at": self.now + 0.04, "classified_at": self.now + 0.06,
+                  "decided_at": self.now + 0.08, "filled_at": self.now + 0.10}]
+        r_a = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, lat_a, news,
+            [], [(self.now, D("1000"))], {}, lat_a, news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        r_b = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, lat_b, news,
+            [], [(self.now, D("1000"))], {}, lat_b, news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        self.assertNotEqual(r_a.arm_a.evaluation_digest, r_b.arm_a.evaluation_digest)
+
+    def test_export_contains_eval_digest(self):
+        """Export must carry the same evaluation_digest as the result."""
+        news = [self._news()]
+        r = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            PolicyTracking(independent_events=15), D("1000"), D("1000"), "cmd")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "eval.json"
+            export_evaluation(r, out)
+            data = json.loads(out.read_text())
+        self.assertEqual(data["arm_a"]["evaluation_digest"], r.arm_a.evaluation_digest)
+        self.assertEqual(data["arm_b"]["evaluation_digest"], r.arm_b.evaluation_digest)
+        self.assertNotEqual(data["arm_a"]["evaluation_digest"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,7 @@ class NewsUtilization:
     duplicate_events: int = 0
     held_rate: float = 0.0
     rejected_rate: float = 0.0
+    observation_evidence_missing: bool = False
     rejection_reasons: dict[str, int] = field(default_factory=dict)
     observation_missing_seconds: float = 0.0
     unknown_match: int = 0
@@ -583,6 +584,24 @@ def _compute_eval_digest(
         "episodes": arm.completed_episodes,
         "wins": arm.wins,
         "turnover": arm.turnover,
+        "cost_allocation_method": arm.cost_breakdown.cost_allocation_method,
+        "commission_jpy": str(arm.cost_breakdown.commission_jpy),
+        "slippage_jpy": str(arm.cost_breakdown.slippage_jpy),
+        "financing_jpy": str(arm.cost_breakdown.financing_jpy),
+        "llm_api_cost_jpy": str(arm.cost_breakdown.llm_api_cost_jpy),
+        "data_api_cost_jpy": str(arm.cost_breakdown.data_api_cost_jpy),
+        "total_trading_cost_jpy": str(arm.cost_breakdown.total_trading_cost_jpy),
+        "total_operating_cost_jpy": str(arm.cost_breakdown.total_operating_cost_jpy),
+        "exit_commission_bps": str(arm.cost_breakdown.exit_commission_bps),
+        "exit_slippage_bps": str(arm.cost_breakdown.exit_slippage_bps),
+        "held_rate": arm.news_util.held_rate,
+        "rejected_rate": arm.news_util.rejected_rate,
+        "unique_eligible": arm.news_util.unique_eligible_events,
+        "latency_missing_stages": arm.latency.missing_stages,
+        "latency_stage_median": arm.latency.stage_median_ms,
+        "latency_stage_p95": arm.latency.stage_p95_ms,
+        "latency_total_median": arm.latency.total_ms_median,
+        "latency_total_p95": arm.latency.total_ms_p95,
     }
     return hashlib.sha256(
         json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
@@ -639,6 +658,7 @@ def build_arm_metrics(
             reason = e.get("rejection_reason", "unknown")
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
     obs_missing = sum(e.get("observation_gap_seconds", 0) for e in news_events)
+    observation_evidence_missing = any("observation_gap_seconds" not in e for e in news_events)
     unknown_match = len([e for e in news_events if e.get("match_type") == "unknown"])
     human_match = len([e for e in news_events if e.get("match_type") == "human"])
     partial = len([f for f in fills if f.partial])
@@ -661,6 +681,7 @@ def build_arm_metrics(
         duplicate_events=duplicate,
         held_rate=len(held_events) / unique_eligible_count if unique_eligible_count > 0 else 0.0,
         rejected_rate=len(rejected_events) / unique_eligible_count if unique_eligible_count > 0 else 0.0,
+        observation_evidence_missing=observation_evidence_missing,
         rejection_reasons=rejection_reasons,
         observation_missing_seconds=obs_missing,
         unknown_match=unknown_match,
@@ -726,7 +747,10 @@ def build_arm_metrics(
                    win_rate=win_rate,
                    open_positions=len(positions),
                    turnover=turnover,
-                   avg_equity_jpy=avg_equity))
+                   avg_equity_jpy=avg_equity,
+                   cost_breakdown=cost_breakdown,
+                   latency=latency,
+                   news_util=news_util))
 
     metrics = ArmMetrics(
         label=label,
@@ -920,20 +944,27 @@ def run_evaluation(
             has_coverage_data = (
                 arm_a.news_util.unique_eligible_events > 0 and
                 arm_b.news_util.unique_eligible_events > 0 and
+                not arm_a.news_util.observation_evidence_missing and
+                not arm_b.news_util.observation_evidence_missing and
                 arm_a.data_gaps_seconds == 0 and
                 arm_b.data_gaps_seconds == 0 and
                 arm_a.news_util.observation_missing_seconds == 0 and
                 arm_b.news_util.observation_missing_seconds == 0
             )
         else:
-            # Partial coverage allows some gaps but less than window duration
+            # Partial coverage: gaps must fit within (1 - coverage) * window_duration
+            _allowed = (D(str(1.0)) - D(str(manifest.min_coverage_fraction))) * D(str(window_duration))
+            allowed_gap_a = float(_allowed)
+            allowed_gap_b = float(_allowed)
             has_coverage_data = (
                 arm_a.news_util.unique_eligible_events > 0 and
                 arm_b.news_util.unique_eligible_events > 0 and
-                arm_a.data_gaps_seconds < window_duration and
-                arm_b.data_gaps_seconds < window_duration and
-                arm_a.news_util.observation_missing_seconds == 0 and
-                arm_b.news_util.observation_missing_seconds == 0
+                not arm_a.news_util.observation_evidence_missing and
+                not arm_b.news_util.observation_evidence_missing and
+                arm_a.data_gaps_seconds <= allowed_gap_a and
+                arm_b.data_gaps_seconds <= allowed_gap_b and
+                arm_a.news_util.observation_missing_seconds <= allowed_gap_a and
+                arm_b.news_util.observation_missing_seconds <= allowed_gap_b
             )
         if not has_coverage_data:
             remaining_items += 1
