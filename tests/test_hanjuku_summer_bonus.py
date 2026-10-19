@@ -483,3 +483,24 @@ def test_a_lone_third_choice_row_is_still_the_menu(monkeypatch):
     assert actions == [p.pad('up')]
     assert state['screen_kind'] == 'summer_bonus'
     assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_the_tail_cell_of_the_third_choice_stays_protected(monkeypatch):
+    """A lone tail cell at x=232/y208 is the まとめて解雇 label, not a response.
+
+    The choice label's tail lands exactly on the inner-column boundary, so the
+    outer-frame exclusion must not drop it; otherwise a menu with only that
+    cell left would be misread as the post-choice response page and A would
+    be sent. x=224 is the control that already stayed protected.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    for x in (224, 232):
+        c = Canvas((16, 72, 57))
+        c.text(8, 8, '5ねん8のつき7572G')
+        c.text(24, 150, 'どちらにする')
+        c.tile(x, 208, 0x0123456789ABCDEF)
+        actions, state2 = decide(c.frame(), state)
+        assert actions == [p.pad('up')], (x, actions)
+        assert state2['screen_kind'] == 'summer_bonus'
+        assert state2['policy']['summer_bonus_plan']['target'] == 'vacation'
