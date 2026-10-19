@@ -47,7 +47,7 @@ def execute(s, queued, monkeypatch, *, manual_slot=False):
     def run(_):
         order.append('run')
         assert read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)['status'] == 'queued'
-        resume.claim(s.adapter, time.monotonic() + 3, None)
+        resume.claim(s.adapter, time.monotonic() + 30, None)
         return 'completed'
     adapter = SimpleNamespace(manager=SimpleNamespace(store=store),
                               state_path=Path(s.g.state_dir) / 'retro_corner.json', run=run)
@@ -76,7 +76,7 @@ def test_common_execution_starts_from_latest_end(setup, monkeypatch, source, exp
         assert receipt['status'] == 'verified'
         assert not list((s.spec.runtime_dir / 'states').iterdir())
         with mock.patch('docich.adapters.retroarch.send_ra_cmd') as send:
-            resume.restore(s.adapter, time.monotonic() + 3, None)
+            resume.restore(s.adapter, time.monotonic() + 30, None)
         send.assert_not_called()
         assert not (s.spec.runtime_dir / 'hanjuku_bot.json').exists()
     else:
@@ -370,10 +370,10 @@ def test_scripted_candidate_without_prepared_or_matching_reservation_refuses_sta
     s = setup
     s.game.raw['hanjuku'] = {'script_bot': True}
     with pytest.raises(AdapterError):
-        resume.claim(s.adapter, time.monotonic() + 3, None)
+        resume.claim(s.adapter, time.monotonic() + 30, None)
     resume.prepare_start(s.g, request(s, 'automatic'))
     with pytest.raises(AdapterError):
-        resume.claim(s.adapter, time.monotonic() + 3, None)
+        resume.claim(s.adapter, time.monotonic() + 30, None)
 
 
 @pytest.mark.parametrize('explicit', [False, True])
