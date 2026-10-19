@@ -8,7 +8,9 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -25,7 +27,11 @@ from docich.adapters.soren91 import (  # noqa: E402
     is_tailscale_ipv4,
     parse_udp_listeners,
 )
-from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
+from docich.game_switch import (  # noqa: E402
+    GameSwitchCoordinator, GameSwitchStore, ReadinessTimeoutError,
+    RuntimeSpec, runtime_state_dict,
+)
+from docich.adapters.cli_game import CliCoordinatorAdapter  # noqa: E402
 from docich.tmux import PaneState, TmuxOwnership  # noqa: E402
 
 MAC_IP = "100.90.0.1"
@@ -1092,6 +1098,236 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
                 self.http_plan = [(202, {"ok": True, "stopping": True})]
                 adapter.cleanup_runtime(time.monotonic() + 30, None)
         self.assertEqual(calls, ["sorengame"])
+
+    def test_cleanup_does_not_restore_over_a_different_active_identity(self):
+        store = GameSwitchStore(self.g.state_dir)
+        store.initialize()
+        # A new game, another generation of the same game, and a re-leased
+        # rollback of the same runtime must all fence out this old adapter.
+        for changes in (
+            {"game": "hanjuku-hero", "adapter": "retroarch"},
+            {"generation": 4, "runtime_id": "g4-abcdef12", "game_window": "game-g4",
+             "agent_window": "agent-g4", "adapter_session": "docich-game-g4"},
+            {"lease_id": str(uuid.uuid4())},
+        ):
+            with self.subTest(changes=changes):
+                active = runtime_state_dict(replace(self.spec, **changes), "2026-10-19T00:00:00Z")
+                state, _ = store.canonical.load()
+                state.update(phase="ready", active=active, next_generation=5)
+                store.canonical.save(state)
+                adapter = self._adapter()
+                with mock.patch.object(adapter, "_sync_twitch") as sync:
+                    with self._bound_listener(False), self._http():
+                        adapter.cleanup_runtime(time.monotonic() + 30, None)
+                sync.assert_not_called()
+                self.assertEqual(store.canonical.load()[0]["active"], active)
+
+    def test_cleanup_with_corrupt_canonical_still_tears_down_without_metadata(self):
+        store = GameSwitchStore(self.g.state_dir)
+        store.initialize()
+        store.canonical.path.write_text("{broken", encoding="utf-8")
+        adapter = self._adapter()
+        self.tmux.sessions[self.spec.adapter_session] = (self.spec.runtime_id, 3, "adapter")
+        with mock.patch.object(adapter, "_sync_twitch") as sync:
+            with self._bound_listener(False), self._http():
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+        sync.assert_not_called()
+        self.assertNotIn(self.spec.adapter_session, self.tmux.sessions)
+
+
+class TestSoren91MetadataCoordinator(Soren91AdapterTestBase):
+    """Real coordinator + fresh adapters; every external effect is a fake."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = GameSwitchStore(self.g.state_dir)
+        self.store.initialize()
+        self.syncs = []
+        self.pending = []
+        self.defer_hook = False
+        self.fail_retirement = False
+        self.fail_cleanup_phase = "ready"
+        self.fail_readiness = set()
+        self.instances = []
+        self.cleanups = []
+        self.metadata = None
+        script = self.root / "update_stream_game.sh"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o700)
+        (Path(self.g.games_dir) / "hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\nadapter="cli"\n'
+            '[twitch]\ncategory_id="12345"\n', encoding="utf-8",
+        )
+
+        def sync(_adapter, game):
+            self.syncs.append(game)
+            self.metadata = game
+
+        def materialize(adapter, deadline, cancel):
+            self.tmux.sessions[adapter.spec.adapter_session] = (
+                adapter.spec.runtime_id, adapter.spec.generation, "adapter",
+            )
+
+        original_cleanup = Soren91CoordinatorAdapter.cleanup_runtime
+
+        def cleanup(adapter, deadline, cancel):
+            state, _ = self.store.canonical.load()
+            self.cleanups.append((adapter.spec, state["phase"]))
+            if self.fail_retirement and state["phase"] == self.fail_cleanup_phase:
+                self.fail_retirement = False
+                raise AdapterError("transient retirement failure")
+            return original_cleanup(adapter, deadline, cancel)
+
+        def readiness(adapter, deadline, cancel):
+            if adapter.spec.game in self.fail_readiness:
+                raise ReadinessTimeoutError("fixture readiness failure")
+
+        patches = (
+            mock.patch.object(CliCoordinatorAdapter, "preflight"),
+            mock.patch.object(Soren91CoordinatorAdapter, "preflight"),
+            mock.patch.object(CliCoordinatorAdapter, "materialize_runtime", materialize),
+            mock.patch.object(Soren91CoordinatorAdapter, "materialize_runtime", materialize),
+            mock.patch.object(CliCoordinatorAdapter, "readiness", readiness),
+            mock.patch.object(Soren91CoordinatorAdapter, "_agent_running", return_value=True),
+            mock.patch.object(Soren91CoordinatorAdapter, "_listener_bound",
+                              lambda a: a.spec.adapter_session in self.tmux.sessions),
+            mock.patch.object(Soren91CoordinatorAdapter, "_sync_twitch", sync),
+            mock.patch.object(Soren91CoordinatorAdapter, "cleanup_runtime", cleanup),
+            mock.patch("docich.stream_category.script_path", return_value=script),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.http_context = self._http()
+        self.http_context.__enter__()
+        self.addCleanup(self.http_context.__exit__, None, None, None)
+
+        def factory(spec):
+            if spec.game == "soren91":
+                adapter = Soren91CoordinatorAdapter(self.g, self.game, spec)
+            else:
+                adapter = CliCoordinatorAdapter(self.g, replace(self.game, name=spec.game), spec)
+            self.instances.append(adapter)
+            return adapter
+
+        def spawn(argv, **kwargs):
+            game = argv[argv.index("--game") + 1]
+            self.assertIn("--activity", argv)
+            self.assertEqual(self.store.canonical.load()[0]["active"]["game"], game)
+            if self.defer_hook:
+                self.pending.append(game)
+            else:
+                sync(None, game)
+
+        from docich.stream_category import commit_hook
+        self.coordinator = GameSwitchCoordinator(
+            self.store, factory, post_commit=commit_hook(self.g, spawn=spawn),
+            poll_interval_s=0.001, quiesce_verify_timeout_s=0.1,
+        )
+
+    def _start(self):
+        self.assertEqual(self.coordinator.start("soren91").status, "succeeded")
+        self.syncs.clear()
+
+    def _switch_to_hanjuku(self):
+        self._start()
+        original = self.store.canonical.load()[0]["active"]
+        result = self.coordinator.switch("hanjuku-hero")
+        self.assertEqual(result.status, "succeeded")
+        committed = self.store.canonical.load()[0]
+        self.assertEqual(committed["active"]["game"], "hanjuku-hero")
+        if result.cleanup_pending:
+            self.assertEqual(committed["retiring"][0]["runtime_id"], original["runtime_id"])
+            self.assertEqual(committed["retiring"][0]["lease_id"], original["lease_id"])
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.store.canonical.load()[0]["active"], committed["active"])
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+        # The pre-commit cleanup must still return the base game's metadata.
+        expected = ["sorengame"] if self.defer_hook else ["sorengame", "hanjuku-hero"]
+        self.assertEqual(self.syncs, expected)
+        for game in self.pending:
+            self.syncs.append(game)
+            self.metadata = game
+        self.assertEqual(self.metadata, "hanjuku-hero")
+        cleanups = [spec for spec, _ in self.cleanups if spec.runtime_id == original["runtime_id"]]
+        self.assertGreaterEqual(len(cleanups), 2)
+        self.assertTrue(all(spec.lease_id == original["lease_id"] for spec in cleanups))
+        self.assertEqual(len(self.instances), len({id(a) for a in self.instances}))
+        return result
+
+    def test_completed_post_commit_update_survives_retiring_cleanup(self):
+        self._switch_to_hanjuku()
+
+    def test_async_post_commit_can_finish_after_retiring_cleanup(self):
+        self.defer_hook = True
+        self._switch_to_hanjuku()
+
+    def test_recover_retries_retirement_without_overwriting_active_metadata(self):
+        self.fail_retirement = True
+        self.assertTrue(self._switch_to_hanjuku().cleanup_pending)
+
+    def test_standalone_stop_restores_base_metadata_and_idle(self):
+        self._start()
+        self.assertEqual(self.coordinator.stop().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        state, _ = self.store.canonical.load()
+        self.assertEqual(state["phase"], "idle")
+        self.assertIsNone(state["active"])
+
+    def test_idle_recover_still_restores_base_metadata(self):
+        self._start()
+        state, _ = self.store.canonical.load()
+        state.update(phase="idle", retiring=[state["active"]], active=None)
+        self.store.canonical.save(state)
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+
+    def test_failed_stop_recover_still_restores_base_metadata(self):
+        self._start()
+        self.fail_retirement = True
+        self.fail_cleanup_phase = "stopping"
+        self.assertEqual(self.coordinator.stop().status, "failed")
+        self.assertEqual(self.store.canonical.load()[0]["active"]["game"], "soren91")
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.store.canonical.load()[0]["phase"], "idle")
+
+    def test_failed_start_returns_metadata_to_external_base(self):
+        self.fail_readiness.add("soren91")
+        self.assertEqual(self.coordinator.start("soren91").status, "failed")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.metadata, "sorengame")
+        self.assertIsNone(self.store.canonical.load()[0]["active"])
+
+    def test_failed_switch_rolls_back_soren91_in_a_new_generation(self):
+        self._start()
+        old = self.store.canonical.load()[0]["active"]
+        self.fail_readiness.add("hanjuku-hero")
+        self.assertEqual(self.coordinator.switch("hanjuku-hero").status, "rolled_back")
+        active = self.store.canonical.load()[0]["active"]
+        self.assertEqual(active["game"], "soren91")
+        self.assertGreater(active["generation"], old["generation"])
+        self.assertNotEqual(active["lease_id"], old["lease_id"])
+        self.assertEqual(self.syncs, ["sorengame", "soren91"])
+        self.assertEqual(self.metadata, "soren91")
+
+    def test_recover_failed_candidate_does_not_overwrite_active_hanjuku(self):
+        self.assertEqual(self.coordinator.start("hanjuku-hero").status, "succeeded")
+        self.syncs.clear()
+        state, _ = self.store.canonical.load()
+        active = state["active"]
+        candidate = runtime_state_dict(self.spec, "2026-10-19T00:00:00Z")
+        candidate["cleanup_role"] = "failed_candidate"
+        state.update(retiring=[candidate], next_generation=4)
+        self.store.canonical.save(state)
+        self.tmux.sessions[self.spec.adapter_session] = (self.spec.runtime_id, 3, "adapter")
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.store.canonical.load()[0]["active"], active)
+        self.assertEqual(self.syncs, [])
+        self.assertEqual(self.metadata, "hanjuku-hero")
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+        self.assertNotIn(self.spec.adapter_session, self.tmux.sessions)
 
 
 WIN_IP = "100.90.0.9"
