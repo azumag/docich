@@ -50,6 +50,13 @@ BATTLE_DRAW_HOLD_MAX = 3
 BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
                                 'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
                                 'monster_menu'})
+# The concert's optional music picker is closed with B, but a stale gold-
+# cursor match can keep the picker test true on a screen B never changes. On
+# 2026-10-10 17:45 UTC exactly that sent B 128 times until the 300 s
+# screen-stalled terminal ended the corner (#1996). After this many unchanged
+# observations with the same concert input, press A instead so the policy
+# itself leaves the screen rather than waiting for the stall watchdog.
+CONCERT_PICKER_REPEAT_MAX = 8
 
 
 def pad(button, ms=100):
@@ -458,6 +465,27 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    # A concert picker that B cannot close must not consume the whole stall
+    # window. Count unchanged observations that produced the same picker B;
+    # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
+    # picker changes the frame on B, so its count never reaches the bound.
+    digest=frame.digest()
+    picker_watch=mem.get('concert_picker_watch') or {}
+    if phase=='concert' and actions==[pad('b')]:
+        repeat=(int(picker_watch.get('repeat') or 0)+1
+                if picker_watch.get('digest')==digest else 1)
+    else:
+        repeat=0
+    if repeat>=CONCERT_PICKER_REPEAT_MAX:
+        decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
+                       observed_metric={'unchanged_repeats':repeat,'frame_sha256':digest},
+                       reason='曲選択の金色カーソル検出がBで変化しないまま繰り返すため、Aへ切り替える')
+        actions=[pad('a')]
+        repeat=0
+    if repeat:
+        mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
+    else:
+        mem.pop('concert_picker_watch',None)
     # 保留の廃止: a screen that froze while we planned no input must not stay
     # that way. The streak counts only observations whose frame digest is one of
     # the two most recent distinct images -- the same evidence
@@ -466,7 +494,6 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
-    digest=frame.digest()
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
