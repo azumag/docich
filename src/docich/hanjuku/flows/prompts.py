@@ -363,10 +363,21 @@ def _summer_bonus_choice_band(screen: Screen) -> bool:
     The band covers the third choice row at y=208, not 207: the upper two rows
     and the hand can be the only things that disappear, and a lone 208 row is
     still the menu.
+
+    Measured dialogue window (g825 evidence, 2ねん8がつ): every response page
+    keeps the panel's outer frame tiles — a single unknown cell at x=248 on
+    the band rows — so an edge-only row is a response page, not a choice row
+    (tests/fixtures/hanjuku/g825-summer-response.png). Only cells inside the
+    panel's inner columns (PROSE_COLUMNS) keep the menu alive: the label rows
+    (x=176) and the post-A fade (inner tiles at x=32..224,
+    g825-summer-post-a-fade.png) still re-observe; the border-only response
+    page does not.
     """
     if screen.hand is not None:
         return True
-    return any(176 <= line.y <= 208 for line in screen.lines)
+    x0, x1 = PROSE_COLUMNS
+    return any(176 <= line.y <= 208 and any(x0 <= x < x1 for x, _ in line.cells)
+               for line in screen.lines)
 
 
 def summer_bonus_continue(screen: Screen, mem):
