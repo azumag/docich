@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from docich import hanjuku_chart as chart, hanjuku_policy as policy
-from docich.hanjuku import map_registration as survey
+from docich.hanjuku.flows import map_registration as survey
 from docich.hanjuku.orchestrator import decide, NO_INPUT_HOLD_MAX
 from docich.hanjuku.strategy import campaign
 from docich.hanjuku_pixels import read_png
@@ -91,6 +91,46 @@ def walk_to_grin(mem):
     pytest.fail('native free-cursor search did not reach the visible candidate')
 
 
+def initial_route_receipt():
+    mem = home_receipt()
+    walk_to_grin(mem)
+    feed(mem, status('グリン')); feed(mem, status('グリン'))
+    feed(mem, field(GRIN))  # close the inspection transaction
+    return mem
+
+
+def test_follow_general_never_overrides_to_an_unregistered_observed_castle():
+    mem = initial_route_receipt()
+    mem.update(captured=['メガパタ'], garrison={'メガパタ': ['ゼウス']})
+    with chart.map_context(mem):
+        order = policy.next_order(mem)
+        assert mem.get('source_override', {}).get('3-Z1') != 'メガパタ'
+        assert order is None or policy._source(order, mem) in chart.castles(3)
+        policy.map_step(parse(field()), mem, field())  # never KeyError
+
+
+def test_runtime_ready_checks_the_effective_source_override():
+    mem = initial_route_receipt()
+    mem['source_override'] = {'3-Z1': 'メガパタ'}
+    with chart.map_context(mem):
+        assert not policy._ready(chart.CHAPTER_3_ORDERS[0], mem)
+
+
+@pytest.mark.parametrize('scenario', ['empty', 'lost', 'general_at_unregistered_castle'])
+def test_unselectable_partial_order_does_not_preempt_discovery(scenario):
+    mem = initial_route_receipt()
+    mem['garrison'] = {'アルマムーン': []}
+    if scenario == 'lost':
+        mem['home_lost'] = True
+    elif scenario == 'general_at_unregistered_castle':
+        mem['captured'] = ['メガパタ']
+        mem['garrison']['メガパタ'] = ['ゼウス']
+    for _ in range(5):
+        actions = feed(mem, field(GRIN))
+        assert actions is not None
+    assert mem['map_discovery']['candidate'] == 'メガパタ'
+
+
 def test_native_frames_register_named_home_then_release_only_the_observed_first_sortie():
     mem = home_receipt()
     assert not chart.orders(3)  # no process-global mutation
@@ -133,6 +173,79 @@ def test_orchestrator_uses_the_run_map_to_start_the_existing_chapter_three_sorti
     assert state['policy']['variant'] == 'chart'
     assert not state['policy'].get('sorties')
     assert chart.castles(3) == {}
+
+
+def test_centered_single_roof_bootstrap_reaches_two_roof_calibration_and_chapter_three_order():
+    # Same source delta as chapter 3, but the home is centred: Grin starts
+    # outside the native frame. The simulated camera clamps the free cursor
+    # at the existing native bounds; commanded motion is not a map receipt.
+    home, grin = (128, 104), (272, 264)
+    roofs = ((home, 'own'), (grin, 'enemy'))
+    cursor, camera = list(home), [0, 0]
+    state = {'policy': memory()}
+    first = field(tuple(cursor), roofs, tuple(camera))
+    assert len([r for r in castle_roofs(first) if not r['clipped']]) == 1
+    actions, state = decide(first, state, run_identity=IDENTITY)
+    assert actions and all(a['buttons'][0] in {'left', 'right', 'up', 'down'} for a in actions)
+    assert not state['policy'].get('map_registration')
+    panel = None
+    first_calibrated_frame = None
+    for _ in range(100):
+        for action in actions:
+            button = action['buttons'][0]
+            if button in {'left', 'right', 'up', 'down'}:
+                assert panel is None
+                distance = round(action['hold_ms']*60/1000)
+                assert 1 <= distance <= survey.MAX_HOLD
+                axis = 0 if button in {'left', 'right'} else 1
+                proposed = cursor[axis]+distance*(1 if button in {'right', 'down'} else -1)
+                clamped = max(8, min((232, 200)[axis], proposed))
+                camera[axis] += proposed-clamped
+                cursor[axis] = clamped
+            elif button == 'a':
+                assert first_calibrated_frame is not None  # no blind A from one roof
+                at = tuple(cursor[i]+camera[i] for i in (0, 1))
+                panel = 'アルマムーン' if at == home else 'グリン' if at == grin else None
+                assert panel is not None
+            elif button == 'b':
+                panel = None
+            else:
+                pytest.fail(f'unexpected bootstrap input: {button}')
+        frame = status(panel) if panel else field(tuple(cursor), roofs, tuple(camera))
+        if not panel and len([r for r in castle_roofs(frame) if not r['clipped']]) >= 2:
+            first_calibrated_frame = first_calibrated_frame or frame.digest()
+        actions, state = decide(frame, state, run_identity=IDENTITY)
+        mem = state['policy']
+        if first_calibrated_frame is None:
+            assert not mem.get('map_registration')
+            assert not (mem.get('map_discovery') or {}).get('origin_frame')
+        if mem.get('active') == '3-Z1':
+            break
+    else:
+        pytest.fail('single-roof bootstrap never reached a valid chapter-3 order')
+    cells = survey.verified_castles(mem, 3)
+    assert set(cells) == {'アルマムーン', 'グリン'}
+    assert tuple(cells['グリン'][i]-cells['アルマムーン'][i] for i in (0, 1)) == (144, 160)
+    assert mem['map_registration']['origin_frame'] == first_calibrated_frame
+    assert not mem.get('sorties') and not chart.castles(3)
+
+
+@pytest.mark.parametrize('moving_cursor', [False, True])
+def test_single_roof_bootstrap_stops_without_two_roofs_and_never_confirms(moving_cursor):
+    mem = memory()
+    home = (128, 104)
+    pads = []
+    for i in range(survey.MAX_BOOTSTRAP+5):
+        frame = field((128+(i%2 if moving_cursor else 0), 104), ((home, 'own'),))
+        actions = feed(mem, frame)
+        assert actions is not None
+        pads.extend(a['buttons'][0] for a in actions)
+        assert not mem.get('map_registration')
+        assert not mem['map_discovery'].get('origin_frame')
+    assert pads and set(pads) <= {'left', 'right', 'up', 'down'}
+    assert len(pads) <= (survey.MAX_BOOTSTRAP if moving_cursor else 3)
+    assert mem['map_discovery']['bootstrap']['done'] is True
+    assert any(r['decision'] == 'map_bootstrap_exhausted' for r in mem['_records'])
 
 
 def test_survey_hold_cannot_turn_into_the_generic_frozen_screen_confirm():

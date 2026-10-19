@@ -16,6 +16,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import re
+
+from . import hanjuku_map_sources as map_sources
+from .hanjuku.identity import run_identity
+
+MAP_SCHEMA = 1
+_MAP_DIGEST = re.compile(r'[0-9a-f]{64}\Z')
 
 _MAP_MEMORY = ContextVar('hanjuku_map_memory', default=None)
 
@@ -904,6 +911,37 @@ def tactics(chapter: int):
     return _TACTICS.get(chapter, ())
 
 
+def _map_point(value):
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(v) is int and abs(v) <= 4096 for v in value))
+
+
+def verified_castles(mem, chapter):
+    """Read a bounded run-scoped receipt; never import an observer or flow."""
+    identity = run_identity(mem.get('_run_identity'))
+    data = mem.get('map_registration') or {}
+    if (identity is None or not isinstance(data, dict) or data.get('schema') != MAP_SCHEMA
+            or data.get('identity') != identity or data.get('chapter') != chapter
+            or chapter != mem.get('chapter') or not _MAP_DIGEST.fullmatch(str(data.get('origin_frame', '')))):
+        return {}
+    records = data.get('castles')
+    if not isinstance(records, dict) or len(records) > 32:
+        return {}
+    out = {}
+    for name, proof in records.items():
+        if (name not in map_sources.SOURCE_CASTLES.get(chapter, {}) or not isinstance(proof, dict)
+                or proof.get('name') != name or proof.get('evidence') != 'native_castle_status'
+                or not _map_point(proof.get('position')) or proof.get('readings') != 2
+                or not all(_MAP_DIGEST.fullmatch(str(proof.get(k, '')))
+                           for k in ('field_frame', 'status_frame'))):
+            return {}
+        position = tuple(proof['position'])
+        if any(sum(abs(a-b) for a,b in zip(position, old)) < 24 for old in out.values()):
+            return {}
+        out[name] = position
+    return out
+
+
 def castles(chapter: int) -> dict:
     static = CASTLES.get(chapter, {})
     if chapter in (4, 9):
@@ -913,7 +951,6 @@ def castles(chapter: int) -> dict:
     memory = _MAP_MEMORY.get()
     if memory is None:
         return static
-    from .hanjuku.map_registration import verified_castles
     measured = verified_castles(memory, chapter)
     return {**measured, **static} if measured else static
 

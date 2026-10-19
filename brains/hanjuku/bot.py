@@ -119,7 +119,8 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # and enemy-owned menus, without claiming an input or a battle outcome.
     capture=(menu_navigation_feedback(state, actions) or bool(card_flow)
              or bool((policy.get('map_discovery') or {}).get('probe'))
-             or any(r.get('decision') in {'map_search_candidate', 'map_castle_confirmed',
+             or any(r.get('decision') in {'map_bootstrap_started', 'map_bootstrap_exhausted',
+                                         'map_search_candidate', 'map_castle_confirmed',
                                          'map_registration_rejected', 'map_reanchored'} for r in records)
              or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',

@@ -304,7 +304,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     concert_house_event = (
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
     if actions is None:
-        from . import map_registration
+        from .flows import map_registration
         actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)

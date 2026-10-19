@@ -84,7 +84,7 @@ def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = mem.get('garrison') or {}
     source = _source(order, mem)
-    owned = _owned(mem)
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
     castles = [source] + sorted(owned - {source})
     return next((castle for castle in castles if castle in owned
                  and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
@@ -144,7 +144,7 @@ def _ready(order, mem) -> bool:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
         cells = chart.castles(mem.get('chapter') or 0)
-        if order.get('source') not in cells or order.get('target') not in cells:
+        if _source(order, mem) not in cells or order.get('target') not in cells:
             return False
     if not _boss_target_unlocked(order, mem):
         return False
@@ -246,7 +246,7 @@ def next_order(mem):
     # even if a newer plan replaced the one it came from.
     retries = [o for step, o in (mem.get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
-    owned = _owned(mem)
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
     garrison = mem.get('garrison') or {}
     # The base chart's remaining orders follow an adopted plan that cannot run
     # (g438 03:48: the plan's only order sent the dead ココット from an empty
@@ -279,10 +279,11 @@ def _follow_general(mem, order, garrison, owned):
     """Send the order from the castle its general is recorded in (g438: 1-B1
     assumes どうし at スペンソニア, but he held ゴーメン)."""
     general = order.get('general')
+    owned = owned & set(chart.castles(mem.get('chapter') or 0))
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
         where = _boss_companion_source(order, mem)
-        if where and where != source:
+        if where in owned and where != source:
             mem.setdefault('source_override', {})[order['step']] = where
             _record(mem, 'boss_companion_source', chart_step=order['step'],
                     observed_metric={'source': source, 'companion_at': where},

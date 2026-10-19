@@ -55,6 +55,7 @@ decision_log   判断記録（全層から利用可）
 | 判断層 | `hanjuku/judgment/events.py` | 交換将軍の受諾判断、モンスター技の判定 |
 | 手順層 | `hanjuku/flows/name.py` | 名前入力 |
 | 手順層 | `hanjuku/flows/map.py` | フィールドマップ・出撃先選択・ワールドマップ |
+| 手順層 | `hanjuku/flows/map_registration.py` | 未校正時の有界カーソル探索、城名確認とラン内地図登録 |
 | 手順層 | `hanjuku/flows/recall.py` | 野営からの帰還指示 |
 | 手順層 | `hanjuku/flows/deploy.py` | 城メニュー・将軍一覧・切り札選択・出撃確認 |
 | 手順層 | `hanjuku/flows/battle.py` | 戦闘パネルの読取と戦闘ループ、戦闘終了の記録 |
@@ -68,6 +69,11 @@ decision_log   判断記録（全層から利用可）
 | 手順層 | `hanjuku/flows/starter.py` | 章開始時の先発隊の選択 |
 | 調停 | `hanjuku/orchestrator.py` | `decide`：前景の所有者の優先順位と画面種別による振り分け、入力0件ゲート |
 | 共通 | `hanjuku/decision_log.py` / `reporting.py` / `version.py` | 判断記録、状態パネル用の集計、`BOT_VERSION` |
+
+`hanjuku_chart` の地図参照は純粋な登録記録の検証を持ち、画面読取や手順層を
+importしない。ランID検証は共通の `hanjuku/identity.py` に置く。
+`hanjuku_map_sources` は公開資料のデータだけを持つ。
+層契約はdataモジュール内の遅延importにも適用する。
 
 ## 改善するときにどこを触るか
 

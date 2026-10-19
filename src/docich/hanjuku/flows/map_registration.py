@@ -1,59 +1,32 @@
 """Bounded free-cursor survey: source hints never become movement facts.
 
-The first field view defines a chapter-local coordinate origin. Camera
+The first field view with two roofs defines a chapter-local origin. Camera
 translation is measured from at least two unchanged roof anchors, including
 scrolls; sent D-pad durations are not position evidence. A location enters
 the run's map only after a stationary cursor/roof inspection and two exact
 castle-status name readings. Only the regular sortie flow can dispatch.
+One-roof startup may pan the free cursor under a separate finite budget;
+it cannot record coordinates or confirm a menu before calibration.
 """
 from __future__ import annotations
 
 import re
 
-from .. import hanjuku_chart as chart, hanjuku_map_sources as sources
-from .decision_log import _record
-from .os_layer.commands import menu_to, pad
-from .os_layer.font import UNKNOWN
-from .os_layer.readers import CASTLE_STATUS, STATUS_NAMES
-from .os_layer.roster import run_identity
-from .os_layer.screen import castle_roofs
+from ... import hanjuku_chart as chart, hanjuku_map_sources as sources
+from ..decision_log import _record
+from ..os_layer.commands import menu_to, pad
+from ..os_layer.font import UNKNOWN
+from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
+from ..os_layer.roster import run_identity
+from ..os_layer.screen import castle_roofs
 
-SCHEMA = 1
+SCHEMA = chart.MAP_SCHEMA
+verified_castles = chart.verified_castles
 MAX_PROBE = 96
 MAX_PANEL = 12
 MAX_SCROLL = 64
 MAX_HOLD = 16
-DIGEST = re.compile(r'[0-9a-f]{64}\Z')
-
-
-def _point(value):
-    return (isinstance(value, (list, tuple)) and len(value) == 2
-            and all(type(v) is int and abs(v) <= 4096 for v in value))
-
-
-def verified_castles(mem, chapter):
-    identity = run_identity(mem.get('_run_identity'))
-    data = mem.get('map_registration') or {}
-    if (identity is None or not isinstance(data, dict) or data.get('schema') != SCHEMA
-            or data.get('identity') != identity or data.get('chapter') != chapter
-            or chapter != mem.get('chapter') or not DIGEST.fullmatch(str(data.get('origin_frame', '')))):
-        return {}
-    records = data.get('castles')
-    if not isinstance(records, dict) or len(records) > 32:
-        return {}
-    out = {}
-    for name, proof in records.items():
-        if (name not in sources.SOURCE_CASTLES.get(chapter, {}) or not isinstance(proof, dict)
-                or proof.get('name') != name or proof.get('evidence') != 'native_castle_status'
-                or not _point(proof.get('position')) or proof.get('readings') != 2
-                or not all(DIGEST.fullmatch(str(proof.get(k, '')))
-                           for k in ('field_frame', 'status_frame'))):
-            return {}
-        position = tuple(proof['position'])
-        if any(sum(abs(a-b) for a,b in zip(position, old)) < 24 for old in out.values()):
-            return {}
-        out[name] = position
-    return out
+MAX_BOOTSTRAP = 32
 
 
 def translation(previous, current, *, limit=None):
@@ -126,7 +99,7 @@ def _pose(state, roofs, cursor):
 
 def _ownership(mem, name, kind):
     """A twice-observed roof and named status prove this current ownership."""
-    from .os_layer.roster import owner
+    from ..os_layer.roster import owner
     owner(mem, STATUS_NAMES.get(name, name), kind)
     home = chart.home_castle(mem['chapter'])
     captured = mem.setdefault('captured', [])
@@ -167,6 +140,52 @@ def _candidate(mem, state, known):
     # Hypothesis used to steer a bounded inspection search only. It is never
     # returned by verified_castles or used to select a sortie destination.
     return wanted, (x+8*(point[0]-left), y+8*(point[1]-top))
+
+
+def _bootstrap(screen, mem, state, roofs):
+    """Bounded free-cursor pan until two roofs enter view; no pose evidence.
+
+    Source deltas choose a search direction/budget only. In particular,
+    neither those deltas nor sent durations ever seed a camera or castle.
+    """
+    search = state.get('bootstrap')
+    if search is None:
+        if len(roofs) != 1:
+            return None
+        chapter = mem['chapter']
+        names = sources.SOURCE_CASTLES[chapter]
+        home = chart.home_castle(chapter)
+        target = next((o['target'] for o in chart.all_orders(chapter)
+                       if o['target'] in names and o['target'] != home), None)
+        if target is None:
+            return None
+        delta = [8*(names[target][i]-names[home][i]) for i in (0, 1)]
+        legs = [[i, 1 if d > 0 else -1, min(256, abs(d)+MAX_HOLD)]
+                for i, d in enumerate(delta) if d]
+        search = state['bootstrap'] = {'legs': legs, 'attempts': 0, 'still': 0}
+        _record(mem, 'map_bootstrap_started', castle=target,
+                observed_metric={'source_delta_hint': delta, 'native_coordinate_verified': False},
+                reason='屋根が一つなので座標は作らず、自由カーソルだけで二屋根が見える範囲を有界探索')
+    mem['_map_registration_hold'] = True
+    if search.get('done'):
+        return []
+    view = [list(screen.cursor), sorted(list(r['target']) for r in roofs)]
+    search['still'] = search['still']+1 if search.get('view') == view else 0
+    search['view'] = view
+    if search['still'] >= 3 or search['attempts'] >= MAX_BOOTSTRAP or not search['legs']:
+        search['done'] = True
+        _record(mem, 'map_bootstrap_exhausted',
+                observed_metric={'attempts': search['attempts'], 'still': search['still'],
+                                 'native_coordinate_verified': False},
+                reason='二屋根を確認できないため初期探索を停止し、座標登録と確認入力は行わない')
+        return []
+    axis, direction, remaining = search['legs'][0]
+    frames = min(MAX_HOLD, remaining)
+    search['legs'][0][2] -= frames
+    if search['legs'][0][2] == 0:
+        search['legs'].pop(0)
+    search['attempts'] += 1
+    return [pad((('left', 'right') if axis == 0 else ('up', 'down'))[direction > 0], frames)]
 
 
 def step(screen, mem, frame):
@@ -279,9 +298,8 @@ def step(screen, mem, frame):
         state.pop('probe', None)
         return []
     known = verified_castles(mem, chapter)
-    from .strategy.orders import _ready
-    if any(_ready(o, mem) and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')
-           for o in chart.orders(chapter)):
+    from ..strategy.orders import next_order
+    if next_order(mem) is not None:
         return None
     roofs = [r for r in castle_roofs(frame) if not r['clipped']][:16]
     camera = _pose(state, roofs, tuple(screen.cursor))
@@ -304,7 +322,7 @@ def step(screen, mem, frame):
                 state['reanchor_stationary'] = stamp
                 state['reanchor_tick'] = tick
             return []
-        return None
+        return _bootstrap(screen, mem, state, roofs)
     state.setdefault('origin_frame', frame.digest())
     expected, hint = _candidate(mem, state, known)
     if expected is None:

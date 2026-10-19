@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from ..identity import run_identity
+
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
 # so the roster shows this many names at once. A page shorter than this ends
@@ -258,15 +260,6 @@ def begin(mem, state):
     mem['recruit_roster'] = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
                              'tick': state['roster_started'], 'names': [], 'wages': {}, 'complete': False,
                              'identity': run_identity(mem.get('_run_identity'))}
-
-
-def run_identity(raw):
-    if (not isinstance(raw, dict) or raw.get('game') != 'hanjuku-hero'
-            or type(raw.get('generation')) is not int or raw['generation'] <= 0
-            or any(not isinstance(raw.get(k), str) or not 1 <= len(raw[k]) <= 256
-                   for k in ('runtime_id', 'lease_id'))):
-        return None
-    return {k: raw[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
 
 
 def completed_survey(mem):
