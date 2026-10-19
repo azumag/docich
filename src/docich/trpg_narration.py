@@ -87,6 +87,7 @@ def _counts(total, *, skipped=0):
 
 def publish(g, *, kind: str, title: str, overlay_body: str, speech_text: str,
             request_id: str, audio_enabled: bool, speaker: str = "",
+            runtime_fence: dict | None = None, dedup_scope: str = "",
             overlay=append_event, speech=enqueue_audio_text, now=time.time) -> dict:
     result = {"overlay": _counts(1),
               "speech": _counts(1, skipped=0 if audio_enabled else 1)}
@@ -106,7 +107,8 @@ def publish(g, *, kind: str, title: str, overlay_body: str, speech_text: str,
         result["overlay"]["failed"] += 1
     if audio_enabled:
         try:
-            speech(g, speech_text, context=CONTEXTS.get(kind, "trpg:intro"), speaker=speaker)
+            speech(g, speech_text, context=CONTEXTS.get(kind, "trpg:intro"), speaker=speaker,
+                   runtime_fence=runtime_fence, dedup_scope=dedup_scope)
             result["speech"]["sent"] += 1
         except Exception:
             result["speech"]["failed"] += 1
