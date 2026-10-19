@@ -961,7 +961,20 @@ class SorenCoordinatorAdapter:
                         expected = None
                 if expected:
                     self._recover_resumed_loop(str(expected))
-            if not self._ack(payload):
+            ack = self._ack(payload)
+            should_proceed = False
+            if not ack:
+                # No broker request at all: verify live processes and HTTP.
+                should_proceed = True
+            elif self._is_expired_timeout_ack(payload):
+                # Broker has rewritten an expired request to ack=timeout (RC_EXPIRED).
+                # The deadline has passed; proceed to verify live processes and HTTP.
+                should_proceed = True
+            # else: active request (accepted/waiting/stopping/stopped) or cancelled:
+            # do not bypass the normal lifecycle flow. Cancelled requests
+            # must be settled through adopt_failed_candidate which cancels
+            # and archives them before readiness is called.
+            if should_proceed:
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
                         with urllib.request.urlopen("http://127.0.0.1:8080/", timeout=1.0) as response:
@@ -970,6 +983,65 @@ class SorenCoordinatorAdapter:
                     except (urllib.error.URLError, OSError):
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+    @staticmethod
+    def _is_expired_timeout_ack(payload: dict) -> bool:
+        """True when the ack is an expired timeout (broker rewrote it due to deadline expiry).
+
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED) when
+        polled. Only when the broker's own ``deadline_epoch`` has passed is this a
+        proven expired cleanup (#2061). A still-valid request must not be mislabelled.
+
+        Additionally, the request and ack must have matching identity (request_id,
+        game, generation) and the broker must not hold any resource or control
+        for a different operation (e.g., player_change). If the request and ack
+        are mismatched, or if resource/control indicate an incomplete operation,
+        this is NOT treated as an expired timeout and readiness must not proceed.
+        """
+        if not isinstance(payload, dict):
+            return False
+        ack = payload.get("ack")
+        request = payload.get("request")
+        resource = payload.get("resource")
+        control = payload.get("control")
+        if not isinstance(ack, dict):
+            return False
+        status = str(ack.get("status") or "")
+        if status != "timeout":
+            return False
+        # Broker's own deadline must have passed (proven expired cleanup).
+        if not _request_deadline_passed(ack):
+            return False
+        # Request and ACK must have matching identity (request_id, game, generation).
+        if not isinstance(request, dict):
+            return False
+        try:
+            if (request.get("request_id") != ack.get("request_id")
+                    or request.get("game") != ack.get("game")
+                    or request.get("generation") != ack.get("generation")):
+                return False
+        except (TypeError, AttributeError):
+            return False
+        # No resource held: resource must be None for an expired cleanup.
+        if resource is not None:
+            return False
+        # No control record, or control matches the same request (not a different operation).
+        if control is not None:
+            if not isinstance(control, dict):
+                return False
+            try:
+                if (control.get("request_id") != ack.get("request_id")
+                        or control.get("game") != ack.get("game")
+                        or control.get("generation") != ack.get("generation")):
+                    return False
+                # If control has an operation (e.g., player_change), this is NOT
+                # a simple expired cleanup. The pause marker remains and the
+                # operation is incomplete. Fail closed.
+                if control.get("operation") is not None:
+                    return False
+            except (TypeError, AttributeError):
+                return False
+        return True
 
     def _paused_loop_identity(self) -> tuple[int, int] | None:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
@@ -1038,6 +1110,10 @@ class SorenCoordinatorAdapter:
         if matches is None or len(matches) != 1:
             return False
         started_at, pid, ticks = matches[0]
+        # If there's a pause marker for soren_loop.sh, the loop is not considered live.
+        # This catches player_change expiry where the pause marker remains.
+        if expected == "soren_loop.sh" and (self.root / "tmp/state/soren_loop.paused").exists():
+            return False
         if self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at:
             return True
         # An older instance is acceptable only if it is the very loop that was paused
