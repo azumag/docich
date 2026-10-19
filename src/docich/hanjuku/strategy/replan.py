@@ -108,7 +108,6 @@ def interim_candidates(mem) -> dict:
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
     busy, _ = _en_route(mem)
     heading = _reserved_targets(mem)
@@ -118,7 +117,7 @@ def interim_candidates(mem) -> dict:
     lost = [c for c in mem.get('lost') or () if c in castles]
     lost.sort(key=lambda c: c != home)          # a lost home castle is retaken first
     targets = [c for c in (*lost, *chart_orders, *castles)
-               if c in castles and c not in owned and c != boss]
+               if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.

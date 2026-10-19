@@ -181,7 +181,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
-Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
+Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)

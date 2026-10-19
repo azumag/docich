@@ -28,7 +28,8 @@ def test_chapter_one_orders_are_fully_measured():
 
 
 @pytest.mark.parametrize('chapter', list(range(3, 13)))   # 2 measured 2026-09-28
-def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter):
+def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter, monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, chapter, {})
     assert chart.castles(chapter) == {}
     assert chart.orders(chapter) == ()
     encoded = chart.all_orders(chapter)
@@ -76,7 +77,8 @@ def test_purchases_are_tuples_and_purchase_for_selects_month():
     assert chart.purchase_for(3, 1, 8) and chart.purchase_for(3, 1, 11)
 
 
-def test_policy_off_chart_reason_for_unmeasured_chapter():
+def test_policy_off_chart_reason_for_unmeasured_chapter(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 3, {})
     mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, None)
     rec = mem['_records'][-1]
@@ -84,7 +86,8 @@ def test_policy_off_chart_reason_for_unmeasured_chapter():
     assert rec['off_chart_reason'] == 'chart_unavailable'
 
 
-def test_interim_candidates_empty_without_measured_castles():
+def test_interim_candidates_empty_without_measured_castles(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 3, {})
     assert policy.interim_candidates({'chapter': 3, 'captured': []}) == {}
 
 

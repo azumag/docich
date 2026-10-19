@@ -1,0 +1,376 @@
+"""Native synthetic frames exercise the registration transaction, not a ROM.
+
+Coordinates in these fixtures are artificial chapter-local points. Public
+image pixels are search hints only; no test claims a measured chapter-3 map.
+"""
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from docich import hanjuku_chart as chart, hanjuku_policy as policy
+from docich.hanjuku import map_registration as survey
+from docich.hanjuku.orchestrator import decide, NO_INPUT_HOLD_MAX
+from docich.hanjuku.strategy import campaign
+from docich.hanjuku_pixels import read_png
+from docich.hanjuku_screen import parse, castle_roofs
+from test_hanjuku_chart_bot import Canvas
+
+IDENTITY = {'game': 'hanjuku-hero', 'generation': 900,
+            'runtime_id': 'g900-synthetic', 'lease_id': 'test-map-survey'}
+HOME = (60, 28)
+GRIN = (204, 188)
+
+
+def memory():
+    return {'chapter': 3, 'tick': 0, '_run_identity': dict(IDENTITY),
+            'survey_run_identity': dict(IDENTITY), '_records': [], 'orders': {}}
+
+
+def field(cursor=HOME, roofs=((HOME, 'own'), (GRIN, 'enemy')), camera=(0, 0)):
+    c = Canvas((64, 140, 40))
+    for (wx, wy), kind in roofs:
+        x, y = wx-camera[0], wy-camera[1]
+        color = (205, 40, 57) if kind == 'own' else (24, 96, 140)
+        for row in range(y-5, y+9):
+            for col in range(x-10, x+11):
+                if 0 <= row < 224 and 0 <= col < 256:
+                    c.put(col, row, color)
+    x, y = cursor
+    for row in (y+1, y+14):
+        for col in (*range(x+2, x+5), *range(x+11, x+14)):
+            c.put(col, row, (255, 255, 255))
+    for row in (y+2, y+3, y+4):
+        c.put(x+1, row, (255, 255, 255))
+    return c.frame()
+
+
+def status(name):
+    c = Canvas((64, 140, 40))
+    for y in range(16, 120):
+        for x in range(16, 240):
+            c.put(x, y, (16, 72, 57))
+    for x in range(35, 111):
+        c.put(x, 16, (255, 48, 48))
+    c.text(16, 31, f'しゅつげき {name} じょう')
+    c.text(16, 47, 'ステータス しゅうにゅう22G')
+    return c.frame()
+
+
+def feed(mem, frame):
+    mem['tick'] += 1
+    with chart.map_context(mem):
+        return survey.step(parse(frame), mem, frame)
+
+
+def home_receipt():
+    mem = memory()
+    assert parse(field()).cursor == HOME
+    assert len(castle_roofs(field())) == 2
+    assert feed(mem, field()) == []
+    assert feed(mem, field()) == [policy.pad('a')]
+    assert feed(mem, status('アルマムーン')) == []
+    assert survey.verified_castles(mem, 3) == {}
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert feed(mem, field()) == []
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+    return mem
+
+
+def walk_to_grin(mem):
+    cursor = list(HOME)
+    for _ in range(40):
+        actions = feed(mem, field(tuple(cursor)))
+        if actions == [policy.pad('a')]:
+            return
+        for action in actions:
+            direction = action['buttons'][0]
+            frames = round(action['hold_ms']*60/1000)
+            axis = 0 if direction in ('left', 'right') else 1
+            cursor[axis] += frames * (1 if direction in ('right', 'down') else -1)
+    pytest.fail('native free-cursor search did not reach the visible candidate')
+
+
+def test_native_frames_register_named_home_then_release_only_the_observed_first_sortie():
+    mem = home_receipt()
+    assert not chart.orders(3)  # no process-global mutation
+    with chart.map_context(mem):
+        assert chart.castles(3) == {'アルマムーン': HOME}
+        assert not chart.orders(3)
+    walk_to_grin(mem)
+    assert feed(mem, status('グリン')) == []
+    assert feed(mem, status('グリン')) == [policy.pad('b')]
+    with chart.map_context(mem):
+        assert chart.castles(3) == {'アルマムーン': HOME, 'グリン': GRIN}
+        assert [o['step'] for o in chart.orders(3)] == ['3-Z1']
+        assert policy.next_order(mem)['target'] == 'グリン'
+        assert policy.nav_step(parse(field()), mem, field(), HOME, 'アルマムーン') == 'arrived'
+    assert mem['variant'] == 'chart'
+    assert not mem.get('sorties')  # surveying alone dispatches nobody
+    logs = [r for r in mem['_records'] if r['decision'] == 'map_castle_confirmed']
+    assert len(logs) == 2 and all(r['observed_metric']['field_frame'] for r in logs)
+
+
+def test_orchestrator_uses_the_run_map_to_start_the_existing_chapter_three_sortie():
+    state = {'policy': memory()}
+    for frame in (field(), field(), status('アルマムーン'), status('アルマムーン'), field()):
+        _, state = decide(frame, state, run_identity=IDENTITY)
+    assert survey.verified_castles(state['policy'], 3) == {'アルマムーン': HOME}
+    cursor = list(HOME)
+    for _ in range(40):
+        actions, state = decide(field(tuple(cursor)), state, run_identity=IDENTITY)
+        if actions == [policy.pad('a')]:
+            break
+        for action in actions:
+            d = action['buttons'][0]
+            cursor[0 if d in ('left', 'right') else 1] += round(action['hold_ms']*60/1000)*(1 if d in ('right', 'down') else -1)
+    else:
+        pytest.fail('orchestrator never opened the candidate')
+    for frame in (status('グリン'), status('グリン'), field(GRIN)):
+        _, state = decide(frame, state, run_identity=IDENTITY)
+    _, state = decide(field(GRIN), state, run_identity=IDENTITY)
+    assert state['policy']['active'] == '3-Z1'
+    assert state['policy']['variant'] == 'chart'
+    assert not state['policy'].get('sorties')
+    assert chart.castles(3) == {}
+
+
+def test_survey_hold_cannot_turn_into_the_generic_frozen_screen_confirm():
+    mem = home_receipt()
+    walk_to_grin(mem)
+    mem['map_discovery']['probe'].update(age=2*survey.MAX_PANEL, closing=True)
+    frame = status('グリン')
+    state = {'policy': mem, 'no_input_streak': NO_INPUT_HOLD_MAX+1,
+             'no_input_frames': [frame.digest()], 'phase': 'field_menu'}
+    actions, updated = decide(frame, state, run_identity=IDENTITY)
+    assert actions == []
+    assert not any(r['decision'] == 'no_input_hold_released' for r in updated['_records'])
+
+
+def test_skipped_foreground_observations_invalidate_geometry_before_continuing():
+    mem = home_receipt()
+    mem['tick'] += 5  # e.g. a higher-priority monthly flow owned these frames
+    assert feed(mem, field()) == []
+    assert 'roof_world' not in mem['map_discovery']
+    assert 'グリン' not in survey.verified_castles(mem, 3)
+
+
+@pytest.mark.parametrize('label', ['メガパタ', 'ハドリバーグ', 'グリソ'])
+def test_candidate_mismatch_foreign_chapter_and_unknown_name_never_become_coordinates(label):
+    mem = home_receipt()
+    walk_to_grin(mem)
+    for _ in range(3):
+        feed(mem, status(label))
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+    with chart.map_context(mem):
+        assert not chart.orders(3)
+
+
+def test_public_hint_without_a_roof_never_authorizes_confirm_or_a_coordinate(monkeypatch):
+    mem = home_receipt()
+    # Preserve two support roofs, but put the expected search point in water.
+    monkeypatch.setattr(survey, '_candidate', lambda *_: ('グリン', (130, 100)))
+    actions = feed(mem, field((130, 100)))
+    assert policy.pad('a') not in (actions or [])
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+
+
+def test_two_distinct_observation_ticks_required_and_status_must_be_full():
+    mem = memory()
+    feed(mem, field())
+    with chart.map_context(mem):
+        assert survey.step(parse(field()), mem, field()) == []
+    feed(mem, field())
+    frame = status('アルマムーン')
+    feed(mem, frame)
+    with chart.map_context(mem):
+        assert survey.step(parse(frame), mem, frame) == []  # same tick
+    assert not survey.verified_castles(mem, 3)
+    bad = Canvas(); bad.text(16, 31, 'アルマムーンじょう')
+    for _ in range(2):
+        feed(mem, bad.frame())
+    assert not survey.verified_castles(mem, 3)
+
+
+def test_existing_native_status_fixture_matches_only_its_real_chapter():
+    frame = read_png(Path(__file__).parent/'fixtures/hanjuku/g706-resume-castle-status.png')
+    screen = parse(frame)
+    assert survey._label(screen, 2) == 'スペランザ'
+    assert survey._label(screen, 3) is None
+
+
+@pytest.mark.parametrize('decision', ['map_search_candidate', 'map_castle_confirmed',
+                                     'map_registration_rejected', 'map_reanchored', None])
+def test_registration_evidence_uses_the_existing_bounded_native_frame_ring(tmp_path, decision):
+    import importlib.util
+    import json
+    path = Path(__file__).resolve().parents[1]/'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('map_registration_snapshot_test', path)
+    bot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bot)
+    frame = field()
+    state = {'step': 121, 'screen_kind': 'map', 'policy': {
+        'map_discovery': {'probe': {'age': 0}} if decision is None else {}}}
+    bot.persist(tmp_path, state, [{'decision': decision}] if decision else [],
+                {'hanjuku': IDENTITY}, actions=[], frame_sha256=frame.digest(), frame=frame)
+    row = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert row['snapshot'] == 'decision-001.png'
+    assert read_png(tmp_path/'hanjuku_frames'/row['snapshot']).digest() == frame.digest()
+
+
+@pytest.mark.parametrize('before,after,expected', [
+    ([(60, 28), (204, 188)], [(44, 28), (188, 188)], (16, 0)),
+    ([(0, 0), (32, 0), (64, 0)], [(0, 0), (32, 0)], None),
+    ([(0, 0)], [(0, 0), (32, 0)], None),
+    ([(0, 0), (32, 16)], [(80, 80), (112, 96)], (-80, -80)),
+])
+def test_roof_translation_requires_unique_two_anchor_support(before, after, expected):
+    assert survey.translation(before, after) == expected
+
+
+def test_scroll_is_measured_from_roofs_and_a_wrong_input_budget_invalidates_tracking():
+    state = {}
+    roofs = castle_roofs(field())
+    assert survey._pose(state, roofs, HOME) == (0, 0)
+    state['origin_frame'] = 'a'*64
+    state['last_input'] = [0, 1, 16]
+    scrolled = castle_roofs(field(HOME, camera=(16, 0)))
+    assert survey._pose(state, scrolled, HOME) == (16, 0)
+    assert state['cursor_world'] == [76, 28]
+    state['last_input'] = [0, 1, 1]
+    assert survey._pose(state, castle_roofs(field(HOME, camera=(32, 0))), HOME) is None
+
+
+def test_a_gap_requires_known_native_name_before_reanchoring_or_new_registration():
+    mem = home_receipt()
+    feed(mem, status('グリン'))  # unowned menu invalidates continuous tracking
+    assert 'roof_world' not in mem['map_discovery']
+    assert feed(mem, field()) == []
+    assert feed(mem, field()) == [policy.pad('a')]
+    assert feed(mem, status('アルマムーン')) == []
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert any(r['decision'] == 'map_reanchored' for r in mem['_records'])
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+
+
+@pytest.mark.parametrize('change', ['identity', 'chapter', 'digest', 'collision', 'foreign', 'readings'])
+def test_invalid_registration_envelope_never_reaches_chart_or_orders(change):
+    mem = home_receipt()
+    data = mem['map_registration']
+    if change == 'identity':
+        mem['_run_identity']['lease_id'] = 'different-lease'
+    elif change == 'chapter':
+        mem['chapter'] = 4
+    elif change == 'digest':
+        data['castles']['アルマムーン']['status_frame'] = ''
+    elif change == 'readings':
+        data['castles']['アルマムーン']['readings'] = 1
+    else:
+        name = 'ハドリバーグ' if change == 'foreign' else 'グリン'
+        data['castles'][name] = {**data['castles']['アルマムーン'], 'name': name}
+    with chart.map_context(mem):
+        assert not chart.castles(3) and not chart.orders(3)
+
+
+def test_map_context_resets_on_exceptions_and_isolates_threads_and_nested_runs():
+    mem = home_receipt()
+    with chart.map_context(mem):
+        assert chart.castles(3)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(chart.castles, 3).result() == {}
+        with pytest.raises(RuntimeError):
+            with chart.map_context(memory()):
+                assert chart.castles(3) == {}
+                raise RuntimeError('test')
+        assert chart.castles(3)
+    assert chart.castles(3) == {}
+    campaign._enter_chapter(mem, 4, reason='synthetic chapter transition')
+    assert 'map_registration' not in mem and 'map_discovery' not in mem
+
+
+def test_new_run_discards_the_old_native_map_and_adopted_active_order():
+    mem = home_receipt()
+    walk_to_grin(mem)
+    feed(mem, status('グリン')); feed(mem, status('グリン'))
+    order = dict(chart.CHAPTER_3_ORDERS[0])
+    mem.update(chart_plan={'orders': [order]}, active=order['step'])
+    _, updated = decide(field(), {'policy': mem}, run_identity={**IDENTITY, 'lease_id': 'new-lease'})
+    assert not updated['policy'].get('map_registration')
+    assert not updated['policy'].get('chart_plan') and not updated['policy'].get('active')
+    assert not chart.castles(3)
+
+
+def test_runtime_plan_with_unmeasured_endpoint_stays_unready():
+    mem = home_receipt()
+    with chart.map_context(mem):
+        assert not policy._ready(chart.CHAPTER_3_ORDERS[0], mem)
+
+
+def test_complete_synthetic_registration_returns_exhausted_orders_to_the_existing_owner():
+    mem = home_receipt()
+    # Planted complete receipt tests ownership handoff, not native geography.
+    proof = mem['map_registration']['castles']['アルマムーン']
+    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    mem['map_registration']['castles'] = {
+        n: {**proof, 'name': n, 'position': [60+32*i, 28+48*i]}
+        for i, n in enumerate(SOURCE_CASTLES[3])}
+    mem['orders'] = {o['step']: 'launched' for o in chart.all_orders(3)}
+    assert len(survey.verified_castles(mem, 3)) == 9
+    assert feed(mem, field()) is None
+
+
+@pytest.mark.parametrize('chapter', [4, 9])
+def test_generic_multi_site_and_moving_boss_are_never_static_navigation_points(chapter, monkeypatch):
+    boss = chart.boss_castle(chapter)
+    home = chart.home_castle(chapter)
+    monkeypatch.setitem(chart.CASTLES, chapter, {home: (0, 0), boss: (64, 64)})
+    assert boss not in chart.castles(chapter)
+    assert not any(o['target'] == boss for o in chart.orders(chapter))
+    order = {'target': boss, 'source': home, 'after': None}
+    mem = {'chapter': chapter, 'captured': list(chart.CASTLE_NAMES[chapter])}
+    assert not policy._ready(order, mem)
+
+
+def test_four_boss_sites_do_not_become_ordinary_interim_targets(monkeypatch):
+    home = chart.home_castle(4)
+    monkeypatch.setitem(chart.CASTLES, 4, {home: (0, 0), **{
+        site: (64*(i+1), 64) for i, site in enumerate(chart.boss_sites(4))}})
+    mem = {'chapter': 4, 'garrison': {home: ['どうし', 'ゼウス']}}
+    assert not any(chart.is_boss_castle(o['target']) for o in policy.interim_candidates(mem).values())
+    for site in chart.boss_sites(4):
+        assert not policy._ready({'target': site, 'source': home, 'after': None}, mem)
+
+
+def king_battle(mem, king, *, site='ボス', entry=True, side='attack', win=True):
+    mem['battle'] = {'away': 1, 'ally': 'ゼウス', 'enemy': king, 'castle': site,
+                     'side': side, 'enemy_hp': 0 if win else 70, 'ally_hp': 40 if win else 0,
+                     **({'entry_evidence': 'measured_boss_entry'} if entry else {})}
+    policy.battle_end(mem, 'map')
+
+
+def test_four_distinct_season_king_wins_are_not_owned_castles_or_a_single_boss_win():
+    from docich.hanjuku_map_sources import SEASON_KINGS
+    mem = {'chapter': 4, 'tick': 100, 'captured': ['マラコビア'], 'garrison': {}}
+    kings = sorted(SEASON_KINGS)
+    king_battle(mem, kings[0], site=chart.boss_sites(4)[0])
+    king_battle(mem, kings[0], site=chart.boss_sites(4)[0])
+    assert len(mem['boss_victories']) == 1 and not mem.get('boss_defeated')
+    assert mem['boss_victories'][kings[0]]['site'] == chart.boss_sites(4)[0]
+    for king in kings[1:]:
+        king_battle(mem, king)
+    assert set(mem['boss_victories']) == SEASON_KINGS
+    assert mem['boss_defeated'] == 4 and mem['chapter'] == 4
+    assert mem['captured'] == ['マラコビア'] and mem['garrison'] == {}
+    assert mem['boss_victories'][kings[-1]]['site'] is None
+
+
+@pytest.mark.parametrize('changes', [{'entry': False}, {'side': 'defense'}, {'win': False},
+                                     {'side': 'defense', 'win': False}])
+def test_unproven_season_king_result_is_never_victory_or_ownership(changes):
+    mem = {'chapter': 4}
+    king_battle(mem, 'サマカンテ', **changes)
+    assert not mem.get('boss_victories') and not mem.get('boss_defeated')
+    assert not mem.get('captured')
+    assert not mem.get('garrison')
+    assert not any((r.get('resulting_event') or '').startswith(('captured:', 'lost:'))
+                   for r in mem.get('_records', []))

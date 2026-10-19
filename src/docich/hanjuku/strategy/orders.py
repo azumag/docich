@@ -131,12 +131,21 @@ def _all_normal_captured(mem):
 def _boss_target_unlocked(order, mem):
     # An adjusted after=None (including normalized self-capture conditions),
     # a retry or a hotloaded active order cannot remove the game prerequisite.
-    if order.get('target') not in chart.BOSS_CASTLES.values():
+    if not chart.is_boss_castle(order.get('target')):
         return True
+    chapter = mem.get('chapter')
+    if chapter == 9 or (chapter == 4 and order.get('target') not in chart.boss_sites(4)):
+        return False
     return _is_boss_order(order, mem) and _all_normal_captured(mem)
 
 
 def _ready(order, mem) -> bool:
+    if mem.get('_run_identity') is not None:
+        # An adopted/hotloaded plan may outlive its native map receipt. The
+        # runtime must never navigate either endpoint from that old plan.
+        cells = chart.castles(mem.get('chapter') or 0)
+        if order.get('source') not in cells or order.get('target') not in cells:
+            return False
     if not _boss_target_unlocked(order, mem):
         return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'

@@ -87,7 +87,7 @@ def _general_visible(screen, general):
 # Y shows the whole island at 1/8 scale; each castle's flag sits at the
 # castle cell / 8 + offset (chapter 1 measured in an isolated emulator on
 # 2026-09-28, all seven flags within 1 px). Blue fill = enemy, red = ours.
-WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0)}   # chapter 2: 3 flags vs measured cells
+WORLD_MAP_OFFSET = chart.WORLD_MAP_OFFSET   # chapter 2: 3 flags vs measured cells
 WORLD_FLAG_ENEMY = (0, 64, 189)
 WORLD_FLAG_OWN = (230, 56, 90)
 WORLD_MARKER = (255, 24, 0)     # ▲ army marker on the Y view (probe-measured)
