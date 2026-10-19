@@ -26,7 +26,7 @@ DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runti
                    'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py')
 DIAGNOSTICS_TIMEOUT=60
 DIAGNOSTICS_STDOUT_MAX=65536
-DIAGNOSTICS_JSON_MAX=49152
+DIAGNOSTICS_JSON_MAX=65536
 DIAGNOSTICS_STR_MAX=500
 DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
@@ -133,6 +133,7 @@ REASON_CODES={
  'invalid Jev route key payload':'configure_jev_route_key_invalid',
  'invalid Clef credential payload':'configure_jev_route_clef_credential_invalid',
  'reconcile production only':'reconcile_production_only',
+ 'diagnostics output too large':'diagnostics_output_too_large',
  'invalid reconcile payload':'reconcile_invalid_request',
  'reviewed reconcile helper missing':'reconcile_helper_missing',
  'reviewed candidate object missing':'reconcile_object_missing',

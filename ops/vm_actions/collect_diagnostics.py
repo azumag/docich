@@ -157,7 +157,7 @@ MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
 # The gateway reads this document over SSH with a 64 KiB stdout cap and then
-# re-serializes it under a 48 KiB cap after adding its own metadata; exceeding
+# re-serializes it under a 64 KiB cap after adding its own metadata; exceeding
 # either fails the whole diagnostics operation closed. Detail reductions aim at
 # the softer MAX_JSON_BYTES target, and only the last-resort reductions below
 # fall back to this hard ceiling.
