@@ -5699,6 +5699,25 @@ def _collect_hanjuku_prediction_ownership(state_dir, data, row):
     return out
 
 
+def _collect_hanjuku_prediction_health(state_dir, errors):
+    """Bounded consecutive-error projection; never expose a record body.
+
+    The counter lives in its own record so it survives the case the durable
+    ledger is rejected by ``_load`` and cannot be rewritten (#2216).
+    """
+    record, present, readable = _bounded_prediction_record(
+        Path(state_dir) / "hanjuku_predictions_health.json")
+    if not present:
+        return None
+    record = record if readable and isinstance(record, dict) else {}
+    streak = record.get("consecutive_errors")
+    return {"present": present, "readable": readable,
+            "consecutive_errors": (streak if type(streak) is int
+                                   and 0 <= streak <= 1_000_000 else None),
+            "last_error": record.get("last_error") if record.get("last_error") in errors else None,
+            "last_ok_at": _finite_number(record.get("last_ok_at"))}
+
+
 def _collect_hanjuku_predictions(state_dir):
     """Read-only bounded projection; never expose OAuth config or API payloads."""
     present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
@@ -5726,6 +5745,9 @@ def _collect_hanjuku_predictions(state_dir):
                  "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
              "cleared": chapter(result.get("cleared")),
              "next_poll_at": _finite_number(data.get("next_poll_at"))}
+    health = _collect_hanjuku_prediction_health(state_dir, errors)
+    if health is not None:
+        entry["health"] = health
     if present and readable and row:
         try:
             ownership = _collect_hanjuku_prediction_ownership(state_dir, data, row)

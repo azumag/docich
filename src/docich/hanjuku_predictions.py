@@ -27,6 +27,12 @@ from .retroarch_boundary import read_record
 
 FILE = 'hanjuku_predictions.json'
 RESULT_FILE = 'hanjuku_prediction_result.json'
+#: Consecutive failing ticks, kept in a separate bounded record so that a ledger
+#: `_load` rejection (the #2213 class) is still observable. The ledger itself is
+#: never written when it cannot be read.
+HEALTH_FILE = 'hanjuku_predictions_health.json'
+HEALTH_SCHEMA = 1
+MAX_ERROR_STREAK = 1_000_000
 MAX_CANCEL_SNAPSHOT_BYTES = 256 * 1024
 POLL_SECONDS = 30
 RETRY_SECONDS = 300
@@ -437,6 +443,58 @@ def summary(state):
             'next_poll_at': state.get('next_poll_at')}
 
 
+def _bounded_clock(value):
+    return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+def _health(root):
+    """Prior health record, or an empty one when unreadable/untrusted."""
+    try:
+        record = read_record(root / HEALTH_FILE, limit=4096)
+    except Exception:
+        return {}
+    if type(record.get('schema')) is not int or record['schema'] != HEALTH_SCHEMA:
+        return {}
+    return record
+
+
+def _update_health(root, outcome, now):
+    """Best-effort consecutive-error counter; never changes the prediction.
+
+    A failing tick must stay observable even when ``_load`` rejects the durable
+    ledger and the ledger therefore cannot be rewritten. Only fixed error codes,
+    counters and clocks are persisted, and a health write failure is ignored so
+    the prediction path is never held or failed by telemetry.
+    """
+    try:
+        prior = _health(root)
+        streak = prior.get('consecutive_errors')
+        streak = streak if type(streak) is int and 0 <= streak <= MAX_ERROR_STREAK else 0
+        failed = outcome.get('mode') == 'error'
+        error = outcome.get('error') if failed else None
+        error = error if error in ERRORS else ('unexpected' if failed else None)
+        record = {
+            'schema': HEALTH_SCHEMA,
+            'consecutive_errors': min(streak + 1, MAX_ERROR_STREAK) if failed else 0,
+            'last_error': error,
+            'last_error_at': _bounded_clock(now if failed else prior.get('last_error_at')),
+            'last_ok_at': _bounded_clock(prior.get('last_ok_at') if failed else now),
+        }
+        atomic_write_json(root / HEALTH_FILE, record)
+    except Exception:
+        pass
+
+
+def _note_health_after_failure(root, now):
+    """Record an unreadable-ledger tick; skip when another tick holds the lock."""
+    try:
+        with locked(root) as acquired:
+            if acquired:
+                _update_health(root, {'mode': 'error', 'error': 'invalid_state'}, now)
+    except Exception:
+        pass
+
+
 def _advance(g, root, state, identity, now, enabled, ending_window, client_factory):
     row = state.get('round')
     # Capture completion and record BEFORE checking pauses, auth or API cooldown.
@@ -681,6 +739,9 @@ def tick(g, identity=None, *, now=None, client_factory=configured_client):
                 # Malformed ledgers themselves never reach this write path.
                 state.update(mode='error', error='invalid_state', next_poll_at=now + RETRY_SECONDS)
             atomic_write_json(root / FILE, state)
-            return summary(state)
+            outcome = summary(state)
+            _update_health(root, outcome, now)
+            return outcome
     except Exception:
+        _note_health_after_failure(root, now if now is not None else time.time())
         return {'mode': 'error', 'error': 'invalid_state'}

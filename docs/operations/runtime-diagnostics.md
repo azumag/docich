@@ -1038,3 +1038,15 @@ boolean / 有界整数だけで示す。出すのは `retry_delay_seconds`（0�
 記録の本文・視聴者名は出力しない。これは検証ロジックの再実装ではなく、
 決定的な記録の所在を示す有界な分類であり、修正の要否は実測と
 `docs/features/yosou-oh-corner.md` の記録契約に従って判断する。
+
+### 半熟英雄の予想 tick の連続失敗（#2216）
+
+`hanjuku_predictions` に `health` を足す（`hanjuku_predictions_health.json` が在る場合だけ）。
+ledger 自体を `_load` が拒否すると tick は ledger を書き換えられないため、連続失敗は
+別の有界記録に残す。出すのは `present` / `readable` と、`consecutive_errors`
+（0〜1000000。error mode の tick で +1、error 以外の tick で 0）、
+`last_error`（`error` と同じ固定語彙、無ければ null）、`last_ok_at`
+（最後に error 以外で tick が完了した時刻、無ければ null）だけ。
+health の読み書き失敗は予想の結果・ledger・API 呼び出しを変えない。
+health 記録は regular file・symlink拒否・16KiB上限で読み、記録の本文や
+任意文字列は投影しない。

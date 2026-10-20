@@ -446,6 +446,13 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   読み上げは従来どおり的中率ボードのみ（(c) は採らない）。実装は `yoso_view`（§3.1）。
 - **8-6（解決・本案）** 部門ごとの最低数: 的中率は `min_rounds`（既定 3）、
   参加・ポイント部門は `min_participations`（既定 1）。`min_rounds` を流用しない（§3.1）。
+- **8-7（未決 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの
+  遠隔復旧経路。実測では WebUI の `POST /api/predictions/action`（`cancel` / `sync`）は
+  *Soren 側* `twitch_predictions.sh` と `tmp/state/current_prediction.json` を操作する経路で、
+  半熟の durable ledger `hanjuku_predictions.json` は操作しない。したがって現状、半熟の
+  round を止める正規の遠隔操作は無く、オーナーが手元で操作するか、恒久修正を配備して
+  tick に受理させる以外にない。固定 operation を足すか WebUI 専用のまま制約を明記するかは
+  オーナー判断。連続失敗の可視化だけは診断へ実装済み（`docs/operations/runtime-diagnostics.md`）。
 
 ## 9. 検証
 
