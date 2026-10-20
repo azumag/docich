@@ -30,7 +30,7 @@ class RestartSorenBgmTest(unittest.TestCase):
         self.assertIn("restart_soren_bgm.sh", text)
         self.assertIn('"exec docich production $SHA"', text)
 
-    def _run(self, *, same_pid=False, exec_ok=True, pulseaudio_pids=(), cgroups=None, proc_root_missing=False, pulseaudio_appears_after_restart=False):
+    def _run(self, *, same_pid=False, exec_ok=True, pulseaudio_pids=(), cgroups=None, proc_root_missing=False, pulseaudio_appears_after_restart=False, unit_user="ubuntu"):
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             bindir = d / "bin"
@@ -51,6 +51,10 @@ class RestartSorenBgmTest(unittest.TestCase):
                 fi
                 if [[ "$*" == "show soren-bgm.service --property=MainPID --value" ]]; then
                   cat "$FAKE_PID_STATE"
+                  exit 0
+                fi
+                if [[ "$*" == "show soren-bgm.service --property=User --value" ]]; then
+                  printf '%s\n' "${{FAKE_UNIT_USER:-ubuntu}}"
                   exit 0
                 fi
                 exit 99
@@ -88,6 +92,16 @@ class RestartSorenBgmTest(unittest.TestCase):
                 )
             else:
                 pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            # Record the -u argument so the contract test can assert that the
+            # unit's own user is scanned rather than whoever runs the helper.
+            pgrep.write_text(
+                pgrep.read_text(encoding="utf-8").replace(
+                    "#!/usr/bin/env bash\n",
+                    '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >>"$FAKE_PGREP_LOG"\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
             pgrep.chmod(0o755)
             proc_root = d / "proc"
             if not proc_root_missing:
@@ -97,15 +111,19 @@ class RestartSorenBgmTest(unittest.TestCase):
                     (entry / "cgroup").write_text(content, encoding="utf-8")
                 proc_root.mkdir(parents=True, exist_ok=True)
             sudo_log = d / "sudo.log"
+            pgrep_log = d / "pgrep.log"
             env = {
                 **os.environ,
                 "PATH": f"{bindir}:/usr/bin:/bin",
                 "FAKE_PID_STATE": str(state),
                 "FAKE_SUDO_LOG": str(sudo_log),
                 "SOREN_BGM_PROC_ROOT": str(proc_root),
+                "FAKE_UNIT_USER": unit_user,
+                "FAKE_PGREP_LOG": str(pgrep_log),
             }
             result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
             result.sudo_log = sudo_log.read_text(encoding="utf-8") if sudo_log.exists() else ""
+            result.pgrep_log = pgrep_log.read_text(encoding="utf-8") if pgrep_log.exists() else ""
             return result
 
     def test_success_restarts_only_fixed_service(self):
@@ -123,6 +141,10 @@ class RestartSorenBgmTest(unittest.TestCase):
         self.assertEqual(result.returncode, 12)
 
     # ---- docich #2008: never restart over a shared PulseAudio server -------
+
+    def test_guard_scans_the_unit_user_not_the_caller(self):
+        result = self._run(pulseaudio_pids=(4242,), cgroups={}, unit_user="ubuntu")
+        self.assertIn("-u ubuntu -x pulseaudio", result.pgrep_log)
 
     def test_pulseaudio_in_the_unit_cgroup_blocks_the_restart(self):
         result = self._run(
@@ -162,7 +184,8 @@ class RestartSorenBgmTest(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("pulseaudio_in_bgm_cgroup", text)
         self.assertIn('[[ "$cgroup" == *"/$unit"* ]]', text)
-        self.assertIn('pgrep -u "$(id -un)" -x pulseaudio', text)
+        self.assertIn('pgrep -u "$owner" -x pulseaudio', text)
+        self.assertIn('systemctl show "$unit" --property=User --value', text)
         self.assertEqual(text.count("if pulseaudio_in_bgm_cgroup; then"), 2)
         self.assertIn("exit 15", text)
         self.assertIn("exit 16", text)

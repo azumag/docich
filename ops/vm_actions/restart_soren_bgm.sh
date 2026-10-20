@@ -20,7 +20,15 @@ proc_root="${SOREN_BGM_PROC_ROOT:-/proc}"
 # user units (`systemctl --user start pulseaudio.socket pulseaudio.service`)
 # installed by install_soren_runtime_service.sh, which no longer spawns here.
 pulseaudio_in_bgm_cgroup() {
-  local pid cgroup
+  local pid cgroup owner
+  # Scan the unit's own user, never the caller's: this helper may run as root,
+  # and a root-scoped pgrep would miss the stray server it must catch. Any
+  # process inside this unit's cgroup necessarily runs as that unit user.
+  owner="$(systemctl show "$unit" --property=User --value 2>/dev/null || true)"
+  case "$owner" in
+    ''|*[!A-Za-z0-9_.-]*) owner="$(id -un)" ;;
+    root) owner="$(id -un)" ;;
+  esac
   while IFS= read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     cgroup="$(cat "$proc_root/$pid/cgroup" 2>/dev/null || true)"
@@ -32,7 +40,7 @@ pulseaudio_in_bgm_cgroup() {
       echo "pulseaudio pid $pid is inside the $unit cgroup; refusing to restart over the shared audio server" >&2
       return 0
     fi
-  done < <(pgrep -u "$(id -un)" -x pulseaudio 2>/dev/null || true)
+  done < <(pgrep -u "$owner" -x pulseaudio 2>/dev/null || true)
   return 1
 }
 
