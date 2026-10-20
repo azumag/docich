@@ -97,12 +97,30 @@ class TestRightStatusData:
         assert cards['ブラッキー']['drops'] is False
         assert cards['ブラッキー']['携行'] is False
 
-    def test_carried_defaults_to_held(self):
+    def test_unknown_carry_is_not_promoted_to_usable(self):
+        # 携行を確認していない在庫は、携行済みにも使用候補にもしない (fail-closed)。
         data = ref.right_status_data(
             'クミン', 'しゅじんこう',
             held_cards=['イッテツーン'])
         cards = {c['card']: c for c in data['cards']}
+        assert cards['イッテツーン']['携行'] is None
+        assert data['droppers'] == []
+
+    def test_explicit_empty_carry_has_no_candidates(self):
+        data = ref.right_status_data(
+            'クミン', 'しゅじんこう',
+            held_cards=['イッテツーン'], carried_cards=[])
+        cards = {c['card']: c for c in data['cards']}
+        assert cards['イッテツーン']['携行'] is False
+        assert data['droppers'] == []
+
+    def test_known_carry_is_a_candidate_when_it_drops_the_egg(self):
+        data = ref.right_status_data(
+            'クミン', 'しゅじんこう',
+            held_cards=['イッテツーン'], carried_cards=['イッテツーン'])
+        cards = {c['card']: c for c in data['cards']}
         assert cards['イッテツーン']['携行'] is True
+        assert data['droppers'] == ['イッテツーン']
 
     def test_empty_cards(self):
         data = ref.right_status_data('クミン', 'しゅじんこう')

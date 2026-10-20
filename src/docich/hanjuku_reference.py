@@ -754,17 +754,18 @@ def right_status_data(enemy_name: str | None, ally_name: str | None,
 
     敵・味方将軍の詳細、所持切り札、卵落予測をまとめる。
     held_cards: 現在の所持品（在庫全体）。carried_cards: この戦闘へ携行していて
-    実際に使える札。carried_cards が None の場合は held_cards と同じ扱い。
-    未携行の在庫を使用候補にしない。
+    実際に使える札。carried_cards が None は「携行不明」であり、在庫を携行済みや
+    使用候補へ昇格させない (携行 None・droppers 空)。空リストは「携行なし」。
     """
     pred = egg_drop_prediction(enemy_name, ally_name)
     held = list(held_cards or [])
-    carried = list(carried_cards if carried_cards is not None else (held_cards or []))
-    droppers = egg_droppers(carried, pred['max_hp_sum']) if pred['max_hp_sum'] is not None else []
+    carried = None if carried_cards is None else list(carried_cards)
+    droppers = (egg_droppers(carried, pred['max_hp_sum'])
+                if carried is not None and pred['max_hp_sum'] is not None else [])
     cards_info = []
     for card in dict.fromkeys(held):
         info = card_egg_drop_info(card, enemy_name, ally_name)
-        info['携行'] = card in carried
+        info['携行'] = None if carried is None else card in carried
         cards_info.append(info)
     return {
         'enemy': general_full_view(enemy_name),
