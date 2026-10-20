@@ -1046,6 +1046,42 @@ class TestHttpHandlers(unittest.TestCase):
             sock.close()
             self.g.webui.token = ""
 
+    def _raw_get_with_body(self, path, body):
+        # issue #2415 (do_GET): body を付けた GET を送り、応答の先頭行を返す。
+        # 送信中に RST が来ると sendall/recv が ConnectionResetError で落ちる。
+        import socket as _socket
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("GET " + path + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        return buf.split(b"\r\n", 1)[0]
+
+    def test_get_unauthorized_with_unread_body_is_not_reset(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            status_line = self._raw_get_with_body("/api/health", b"x" * (200 * 1024))
+        finally:
+            self.g.webui.token = ""
+        self.assertIn(b"401", status_line)
+
+    def test_get_root_with_unread_body_is_not_reset(self):
+        status_line = self._raw_get_with_body("/", b"x" * (200 * 1024))
+        self.assertIn(b"200", status_line)
+
     def test_beta_control_oversized_body_is_not_reset(self):
         # issue #2415 (_handle_beta_control): 長さ上限 (4096) を超える本文を読まずに
         # 400 で返すと、送信中のクライアントが RST を受けて応答を読めない。

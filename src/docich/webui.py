@@ -3481,6 +3481,8 @@ class _Handler(BaseHTTPRequestHandler):
                 # token 入力フォームを表示する必要があるため認証不要で常に返す。
                 # query token は廃止済み (issue #41): ログイン手順はフォーム入力→
                 # sessionStorage 保存のみで、URL 経由の token 受け渡しは行わない。
+                # body を付けた GET は読まずに 200 で閉じると RST になり得る (issue #2415)。
+                self._drain_declared_body()
                 snapshot, resource_status = self.resources.refresh()
                 body = snapshot.html
                 self.send_response(200)
@@ -3495,6 +3497,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if not self._check_auth():
                 status = 401
+                self._drain_declared_body()
                 self._send_error_json(401, "unauthorized", "token required")
                 return
             if path == "/api/health":
