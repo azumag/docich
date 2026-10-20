@@ -701,3 +701,138 @@ def test_p2_sparse_canceled_without_evidence_keeps_the_round_pending(env, monkey
     assert len(calls) == 1
     assert any(s.get('outcomes', [{}])[0].get('users') == 0 for s in calls[0] if s)
     assert env.state()['round']['status'] == 'CANCELED'
+
+
+@pytest.mark.parametrize('operation', ['cancel', 'sync'])
+def test_p1_malformed_result_survives_a_transient_record_failure(env, operation, monkeypatch):
+    """P1: the pending (retry) row must also be loader-acceptable.
+
+    A malformed result that survives in a *pending* row makes the next ordinary
+    tick fail in `_load` with `invalid_state`, so the retry that consumes the
+    snapshot can never run.
+    """
+    import docich.hanjuku_predictions as hp
+
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome['users'] = 1 if outcome['id'] == 'outcome-0' else 0
+        outcome['channel_points'] = 10 if outcome['id'] == 'outcome-0' else 0
+
+    if operation == 'sync':
+        env.remote.rows[0]['status'] = 'CANCELED'
+        _break_result(env)
+        monkeypatch.setattr(hp, '_record_canceled',
+                            lambda *a, **kw: (_ for _ in ()).throw(api.APIError('leaderboard')))
+        result = control.sync(env.g, client_factory=env.factory, now=200)
+        assert result['outcome'] == 'canceled_record_pending'
+    else:
+        _break_result(env)
+        calls = {'n': 0}
+        real = hp._record_canceled
+
+        def flaky(root, now, client, *, sources=()):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise api.APIError('leaderboard')
+            return real(root, now, client, sources=sources)
+
+        monkeypatch.setattr(hp, '_record_canceled', flaky)
+        result = control.cancel(env.g, client_factory=env.factory, now=200)
+        assert result['outcome'] == 'canceled_record_pending'
+
+    # The untrusted evidence was preserved and the pending row is loadable.
+    evidence = list(env.g.state_dir.glob('hanjuku_prediction_recovered_result_*.json'))
+    assert len(evidence) == 1
+    state = p._load(env.g.state_dir, 1)          # ordinary loader accepts
+    assert state['round']['status'] == 'LOCKED'
+    assert state['round']['result'] is None
+
+    # The next ordinary tick reaches the retry and records the same id once.
+    recorded = []
+    monkeypatch.setattr(hp, '_record_canceled',
+                        lambda root, now, client, **kw: recorded.append(kw.get('sources')))
+    env.remote.calls.clear()
+    outcome = p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert outcome['error'] is None
+    assert len(recorded) == 1
+    assert not [c for c in env.remote.calls if c[0] == 'POST']
+
+    # And a later runtime still creates normally.
+    later = {**ID, 'runtime_id': 'g2-abcdef', 'generation': 2, 'lease_id': 'lease2'}
+    runtime = env.g.state_dir / 'runtimes' / later['runtime_id']
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(runtime / 'hanjuku_run.json', {**later, 'schema': 1})
+    atomic_write_json(env.g.state_dir / 'game_switch.json', {'phase': 'ready', 'active': later})
+    env.remote.allow_create = True
+    env.remote.calls.clear()
+    assert p.tick(env.g, later, now=300, client_factory=env.factory)['mode'] == 'active'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_p2_transient_failure_then_tick_keeps_the_snapshot_counts(env, monkeypatch):
+    """P2: a sparse CANCELED response must not overwrite richer saved evidence.
+
+    After a transient `leaderboard` failure the ordinary tick passes
+    `(remote, snapshot)` to `_record_canceled`. The sparse remote must not win
+    over the snapshot that still carries the real 1 person / 10 points.
+    """
+    import docich.hanjuku_predictions as hp
+
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome['users'] = 1 if outcome['id'] == 'outcome-0' else 0
+        outcome['channel_points'] = 10 if outcome['id'] == 'outcome-0' else 0
+
+    titles = [{'id': o['id'], 'title': o['title']} for o in env.remote.rows[0]['outcomes']]
+    title = env.remote.rows[0]['title']
+
+    # The CANCELED response, and any later GET, omit the counts entirely.
+    patched = {'v': False}
+
+    def sparse_end(prediction_id, status, outcome_id=None):
+        patched['v'] = True
+        return [{'id': prediction_id, 'title': title, 'status': status, 'outcomes': titles}]
+
+    def sparse_list(prediction_id=None):
+        # Before the PATCH the round is still LOCKED and carries its counts;
+        # only the post-PATCH CANCELED response omits them.
+        env.remote.calls.append(('GET', prediction_id))
+        return [{'id': 'prediction-0', 'title': title,
+                 'status': 'CANCELED' if patched['v'] else 'LOCKED',
+                 'outcomes': titles if patched['v'] else
+                 [{'id': o['id'], 'title': o['title'], 'users': o['users'],
+                   'channel_points': o['channel_points']}
+                  for o in env.remote.rows[0]['outcomes']]}]
+
+    env.remote.end = sparse_end
+    env.remote.list = sparse_list
+
+    real = hp._record_canceled
+    calls = {'n': 0}
+
+    def flaky(root, now, client, *, sources=()):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise api.APIError('leaderboard')
+        return real(root, now, client, sources=sources)
+
+    monkeypatch.setattr(hp, '_record_canceled', flaky)
+    assert control.cancel(env.g, client_factory=env.factory, now=200)['outcome'] == \
+        'canceled_record_pending'
+    # Evidence is still on disk for the retry.
+    assert len(list(env.g.state_dir.glob('hanjuku_prediction_cancel_*.json'))) == 1
+
+    # Let the ordinary tick perform the retry for real.
+    monkeypatch.setattr(hp, '_record_canceled', real)
+    env.remote.calls.clear()
+    outcome = p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert outcome['error'] is None
+
+    ledger = json.loads((env.g.state_dir / 'prediction_leaderboard.json').read_text())
+    rounds = ledger['rounds']
+    assert list(rounds) == ['prediction-0']
+    row = rounds['prediction-0']
+    # The saved 1 person / 10 points survived the sparse response.
+    assert sum(o['users'] for o in row['outcomes']) == 1
+    assert sum(o['points'] for o in row['outcomes']) == 10
+    assert row['cancel_reason'] == 'no-contest'
+    # Recorded exactly once and the snapshot was consumed.
+    assert not list(env.g.state_dir.glob('hanjuku_prediction_cancel_*.json'))

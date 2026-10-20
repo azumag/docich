@@ -738,6 +738,12 @@ ledger `hanjuku_predictions.json` は触らない）。正規の遠隔復旧は 
   `invalid_state` で止まる）。証拠を保存できなければ拒否する。
 - 不成立キャンセルの記帳根拠は CANCELED 応答の shape に依存させない。応答が counts を
   省いても、取消前に保存した no-contest snapshot から記帳する。記帳できるまで DONE にしない。
+  通常 tick も `sources=(remote, snapshot)` を渡すため、`_record_canceled` は証拠の濃さ
+  （`top_predictors` あり > counts あり > なし）で candidate を選び、sparse な応答で
+  保存済みの人数・ポイントを 0/0 に劣化させない。
+- 一時的な記帳失敗で未解決のまま残る row（`*_record_pending`）も、malformed な `result` を
+  保持していると次tickが `_load` で `invalid_state` になり再試行できない。終端時だけでなく
+  pending 時も証拠を退避してから永続化する。
 - `check-` は所有台帳を検証できない場合も拒否する（apply と同じ判定）。
 - 本番 profile は script が `--config config/docich.soren-live.toml` で明示的に束縛する
   （gateway 環境は `DOCICH_CONFIG` を継承しない）。

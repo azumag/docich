@@ -344,6 +344,20 @@ def _no_contest(remote):
     return counted is not None and counted <= 1
 
 
+def _evidence_rank(remote):
+    """How much participation one candidate row proves; richer always wins.
+
+    A sparse ``CANCELED`` response that omits ``users``/``channel_points`` must
+    never be recorded in place of a source that still carries the counts: the
+    record would show 0 participants and 0 points while the real evidence is
+    deleted with the snapshot. Ranking keeps the best available source
+    regardless of the order the caller passes them in.
+    """
+    if _has_predictors(remote):
+        return 2
+    return 1 if _contested_outcomes(remote) is not None else 0
+
+
 def _record_settled(root, remote, now, client):
     """Record one RESOLVED prediction in the 予想王 leaderboard (fail-closed).
 
@@ -460,8 +474,7 @@ def _record_canceled(root, now, client, *, sources=()):
             leaderboard.extract(annotated)
         except leaderboard.LeaderboardError:
             raise APIError('invalid_response') from None
-        if candidate is None or (_has_predictors(annotated)
-                                 and not _has_predictors(candidate)):
+        if candidate is None or _evidence_rank(annotated) > _evidence_rank(candidate):
             candidate = annotated
     if candidate is None or not _has_predictors(candidate):
         prediction_id = next((s.get('id') for s in sources
@@ -471,7 +484,8 @@ def _record_canceled(root, now, client, *, sources=()):
             match = next((r for r in rows
                           if isinstance(r, dict) and r.get('id') == prediction_id), None)
             annotated = _canceled_candidate(match)
-            if annotated is not None and (candidate is None or _has_predictors(annotated)):
+            if annotated is not None and (candidate is None
+                                         or _evidence_rank(annotated) > _evidence_rank(candidate)):
                 candidate = annotated
     if candidate is None:
         raise APIError('invalid_response')

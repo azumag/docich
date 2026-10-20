@@ -248,12 +248,13 @@ def cancel(g, *, client_factory=None, now=None):
                     # Report the pending write rather than claiming completion.
                     outcome = "canceled_record_pending"
                     terminal = False
+        # A result the ordinary loader refuses must never be persisted, in a
+        # pending row as much as in a tombstone: otherwise the very next tick
+        # fails in `_load` and can never reach the retry that records it.
+        _quiesce_result(root, row)
         if terminal:
             # Terminal tombstone for this attempt, never `round=None`.
             row["status"] = "CANCELED"
-            # A result the ordinary loader refuses must not survive in a
-            # tombstone, or every later tick (and later runtime) stays stuck.
-            _quiesce_result(root, row)
             state.update(mode="canceled", error=None, next_poll_at=0)
         else:
             # Keep the round unresolved: the next tick re-observes CANCELED and
@@ -293,13 +294,17 @@ def sync(g, *, client_factory=None, now=None):
             outcome = "remote_absent"
         elif remote.get("status") in predictions.DONE:
             # The remote already ended this round. Record the outcome the
-            # normal tick would have recorded, then clear local ownership.
+            # normal tick would have recorded, then leave a terminal tombstone.
+            # A transient ledger failure keeps the row unresolved so the next
+            # tick re-observes the same remote state and retries exactly once.
+            pending = False
             if remote["status"] == "RESOLVED":
                 try:
                     predictions._record_settled(root, remote, now, client)
                 except APIError as exc:
-                    if exc.code != "invalid_response":
-                        raise ControlRefused(f"ledger_{exc.code}") from None
+                    # `invalid_response` mirrors the tick: the row is terminal
+                    # and is never retried.
+                    pending = exc.code != "invalid_response"
             else:
                 # Both the terminal row and any snapshot saved before the
                 # cancel are legitimate sources; neither is required to carry
@@ -310,17 +315,18 @@ def sync(g, *, client_factory=None, now=None):
                 if sources:
                     try:
                         predictions._record_canceled(root, now, client, sources=sources)
+                        predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
                     except APIError as exc:
-                        if exc.code != "invalid_response":
-                            # Leave the round unresolved so the next tick
-                            # re-observes CANCELED and records this id once.
-                            raise ControlRefused(f"ledger_{exc.code}") from None
-                    predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
-            # Terminal tombstone: `_advance` refuses a second wager in a run
-            # whose round is already DONE, and a later runtime still creates.
-            row["status"] = remote["status"]
-            state.update(mode=remote["status"].lower(), error=None, next_poll_at=0)
-            outcome = remote["status"].lower()
+                        pending = exc.code != "invalid_response"
+            if pending:
+                outcome = f"{remote['status'].lower()}_record_pending"
+                state.update(mode="settling", error=None, next_poll_at=0)
+            else:
+                # Terminal tombstone: `_advance` refuses a second wager in a run
+                # whose round is already DONE, and a later runtime still creates.
+                row["status"] = remote["status"]
+                state.update(mode=remote["status"].lower(), error=None, next_poll_at=0)
+                outcome = remote["status"].lower()
         else:
             # Re-adopt the live round with the authoritative ids/status only.
             # Target, middle and the outcome titles stay exactly as recorded.
@@ -335,10 +341,10 @@ def sync(g, *, client_factory=None, now=None):
             row.update(id=remote["id"], outcome_ids=adopted, status=remote["status"])
             state.update(mode="active", error=None, next_poll_at=0)
             outcome = "adopted"
-        if row["status"] in predictions.DONE:
-            # A result the ordinary loader refuses must not survive in a
-            # tombstone, or every later tick (and later runtime) stays stuck.
-            _quiesce_result(root, row)
+        # A result the ordinary loader refuses must never be persisted, in a
+        # pending row as much as in a tombstone: otherwise the very next tick
+        # fails in `_load` and can never reach the retry that records it.
+        _quiesce_result(root, row)
         atomic_write_json(root / predictions.FILE, state)
         predictions._update_health(root, {"mode": state.get("mode"), "error": None}, now)
     return {"operation": "sync", "outcome": outcome, "prediction_id": row.get("id")}

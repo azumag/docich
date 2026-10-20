@@ -494,6 +494,16 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   `channel_points` を省いても、取消前に LOCKED の counts から保存した no-contest snapshot を
   記帳根拠として引き継ぐ。証明できた source だけで `_record_canceled` を呼び、記帳できて
   いない間は round を DONE にしない（snapshot を孤児にしない）。
+  さらに `_record_canceled` 自身が **証拠の濃さで candidate を選ぶ**（`_evidence_rank`:
+  `top_predictors` あり > counts あり > なし）。operator 側で filter しても、通常 tick は
+  `sources=(remote, snapshot)` を渡すため、sparse な CANCELED 応答が保存済みの人数・ポイントを
+  0/0 で上書き記帳して snapshot を消す経路が残る。tick 側でも濃い証拠が必ず勝つようにする。
+- **一時的な記帳失敗の未解決 row も通常 loader が受理できるようにする。** 記帳失敗で
+  `canceled_record_pending` / `resolved_record_pending` になった row は未解決のまま残すが、
+  malformed な `result` を保持したままだと次tickが `_load` で `invalid_state` になり、
+  snapshot を消費する再試行へ到達できない。operator は終端時だけでなく **pending 時も
+  `_quiesce_result` を通して**から永続化する。sync も拒否で終わらせず、同じ pending row を
+  永続化して次tickの再試行に引き継ぐ。
 - **remote の「不在」と「所有権不一致」を区別する。** 同じ prediction id を返すが title や
   outcome id が一致しない場合は `remote_mismatch` で fail-closed し、ローカル所有を消さない。
   GET が実際に対象 id を返さなかった場合だけ不在として扱う。
