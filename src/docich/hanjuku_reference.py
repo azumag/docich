@@ -872,7 +872,7 @@ def general_strength(name: str | None):
     return GENERAL_STATS.get(name) if name else None
 
 
-# 強制解雇で選ぶ「弱い将軍」の順序 (Issue #2367、owner 2026-10-20)。
+# 強制解雇で選ぶ「弱い将軍」の順序 (Issue #2367、owner 2026-10-20 20:45 採用)。
 # 採用した順序:
 #   1. 卵なし (静的なエッグ種別 '－')
 #   2. HP × 戦闘 が小さい (HP は最大HP。現在HPの負傷は使わない)

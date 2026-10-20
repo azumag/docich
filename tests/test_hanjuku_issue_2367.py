@@ -27,6 +27,15 @@ def test_equal_hp_and_combat_prefers_the_non_mounted_general():
     assert weakest_general(['グリッシーニ', 'チキータ'])[0] == 'チキータ'
 
 
+
+def test_owner_adopted_order_uses_max_hp_and_ignores_egg_type_rank():
+    # Same eggless status, same 54 = HP x combat, same non-mounted class:
+    # the lower max HP wins even though the egg types differ.
+    assert weakest_general(['クミン', 'チコリ', 'レモン'])[0] == 'チコリ'
+    # クミン and レモン have identical HP/combat/horse; only the egg type
+    # differs and it is not ranked, so the name order is the final rule.
+    assert weakest_general(['レモン', 'クミン'])[0] == 'クミン'
+
 def test_unknown_name_never_confirms_a_weakest_candidate():
     target, evidence = weakest_general(['ゼウス', '未読のしょうぐん'])
     assert target is None and evidence['unresolved'] == ['未読のしょうぐん']

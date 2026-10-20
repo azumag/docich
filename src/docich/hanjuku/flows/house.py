@@ -395,20 +395,20 @@ def _defer_unsafe_house_route(mem):
 def _next_general(mem):
     from ... import hanjuku_chart as chart
     from ..os_layer.world import _owned
-    from ..strategy.economy import WAGE_RESERVE
+    from ..strategy.economy import WAGE_SPEND_HOLD
     state = mem['house']
     pending = state.get('pending') or []
     if not pending:
         _phase(state, 'close')
         return
-    if not affordable_gift(mem.get('gold'), WAGE_RESERVE):
+    if not affordable_gift(mem.get('gold'), WAGE_SPEND_HOLD):
         # Without this record an unaffordable trip closes silently and the
         # owner sees "the general never entered the house" with no evidence
         # (g530 2026-10-01 09:20:30: ゼウス broken, gold≈18-31 < 80).
         _record(mem, 'general_deferred',
                 observed_metric={'gold': mem.get('gold'), 'pending': list(pending),
-                                 'need': min(cost for _, cost in GIFTS) + WAGE_RESERVE},
-                reason='所持金では家の贈り物と賃金予備を賄えないため派遣せず保留（次スキャンで再判定）')
+                                 'need': min(cost for _, cost in GIFTS) + WAGE_SPEND_HOLD},
+                reason='所持金では破損卵の修理費（家の贈り物）を賄えないため派遣せず保留（次スキャンで再判定）')
         _phase(state, 'close')
         return
     name = pending.pop(0)
@@ -1001,7 +1001,7 @@ def _repair_step(screen, mem, frame):
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
     from ..os_layer.world import _owned
-    from ..strategy.economy import WAGE_RESERVE
+    from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
@@ -1114,7 +1114,7 @@ def _repair_step(screen, mem, frame):
             return []
         if not _repair_hp_ready(info):
             return _exit(mem, '派遣確定前に全快HPを確認できないため出撃を取り消す')
-        if not affordable_gift(mem.get('gold'), WAGE_RESERVE):
+        if not affordable_gift(mem.get('gold'), WAGE_SPEND_HOLD):
             return _exit(mem, '派遣前に修理資金が不足したため出撃を取り消す')
         if _defer_unsafe_house_route(mem):
             return []
@@ -1196,9 +1196,9 @@ def _repair_step(screen, mem, frame):
                     observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold')},
                     reason='家の贈り物一覧と価格を実画面で確認')
             gold = (screen.header or {}).get('gold')
-            gift = affordable_gift(gold, WAGE_RESERVE)
+            gift = affordable_gift(gold, WAGE_SPEND_HOLD)
             if not gift:
-                _record(mem, 'purchase_skipped', reason='到着時の所持金では賃金を残せないため購入しない')
+                _record(mem, 'purchase_skipped', reason='到着時の所持金では破損卵の修理費（実費）を支払えないため購入しない')
                 _phase(state, 'decline')
                 return []
             state['purchase'] = {'item': gift[0], 'cost': gift[1], 'gold_before': gold,
@@ -1213,7 +1213,7 @@ def _repair_step(screen, mem, frame):
             return []
         buy = state['purchase']
         gold = (screen.header or {}).get('gold')
-        if type(gold) is not int or gold < buy['cost'] + WAGE_RESERVE:
+        if type(gold) is not int or gold < buy['cost'] + WAGE_SPEND_HOLD:
             return _exit(mem, '購入直前の所持金を確認できないため購入しない')
         move = menu_to(screen, buy['item'], exact=False)
         if move == 'here':
