@@ -31,6 +31,16 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   production の任意コマンド結果を Actions へ公開してはならない。
 - `stream_title_sync` は Soren の owner-only journal 1ファイルだけを読む。最大32KiB、最新行だけを許可schemaで検証し、現在の Soren gitlink SHA と一致し15分以内の記録に限って platform enum / skip reason を表示する。
 
+## ゲスト OS 無応答時は diagnostics を使えない
+
+diagnostics は SSH gateway とゲスト OS 上の collector に依存する。SSH の banner exchange が
+タイムアウトし管理 WebUI も応答しない状態では、この経路は復旧にも原因調査にも使えない。
+その場合は `docs/operations/vm-guest-unresponsive-recovery.md` の帯域外通常再起動
+（オーナー明示承認・通常再起動・公開 A/V 再受入）に従う。
+
+復旧後は diagnostics の固定 field と時刻を Issue へ転記する。Actions の run 履歴は
+失われることがあり、run ID だけでは後から証拠を再取得できない。
+
 ## 汎用 PID helper の診断専用契約（#2469 follow-up）
 
 `ops/vm_actions/safe_pid_cleanup.py` は、既存 API 名
