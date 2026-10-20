@@ -1078,9 +1078,16 @@ class TestHttpHandlers(unittest.TestCase):
             self.g.webui.token = ""
         self.assertIn(b"401", status_line)
 
-    def test_get_root_with_unread_body_is_not_reset(self):
-        status_line = self._raw_get_with_body("/", b"x" * (200 * 1024))
+    def test_get_root_with_unread_body_is_drained(self):
+        # RST の発生はタイミング依存で決定的に観測できないため、drain が宣言長で
+        # 呼ばれたことを数える (issue #2415)。修正前は呼ばれず必ず落ちる。
+        size = 200 * 1024
+        original = webui._Handler._drain_oversized_body
+        with mock.patch.object(webui._Handler, "_drain_oversized_body", autospec=True,
+                               side_effect=original) as drain:
+            status_line = self._raw_get_with_body("/", b"x" * size)
         self.assertIn(b"200", status_line)
+        self.assertIn(mock.call(mock.ANY, size), drain.call_args_list)
 
     def test_beta_control_oversized_body_is_not_reset(self):
         # issue #2415 (_handle_beta_control): 長さ上限 (4096) を超える本文を読まずに
