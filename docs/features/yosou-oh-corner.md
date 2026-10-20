@@ -446,13 +446,41 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   読み上げは従来どおり的中率ボードのみ（(c) は採らない）。実装は `yoso_view`（§3.1）。
 - **8-6（解決・本案）** 部門ごとの最低数: 的中率は `min_rounds`（既定 3）、
   参加・ポイント部門は `min_participations`（既定 1）。`min_rounds` を流用しない（§3.1）。
-- **8-7（未決 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの
+- **8-7（解決・本案 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの
   遠隔復旧経路。実測では WebUI の `POST /api/predictions/action`（`cancel` / `sync`）は
   *Soren 側* `twitch_predictions.sh` と `tmp/state/current_prediction.json` を操作する経路で、
-  半熟の durable ledger `hanjuku_predictions.json` は操作しない。したがって現状、半熟の
-  round を止める正規の遠隔操作は無く、オーナーが手元で操作するか、恒久修正を配備して
-  tick に受理させる以外にない。固定 operation を足すか WebUI 専用のまま制約を明記するかは
-  オーナー判断。連続失敗の可視化だけは診断へ実装済み（`docs/operations/runtime-diagnostics.md`）。
+  半熟の durable ledger `hanjuku_predictions.json` は操作しない。したがって半熟の round を
+  止める経路は WebUI には無く、owner-only operator に**固定 operation**
+  `cancel-prediction` / `sync-prediction`（`check-` 前置きで事前確認）を追加した。
+  実装は `ops/vm_actions/control_hanjuku_prediction.sh` →
+  `src/docich/hanjuku_prediction_control.py`、workflow は
+  `.github/workflows/corner-rotation-operator.yml`。連続失敗の可視化は診断へ実装済み
+  （`docs/operations/runtime-diagnostics.md`）。詳細は §8-7.1。
+
+#### 8-7.1 owner-only の予想 round 制御（2026-10-20）
+
+半熟の予想 round が「未検証の記録から settlement を作らない」fail-closed で止まったとき、
+オーナーは WebUI ではなく canonical operator workflow から復旧できる。
+
+- 固定 operation は4つ。`check-cancel-prediction` / `cancel-prediction` /
+  `check-sync-prediction` / `sync-prediction`。`expected_reservation` も
+  `outcome_index` も取らず、**prediction id・outcome index・任意コマンドを入力にしない**。
+- `cancel` は台帳が所有する round だけを remote で `CANCELED` にして返金し、ローカル所有を
+  解除する。不成立（`no-contest`）と証明できたときだけ参加実績を台帳へ記録する。
+- `sync` は台帳が所有する round を remote の権威状態へ合わせる。remote が既に
+  `RESOLVED` / `CANCELED` ならその結果を記録して所有を解除し、生きていれば実 id を再取り込みし、
+  remote に存在しなければ stale な所有だけを捨てる。**target / middle / 選択肢は変更しない。**
+- どちらも既に記録された round の照合のみを行う。新しい round を作らず、勝者を選ばず、
+  他コーナーの賭けに触れない。`check-` は同じ判定を読み取り専用で行い、対象が無ければ非0で拒否する。
+- 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞は durable `result` が契約違反の
+  場合などで、tick の `_load` は fail-closed のまま拒否し続ける。operator だけが
+  `_load_recoverable` を使い、**所有権（identity / title / window / nonce / status / remote id）は
+  厳格に検証したまま** durable result の契約だけを緩く扱って当該 round を終わらせられる。
+  壊れた台帳そのものは修復も上書きもしない（`ledger_unreadable` で拒否）。
+- 認可は既存と同じ。owner 本人・`refs/heads/main`・`ref_protected`・確認文字列
+  `production`・workflow は canonical な `corner-rotation-operator.yml` のみ・本番 SHA 一致。
+  運用手順は `docs/corner-rotation.md`。
+
 
 ## 9. 検証
 

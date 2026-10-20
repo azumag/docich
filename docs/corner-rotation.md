@@ -705,6 +705,39 @@ Soren の `twitch_predictions.sh` が追記する
 診断は `prediction_leaderboard`（rounds/viewers の件数のみ）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
 
+### 半熟予想 round の owner-only 復旧（`cancel-prediction` / `sync-prediction`、#2216）
+
+半熟の予想 round が「未検証の記録から settlement を作らない」fail-closed で止まったとき、
+WebUI の `POST /api/predictions/action` では復旧できない（あの経路はSoren側の
+`twitch_predictions.sh` と `tmp/state/current_prediction.json` を操作し、半熟の durable
+ledger `hanjuku_predictions.json` は触らない）。正規の遠隔復旧は canonical な
+`corner-rotation-operator` workflow の固定 operation 4つ。
+
+| operation | 動作 |
+| --- | --- |
+| `check-cancel-prediction` | cancel の対象が居るかを読み取り専用で確認する。対象が無ければ非0で拒否 |
+| `cancel-prediction` | 台帳が所有する round を remote で `CANCELED` にして返金し、ローカル所有を解除する |
+| `check-sync-prediction` | sync の対象が居るかを読み取り専用で確認する |
+| `sync-prediction` | 所有 round を remote の権威状態へ合わせる（終了済みなら結果を記録して解除、生きていれば実 id を再取り込み、不在なら stale 所有だけを捨てる） |
+
+- 手順: まず `check-<op>-prediction` を流して対象が居ることを確認し、次に同じ `<op>-prediction`
+  を流す。`confirm` は `production`。
+- 入力は `operation` と `confirm` だけ。**prediction id・outcome index・任意コマンドは取らない。**
+  認可は owner 本人・`refs/heads/main`・`ref_protected`・本番 SHA 一致・canonical workflow のみ
+  （`ops/vm_actions/authorize_corner_rotation.py`）。
+- 両操作とも**既に記録された round の照合だけ**を行う。新しい round を作らず、勝者を選ばず、
+  target / middle / 選択肢を変えず、他コーナーの賭けに触れない。
+- 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞（durable `result` の契約違反など）は
+  tick の `_load` が fail-closed のまま拒否し続けるので、operator だけが
+  `_load_recoverable` を使う。**所有権は厳格に検証したまま** durable result の契約だけを
+  緩く扱う。壊れた台帳そのものは修復も上書きもせず `ledger_unreadable` で拒否する。
+- 実装: `ops/vm_actions/control_hanjuku_prediction.sh` →
+  `src/docich/hanjuku_prediction_control.py`（check は
+  `src/docich/hanjuku_prediction_control_check.py`）。固定コードだけを返し、
+  token・remote payload・視聴者名・台帳本文は出さない。
+- 連続失敗の可視化は診断の `hanjuku_predictions.health`（`consecutive_errors` /
+  `last_error` / `last_ok_at`）で見る（`docs/operations/runtime-diagnostics.md`）。
+
 ### 不成立キャンセルの参加実績と5指標ランキング（#933 PR-5）
 
 対立する投票が無い不成立キャンセル（`CANCELED` / `no-contest`）でも、証拠のある参加を
