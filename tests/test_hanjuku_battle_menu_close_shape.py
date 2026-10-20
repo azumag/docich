@@ -231,3 +231,51 @@ def test_command_brain_still_rejects_the_pre_fix_nested_shape():
     with patch.object(brains.procs, 'run', return_value=result):
         assert brain.decide(obs) == []  # no guess, no input
     assert brain.observation_interval_ms is None
+
+
+
+# ---------------------------------------------- use_egg owner -> CommandBrain
+
+def test_use_egg_owner_delivers_single_b_at_close_through_command_brain():
+    """The use_egg path (independent judgment) reaches the bounded close and
+    delivers B as a single pad dict through parse_actions and CommandBrain.
+
+    With the pre-fix ``[pad('b')]`` return the owner would emit ``[[pad('b')]]``
+    and the driver would reject the list item, so the escape never closed.
+    """
+    mem = battle_memory(egg_battle=False, side='attack', ally_hp=80, enemy_hp=100)
+    mem['battle']['start_ally_hp'] = 80
+    mem['battle']['start_enemy_hp'] = 100
+    mem['indep_menu'] = True
+    mem['indep_menu_action'] = 'use_egg'
+    mem['indep_menu_key'] = 'test'
+    mem['battle']['own_egg_zero_observed'] = False
+    mem['battle']['own_egg_positive_observed'] = True
+
+    emitted = []
+    for _ in range(EPISODE + 1):
+        # cursor=192 so _battle_menu_to('たまごをつかう') returns 'up', not 'here'
+        actions = p.battle_menu_step(command_box(cursor=192), mem)
+        emitted.extend(actions)
+        assert all(isinstance(a, dict) for a in actions), actions
+        parsed = parse_actions(actions)
+        assert all(a.type in {'pad', 'wait', 'key', 'text', 'special'} for a in parsed)
+        if any(a.get('buttons') == ['b'] for a in actions):
+            break
+    else:
+        raise AssertionError('the use_egg owner never reached its bounded close')
+
+    assert any(a.get('buttons') == ['b'] for a in emitted)
+    assert all(isinstance(a, dict) for a in emitted)
+
+    close = next(a for a in emitted if a.get('buttons') == ['b'])
+    stdout = json.dumps({'actions': [close], 'observation_interval_ms': 1500})
+    game = SimpleNamespace(name='hanjuku-hero', raw={'hanjuku': {'script_bot': True}},
+                           agent=SimpleNamespace(command=['unused']))
+    global_config = SimpleNamespace(repo_root=ROOT, agent=SimpleNamespace(brain_timeout_s=5))
+    brain = brains.CommandBrain(global_config, game)
+    obs = SimpleNamespace(to_json=lambda: '{}')
+    result = SimpleNamespace(returncode=0, stdout=stdout, stderr='')
+    with patch.object(brains.procs, 'run', return_value=result):
+        brain_actions = brain.decide(obs)
+    assert [(a.type, a.buttons) for a in brain_actions] == [('pad', ['b'])]
