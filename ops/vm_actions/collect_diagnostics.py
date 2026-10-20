@@ -8654,11 +8654,102 @@ def _collect_hanjuku_resume(state_dir):
         return unavailable
 
 
+_HANJUKU_REFILL_ENUMS = {
+    'scope': frozenset({'current', 'unknown'}),
+    'count': frozenset({'zero', 'low', 'below_target', 'enough', 'unknown'}),
+    'basis': frozenset({'screen_total', 'observed_plus_paid_refill', 'unread_total',
+                        'unverified_refill', 'unknown'}),
+    'check': frozenset({'none', 'opening', 'requested', 'quantity_requested',
+                        'closing', 'measured', 'unverified', 'unknown'}),
+    'check_result': frozenset({'none', 'measured', 'unverified', 'unknown'}),
+    'outcome': frozenset({'none', 'cancelled', 'insufficient_funds', 'unverified',
+                          'attempt_limit', 'not_attempted', 'unknown'}),
+    'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
+    'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
+    'planned': frozenset({'zero', 'positive', 'unknown'}),
+    'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
+                         'deferred_army', 'deferred_egg', 'deferred_cash', 'deferred_roster',
+                         'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
+}
+_HANJUKU_REFILL_BOOLS = ('payroll_pending', 'low_priority', 'done', 'egg_hold', 'recruit_hold')
+
+
+def _compact_hanjuku_refill(value):
+    """Only fixed enums/bools survive: never a writer's reason or names."""
+    if not isinstance(value, dict) or value.get('scope') != 'current':
+        return {'scope': 'unknown'}
+    out = {key: value[key] if isinstance(value.get(key), str) and value[key] in allowed
+           else 'unknown' for key, allowed in _HANJUKU_REFILL_ENUMS.items()}
+    out.update({key: value.get(key) if type(value.get(key)) is bool else None
+                for key in _HANJUKU_REFILL_BOOLS})
+    return out
+
+
+def _project_hanjuku_refill(mem, active):
+    """Current-month recorded gates only, not a newly computed spend decision.
+
+    Caller already pins bot/run identity and a <=30s bot mtime. No extra file
+    or log is read. The writer's unverified receipt/ended attempt stays so.
+    """
+    identity = {key: active[key] for key in HANJUKU_TACTICAL_KEYS}
+    def same_identity(value):
+        return (isinstance(value, dict) and value.keys() == identity.keys()
+                and all(type(value[key]) is type(expected) and value[key] == expected
+                        for key, expected in identity.items()))
+    chapter, month, shop = mem.get('chapter'), mem.get('month'), mem.get('shop')
+    if (not same_identity(mem.get('_run_identity')) or type(chapter) is not int
+            or not 1 <= chapter <= 12 or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or not isinstance(shop, dict) or shop.get('key') != month):
+        return {'scope': 'unknown'}
+    def same_scope(value):
+        return (isinstance(value, list) and len(value) == 3 and same_identity(value[0])
+                and type(value[1]) is int and value[1] == chapter
+                and type(value[2]) is str and value[2] == month)
+    count = mem.get('soldiers_seen')
+    current = (same_scope(mem.get('soldiers_seen_scope')) and mem.get('soldiers_seen_key') == month
+               and type(count) is int and 0 <= count <= 1_000_000)
+    check, receipt = mem.get('army_count_check'), shop.get('soldier_receipt')
+    check_current = isinstance(check, dict) and same_scope(check.get('scope'))
+    low, pending = shop.get('low_army_refill'), mem.get('recruit_payroll_pending')
+    hero, general = shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0)
+    repair_valid = all(type(n) is int and 0 <= n <= 1_000_000 for n in (hero, general))
+    planned = shop.get('soldiers')
+    outcome = shop.get('refill_outcome')
+    out = {'scope': 'current',
+           'count': ('unknown' if not current else 'zero' if count == 0 else
+                     'low' if count <= 20 else 'below_target' if count < 50 else 'enough'),
+           'basis': mem.get('soldiers_seen_basis') if current else 'unknown',
+           'check': ('none' if check is None else check.get('stage') if isinstance(check, dict)
+                     and check_current else 'unknown'),
+           'check_result': ('none' if check is None else
+                            check.get('result', 'none') if check_current else 'unknown'),
+           'outcome': 'none' if outcome is None else outcome,
+           'receipt': ('none' if receipt is None or receipt is False else receipt.get('status')
+                       if isinstance(receipt, dict) and receipt.get('key') == month else 'unknown'),
+           'repair': ('unknown' if not repair_valid else 'both' if hero and general else
+                      'hero' if hero else 'general' if general else 'none'),
+           'planned': ('unknown' if type(planned) is not int or not 0 <= planned <= 99 else
+                       'positive' if planned else 'zero'),
+           'recruit': 'none' if shop.get('recruit') is None else shop['recruit'],
+           'payroll_pending': (False if pending is None else bool(pending) if isinstance(pending, list)
+                               and len(pending) <= 32 and all(isinstance(x, str) for x in pending) else None),
+           'low_priority': (False if low is None else low.get('active') if isinstance(low, dict)
+                            and type(low.get('version')) is int and low['version'] == 1
+                            and same_scope(low.get('scope')) else None),
+           'done': shop.get('soldiers_done')}
+    for field, key in (('egg_hold', 'reserve'), ('recruit_hold', 'recruit_reserve')):
+        value = shop.get(key, 0)
+        out[field] = bool(value) if type(value) is int and 0 <= value <= 1_000_000 else None
+    return _compact_hanjuku_refill(out)
+
+
 def _collect_hanjuku_tactical(state_dir, now):
-    """Chapter-1 fixed castle labels and last card prediction from a fresh run.
+    """Fresh fixed castle, card-prediction and monthly-refill records.
 
     These are the bot's recorded beliefs, not independently verified ownership
-    or roster. An absent garrison record remains unknown rather than empty.
+    or roster/payment. Castle labels remain chapter-1 only; refill gates do not
+    imply an input was received. An absent garrison remains unknown, not empty.
     """
     out = {'status': 'unavailable', 'basis': 'bot_record', 'age_sec': None}
     try:
@@ -8690,12 +8781,13 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not 1 <= mem['chapter'] <= 12):
             return {**out, 'status': 'unsupported_chapter'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
+        refill = _project_hanjuku_refill(mem, active)
         if mem['chapter'] != 1:
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment}
+                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -8730,7 +8822,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         out.update(status='ok', age_sec=int(age), chapter=1,
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
-                   last_card_assessment=assessment)
+                   last_card_assessment=assessment, refill=refill)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
@@ -10778,7 +10870,10 @@ def _diagnostics_budget(payload):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
+        refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if refill is not None:
+            payload['hanjuku_tactical']['refill'] = _compact_hanjuku_refill(refill)
     # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
     # their per-component/per-stream details and the latest NetHack result.
     # ``encoder`` and ``pulse_sink_inputs.attribution`` are never reduced here
