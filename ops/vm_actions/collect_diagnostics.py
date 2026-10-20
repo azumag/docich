@@ -10979,6 +10979,230 @@ def _collect_nethack_tiles(state_dir, now):
     return result
 
 
+SHARED_RUNTIME_ROLES = ("shared_stream", "encoder", "audio")
+SHARED_RUNTIME_ROLE_LABELS = {
+    "shared_stream": "shared stream / distribution",
+    "encoder": "stream encoder",
+    "audio": "audio (pulseaudio)",
+}
+SHARED_RUNTIME_MAX_PIDS = 64
+
+
+def _proc_start_ticks(proc_root, pid):
+    """Return (start_ticks, started_at_epoch_or_None) for one pid, or None."""
+    text = None
+    try:
+        with open(proc_root / str(pid) / "stat", "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(4096)
+    except OSError:
+        return None
+    if not text:
+        return None
+    rest = text.rsplit(")", 1)
+    if len(rest) != 2:
+        return None
+    fields = rest[1].split()
+    # starttime is field 22 (1-based) => index 19 (0-based) after the split.
+    if len(fields) < 20:
+        return None
+    try:
+        start_ticks = int(fields[19])
+    except (TypeError, ValueError):
+        return None
+    if start_ticks < 0:
+        return None
+    # best-effort started_at from /proc/stat btime (may be unavailable)
+    started_at = None
+    try:
+        with open(proc_root.parent / "stat", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("btime "):
+                    btime = int(line.split()[1])
+                    clk_tck = os.sysconf("SC_CLK_TCK")
+                    started_at = btime + int(start_ticks / clk_tck)
+                    break
+    except (OSError, ValueError, AttributeError):
+        started_at = None
+    return start_ticks, started_at
+
+
+def _classify_shared_runtime_role(comm, argv):
+    """Fixed, closed classification. Returns one of SHARED_RUNTIME_ROLES or None."""
+    comm_l = (comm or "").strip().lower()
+    argv_l = " ".join(part for part in (argv or []) if isinstance(part, str)).lower()
+    # audio: pulseaudio daemon (and the audio priority keeper is separate)
+    if comm_l == "pulseaudio" or "pulseaudio" in argv_l:
+        return "audio"
+    # encoder: ffmpeg doing stream capture/encoding
+    if comm_l.startswith("ffmpeg") and (
+        "x11grab" in argv_l or "stream" in argv_l or "capture" in argv_l
+        or "gdigrab" in argv_l
+    ):
+        return "encoder"
+    # shared stream / distribution: shared overlay, direct stream, stream runner
+    if (
+        "shared-overlay" in argv_l
+        or "shared_overlay" in argv_l
+        or "direct_stream" in argv_l
+        or "direct-stream" in argv_l
+        or "stream_runner" in argv_l
+        or "stream-runner" in argv_l
+        or comm_l in {"soren-shared-overlay", "direct-stream", "stream-runner"}
+        or "shared" in comm_l
+    ):
+        return "shared_stream"
+    return None
+
+
+def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
+    """Read-only projection of shared stream/encoder/audio PID sets.
+
+    Emits, per fixed role, the sorted PID list together with the per-PID
+    start ticks (and best-effort started_at epoch) so before/after comparison
+    can exclude PID reuse. No argv, env, secrets or paths are emitted.
+    Partial read failures are reflected by scan_complete=False rather than
+    silently dropping a role.
+    """
+    if uid is None:
+        uid = os.geteuid()
+    roles = {role: [] for role in SHARED_RUNTIME_ROLES}
+    scan_complete = True
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        names = []
+        scan_complete = False
+    pids = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            pids.append(int(name))
+        except ValueError:
+            continue
+    pids.sort()
+    for pid in pids[:4096]:
+        base = proc_root / str(pid)
+        try:
+            owner = os.stat(base).st_uid
+        except OSError:
+            scan_complete = False
+            continue
+        if owner != uid:
+            continue
+        comm = None
+        try:
+            with open(base / "comm", "r", encoding="utf-8", errors="replace") as handle:
+                comm = handle.read(64)
+        except OSError:
+            scan_complete = False
+            continue
+        cmdline = None
+        try:
+            with open(base / "cmdline", "rb") as handle:
+                raw = handle.read(4096)
+            cmdline = [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
+        except OSError:
+            scan_complete = False
+            continue
+        role = _classify_shared_runtime_role(comm, cmdline)
+        if role is None:
+            continue
+        parsed = _proc_start_ticks(proc_root, pid)
+        if parsed is None:
+            # Partial: a role member whose start tick could not be read makes
+            # the whole role unusable for reuse-safe comparison.
+            scan_complete = False
+            continue
+        start_ticks, started_at = parsed
+        if len(roles[role]) >= SHARED_RUNTIME_MAX_PIDS:
+            scan_complete = False
+            continue
+        entry = {"pid": pid, "start_ticks": start_ticks}
+        if started_at is not None:
+            entry["started_at"] = started_at
+        roles[role].append(entry)
+    # Sort each role's entries by pid for deterministic output.
+    for role in roles:
+        roles[role].sort(key=lambda item: item["pid"])
+    section = {
+        "schema_version": 1,
+        "scan_complete": bool(scan_complete),
+        "roles": {},
+    }
+    for role in SHARED_RUNTIME_ROLES:
+        entries = roles[role]
+        section["roles"][role] = {
+            "count": len(entries),
+            "pids": [item["pid"] for item in entries],
+            "entries": entries,
+        }
+    return section
+
+
+def _shared_runtime_pid_set(section):
+    """Return {role: frozenset of (pid, start_ticks)} or None if unusable."""
+    if not isinstance(section, dict):
+        return None
+    if section.get("scan_complete") is not True:
+        return None
+    roles = section.get("roles")
+    if not isinstance(roles, dict):
+        return None
+    result = {}
+    for role in SHARED_RUNTIME_ROLES:
+        role_data = roles.get(role)
+        if not isinstance(role_data, dict):
+            return None
+        entries = role_data.get("entries")
+        if not isinstance(entries, list):
+            return None
+        s = set()
+        for item in entries:
+            if not isinstance(item, dict):
+                return None
+            pid = item.get("pid")
+            ticks = item.get("start_ticks")
+            if type(pid) is not int or type(ticks) is not int:
+                return None
+            s.add((pid, ticks))
+        result[role] = s
+    return result
+
+
+def compare_shared_runtime_pids(before, after):
+    """Fail-closed before/after comparison of shared runtime PID sets.
+
+    Accepts either full diagnostics dicts (with a ``shared_runtime_pids`` key)
+    or the section itself. Returns a dict with ``match`` (bool), the list of
+    mismatched roles, and a short ``reason``. Unknown/partial/missing sides
+    never count as a match.
+    """
+    if isinstance(before, dict) and "shared_runtime_pids" in before:
+        before = before["shared_runtime_pids"]
+    if isinstance(after, dict) and "shared_runtime_pids" in after:
+        after = after["shared_runtime_pids"]
+    before_set = _shared_runtime_pid_set(before)
+    after_set = _shared_runtime_pid_set(after)
+    if before_set is None or after_set is None:
+        return {
+            "match": False,
+            "mismatched_roles": list(SHARED_RUNTIME_ROLES),
+            "reason": "unavailable_or_partial",
+        }
+    mismatched = []
+    for role in SHARED_RUNTIME_ROLES:
+        if before_set[role] != after_set[role]:
+            mismatched.append(role)
+    if mismatched:
+        return {
+            "match": False,
+            "mismatched_roles": mismatched,
+            "reason": "pid_set_changed",
+        }
+    return {"match": True, "mismatched_roles": [], "reason": "ok"}
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -11057,6 +11281,7 @@ def main(argv):
         "cpu_profile": _collect_cpu_profile(now),
         "audio_priority": _collect_audio_priority(),
         "audio_gaps": _collect_audio_gaps(now),
+        "shared_runtime_pids": _collect_shared_runtime_pids(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
