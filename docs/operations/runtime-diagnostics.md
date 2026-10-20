@@ -865,7 +865,36 @@ journal最大32KiBは維持する。存在だけではIDの正当性や認証・
 `event=started` のままならhelper開始後に結果行が残らなかった状態。
 `event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
 視聴者に見える実表示は保証しない。Twitchのtitle/categoryはこのjournalへ保存しない。
-統合ログ `stream-game.log` / `stream_title_day.log` の読取り・出力もしない。
+この journal 投影自体は統合ログを読まない。次節の固定ログ観測は別の証拠として扱う。
+
+## タイトル更新の停止段階の read-only 観測（#789）
+
+`stream_title_attempts` は、既存の固定3ログ（Soren の
+`tmp/logs/stream_game.log` / `tmp/logs/stream_title_day.log` と、既存 docich
+state directory の `logs/stream-game.log`）の末尾だけを読む。環境変数による
+ログパス変更は追跡しない。設定済みrootの祖先を含めた全segmentをnofollowで開き、
+root以下の同一owner・他者書込不可、regular file・単一link、読取前後と再openの
+inode/metadata一致を要求する。1source最大32KiB・256行・末尾1行4KiB。
+内容・URL・login・ID・path・HTTP bodyは返さず、公開producerの既知literalから
+固定の `observed_outcome` / `observed_reason` だけを生成する。最後の行が未知、
+途中書込、過大、不正UTF-8なら古い失敗を探し直さない。時刻が逆行した尾部も
+`ambiguous_order` としてunknownへ戻す。後続成功は旧失敗を上書きする。
+
+`record_status=fresh/stale` と `age_sec` はproducerのoffset無し時刻をhost localと
+仮定した値であり、`time_basis=host_local_unverified` を必ず付ける。staleでも
+最後に観測された既知理由は保持するが、現在の原因とはしない。journalのinvokedと
+120秒以内でも `journal_relation=time_window_only` に留め、同一runの証明にしない。
+`current_failure` は常に `unknown`。`credential_validation_failed` はproducerの
+client ID解決失敗文言の観測であり、token失効・ネットワーク失敗等を区別しない。
+ログのmtime、ファイル一致、古いresultだけで現在の原因や更新成功を断定しない。
+
+`day_script` は日次scriptの実modeとowner実行bitを観測するだけで、起動の証明では
+ない。`day_units` はsystem/user両scopeの既存 `soren-title-day.service` / `.timer` に
+固定propertyのread-only `systemctl show` を計4回（各timeout 1秒）実行し、許可enumと
+通常終了時のexit statusだけを返す。`Result` / `ExecMainStatus` は最後の実行の値で
+あり `result_freshness=unknown`。当日のtickと結び付けない。unitの追加・enable・restart、
+updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
+既存journal契約は変更しない。未知・読取不能はunknownとして残す。
 
 ## 出さないもの
 

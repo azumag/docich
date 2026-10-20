@@ -18,7 +18,11 @@ Observed sources (all read-only):
   - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
     fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
-    UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
+    UTC time, SHA and two nonsecret ID presence booleans only
+  - bounded tails of three fixed title-updater logs, classified in memory to
+    reviewed outcomes only, plus the daily script's mode and fixed user/system
+    unit states. Bodies, identities, URLs and arbitrary paths are never emitted;
+    historical observations never attest a current failure or the same run
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
@@ -3105,6 +3109,282 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     result["youtube"] = youtube
     result["kick"] = kick
     return result
+
+
+STREAM_TITLE_LOG_MAX_BYTES = 32 * 1024
+STREAM_TITLE_LOG_MAX_LINES = 256
+STREAM_TITLE_LOG_MAX_LINE_BYTES = 4096
+STREAM_TITLE_LOG_SOURCES = {
+    "game": ("soren", ("tmp", "logs", "stream_game.log"), "stream_game"),
+    "dispatch": ("state", ("logs", "stream-game.log"), "stream_game"),
+    "day": ("soren", ("tmp", "logs", "stream_title_day.log"), "stream_title"),
+}
+
+
+def _stream_title_open_fixed(root, parts):
+    """Open fixed sources through owned, non-writable-by-others directories.
+
+    Keep the parent descriptor for a post-read identity check. No environment
+    override, glob, symlink, device, FIFO or multiply linked file is accepted.
+    """
+    root = Path(root)
+    if not root.is_absolute() or ".." in root.parts:
+        raise ValueError("unsafe title root")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(root.anchor, directory_flags)
+    fd = None
+    try:
+        # O_NOFOLLOW on a multi-component root protects only its final part.
+        # Traverse every component, including ancestors of the configured root.
+        for part in root.parts[1:]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        for part in (None, *parts[:-1]):
+            if part is not None:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                os.close(directory)
+                directory = child
+            info = os.fstat(directory)
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise ValueError("unsafe title directory")
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise ValueError("unsafe title file")
+        return fd, directory, info
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+        raise
+
+
+def _stream_title_file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_uid, info.st_mode, info.st_nlink)
+
+
+def _stream_title_log_observation(root, parts, prefix, now, sync):
+    """Report the newest complete log observation, not a current root cause.
+
+    The public producers have neither run IDs nor UTC offsets in these logs.
+    Host-local time is only an estimate; even a nearby journal timestamp is
+    explicitly time-window-only evidence. Retain stale observations, labelled
+    as such, but never search backwards for an old failure after a newer
+    success, unknown line, partial write or log rotation.
+    """
+    result = {"record_status": "unreadable", "observed_outcome": "unknown",
+              "observed_reason": "unknown", "age_sec": -1,
+              "time_basis": "host_local_unverified",
+              "journal_relation": "unknown", "tail_truncated": False}
+    fd = directory = None
+    try:
+        fd, directory, before = _stream_title_open_fixed(root, parts)
+        offset = max(0, before.st_size - STREAM_TITLE_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = bytearray()
+        while len(raw) < STREAM_TITLE_LOG_MAX_BYTES + 1:
+            chunk = os.read(fd, min(4096, STREAM_TITLE_LOG_MAX_BYTES + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(fd)
+        path_info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        # Also reopen the fixed traversal: replacing any ancestor during the
+        # read must not turn a historical inode into the current source.
+        check_fd, check_dir, reopened = _stream_title_open_fixed(root, parts)
+        os.close(check_fd)
+        os.close(check_dir)
+        identity = _stream_title_file_identity(before)
+        if any(_stream_title_file_identity(item) != identity
+               for item in (after, path_info, reopened)):
+            result["record_status"] = "changed"
+            return result
+        result["tail_truncated"] = offset > 0
+        if len(raw) > STREAM_TITLE_LOG_MAX_BYTES:
+            result["record_status"] = "changed"
+            return result
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+        return result
+    except ValueError:
+        result["record_status"] = "unsafe"
+        return result
+    except OSError:
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    if not raw:
+        result["record_status"] = "empty"
+        return result
+    if not raw.endswith(b"\n"):
+        result["record_status"] = "incomplete"
+        return result
+    if offset:
+        cut = raw.find(b"\n")
+        raw = raw[cut + 1:] if cut >= 0 else b""
+    lines = raw.splitlines()
+    if len(lines) > STREAM_TITLE_LOG_MAX_LINES:
+        lines = lines[-STREAM_TITLE_LOG_MAX_LINES:]
+        result["tail_truncated"] = True
+    if not lines or len(lines[-1]) > STREAM_TITLE_LOG_MAX_LINE_BYTES:
+        result["record_status"] = "unrecognized"
+        return result
+    # Copied/rotated logs may append an older failure after a newer success.
+    # A timestamp regression in this bounded source makes ordering ambiguous;
+    # do not mistake the last physical line for the most recent execution.
+    previous_stamp = None
+    for item in lines:
+        header = re.match(rb"\[" + prefix.encode("ascii") + rb" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ", item)
+        if header:
+            try:
+                value = dt.datetime.strptime(header[1].decode("ascii"), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if previous_stamp is not None and value < previous_stamp:
+                result["record_status"] = "ambiguous_order"
+                return result
+            previous_stamp = value
+    try:
+        line = lines[-1].decode("utf-8", "strict")
+        match = re.fullmatch(r"\[" + prefix + r" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ([^\r\n\x00]*)", line)
+        if not match:
+            raise ValueError("unknown producer line")
+        stamp = dt.datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S").timestamp()
+    except (UnicodeError, ValueError, OverflowError, OSError):
+        result["record_status"] = "unrecognized"
+        return result
+    age = int(now - stamp)
+    result["age_sec"] = age
+    if age < -STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC:
+        result["record_status"] = "future"
+        return result
+    message = match[2]
+    reason = "unknown"
+    exact_failures = {
+        "ERROR: no token (set TWITCH_GAME_TOKEN, TWITCH_TITLE_TOKEN, TWITCH_BOT_TOKEN or TWITCH_PREDICTIONS_TOKEN)": "credential_missing",
+        "ERROR: TWITCH_BROADCASTER_ID not set": "broadcaster_missing",
+        "ERROR: no valid broadcaster credential with channel:manage:broadcast": "credential_candidates_rejected",
+        "ERROR: failed to choose public title body": "body_selection_failed",
+        "ERROR: failed to compose public title": "composition_failed",
+    }
+    starts = {
+        "ERROR: no client id (token invalid? resp: ": "credential_validation_failed",
+        "ERROR: public title helper not found: ": "helper_missing",
+        "ERROR: failed to fetch current channel (resp: ": "channel_read_failed",
+        "ERROR: failed to fetch current title (resp: ": "channel_read_failed",
+        "ERROR: PATCH failed (HTTP ": "channel_update_failed",
+        "ERROR: game toml not found: ": "game_config_missing",
+        "ERROR: [twitch].category_id が解決できません ": "category_unresolved",
+        "ERROR: failed to compute day N ": "day_computation_failed",
+    }
+    if message in exact_failures:
+        reason = exact_failures[message]
+    elif re.fullmatch(r"ERROR: token\(login=[^)\r\n]{1,128}\) lacks 'channel:manage:broadcast' scope\. TWITCH_GAME_TOKEN \(broadcaster の broadcast 付きトークン\) を設定してください。", message):
+        reason = "broadcast_scope_missing"
+    else:
+        reason = next((value for start, value in starts.items() if message.startswith(start)), "unknown")
+    outcome = "failure" if reason != "unknown" else "unknown"
+    if (message == "already up to date; no change needed"
+            or (prefix == "stream_title" and re.fullmatch(r"title already current for day [1-9][0-9]{0,8}; no change needed", message))):
+        outcome, reason = "unchanged", "none"
+    elif (message.startswith("OK: updated title=")
+          or (prefix == "stream_title" and message.startswith("OK: title updated -> "))):
+        outcome, reason = "twitch_updated", "none"
+    elif message.startswith("current: ") or (prefix == "stream_title" and message.startswith("current title: ")):
+        outcome, reason = "channel_read", "none"
+    elif message.startswith("desired title: "):
+        outcome, reason = "composed", "none"
+    elif re.fullmatch(r"using credential: TWITCH_(?:TITLE|PREDICTIONS|BOT)_TOKEN", message):
+        outcome, reason = "credential_selected", "none"
+    result.update(observed_outcome=outcome, observed_reason=reason)
+    result["record_status"] = (
+        "unrecognized" if outcome == "unknown"
+        else "stale" if age > STREAM_TITLE_SYNC_MAX_AGE_SEC else "fresh"
+    )
+    try:
+        journal_stamp = dt.datetime.strptime(sync["occurred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+        if sync.get("event") == "invoked":
+            result["journal_relation"] = (
+                "time_window_only" if 0 <= stamp - journal_stamp <= 120
+                else "not_correlated"
+            )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return result
+
+
+def _stream_title_day_script(soren):
+    result = {"record_status": "unreadable", "mode": None, "executable": None}
+    fd = directory = None
+    try:
+        fd, directory, info = _stream_title_open_fixed(soren, ("update_stream_title_day.sh",))
+        result.update(record_status="observed", mode=f"{stat.S_IMODE(info.st_mode):04o}",
+                      executable=bool(info.st_mode & stat.S_IXUSR))
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+    except (OSError, ValueError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    return result
+
+
+def _stream_title_day_unit(scope, kind):
+    # Result/exit_status are the manager's LAST execution, whose freshness and
+    # relationship to a title log are unproven, not evidence of today's tick.
+    result = {"load_state": "unknown", "active_state": "unknown",
+              "enabled_state": "unknown", "result": "unknown",
+              "exit_status": None, "result_freshness": "unknown"}
+    properties = ("LoadState", "ActiveState", "UnitFileState", "Result",
+                  "ExecMainCode", "ExecMainStatus")
+    answer = _systemctl_scope(scope, ["show", f"soren-title-day.{kind}",
+                                    "--property=" + ",".join(properties), "--no-pager"], timeout=1)
+    if answer is None or len(answer[1]) > 4096:
+        return result
+    values = {}
+    for line in answer[1].splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in properties or key in values:
+            return result
+        values[key] = value
+    allowed = {
+        "load_state": ("LoadState", {"loaded", "not-found", "error", "masked", "bad-setting", "merged", "stub"}),
+        "active_state": ("ActiveState", {"active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing"}),
+        "enabled_state": ("UnitFileState", {"enabled", "enabled-runtime", "disabled", "static", "masked", "masked-runtime", "linked", "linked-runtime", "alias", "indirect", "generated", "transient", "not-found", "bad"}),
+        "result": ("Result", {"success", "exit-code", "signal", "core-dump", "timeout", "watchdog", "start-limit-hit", "resources", "protocol", "exec-condition", "oom-kill"}),
+    }
+    for field, (key, choices) in allowed.items():
+        if values.get(key) in choices:
+            result[field] = values[key]
+    exit_status = values.get("ExecMainStatus", "")
+    if values.get("ExecMainCode") == "1" and re.fullmatch(r"[0-9]{1,3}", exit_status) and int(exit_status) <= 255:
+        result["exit_status"] = int(exit_status)
+    return result
+
+
+def _collect_stream_title_attempts(soren, state_dir, now, sync=None):
+    roots = {"soren": soren, "state": state_dir}
+    return {
+        "schema_version": 1,
+        "current_failure": "unknown",
+        "logs": {name: _stream_title_log_observation(roots[root], parts, prefix, now, sync)
+                 for name, (root, parts, prefix) in STREAM_TITLE_LOG_SOURCES.items()},
+        "day_script": _stream_title_day_script(soren),
+        "day_units": {scope: {kind: _stream_title_day_unit(scope, kind)
+                              for kind in ("service", "timer")}
+                      for scope in ("system", "user")},
+    }
 
 
 def _supervisor_directory(path, dir_fd=None):
@@ -10572,7 +10852,11 @@ def _diagnostics_budget(payload):
             text = _nethack_history_budget(payload)
             if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
                 break
-    return text
+    # JSON whitespace is not evidence. Keep the new bounded summary without
+    # pushing previously fitting envelopes over their byte budget; all values
+    # and the existing conservative detail-reduction order stay unchanged.
+    return json.dumps(json.loads(text), sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _collect_nethack_tiles(state_dir, now):
@@ -10690,11 +10974,15 @@ def main(argv):
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
+    title_sync = _collect_stream_title_sync(
+        soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+    )
     payload = {
         "status": _severity(workers, queues, ai, improvement, corners),
         "meta": meta,
-        "stream_title_sync": _collect_stream_title_sync(
-            soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+        "stream_title_sync": title_sync,
+        "stream_title_attempts": _collect_stream_title_attempts(
+            soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
