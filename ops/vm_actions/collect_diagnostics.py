@@ -4607,6 +4607,41 @@ def _project_soren91_corner(data):
     return entry
 
 
+_TSUITATE_SWITCH_ERROR_CODES = frozenset({
+    # Fixed GameSwitch ERROR_* values plus Tsuitate's local fallback and the
+    # ControlError codes it persists. Never echo a bounded-but-unknown token:
+    # arbitrary messages, identifiers or credentials can fit within 64 bytes.
+    "busy", "queued", "request_conflict", "invalid_game", "already_active",
+    "no_active_game", "invalid_rotation", "prepare_failed", "quiesce_failed",
+    "round_boundary_unsupported", "start_failed", "readiness_timeout",
+    "agent_start_failed", "rollback_failed", "state_corrupt",
+    "recovery_required", "probe_failed", "timeout", "internal",
+    "source_fence_lost", "switch_failed", "control_unavailable",
+    "control_not_configured", "invalid_beta_operation",
+    "token_not_configured", "run_locked", "run_mismatch",
+    "control_authentication_failed", "control_timeout", "terminal_unconfirmed",
+    "recovery_not_available", "recovery_checkpoint_invalid",
+    "terminal_result_unavailable", "terminal_storage_failure",
+})
+
+
+def _project_tsuitate_corner(data):
+    """Expose the persisted failure category, not a new recovery decision.
+
+    The generic last_error_code field intentionally classifies only
+    recovery_required. Preserve that contract while making known Tsuitate
+    producer codes observable under a separate field (docich#1992). The
+    existing last_error preview remains redacted and length-capped; unknown
+    codes are null rather than raw state content.
+    """
+    entry = _project_corner_state(data)
+    code = data.get("last_error_code")
+    entry["switch_error_code"] = (
+        code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
+    )
+    return entry
+
+
 def _project_review(value):
     """Bounded 衝立将棋 感想戦 counters: where the facts came from and the kind.
 
@@ -5375,6 +5410,8 @@ def _collect_corner_files(state_dir, payload, now):
         if readable:
             if name == "soren91_corner":
                 entry.update(_project_soren91_corner(data))
+            elif name == "tsuitate_corner":
+                entry.update(_project_tsuitate_corner(data))
             else:
                 entry.update(_project_corner_state(data))
             if name == "retro_corner":
