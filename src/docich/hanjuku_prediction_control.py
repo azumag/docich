@@ -41,6 +41,8 @@ from .game_switch import atomic_write_json
 from .hanjuku_prediction_api import APIError
 
 OPERATIONS = ("cancel", "sync")
+#: The reviewed production profile; the gateway env does not set DOCICH_CONFIG.
+LIVE_CONFIG = "config/docich.soren-live.toml"
 
 #: Fixed, secret-safe outcome codes. Nothing else crosses the operator boundary.
 EXIT_OK = 0
@@ -106,20 +108,34 @@ def _owned_row(state):
     return row
 
 
-def _remote_rows(client, row):
+def _remote_row(client, row):
+    """The single remote row for this id, or ``None`` when GET returns nothing.
+
+    A row that carries this id but differs in title/outcomes is an ownership
+    *mismatch*, not an absence. Filtering it out would silently drop local
+    ownership for a prediction that still exists in another shape, so a
+    mismatch fails closed instead.
+    """
     try:
         rows = client.list(row.get("id"))
     except APIError as exc:
         raise ControlRefused(f"remote_{exc.code}") from None
-    return [r for r in rows if isinstance(r, dict) and predictions._matches(r, row)]
+    candidates = [r for r in rows if isinstance(r, dict) and r.get("id") == row.get("id")]
+    if not candidates:
+        return None
+    if len(candidates) > 1 or not predictions._matches(candidates[0], row):
+        raise ControlRefused("remote_mismatch")
+    return candidates[0]
 
 
 def cancel(g, *, client_factory=None, now=None):
-    """Cancel the owned round remotely and clear local ownership.
+    """Cancel the owned round remotely and leave this attempt terminal.
 
-    Idempotent: a round already gone from the remote, or already terminal
-    remotely, clears the local ownership rather than failing, so a retried
-    operator run converges instead of spinning.
+    The round is never erased: a DONE row belonging to the same run is what
+    stops `_advance` from opening a second wager in that run, and it is also
+    what lets the ordinary tick re-observe the `CANCELED` remote row and retry
+    the participation record exactly once (#933). A later, different runtime
+    still creates normally.
     """
     root = Path(g.state_dir)
     now = time.time() if now is None else now
@@ -133,14 +149,15 @@ def cancel(g, *, client_factory=None, now=None):
         except Exception:
             raise ControlRefused("ledger_unreadable") from None
         row = _owned_row(state)
-        matches = _remote_rows(client, row)
-        if len(matches) > 1:
-            raise ControlRefused("remote_mismatch")
-        remote = matches[0] if matches else None
-        canceled = None
+        remote = _remote_row(client, row)
+        # A DONE row stops `_advance` from opening a second wager in this run.
+        # While the participation record is still pending the row must instead
+        # stay unresolved, so the next tick re-observes CANCELED and records the
+        # same id exactly once (an unresolved round also blocks a new wager).
+        terminal = True
         if remote is None:
-            # The remote no longer carries this exact round. Do not PATCH an id
-            # we cannot verify; just drop the stale local ownership.
+            # GET really returned nothing for this id. Do not PATCH an id we
+            # cannot verify; terminalize the attempt locally instead.
             outcome = "remote_absent"
         elif remote.get("status") in predictions.DONE:
             # Twitch rejects CANCELED on a finished prediction. Do not turn a
@@ -148,6 +165,14 @@ def cancel(g, *, client_factory=None, now=None):
             # that records the remote's terminal state without changing it.
             raise ControlRefused(f"remote_{remote['status'].lower()}_use_sync")
         else:
+            # Bounded, verified evidence BEFORE the irreversible cancel, exactly
+            # like the ordinary tick: the snapshot survives a failed
+            # participation write so it can be retried once after restart.
+            if (predictions._no_contest(remote) and remote.get("status") == "LOCKED"):
+                try:
+                    predictions._save_cancel_snapshot(root, row, remote)
+                except APIError:
+                    raise ControlRefused("evidence_unavailable") from None
             try:
                 response = client.end(row["id"], "CANCELED")
             except APIError as exc:
@@ -157,19 +182,26 @@ def cancel(g, *, client_factory=None, now=None):
                 raise ControlRefused("remote_unverified")
             canceled = response[0]
             outcome = "canceled"
-        # The no-contest participation record is attempted only when the
-        # canceled row is proven no-contest; a failure here must not lose the
-        # cancellation we already verified. It stays retried by the next tick.
-        if canceled is not None and predictions._no_contest(canceled):
-            try:
-                predictions._record_canceled(root, now, client, sources=(canceled,))
-                predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
-            except (APIError, OSError):
-                pass
-        state["round"] = None
-        state.update(mode="canceled", error=None, next_poll_at=0)
+            if predictions._no_contest(canceled):
+                try:
+                    predictions._record_canceled(root, now, client, sources=(canceled,))
+                    predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
+                except (APIError, OSError):
+                    # Keep the snapshot and leave the round unresolved: the
+                    # next tick re-observes CANCELED and records this id once.
+                    # Report the pending write rather than claiming completion.
+                    outcome = "canceled_record_pending"
+                    terminal = False
+        if terminal:
+            # Terminal tombstone for this attempt, never `round=None`.
+            row["status"] = "CANCELED"
+            state.update(mode="canceled", error=None, next_poll_at=0)
+        else:
+            # Keep the round unresolved: the next tick re-observes CANCELED and
+            # records this id once, without opening a second wager.
+            state.update(mode="settling", error=None, next_poll_at=0)
         atomic_write_json(root / predictions.FILE, state)
-        predictions._update_health(root, {"mode": "canceled", "error": None}, now)
+        predictions._update_health(root, {"mode": state.get("mode"), "error": None}, now)
     return {"operation": "cancel", "outcome": outcome, "prediction_id": row["id"]}
 
 
@@ -192,13 +224,12 @@ def sync(g, *, client_factory=None, now=None):
         except Exception:
             raise ControlRefused("ledger_unreadable") from None
         row = _owned_row(state)
-        matches = _remote_rows(client, row)
-        if len(matches) > 1:
-            raise ControlRefused("remote_mismatch")
-        remote = matches[0] if matches else None
+        remote = _remote_row(client, row)
         if remote is None:
-            state["round"] = None
-            state.update(mode="idle", error=None, next_poll_at=0)
+            # Terminalize this attempt locally; never erase the row, or the
+            # same run could open a second wager on the next tick.
+            row["status"] = "CANCELED"
+            state.update(mode="canceled", error=None, next_poll_at=0)
             outcome = "remote_absent"
         elif remote.get("status") in predictions.DONE:
             # The remote already ended this round. Record the outcome the
@@ -219,7 +250,9 @@ def sync(g, *, client_factory=None, now=None):
                         if exc.code != "invalid_response":
                             raise ControlRefused(f"ledger_{exc.code}") from None
                     predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
-            state["round"] = None
+            # Terminal tombstone: `_advance` refuses a second wager in a run
+            # whose round is already DONE, and a later runtime still creates.
+            row["status"] = remote["status"]
             state.update(mode=remote["status"].lower(), error=None, next_poll_at=0)
             outcome = remote["status"].lower()
         else:
@@ -259,8 +292,17 @@ def _build_parser():
 
 def main(argv=None):
     args = _build_parser().parse_args(argv)
+    # The gateway runs fixed scripts in a limited environment that does not
+    # carry DOCICH_CONFIG, so an unspecified config would resolve to
+    # config/docich.toml (state_dir=run) instead of the live profile
+    # (run-soren-live). Always bind the reviewed production profile.
+    root = _repo_root()
+    config = Path(args.config) if args.config else root / LIVE_CONFIG
+    if not config.is_file():
+        print("docich: prediction control live configuration missing", file=sys.stderr)
+        return EXIT_UNREADABLE
     try:
-        g = load_global(_repo_root(), Path(args.config) if args.config else None)
+        g = load_global(root, config)
     except Exception:
         print("docich: prediction control configuration unavailable", file=sys.stderr)
         return EXIT_UNREADABLE

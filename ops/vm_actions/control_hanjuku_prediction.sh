@@ -32,13 +32,19 @@ esac
 root="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"
 [[ -f "$root/src/docich/hanjuku_prediction_control.py" && -f "$root/config/docich.soren-live.toml" ]] || exit 25
 
+# The gateway executes fixed scripts in a limited environment that does not
+# inherit DOCICH_CONFIG. Bind the reviewed live profile explicitly, otherwise
+# load_global(None) selects config/docich.toml (state_dir=run) and would act on
+# the wrong state directory. The module also defaults to this path.
+config="$root/config/docich.soren-live.toml"
+
 # `check` must not mutate anything: it reports which round the reviewed
 # operation would act on, using the same read-only ledger projection that the
 # diagnostics collector uses, and refuses an already-terminal round.
 if [[ "$mode" == check ]]; then
   export PYTHONPATH="$root/src"
-  exec python3 -B -P -m docich.hanjuku_prediction_control_check "$operation"
+  exec python3 -B -P -m docich.hanjuku_prediction_control_check --config "$config" "$operation"
 fi
 
 export PYTHONPATH="$root/src"
-exec python3 -B -P -m docich.hanjuku_prediction_control "$operation"
+exec python3 -B -P -m docich.hanjuku_prediction_control --config "$config" "$operation"

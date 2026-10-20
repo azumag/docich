@@ -727,6 +727,14 @@ ledger `hanjuku_predictions.json` は触らない）。正規の遠隔復旧は 
   （`ops/vm_actions/authorize_corner_rotation.py`）。
 - 両操作とも**既に記録された round の照合だけ**を行う。新しい round を作らず、勝者を選ばず、
   target / middle / 選択肢を変えず、他コーナーの賭けに触れない。
+- round は消さず `status=CANCELED` の終端 tombstone として残す。これが同一 run での
+  二つ目の賭けを止める（別 runtime の後続 run は通常どおり作成できる）。
+  参加実績の記帳に失敗したときは未解決のまま残し、次の tick が同じ id を1回だけ記帳する。
+- remote が同じ id を別 shape（title / outcome id）で返す場合は `remote_mismatch` で拒否し、
+  ローカル所有を消さない。GET が対象 id を返さない場合だけ不在として扱う。
+- `check-` は所有台帳を検証できない場合も拒否する（apply と同じ判定）。
+- 本番 profile は script が `--config config/docich.soren-live.toml` で明示的に束縛する
+  （gateway 環境は `DOCICH_CONFIG` を継承しない）。
 - 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞（durable `result` の契約違反など）は
   tick の `_load` が fail-closed のまま拒否し続けるので、operator だけが
   `_load_recoverable` を使う。**所有権は厳格に検証したまま** durable result の契約だけを

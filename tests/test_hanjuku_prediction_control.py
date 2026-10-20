@@ -9,12 +9,14 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from docich import hanjuku_prediction_control as control
 from docich import hanjuku_prediction_control_check as check
+from docich import hanjuku_prediction_api as api
 from docich import hanjuku_predictions as p
 from docich import hanjuku_progress as progress
 from docich.config import load_global
@@ -37,6 +39,7 @@ class FakeAPI:
         self.rows = []
         self.calls = []
         self.failure = None
+        self.allow_create = False
 
     def list(self, prediction_id=None):
         self.calls.append(('GET', prediction_id))
@@ -44,8 +47,15 @@ class FakeAPI:
             raise self.failure
         return copy.deepcopy([r for r in self.rows if not prediction_id or r['id'] == prediction_id])
 
-    def create(self, title, outcomes, window):  # pragma: no cover - must never run
-        raise AssertionError('prediction control must never create a round')
+    def create(self, title, outcomes, window):
+        self.calls.append(('POST', title, tuple(outcomes), window))
+        if not self.allow_create:
+            raise AssertionError('prediction control must never create a round')
+        row = {'id': f'prediction-{len(self.rows)}', 'title': title, 'status': 'ACTIVE',
+               'outcomes': [{'id': f'outcome-{i}', 'title': x}
+                            for i, x in enumerate(outcomes)]}
+        self.rows.append(row)
+        return [copy.deepcopy(row)]
 
     def end(self, prediction_id, status, outcome_id=None):
         self.calls.append(('PATCH', prediction_id, status, outcome_id))
@@ -102,7 +112,9 @@ def test_cancel_ends_the_owned_round_and_clears_local_ownership(env):
                       'prediction_id': env.remote.rows[0]['id']}
     assert env.remote.rows[0]['status'] == 'CANCELED'
     state = env.state()
-    assert state['round'] is None and state['mode'] == 'canceled' and state['error'] is None
+    # A terminal tombstone keeps this run from opening a second wager.
+    assert state['round']['status'] == 'CANCELED'
+    assert state['mode'] == 'canceled' and state['error'] is None
     # Never picks a winner and never creates a second round.
     assert ('PATCH', env.remote.rows[0]['id'], 'CANCELED', None) in env.remote.calls
     assert not [c for c in env.remote.calls if c[0] == 'POST']
@@ -112,7 +124,7 @@ def test_cancel_is_idempotent_when_the_remote_no_longer_has_the_round(env):
     env.remote.rows.clear()
     result = control.cancel(env.g, client_factory=env.factory, now=200)
     assert result['outcome'] == 'remote_absent'
-    assert env.state()['round'] is None
+    assert env.state()['round']['status'] == 'CANCELED'
     assert not [c for c in env.remote.calls if c[0] == 'PATCH']
 
 
@@ -158,7 +170,7 @@ def test_control_recovers_a_round_the_tick_ledger_rejects(env):
     assert report['actionable'] is True and report['reason'] == 'reviewed_round_live'
     result = control.cancel(env.g, client_factory=env.factory, now=200)
     assert result['outcome'] == 'canceled'
-    assert env.state()['round'] is None
+    assert env.state()['round']['status'] == 'CANCELED'
 
 
 def test_load_recoverable_stays_strict_about_ownership(env):
@@ -195,7 +207,7 @@ def test_cancel_refuses_a_round_the_remote_already_resolved(env):
     assert exc.value.code == 'remote_resolved_use_sync'
     # No PATCH was attempted at all, and ownership was left intact for the sync.
     assert not [c for c in env.remote.calls if c[0] == 'PATCH']
-    assert env.state()['round'] is not None
+    assert env.state()['round']['status'] == 'LOCKED'
 
 
 def test_sync_clears_ownership_the_remote_already_finished(env):
@@ -204,7 +216,7 @@ def test_sync_clears_ownership_the_remote_already_finished(env):
     result = control.sync(env.g, client_factory=env.factory, now=200)
     assert result['outcome'] == 'resolved'
     state = env.state()
-    assert state['round'] is None and state['mode'] == 'resolved'
+    assert state['round']['status'] == 'RESOLVED' and state['mode'] == 'resolved'
 
 
 def test_sync_readopts_a_live_round_without_changing_its_selection(env):
@@ -222,7 +234,7 @@ def test_sync_clears_ownership_when_the_remote_round_is_gone(env):
     env.remote.rows.clear()
     result = control.sync(env.g, client_factory=env.factory, now=200)
     assert result['outcome'] == 'remote_absent'
-    assert env.state()['round'] is None
+    assert env.state()['round']['status'] == 'CANCELED'
 
 
 def test_sync_never_patches_or_creates(env):
@@ -281,6 +293,38 @@ def test_control_script_uses_only_a_fixed_operation_enum():
     assert 'eval ' not in text
     for forbidden in ('resolve', 'create', 'outcome_index', 'prediction_id'):
         assert f'PREDICTION_{forbidden.upper()}' not in text
+
+
+def test_control_script_passes_the_reviewed_live_config_to_both_entrypoints():
+    """P1 regression: the gateway env has no DOCICH_CONFIG, so bind it here."""
+    import os
+    import tempfile
+    text = CONTROL_SCRIPT.read_text(encoding='utf-8')
+    assert 'config="$root/config/docich.soren-live.toml"' in text
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / 'src/docich').mkdir(parents=True)
+        (root / 'src/docich/hanjuku_prediction_control.py').touch()
+        (root / 'src/docich/hanjuku_prediction_control_check.py').touch()
+        (root / 'config').mkdir()
+        (root / 'config/docich.soren-live.toml').touch()
+        python = root / 'python3'
+        python.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+        python.chmod(0o755)
+        env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+               'DOCICH_PROD_ROOT': str(root)}
+        live = str(root / 'config/docich.soren-live.toml')
+        for mode, module, operation in (
+                ('check', 'docich.hanjuku_prediction_control_check', 'cancel'),
+                ('check', 'docich.hanjuku_prediction_control_check', 'sync'),
+                ('apply', 'docich.hanjuku_prediction_control', 'cancel'),
+                ('apply', 'docich.hanjuku_prediction_control', 'sync')):
+            result = subprocess.run(['bash', str(CONTROL_SCRIPT)], capture_output=True, text=True,
+                                    env={**env, 'PREDICTION_MODE': mode,
+                                         'PREDICTION_OPERATION': operation})
+            assert result.returncode == 0, result.stderr
+            argv = json.loads(result.stdout)
+            assert argv == ['-B', '-P', '-m', module, '--config', live, operation], (mode, operation, argv)
 
 
 def test_control_script_rejects_extra_arguments_before_any_launch():
@@ -362,3 +406,147 @@ def test_workflow_exposes_only_fixed_prediction_operations():
     assert 'inputs.command' not in text
     assert 'inputs.prediction_id' not in text
     assert 'inputs.outcome_index' not in text
+
+
+# --- independent-review regressions (#2216 review 5582196292) -----------------
+
+def test_p1_cancel_and_sync_bind_the_reviewed_live_profile(monkeypatch, tmp_path):
+    """P1: the gateway does not inherit DOCICH_CONFIG.
+
+    Both entrypoints must select config/docich.soren-live.toml (state_dir
+    run-soren-live) rather than falling back to config/docich.toml (run).
+    """
+    import docich.hanjuku_prediction_control as m
+    assert m.LIVE_CONFIG == "config/docich.soren-live.toml"
+    seen = {}
+    real = m.load_global
+
+    def spy(root, config):
+        seen['config'] = config
+        return real(root, config)
+
+    monkeypatch.setattr(m, 'load_global', spy)
+    monkeypatch.setattr(m, 'run', lambda g, op, **kw: seen.setdefault('op', op) or {'ok': True})
+    for operation in ('cancel', 'sync'):
+        seen.clear()
+        monkeypatch.setenv('DOCICH_CONFIG', '/nonexistent/ignored.toml')
+        assert m.main([operation]) == m.EXIT_OK
+        assert seen['config'] == ROOT / 'config/docich.soren-live.toml'
+        assert seen['op'] == operation
+    # An explicit path is still honoured, but never silently omitted.
+    seen.clear()
+    assert m.main(['--config', str(ROOT / 'config/docich.soren-live.toml'), 'sync']) == m.EXIT_OK
+    assert seen['config'] == ROOT / 'config/docich.soren-live.toml'
+
+
+def test_p1_live_profile_selects_the_production_state_dir(tmp_path):
+    """The bound profile is the one that owns run-soren-live, not run."""
+    live = load_global(ROOT, ROOT / 'config/docich.soren-live.toml')
+    default = load_global(ROOT, ROOT / 'config/docich.toml')
+    assert live.state_dir.name == 'run-soren-live'
+    assert default.state_dir.name == 'run'
+
+
+def test_p1_cancel_does_not_open_a_second_wager_in_the_same_run(env):
+    """P1: the terminal tombstone must survive, or the next tick re-POSTs."""
+    control.cancel(env.g, client_factory=env.factory, now=200)
+    assert env.state()['round']['status'] == 'CANCELED'
+    # The same run is still ready and active: _advance must not create.
+    env.remote.calls.clear()
+    p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert not [c for c in env.remote.calls if c[0] == 'POST']
+    assert env.state()['round']['status'] == 'CANCELED'
+
+
+def test_p1_sync_does_not_open_a_second_wager_in_the_same_run(env):
+    env.remote.rows[0]['status'] = 'CANCELED'
+    control.sync(env.g, client_factory=env.factory, now=200)
+    assert env.state()['round']['status'] == 'CANCELED'
+    env.remote.calls.clear()
+    p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert not [c for c in env.remote.calls if c[0] == 'POST']
+
+
+def test_p1_a_later_runtime_creates_normally(env):
+    """Only the next, different runtime may open a fresh wager."""
+    control.cancel(env.g, client_factory=env.factory, now=200)
+    later = {**ID, 'runtime_id': 'g2-abcdef', 'generation': 2, 'lease_id': 'lease2'}
+    runtime = env.g.state_dir / 'runtimes' / later['runtime_id']
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(runtime / 'hanjuku_run.json', {**later, 'schema': 1})
+    atomic_write_json(env.g.state_dir / 'game_switch.json',
+                      {'phase': 'ready', 'active': later})
+    env.remote.allow_create = True
+    env.remote.calls.clear()
+    result = p.tick(env.g, later, now=300, client_factory=env.factory)
+    assert result['mode'] == 'active'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+    assert env.state()['round']['runtime_id'] == later['runtime_id']
+
+
+def test_p2_bookkeeping_failure_keeps_retry_evidence_and_stays_unresolved(env, monkeypatch):
+    """P2: a swallowed record write must not erase the retry path."""
+    import docich.hanjuku_predictions as hp
+
+    # No contest: prove the participation-record path is the one that runs.
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome['users'] = 0
+        outcome['channel_points'] = 0
+
+    def fail(*a, **kw):
+        raise api.APIError('leaderboard')
+
+    monkeypatch.setattr(hp, '_record_canceled', fail)
+    result = control.cancel(env.g, client_factory=env.factory, now=200)
+    assert result['outcome'] == 'canceled_record_pending'
+    state = env.state()
+    # Unresolved, so the next tick re-observes CANCELED and retries the record.
+    assert state['round']['status'] == 'LOCKED'
+    assert state['mode'] == 'settling'
+    assert env.remote.rows[0]['status'] == 'CANCELED'
+
+    # The next tick records the same id exactly once, then the round goes DONE.
+    recorded = []
+    monkeypatch.setattr(hp, '_record_canceled',
+                        lambda root, now, client, sources=(): recorded.append(sources[0]['id']))
+    env.remote.calls.clear()
+    p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert recorded == [env.remote.rows[0]['id']]
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert not [c for c in env.remote.calls if c[0] == 'POST']
+
+
+def test_p2_same_id_with_a_different_shape_is_a_mismatch_not_an_absence(env):
+    """P2: a row for this id in another shape must fail closed."""
+    # Same id, different outcome ids: ownership can no longer be proven.
+    for index, outcome in enumerate(env.remote.rows[0]['outcomes']):
+        outcome['id'] = f'other-{index}'
+    for operation in (control.cancel, control.sync):
+        before = env.state()['round']
+        with pytest.raises(control.ControlRefused) as exc:
+            operation(env.g, client_factory=env.factory, now=200)
+        assert exc.value.code == 'remote_mismatch'
+        # Local ownership is untouched, not silently dropped.
+        assert env.state()['round']['id'] == before['id']
+
+
+def test_p2_same_id_with_a_different_title_is_a_mismatch(env):
+    env.remote.rows[0]['title'] = 'another corner wager'
+    with pytest.raises(control.ControlRefused) as exc:
+        control.cancel(env.g, client_factory=env.factory, now=200)
+    assert exc.value.code == 'remote_mismatch'
+
+
+def test_p2_check_refuses_a_ledger_it_cannot_verify(env):
+    """P2: check must agree with apply, which refuses `ledger_unreadable`."""
+    state = env.state()
+    state['round']['outcome_ids'] = ['broken']
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    before = (env.g.state_dir / p.FILE).read_bytes()
+    report = check.inspect(env.g, 'cancel', now=200)
+    assert report['actionable'] is False
+    assert report['reason'] == 'ledger_unreadable'
+    assert (env.g.state_dir / p.FILE).read_bytes() == before
+    with pytest.raises(control.ControlRefused) as exc:
+        control.cancel(env.g, client_factory=env.factory, now=200)
+    assert exc.value.code == 'ledger_unreadable'

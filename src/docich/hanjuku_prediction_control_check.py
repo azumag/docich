@@ -45,11 +45,10 @@ def inspect(g, operation, *, now=None):
     try:
         state = predictions._load_recoverable(root, seed)
     except Exception:
-        # The #2213 class: the durable ledger cannot be validated, which is
-        # exactly the stall this operator exists to clear. It is actionable,
-        # but only the reconciliation path (sync) can decide the real remote
-        # state, so cancel is reported as eligible too and left to `apply`.
-        report.update(actionable=True, reason="ledger_unreadable")
+        # `apply` refuses the same ledger with `ledger_unreadable`, so `check`
+        # must not report it as eligible: a target whose ownership cannot be
+        # verified is not a recoverable target. check and apply agree.
+        report["reason"] = "ledger_unreadable"
         return report
 
     row = state.get("round") if isinstance(state.get("round"), dict) else None

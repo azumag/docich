@@ -472,6 +472,25 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   remote に存在しなければ stale な所有だけを捨てる。**target / middle / 選択肢は変更しない。**
 - どちらも既に記録された round の照合のみを行う。新しい round を作らず、勝者を選ばず、
   他コーナーの賭けに触れない。`check-` は同じ判定を読み取り専用で行い、対象が無ければ非0で拒否する。
+  **所有台帳を検証できない場合も `actionable=False` で拒否する**（apply 側も同じ台帳を
+  `ledger_unreadable` で拒否するため、check だけ成功扱いにしない）。
+- **round を消さず終端 tombstone（`status=CANCELED`）で残す。** 既存の `_advance` は
+  「同じ run が所有する終端 round があれば二つ目の賭けを開かない」ため、`round=None` にすると
+  そのガードが消え、同じ ready/active の run で次の tick が新しい予想を POST してしまう。
+  tombstone を残せば同一 run では再作成せず、**別 runtime の後続 run だけ**が通常どおり作成できる。
+- **記帳失敗を握り潰さない。** 不成立キャンセルの参加実績記帳が `leaderboard` で失敗したときは、
+  round を終端にせず未解決のまま残し（`mode=settling`、`outcome=canceled_record_pending`）、
+  取消前 snapshot も保持する。次の tick が remote の `CANCELED` を再観測して同じ prediction id を
+  1回だけ記帳する（未解決 round も二つ目の賭けを止める）。通常 tick の
+  `_save_cancel_snapshot` → PATCH → 記帳 → 証拠削除と同じ順序で、不可逆取消の前に証拠を保存する。
+- **remote の「不在」と「所有権不一致」を区別する。** 同じ prediction id を返すが title や
+  outcome id が一致しない場合は `remote_mismatch` で fail-closed し、ローカル所有を消さない。
+  GET が実際に対象 id を返さなかった場合だけ不在として扱う。
+- **本番 profile を明示的に束縛する。** gateway は固定 script を `DOCICH_CONFIG` を継承しない
+  限定環境で実行するため、`load_global(..., None)` は `config/docich.toml`（`state_dir=run`）を
+  選んでしまい本番の `config/docich.soren-live.toml`（`run-soren-live`）を操作しない。
+  script は `--config "$root/config/docich.soren-live.toml"` を渡し、モジュール側も既定で
+  この live config を選ぶ。
 - 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞は durable `result` が契約違反の
   場合などで、tick の `_load` は fail-closed のまま拒否し続ける。operator だけが
   `_load_recoverable` を使い、**所有権（identity / title / window / nonce / status / remote id）は
