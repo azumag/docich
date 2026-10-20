@@ -4483,8 +4483,13 @@ def _project_corner_state(data):
         data.get("status") == "failed"
         and (error_code == "recovery_required" or legacy_recovery_error)
     )
+    finish_reason = data.get("finish_reason")
     return {
         "status": _bounded_str(data.get("status"), 32),
+        # Persisted producer reasons only; never infer a boundary from timing.
+        "finish_reason": (finish_reason if isinstance(finish_reason, str)
+                          and finish_reason in {"terminal", "stalled", "recover", "force_recover"}
+                          else None),
         "date": _bounded_str(data.get("date"), 16),
         "game": _bounded_str(data.get("game"), 64),
         "previous_game": _bounded_str(data.get("previous_game"), 64),
