@@ -742,8 +742,10 @@ def _egg_inventory(mem, cur, kit):
     not offered again. One shared row feeds both the card and the tactic.
     """
     stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
-    used = [*(cur.get('cards_used') or []), *(cur.get('cards_selected') or []),
-            *(cur.get('cards_unclassified') or [])]
+    # 1回の使用は選択時 (cards_selected) と結果確定時 (cards_used /
+    # cards_unclassified) の両方に載るため、札ごとに多い方の件数を使う。
+    selected = cur.get('cards_selected') or []
+    settled = [*(cur.get('cards_used') or []), *(cur.get('cards_unclassified') or [])]
     ordered = []
     for name in [*(kit or []), *sorted(stock, key=lambda n: (CARD_IDS.get(n, 99), str(n)))]:
         if isinstance(name, str) and name and name not in ordered:
@@ -755,7 +757,7 @@ def _egg_inventory(mem, cur, kit):
         count = count if type(count) is int and 0 <= count <= 99 else None
         if carried <= 0 and count == 0:
             continue                      # known absent, not an owned card
-        spent = sum(1 for card in used if card == name)
+        spent = max(selected.count(name), settled.count(name))
         if kit is None:
             available, unavailable = None, 'kit_unknown'
         elif carried <= 0:
