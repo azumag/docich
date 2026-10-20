@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 import unittest
@@ -266,6 +267,100 @@ class StreamTitleAttemptDiagnosticsTests(unittest.TestCase):
             out = collector._collect_stream_title_attempts(self.soren, self.state, self.now)
         self.assertEqual(out["day_units"]["system"]["service"]["result"], "unknown")
         self.assertNotIn("PRIVATE", json.dumps(out))
+
+    def test_root_rejections_are_fixed_metadata_not_permission_changes(self):
+        self.log("ERROR: failed to compose public title")
+        script = self.soren / "update_stream_title_day.sh"
+        script.write_text("PRIVATE")
+        self.soren.chmod(0o777)
+        with mock.patch.object(collector.os, "read", side_effect=AssertionError("body read")):
+            out = self.collect()
+        self.assertEqual(out["logs"]["game"]["record_status"], "unsafe")
+        self.assertEqual(out["logs"]["game"]["read_rejection"], "root_writable")
+        self.assertEqual(out["day_script"]["record_status"], "unreadable")
+        self.assertEqual(out["day_script"]["read_rejection"], "root_writable")
+        self.soren.chmod(0o755)
+        with mock.patch.object(collector.os, "getuid", return_value=os.getuid() + 1):
+            out = self.collect()
+        self.assertEqual(out["logs"]["game"]["read_rejection"], "root_owner_mismatch")
+        self.assertEqual(out["day_script"]["read_rejection"], "root_owner_mismatch")
+        row = collector._stream_title_log_observation(
+            Path("PRIVATE-relative"), ("stream_game.log",), "stream_game", self.now, {}
+        )
+        self.assertEqual(row["read_rejection"], "root_invalid")
+        self.assertNotIn("PRIVATE", json.dumps((out, row)))
+
+    def test_descendant_directory_rejections_are_separate_from_root(self):
+        path = self.log("ERROR: failed to compose public title")
+        path.parent.chmod(0o777)
+        out = self.collect()
+        self.assertEqual(out["logs"]["game"]["read_rejection"], "directory_writable")
+        path.parent.chmod(0o755)
+        inode = path.parent.stat().st_ino
+        original_fstat = os.fstat
+
+        def fstat(fd):
+            info = original_fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino == inode:
+                values = list(info)
+                values[4] += 1
+                return os.stat_result(values)
+            return info
+
+        with mock.patch.object(collector.os, "fstat", side_effect=fstat):
+            out = self.collect()
+        self.assertEqual(out["logs"]["game"]["read_rejection"], "directory_owner_mismatch")
+        self.assertEqual(out["logs"]["game"]["record_status"], "unsafe")
+
+    def test_file_rejection_reasons_preserve_all_existing_read_guards(self):
+        original_fstat = os.fstat
+
+        def foreign_file(fd):
+            info = original_fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                values = list(info)
+                values[4] += 1
+                return os.stat_result(values)
+            return info
+
+        for kind, expected in (("fifo", "not_regular"), ("owner", "file_owner_mismatch"),
+                               ("hardlink", "multiple_links"), ("writable", "file_writable")):
+            with self.subTest(kind=kind):
+                path = self.log("ERROR: failed to compose public title")
+                if kind == "fifo":
+                    path.unlink()
+                    os.mkfifo(path, 0o600)
+                elif kind == "hardlink":
+                    os.link(path, path.with_name("PRIVATE-alias"))
+                elif kind == "writable":
+                    path.chmod(0o666)
+                patch = (mock.patch.object(collector.os, "fstat", side_effect=foreign_file)
+                         if kind == "owner" else mock.patch.object(collector.os, "fstat", side_effect=original_fstat))
+                try:
+                    with patch, mock.patch.object(collector.os, "read", side_effect=AssertionError("body read")):
+                        out = self.collect()
+                finally:
+                    path.unlink()
+                row = out["logs"]["game"]
+                self.assertEqual(row["read_rejection"], expected)
+                self.assertEqual(row["record_status"], "unsafe")
+                self.assertEqual(row["observed_reason"], "unknown")
+                self.assertEqual(out["current_failure"], "unknown")
+                self.assertNotIn("PRIVATE", json.dumps(out))
+
+    def test_read_rejection_never_echoes_unknown_exception_or_private_metadata(self):
+        self.log("OK: updated title=PRIVATE game_id=123")
+        out = self.collect()
+        self.assertEqual(out["logs"]["game"]["read_rejection"], "none")
+        for error in (ValueError("PRIVATE /private/path uid=987654"),
+                      collector._StreamTitleUnsafe("PRIVATE uid=987654")):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(collector, "_stream_title_open_fixed", side_effect=error):
+                    out = self.collect()
+                self.assertEqual(out["logs"]["game"]["read_rejection"], "unknown")
+                self.assertEqual(out["day_script"]["read_rejection"], "unknown")
+                for value in ("PRIVATE", "private/path", "987654", str(self.soren)):
+                    self.assertNotIn(value, json.dumps(out))
 
 
 if __name__ == "__main__":

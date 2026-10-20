@@ -3121,6 +3121,21 @@ STREAM_TITLE_LOG_SOURCES = {
 }
 
 
+STREAM_TITLE_READ_REJECTIONS = frozenset({
+    "root_invalid", "root_owner_mismatch", "root_writable",
+    "directory_owner_mismatch", "directory_writable", "not_regular",
+    "file_owner_mismatch", "multiple_links", "file_writable",
+})
+
+
+class _StreamTitleUnsafe(ValueError):
+    """Carry a fixed metadata-only refusal without paths, IDs or raw errors."""
+
+    def __init__(self, reason):
+        super().__init__("unsafe title source")
+        self.reason = reason if reason in STREAM_TITLE_READ_REJECTIONS else "unknown"
+
+
 def _stream_title_open_fixed(root, parts):
     """Open fixed sources through owned, non-writable-by-others directories.
 
@@ -3129,7 +3144,7 @@ def _stream_title_open_fixed(root, parts):
     """
     root = Path(root)
     if not root.is_absolute() or ".." in root.parts:
-        raise ValueError("unsafe title root")
+        raise _StreamTitleUnsafe("root_invalid")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory = os.open(root.anchor, directory_flags)
     fd = None
@@ -3147,14 +3162,22 @@ def _stream_title_open_fixed(root, parts):
                 os.close(directory)
                 directory = child
             info = os.fstat(directory)
-            if info.st_uid != os.getuid() or info.st_mode & 0o022:
-                raise ValueError("unsafe title directory")
+            stage = "root" if part is None else "directory"
+            if info.st_uid != os.getuid():
+                raise _StreamTitleUnsafe(stage + "_owner_mismatch")
+            if info.st_mode & 0o022:
+                raise _StreamTitleUnsafe(stage + "_writable")
         fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                      dir_fd=directory)
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_nlink != 1 or info.st_mode & 0o022):
-            raise ValueError("unsafe title file")
+        if not stat.S_ISREG(info.st_mode):
+            raise _StreamTitleUnsafe("not_regular")
+        if info.st_uid != os.getuid():
+            raise _StreamTitleUnsafe("file_owner_mismatch")
+        if info.st_nlink != 1:
+            raise _StreamTitleUnsafe("multiple_links")
+        if info.st_mode & 0o022:
+            raise _StreamTitleUnsafe("file_writable")
         return fd, directory, info
     except Exception:
         if fd is not None:
@@ -3180,7 +3203,8 @@ def _stream_title_log_observation(root, parts, prefix, now, sync):
     result = {"record_status": "unreadable", "observed_outcome": "unknown",
               "observed_reason": "unknown", "age_sec": -1,
               "time_basis": "host_local_unverified",
-              "journal_relation": "unknown", "tail_truncated": False}
+              "journal_relation": "unknown", "tail_truncated": False,
+              "read_rejection": "unknown"}
     fd = directory = None
     try:
         fd, directory, before = _stream_title_open_fixed(root, parts)
@@ -3208,8 +3232,12 @@ def _stream_title_log_observation(root, parts, prefix, now, sync):
         if len(raw) > STREAM_TITLE_LOG_MAX_BYTES:
             result["record_status"] = "changed"
             return result
+        result["read_rejection"] = "none"
     except FileNotFoundError:
         result["record_status"] = "absent"
+        return result
+    except _StreamTitleUnsafe as error:
+        result.update(record_status="unsafe", read_rejection=error.reason)
         return result
     except ValueError:
         result["record_status"] = "unsafe"
@@ -3322,14 +3350,17 @@ def _stream_title_log_observation(root, parts, prefix, now, sync):
 
 
 def _stream_title_day_script(soren):
-    result = {"record_status": "unreadable", "mode": None, "executable": None}
+    result = {"record_status": "unreadable", "mode": None, "executable": None,
+              "read_rejection": "unknown"}
     fd = directory = None
     try:
         fd, directory, info = _stream_title_open_fixed(soren, ("update_stream_title_day.sh",))
         result.update(record_status="observed", mode=f"{stat.S_IMODE(info.st_mode):04o}",
-                      executable=bool(info.st_mode & stat.S_IXUSR))
+                      executable=bool(info.st_mode & stat.S_IXUSR), read_rejection="none")
     except FileNotFoundError:
         result["record_status"] = "absent"
+    except _StreamTitleUnsafe as error:
+        result["read_rejection"] = error.reason
     except (OSError, ValueError):
         pass
     finally:
