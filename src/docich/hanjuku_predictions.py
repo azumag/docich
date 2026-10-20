@@ -444,7 +444,14 @@ def summary(state):
 
 
 def _bounded_clock(value):
-    return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+    if type(value) not in (int, float) or isinstance(value, bool):
+        return None
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+    except (OverflowError, ValueError, TypeError):
+        return None
+    return value
 
 
 def _health(root):
@@ -472,7 +479,7 @@ def _update_health(root, outcome, now):
         streak = streak if type(streak) is int and 0 <= streak <= MAX_ERROR_STREAK else 0
         failed = outcome.get('mode') == 'error'
         error = outcome.get('error') if failed else None
-        error = error if error in ERRORS else ('unexpected' if failed else None)
+        error = error if isinstance(error, str) and error in ERRORS else ('unexpected' if failed else None)
         record = {
             'schema': HEALTH_SCHEMA,
             'consecutive_errors': min(streak + 1, MAX_ERROR_STREAK) if failed else 0,

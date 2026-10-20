@@ -4137,7 +4137,10 @@ def _bounded_time(value):
 def _finite_number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value if math.isfinite(value) else None
+    try:
+        return value if math.isfinite(value) else None
+    except (OverflowError, ValueError, TypeError):
+        return None
 
 
 def _file_age_sec(path, now):
@@ -5711,10 +5714,12 @@ def _collect_hanjuku_prediction_health(state_dir, errors):
         return None
     record = record if readable and isinstance(record, dict) else {}
     streak = record.get("consecutive_errors")
+    last_error = record.get("last_error")
+    last_error = last_error if isinstance(last_error, str) and last_error in errors else None
     return {"present": present, "readable": readable,
             "consecutive_errors": (streak if type(streak) is int
                                    and 0 <= streak <= 1_000_000 else None),
-            "last_error": record.get("last_error") if record.get("last_error") in errors else None,
+            "last_error": last_error,
             "last_ok_at": _finite_number(record.get("last_ok_at"))}
 
 
