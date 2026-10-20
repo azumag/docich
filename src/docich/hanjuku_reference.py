@@ -345,6 +345,18 @@ GENERAL_STATS: dict[str, tuple[int, int, str, str, int]] = {
     'ゼウス': (85, 13, '0', 'ワンダー', 2),  # 127
 }
 
+# 騎馬 (wikiwiki 将軍ページの「馬」列、2026-10-20 確認)。ここに無い将軍は
+# 徒歩。騎馬は移動・突撃に有利なため、強制解雇の比較では同条件なら徒歩を先に
+# 弱いとみなす (Issue #2367)。
+GENERAL_HORSES: frozenset[str] = frozenset({
+    'ココット', 'ピスタチオ', 'カシュー', 'キッシュ', 'シェーブル', 'タルタル',
+    'ヘルメス', 'デーメーテール', 'ミュスカデ', 'エピィ', 'フェットチーネ',
+    'バーミセリ', 'フェデリーニ', 'バタール', 'バゲット', 'ブリオッシュ',
+    'バトウラ', 'ブレッツェル', 'マフィン', 'ベーグル', 'ブラウニー', 'マサラ',
+    'コンポート', 'グリッシーニ', 'オレガノ', 'エストラゴン', 'エッジ',
+    'ガーラント', 'バランタイン',
+})
+
 
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
 # Each unit knows exactly two skills; MONSTER_EFFECT_SKILLS is the global set
@@ -858,6 +870,57 @@ STRONG_GENERAL_HP_GAP = 20         # 敵の最大HPが味方をこの値以上�
 def general_strength(name: str | None):
     """gcgx shogun.html の (HP, 戦闘, 補正, エッグ種別, 思考)。表に無ければ None。"""
     return GENERAL_STATS.get(name) if name else None
+
+
+# 強制解雇で選ぶ「弱い将軍」の順序 (Issue #2367、owner 2026-10-20)。
+# 採用した順序:
+#   1. 卵なし (静的なエッグ種別 '－')
+#   2. HP × 戦闘 が小さい (HP は最大HP。現在HPの負傷は使わない)
+#   3. 騎馬でない (GENERAL_HORSES に無い)
+#   4. 最大HP が低い
+#   5. 戦闘が低い
+#   6. 名前 (同値時の決定的な最終順)
+# 卵種別どうしの優劣は未確定のため順位に使わない。未読・残回数0・破損は
+# ここでは扱わない (静的な種別だけを見るので「卵なし」と混同しない)。
+# HP×戦闘はオーナー提案の候補式であり、この順序をテストで固定する。
+def general_weakness(name: str | None):
+    """弱い順の比較キー。静的データに無い名前は None (順位を確定しない)。"""
+    stats = general_strength(name)
+    hp = general_max_hp(name)
+    if stats is None or hp is None:
+        return None
+    max_hp, combat, _bonus, egg, _thought = stats
+    if max_hp != hp:
+        return None  # 二つの静的HP表が食い違う名前は比較しない
+    eggless = egg == '－'
+    return (0 if eggless else 1, max_hp * combat,
+            1 if name in GENERAL_HORSES else 0, max_hp, combat, name)
+
+
+def weakest_general(names):
+    """候補一覧から最も弱い将軍を選ぶ。未知名が1つでもあれば確定しない。
+
+    返り値は (name, evidence)。name が None のときは、未知名や空の一覧を
+    evidence['unresolved'] に残し、既定カーソルを最弱とみなさない。
+    """
+    evidence = {'basis': 'eggless,hp_x_combat,not_mounted,max_hp,combat,name',
+                'candidates': [], 'unresolved': []}
+    if (not isinstance(names, (list, tuple)) or not names
+            or len(set(names)) != len(names)):
+        evidence['unresolved'] = ['empty_or_duplicate_list']
+        return None, evidence
+    ranked = []
+    for name in names:
+        key = general_weakness(name) if isinstance(name, str) else None
+        if key is None:
+            evidence['unresolved'].append(name)
+            continue
+        ranked.append((key, name))
+    evidence['candidates'] = [{'name': name, 'key': list(key)} for key, name in ranked]
+    if evidence['unresolved'] or len(ranked) != len(names):
+        return None, evidence
+    ranked.sort()
+    return ranked[0][1], evidence
 
 
 def strong_general(enemy: str | None, ally: str | None):

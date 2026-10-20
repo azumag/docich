@@ -74,9 +74,9 @@ def test_threshold_is_twenty_soldiers(count, first):
         assert mem['shop']['soldiers_done'] is True
 
 
-@pytest.mark.parametrize('gold,repair,expected', [(120, 0, 34), (70, 20, 20), (60, 0, 30),
-                                                  (50, 20, 0), (30, 0, 0)])
-def test_only_wages_and_house_repair_stay_in_hand(gold, repair, expected):
+@pytest.mark.parametrize('gold,repair,expected', [(120, 0, 34), (70, 20, 34), (60, 0, 34),
+                                                  (50, 20, 30), (30, 0, 30)])
+def test_only_house_repair_stays_in_hand_no_wage_hold(gold, repair, expected):
     mem = memory(gold=gold)
     shop = mem['shop']
     shop['hero_repair_reserve'] = repair
@@ -84,7 +84,7 @@ def test_only_wages_and_house_repair_stay_in_hand(gold, repair, expected):
     if expected:
         assert economy.low_army_first(shop)
         assert shop['soldiers'] == expected and shop['soldiers_done'] is False
-        assert gold - shop['soldiers'] >= economy.WAGE_RESERVE + repair
+        assert gold - shop['soldiers'] >= repair
     else:
         # Nothing beyond wages/repair: the existing plan stays, nothing is held back.
         assert not economy.low_army_first(shop)
@@ -96,12 +96,12 @@ def test_editor_pays_the_full_low_army_refill_despite_rearmed_egg_hold_and_cards
     mem = memory(gold=70)
     mem['shop']['hero_repair_reserve'] = 20
     assert p.month_step(screen(70, on='へいしほじゅう'), mem) == [p.pad('a')]
-    assert mem['shop']['soldiers'] == 20
+    assert mem['shop']['soldiers'] == 34  # 70G - 20G repair, capped 16 -> 50
     mem = json.loads(json.dumps(mem))  # hotloaded between the menu and the editor
     assert economy.low_army_first(mem['shop'])
-    assert p.quantity_step(editor(20, 70), mem, soldiers=True) == [p.pad('a')]
+    assert p.quantity_step(editor(34, 70), mem, soldiers=True) == [p.pad('a')]
     receipt = mem['shop']['soldier_receipt']
-    assert receipt['qty'] == 20 and receipt['status'] == 'pending'
+    assert receipt['qty'] == 34 and receipt['status'] == 'pending'
     assert receipt['soldiers_before'] == 16
     assert mem['shop']['reserve'] == 50  # the egg hold is kept for afterwards
 
@@ -124,10 +124,10 @@ def test_paid_refill_hands_the_menu_back_to_cards_then_egg():
 def test_partial_refill_does_not_rearm_once_its_receipt_exists():
     mem = memory(gold=60)
     p.month_step(screen(60, on='へいしほじゅう'), mem)
-    assert p.quantity_step(editor(30, 60), mem, soldiers=True) == [p.pad('a')]
+    assert p.quantity_step(editor(34, 60), mem, soldiers=True) == [p.pad('a')]
     for _ in range(2):
-        p.observe_events(screen(30), mem)
-    assert mem['soldiers_seen'] == 46
+        p.observe_events(screen(26), mem)
+    assert mem['soldiers_seen'] == 50
     shop = mem['shop']
     for _ in range(3):
         economy._low_army_refill(mem, shop, screen(30).header)

@@ -25,8 +25,8 @@ def memory(count=10, gold=79):
     return mem
 
 
-@pytest.mark.parametrize('count,gold,expected', [(0, 79, 49), (10, 79, 40), (49, 79, 1),
-                                               (0, 45, 15), (10, 45, 15)])
+@pytest.mark.parametrize('count,gold,expected', [(0, 79, 50), (10, 79, 40), (49, 79, 1),
+                                               (0, 45, 45), (10, 45, 40)])
 def test_cached_zero_plan_opens_refill_after_unaffordable_recovery(count, gold, expected):
     mem = memory(count, gold)
     assert p.month_step(screen(gold), mem) == [p.pad('a')]
@@ -42,9 +42,9 @@ def test_cached_zero_plan_opens_refill_after_unaffordable_recovery(count, gold, 
 def test_new_skip_replans_in_the_same_observation_instead_of_exiting():
     # Above LOW_ARMY the recovery is still tried first; twenty or fewer
     # soldiers are refilled before it (test_hanjuku_low_army_refill_first).
-    mem = memory(30)
+    mem = memory(30, gold=49)  # 49G cannot pay the 50G recovery
     mem['shop'].update(egg='pending', closed=False)
-    assert p.month_step(screen(79), mem) == [p.pad('a')]
+    assert p.month_step(screen(49), mem) == [p.pad('a')]
     assert mem['shop']['soldiers'] == 20
     assert mem['shop']['egg'] == 'skipped'
     assert not mem.get('month_exit')
@@ -126,8 +126,8 @@ def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
     assert shop == before
 
 
-@pytest.mark.parametrize('gold,repair,cards,expected', [(79, 0, [], 40), (79, 50, [], 0),
-    (95, 50, [], 15), (79, 0, [['ブラッキー', 10]], 19), (30, 0, [], 0)])
+@pytest.mark.parametrize('gold,repair,cards,expected', [(79, 0, [], 40), (79, 50, [], 29),
+    (95, 50, [], 40), (79, 0, [['ブラッキー', 10]], 40), (30, 0, [], 30)])
 def test_shortfall_wages_repairs_and_required_cards_remain_reserved(gold, repair, cards, expected):
     mem = memory(gold=gold)
     mem['shop'].update(hero_repair_reserve=repair, items=cards, merchant_done=not cards)

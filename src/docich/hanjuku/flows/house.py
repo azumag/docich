@@ -442,6 +442,80 @@ def _next_general(mem):
         _phase(state, 'find_field')
 
 
+def _month_count(screen, mem, state, frame):
+    """Monthly roster count: names from the list and scroll only (Issue #2367).
+
+    The monthly check needs the number of resident generals, not their HP,
+    egg type, remaining uses or location. Every visible name on each fresh
+    page is merged into this scan; no status screen is opened. A page shorter
+    than the native eight rows ends the list on screen, a wrapped cursor proves
+    a full walk and the native scroll-end frame proves the last page. An
+    unproven end leaves ``complete`` false and the existing retry cap applies.
+    """
+    from ..os_layer.commands import pad
+    names = roster(screen)
+    if names is None or screen.selected not in names:
+        return []
+    selected = screen.selected
+    if not state.get('seen'):
+        state['roster_first_general'] = selected if selected == 'どうし' and screen.hand[1] == 33 else None
+        state['singleton_first_page'] = _singleton_page(screen, frame)
+    for name in names:
+        if name not in state.get('seen', []):
+            state.setdefault('seen', []).append(name)
+    if _roster_scroll_end(screen, frame):
+        state['roster_end_observed'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    if (len(state['seen']) >= 2 and state.get('month_moved')
+            and selected == state['seen'][0]):
+        state['roster_wrapped'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    if len(names) < receipts.VISIBLE_NAME_ROWS:
+        state['roster_end_observed'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    state['selected'] = selected
+    state['month_moved'] = True
+    _phase(state, 'roster_advance')
+    return [pad('down')]
+
+
+def _month_count_advance(screen, mem, state, frame):
+    """Follow a list scroll without opening any general's status screen."""
+    from ..os_layer.commands import pad
+    names = roster(screen)
+    if names is None or screen.selected not in names:
+        state['month_advance_observations'] = 0
+        return []
+    if screen.selected != state.get('selected'):
+        state.pop('month_advance_observations', None)
+        _phase(state, 'roster')
+        return []
+    observations = int(state.get('month_advance_observations') or 0) + 1
+    state['month_advance_observations'] = observations
+    if observations >= 2:
+        # Two bounded Down presses at the final visible row did not move the
+        # cursor: the list ends there. That is a bounded end observation, not
+        # a full-page guess. Anywhere else, leave with the names actually read
+        # but without complete(), so this is not a confirmed roster.
+        at_last = screen.selected == names[-1]
+        if at_last:
+            state['roster_end_observed'] = True
+        _record(mem, 'month_roster_end_bounded' if at_last else 'month_roster_end_unproven',
+                observed_metric={'generals': list(state.get('seen') or []),
+                                 'observations': observations,
+                                 'selected': screen.selected,
+                                 'last_visible': names[-1]},
+                reason=('月次の一覧が最終行で動かないため末尾として有限に確定'
+                        if at_last else
+                        '月次の一覧でスクロール端の証拠を得られないため、読めた名前だけを残して有限に終了'))
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    return [pad('down')]
+
+
 def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
     from ..os_layer.commands import pad
     from ..os_layer.readers import STATUS_NAMES
@@ -615,6 +689,11 @@ def step(screen, mem, frame):
             return None
         return _exit(mem, '完了確認の月・ラン・名簿が無効になったため部分再確認を中断')
     phase = state['phase']
+    if state.get('month_scan') and phase == 'month_open' and screen.kind == 'main_menu':
+        # The information menu was already open on this frame (no navigation
+        # was needed from the month menu); continue with its しょうぐん row.
+        _phase(state, 'open_roster')
+        phase = 'open_roster'
     # The monthly main-menu survey returns to the same monthly menu, never
     # starts a repair trip, and gives the ordinary spending policy the next
     # observation. Delayed pre-open monthly frames do not start another flow.
@@ -736,6 +815,8 @@ def step(screen, mem, frame):
             return actions
         return []
     if phase == 'roster':
+        if state.get('month_scan'):
+            return _month_count(screen, mem, state, frame)
         names = roster(screen)
         if names is None:
             return []
@@ -788,6 +869,8 @@ def step(screen, mem, frame):
         _phase(state, 'roster_advance')
         return [pad('down')]
     if phase == 'roster_advance':
+        if state.get('month_scan'):
+            return _month_count_advance(screen, mem, state, frame)
         names = roster(screen)
         if names is None:
             state['roster_end_observations'] = 0

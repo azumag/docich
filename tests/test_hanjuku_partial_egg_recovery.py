@@ -71,7 +71,7 @@ def test_quote_needs_exact_one_egg_price_current_owner_and_reserved_payroll(chan
     mem = selected_memory(); screen = quote()
     if change == 'multi': screen = quote(quantity=2, cost=100)
     elif change == 'wrong_price': screen = quote(cost=49)
-    elif change == 'short': screen = quote(gold=57)  # actual full payroll8 -> needs58
+    elif change == 'short': screen = quote(gold=49)  # one recovery costs 50, no payroll hold
     elif change == 'month': screen = quote(month=5)
     elif change == 'run': mem['_run_identity']['lease_id'] = 'other'
     elif change == 'chapter': mem['chapter'] = 2
@@ -138,7 +138,7 @@ def test_unknown_or_full_rows_are_never_paid_as_partial_recovery(change):
     assert not p._individual_egg_candidate(screen, mem, mem['month_sub'])
 
 
-@pytest.mark.parametrize('gold,opens', [(57, False), (58, True), (80, True)])
+@pytest.mark.parametrize('gold,opens', [(49, False), (50, True), (80, True)])
 def test_entry_can_afford_one_recovery_with_complete_actual_payroll(gold, opens):
     mem = memory(gold); mem.pop('month_sub'); mem['shop']['egg'] = 'check'
     actions = p._month_extra(ready_menu(gold), mem, mem['shop'], egg_only=True)
@@ -221,8 +221,8 @@ def test_hero_payment_keeps_other_zero_and_leaves_budget_for_next_actor():
     assert mem['month_sub']['individual_actor'] == 'ココット'
 
 
-@pytest.mark.parametrize('gold,allowed', [(94, False), (95, True)])
-def test_hero_single_quote_reserves_the_entire_known_payroll(gold, allowed):
+@pytest.mark.parametrize('gold,allowed', [(49, False), (50, True), (94, True)])
+def test_hero_single_quote_ignores_the_known_payroll(gold, allowed):
     mem = hero_memory(gold)
     mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
     assert p._hero_egg_wage_floor(mem) == 45
@@ -232,7 +232,7 @@ def test_hero_single_quote_reserves_the_entire_known_payroll(gold, allowed):
 
 
 def test_large_known_payroll_keeps_hero_priority_when_full_quote_is_short():
-    mem = hero_memory(180)  # full150 + actual45 >180, but50 +45 fits
+    mem = hero_memory(149)  # full150 is short, but one 50G recovery fits
     mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
     assert p._egg_recovery_step(hero_list(), mem, mem['month_sub']) == [p.pad('a')]
     assert mem['month_sub']['hero_selected'] is True
@@ -284,13 +284,13 @@ def test_partial_payment_keeps_all_62g_payroll_before_a_soldier_confirmation():
     screen.lines = [TextLine(l.y, tuple((x, '4' if x == 104 else ch) for x, ch in l.cells))
                     if l.y == 71 else l for l in screen.lines]
     mem['month_sub']['full_selected'] = True
-    assert p._egg_recovery_step(quote(112, 2, 100), mem, mem['month_sub']) == [p.pad('b')]
+    assert p._egg_recovery_step(quote(112, 3, 150), mem, mem['month_sub']) == [p.pad('b')]
     assert p._egg_recovery_step(screen, mem, mem['month_sub']) == [p.pad('a')]
     assert p._egg_recovery_step(quote(112), mem, mem['month_sub']) == [p.pad('a')]
     assert p._finish_month_sub(ready_menu(62), mem, mem['shop'])
-    assert mem['shop']['egg'] == 'done' and mem['shop']['soldiers'] == 0
+    assert mem['shop']['egg'] == 'done' and mem['shop']['soldiers'] == 50
     q = quantity(62); q.header['month'] = 6
-    p.quantity_step(q, mem, soldiers=True)
+    assert p.quantity_step(q, mem, soldiers=True) == []
     assert not mem['shop'].get('soldier_receipt')
 
 
@@ -305,5 +305,5 @@ def test_hotloaded_old_soldier_plan_is_recapped_to_the_shortfall_floor():
     p.quantity_step(q, mem, soldiers=True)
     # Owner (2026-10-14): the known 62G payroll is not reserved in full, but
     # the documented shortfall floor is, and the receipt is still required.
-    assert mem['shop']['soldiers'] == 62 - economy.WAGE_RESERVE
+    assert mem['shop']['soldiers'] == 50
     assert not mem['shop'].get('soldier_receipt')

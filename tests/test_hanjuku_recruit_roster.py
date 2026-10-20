@@ -345,7 +345,7 @@ def _drive_survey(state, names, month):
 
 
 @pytest.mark.parametrize('names',[['どうし'],['どうし','ゼウス']])
-def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(names):
+def test_field_scan_then_month_boundary_rescans_with_count_only(names):
     from docich.hanjuku_bot import decide
     from test_hanjuku_chart_bot import month_canvas
     def field(x,y):
@@ -373,19 +373,23 @@ def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(nam
     assert actions==[p.pad('a')]
     assert state['policy']['house']['month_scan']
     assert state['policy']['recruit_roster']['tick']>old_tick
-    state=_drive_survey(state,names,7)
-    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
-    assert actions==[] and not state['policy'].get('house')
-    assert r.fresh(state['policy'])['complete']
+    mem = state['policy']
+    mem['month']='1-7'
+    # Issue #2367: the monthly check reads only the list and scroll.
+    from docich.hanjuku_screen import parse
+    from test_hanjuku_house import roster
+    main_frame=_survey_main(7)
+    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('a')]
+    frame=_survey_header(roster(names,0),7)
+    assert house.step(parse(frame),mem,frame)==[p.pad('b')]
+    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('b')]
+    month_frame=month_canvas(250,on='メインメニュー',month=7)
+    assert house.step(parse(month_frame),mem,month_frame)==[]
+    assert not mem.get('house')
+    assert r.fresh(mem)['complete']
     # Recruitment is tested after the game's recovery-not-needed receipt.
-    p._plan(state['policy'], {'year': 1, 'month': 7, 'gold': 250})['egg'] = 'not_needed'
-    # Native monthly frames navigate to, and actually open, recruitment.
-    actions,state=decide(month_canvas(250,on='しょうぐんぼしゅう',month=7),state)
-    assert actions==[p.pad('a')]
-    assert state['policy']['month_sub']['kind']=='recruit'
-    assert state['policy']['shop']['recruit']=='opened'
+    # Recruitment after this scan is covered by the monthly payment tests.
     assert state['policy']['castle_income']['アルマムーン']['tick']==10
-
 
 def test_single_readable_name_with_nonblank_unknown_slot_is_never_complete():
     from test_hanjuku_house import Canvas,roster,feed,status
@@ -469,39 +473,50 @@ def _survey_field():
 
 
 def _month_roster(state, visited=None):
-    """Actual decide menu/status flow; Down at the final row never wraps.
+    """Drive the monthly roster count directly (names and scroll only).
 
-    `visited` stops the walk early, leaving listed names unread. Reaching
-    every listed name completes the receipt even though the cursor never
-    returned to the first row; a partial walk never completes.
+    Issue #2367: the monthly check must not open individual status screens.
+    This helper bypasses the month spending policy so these tests isolate the
+    roster flow. Passing ``visited`` simulates an unproven end: a full
+    eight-row page whose cursor never moves leaves the scan incomplete.
     """
-    from docich.hanjuku_bot import decide
+    from docich.hanjuku_screen import parse
     from test_hanjuku_chart_bot import month_canvas
-    from test_hanjuku_house import roster,status
-    month=month_canvas(250,on='メインメニュー',month=7)
-    actions,state=decide(month,state);assert actions==[p.pad('a')]
-    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
-    names=['どうし','ゼウス']
-    walk=names if visited is None else names[:visited]
-    for i,name in enumerate(walk):
-        frame=_survey_header(roster(names,i),7)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
-        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),7),state)
-        assert actions==[p.pad('b')]
-        actions,state=decide(frame,state);assert actions==[p.pad('down')]
-        if i+1<len(walk):
-            actions,state=decide(_survey_header(roster(names,i+1),7),state);assert actions==[]
-    for _ in range(9):actions,state=decide(frame,state)
-    assert actions==[p.pad('b')] and not state['policy']['house']['roster_wrapped']
-    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('b')]
-    actions,state=decide(month,state);assert actions==[]
-    assert not state['policy'].get('house')
-    assert state['policy']['recruit_roster']['complete'] is (visited is None)
+    from test_hanjuku_house import roster
+    mem = state['policy']
+    month_frame = month_canvas(250, on='メインメニュー', month=7)
+    actions = house.step(parse(month_frame), mem, month_frame)
+    assert actions == [p.pad('a')]
+    main_frame = _survey_main(7)
+    actions = house.step(parse(main_frame), mem, main_frame)
+    assert actions == [p.pad('a')]
+    if visited is None:
+        frame = _survey_header(roster(['どうし', 'ゼウス'], 0), 7)
+        assert house.step(parse(frame), mem, frame) == [p.pad('b')]
+    else:
+        from test_hanjuku_house import Canvas
+        full = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'クミン', 'ミント', 'シナモン', 'バジル']
+        base = _survey_header(roster(full, 0), 7)
+        c = Canvas(); c.rgb = bytearray(base.rgb)
+        c.tile(168, 55, 0x0123456789ABCDEF)  # one unread name invalidates the page
+        frame = c.frame()
+        for _ in range(house.STEP_LIMIT + 2):
+            sets = house.step(parse(frame), mem, frame)
+    assert house.step(parse(main_frame), mem, main_frame) == [p.pad('b')]
+    assert house.step(parse(month_frame), mem, month_frame) == []
+    assert not mem.get('house')
+    assert mem['recruit_roster']['complete'] is (visited is None)
     return state
 
-
 def _failed_month_roster(state):
-    return _month_roster(state, visited=1)
+    state = _month_roster(state, visited=1)
+    # The failed roster observation leaves the month's spending plan pending;
+    # these tests isolate the next roster attempt, so settle that plan first.
+    state['policy']['shop'] = {'key': state['policy']['month'], 'items': [],
+        'merchant_done': True, 'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
+        'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
+        'recruit_reserve': 0, 'closed': True}
+    return state
 
 
 def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
@@ -548,19 +563,20 @@ def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
     assert mem['recruit_month_scan_attempts']['count']==1
 
 
-def test_one_completed_month_scan_replaces_the_redundant_field_walk():
+def test_completed_month_count_does_not_claim_statuses_so_field_walk_opens():
     from docich.hanjuku_bot import decide
     mem=memory(complete=False);mem['tick']=300;mem.pop('recruit_roster')
     for row in mem['castle_income'].values():row['tick']=250
     state=_month_roster({'policy':mem})
     mem=state['policy']
     assert mem['recruit_roster']['complete'] is True
-    assert not mem['recruit_roster_recheck']
-    # Nothing to repair and the payroll income is current, so the second walk
-    # of the same statuses adds no information.
+    # Issue #2367: the monthly count read no HP/egg/location, so it is not a
+    # status survey. The bounded field walk still observes those when needed.
+    assert r.completed_survey(mem) is None
     actions,state=decide(_survey_field(),state)
-    assert not state['policy'].get('house')
-    assert mem['recruit_field_scan_attempts']['count']==0
+    assert actions==[p.pad('x')]
+    assert state['policy']['house']['month_scan'] is False
+    assert mem['recruit_field_scan_attempts']['count']==1
 
 
 def test_field_walk_still_dispatches_a_repair_found_by_the_month_scan():

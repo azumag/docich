@@ -10,8 +10,8 @@ from ..judgment.battle import _own_egg_empty
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import _current, _options, month_menu_ready
 from ..os_layer.world import NAME
-from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, _depleted_eggs, _egg_measured_cost,
-                                _egg_recovery_targets, _egg_recovery_wage_floor, _hero_egg_wage_floor,
+from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, WAGE_SPEND_HOLD,
+                                _depleted_eggs, _egg_measured_cost, _egg_recovery_targets,
                                 _month_key)
 
 
@@ -34,8 +34,8 @@ def _hero_only_egg_recovery(screen, mem, sub):
         return False
     gold = sub.get('gold_before')
     repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
-    return (type(gold) is int and gold >= EGG_RECOVER_COST + repair + _hero_egg_wage_floor(mem)
-            and (sub.get('full_quote_short') or gold < _egg_measured_cost(mem) + repair + _hero_egg_wage_floor(mem)))
+    return (type(gold) is int and gold >= EGG_RECOVER_COST + repair + WAGE_SPEND_HOLD
+            and (sub.get('full_quote_short') or gold < _egg_measured_cost(mem) + repair + WAGE_SPEND_HOLD))
 
 
 def _individual_egg_selected(mem, sub):
@@ -81,7 +81,7 @@ def _individual_egg_candidate(screen, mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     gold = sub.get('gold_before')
     repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
-    floor = _egg_recovery_wage_floor(mem)
+    floor = WAGE_SPEND_HOLD
     if (identity is None or sub.get('key') != mem.get('month')
             or type(mem.get('chapter')) is not int or not 1 <= mem['chapter'] <= 12
             or type(gold) is not int or gold < EGG_RECOVER_COST + floor + repair
@@ -235,9 +235,9 @@ def _egg_recovery_step(screen, mem, sub):
         if (sub.get('full_selected') is True and sub.get('stage') != 'recovering' and quoted_cost is not None and type(gold) is int
                 and sub.get('key') == mem.get('month') == _month_key(screen.header)
                 and quoted_count > 1 and quoted_cost == quoted_count * EGG_RECOVER_COST
-                and gold < quoted_cost + _egg_recovery_wage_floor(mem)
+                and gold < quoted_cost + WAGE_SPEND_HOLD
                            + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
-                and gold >= EGG_RECOVER_COST + _egg_recovery_wage_floor(mem)
+                and gold >= EGG_RECOVER_COST + WAGE_SPEND_HOLD
                             + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
                 and not sub.get('full_quote_short')
                 and any(observed_uses((mem.get('egg_uses') or {}).get(n)) in (0, 1)
@@ -255,7 +255,7 @@ def _egg_recovery_step(screen, mem, sub):
                 # Owner (2026-09-28): 賃金リザーブは守る - the estimate that
                 # opened this screen is only a lower bound, so the floor is
                 # checked against the real quote, not the reservation.
-                + (_hero_egg_wage_floor(mem) if hero_only else _egg_recovery_wage_floor(mem))):
+                + WAGE_SPEND_HOLD):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': quoted_cost is not None},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
