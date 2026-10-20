@@ -26,6 +26,7 @@ import pytest  # noqa: E402
 from docich import hanjuku_policy as p  # noqa: E402
 from docich.actions import ActionError, parse_actions  # noqa: E402
 from docich.agent import brains  # noqa: E402
+from docich.hanjuku.flows import battle_menus  # noqa: E402
 from docich.hanjuku.flows.battle_menus import (BATTLE_MENU_STALL_RETRIES,  # noqa: E402
                                                BATTLE_MENU_STALL_WAIT, _battle_menu_move)
 from docich.hanjuku_font import TextLine  # noqa: E402
@@ -279,3 +280,82 @@ def test_use_egg_owner_delivers_single_b_at_close_through_command_brain():
     with patch.object(brains.procs, 'run', return_value=result):
         brain_actions = brain.decide(obs)
     assert [(a.type, a.buttons) for a in brain_actions] == [('pad', ['b'])]
+
+
+# --------------------------------------------------------- mutation resistance
+
+
+def test_the_use_egg_regression_is_not_vacuous(monkeypatch):
+    """Re-introducing the defect must fail this file, including use_egg.
+
+    A regression that passes both before and after the fix proves nothing. This
+    mutates the helper back to the pre-fix ``[pad('b')]`` for the whole episode
+    and requires the use_egg owner path to surface the nested shape, so the
+    guard above cannot silently stop reaching the 16-observation close.
+    """
+    calls = {'n': 0}
+    real = battle_menus._battle_menu_move
+
+    def pre_fix(screen, mem, label, **kw):
+        value = real(screen, mem, label, **kw)
+        if isinstance(value, dict) and value.get('buttons') == ['b']:
+            calls['n'] += 1
+            return [value]  # the exact pre-fix return shape
+        return value
+
+    monkeypatch.setattr(battle_menus, '_battle_menu_move', pre_fix)
+    mem = battle_memory(egg_battle=False, side='attack', ally_hp=80, enemy_hp=100)
+    mem['battle']['start_ally_hp'] = 80
+    mem['battle']['start_enemy_hp'] = 100
+    mem['indep_menu'] = True
+    mem['indep_menu_action'] = 'use_egg'
+    mem['indep_menu_key'] = 'test'
+    mem['battle']['own_egg_zero_observed'] = False
+    mem['battle']['own_egg_positive_observed'] = True
+
+    flat = []
+    for _ in range(EPISODE + 1):
+        actions = p.battle_menu_step(command_box(cursor=192), mem)
+        flat.extend(actions)
+        if any(isinstance(a, list) for a in actions):
+            break
+    else:
+        raise AssertionError('the mutated helper never surfaced the nested close')
+
+    # The defect is observable at the owner boundary and rejected by the driver
+    # in the shape the bot actually prints: the list item nested in `actions`.
+    assert calls['n'] == 1, 'the mutated close must come from the helper once'
+    nested = [a for a in flat if isinstance(a, list)]
+    assert nested and nested[0] and nested[0][0].get('buttons') == ['b'], flat
+    with pytest.raises(ActionError):
+        parse_actions(flat)
+
+
+def test_the_16_observation_close_is_reached_not_shortcut():
+    """Pin the episode length on the owner that uses the helper's own budget.
+
+    The charted-card owner additionally bounds itself at ``command_menu_ticks``
+    > 8, so it closes earlier. The use_egg owner reaches the helper's stall
+    budget: 16 observations. If a later change made either close immediately
+    (or never), this fails, so the regression keeps exercising the stall path.
+    """
+    mem = battle_memory(egg_battle=False, side='attack', ally_hp=80, enemy_hp=100)
+    mem['battle']['start_ally_hp'] = 80
+    mem['battle']['start_enemy_hp'] = 100
+    mem['indep_menu'] = True
+    mem['indep_menu_action'] = 'use_egg'
+    mem['indep_menu_key'] = 'test'
+    mem['battle']['own_egg_zero_observed'] = False
+    mem['battle']['own_egg_positive_observed'] = True
+    observed = None
+    for index in range(EPISODE + 2):
+        actions = p.battle_menu_step(command_box(cursor=192), mem)
+        if [a.get('buttons') for a in actions] == [['b']]:
+            observed = index + 1  # 1-based observation number
+            break
+    assert observed is not None, 'the owner never closed'
+    # EPISODE=15 means the close lands on the 16th observation.
+    assert observed == EPISODE + 1, f'close at observation {observed}, expected {EPISODE + 1}'
+    decisions = [r['decision'] for r in mem['_records']]
+    assert decisions.count('battle_menu_nav_retry') == BATTLE_MENU_STALL_RETRIES
+    assert decisions[-1] == 'battle_menu_nav_unaccepted'
