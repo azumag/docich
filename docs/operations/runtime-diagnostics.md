@@ -190,6 +190,20 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   presenter の pane は tmux window ごと消えるため、この記録が失敗理由を
   後から確認できる唯一の正規経路になる。request ID・runtime identity・
   自由文の本文は出さない。
+- `corners.tsuitate_corner` は同じ理由で `switch_error_code` を返す（#1992）。
+  衝立将棋の view は世代session（tmux）で動き、その pane は session ごと
+  消えるため、枠自身の state file に保存された `start_failed` /
+  `readiness_timeout` / `rollback_failed` などの切替エラーコードを正規の診断へ
+  投影する。値は
+  **固定の producer 語彙（GameSwitch の `ERROR_*` と ControlError のコード）の
+  allowlist に一致するときだけ**出し、未知・型違いは `null` にする。64文字に
+  収まる任意のトークンはメッセージ・識別子・資格情報を含み得るため、
+  bounded であっても生値は echo しない。soren91 と違い `switch_status` は
+  射影しない。`last_error` は保存済みの文言を200文字上限・redact済みで返すが、
+  起動失敗の根因詳細が含まれるとは限らない。失敗時に固定文だけが保存される
+  経路もあり、切替 receipt とは別の証拠として扱う。他コーナーの `last_error_code` は
+  `recovery_required` 以外を `null` に落とす射影なので、生の切替エラーコードを
+  読むときは `switch_error_code` を使う。
 - `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
   （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
   `volume_percent` / `player` の固定キーのみで、`player` は
