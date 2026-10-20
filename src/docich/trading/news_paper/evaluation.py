@@ -830,13 +830,17 @@ def _compute_digests(
         "held_rate": result_arm.news_util.held_rate,
         "rejected_rate": result_arm.news_util.rejected_rate,
         "unique_eligible": result_arm.news_util.unique_eligible_events,
-        # Cost breakdown (explicit rates for reproducibility)
+        # Cost breakdown (explicit rates for reproducibility) - must match _compute_eval_digest
+        "cost_allocation_method": result_arm.cost_breakdown.cost_allocation_method,
+        "commission_jpy": str(result_arm.cost_breakdown.commission_jpy),
+        "slippage_jpy": str(result_arm.cost_breakdown.slippage_jpy),
+        "financing_jpy": str(result_arm.cost_breakdown.financing_jpy),
+        "llm_api_cost_jpy": str(result_arm.cost_breakdown.llm_api_cost_jpy),
+        "data_api_cost_jpy": str(result_arm.cost_breakdown.data_api_cost_jpy),
+        "total_trading_cost_jpy": str(result_arm.cost_breakdown.total_trading_cost_jpy),
+        "total_operating_cost_jpy": str(result_arm.cost_breakdown.total_operating_cost_jpy),
         "exit_commission_bps": str(result_arm.cost_breakdown.exit_commission_bps),
         "exit_slippage_bps": str(result_arm.cost_breakdown.exit_slippage_bps),
-        "total_trading_cost": str(result_arm.cost_breakdown.total_trading_cost_jpy),
-        "total_operating_cost": str(result_arm.cost_breakdown.total_operating_cost_jpy),
-        "llm_api_cost": str(result_arm.cost_breakdown.llm_api_cost_jpy),
-        "data_api_cost": str(result_arm.cost_breakdown.data_api_cost_jpy),
         # Latency (stage medians and totals)
         "latency_total_median_ms": result_arm.latency.total_ms_median,
         "latency_total_p95_ms": result_arm.latency.total_ms_p95,
