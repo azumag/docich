@@ -590,6 +590,60 @@ def test_soren91_corner_absent_is_reported_without_inventing_state(tmp_path):
     assert result['soren91_corner']=={'present':False,'readable':False}
 
 
+def test_tsuitate_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
+    # docich#1992: the tsuitate view runs in the generation's own tmux session
+    # and its pane dies with that session, so the corner's own record is the
+    # only durable evidence of *why* a start rolled back. Without this
+    # projection the operator sees only "failed" and has to reproduce it.
+    # Statuses stay fixed enums and the detail is bounded and redacted.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed','game':'tsuitate-view','previous_game':'sorengame',
+        'last_error_code':'start_failed',
+        'last_error':'tmux session ownership設定 に失敗しました: '
+                     'no such session: $198',
+        'switch_status':'rolled_back',
+        'switch_request_id':'7a7b7563-DO-NOT-PUBLISH',
+        'completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['status']=='failed'
+    assert entry['game']=='tsuitate-view'
+    assert entry['previous_game']=='sorengame'
+    assert entry['switch_status']=='rolled_back'
+    assert entry['switch_error_code']=='start_failed'
+    assert 'no such session' in entry['last_error']
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'DO-NOT-PUBLISH' not in rendered and '7a7b7563' not in rendered
+
+
+def test_tsuitate_corner_redacts_the_error_and_refuses_unknown_enums(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'last_error':'view failed token=SUPERSECRET123',
+        'last_error_code':'x'*200,
+        'switch_status':'DO-NOT-PUBLISH'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['switch_status'] is None
+    assert isinstance(entry['switch_error_code'],str)
+    assert len(entry['switch_error_code'])<=64
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+    assert '[REDACTED]' in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

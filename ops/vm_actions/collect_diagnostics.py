@@ -3494,6 +3494,11 @@ CORNER_STATE_FILES = {
 
 # Fixed enum of the switch result a corner recorded in its own state file.
 SWITCH_STATUSES = frozenset({"queued", "succeeded", "failed", "rolled_back"})
+# Corners whose own tmux pane dies with the switch that failed, so their state
+# file is the only durable record of the switch error code (docich#1221,
+# docich#1992). Every other corner keeps the collapsed
+# ``_project_corner_state()`` projection.
+SWITCH_ERROR_CORNERS = frozenset({"soren91_corner", "tsuitate_corner"})
 
 # These are the remaining sources consulted by rotation's live and retired
 # adapters. Do not derive filenames from state, catalog rows or request IDs.
@@ -4587,13 +4592,18 @@ def _project_corner_state(data):
     }
 
 
-def _project_soren91_corner(data):
-    """Meriken/soren91 corner lifecycle plus why its last switch ended.
+def _project_switch_error_corner(data):
+    """Corner lifecycle plus why its last switch ended.
 
-    The corner keeps the propagated switch error in its own state file. That
-    is the only durable evidence for a ``readiness_timeout``: the presenter
-    pane dies with its tmux window, so without this the operator sees only
-    "failed" and has to reproduce the failure to learn the cause (docich#1221).
+    soren91 and tsuitate both keep the propagated switch error in their own
+    state file, and for both that record is the only durable evidence of why a
+    start ended: the corner's own tmux pane dies with its session, so without
+    this the operator sees only "failed" and has to reproduce the failure to
+    learn the cause (docich#1221 for the soren91 presenter, docich#1992 for the
+    tsuitate view, whose start was rolled back with ``ownership設定`` /
+    ``no such session: $N`` after the pane died). ``_project_corner_state()``
+    deliberately collapses ``last_error_code`` to the ``recovery_required``
+    enum, so a corner that needs the raw switch code is projected through here.
     ``switch_status`` stays a fixed enum; the recorded switch error code is a
     bounded token and the detail is redacted and length-capped.
     """
@@ -5372,8 +5382,8 @@ def _collect_corner_files(state_dir, payload, now):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
-            if name == "soren91_corner":
-                entry.update(_project_soren91_corner(data))
+            if name in SWITCH_ERROR_CORNERS:
+                entry.update(_project_switch_error_corner(data))
             else:
                 entry.update(_project_corner_state(data))
             if name == "retro_corner":
