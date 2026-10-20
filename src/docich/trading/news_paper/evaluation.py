@@ -602,6 +602,13 @@ def _compute_eval_digest(
         "latency_stage_p95": arm.latency.stage_p95_ms,
         "latency_total_median": arm.latency.total_ms_median,
         "latency_total_p95": arm.latency.total_ms_p95,
+        "policy_independent_events": arm.policy_tracking.independent_events,
+        "policy_policies_tested": arm.policy_tracking.policies_tested,
+        "policy_train_events": arm.policy_tracking.train_events,
+        "policy_val_events": arm.policy_tracking.val_events,
+        "policy_holdout_events": arm.policy_tracking.holdout_events,
+        "policy_synthetic": arm.policy_tracking.synthetic_historical_results,
+        "policy_forward_saved": arm.policy_tracking.forward_saved_classification,
     }
     return hashlib.sha256(
         json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()
@@ -750,7 +757,8 @@ def build_arm_metrics(
                    avg_equity_jpy=avg_equity,
                    cost_breakdown=cost_breakdown,
                    latency=latency,
-                   news_util=news_util))
+                   news_util=news_util,
+                   policy_tracking=policy_tracking))
 
     metrics = ArmMetrics(
         label=label,
