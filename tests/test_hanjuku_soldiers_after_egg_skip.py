@@ -100,7 +100,7 @@ def test_old_count_cannot_authorize_a_fallback(field):
 
 
 @pytest.mark.parametrize('block', ['pending', 'paid', 'unverified', 'egg_unverified', 'ritual',
-                                    'recruit_opened', 'recruit_unverified', 'payroll',
+                                    'recruit_opened', 'recruit_unverified',
                                     'failed_check', 'corrupt_check', 'refill_requested', 'unknown_card'])
 def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
     mem = memory()
@@ -113,8 +113,6 @@ def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
         mem['month_sub'] = {'kind': 'egg', 'stage': 'recovering'}
     elif block.startswith('recruit_'):
         shop['recruit'] = block.removeprefix('recruit_')
-    elif block == 'payroll':
-        mem['recruit_payroll_pending'] = ['ココット']
     elif block.endswith('check') or block == 'refill_requested':
         mem['army_count_check'] = {'scope': deepcopy(mem['soldiers_seen_scope']),
             'stage': 'unverified' if block == 'failed_check' else 'unexpected' if block == 'corrupt_check' else 'measured',
@@ -183,3 +181,13 @@ def test_existing_deferral_loses_permission_when_observations_become_invalid(cha
         mem['army_count_check'] = {'scope': deepcopy(mem['soldiers_seen_scope']), 'stage': 'unverified'}
     assert not refresh_soldier_egg_deferral(mem, mem['shop'], header)
     assert not egg_deferred_for_soldiers(mem['shop'])
+
+
+def test_pending_payroll_alone_does_not_block_post_skip_soldiers():
+    mem = memory(count=0, gold=81)
+    mem['recruit_payroll_pending'] = ['ココット']
+    assert refresh_soldier_egg_deferral(mem, mem['shop'], screen(81).header)
+    assert mem['shop']['soldiers'] == 50
+    assert mem['shop']['soldiers_done'] is False
+    assert mem['recruit_payroll_pending'] == ['ココット']
+    assert not mem['shop'].get('soldier_receipt')

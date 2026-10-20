@@ -136,7 +136,7 @@ def test_partial_refill_does_not_rearm_once_its_receipt_exists():
 
 
 @pytest.mark.parametrize('block', ['pending', 'paid', 'unverified', 'ritual', 'recruit_opened',
-                                   'recruit_unverified', 'failed_check', 'payroll'])
+                                   'recruit_unverified', 'failed_check'])
 def test_live_unverified_or_exhausted_transactions_are_not_rewritten(block):
     mem = memory()
     shop = mem['shop']
@@ -148,8 +148,6 @@ def test_live_unverified_or_exhausted_transactions_are_not_rewritten(block):
         shop['recruit'] = block.removeprefix('recruit_')
     elif block == 'failed_check':
         mem['army_count_check'] = {'scope': deepcopy(mem['soldiers_seen_scope']), 'stage': 'unverified'}
-    else:
-        mem['recruit_payroll_pending'] = ['ココット']
     before = deepcopy(shop)
     economy._low_army_refill(mem, shop, screen(120).header)
     assert shop == before
@@ -229,3 +227,14 @@ def test_planned_low_army_refill_survives_a_transient_egg_first_frame():
     assert not economy.low_army_first(mem['shop'])
     assert monthly._low_army_planned(mem, mem['shop'], screen(120).header)
     assert mem['shop']['soldiers'] == 34 and mem['shop']['soldiers_done'] is False
+
+
+def test_pending_chapter_payroll_does_not_starve_measured_low_army():
+    mem = memory(count=0, gold=81); shop = mem['shop']
+    mem['recruit_payroll_pending'] = ['ココット']
+    before = list(mem['recruit_payroll_pending'])
+    economy._low_army_refill(mem, shop, screen(81).header)
+    assert shop['soldiers'] == 50 and shop['soldiers_done'] is False
+    assert economy.low_army_first(shop)
+    assert mem['recruit_payroll_pending'] == before
+    assert not shop.get('soldier_receipt')  # plan, not input/payment evidence
