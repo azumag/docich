@@ -313,6 +313,16 @@ class ComparisonGate:
             violations.append("cost_allocation_method mismatch")
         if arm_a.news_util.cost_allocation_method != arm_b.news_util.cost_allocation_method:
             violations.append("news cost_allocation_method mismatch")
+        # Compare exit fee rates (critical: different fees make arms incomparable)
+        if arm_a.cost_breakdown.exit_commission_bps != arm_b.cost_breakdown.exit_commission_bps:
+            violations.append("exit_commission_bps mismatch")
+        if arm_a.cost_breakdown.exit_slippage_bps != arm_b.cost_breakdown.exit_slippage_bps:
+            violations.append("exit_slippage_bps mismatch")
+        # Compare initial capital (first equity point)
+        if arm_a.avg_equity_jpy != arm_b.avg_equity_jpy and arm_a.avg_equity_jpy > 0 and arm_b.avg_equity_jpy > 0:
+            # Only flag if significantly different (allow tiny float differences)
+            if abs(arm_a.avg_equity_jpy - arm_b.avg_equity_jpy) > (arm_a.avg_equity_jpy * D("0.001")):
+                violations.append("avg_equity_jpy mismatch")
         # Check synthetic/historical mixing
         if arm_a.policy_tracking.synthetic_historical_results or arm_b.policy_tracking.synthetic_historical_results:
             violations.append("synthetic_historical_results present in primary evaluation")
@@ -361,9 +371,7 @@ class EvaluationResult:
         """Export dict without secrets, raw text, or unauthorized data."""
         base = self.to_dict()
         # Remove any potentially sensitive fields
-        for arm in ("arm_a", "arm_b"):
-            if arm in base and "news_util" in base[arm]:
-                base[arm]["news_util"].pop("rejection_reasons", None)
+        # Keep rejection_reasons in export for evidence completeness
         return base
 
 
@@ -1028,9 +1036,14 @@ def run_evaluation(
 
 
 def export_evaluation(result: EvaluationResult, output_path: Path) -> None:
-    """Write evaluation result to file (read-only export, no secrets)."""
+    """Write evaluation result to file (read-only export, no secrets).
+
+    Does not overwrite an existing evidence file; raises FileExistsError instead.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w") as f:
+    if output_path.exists():
+        raise FileExistsError(f"evidence file already exists: {output_path}")
+    with output_path.open("x") as f:
         json.dump(result.to_export_dict(), f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
