@@ -319,9 +319,10 @@ class ComparisonGate:
         if arm_a.cost_breakdown.exit_slippage_bps != arm_b.cost_breakdown.exit_slippage_bps:
             violations.append("exit_slippage_bps mismatch")
         # Compare initial capital (first equity point)
-        if arm_a.avg_equity_jpy != arm_b.avg_equity_jpy and arm_a.avg_equity_jpy > 0 and arm_b.avg_equity_jpy > 0:
-            # Only flag if significantly different (allow tiny float differences)
-            if abs(arm_a.avg_equity_jpy - arm_b.avg_equity_jpy) > (arm_a.avg_equity_jpy * D("0.001")):
+        if arm_a.avg_equity_jpy > 0 and arm_b.avg_equity_jpy > 0:
+            # Symmetric relative comparison: A/B swap must yield same verdict
+            _max_eq = max(arm_a.avg_equity_jpy, arm_b.avg_equity_jpy)
+            if abs(arm_a.avg_equity_jpy - arm_b.avg_equity_jpy) > (_max_eq * D("0.001")):
                 violations.append("avg_equity_jpy mismatch")
         # Check synthetic/historical mixing
         if arm_a.policy_tracking.synthetic_historical_results or arm_b.policy_tracking.synthetic_historical_results:
@@ -334,6 +335,10 @@ class ComparisonGate:
             conditions={
                 "cost_allocation_a": arm_a.cost_breakdown.cost_allocation_method,
                 "cost_allocation_b": arm_b.cost_breakdown.cost_allocation_method,
+                "avg_equity_a": str(arm_a.avg_equity_jpy),
+                "avg_equity_b": str(arm_b.avg_equity_jpy),
+                "exit_commission_bps_a": str(arm_a.cost_breakdown.exit_commission_bps),
+                "exit_commission_bps_b": str(arm_b.cost_breakdown.exit_commission_bps),
             },
             violations=violations
         )
