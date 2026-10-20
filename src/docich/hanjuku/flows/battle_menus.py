@@ -109,6 +109,14 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     chose. An unchanged frame is the only evidence available that the previous
     press was not accepted: hold, retry the same single press a bounded number
     of times, then close the menu instead of confirming anything.
+
+    Return contract (identical to :func:`_battle_menu_to`): a single pad dict
+    (``'here'`` when the cursor is already on the label), ``None`` when no
+    cursor/target is readable, or ``[]`` to plan no input while the window is
+    held. The unaccepted close is a single pad dict too, never a one-element
+    list: callers wrap the result with ``[move] if move else []``, so a list
+    here would nest into ``[[pad('b')]]`` and every consumer that parses the
+    actions (``hanjuku.actions.parse_actions``) rejects a list item.
     """
     move = _battle_menu_to(screen, label)
     if not isinstance(move, dict):
@@ -143,7 +151,7 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
                 observed_metric={'direction': direction, 'retries': state['retries'],
                                  'frame_sha256': sha},
                 reason='同一画面のまま方向入力が受け付けられないため、確定せずメニューを閉じる')
-        return [pad('b')]
+        return pad('b')
     state.update(sha=sha, waits=0)
     return move
 
@@ -540,7 +548,12 @@ def battle_menu_step(screen: Screen, mem):
             return [pad('b')]
         move = _battle_menu_move(screen, mem, 'きりふだ')
         if move != 'here':
-            if move:
+            if isinstance(move, dict) and move.get('buttons') == ['b']:
+                # The box did not accept the direction. Keep the carried card
+                # (no selection, no consumption) and release the flow; a close
+                # is not progress toward the row.
+                _card_use_unclassified(mem, cur, '切り札行へ動かないため一覧を開かずメニューを閉じる')
+            elif move:
                 flow['stage'] = 'down'
             return [move] if move else []
         flow['stage'] = 'list'
@@ -550,6 +563,11 @@ def battle_menu_step(screen: Screen, mem):
         move = _battle_menu_move(screen, mem, 'きりふだ') if rare else None
         if move == []:
             return []  # an identical frame is still not the card row
+        if isinstance(move, dict) and move.get('buttons') == ['b']:
+            # The box did not accept the direction: close it without opening the
+            # card flow. `_battle_menu_to` never emits B, so this is the
+            # bounded unaccepted close, not a step toward the row.
+            return [move]
         if move is not None:
             tid = rare['tactic_id']
             cur.setdefault('tactics_done', []).append(tid)

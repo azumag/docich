@@ -54,6 +54,24 @@ RGB digest は 256×224 へ正規化したRGB画素のSHA-256で、PNGバイト�
 
 どちらもゲーム・配信・音声・ユーザー休止を操作しない。
 
+## post-mergeレビューで見つかったP2（v238のまま修正）
+
+初回マージ（`830fb38e`）の独立レビューで、`_battle_menu_move` の不受理クローズが
+`[pad('b')]`（1要素リスト）を返し、呼び出し側が `[move] if move else []` で包むため
+`[[pad('b')]]` になる欠陥が再現された。production のdriverは各要素が object であることを
+要求するため（`hanjuku.actions.parse_actions` → `各アクションは object である必要があります`）、
+**この脱出経路は実際にはメニューを閉じられなかった**（＝設計した逃げ道が無効だった）。
+
+修正はヘルパーの戻り値を `_battle_menu_to` と同じ契約（単一pad dict / `'here'` / `None` /
+保留の `[]`）に揃え、不受理クローズも単一pad dictで返す。あわせて卵戦・切替札の2経路で
+「B close」を移動進行として扱わないようにした（切替札では `_card_use_unclassified` により
+携行札を差し引かず解放。実使用・消費は確定しない）。
+
+回帰は `tests/test_hanjuku_battle_menu_close_shape.py` がヘルパー契約 → 各コマンド所有者 →
+botのstdout JSON → `CommandBrain` まで通しで固定し、修正前の入れ子形が実際に拒否されることも
+確認する。既存の `test_hanjuku_battle_menu_nav_stall.py` は入れ子形を期待していたため、
+修正後の契約へ更新した（この点はP2の再現そのものを固定していた）。
+
 ## 維持する制約
 
 - 通常0禁止（卵0・兵士0・使用不能資源を実画面の証拠なく使わない）

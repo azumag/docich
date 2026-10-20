@@ -41,7 +41,9 @@ def test_identical_frame_waits_retries_then_closes_without_confirming():
         for _ in range(BATTLE_MENU_STALL_WAIT):
             assert _battle_menu_move(menu, mem, 'きりふだ') == []
     closing = _battle_menu_move(menu, mem, 'きりふだ')
-    assert [a['buttons'] for a in closing] == [['b']]
+    # A single pad dict, exactly like _battle_menu_to: callers wrap it once, so
+    # a list here would nest into [[pad('b')]] and be rejected by the driver.
+    assert closing['buttons'] == ['b']
     assert mem['_records'][-1]['decision'] == 'battle_menu_nav_unaccepted'
     assert 'battle_menu_move' not in mem
 
@@ -52,6 +54,8 @@ def test_never_emits_a_on_the_unaccepted_path():
                for _ in range(BATTLE_MENU_STALL_WAIT + BATTLE_MENU_STALL_RETRIES + 6)]
     flat = [a for batch in actions if isinstance(batch, list) for a in batch]
     assert not any(a.get('buttons') == ['a'] for a in flat)
+    # Every value the callers may wrap is a single pad dict, never a list.
+    assert all(not isinstance(v, list) or v == [] for v in actions)
 
 
 def test_a_real_cursor_move_restarts_the_cadence():
