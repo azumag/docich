@@ -29,6 +29,10 @@ Twitch 配信が停止した。復旧はオーナー明示承認のもとで Ora
 - 管理 WebUI が HTTP を返さない。
 - Oracle Cloud コンソールのインスタンス lifecycle が `running`（電源断ではない）。
 
+**「映像なし + OCI `running`」の 2 点だけで無応答と判断しない。** 映像停止は配信側・
+encoder・Twitch 受信側でも起き得るし、OCI `running` はゲスト OS の健康を示さない。
+最低でも SSH banner タイムアウトと WebUI 無応答を加えた複数シグナルで判定する。
+
 補助検知として `ops/vm_actions/monitor_silence.py`（#2377）が VM monitor の沈黙を
 独立に検知する。これは「気づき」の経路であり、復旧手段ではない。
 
@@ -38,6 +42,10 @@ Twitch 配信が停止した。復旧はオーナー明示承認のもとで Ora
    タイムアウト・沈黙・過去の同種承認を承認とみなさない。
 2. **通常再起動**（Oracle Cloud の Reboot。停止待ちを経て起動）を使う。
    即時強制再起動（Stop + Start の強制）や Terminate は選ばない。
+   **ただし通常 Reboot も、OS 終了を最大 15 分待った後に power cycle へ進み得る。**
+   その間 VM は配信停止となり、ディスク書き込み中の破損リスクもある。
+   復帰時間の上限ではない。Reboot の実行そのものが承認対象であり、承認時には
+   この時間窓と破損リスクを含めて判断する。
 3. クラウド操作権限を新設しない。既存の Oracle Cloud コンソール操作に限定する。
 4. 復旧済みの配信を調査のために再停止しない。
 5. 完了条件は**公開 A/V の再受入**まで。SSH 復帰だけでは完了にしない。
@@ -175,6 +183,7 @@ VM の docich HEAD は diagnostics の `sha` で確認する。Actions の candi
 - receipt / generation / terminal / 資源解放の照合前の手動 latch 削除。
 - Actions の candidate SHA と実 VM HEAD の混同。
 - 証拠が無いまま「OOM が原因」「特定のコーナーが原因」と断定すること。
+- 「映像なし + OCI `running`」の 2 点だけでゲスト OS 無応答と判断すること。
 
 ## 10. 関連
 
