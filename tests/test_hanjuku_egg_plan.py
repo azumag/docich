@@ -145,18 +145,116 @@ def test_a_spare_dropper_opens_the_battle_to_force_the_egg_drop():
     assert not state['battle'].get('enemy_egg_dropped')
 
 
-def test_the_chart_still_owns_the_card_it_names_even_when_that_card_drops_eggs():
-    # 1-V2 のフットバースは開幕戦術としてチャートに書かれている。この組み合わせでは
-    # フットバースが卵落札なので (ヴィーナス82 + ガルバンゾー30 = 112 → 余り0)、
-    # 卵ディニアル側が先に取ってはいけない。
-    state = mem('1-V2', ally='ヴィーナス')
-    view = opening(state, 'ガルバンゾー', 30, 'ヴィーナス', 82)
+def test_a_charted_dropper_stays_with_the_chart_and_is_not_an_opening_tactic():
+    # チャート優先を維持 (#2364 方針): 1-A2 のフットバースはチャートで指定された
+    # 札なので、max HP 合計の判定が成立しても開幕の卵落には回さない。
+    state = mem('1-A2')
+    opening(state, 'ガルバンゾー', 30, 'しゅじんこう', 20)
+    plan = state['battle']['egg_plan']
+    assert plan['max_hp_sum'] == plan['enemy_max_hp'] + plan['ally_max_hp']
+    assert 'フットバース' in plan['charted']
+    assert plan['dropper'] != 'フットバース'
+    flow = state['battle'].get('card_flow')
+    assert flow is None or not str(flow.get('tactic_id', '')).startswith('eggdrop:')
+
+
+def test_the_display_plan_and_the_tactic_use_the_same_max_hp_arithmetic():
+    # キッシュ26 + ココット24 = 50 → 余り2。卵落3のブラッキーだけが成立する。
+    state = mem('1-C2', ally='ココット')
+    opening(state, 'キッシュ', 26, 'ココット', 24)
+    plan = state['battle']['egg_plan']
+    assert (plan['enemy_max_hp'], plan['ally_max_hp'], plan['max_hp_sum']) == (26, 24, 50)
+    assert plan['remainder'] == 2 and plan['threshold'] == 3
+    rows = {row['name']: row for row in plan['cards']}
+    assert rows['ブラッキー']['id'] == 2 and rows['ブラッキー']['egg_drop'] == 3
+    assert rows['ブラッキー']['drops'] is True
+    assert rows['ダイチスイム']['id'] == 1 and rows['ダイチスイム']['egg_drop'] == 1
+    assert rows['ダイチスイム']['drops'] is False
+    assert plan['dropper'] == 'ブラッキー'
+    assert plan['egg_drop'] == {'value': 3, 'threshold': 3, 'max_hp_sum': 50, 'drops': True}
+    # 現在HPを変えても最大HP由来の判定は変わらない。
+    for current in (1, 13, 999):
+        state['battle']['enemy_hp'] = current
+        again = policy._egg_plan(state, state['battle'])
+        assert again['max_hp_sum'] == 50 and again['dropper'] == 'ブラッキー'
+
+
+def test_egg_drop_boundaries_use_a_strict_greater_than():
+    # 合計80 → 余り0、合計95 → 余り15。
+    assert reference.egg_drop_remainder(80) == 0
+    assert reference.egg_drop_threshold(80) == 1
+    assert reference.egg_drop_remainder(95) == 15
+    assert reference.egg_drop_threshold(95) == 16
+    # 卵落 = 余り は不成立、余り+1 で成立 (>= にしない)。
+    assert reference.egg_drop_prediction('デッドガン', 80)['drops'] is False
+    assert reference.egg_drop_prediction('ダイチスイム', 80)['drops'] is True
+    assert reference.egg_drop_prediction('グルミー', 95)['drops'] is False
+    assert max(reference.EGG_DROP_VALUES.values()) == 15
+    # 余り2 でも同じ境界 (ピッグローラー2 は不成立、ブラッキー3 は成立)。
+    assert reference.egg_drop_prediction('ピッグローラー', 50)['drops'] is False
+    assert reference.egg_drop_prediction('ブラッキー', 50)['drops'] is True
+
+
+def test_unknown_data_never_becomes_a_zero_filled_prediction():
+    state = mem('1-A2')
+    state['card_stock'] = {'きらきら': 1, 'ダイチスイム': 2, 'ブラッキー': 0}
+    opening(state, '未知将軍', 10, 'しゅじんこう', 80)
+    plan = state['battle']['egg_plan']
+    assert plan['verdict'] == 'unknown'
+    assert plan['enemy_max_hp'] is None and plan['max_hp_sum'] is None
+    assert plan['remainder'] is None and plan['dropper'] is None
+    rows = {row['name']: row for row in plan['cards']}
+    assert rows['きらきら']['id'] is None and rows['きらきら']['egg_drop'] is None
+    assert rows['きらきら']['drops'] is None
+    assert rows['きらきら']['carried'] == 0
+    assert rows['きらきら']['usable'] is False
+    assert rows['きらきら']['unavailable'] == 'not_carried'
+    # 在庫0は「所持なし」と断定せず、携行0として残す (行自体は落とす)。
+    assert 'ブラッキー' not in rows
+
+
+def test_boss_battles_are_excluded_and_eggless_or_used_eggs_do_not_fire():
+    boss = mem('1-B1')
+    opening(boss, 'クイーン', 70, 'しゅじんこう', 80)
+    plan = boss['battle']['egg_plan']
+    assert plan['excluded'] == 'boss' and plan['verdict'] == 'excluded'
+    assert plan['dropper'] is None
+    # 卵なし。
+    plain = mem('1-C2', ally='ココット')
+    opening(plain, 'キャラウェイ', 40, 'ココット', 24)
+    assert plain['battle']['egg_plan']['verdict'] == 'no_egg'
+    assert plain['battle']['egg_plan']['dropper'] is None
+    # 使用済み: 召喚を観測した戦闘ではもう落とす対象がない。
+    used = mem('1-C2', ally='ココット')
+    opening(used, 'キッシュ', 26, 'ココット', 24)
+    used['battle']['egg_battle'] = True
+    assert policy._egg_plan(used, used['battle'])['verdict'] == 'used'
+    assert policy._egg_plan(used, used['battle'])['dropper'] is None
+    assert policy._egg_drop_tactics(used, used['battle'], 'キッシュ') == []
+    # 落下推定 (未確認) でも再使用しない。
+    dropped = mem('1-C2', ally='ココット')
+    opening(dropped, 'キッシュ', 26, 'ココット', 24)
+    dropped['battle']['enemy_egg_drop_expected'] = True
+    assert policy._egg_plan(dropped, dropped['battle'])['verdict'] == 'dropped'
+    assert policy._egg_plan(dropped, dropped['battle'])['dropper'] is None
+    assert policy._egg_drop_tactics(dropped, dropped['battle'], 'キッシュ') == []
+
+
+def test_used_and_uncarried_cards_are_not_offered_even_when_they_would_drop():
+    state = mem('1-C2', ally='ココット')
+    state['card_stock'] = {'ダイチスイム': 2, 'ブラッキー': 1, 'イッテツーン': 1}
+    opening(state, 'キッシュ', 26, 'ココット', 24)
+    state['battle']['cards_used'] = ['ブラッキー']
     plan = policy._egg_plan(state, state['battle'])
-    assert plan['droppers'] == ['フットバース']
-    assert plan['dropper'] is None            # チャートが指す札なので開幕の別札に回さない
-    policy.battle_step(view, state)
-    assert state['battle']['card_flow']['card'] == 'フットバース'
-    assert not state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')
+    rows = {row['name']: row for row in plan['cards']}
+    assert rows['ブラッキー']['available'] == 0
+    assert rows['ブラッキー']['usable'] is False
+    assert rows['ブラッキー']['unavailable'] == 'used'
+    assert rows['イッテツーン']['usable'] is False
+    assert rows['イッテツーン']['unavailable'] == 'not_carried'
+    assert 'ブラッキー' not in plan['droppers'] and 'イッテツーン' not in plan['droppers']
+    assert plan['dropper'] is None
+    assert plan['verdict'] == 'not_droppable'
 
 
 def test_no_proactive_drop_against_a_general_without_an_egg():
@@ -270,3 +368,22 @@ def test_the_survival_rescue_picks_the_dropper_and_watches_it():
                            policy._egg_drop_evidence(cur, 'マグネガキン'))
     assert cur['egg_drop_watch'] == {'card': 'マグネガキン', 'hp': 30, 'value': 8,
                                      'threshold': 6, 'max_hp_sum': 117, 'evidence_version': 2}
+
+
+def test_battle_end_and_a_new_opponent_drop_the_old_plan_and_cards():
+    # 画面切替・戦闘終了・相手変更で旧将軍・旧携行品・旧計算を残さない。
+    state = mem('1-C2', ally='ココット')
+    opening(state, 'キッシュ', 26, 'ココット', 24)
+    assert state['battle']['egg_plan']['enemy'] == 'キッシュ'
+    assert state['battle']['egg_plan']['verdict'] == 'droppable'
+    # パネルを2回連続で失った観測で戦闘記録ごと消える。
+    policy.battle_end(state, 'map')
+    assert 'battle' in state
+    policy.battle_end(state, 'map')
+    assert 'battle' not in state and 'egg_plan' not in state
+    # 別の相手の新しい戦闘は、前の将軍・携行・計算を持ち越さない。
+    other = mem('1-C3', ally='ココット')
+    opening(other, 'キャラウェイ', 40, 'ココット', 24)
+    plan = other['battle']['egg_plan']
+    assert plan['enemy'] == 'キャラウェイ' and plan['verdict'] == 'no_egg'
+    assert plan['dropper'] is None and plan['cards'] == []

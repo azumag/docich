@@ -438,6 +438,11 @@ def battle_step(screen: Screen, mem):
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
+    # Keep the display projection on the same arithmetic as this observation:
+    # consumed cards and the enemy-egg state must not stay at the opening
+    # snapshot (#2364). This only rewrites cur['egg_plan']; it records nothing
+    # new except the existing one-shot sortie mismatch.
+    _egg_plan(mem, cur)
     _observe_clash_gauge(mem, cur, screen)
     _observe_defender(mem, cur)
     from . import okunote
@@ -618,8 +623,10 @@ def battle_step(screen: Screen, mem):
                                      'card_damage_gate': damage_gate},
                     **({'strong_enemy': strong_evidence} if strong_evidence is not None else {}),
                     **({'egg_drop': drop_evidence,
-                        'egg_plan': {key: egg_plan[key] for key in
-                                     ('threat', 'deny_opening_egg', 'id_sum', 'droppers')}}
+                        'egg_plan': {key: egg_plan.get(key) for key in
+                                     ('threat', 'deny_opening_egg', 'id_sum', 'droppers',
+                                      'dropper', 'max_hp_sum',
+                                      'remainder', 'egg_state')}}
                        if drop_evidence else {}),
                     resulting_event='card_planned')
             return [pad('b')]
