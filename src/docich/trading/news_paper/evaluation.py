@@ -855,6 +855,14 @@ def _compute_digests(
         "latency_stage_medians": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_median_ms.items()},
         "latency_stage_p95": {k: str(v) if v is not None else None for k, v in result_arm.latency.stage_p95_ms.items()},
         "latency_missing_stages": sorted(result_arm.latency.missing_stages),
+        # Policy tracking
+        "policy_independent_events": result_arm.policy_tracking.independent_events,
+        "policy_policies_tested": result_arm.policy_tracking.policies_tested,
+        "policy_train_events": result_arm.policy_tracking.train_events,
+        "policy_val_events": result_arm.policy_tracking.val_events,
+        "policy_holdout_events": result_arm.policy_tracking.holdout_events,
+        "policy_synthetic": result_arm.policy_tracking.synthetic_historical_results,
+        "policy_forward_saved": result_arm.policy_tracking.forward_saved_classification,
     }
     eval_digest = hashlib.sha256(
         json.dumps(eval_data, sort_keys=True, separators=(",", ":")).encode()

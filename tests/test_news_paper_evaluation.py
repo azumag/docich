@@ -685,6 +685,24 @@ class TestReviewResiduals(unittest.TestCase):
         self.assertEqual(data["arm_b"]["evaluation_digest"], r.arm_b.evaluation_digest)
         self.assertNotEqual(data["arm_a"]["evaluation_digest"], "")
 
+    def test_policy_tracking_change_changes_eval_digest(self):
+        """Policy tracking change must change evaluation_digest."""
+        news = [self._news()]
+        pt_a = PolicyTracking(independent_events=15)
+        pt_b = PolicyTracking(independent_events=0)
+        r_a = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            pt_a, D("1000"), D("1000"), "cmd")
+        r_b = run_evaluation(
+            self._manifest(), [], [(self.now, D("1000"))], {}, [], news,
+            [], [(self.now, D("1000"))], {}, [], news,
+            CostBreakdown(), CostBreakdown(),
+            pt_b, D("1000"), D("1000"), "cmd")
+        self.assertNotEqual(r_a.arm_a.evaluation_digest, r_b.arm_a.evaluation_digest)
+        self.assertNotEqual(r_a.arm_a.policy_tracking.independent_events, r_b.arm_a.policy_tracking.independent_events)
+
 
 if __name__ == "__main__":
     unittest.main()
