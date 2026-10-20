@@ -502,7 +502,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
-            and not sortie_cancel_hold
+            and not (sortie_cancel_hold or (kind == 'sortie_confirm'
+                     and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)
