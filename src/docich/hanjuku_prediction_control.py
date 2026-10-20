@@ -30,12 +30,14 @@ a winner, and never touch another corner's wager.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
 import time
 
 from . import hanjuku_predictions as predictions
+from . import hanjuku_progress as progress
 from .config import load_global
 from .game_switch import atomic_write_json
 from .hanjuku_prediction_api import APIError
@@ -43,6 +45,9 @@ from .hanjuku_prediction_api import APIError
 OPERATIONS = ("cancel", "sync")
 #: The reviewed production profile; the gateway env does not set DOCICH_CONFIG.
 LIVE_CONFIG = "config/docich.soren-live.toml"
+#: A malformed durable result is preserved out of band, bounded like the
+#: cancel snapshot it sits beside.
+MAX_RECOVERED_RESULT_BYTES = 64 * 1024
 
 #: Fixed, secret-safe outcome codes. Nothing else crosses the operator boundary.
 EXIT_OK = 0
@@ -89,6 +94,51 @@ def _seed(g):
         return predictions.config(g)[1]
     except Exception:
         raise ControlRefused("configuration_unavailable") from None
+
+
+def _result_is_valid(row):
+    """True when the ordinary loader would accept this row's durable result."""
+    result = row.get("result")
+    if result is None:
+        return True
+    try:
+        predictions._checked_result(result, {key: row[key] for key in progress.KEYS})
+    except Exception:
+        return False
+    return True
+
+
+def _recovered_result_path(root, row):
+    digest = hashlib.sha256(row["id"].encode("utf-8")).hexdigest()
+    return root / f"hanjuku_prediction_recovered_result_{digest}.json"
+
+
+def _quiesce_result(root, row):
+    """Preserve a malformed durable result, then converge the row for `_load`.
+
+    `_load` validates ``row['result']`` even for a DONE round, so a tombstone
+    that kept the malformed result would keep every later tick in
+    ``invalid_state`` and block even a subsequent runtime. The untrusted bytes
+    are preserved out of band (bounded, atomic) and the row is cleared to a
+    shape the ordinary loader accepts. Refuses when the evidence cannot be
+    preserved, so nothing is silently discarded.
+    """
+    if _result_is_valid(row):
+        return None
+    result = row["result"]
+    try:
+        payload = json.dumps(result, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":")) + "\n"
+        if len(payload.encode("utf-8")) > MAX_RECOVERED_RESULT_BYTES:
+            raise ValueError("recovered result exceeds the byte limit")
+    except (TypeError, ValueError):
+        raise ControlRefused("evidence_unpreservable") from None
+    try:
+        atomic_write_json(_recovered_result_path(root, row), result)
+    except OSError:
+        raise ControlRefused("evidence_unavailable") from None
+    row["result"] = None
+    return _recovered_result_path(root, row).name
 
 
 def _owned_row(state):
@@ -164,13 +214,14 @@ def cancel(g, *, client_factory=None, now=None):
             # recoverable mismatch into a failed PATCH: `sync` is the operation
             # that records the remote's terminal state without changing it.
             raise ControlRefused(f"remote_{remote['status'].lower()}_use_sync")
-        else:
+        snapshot = None
+        if remote is not None and remote.get("status") not in predictions.DONE:
             # Bounded, verified evidence BEFORE the irreversible cancel, exactly
             # like the ordinary tick: the snapshot survives a failed
             # participation write so it can be retried once after restart.
             if (predictions._no_contest(remote) and remote.get("status") == "LOCKED"):
                 try:
-                    predictions._save_cancel_snapshot(root, row, remote)
+                    snapshot = predictions._save_cancel_snapshot(root, row, remote)
                 except APIError:
                     raise ControlRefused("evidence_unavailable") from None
             try:
@@ -182,9 +233,14 @@ def cancel(g, *, client_factory=None, now=None):
                 raise ControlRefused("remote_unverified")
             canceled = response[0]
             outcome = "canceled"
-            if predictions._no_contest(canceled):
+            # The CANCELED response may omit the counts that prove no-contest.
+            # The snapshot saved before the irreversible cancel is an equally
+            # authoritative basis, so record from whichever source proves it.
+            sources = tuple(source for source in (canceled, snapshot)
+                            if predictions._no_contest(source))
+            if sources:
                 try:
-                    predictions._record_canceled(root, now, client, sources=(canceled,))
+                    predictions._record_canceled(root, now, client, sources=sources)
                     predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
                 except (APIError, OSError):
                     # Keep the snapshot and leave the round unresolved: the
@@ -195,6 +251,9 @@ def cancel(g, *, client_factory=None, now=None):
         if terminal:
             # Terminal tombstone for this attempt, never `round=None`.
             row["status"] = "CANCELED"
+            # A result the ordinary loader refuses must not survive in a
+            # tombstone, or every later tick (and later runtime) stays stuck.
+            _quiesce_result(root, row)
             state.update(mode="canceled", error=None, next_poll_at=0)
         else:
             # Keep the round unresolved: the next tick re-observes CANCELED and
@@ -225,6 +284,7 @@ def sync(g, *, client_factory=None, now=None):
             raise ControlRefused("ledger_unreadable") from None
         row = _owned_row(state)
         remote = _remote_row(client, row)
+        pending = False
         if remote is None:
             # Terminalize this attempt locally; never erase the row, or the
             # same run could open a second wager on the next tick.
@@ -241,13 +301,19 @@ def sync(g, *, client_factory=None, now=None):
                     if exc.code != "invalid_response":
                         raise ControlRefused(f"ledger_{exc.code}") from None
             else:
+                # Both the terminal row and any snapshot saved before the
+                # cancel are legitimate sources; neither is required to carry
+                # the counts on its own, so keep whichever proves no-contest.
                 snapshot = predictions._load_cancel_snapshot(root, row)
-                if snapshot is not None or predictions._no_contest(remote):
+                sources = tuple(source for source in (remote, snapshot)
+                                if predictions._no_contest(source))
+                if sources:
                     try:
-                        predictions._record_canceled(root, now, client,
-                                                     sources=(remote, snapshot))
+                        predictions._record_canceled(root, now, client, sources=sources)
                     except APIError as exc:
                         if exc.code != "invalid_response":
+                            # Leave the round unresolved so the next tick
+                            # re-observes CANCELED and records this id once.
                             raise ControlRefused(f"ledger_{exc.code}") from None
                     predictions._cancel_snapshot_path(root, row).unlink(missing_ok=True)
             # Terminal tombstone: `_advance` refuses a second wager in a run
@@ -269,6 +335,10 @@ def sync(g, *, client_factory=None, now=None):
             row.update(id=remote["id"], outcome_ids=adopted, status=remote["status"])
             state.update(mode="active", error=None, next_poll_at=0)
             outcome = "adopted"
+        if row["status"] in predictions.DONE:
+            # A result the ordinary loader refuses must not survive in a
+            # tombstone, or every later tick (and later runtime) stays stuck.
+            _quiesce_result(root, row)
         atomic_write_json(root / predictions.FILE, state)
         predictions._update_health(root, {"mode": state.get("mode"), "error": None}, now)
     return {"operation": "sync", "outcome": outcome, "prediction_id": row.get("id")}

@@ -483,6 +483,17 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   取消前 snapshot も保持する。次の tick が remote の `CANCELED` を再観測して同じ prediction id を
   1回だけ記帳する（未解決 round も二つ目の賭けを止める）。通常 tick の
   `_save_cancel_snapshot` → PATCH → 記帳 → 証拠削除と同じ順序で、不可逆取消の前に証拠を保存する。
+- **不正な durable result を tombstone に残さない。** `_load` は DONE の row でも
+  `_checked_result` を呼ぶため、malformed な `result` を残したまま終端化すると次tickも
+  後続runtimeも `invalid_state` で止まる。operator は元の不正証拠を
+  `hanjuku_prediction_recovered_result_<予想IDのSHA-256>.json`（0600・原子的置換・64 KiB上限）へ
+  退避してから row の `result` を空にし、通常 loader が受理する tombstone へ収束させる。
+  証拠を保存できないときは `evidence_unpreservable` / `evidence_unavailable` で拒否し、
+  黙って捨てない。
+- **CANCELED 応答の shape に記帳根拠を依存させない。** CANCELED 応答が `users` /
+  `channel_points` を省いても、取消前に LOCKED の counts から保存した no-contest snapshot を
+  記帳根拠として引き継ぐ。証明できた source だけで `_record_canceled` を呼び、記帳できて
+  いない間は round を DONE にしない（snapshot を孤児にしない）。
 - **remote の「不在」と「所有権不一致」を区別する。** 同じ prediction id を返すが title や
   outcome id が一致しない場合は `remote_mismatch` で fail-closed し、ローカル所有を消さない。
   GET が実際に対象 id を返さなかった場合だけ不在として扱う。

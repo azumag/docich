@@ -732,6 +732,12 @@ ledger `hanjuku_predictions.json` は触らない）。正規の遠隔復旧は 
   参加実績の記帳に失敗したときは未解決のまま残し、次の tick が同じ id を1回だけ記帳する。
 - remote が同じ id を別 shape（title / outcome id）で返す場合は `remote_mismatch` で拒否し、
   ローカル所有を消さない。GET が対象 id を返さない場合だけ不在として扱う。
+- malformed な durable `result` は tombstone に残さない。元の不正証拠を
+  `hanjuku_prediction_recovered_result_<予想IDのSHA-256>.json` へ退避してから row の `result` を
+  空にし、通常 loader が受理する終端 row に収束させる（残すと次tickも後続runtimeも
+  `invalid_state` で止まる）。証拠を保存できなければ拒否する。
+- 不成立キャンセルの記帳根拠は CANCELED 応答の shape に依存させない。応答が counts を
+  省いても、取消前に保存した no-contest snapshot から記帳する。記帳できるまで DONE にしない。
 - `check-` は所有台帳を検証できない場合も拒否する（apply と同じ判定）。
 - 本番 profile は script が `--config config/docich.soren-live.toml` で明示的に束縛する
   （gateway 環境は `DOCICH_CONFIG` を継承しない）。

@@ -550,3 +550,154 @@ def test_p2_check_refuses_a_ledger_it_cannot_verify(env):
     with pytest.raises(control.ControlRefused) as exc:
         control.cancel(env.g, client_factory=env.factory, now=200)
     assert exc.value.code == 'ledger_unreadable'
+
+
+def _break_result(env):
+    """A durable result the ordinary loader refuses (the #2213-class stall)."""
+    state = env.state()
+    state['round']['result'] = {'schema': 1, **ID, 'reason': 'input_stalled',
+                                'frame_sha256': 'not-a-digest', 'cleared': None}
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    with pytest.raises(ValueError):
+        p._load(env.g.state_dir, 1)
+    return state
+
+
+@pytest.mark.parametrize('operation', ['cancel', 'sync'])
+def test_p1_malformed_result_converges_so_the_normal_tick_recovers(env, operation):
+    """P1: a tombstone must not keep a result the ordinary loader refuses.
+
+    `_load` validates `row['result']` even for a DONE round, so leaving the
+    malformed result in place would keep every later tick, and every later
+    runtime, stuck in `invalid_state`.
+    """
+    _break_result(env)
+    if operation == 'sync':
+        env.remote.rows[0]['status'] = 'RESOLVED'
+        env.remote.rows[0]['winning_outcome_id'] = 'outcome-0'
+        result = control.sync(env.g, client_factory=env.factory, now=200)
+        assert result['outcome'] == 'resolved'
+    else:
+        result = control.cancel(env.g, client_factory=env.factory, now=200)
+        assert result['outcome'] == 'canceled'
+
+    # The original untrusted bytes are preserved out of band, not discarded.
+    evidence = list(env.g.state_dir.glob('hanjuku_prediction_recovered_result_*.json'))
+    assert len(evidence) == 1
+    preserved = json.loads(evidence[0].read_text())
+    assert preserved['frame_sha256'] == 'not-a-digest'
+
+    # The ordinary loader accepts the tombstone again...
+    state = p._load(env.g.state_dir, 1)
+    assert state['round']['status'] in ('CANCELED', 'RESOLVED')
+    assert state['round']['result'] is None
+
+    # ...so the next tick no longer reports invalid_state, and the same run
+    # still cannot open a second wager.
+    env.remote.calls.clear()
+    outcome = p.tick(env.g, ID, now=201, client_factory=env.factory)
+    assert outcome['error'] is None
+    assert not [c for c in env.remote.calls if c[0] == 'POST']
+
+    # A later runtime creates normally: the stall no longer blocks the corner.
+    later = {**ID, 'runtime_id': 'g2-abcdef', 'generation': 2, 'lease_id': 'lease2'}
+    runtime = env.g.state_dir / 'runtimes' / later['runtime_id']
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(runtime / 'hanjuku_run.json', {**later, 'schema': 1})
+    atomic_write_json(env.g.state_dir / 'game_switch.json', {'phase': 'ready', 'active': later})
+    env.remote.allow_create = True
+    env.remote.calls.clear()
+    assert p.tick(env.g, later, now=300, client_factory=env.factory)['mode'] == 'active'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_p1_quiesce_refuses_rather_than_discarding_oversized_evidence(env):
+    """Defense in depth: evidence too large to preserve refuses, never drops.
+
+    The durable ledger is itself bounded well below this limit, so the guard is
+    unreachable through the real path; it is asserted directly so a future
+    ledger bound cannot silently start discarding evidence.
+    """
+    row = {'id': 'prediction-0', **ID, 'target': 2, 'middle': 1,
+           'result': {'schema': 1, 'extra': 'x' * (control.MAX_RECOVERED_RESULT_BYTES + 1)}}
+    with pytest.raises(control.ControlRefused) as exc:
+        control._quiesce_result(env.g.state_dir, row)
+    assert exc.value.code == 'evidence_unpreservable'
+    # Nothing was cleared and no partial evidence file was left behind.
+    assert row['result'] is not None
+    assert not list(env.g.state_dir.glob('hanjuku_prediction_recovered_result_*.json'))
+
+
+def test_p2_sparse_canceled_response_still_records_from_the_snapshot(env):
+    """P2: the CANCELED response may omit the counts that prove no-contest.
+
+    The snapshot saved before the irreversible cancel is an equally
+    authoritative basis, and the round must not go DONE while the
+    participation record is still unwritten.
+    """
+    # LOCKED GET proves no-contest from its counts.
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome['users'] = 0
+        outcome['channel_points'] = 0
+
+    recorded = []
+    real_record = p._record_canceled
+
+    def spy(root, now, client, *, sources=()):
+        recorded.append([tuple(sorted(s.get('outcomes', [{}])[0].get('users', -1)
+                                      for s in sources if s))])
+        return real_record(root, now, client, sources=sources)
+
+    original_end = env.remote.end
+
+    def end_without_counts(prediction_id, status, outcome_id=None):
+        rows = original_end(prediction_id, status, outcome_id)
+        # Twitch may omit the counts on the CANCELED response.
+        for outcome in rows[0]['outcomes']:
+            outcome.pop('users', None)
+            outcome.pop('channel_points', None)
+        return rows
+
+    env.remote.end = end_without_counts
+    import docich.hanjuku_predictions as hp
+    hp._record_canceled, saved = spy, hp._record_canceled
+    try:
+        result = control.cancel(env.g, client_factory=env.factory, now=200)
+    finally:
+        hp._record_canceled = saved
+
+    assert result['outcome'] == 'canceled'
+    # The record was attempted exactly once, and the round went terminal.
+    assert len(recorded) == 1
+    assert env.state()['round']['status'] == 'CANCELED'
+    # The pre-cancel snapshot was consumed, not orphaned.
+    assert not list(env.g.state_dir.glob('hanjuku_prediction_cancel_*.json'))
+
+
+def test_p2_sparse_canceled_without_evidence_keeps_the_round_pending(env, monkeypatch):
+    """No proven basis means the record stays retryable, never silently lost."""
+    import docich.hanjuku_predictions as hp
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome['users'] = 0
+
+    def sparse_end(prediction_id, status, outcome_id=None):
+        row = env.remote.rows[0]
+        row['status'] = status
+        sparse = copy.deepcopy(row)
+        for outcome in sparse['outcomes']:
+            outcome.pop('users', None)
+            outcome.pop('channel_points', None)
+        return [sparse]
+
+    env.remote.end = sparse_end
+    real_record = hp._record_canceled
+    calls = []
+    monkeypatch.setattr(hp, '_record_canceled',
+                        lambda root, now, client, *, sources=(): calls.append(sources))
+
+    result = control.cancel(env.g, client_factory=env.factory, now=200)
+    # The snapshot preserved the LOCKED counts, so it is recorded from there.
+    assert result['outcome'] == 'canceled'
+    assert len(calls) == 1
+    assert any(s.get('outcomes', [{}])[0].get('users') == 0 for s in calls[0] if s)
+    assert env.state()['round']['status'] == 'CANCELED'
