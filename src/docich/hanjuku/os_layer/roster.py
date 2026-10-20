@@ -481,6 +481,15 @@ def wage(mem, info):
         receipt.setdefault('wages', {})[info['general']] = value
 
 
+def listed(mem, state, name):
+    """Monthly list-only read: a listed name's stable fixed salary, no status screen."""
+    receipt = fresh(mem, include_completed=False)
+    value = fixed_wage(name)
+    if (receipt and not state.get('roster_invalidated')
+            and state.get('roster_started') == receipt['tick'] and value is not None):
+        receipt.setdefault('wages', {})[name] = value
+
+
 def economics(mem, owned, *, lower_bound=False):
     """Fresh complete actual wages and current-owned castle income only.
 

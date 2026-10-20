@@ -268,6 +268,12 @@ def _survey_work(mem):
     if any(info.get('broken') and info.get('month') == month
            for info in (mem.get('house_eggs') or {}).values()):
         return True
+    # The monthly headcount no longer opens status screens, so eggs are read
+    # here once per month (field_month caps the walk) for every listed general.
+    eggs = mem.get('house_eggs') or {}
+    listed = receipts.fresh(mem)
+    if listed and any((eggs.get(n) or {}).get('month') != month for n in listed.get('names') or ()):
+        return True
     if _recruit_shortage(mem) is None:
         return False
     owned = sorted(_owned(mem))
@@ -764,6 +770,13 @@ def step(screen, mem, frame):
             _phase(state, 'leave_roster')
             return [pad('b')]
         state['selected'] = selected
+        if state.get('month_scan'):
+            # The monthly headcount comes from the list and scroll alone. Salaries
+            # are the stable fixed table, so HP/egg/location detail is not opened here.
+            receipts.listed(mem, state, selected)
+            state['seen'].append(selected)
+            _phase(state, 'roster_advance')
+            return [pad('down')]
         _phase(state, 'status')
         return [pad('a')]
     if phase == 'status':

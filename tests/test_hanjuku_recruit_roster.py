@@ -326,10 +326,16 @@ def _drive_survey(state, names, month):
     assert actions==[p.pad('a')]
     for i,name in enumerate(names):
         frame=_survey_header(roster(names,i),month)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
-        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),month),state)
-        assert actions==[p.pad('b')]
-        actions,state=decide(frame,state);assert actions==[p.pad('down')]
+        monthly=bool((state['policy'].get('house') or {}).get('month_scan'))
+        actions,state=decide(frame,state)
+        if monthly:
+            # The monthly headcount reads the list only: no status detail screen.
+            assert actions==[p.pad('down')]
+        else:
+            assert actions==[p.pad('a')]
+            actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),month),state)
+            assert actions==[p.pad('b')]
+            actions,state=decide(frame,state);assert actions==[p.pad('down')]
         if len(names)>1:
             actions,state=decide(_survey_header(roster(names,(i+1)%len(names)),month),state)
             assert actions==[]
@@ -477,17 +483,15 @@ def _month_roster(state, visited=None):
     """
     from docich.hanjuku_bot import decide
     from test_hanjuku_chart_bot import month_canvas
-    from test_hanjuku_house import roster,status
+    from test_hanjuku_house import roster
     month=month_canvas(250,on='メインメニュー',month=7)
     actions,state=decide(month,state);assert actions==[p.pad('a')]
     actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
     names=['どうし','ゼウス']
     walk=names if visited is None else names[:visited]
     for i,name in enumerate(walk):
+        # Monthly headcount reads the list only: no status detail screen is opened.
         frame=_survey_header(roster(names,i),7)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
-        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),7),state)
-        assert actions==[p.pad('b')]
         actions,state=decide(frame,state);assert actions==[p.pad('down')]
         if i+1<len(walk):
             actions,state=decide(_survey_header(roster(names,i+1),7),state);assert actions==[]
@@ -548,7 +552,7 @@ def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
     assert mem['recruit_month_scan_attempts']['count']==1
 
 
-def test_one_completed_month_scan_replaces_the_redundant_field_walk():
+def test_monthly_scan_reads_no_eggs_so_the_field_walk_still_runs():
     from docich.hanjuku_bot import decide
     mem=memory(complete=False);mem['tick']=300;mem.pop('recruit_roster')
     for row in mem['castle_income'].values():row['tick']=250
@@ -556,11 +560,12 @@ def test_one_completed_month_scan_replaces_the_redundant_field_walk():
     mem=state['policy']
     assert mem['recruit_roster']['complete'] is True
     assert not mem['recruit_roster_recheck']
-    # Nothing to repair and the payroll income is current, so the second walk
-    # of the same statuses adds no information.
+    # The monthly walk reads names only, so eggs are not known this month and
+    # the field walk (which opens status screens) is not redundant.
     actions,state=decide(_survey_field(),state)
-    assert not state['policy'].get('house')
-    assert mem['recruit_field_scan_attempts']['count']==0
+    assert state['policy'].get('house')
+    assert state['policy']['house'].get('month_scan') is not True
+    assert mem['recruit_field_scan_attempts']['count']==1
 
 
 def test_field_walk_still_dispatches_a_repair_found_by_the_month_scan():
