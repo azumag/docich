@@ -252,17 +252,18 @@ def test_resuming_a_recruitment_intro_opens_without_a_wage_hold():
     assert mem['shop']['soldiers'] == 99  # the existing plan is not cut for wages
 
 
-def test_soldiers_and_recruit_may_use_all_cash_down_to_zero():
+def test_optional_recruit_fee_never_shrinks_the_necessary_soldier_plan():
     mem = memory(80)
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80})
-    # 30 soldiers + the 50G fee spend the whole balance.
-    assert shop['soldiers'] == 30 and shop['soldiers_done'] is False
+    # The 50G fee reservation may not cut the 50 necessary soldiers: the plan
+    # keeps the need and defers the optional recruitment instead.
+    assert shop['soldiers_before_recruit'] == 50
     shop['egg'] = 'not_needed'
-    assert policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
-    assert shop['recruit'] == 'opened'
-    assert shop['soldiers'] == 30
-    assert mem['month_sub']['kind'] == 'recruit'
-    assert 80 - shop['soldiers'] - policy.RECRUIT_COST == 0
+    assert policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem) == [policy.pad('down')]
+    assert shop['soldiers'] == 50 and shop['soldiers_done'] is False
+    assert shop['recruit'] == 'deferred_cash' and shop['recruit_reserve'] == 0
+    assert 'month_sub' not in mem
+    assert 80 - shop['soldiers'] < policy.RECRUIT_COST
 
 
 def test_soldier_restoration_clamps_to_the_real_post_recovery_balance():

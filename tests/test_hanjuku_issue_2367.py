@@ -74,6 +74,37 @@ def test_after_one_dismissal_the_next_weakest_is_chosen_again():
     assert generals == ['ミント', 'ヴィーナス']
 
 
+def test_unproven_full_page_never_confirms_a_dismissal():
+    names = ['フェデリーニ', 'ゼウス', 'ヴィーナス', 'ココット',
+             'クミン', 'ミント', 'シナモン', 'バジル']
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    dismissed = []
+    for _ in range(30):
+        actions, state = decide(discharge_frame(names, 0), state)
+        dismissed += [r for r in state['_records']
+                      if r['decision'] == 'discharge_general']
+    assert dismissed == []
+    assert state['_records'] == [] or any(
+        r['strategy_variant'] == 'discharge_scan_unproven' for r in state['_records'])
+
+
+def test_a_candidate_on_a_previous_page_is_reached_with_up():
+    first = ['フェデリーニ', 'ゼウス', 'ヴィーナス', 'ココット',
+             'クミン', 'ミント', 'シナモン', 'バジル']
+    last = ['ヘーゼル', 'ラズベリー']
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    for i in range(8):
+        actions, state = decide(discharge_frame(first, i), state)
+        assert actions == [p.pad('down')]
+    actions, state = decide(discharge_frame(last, 0), state)
+    assert actions == [p.pad('up')]  # フェデリーニ is on the previous page
+    actions, state = decide(discharge_frame(first, 0), state)
+    assert actions == [p.pad('a')]
+    record = state['_records'][-1]
+    assert record['decision'] == 'discharge_general'
+    assert record['general'] == 'フェデリーニ'
+
+
 def test_paid_up_discharge_list_leaves_without_another_dismissal():
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
     actions, state = decide(discharge_frame(['ゼウス', 'ミント'], 0, gold='32G'), state)
@@ -109,6 +140,43 @@ def test_large_measured_payroll_does_not_hold_cash_from_soldiers():
     assert economy._soldier_spendable(mem, shop, {'year': 1, 'month': 7, 'gold': 70}) == 30
 
 
+@pytest.mark.parametrize('gold', [60, 74, 75])
+def test_recruit_reserve_never_shrinks_the_necessary_soldier_refill(gold):
+    from test_hanjuku_soldiers_after_egg_skip import memory as soldier_memory
+    from test_hanjuku_army_count_check import screen
+    mem = soldier_memory(25, gold)
+    shop = mem['shop']
+    shop.update(reserve=0, recruit_reserve=50, soldiers=25, soldiers_target=25,
+                soldiers_done=False, soldiers_before_recruit=25, egg='not_needed')
+    economy._limit_soldier_refill(mem, shop, screen(gold).header)
+    # The 50G optional recruit fee is not deducted from the 25 needed troops.
+    assert shop['soldiers'] == 25
+    assert shop['soldiers_before_recruit'] == 25
+    # The optional fee gate therefore sees only gold - necessary soldiers.
+    assert gold - shop['soldiers_before_recruit'] == gold - 25
+
+
+@pytest.mark.parametrize('change', ['income_unread', 'payroll_unread', 'known_deficit'])
+def test_necessary_recruitment_opens_without_an_income_or_payroll_proof(change):
+    from test_hanjuku_chart_bot import month_canvas, _fewer_generals_than_castles_memory
+    mem = _fewer_generals_than_castles_memory()
+    if change == 'income_unread':
+        mem['castle_income'].clear()
+    elif change == 'payroll_unread':
+        mem['recruit_roster']['wages'] = {}
+    else:
+        for row in mem['castle_income'].values():
+            row['income'] = 1
+        mem['recruit_roster']['wages'] = {n: 15 for n in mem['recruit_roster']['names']}
+    plan = p._plan(mem, {'year': 1, 'month': 7, 'gold': 300})
+    plan.update(egg='not_needed', merchant_done=True, items=[],
+                soldiers=0, soldiers_done=True)
+    actions = p.month_step(parse(month_canvas(300, on='しょうぐんぼしゅう', month=7)), mem)
+    assert actions == [p.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+    assert mem['shop']['recruit'] == 'opened'
+
+
 # ---------------------------------------------------------------- month list
 def month_memory():
     return {'chapter': 1, 'month': '1-7', 'tick': 500, '_records': []}
@@ -136,7 +204,7 @@ def test_monthly_scan_reads_names_only_and_never_a_status_screen(monkeypatch):
     assert not mem.get('house_eggs')
 
 
-def test_exactly_eight_generals_complete_on_a_bounded_end_observation():
+def test_exactly_eight_generals_without_a_native_end_stay_incomplete():
     from test_hanjuku_recruit_roster import _survey_main
     mem = month_memory()
     state = {'phase': 'open_roster', 'chapter': 1, 'roster_month': '1-7',
@@ -146,17 +214,38 @@ def test_exactly_eight_generals_complete_on_a_bounded_end_observation():
     main = _survey_main(7)
     house.step(parse(main), mem, main)
     names = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'クミン', 'ミント', 'シナモン', 'バジル']
-    page = roster_frame(names, 7)  # the cursor is already on the final row
+    page = roster_frame(names, 7)
     assert house.step(parse(page), mem, page) == [p.pad('down')]
     assert house.step(parse(page), mem, page) == [p.pad('down')]
     assert house.step(parse(page), mem, page) == [p.pad('b')]
-    assert mem['house']['roster_end_observed'] is True
+    assert not mem['house'].get('roster_end_observed')
     assert house.step(parse(main), mem, main) == [p.pad('b')]
     month = month_canvas(250, on='メインメニュー', month=7)
     house.step(parse(month), mem, month)
-    assert mem['recruit_roster']['complete'] is True
+    assert mem['recruit_roster']['complete'] is False
     assert mem['recruit_roster']['names'] == names
-    assert any(r['decision'] == 'house_month_roster_end_bounded' for r in mem['_records'])
+    assert any(r['decision'] == 'house_month_roster_end_unproven' for r in mem['_records'])
+
+
+def test_native_continuation_page_is_not_treated_as_the_end():
+    from docich.hanjuku_pixels import read_png
+    from pathlib import Path as P
+    frame = read_png(P('tests/fixtures/hanjuku-roster-end/g749-11428.png'))
+    screen = parse(frame)
+    mem = month_memory()
+    state = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-7',
+             'month_scan': True, 'age': 0, 'total': 0, 'seen': [], 'pending': []}
+    mem['house'] = state
+    receipts.begin(mem, state)
+    actions = None
+    for _ in range(3):
+        actions = house.step(screen, mem, frame)
+    assert actions == [p.pad('b')]
+    assert not mem['house'].get('roster_end_observed')
+    assert 'ビシソワーズ' not in state['seen']
+    house.step(parse(month_canvas(250, on='メインメニュー', month=7)), mem,
+               None)
+    assert mem['recruit_roster']['complete'] is False
 
 
 def test_monthly_scan_follows_a_full_page_scroll_and_counts_each_name_once():

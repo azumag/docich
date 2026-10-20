@@ -112,21 +112,22 @@ def test_partial_duplicate_page_and_month_join_or_defeat_invalidate():
     assert r.fresh(mem) is None and state['roster_invalidated']
 
 
-@pytest.mark.parametrize('income,allowed', [(18,False),(19,True),(100,True)])
-def test_normal_income_covers_actual_wages_and_additional_max15(income,allowed):
+@pytest.mark.parametrize('income', [18, 19, 100])
+def test_income_and_wages_do_not_gate_recruitment(income):
+    # Issue #2367: income/payroll alone never holds a necessary recruitment.
     mem=memory(income=income) # hero0 + Zeus4 + candidate max15
     assert r.economics(mem,{'アルマムーン'})['wages']==4
-    assert p._stop_uneconomic_recruit(mem,shop()) is (not allowed)
+    assert p._stop_uneconomic_recruit(mem,shop()) is False
 
 
-def test_unknown_member_or_unobserved_castle_income_is_not_zero():
+def test_unknown_member_or_unobserved_castle_income_does_not_hold_recruitment():
     for mutate in [lambda m:m['recruit_roster']['wages'].update({'ゼウス':None}),
                    lambda m:m['castle_income'].clear(),
                    lambda m:m['castle_income']['アルマムーン'].update(month='1-6')]:
         mem=memory();mutate(mem);s=shop()
-        assert p._stop_uneconomic_recruit(mem,s)
-        assert s['recruit']=='deferred_economy' and s['recruit_reserve']==50
-        assert mem['recruit_hold']['reason']=='income_or_payroll_unknown'
+        assert p._stop_uneconomic_recruit(mem,s) is False
+        assert s['recruit']=='check' and s['recruit_reserve']==50
+        assert 'recruit_hold' not in mem
     assert r.fixed_wage('ゼウ') is None and r.fixed_wage('unknown') is None
 
 
@@ -673,8 +674,8 @@ def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, op
     assert (actions==[p.pad('a')])==opens
 
 
-@pytest.mark.parametrize('income,held', [(40, False), (5, True)])
-def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income, held):
+@pytest.mark.parametrize('income', [40, 5])
+def test_an_unread_castle_never_holds_recruitment_now(income):
     # g684 2-2: ゴーメン (owned, never read) made economics None and every
     # month's recruitment was 'deferred_economy' although 74G covered 25+15.
     mem = memory(castles=3, income=income)
@@ -684,5 +685,5 @@ def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income,
     bound = r.economics(mem, owned, lower_bound=True)
     assert bound['castles_read'] == 2 and bound['income'] == 2 * income
     s = {'key': '1-7', 'recruit': 'pending'}
-    assert p._stop_uneconomic_recruit(mem, s) is held
-    assert (s['recruit'] == 'deferred_economy') is held
+    assert p._stop_uneconomic_recruit(mem, s) is False
+    assert s['recruit'] == 'pending'

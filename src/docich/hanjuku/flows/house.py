@@ -496,21 +496,16 @@ def _month_count_advance(screen, mem, state, frame):
     observations = int(state.get('month_advance_observations') or 0) + 1
     state['month_advance_observations'] = observations
     if observations >= 2:
-        # Two bounded Down presses at the final visible row did not move the
-        # cursor: the list ends there. That is a bounded end observation, not
-        # a full-page guess. Anywhere else, leave with the names actually read
-        # but without complete(), so this is not a confirmed roster.
-        at_last = screen.selected == names[-1]
-        if at_last:
-            state['roster_end_observed'] = True
-        _record(mem, 'month_roster_end_bounded' if at_last else 'month_roster_end_unproven',
+        # A stalled cursor is not proof of the list end: the native
+        # continuation page g749-11428 shows a full eight-row page whose
+        # Down has not moved yet. Only a wrap, a short page or the native
+        # scroll-end frame proves the end. Leave incomplete otherwise.
+        _record(mem, 'month_roster_end_unproven',
                 observed_metric={'generals': list(state.get('seen') or []),
                                  'observations': observations,
                                  'selected': screen.selected,
                                  'last_visible': names[-1]},
-                reason=('月次の一覧が最終行で動かないため末尾として有限に確定'
-                        if at_last else
-                        '月次の一覧でスクロール端の証拠を得られないため、読めた名前だけを残して有限に終了'))
+                reason='月次の一覧でスクロール端の証拠を得られないため、読めた名前だけを残して未完了で終了')
         _phase(state, 'leave_roster')
         return [pad('b')]
     return [pad('down')]

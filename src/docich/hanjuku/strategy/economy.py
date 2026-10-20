@@ -216,8 +216,10 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
         cap = min(cap, available if available is not None else 0)
     elif type(gold) is int:
         # No payroll hold: the plan may use the cash left after the other
-        # necessary reservations, even down to 0G.
-        held = _month_held_reserve(shop) + shop.get('recruit_reserve', 0)
+        # necessary reservations, even down to 0G. The optional recruitment
+        # fee is not one of them: it must not shrink the necessary refill and
+        # then use that artificial spare cash to authorise itself (#2367).
+        held = _month_held_reserve(shop)
         if low_army_first(shop):
             held -= shop.get('reserve', 0)  # the egg hold waits behind a low army
         cap = min(cap, max(0, gold - held))
@@ -593,40 +595,29 @@ def _recruit_shortage(mem):
 
 
 def _stop_uneconomic_recruit(mem, shop):
-    from ..os_layer.roster import economics
+    """Recruitment is not gated by the payroll/income balance (Issue #2367).
+
+    Owner 2026-10-20: 給与収支が不明／赤字であることだけを理由に、必要な
+    募集を保留しない。実価格・実残金・必要兵士・卵・修理の予約、未払い
+    receipt は従来どおり別のゲートで扱う。在籍メンバーの未確認
+    (recruit_payroll_pending) は収支ではなく名簿の同一性の問題なので残す。
+    """
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return False  # finish the existing conversation without guessing refunds
-    owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
-    economy = economics(mem, owned)
-    if economy is None:
-        # Unread castles only add income: a covering lower bound suffices
-        # (g684 2-2: ゴーメン unread, recruitment held every month).
-        bound = economics(mem, owned, lower_bound=True)
-        if bound and bound['castles_read'] and bound['income'] >= bound['wages'] + bound['additional_wage_max']:
-            economy = bound
-    # Owner approved ordinary observed income plus the existing cash reserves.
-    # Do not silently apply an unapproved permanent quarter-income factor.
-    sustainable = economy and economy['income'] >= economy['wages'] + economy['additional_wage_max']
-    if sustainable:
+    if not mem.get('recruit_payroll_pending'):
         mem.pop('recruit_hold', None)
         return False
-    status = 'deferred_economy' if economy is None else 'not_affordable'
+    status = 'deferred_economy'
     if shop.get('recruit') != status:
-        _record(mem, 'recruit_economy_held', month=shop.get('key'),
-                observed_metric={'economy': economy,
-                                 'pending_employees': mem.get('recruit_payroll_pending') or []},
-                expected_metric='募集後も賃金を収入で支払えることを確認',
-                reason=('実収入・同一scan総賃金が不明のため募集を保留し確認する' if economy is None
-                        else '募集後の賃金を安全側の収入で賄えないため募集を見送る'))
+        _record(mem, 'recruit_membership_held', month=shop.get('key'),
+                observed_metric={'pending_employees': mem.get('recruit_payroll_pending') or []},
+                reason='章替わり後の在籍メンバーが未確認のため、名簿を再確認するまで募集を保留')
     shop['recruit'] = status
     shop['recruit_priority'] = False
     mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
-                          'reason': ('pending_employees' if mem.get('recruit_payroll_pending')
-                                     else 'income_or_payroll_unknown' if economy is None else 'wages_exceed_income'),
-                          'status': status}
-    mem['recruit_roster_recheck'] = economy is None
+                          'reason': 'pending_employees', 'status': status}
+    mem['recruit_roster_recheck'] = True
     return True
-
 
 def _house_repair_reserve(shop):
     values = (shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0))

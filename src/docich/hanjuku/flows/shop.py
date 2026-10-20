@@ -349,7 +349,30 @@ def discharge_candidates(screen):
     return names
 
 
-def discharge_step(screen: Screen, mem):
+def _discharge_scroll_end(screen, frame, names):
+    """Native last-page proof for the discharge list (same green list panel).
+
+    The discharge list shows one name per 16px row from y=47. A full eight-row
+    page whose cursor sits on the last row still needs the native up-arrow and
+    empty down-arrow slot; a stalled cursor alone is not an end proof.
+    """
+    from ..os_layer.phase import green
+    if (frame is None or frame.width != 256 or frame.height != 224
+            or len(names) != 8 or screen.selected != names[-1]
+            or not screen.hand or not 137 <= screen.hand[1] <= 160):
+        return False
+    return (all(min(frame.pixel(x, y)) >= 240
+                for y in range(30, 34) for x in range(195 - (y - 30), 196 + (y - 30)))
+            and all(green(*frame.pixel(x, y))
+                    for y in range(159, 162) for x in range(192, 199))
+            and all(max(frame.pixel(x, 162)) <= 8 for x in range(192, 199))
+            and all(170 <= frame.pixel(x, 163)[0] <= 220
+                    and 110 <= frame.pixel(x, 163)[1] <= 170
+                    and 50 <= frame.pixel(x, 163)[2] <= 100
+                    for x in range(192, 199)))
+
+
+def discharge_step(screen: Screen, mem, frame=None):
     """Forced discharge list: dismiss the weakest general only while in debt.
 
     Wages come out at the month boundary; a negative balance forces
@@ -419,17 +442,22 @@ def discharge_step(screen: Screen, mem):
     if phase == 'after':
         phase = state['phase'] = 'scan'
     if phase in ('scan', 'scan_move'):
-        if screen.selected == state.get('last'):
-            state['still'] = int(state.get('still') or 0) + 1
-        else:
-            state['still'] = 0
-        state['last'] = selected
         state['moves'] = int(state.get('moves') or 0) + 1
         wrapped = (selected == scan[0] and state.get('moved') is True
                    and len(scan) > len(names))
-        complete = (len(names) < 8 or wrapped or state['still'] >= 2
-                    or state['moves'] > 2 * DISCHARGE_LIMIT + 8)
-        if not complete:
+        proven = (len(names) < 8 or wrapped
+                  or _discharge_scroll_end(screen, frame, names))
+        if not proven:
+            if state['moves'] > 2 * DISCHARGE_LIMIT + 8:
+                if not state.get('scan_held'):
+                    state['scan_held'] = True
+                    _record(mem, 'situation_held', screen=screen.kind,
+                            strategy_variant='discharge_scan_unproven',
+                            observed_metric={'month': key, 'candidates': scan,
+                                             'moves': state['moves'],
+                                             'selected': selected},
+                            reason='解雇候補の一覧端を証明できないため、未走査ページを残したまま最弱を確定しない')
+                return []
             state['moved'] = True
             state['phase'] = 'scan_move'
             return [pad('down')]
@@ -448,23 +476,33 @@ def discharge_step(screen: Screen, mem):
         phase = 'select'
     if phase == 'select':
         target = state.get('target')
-        if (not isinstance(target, str) or target not in names or target not in scan):
+        if not isinstance(target, str) or target not in scan:
             state['phase'] = 'scan'
             return []
+        moves = int(state.get('cursor_moves') or 0)
+        if moves > 2 * DISCHARGE_LIMIT + 8:
+            if not state.get('cursor_held'):
+                state['cursor_held'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        strategy_variant='discharge_cursor_unreached',
+                        observed_metric={'month': key, 'target': target,
+                                         'selected': selected, 'moves': moves},
+                        reason='最弱候補へカーソルを移動できないため解雇を確定せず入力を保留')
+            return []
         if selected != target:
-            moves = int(state.get('cursor_moves') or 0)
-            if moves > 2 * DISCHARGE_LIMIT + 8:
-                if not state.get('cursor_held'):
-                    state['cursor_held'] = True
-                    _record(mem, 'situation_held', screen=screen.kind,
-                            strategy_variant='discharge_cursor_unreached',
-                            observed_metric={'month': key, 'target': target,
-                                             'selected': selected, 'moves': moves},
-                            reason='最弱候補へカーソルを移動できないため解雇を確定せず入力を保留')
-                return []
             state['cursor'] = selected
             state['cursor_moves'] = moves + 1
-            return [pad('down' if names.index(target) > names.index(selected) else 'up')]
+            if target in names:
+                return [pad('down' if names.index(target) > names.index(selected) else 'up')]
+            # The candidate is on an earlier/later page. Walk the real list
+            # back to it instead of re-reading this page forever.
+            target_index = scan.index(target)
+            if target_index < scan.index(names[0]):
+                return [pad('up')]
+            if target_index > scan.index(names[-1]):
+                return [pad('down')]
+            state['phase'] = 'scan'
+            return []
         state['presses'] = int(state['presses']) + 1
         _record(mem, 'discharge_general', general=target,
                 strategy_variant='weakest_general',
