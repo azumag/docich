@@ -143,7 +143,7 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
                 observed_metric={'direction': direction, 'retries': state['retries'],
                                  'frame_sha256': sha},
                 reason='同一画面のまま方向入力が受け付けられないため、確定せずメニューを閉じる')
-        return [pad('b')]
+        return pad('b')
     state.update(sha=sha, waits=0)
     return move
 

@@ -41,7 +41,7 @@ def test_identical_frame_waits_retries_then_closes_without_confirming():
         for _ in range(BATTLE_MENU_STALL_WAIT):
             assert _battle_menu_move(menu, mem, 'きりふだ') == []
     closing = _battle_menu_move(menu, mem, 'きりふだ')
-    assert [a['buttons'] for a in closing] == [['b']]
+    assert closing['buttons'] == ['b']
     assert mem['_records'][-1]['decision'] == 'battle_menu_nav_unaccepted'
     assert 'battle_menu_move' not in mem
 
