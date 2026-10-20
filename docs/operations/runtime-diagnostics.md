@@ -875,6 +875,11 @@ state directory の `logs/stream-game.log`）の末尾だけを読む。環境�
 ログパス変更は追跡しない。設定済みrootの祖先を含めた全segmentをnofollowで開き、
 root以下の同一owner・他者書込不可、regular file・単一link、読取前後と再openの
 inode/metadata一致を要求する。1source最大32KiB・256行・末尾1行4KiB。
+`read_rejection` は既存の拒否を弱めず、root/子directoryのowner不一致・他者書込、
+fileの非regular・owner不一致・複数link・他者書込、root形式不正だけを固定enumで分離する。
+UID・path・例外本文は出さない。OSのopen失敗等は `unknown` のまま、読取guardを
+通過した場合は `none` とする。複数条件が不適合なら最初の拒否だけであり、全属性の証明や
+更新停止原因の診断ではない。`day_script` も同じ拒否理由だけを返し、既存statusは変えない。
 内容・URL・login・ID・path・HTTP bodyは返さず、公開producerの既知literalから
 固定の `observed_outcome` / `observed_reason` だけを生成する。最後の行が未知、
 途中書込、過大、不正UTF-8なら古い失敗を探し直さない。時刻が逆行した尾部も
