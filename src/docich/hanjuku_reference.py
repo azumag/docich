@@ -885,8 +885,12 @@ def general_strength(name: str | None):
 # HP×戦闘はオーナー提案の候補式であり、この順序をテストで固定する。
 def general_weakness(name: str | None):
     """弱い順の比較キー。静的データに無い名前は None (順位を確定しない)。"""
-    stats = general_strength(name)
-    hp = general_max_hp(name)
+    # 一覧の表示名 `どうし` は静的データでは `しゅじんこう`。賃金表
+    # (`fixed_wage`) と撤退判定 (`judgment.retreat`) と同じ別名規則を、
+    # ここでも一箇所だけ適用する。他の将軍のキーは変わらない。
+    canonical = 'しゅじんこう' if name == 'どうし' else name
+    stats = general_strength(canonical)
+    hp = general_max_hp(canonical)
     if stats is None or hp is None:
         return None
     max_hp, combat, _bonus, egg, _thought = stats
@@ -894,7 +898,7 @@ def general_weakness(name: str | None):
         return None  # 二つの静的HP表が食い違う名前は比較しない
     eggless = egg == '－'
     return (0 if eggless else 1, max_hp * combat,
-            1 if name in GENERAL_HORSES else 0, max_hp, combat, name)
+            1 if (canonical in GENERAL_HORSES) else 0, max_hp, combat, canonical)
 
 
 def weakest_general(names):

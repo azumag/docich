@@ -28,6 +28,15 @@ def test_equal_hp_and_combat_prefers_the_non_mounted_general():
 
 
 
+
+def test_hero_display_name_is_normalized_for_the_weakest_ranking():
+    # 一覧の表示名 `どうし` は静的データの `しゅじんこう` と同じ将軍。
+    # 別名を解決しないと解雇走査が未解決のまま停止する (#2603)。
+    assert general_weakness('どうし') == general_weakness('しゅじんこう')
+    assert weakest_general(['どうし', 'ゼウス', 'ヴィーナス', 'ココット'])[0] == 'ココット'
+    # 別名を含まない一覧の順位は変わらない。
+    assert weakest_general(['ゼウス', 'ヴィーナス', 'ココット'])[0] == 'ココット'
+
 def test_owner_adopted_order_uses_max_hp_and_ignores_egg_type_rank():
     # Same eggless status, same 54 = HP x combat, same non-mounted class:
     # the lower max HP wins even though the egg types differ.
@@ -113,6 +122,16 @@ def test_a_candidate_on_a_previous_page_is_reached_with_up():
     assert record['decision'] == 'discharge_general'
     assert record['general'] == 'フェデリーニ'
 
+
+
+def test_hero_in_the_discharge_list_does_not_stall_the_scan():
+    names = ['どうし', 'ミント', 'ゼウス']
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    assert decide(discharge_frame(names, 0), state)[0] == [p.pad('down')]
+    actions, state = decide(discharge_frame(names, 1), state)
+    assert actions == [p.pad('a')]
+    record = state['_records'][-1]
+    assert record['general'] == 'ミント'
 
 def test_paid_up_discharge_list_leaves_without_another_dismissal():
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
