@@ -56,7 +56,7 @@ src/docich/
                         # [mystery_corner] narration_agents が非空のときだけLLM）
   mystery_view.py       # 配信HTML事件ボード（loopback 8807、payload読み取り専用）
   mystery_corner.py     # GameSwitch でのライフサイクル + フェーズ状態機械
-  adapters/mystery_program.py  # view adapter（960x540 viewport、フルスクリーン例外の対象外）
+  adapters/mystery_program.py  # view adapter（全画面 1280×720、未知時は 960×540 viewport）
 ```
 
 ### 3.1 trpgオフラインコアとの統合（#2481 → #2492、2026-10-18 統合判断）
@@ -118,8 +118,23 @@ PYTHONPATH=src python3 -m pytest -q tests/test_mystery_case.py \
   （本番実測: mystery state = interrupted / switch-terminal-before-corner-active /
   started_at=null。state は reconcile_failed_start が正しく受理し、背景の sorengame へ
   復帰済み）。ボードは case が無い間「準備中」表示になる。
-- 配信ネイティブ全画面例外（天気・予想王のみ）には入れない。本viewは通常のゲーム領域
-  （960×540 viewport）に投影する。
+- **全画面表示（2026-10-21 オーナー依頼）**: 天気予報・予想王と同じ配信ネイティブの
+  情報画面として扱い、`display.width/height`（本番 1280×720）が既知なら
+  `(0, 0, width, height)` の全画面に提示する。ビューHTMLは960×540を基準に縦横比維持で
+  拡大するため、レイアウトは変えない。`display.width/height` が無い環境では従来の
+  `viewport` へ fallback する。コーナー中はステータス枠を隠し（#2494）、終了は既存
+  GameSwitch の復帰経路で元画面へ戻す。
+- **配信タイトルとカテゴリ**: commit 時は `mystery-view` を明示カテゴリ経路
+  （`AI探偵ミステリー` / Just Chatting `509658`）で発表し、復帰時に前のゲームの
+  タイトル・カテゴリへ戻す。置き換えられたゲームのメタデータを残さない。
+- **ラジオとの混線防止**: コーナー中は Soren の共有フラグ
+  `tmp/.program_corner_active`（`ends_at` 付き・ボード更新ごとに延長）を書き、
+  Soren のラジオは新規生成と deferred 再生の両方を止める。旧 PAPER フラグ
+  `tmp/.paper_corner_active` にも同じ内容を mirror し、旧 Soren ゲートしか配備されて
+  いない間も新規生成だけは止まるようにする（共有ゲート配備後に削除できる互換層）。
+  Soren 側は共有フラグを第一に、旧 PAPER フラグを後方互換として受理する。
+  終了・退避時は所有 token が一致する場合だけフラグを削除する（別コーナーのフラグを
+  消さない）。クラッシュ時も `ends_at` で自動復帰する。
 - 予想の精算が連続失敗した場合、予想は LOCKED のまま残る。state の
   `prediction-settle-failed` と `prediction_id` で Twitch ダッシュボードから手動精算できる。
   定期再試行は follow-up。

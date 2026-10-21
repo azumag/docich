@@ -812,10 +812,15 @@ seed から確定し、コミットメント（SHA-256）を配信ボードへ�
 CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
 差し引いた予算内にクランプする。
 
-表示は 960×540 viewport の読み取り専用 view（loopback 8807、配信ネイティブ全画面例外の
-対象外）。view は corner が書く `mystery_view.json`（0600・256KiB上限・atomic）だけを
-読み、generation 束縛で別世代には出ない。ナレーションは `[mystery_corner].narration_agents`
-が非空のときだけ共有 LLM dispatch を使い、失敗時は定型文へ fallback する。reveal は常に定型文。
+表示は読み取り専用 view（loopback 8807）で、天気予報・予想王と同じ配信ネイティブ
+全画面例外として `(0, 0, display.width, display.height)`（本番 1280×720）に提示する
+（2026-10-21 オーナー依頼。`display.width/height` が無い環境は 960×540 viewport へ
+fallback）。commit 時は配信タイトル・カテゴリを `AI探偵ミステリー` / Just Chatting へ
+切り替え、復帰時に前のゲームへ戻す。コーナー中は Soren の共有フラグ
+`tmp/.program_corner_active` でラジオの新規生成と deferred 再生を止める。view は corner が
+書く `mystery_view.json`（0600・256KiB上限・atomic）だけを読み、generation 束縛で別世代には
+出ない。ナレーションは `[mystery_corner].narration_agents` が非空のときだけ共有 LLM
+dispatch を使い、失敗時は定型文へ fallback する。reveal は常に定型文。
 セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
 interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
 `docs/features/mystery-corner.md`。
