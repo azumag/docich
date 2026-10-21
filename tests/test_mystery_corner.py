@@ -384,14 +384,12 @@ def test_mystery_corner_suppresses_the_soren_radio_only_while_the_board_is_live(
     adapter = _adapter(g, _corner(audio_enabled=True), switch, now, sleep)
     manager = adapter.manager
     flag = manager._program_flag_path()
-    legacy = manager._legacy_program_flag_path()
     observed = []
     original_write = manager._write_view
 
     def write_view(*args, **kwargs):
         original_write(*args, **kwargs)
-        observed.append(json.loads(flag.read_text())
-                        if flag.exists() and legacy.exists() else None)
+        observed.append(json.loads(flag.read_text()) if flag.exists() else None)
 
     manager._write_view = write_view
     assert manager.run_rotation(str(uuid.uuid4())) == "completed"
@@ -400,9 +398,9 @@ def test_mystery_corner_suppresses_the_soren_radio_only_while_the_board_is_live(
     assert all(item["kind"] == "mystery" for item in observed)
     assert len({item["owner"] for item in observed}) == 1
     last = observed[-1]
-    assert last["ends_at"] == last["progress_at"] + PROGRAM_FLAG_TTL_S
+    assert last["ends_at"] == int(last["progress_at"] + PROGRAM_FLAG_TTL_S)
     assert last["owner"] == last["request_id"]
-    assert not flag.exists() and not legacy.exists()
+    assert not flag.exists()
 
 
 def test_mystery_program_flag_never_deletes_another_owners_flag(tmp_path):
@@ -410,24 +408,49 @@ def test_mystery_program_flag_never_deletes_another_owners_flag(tmp_path):
     manager = _adapter(g, _corner(audio_enabled=True), switch, [0],
                        lambda _s: None).manager
     flag = manager._program_flag_path()
-    legacy = manager._legacy_program_flag_path()
 
     manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
     assert json.loads(flag.read_text())["owner"] == "owner-a"
-    assert json.loads(legacy.read_text())["owner"] == "owner-a"
 
     # A live foreign flag is never overwritten by a corner that lost its slot.
     manager._refresh_program_flag({"rotation_request_id": "owner-b", "started_at": 2})
     assert json.loads(flag.read_text())["owner"] == "owner-a"
-    assert json.loads(legacy.read_text())["owner"] == "owner-a"
 
     manager._clear_program_flag({"rotation_request_id": "owner-b"})
-    assert flag.exists() and legacy.exists()
+    assert flag.exists()
 
     manager._clear_program_flag({"rotation_request_id": "owner-a"})
-    assert not flag.exists() and not legacy.exists()
+    assert not flag.exists()
     # Clearing twice is harmless.
     manager._clear_program_flag({"rotation_request_id": "owner-a"})
+
+
+def test_mystery_program_flag_does_not_touch_the_paper_corner_flag(tmp_path):
+    # The legacy .paper_corner_active name is owned by the PAPER corner. The
+    # mystery corner used to mirror into it, which raced with PAPER's own
+    # refresh/clear in both directions: PAPER overwrote the mirror and dropped
+    # the owner token (so the radio stayed muted for the whole TTL), and
+    # PAPER's own clear removed the mystery mirror.
+    g, _now, _factory, _store, switch = _setup(tmp_path)
+    manager = _adapter(g, _corner(audio_enabled=True), switch, [0],
+                       lambda _s: None).manager
+    shared = manager._program_flag_path()
+    paper = shared.with_name(".paper_corner_active")
+
+    manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
+    assert shared.exists()
+    assert not paper.exists()
+
+    # A PAPER-owned payload (owner-less) is never overwritten nor deleted.
+    paper.parent.mkdir(parents=True, exist_ok=True)
+    paper.write_text(json.dumps({"date": "2026-10-21", "started_at": 1.0,
+                                 "progress_at": 2.0, "ends_at": 1.0 + 1800}),
+                     encoding="utf-8")
+    manager._refresh_program_flag({"rotation_request_id": "owner-b", "started_at": 2})
+    assert json.loads(paper.read_text()).get("owner") is None
+    manager._clear_program_flag({"rotation_request_id": "owner-a"})
+    assert paper.exists()
+    assert not shared.exists()
 
 
 def test_mystery_program_flag_is_not_advertised_without_corner_audio(tmp_path):
@@ -437,7 +460,8 @@ def test_mystery_program_flag_is_not_advertised_without_corner_audio(tmp_path):
 
     manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
     assert not manager._program_flag_path().exists()
-    assert not manager._legacy_program_flag_path().exists()
+    assert not manager._program_flag_path().with_name(
+        ".paper_corner_active").exists()
 
 
 def test_mystery_corner_polls_drive_the_investigation(tmp_path, quiet_narration):

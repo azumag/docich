@@ -129,9 +129,10 @@ PYTHONPATH=src python3 -m pytest -q tests/test_mystery_case.py \
   タイトル・カテゴリへ戻す。置き換えられたゲームのメタデータを残さない。
 - **ラジオとの混線防止**: コーナー中は Soren の共有フラグ
   `tmp/.program_corner_active`（`ends_at` 付き・ボード更新ごとに延長）を書き、
-  Soren のラジオは新規生成と deferred 再生の両方を止める。旧 PAPER フラグ
-  `tmp/.paper_corner_active` にも同じ内容を mirror し、旧 Soren ゲートしか配備されて
-  いない間も新規生成だけは止まるようにする（共有ゲート配備後に削除できる互換層）。
+  Soren のラジオは新規生成と deferred 再生の両方を止める。
+  このコーナーが書くのは共有フラグ**だけ**で、旧 PAPER フラグ
+  `tmp/.paper_corner_active` には mirror しない（その名前は PAPER コーナーの所有で、
+  双方向の競合で owner token を失いラジオが TTL(1800秒) 止まった実測がある）。
   Soren 側は共有フラグを第一に、旧 PAPER フラグを後方互換として受理する。
   終了・退避時は所有 token が一致する場合だけフラグを削除する（別コーナーのフラグを
   消さない）。クラッシュ時も `ends_at` で自動復帰する。

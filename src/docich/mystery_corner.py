@@ -130,9 +130,9 @@ STATUS_OVERLAY_CONTROL_TIMEOUT_S = 10.0
 #: middle of the case and cut the corner narration. The flag carries a sliding
 #: expiry refreshed on every board write; Soren treats a missing/expired flag
 #: as inactive, so a crashed corner resumes the radio after at most this TTL
-#: (fail-open). PAPER keeps its legacy flag name for backward compatibility,
-#: and this corner mirrors its payload into that legacy name until the shared
-#: Soren gate is deployed everywhere.
+#: (fail-open). The shared flag is the only file this corner writes: the
+#: legacy ``.paper_corner_active`` name stays owned by the PAPER corner, and
+#: the Soren gate reads both names.
 PROGRAM_FLAG_NAME = ".program_corner_active"
 PROGRAM_FLAG_TTL_S = 1800.0
 
@@ -507,10 +507,6 @@ class MysteryCornerManager:
 
         return resolve_soren_root(self.g) / "tmp" / PROGRAM_FLAG_NAME
 
-    def _legacy_program_flag_path(self):
-        """PAPER-era name, mirrored until the shared Soren gate is deployed."""
-        return self._program_flag_path().with_name(".paper_corner_active")
-
     def _program_flag_owner(self, state):
         owner = state.get("rotation_request_id")
         return owner if isinstance(owner, str) and owner else ""
@@ -542,11 +538,22 @@ class MysteryCornerManager:
         """Advertise this program corner to the Soren radio (best-effort).
 
         The radio reads only ``ends_at``; the owner token lets this corner
-        avoid deleting or overwriting a newer owner's flag. The legacy PAPER
-        flag is mirrored for a deployment that still runs the old Soren gate; a
-        newer Soren checks the shared flag first. Failures are swallowed: the
-        radio treats a missing/broken flag as inactive, and the sliding expiry
-        bounds a crashed corner to ``PROGRAM_FLAG_TTL_S``. Never raises.
+        avoid deleting or overwriting a newer owner's flag. Failures are
+        swallowed: the radio treats a missing/broken flag as inactive, and the
+        sliding expiry bounds a crashed corner to ``PROGRAM_FLAG_TTL_S``.
+
+        This corner writes ONLY the shared ``tmp/.program_corner_active`` flag.
+        It deliberately does not mirror into the legacy ``.paper_corner_active``
+        name: that file is owned by the PAPER corner (owner-less payload), and
+        a shared write there would race with PAPER's own refresh/clear. The
+        2026-10-21 review reproduced both directions of that race (PAPER
+        overwrote the mirror and dropped the owner token, so the mystery
+        corner could not clear its own flag and the radio stayed muted for the
+        whole 1800s TTL). The shared flag is the reviewed contract with the
+        Soren gate in ``broadcast/radio_state.sh``; PAPER keeps its own flag
+        and the Soren gate reads both.
+
+        Never raises.
         """
         try:
             # No narration means nothing to protect: leave the radio alone.
@@ -556,10 +563,10 @@ class MysteryCornerManager:
             if not owner:
                 return
             now = self.clock()
-            paths = (self._program_flag_path(), self._legacy_program_flag_path())
+            flag = self._program_flag_path()
             # A lost slot can still call _write_view for its reveal. Never
             # overwrite the new owner's live flag in that path.
-            if any(self._foreign_program_flag(flag, owner, now) for flag in paths):
+            if self._foreign_program_flag(flag, owner, now):
                 return
             payload = {
                 "kind": "mystery",
@@ -567,34 +574,36 @@ class MysteryCornerManager:
                 "request_id": state.get("rotation_request_id"),
                 "started_at": state.get("started_at"),
                 "progress_at": now,
-                "ends_at": now + PROGRAM_FLAG_TTL_S,
+                # Integer seconds: the Soren shell parses ``ends_at`` with a
+                # digits-only pattern and truncates it, so a float keeps the
+                # same meaning but an int is the unambiguous contract.
+                "ends_at": int(now + PROGRAM_FLAG_TTL_S),
             }
-            for flag in paths:
-                try:
-                    flag.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_json(flag, payload)
-                except Exception:
-                    continue
+            try:
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(flag, payload)
+            except Exception:
+                pass
         except Exception:
             pass
 
     def _clear_program_flag(self, state):
-        """Remove only this corner's flags; a newer owner's flag is kept."""
+        """Remove only this corner's flag; a newer owner's flag is kept."""
         try:
             owner = self._program_flag_owner(state)
             if not owner:
                 return
-            for flag in (self._program_flag_path(), self._legacy_program_flag_path()):
-                try:
-                    current = json.loads(flag.read_text(encoding="utf-8"))
-                except FileNotFoundError:
-                    continue
-                except (OSError, ValueError):
-                    # Unreadable flags expire on their own; do not guess
-                    # ownership.
-                    continue
-                if isinstance(current, dict) and current.get("owner") == owner:
-                    flag.unlink(missing_ok=True)
+            flag = self._program_flag_path()
+            try:
+                current = json.loads(flag.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return
+            except (OSError, ValueError):
+                # Unreadable flags expire on their own; do not guess
+                # ownership.
+                return
+            if isinstance(current, dict) and current.get("owner") == owner:
+                flag.unlink(missing_ok=True)
         except Exception:
             pass
 
