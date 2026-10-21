@@ -124,6 +124,13 @@ PYTHONPATH=src python3 -m pytest -q tests/test_mystery_case.py \
   拡大するため、レイアウトは変えない。`display.width/height` が無い環境では従来の
   `viewport` へ fallback する。コーナー中はステータス枠を隠し（#2494）、終了は既存
   GameSwitch の復帰経路で元画面へ戻す。
+- **presenter バイナリの preflight 確認（2026-10-21 修正）**: 全画面提示は
+  viewport の設定有無に関わらず `presentation.py` を経由するため、`Xvfb` / `ffplay` /
+  `xdotool` の不在を preflight で検出する。`ProgramViewAdapter.preflight` は
+  「実際に `_viewer_command()` が presentation.py を通るか」で判定する
+  （`_presenter_required()`）。`viewport_width > 0` だけを条件にすると、全画面提示
+  経路（本番 `config/docich.soren-live.toml` は viewport が設定されているが、
+  viewport 未設定の環境でも同じ）だけ presenter 不在が検査をすり抜ける。
 - **配信タイトルとカテゴリ**: commit 時は `mystery-view` を明示カテゴリ経路
   （`AI探偵ミステリー` / Just Chatting `509658`）で発表し、復帰時に前のゲームの
   タイトル・カテゴリへ戻す。置き換えられたゲームのメタデータを残さない。

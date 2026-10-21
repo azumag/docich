@@ -214,6 +214,29 @@ class ProgramViewAdapter(CliCoordinatorAdapter):
             return self._viewer_command()
         return super()._xterm_command()
 
+    def _presenter_required(self) -> bool:
+        """True when this view is shown through the presenter (presentation.py).
+
+        The presenter needs Xvfb, ffplay and xdotool.  It is required whenever
+        the viewer command runs through it, which is not only the case when
+        the shared game viewport is configured: the broadcast-native
+        information screens (天気予報・予想王・AI探偵ミステリー) present the
+        whole display frame ``(0, 0, width, height)`` and still need the same
+        binaries, even where no game viewport is configured at all.
+
+        The configured viewport stays part of the condition so this check can
+        never be weaker than the previous one; the viewer command is only an
+        additional trigger.
+        """
+        display = self.g.display
+        if display.viewport_width > 0:
+            return True
+        if self.dashboard_kind == "html":
+            return any("presentation.py" in part for part in self._viewer_command())
+        # The text dashboard falls back to the shared xterm path, which only
+        # uses the presenter when the game viewport is configured.
+        return False
+
     def preflight(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
         self._game_command()
@@ -225,7 +248,7 @@ class ProgramViewAdapter(CliCoordinatorAdapter):
                 )
         else:
             self._xterm_bin()
-        if self.g.display.viewport_width > 0:
+        if self._presenter_required():
             for binary in ("Xvfb", "ffplay", "xdotool"):
                 if not shutil.which(binary):
                     raise AdapterError(f"{binary} が見つかりません")
