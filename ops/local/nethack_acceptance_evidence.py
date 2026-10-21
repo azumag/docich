@@ -15,7 +15,8 @@ What the current collector can and cannot prove (checked 2026-10-20):
 
 - ``nethack_panes.agent`` is the ``agent-g{generation}`` pane tail, so the
   trailing run of ``nethack: N 件のアクションを実行しました`` lines is visible.
-  This is the decisive signal for "the corner kept acting".
+  This proves only that a positive action count was logged in the capture;
+  it does not prove pager passage, map changes, or turn progress.
 - ``nethack_panes.game`` is the game pane tail (last 14 non-blank lines). The
   ``--More--`` prompt renders on the top screen row, so the pager text is
   structurally outside that window. A capture is therefore never failed for a
@@ -47,7 +48,7 @@ STATUS_UNKNOWN = "unknown"
 
 #: ``[agent] nethack: 12 件のアクションを実行しました (brain=nethack)`` as emitted
 #: by the agent loop. Only the count is needed; the brain tag is not asserted.
-_ACTION_RE = re.compile(r"nethack:\s*(?P<count>\d+)\s*件のアクション")
+_ACTION_RE = re.compile(r"nethack:\s*(?P<count>.*?)\s*件のアクション")
 #: NetHack's own pager/catch-all prompt, when it lands inside the pane window.
 _MORE_RE = re.compile(r"--\s*more\s*--", re.IGNORECASE)
 #: A redaction marker inside a value that should be numeric.
@@ -60,29 +61,27 @@ STALL_RUN = 3
 
 
 def _repair_masked_json(raw):
-    """Make a log-masked diagnostics payload parseable without inventing data.
+    """Repair masked numeric atoms outside strings; preserve quoted evidence.
 
-    GitHub's log redaction rewrites numeric substrings inside otherwise valid
-    JSON, e.g. ``"at":1792176165.***7505``, so the document no longer parses.
-    Every masked value is replaced with ``null``: the mask means the real value
-    is unknown, and a fabricated number could turn a stall into a pass. The
-    substitution only touches ``***`` runs adjacent to digits, so genuine
-    string content elsewhere is left alone.
+    Walk JSON strings as whole tokens, including escaped quotes/backslashes.
+    Only malformed masked Unicode escapes inside strings need replacement.
+    Other malformed JSON remains a parse error rather than being guessed.
     """
-    # A masked ``\uXXXX`` escape must become a *valid* escape: rewriting it to
-    # ``null`` yields ``\unull``, which is not parseable. U+FFFD is the honest
-    # placeholder for "a character was redacted", and this helper only ever
-    # reads fixed ASCII keys, so no decision depends on the substituted glyph.
-    raw = re.sub(r"\\u[\dA-Fa-f]*\*{2,}[\dA-Fa-f]*", "\\\\ufffd", raw)
-    # A masked number: a numeric token containing at least one mask run. The
-    # mask can appear more than once inside one number (``179***3***1.0318093``)
-    # or swallow the leading digits entirely (``"age_sec":***728``), and digits
-    # survive on either side, so the whole token has to be matched rather than
-    # the mask alone. Rewriting only the mask leaves fragments such as
-    # ``1792176165.null`` or ``null***1.0318093``, which are still invalid JSON.
-    # ``-?`` and the bare-``***`` alternative cover masked negatives and values
-    # that are nothing but a mask.
-    return re.sub(r"(?:-?\d[\d.eE+-]*)?(?:\*{2,}[\d.eE+-]*)+", "null", raw)
+    tokens = re.compile(r'"(?:\\.|[^"\\])*"|[^"\s,:{}\[\]]+')
+    masked_number = re.compile(r'(?:-?\d[\d.eE+-]*)?(?:\*{2,}[\d.eE+-]*)+')
+    escapes = re.compile(r'\\(?:u[\dA-Fa-f]*\*{2,}[\dA-Fa-f]*|.)')
+
+    def repair_token(match):
+        token = match.group()
+        if token.startswith('"'):
+            return escapes.sub(
+                lambda escape: r'\ufffd' if escape.group().startswith(r'\u')
+                and '*' in escape.group() else escape.group(), token)
+        if masked_number.fullmatch(token):
+            return 'null'
+        return token
+
+    return tokens.sub(repair_token, raw)
 
 
 def _dig(data, *path):
@@ -99,12 +98,16 @@ def _action_counts(lines):
     """Return (counts, masked) parsed from agent pane lines, in order."""
     counts, masked = [], False
     for line in _as_lines(lines):
-        if _MASK_RE.search(line) and "件のアクション" in line:
-            masked = True
-            continue
         match = _ACTION_RE.search(line)
         if match is not None:
-            counts.append(int(match.group("count")))
+            value = match.group("count")
+            if re.fullmatch(r"[0-9]+", value):
+                counts.append(int(value))
+            else:
+                # Unknown observations must break consecutive zero runs and
+                # must not let an older positive count become the latest one.
+                counts.append(None)
+                masked = True
     return counts, masked
 
 
@@ -145,7 +148,8 @@ def evaluate(doc):
     The verdict distinguishes three outcomes rather than collapsing them:
 
     - ``acting``: the agent pane shows a run of counts where the latest action
-      count is positive, i.e. the resumed game kept taking actions.
+      count is positive while NetHack is active. This is logged execution
+      evidence only, not proof of pager passage or gameplay progress.
     - ``stalled``: the capture caught a trailing run of zero-count lines, which
       is exactly the #2271 symptom.
     - ``unknown``: the capture cannot decide (corner inactive, panes empty, or
@@ -155,7 +159,6 @@ def evaluate(doc):
     if not isinstance(diag, dict):
         diag = doc if isinstance(doc, dict) else {}
 
-    panes = diag.get("nethack_panes") or {}
     active_game = _dig(diag, "nethack_panes", "active_game")
     agent_lines = _as_lines(_dig(diag, "nethack_panes", "agent"))
     game_lines = _as_lines(_dig(diag, "nethack_panes", "game"))
@@ -164,7 +167,7 @@ def evaluate(doc):
     counts, masked = _action_counts(agent_lines)
     zero_run = _trailing_zero_run(counts)
 
-    if counts:
+    if active_game == CORNER and counts and counts[-1] is not None:
         status = STATUS_ACTING if counts[-1] > 0 else STATUS_STALLED
     elif masked:
         status = STATUS_UNKNOWN
@@ -263,7 +266,7 @@ def main(argv=None):
         print(json.dumps(verdict, ensure_ascii=False, sort_keys=True))
     else:
         print(render(verdict))
-    return 0 if verdict["status"] != STATUS_UNKNOWN else 3
+    return {STATUS_ACTING: 0, STATUS_STALLED: 1, STATUS_UNKNOWN: 3}[verdict["status"]]
 
 
 if __name__ == "__main__":

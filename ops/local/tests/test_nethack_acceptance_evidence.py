@@ -103,7 +103,7 @@ def test_inactive_corner_capture_is_unknown_with_reason():
 def test_masked_action_counts_never_become_a_false_pass():
     verdict = evaluate(doc(agent=[agent_line(0, masked=True), agent_line(0, masked=True)]))
     assert verdict["status"] == STATUS_UNKNOWN
-    assert verdict["action_counts"] == []
+    assert verdict["action_counts"] == [None, None]
     assert any("redacted" in r for r in verdict["reasons"])
 
 
@@ -189,7 +189,7 @@ def test_cli_rejects_invalid_json(tmp_path):
 def test_main_accepts_stdin(monkeypatch):
     monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(
         json.dumps(doc(agent=[agent_line(0), agent_line(0), agent_line(0)]))))
-    assert main(["--json"]) == 0
+    assert main(["--json"]) == 1
 
 
 # --- log-redaction repair -------------------------------------------------
@@ -247,3 +247,60 @@ def test_unrecoverable_json_still_fails_loudly(tmp_path):
     proc = subprocess.run([sys.executable, str(TOOL), str(path)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 2
+
+
+@pytest.mark.parametrize('counts,status,zero_run', [
+    ([5, None], STATUS_UNKNOWN, 0),
+    ([0, None, 0, 0], STATUS_UNKNOWN, 2),
+    ([None, 0, 0, 0], STATUS_STALLED, 3),
+    ([None, 5], STATUS_ACTING, 0),
+])
+def test_unknown_observations_preserve_order(counts, status, zero_run):
+    verdict = evaluate(doc(agent=[agent_line(c, masked=c is None) for c in counts]))
+    assert verdict['status'] == status
+    assert verdict['action_counts'] == counts
+    assert verdict['action_count_latest'] == counts[-1]
+    assert verdict['trailing_zero_run'] == zero_run
+
+
+@pytest.mark.parametrize('counts', [[5], [0, 0, 0]])
+@pytest.mark.parametrize('active_game', ['sorengame', None, ''])
+def test_inactive_corner_never_uses_residual_logs(counts, active_game):
+    verdict = evaluate(doc(agent=[agent_line(c) for c in counts], active_game=active_game))
+    assert verdict['status'] == STATUS_UNKNOWN
+
+
+def test_numeric_repair_preserves_quoted_masks_and_escaped_strings():
+    strings = ['***', '123***45', 'quote " ***', r'literal \u6***6',
+               r'backslash \\ then ***']
+    raw = json.dumps({'text': strings})[:-1] + ', "age":12***3}'
+    fixed = json.loads(_repair(raw))
+    assert fixed == {'text': strings, 'age': None}
+
+
+def test_repair_does_not_salvage_arbitrary_invalid_tokens():
+    with pytest.raises(ValueError):
+        json.loads(_repair('{"age":garbage***123}'))
+
+
+def test_numeric_repair_does_not_erase_latest_unknown_action(tmp_path):
+    payload = json.dumps(doc(agent=[agent_line(5), agent_line(None, masked=True)]))
+    payload = payload.replace('"active_generation": 888', '"active_generation": 8***8')
+    path = tmp_path / 'masked.json'
+    path.write_text(payload, encoding='utf-8')
+    proc = subprocess.run([sys.executable, str(TOOL), '--json', str(path)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 3, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result['status'] == STATUS_UNKNOWN
+    assert result['action_counts'] == [5, None]
+    assert result['action_count_latest'] is None
+
+
+def test_stalled_cli_is_nonzero(tmp_path):
+    path = tmp_path / 'stalled.json'
+    path.write_text(json.dumps(doc(agent=[agent_line(0)] * 3)), encoding='utf-8')
+    proc = subprocess.run([sys.executable, str(TOOL), '--json', str(path)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout)['status'] == STATUS_STALLED
