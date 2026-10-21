@@ -199,6 +199,16 @@ class Soren91CornerManager(RetroCornerManager):
     # 独自の固定文終了告知を finish 直後に呼ぶため、ベースの結果まとめ投稿は使わない。
     announce_end_result = False
 
+    # Catalog adapters whose durable rotation records ``settle_released_failure``
+    # may retire for this manager family (#2352, #2480). The automatic
+    # Meriken (soren91) slot owns ``soren91_corner.json`` and its released
+    # failed owner otherwise blocks every later dispatch with run_rotation's
+    # owner inspection, exactly like the NetHack slot (#2478). The dedicated
+    # ``soren91-corner recover-failed`` entry is gated on the
+    # ``recovery_required`` latch and cannot see the released ledger, so this
+    # widening is what lets the rotation retire the owner.
+    _released_owner_adapters = frozenset({"meriken"})
+
     def __init__(
         self,
         g: GlobalConfig,
