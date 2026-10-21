@@ -273,6 +273,91 @@ OPENCODE_CALLER_TITLES = {
 }
 
 
+TWITCH_OAUTH_STATUSES = frozenset({
+    "ok", "not_configured", "reauth_required", "network_error",
+    "validate_unavailable", "token_endpoint_unavailable", "token_response_invalid",
+    "env_unreadable", "token_format_rejected", "new_token_not_broadcaster",
+    "new_token_missing_scopes", "new_token_token_invalid", "io_error",
+    "consent_denied", "state_missing", "state_mismatch_or_expired",
+    "client_credentials_missing", "refresh_token_missing",
+})
+TWITCH_OAUTH_SCOPES = frozenset({
+    "channel:manage:broadcast", "chat:edit", "chat:read", "user:write:chat",
+    "clips:edit", "channel:manage:polls", "channel:manage:predictions",
+    "channel:read:goals",
+})
+
+
+def _twitch_oauth_timestamp(value):
+    """Normalize a producer timestamp, never forward arbitrary source text."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|\+00:00)", value):
+        return None, None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return stamp.isoformat(timespec="seconds"), stamp.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None, None
+
+
+def _collect_twitch_oauth(now):
+    """Read only the fixed status record, not credentials or live OAuth APIs.
+
+    These are historical producer observations, not evidence that a token is
+    currently valid/expired. Error records intentionally have no expiry facts.
+    """
+    result = {"present": False, "readable": False, "status": "unknown",
+              "action": None, "checked_at": None, "expires_at": None,
+              "age_sec": None, "checked_at_future": None,
+              "missing_scopes": [], "missing_scopes_known": False}
+    fd = directory = None
+    try:
+        fd, directory, before = _stream_title_open_fixed(
+            _program_state_dir(), ("twitch_oauth", "status.json"))
+        result["present"] = True
+        if before.st_size > 4096:
+            return result
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(4097)
+        after = os.fstat(fd)
+        named = os.stat("status.json", dir_fd=directory, follow_symlinks=False)
+        if (len(raw) > 4096
+                or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                or _stream_title_file_identity(after) != _stream_title_file_identity(named)):
+            return result
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            return result
+        result["readable"] = True
+        status = data.get("status")
+        if isinstance(status, str) and status in TWITCH_OAUTH_STATUSES:
+            result["status"] = status
+        action = data.get("action")
+        if isinstance(action, str) and action in {"authorized", "refreshed", "no_change"}:
+            result["action"] = action
+        result["checked_at"], checked = _twitch_oauth_timestamp(data.get("checked_at"))
+        result["expires_at"], _ = _twitch_oauth_timestamp(data.get("expires_at"))
+        if checked is not None:
+            result["checked_at_future"] = checked > now
+            if checked <= now:
+                result["age_sec"] = min(int(now - checked), 2**31 - 1)
+        scopes = data.get("missing_scopes")
+        if (isinstance(scopes, list) and len(scopes) <= len(TWITCH_OAUTH_SCOPES)
+                and all(isinstance(s, str) and s in TWITCH_OAUTH_SCOPES for s in scopes)):
+            result["missing_scopes"] = sorted(set(scopes))
+            result["missing_scopes_known"] = True
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, RecursionError, _StreamTitleUnsafe):
+        result["present"] = True
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    return result
+
+
 def _collect_opencode_retention(soren, now):
     """Project only bounded enums/numbers; never forward exception or DB text."""
     OPENCODE_RETENTION_TIMER = _REG.OPENCODE_RETENTION_TIMER
@@ -11566,6 +11651,7 @@ def main(argv):
         "status": _severity(workers, queues, ai, improvement, corners),
         "meta": meta,
         "stream_title_sync": title_sync,
+        "twitch_oauth": _collect_twitch_oauth(now),
         "stream_title_attempts": _collect_stream_title_attempts(
             soren, _program_state_dir(), now, title_sync
         ),

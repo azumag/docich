@@ -1051,6 +1051,23 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
 
+## Twitch OAuth status observation
+
+`twitch_oauth` は固定の `state_dir/twitch_oauth/status.json` だけを最大4096 bytesで読み、
+`present/readable`、固定enumの `status/action`、UTC日時の `checked_at/expires_at`、
+有界な `age_sec`、`checked_at_future`、既知scopeだけの `missing_scopes` と
+`missing_scopes_known` を返す。未知・不正なscope一覧は空配列かつknown=falseであり、
+scope不足なしの証明にはしない。親・末端symlink、非regular、複数hardlink、他者書込可能な
+state directory/file、読取中のfile差替え・変更は拒否する。
+
+これは記録時点の観測であり、現在のトークン有効性や実失効を判定しない。エラー時のproducerは
+expiryを保持しないため、nullを失効と解釈しない。未来のchecked_atはage=null・future=true、
+不正日時はnullとする。古い記録を新しい正常状態へ読み替えない。
+login、token、secret、認可URL、任意文字列・pathは出力しない。OAuth moduleの操作や外部API、
+認証ファイル、unit照会・設定、通知、全体severityは変更しない。#2636のdiagnostics投影のみで、
+owner通知・連続一時障害の実失効判定・本番受入は別途残る。出力は1KiB未満、既存の56KiB
+hard ceilingを維持し、極端な過大envelopeでは既存のoutput_omitted規則に従う。
+
 ## OpenCode retention health
 
 `opencode_retention` は固定stateの `attempt` / `default` / `worker` と専用timerのactive/enabledを返す。
