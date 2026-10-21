@@ -832,6 +832,11 @@ def _egg_plan(mem, cur):
             'ally_profile': reference.general_profile(
                 'しゅじんこう' if cur.get('ally') == NAME else
                 (cur.get('ally') if isinstance(cur.get('ally'), str) else None))}
+    # The display validates profile identity against the live battle name.
+    # Hero stats use the canonical table row, but its label and carried max
+    # HP must match the value used by the battle plan.
+    if cur.get('ally') == NAME and plan['ally_profile'] is not None:
+        plan['ally_profile'].update(name=NAME, max_hp=ally_max)
     plan['verdict'] = ('excluded' if excluded == 'boss'
                        else 'unknown' if excluded or total is None or egg_state == 'unknown'
                        else 'no_egg' if egg_state == 'none'

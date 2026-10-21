@@ -406,3 +406,18 @@ def test_non_threatening_egg_owner_has_documented_verdict():
     plan = state['battle']['egg_plan']
     assert plan['has_egg'] is True and plan['threat'] is False
     assert plan['verdict'] == 'not_threat' and plan['dropper'] is None
+
+
+@pytest.mark.parametrize('maximum', [90, 120, None])
+def test_named_hero_profile_matches_display_identity_and_observed_maximum(maximum):
+    cur = {'enemy': 'クミン', 'ally': policy.NAME, 'step': None, 'side': 'attack',
+           'ally_hp': 20, 'enemy_hp': 20, 'ref_ally_hp': maximum}
+    state = {'chapter': 1, 'battle': cur}
+    plan = policy._egg_plan(state, cur)
+    profile = plan['ally_profile']
+    # Soren rejects a profile whose name differs from the displayed ally.
+    assert profile['name'] == cur['ally'] == plan['ally']
+    assert profile['max_hp'] == plan['ally_max_hp'] == (maximum or 90)
+    canonical = reference.general_profile('しゅじんこう')
+    assert profile['combat'] == canonical['combat']
+    assert canonical['name'] == 'しゅじんこう'
