@@ -681,37 +681,62 @@ def _reserve_general_repair(mem, shop, gold):
 
 
 def _hero_repair_defer_reason(mem):
-    """Only a fresh, same-run inability can release the hero's house fee.
+    """Keep an observed deferral until repair readiness is positively rechecked.
 
-    Unknown HP/location and merely being outside the house are not proof of
-    inability. Castle residents can be dispatched; an active trip owns its fee.
+    The latch is a spending policy, not a claim that old HP is still current.
+    Monthly roster-only reads do not invalidate it. A different run/chapter
+    does, and an active purchase/trip always retains ownership of its cash.
     """
     from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
+    chapter = mem.get('chapter')
+    key = 'hero_repair_deferral'
+    deferred = mem.get(key)
+    if (identity is None or type(chapter) is not int
+            or not isinstance(deferred, dict)
+            or deferred.get('run_identity') != identity
+            or deferred.get('chapter') != chapter
+            or deferred.get('reason') not in ('wounded', 'moving')
+            or type(deferred.get('observed_tick')) is not int
+            or type(mem.get('tick')) is not int
+            or not 0 <= deferred['observed_tick'] <= mem['tick']
+            or not isinstance(deferred.get('month'), str) or not deferred['month']):
+        mem.pop(key, None)
+        deferred = None
     info = (mem.get('house_eggs') or {}).get(NAME)
+    now = mem.get('tick')
+    if (identity is not None and type(chapter) is int and isinstance(info, dict)
+            and info.get('observed_run_identity') == identity
+            and info.get('general') == NAME
+            and info.get('observed_chapter') == chapter
+            and mem.get('month') and info.get('month') == mem.get('month')
+            and type(info.get('observed_tick')) is int and type(now) is int
+            and 0 <= info['observed_tick'] <= now
+            and now - info['observed_tick'] <= 400):
+        hp, maximum = info.get('hp'), info.get('max_hp')
+        known_hp = (type(hp) is int and type(maximum) is int
+                    and maximum > 0 and 0 <= hp <= maximum)
+        moving = (info.get('location_observed') is True
+                  and info.get('location') == 'field'
+                  and info.get('camp_observed') is not True)
+        ready = (known_hp and hp == maximum
+                 and info.get('location_observed') is True
+                 and (info.get('location') == 'castle'
+                      or info.get('camp_observed') is True))
+        if info.get('broken') is False or (info.get('broken') is True and ready):
+            mem.pop(key, None)
+            deferred = None
+        elif info.get('broken') is True and ((known_hp and hp < maximum) or moving):
+            deferred = {'run_identity': dict(identity), 'chapter': chapter,
+                        'reason': 'wounded' if known_hp and hp < maximum else 'moving',
+                        'observed_tick': info['observed_tick'], 'month': info['month']}
+            mem[key] = deferred
     state = mem.get('house') or {}
-    if (identity is None or not isinstance(info, dict)
-            or info.get('observed_run_identity') != identity
-            or info.get('general') != NAME or info.get('broken') is not True
-            or type(mem.get('chapter')) is not int
-            or info.get('observed_chapter') != mem.get('chapter')
-            or not mem.get('month') or info.get('month') != mem.get('month')
-            or mem.get('month_sub')
-            or (state.get('general') == NAME and (
-                state.get('phase') not in (None, 'close')
-                or any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending'))))):
+    if (mem.get('month_sub') or (state.get('general') == NAME and (
+            state.get('phase') not in (None, 'close')
+            or any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending'))))):
         return None
-    observed, now = info.get('observed_tick'), mem.get('tick')
-    if not (type(observed) is int and type(now) is int and 0 <= observed <= now
-            and now - observed <= 400):
-        return None
-    hp, maximum = info.get('hp'), info.get('max_hp')
-    if type(hp) is int and type(maximum) is int and 0 <= hp < maximum:
-        return 'wounded'
-    if (info.get('location_observed') is True and info.get('location') == 'field'
-            and info.get('camp_observed') is not True):
-        return 'moving'
-    return None
+    return deferred['reason'] if deferred is not None else None
 
 
 def _hero_repair_floor(mem):
@@ -730,8 +755,9 @@ def _reserve_hero_repair(mem, shop, gold):
             _record(mem, 'hero_repair_funds_released', month=shop.get('key'),
                     observed_metric={'released': released, 'building_floor_released': max(50, released),
                                      'gold': gold, 'condition': reason,
-                                     'observed_tick': (mem.get('house_eggs') or {})[NAME]['observed_tick']},
-                    reason='同一ラン・章・月の新しい観測で修理不能を確認したため主人公の修理予約を解放する')
+                                     'observed_tick': mem['hero_repair_deferral']['observed_tick'],
+                                     'observation_month': mem['hero_repair_deferral']['month']},
+                    reason='同一ラン・章で確認した修理不能による解放を、次の修理可能確認まで維持する')
         return
     shop.pop('hero_repair_deferred', None)
     if not _hero_egg_broken(mem) or shop.get('hero_repair_reserve'):

@@ -287,6 +287,8 @@ def _observe_status(screen, mem):
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
         receipts.status_observed(mem, mem['house_eggs'][name])
+        from ..strategy.economy import _hero_repair_defer_reason
+        _hero_repair_defer_reason(mem)
         _record(mem, 'egg_seen', observed_metric=info, reason='将軍のステータスで卵の状態を確認')
     return info
 
