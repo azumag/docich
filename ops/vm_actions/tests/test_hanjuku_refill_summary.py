@@ -177,6 +177,17 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 self.assertEqual(mem, before)
 
+    def test_malformed_house_never_promotes_a_valid_raw_roster(self):
+        self.policy['recruit_roster'] = {
+            'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+            'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        self.policy['roster_survey'] = {'receipt': deepcopy(self.policy['recruit_roster'])}
+        for house in (1, True, ['roster_started'], 'roster_started', 0, False, [], ''):
+            with self.subTest(house=house):
+                self.policy['house'] = house
+                self.assertEqual(self.module._project_hanjuku_refill(
+                    self.policy, OWNER)['roster'], 'unavailable')
+
     def test_scope_comparison_rejects_boolean_aliases(self):
         self.policy['chapter'] = 1
         for key in ('soldiers_seen_scope',):

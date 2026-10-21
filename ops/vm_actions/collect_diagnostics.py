@@ -8721,7 +8721,10 @@ def _hanjuku_refill_roster(mem, same_identity, chapter, month):
                         (not surveyed or len(n) <= 32 and '\ufffd' not in n) for n in names)
                 and len(set(names)) == len(names))
 
-    survey, house = mem.get('roster_survey'), mem.get('house') or {}
+    house = mem.get('house')
+    if house is not None and not isinstance(house, dict):
+        return None
+    survey, house = mem.get('roster_survey'), house or {}
     if isinstance(house, dict) and 'roster_started' not in house and isinstance(survey, dict):
         receipt, scope = survey.get('receipt'), survey.get('scope')
         statuses, dirty = survey.get('statuses'), survey.get('dirty')
