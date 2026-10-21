@@ -1154,6 +1154,15 @@ ActionsのmaskでJSONやPIDが欠落した場合も、不明値を補って成�
 PID一致だけで公開映像・音声・ユーザー休止維持を証明したことにはせず、それぞれの
 受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。
 
+半熟の補充要約 `hanjuku_tactical.refill.roster` は、募集の `roster.fresh` と同じraw/completed-survey選択契約を、collector内で
+構造検証した名簿の確認状態です（botモジュールの追加importなし）。型を含むscope照合と
+契約比較テストを行います。`unavailable` は有効な現在名簿なし、
+`partial` は全件確認未完、`complete_no_pending` は全件確認済み・在籍確認待ちなし、
+`complete_all_seen` は全件確認済み・待ち対象が全て名簿に存在、`complete_missing` は
+全件確認済みでも待ち対象の一部が名簿に存在しない状態です。将軍名・人数・理由本文は
+公開せず、不正な待ち対象は `unknown` とします。この診断は待ちフラグを解除せず、
+解雇や戦死を推定しません。出力予算による圧縮時も再検証して固定enumだけを残します。
+
 部分取得（scan_complete=false）時だけ、shared_runtime_pids.failure_stage に固定の検証段階名を出します。例は producer_sources、stream_process、audio_process、encoder_process、pipeline_receipt、native_encoder_process、guardian_process、source_recheck、identity_recheck です。例外本文・argv・ファイルパスは出しません。失敗段階は原因の断定やプロセス停止の証明ではなく、追加調査箇所の手掛かりです。成功時のschema 2と比較契約は不変で、部分取得同士を一致と扱いません。
 
 固定producer記録の取得で拒否した場合は、`failure_source`（stream/audio/identities/unknown）と

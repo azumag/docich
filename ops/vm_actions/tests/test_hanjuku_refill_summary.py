@@ -20,7 +20,7 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.module = load_collector()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.runtime = self.root / 'runtimes' / OWNER['runtime_id']
         self.runtime.mkdir(parents=True)
         self.policy = {'_run_identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
@@ -76,11 +76,11 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(result, ensure_ascii=False).encode()), self.module.HARD_JSON_BYTES)
         self.assertNotIn('PRIVATE', json.dumps(result))
 
-    def test_summary_stays_below_four_hundred_bytes(self):
+    def test_summary_stays_below_four_hundred_fifty_bytes(self):
         value = {key: max(allowed, key=len) for key, allowed in self.module._HANJUKU_REFILL_ENUMS.items()}
         value['scope'] = 'current'
         value.update({key: False for key in self.module._HANJUKU_REFILL_BOOLS})
-        self.assertLessEqual(len(json.dumps(value, sort_keys=True).encode()), 400)
+        self.assertLessEqual(len(json.dumps(value, sort_keys=True).encode()), 450)
 
     def test_current_check_result_and_recruit_status_keep_writer_enums(self):
         self.policy['army_count_check'].update(stage='closing', result='unverified')
@@ -93,6 +93,100 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.write_records(); refill = self.collect()['refill']
         self.assertEqual(refill['check_result'], 'unknown')
         self.assertEqual(refill['recruit'], 'unknown')
+
+    def test_roster_gate_uses_current_membership_without_exposing_names(self):
+        self.policy['recruit_roster'] = {
+            'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+            'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        for pending, expected in ((None, 'complete_no_pending'),
+                                  (['PRIVATE-name'], 'complete_all_seen'),
+                                  (['PRIVATE-other'], 'complete_missing')):
+            self.policy['recruit_payroll_pending'] = pending
+            before = deepcopy(self.policy)
+            self.write_records()
+            refill = self.collect()['refill']
+            self.assertEqual(refill['roster'], expected)
+            self.assertNotIn('PRIVATE', json.dumps(refill))
+            self.assertEqual(self.policy, before)
+        self.policy['recruit_roster']['complete'] = False
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'partial')
+        self.policy['recruit_roster']['tick'] = -400
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
+        self.policy['recruit_roster'].update(tick=90, complete=True, month='3-2')
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
+        self.policy['recruit_roster'].update(month='3-3', identity={**OWNER, 'generation': 888})
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
+
+    def test_roster_scope_rejects_numeric_type_aliases(self):
+        active = {**OWNER, 'generation': 1}
+        self.policy.update(_run_identity=active, chapter=1)
+        receipt = {'identity': deepcopy(active), 'chapter': 1, 'month': '3-3',
+                   'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        for field, value in (('generation', 1.0), ('generation', True),
+                             ('chapter', 1.0), ('chapter', True)):
+            with self.subTest(field=field, value=value):
+                seen = deepcopy(receipt)
+                if field == 'generation':
+                    seen['identity'][field] = value
+                else:
+                    seen[field] = value
+                self.policy['recruit_roster'] = seen
+                refill = self.module._project_hanjuku_refill(self.policy, active)
+                self.assertEqual(refill['roster'], 'unavailable')
+        self.policy['recruit_roster'] = receipt
+        self.assertEqual(self.module._project_hanjuku_refill(
+            self.policy, active)['roster'], 'complete_all_seen')
+
+    def test_roster_projection_matches_strategy_raw_and_completed_contract(self):
+        from docich.hanjuku.os_layer.roster import fresh
+        receipt = {'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+                   'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        survey = {'schema': 1, 'identity': deepcopy(OWNER), 'scope': [2, '3-3'],
+                  'receipt': deepcopy(receipt), 'dirty': {},
+                  'statuses': {'PRIVATE-name': {'general': 'PRIVATE-name', 'month': '3-3',
+                               'observed_chapter': 2, 'observed_tick': 95, 'broken': False}}}
+        cases = [dict(recruit_roster=receipt), dict(roster_survey=survey),
+                 dict(roster_survey=survey, tick=1000),
+                 dict(roster_survey=survey, house={'roster_started': 99}),
+                 dict(roster_survey=survey, house={'roster_started': 99}, recruit_roster=receipt)]
+        for field, value in (('schema', 2), ('scope', [2, '3-2']),
+                             ('identity', {**OWNER, 'generation': 888}),
+                             ('statuses', {}), ('dirty', {'PRIVATE-other': []}),
+                             ('dirty_revisions', {'PRIVATE-name': -1}),
+                             ('read_revisions', {'PRIVATE-name': True})):
+            invalid = deepcopy(survey); invalid[field] = value
+            cases.extend([dict(roster_survey=invalid),
+                          dict(roster_survey=invalid, recruit_roster=receipt)])
+        for field, value in (('observed_tick', 89), ('observed_chapter', 1),
+                             ('month', '3-2'), ('broken', 0)):
+            invalid = deepcopy(survey); invalid['statuses']['PRIVATE-name'][field] = value
+            cases.append(dict(roster_survey=invalid))
+        for changes in cases:
+            with self.subTest(changes=changes):
+                mem = deepcopy(self.policy); mem.update(deepcopy(changes))
+                before = deepcopy(mem)
+                expected = fresh(mem)
+                same_identity = lambda value: (isinstance(value, dict) and value == OWNER
+                    and value.keys() == OWNER.keys()
+                    and all(type(value[k]) is type(v) for k, v in OWNER.items()))
+                actual = self.module._hanjuku_refill_roster(mem, same_identity, 2, '3-3')
+                self.assertEqual(actual, expected)
+                self.assertEqual(mem, before)
+
+    def test_malformed_house_never_promotes_a_valid_raw_roster(self):
+        self.policy['recruit_roster'] = {
+            'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+            'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        self.policy['roster_survey'] = {'receipt': deepcopy(self.policy['recruit_roster'])}
+        for house in (1, True, ['roster_started'], 'roster_started', 0, False, [], ''):
+            with self.subTest(house=house):
+                self.policy['house'] = house
+                self.assertEqual(self.module._project_hanjuku_refill(
+                    self.policy, OWNER)['roster'], 'unavailable')
 
     def test_scope_comparison_rejects_boolean_aliases(self):
         self.policy['chapter'] = 1
