@@ -32,7 +32,7 @@ TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', '
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
 
-BIJIN_MIN_GOLD = 1000   # 美女の依頼を断る所持金のしきい値（オーナー指示 2026-10-15）
+BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
 BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
@@ -200,19 +200,9 @@ def _bijin_gold(screen: Screen):
 
 
 def bijin_guard_step(screen: Screen, mem, *, phase=None):
-    """美女の依頼: 所持金1000G以下・読取不明では必ず断る。
+    """1000G以上なら依頼を受けて家へ進み、それ以外・読取不明は断る。
 
-    Owner (2026-10-15): 美女イベントでお金に余裕がないとき（少なくとも
-    1000G以下）は必ず「いかん」で断る。依頼文は「〜お願いがあって来たの……
-    聞いてくれる?」（倒転王国 monthlyevent.html）。承諾側 うんデヘヘ！ を選ぶと
-    どれか ほしいなー → 香水100G/車200G/家500G の購入メニューへ進み、
-    半熟値が上がるのは家500Gだけで他は何も起きない。実機のかな書きに合わせ、
-    断り行は いかんッ/けえんな/けーんな を探す。
-
-    1000G超の裏付けが読めたときだけ従来の経路（承諾して最安品）へ返し、
-    それ以外は断り行を読んで選ぶ。断り行・現在行を確定できないときは
-    ブラインドAを押さず保留する（ゴニンジャーと同じフェイルセーフ）。
-    依頼文の読み上げ頁（選択肢がまだ見えない）は既存の進行に任せる。
+    選択肢と現在行を確認できない間は決定せず、既存の画面所有境界を保つ。
     """
     guard = mem.get('bijin_guard')
     if isinstance(guard, dict):
@@ -227,7 +217,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             _record(mem, 'bijin_request_seen', screen=screen.kind,
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
                                      'gold': _bijin_gold(screen)},
-                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以下・読取不明なら必ず断る')
+                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以上なら家へ進み、未満・読取不明なら断る')
         guard['tick'] = tick
     if not isinstance(guard, dict):
         return None
@@ -241,9 +231,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         mem.pop('bijin_guard', None)
         return None
     gold = _bijin_gold(screen)
-    if gold is not None and gold > BIJIN_MIN_GOLD:
-        mem.pop('bijin_guard', None)  # 1000G超は従来どおり（承諾側。購入品の改善は別課題）
-        return None
+    accept = gold is not None and gold >= BIJIN_MIN_GOLD
     if not _is_bijin_request(screen.text):
         if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
             # A positively readable page without the request wording, without
@@ -264,7 +252,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             # request could be confirmed), so keep the pending episode held
             # instead of returning None and letting the generic A through.
             # Release only happens on an explicit end condition: a read
-            # decline/accept row, a gold reading over the floor, a new monthly
+            # decline/accept row, a new monthly
             # owner or a non-dialogue/battle/map screen.
             guard['held'] = True
             if not guard.get('unread_question_recorded'):
@@ -280,7 +268,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
     guard['choice_seen'] = True
     move = None
-    for label in BIJIN_DECLINE_TOKENS:
+    for label in (('うんデヘヘ', 'うむッ') if accept else BIJIN_DECLINE_TOKENS):
         move = menu_to(screen, label, exact=False)
         if move is not None:
             break
@@ -290,18 +278,18 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             guard['unread_choice_recorded'] = True
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'bijin_guard': True, 'gold': gold, 'text': screen.text[-80:]},
-                    reason='美女の依頼の断り行（いかんッ/けえんな）と現在行を確定できないため決定せず再観測')
+                    reason='美女の依頼の選択行と現在行を確定できないため決定せず再観測')
         return []
     if move != 'here':
         return [move]
     guard['chosen'] = True
     cur = _current(screen)
     _record(mem, 'prompt', choice=(cur[2] if cur else label), prompt=screen.text[-60:],
-            strategy_variant=('decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
+            strategy_variant=('accept_bijin_house' if accept else
+                              'decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
             observed_metric={'gold': gold},
-            reason=('所持金{}Gが1000G以下と読めたため美女の購入依頼を断る（いかん）'.format(gold)
-                    if gold is not None else
-                    '所持金を読めないため美女の購入依頼を見送る（1000G超を確認できるまでは買わない）'))
+            reason=('所持金1000G以上を確認したため依頼を受けて家を選ぶ' if accept else
+                    '所持金1000G以上を確認できないため依頼を断る'))
     return [pad('a')]
 
 
@@ -609,8 +597,8 @@ def observe_events(screen: Screen, mem):
 
 
 def gift_step(screen: Screen, mem):
-    """「なにを かいあたえますか?」: the chart resets here; the bot cannot, so
-    it buys the cheapest listed item and records the deviation."""
+    """美女は1000G以上で家を選ぶ。それ以外の贈り物は従来の方針。"""
+    mem.pop('bijin_gift_hold', None)
     items = []
     for line in screen.lines:
         # The live gift prompt shares the first price row. Restrict the
@@ -619,6 +607,28 @@ def gift_step(screen: Screen, mem):
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))
+    bijin = ('どれかほしい' in screen.text.replace(' ', '')
+             or any(name in ('こうすい', 'くるま', 'いえ') for _, name in items))
+    if bijin:
+        mem['bijin_gift_hold'] = True
+        gold = _bijin_gold(screen)
+        if gold is None or gold < BIJIN_MIN_GOLD:
+            for label in BIJIN_DECLINE_TOKENS:
+                move = menu_to(screen, label, exact=False)
+                if move is not None:
+                    return [pad('a')] if move == 'here' else [move]
+            return []  # Already in the item menu: never purchase without the cash condition.
+        houses = [(price, name) for price, name in items if name == 'いえ' and price == 500]
+        if len(houses) != 1:
+            return []
+        price, name = houses[0]
+        move = menu_to(screen, name, exact=False)
+        if move == 'here':
+            _record(mem, 'gift', strategy_variant='bijin_house', item=name, price=price,
+                    gold=gold, observed_metric={'price': price, 'affordable': True},
+                    reason='所持金1000G以上のため半熟値を上げる家を選ぶ')
+            return [pad('a')]
+        return [move] if move else []
     if not items:
         return []
     price, name = min(items)
