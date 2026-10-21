@@ -344,7 +344,7 @@ class TestRunningView(StreamCategoryTestBase):
             " pathlib.Path(a[a.index('-o')+1]).write_text('')\n"
             " print('204',end='')\n"
             "elif any('oauth2/validate' in x for x in a):\n"
-            " print(json.dumps({'client_id':'test','login':'test','scopes':['channel:manage:broadcast']}))\n"
+            " print(json.dumps({'client_id':'test','login':'test','user_id':'test-only','scopes':['channel:manage:broadcast']}))\n"
             "else:\n"
             " print(json.dumps({'data':[{'title':'OLD PRIVATE WORK','game_id':'1','game_name':'Old'}]}))\n",
             encoding="utf-8",
