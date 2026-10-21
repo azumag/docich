@@ -123,6 +123,19 @@ class SpeechConfig:
             candidate = repo_root / "config" / "voicevox_word_replace.txt"
             if candidate.is_file():
                 replace_file = candidate
+            elif env.get("VOICEVOX_WORD_REPLACE_FILE"):
+                # The Soren wrapper explicitly passes its dictionary. Keep
+                # the repo-local override first and accept only the canonical
+                # submodule file, not arbitrary paths or symlink escapes.
+                try:
+                    candidate = Path(env["VOICEVOX_WORD_REPLACE_FILE"]).resolve(strict=True)
+                    expected = repo_root.resolve() / "games/soviet_now/config/voicevox_word_replace.txt"
+                    # Do not resolve expected: a relocated submodule/config or
+                    # dictionary symlink must not broaden the allowed location.
+                    if candidate == expected and candidate.is_file():
+                        replace_file = candidate
+                except (OSError, RuntimeError, ValueError):
+                    pass  # An unavailable/invalid optional dictionary stays unused.
         elif env.get("VOICEVOX_WORD_REPLACE_FILE"):
             replace_file = Path(env["VOICEVOX_WORD_REPLACE_FILE"])
 
