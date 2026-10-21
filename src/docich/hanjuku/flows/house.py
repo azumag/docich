@@ -275,6 +275,18 @@ def _survey_work(mem):
                for c in owned)
 
 
+def observe_hero_repair_status(info, mem):
+    """Remember a validated named reading without changing recall/receipt state."""
+    from ..strategy.economy import _hero_repair_defer_reason
+    from ..os_layer.world import NAME
+    if isinstance(info, dict) and info.get('general') == NAME:
+        mem.setdefault('house_eggs', {})[NAME] = {
+            **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
+            'observed_tick': mem.get('tick'),
+            'observed_run_identity': receipts.run_identity(mem.get('_run_identity'))}
+        _hero_repair_defer_reason(mem)
+
+
 def _observe_status(screen, mem):
     info = general_status(screen)
     if info:
@@ -287,8 +299,7 @@ def _observe_status(screen, mem):
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
         receipts.status_observed(mem, mem['house_eggs'][name])
-        from ..strategy.economy import _hero_repair_defer_reason
-        _hero_repair_defer_reason(mem)
+        observe_hero_repair_status(info, mem)
         _record(mem, 'egg_seen', observed_metric=info, reason='将軍のステータスで卵の状態を確認')
     return info
 
@@ -1397,6 +1408,7 @@ def _field_step(screen, mem, frame):
             return []
         if info['general'] != name or (not state.get('returning') and not info['broken']):
             return _exit(mem, '本人の卵割れまたは帰還対象を確認できないため操作を中止')
+        observe_hero_repair_status(info, mem)
         if not state.get('returning') and not _repair_hp_ready(info):
             state['returning'] = True
             _record(mem, 'recall_needed', observed_metric={'hp': info.get('hp'), 'max_hp': info.get('max_hp')},

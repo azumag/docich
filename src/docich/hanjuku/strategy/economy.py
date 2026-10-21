@@ -687,29 +687,32 @@ def _hero_repair_defer_reason(mem):
     Monthly roster-only reads do not invalidate it. A different run/chapter
     does, and an active purchase/trip always retains ownership of its cash.
     """
+    import re
     from ..os_layer.roster import run_identity
+    def valid_month(value):
+        return isinstance(value, str) and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', value) is not None
     identity = run_identity(mem.get('_run_identity'))
     chapter = mem.get('chapter')
     key = 'hero_repair_deferral'
     deferred = mem.get(key)
     if (identity is None or type(chapter) is not int
             or not isinstance(deferred, dict)
-            or deferred.get('run_identity') != identity
-            or deferred.get('chapter') != chapter
+            or run_identity(deferred.get('run_identity')) != identity
+            or type(deferred.get('chapter')) is not int or deferred.get('chapter') != chapter
             or deferred.get('reason') not in ('wounded', 'moving')
             or type(deferred.get('observed_tick')) is not int
             or type(mem.get('tick')) is not int
             or not 0 <= deferred['observed_tick'] <= mem['tick']
-            or not isinstance(deferred.get('month'), str) or not deferred['month']):
+            or not valid_month(deferred.get('month'))):
         mem.pop(key, None)
         deferred = None
     info = (mem.get('house_eggs') or {}).get(NAME)
     now = mem.get('tick')
     if (identity is not None and type(chapter) is int and isinstance(info, dict)
-            and info.get('observed_run_identity') == identity
+            and run_identity(info.get('observed_run_identity')) == identity
             and info.get('general') == NAME
-            and info.get('observed_chapter') == chapter
-            and mem.get('month') and info.get('month') == mem.get('month')
+            and type(info.get('observed_chapter')) is int and info.get('observed_chapter') == chapter
+            and valid_month(mem.get('month')) and info.get('month') == mem.get('month')
             and type(info.get('observed_tick')) is int and type(now) is int
             and 0 <= info['observed_tick'] <= now
             and now - info['observed_tick'] <= 400):

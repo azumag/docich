@@ -178,3 +178,51 @@ def test_corrupt_persisted_deferral_cannot_release_money(field, value):
     mem['house_eggs'][p.NAME]['observed_tick'] = 0  # cannot recreate from stale evidence
     e._reserve_hero_repair(mem, mem['shop'], 65)
     assert mem['shop']['hero_repair_reserve'] == 50
+
+
+@pytest.mark.parametrize('source', ['observed', 'persisted'])
+@pytest.mark.parametrize('field', ['generation', 'chapter', 'month'])
+def test_boolean_identity_and_invalid_month_never_release(source, field):
+    mem = memory()
+    mem['_run_identity']['generation'] = 1
+    mem['chapter'] = 1
+    info = mem['house_eggs'][p.NAME]
+    info['observed_run_identity'] = dict(mem['_run_identity'])
+    info['observed_chapter'] = 1
+    if source == 'persisted':
+        e._reserve_hero_repair(mem, mem['shop'], 65)
+        target = mem['hero_repair_deferral']
+        info['observed_tick'] = 0
+        identity_key, chapter_key = 'run_identity', 'chapter'
+    else:
+        target = info
+        identity_key, chapter_key = 'observed_run_identity', 'observed_chapter'
+    if field == 'generation':
+        target[identity_key]['generation'] = True
+    elif field == 'chapter':
+        target[chapter_key] = True
+    else:
+        target['month'] = 'not-a-month'
+        mem['month'] = 'not-a-month'
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    assert mem['shop']['hero_repair_reserve'] == 50
+
+
+def test_actual_main_camp_observation_restores_repair_reservation():
+    from test_hanjuku_house import Canvas, parse
+    from docich.hanjuku.flows import camp_recheck
+    mem = memory(); e._reserve_hero_repair(mem, mem['shop'], 65)
+    mem.update(month='4-2', tick=1000)
+    canvas = Canvas()
+    canvas.text(56, 7, '2わ4ねん2のつき65G')
+    canvas.text(24, 39, p.NAME)
+    canvas.text(88, 39, 'しょうぐん')
+    canvas.text(24, 55, 'HP')
+    canvas.text(64, 55, '40/ 40 P')
+    canvas.text(24, 119, 'たまご')
+    canvas.text(56, 119, 'こわれている')
+    canvas.text(24, 151, 'キャンプしています')
+    camp_recheck.observe_camp_status(parse(canvas.frame()), mem)
+    assert 'hero_repair_deferral' not in mem
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    assert mem['shop']['hero_repair_reserve'] == 50
