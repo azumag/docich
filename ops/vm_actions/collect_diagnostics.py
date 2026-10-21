@@ -8677,6 +8677,8 @@ _HANJUKU_REFILL_ENUMS = {
     'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
     'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
     'planned': frozenset({'zero', 'positive', 'unknown'}),
+    'roster': frozenset({'unavailable', 'partial', 'complete_no_pending',
+                          'complete_all_seen', 'complete_missing', 'unknown'}),
     'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
                          'deferred_army', 'deferred_egg', 'deferred_cash', 'deferred_roster',
                          'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
@@ -8693,6 +8695,63 @@ def _compact_hanjuku_refill(value):
     out.update({key: value.get(key) if type(value.get(key)) is bool else None
                 for key in _HANJUKU_REFILL_BOOLS})
     return out
+
+
+def _hanjuku_refill_roster(mem, same_identity, chapter, month):
+    """Validate stored roster receipts without importing unverified bot code.
+
+    Mirrors roster.fresh's raw/completed-survey choice, with exact scope types.
+    Contract tests compare both paths with the strategy's read-only reader.
+    """
+    now = mem.get('tick')
+    if type(now) is not int:
+        return None
+
+    def valid(receipt, *, surveyed=False):
+        if not isinstance(receipt, dict):
+            return False
+        names, tick = receipt.get('names'), receipt.get('tick')
+        return (same_identity(receipt.get('identity'))
+                and type(receipt.get('chapter')) is int and receipt['chapter'] == chapter
+                and type(receipt.get('month')) is str and receipt['month'] == month
+                and type(tick) is int
+                and (0 <= tick <= now if surveyed else 0 <= now - tick < 400)
+                and isinstance(names, list) and 1 <= len(names) <= 32
+                and all(isinstance(n, str) and n and
+                        (not surveyed or len(n) <= 32 and '\ufffd' not in n) for n in names)
+                and len(set(names)) == len(names))
+
+    house = mem.get('house')
+    if house is not None and not isinstance(house, dict):
+        return None
+    survey, house = mem.get('roster_survey'), house or {}
+    if isinstance(house, dict) and 'roster_started' not in house and isinstance(survey, dict):
+        receipt, scope = survey.get('receipt'), survey.get('scope')
+        statuses, dirty = survey.get('statuses'), survey.get('dirty')
+        if (type(survey.get('schema')) is int and survey['schema'] == 1
+                and same_identity(survey.get('identity'))
+                and isinstance(scope, list) and len(scope) == 2
+                and type(scope[0]) is int and scope[0] == chapter
+                and type(scope[1]) is str and scope[1] == month
+                and valid(receipt, surveyed=True) and receipt.get('complete') is True
+                and isinstance(statuses, dict) and set(statuses) == set(receipt['names'])
+                and isinstance(dirty, dict) and set(dirty) <= set(receipt['names'])
+                and all(isinstance(fields, list) and all(isinstance(f, str) for f in fields)
+                        and set(fields) <= {'hp', 'location', 'egg'} for fields in dirty.values())
+                and all(isinstance(row, dict) and row.get('general') == name
+                        and row.get('month') == month
+                        and type(row.get('observed_chapter')) is int and row['observed_chapter'] == chapter
+                        and type(row.get('observed_tick')) is int
+                        and receipt['tick'] <= row['observed_tick'] <= now
+                        and type(row.get('broken')) is bool for name, row in statuses.items())
+                and all(isinstance(survey.get(key, {}), dict)
+                        and set(survey.get(key, {})) <= set(receipt['names'])
+                        and all(type(v) is int and 0 <= v <= 10**6
+                                for v in survey.get(key, {}).values())
+                        for key in ('dirty_revisions', 'read_revisions'))):
+            return receipt
+    receipt = mem.get('recruit_roster')
+    return receipt if valid(receipt) else None
 
 
 def _project_hanjuku_refill(mem, active):
@@ -8726,7 +8785,27 @@ def _project_hanjuku_refill(mem, active):
     repair_valid = all(type(n) is int and 0 <= n <= 1_000_000 for n in (hero, general))
     planned = shop.get('soldiers')
     outcome = shop.get('refill_outcome')
-    out = {'scope': 'current',
+    # Use the same read-only freshness contract as recruitment. Only the
+    # relationship is public; names and historical membership stay private.
+    roster_gate = 'unknown'
+    try:
+        seen = _hanjuku_refill_roster(mem, same_identity, chapter, month)
+        valid_pending = (pending is None or isinstance(pending, list)
+                         and len(pending) <= 32
+                         and all(isinstance(n, str) and n for n in pending))
+        if (seen is None or not same_identity(seen.get('identity'))
+                or type(seen.get('chapter')) is not int or seen['chapter'] != chapter
+                or type(seen.get('month')) is not str or seen['month'] != month):
+            roster_gate = 'unavailable'
+        elif seen.get('complete') is not True:
+            roster_gate = 'partial'
+        elif valid_pending:
+            roster_gate = ('complete_no_pending' if not pending else
+                           'complete_all_seen' if set(pending) <= set(seen['names'])
+                           else 'complete_missing')
+    except (ImportError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    out = {'scope': 'current', 'roster': roster_gate,
            'count': ('unknown' if not current else 'zero' if count == 0 else
                      'low' if count <= 20 else 'below_target' if count < 50 else 'enough'),
            'basis': mem.get('soldiers_seen_basis') if current else 'unknown',
