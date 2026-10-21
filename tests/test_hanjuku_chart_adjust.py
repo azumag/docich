@@ -534,14 +534,14 @@ def test_adjusted_month_purchases_replace_the_plan_and_record_recruit_gap():
     mem['_records'] = []
     header = {'chapter': 1, 'year': 1, 'month': 8, 'gold': 60}
     shop = policy._plan(mem, header)
-    # 60 - 2*24 would leave 12: under the wage reserve nothing goes to soldiers.
-    assert shop['items'] == [['クースカン', 2]] and shop['soldiers'] == 0
+    # 60 - 2*24 leaves 12, which now goes to soldiers (no wage hold).
+    assert shop['items'] == [['クースカン', 2]] and shop['soldiers'] == 12
     [plan] = decisions(mem, 'month_plan')
     assert plan['strategy_variant'] == 'chart_adjusted'
     assert plan['deviation_reason'] == 'recruit_owner_rule'   # chart count replaced by the owner rule
     # An uncovered month refills soldiers with the gold left minus the wage reserve.
     refill = policy._plan(mem, {**header, 'month': 9})
-    assert refill['items'] == [] and refill['soldiers'] == 60 - policy.WAGE_RESERVE
+    assert refill['items'] == [] and refill['soldiers'] == 50
     assert refill['variant'] == 'soldier_refill_only'
     # The base chart month still uses the base plan.
     mem['shop'] = None
@@ -986,18 +986,18 @@ def test_unpriced_adjusted_cards_resize_soldiers_from_gold_after_merchant():
     shop = policy._plan(mem, header)
     [plan] = decisions(mem, 'month_plan')
     assert plan['plan']['unpriced_cards'] == ['ダイチスイム']
-    assert shop['soldiers'] == 60 - policy.WAGE_RESERVE and shop['soldiers_from_gold']  # provisional only
+    assert shop['soldiers'] == 50 and shop['soldiers_from_gold']  # provisional only
     # The merchant really charged for the cards: 80G remain on screen.
     shop['merchant_done'] = True
     month = _text_screen('', 'month_menu')
     month.header = {**header, 'gold': 80}
     policy.month_step(month, mem)
     [recalc] = decisions(mem, 'soldier_plan_recalc')
-    assert shop['soldiers'] == 80 - policy.WAGE_RESERVE and recalc['observed_metric']['gold_after_merchant'] == 80
+    assert shop['soldiers'] == 50 and recalc['observed_metric']['gold_after_merchant'] == 80
     # Recomputed once; a later frame does not resize again.
     month.header = {**header, 'gold': 5}
     policy.month_step(month, mem)
-    assert shop['soldiers'] == 80 - policy.WAGE_RESERVE and len(decisions(mem, 'soldier_plan_recalc')) == 1
+    assert shop['soldiers'] == 5 and len(decisions(mem, 'soldier_plan_recalc')) == 1
 
 
 def test_soldier_recalc_holds_on_unreadable_gold_and_skips_when_broke():

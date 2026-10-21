@@ -186,13 +186,13 @@ def test_egg_drop_boundaries_use_a_strict_greater_than():
     assert reference.egg_drop_remainder(95) == 15
     assert reference.egg_drop_threshold(95) == 16
     # 卵落 = 余り は不成立、余り+1 で成立 (>= にしない)。
-    assert reference.egg_drop_prediction('デッドガン', 80)['drops'] is False
-    assert reference.egg_drop_prediction('ダイチスイム', 80)['drops'] is True
-    assert reference.egg_drop_prediction('グルミー', 95)['drops'] is False
+    assert reference.card_drop_prediction('デッドガン', 80)['drops'] is False
+    assert reference.card_drop_prediction('ダイチスイム', 80)['drops'] is True
+    assert reference.card_drop_prediction('グルミー', 95)['drops'] is False
     assert max(reference.EGG_DROP_VALUES.values()) == 15
     # 余り2 でも同じ境界 (ピッグローラー2 は不成立、ブラッキー3 は成立)。
-    assert reference.egg_drop_prediction('ピッグローラー', 50)['drops'] is False
-    assert reference.egg_drop_prediction('ブラッキー', 50)['drops'] is True
+    assert reference.card_drop_prediction('ピッグローラー', 50)['drops'] is False
+    assert reference.card_drop_prediction('ブラッキー', 50)['drops'] is True
 
 
 def test_unknown_data_never_becomes_a_zero_filled_prediction():

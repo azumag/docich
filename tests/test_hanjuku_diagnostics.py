@@ -176,3 +176,83 @@ def test_later_chapter_card_prediction_still_checks_generation_after_read(tmp_pa
     monkeypatch.setattr(d, '_read_hanjuku_record', read)
     out = d._collect_hanjuku_tactical(tmp_path, 110)
     assert out['status'] == 'identity_changed' and 'last_card_assessment' not in out
+
+
+def house_record(bot):
+    identity = dict(bot['decision_trace'])
+    bot['policy'].update(_run_identity=identity, chapter=2, month='4-5',
+        last_house_deferral={'identity': identity, 'chapter': 2, 'month': '4-5',
+                             'tick': 498, 'code': 'position_unread', 'phase': 'house_confirm',
+                             'reason': 'PRIVATE', 'general': 'PRIVATE'})
+    return bot['policy']['last_house_deferral']
+
+
+def test_house_deferral_survives_close_and_is_bounded_private_readonly(tmp_path):
+    file, bot = setup(tmp_path)
+    house_record(bot)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    before = file.read_bytes()
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['last_house_deferral'] == {'age_ticks': 2, 'code': 'position_unread', 'phase': 'house_confirm'}
+    assert 'PRIVATE' not in json.dumps(out) and 'private-lease' not in json.dumps(out)
+    assert file.read_bytes() == before
+
+
+@pytest.mark.parametrize('change', [dict(tick=501), dict(tick=99), dict(tick=True),
+    dict(chapter=True), dict(chapter=1), dict(month='4-4'), dict(identity={})])
+def test_old_or_malformed_house_deferral_hidden(tmp_path, change):
+    _, bot = setup(tmp_path); record = house_record(bot); record.update(change)
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) is None
+
+
+def test_house_deferral_identity_types_and_arbitrary_fields_rejected(tmp_path):
+    _, bot = setup(tmp_path); record = house_record(bot)
+    record.update(code=['SECRET'], phase={'SECRET': 1})
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) == {
+        'age_ticks': 2, 'code': 'unknown', 'phase': 'other'}
+    record['identity'] = {**record['identity'], 'generation': True}
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) is None
+
+
+def test_house_deferral_kept_in_budget_reduction(monkeypatch):
+    receipt = {'age_ticks': 2, 'code': 'alignment_limit', 'phase': 'house_confirm'}
+    payload = {'hanjuku_tactical': {'status': 'ok', 'castles': ['x'*2000],
+                                  'last_house_deferral': {**receipt, 'secret': 'PRIVATE'}},
+               'ai': {'recent_events': [], 'anomalous_components': {}}, 'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    text = d._diagnostics_budget(payload)
+    assert payload['hanjuku_tactical']['last_house_deferral'] == receipt
+    assert 'PRIVATE' not in text and len(text.encode()) <= 600
+
+
+def test_real_exit_receipt_reaches_projection_after_house_state_removed(tmp_path):
+    from docich.hanjuku.flows import house
+    _, bot = setup(tmp_path)
+    mem = bot['policy']
+    mem.update(_run_identity=dict(bot['decision_trace']), chapter=2, month='4-5',
+               house={'phase': 'house_confirm', 'age': 3, 'total': 12})
+    assert house._exit(mem, 'PRIVATE reason', diagnostic_code='position_unread') == []
+    assert mem['house']['phase'] == 'close'
+    mem.pop('house')
+    mem = json.loads(json.dumps(mem))
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
+        'age_ticks': 0, 'code': 'position_unread', 'phase': 'house_confirm'}
+
+
+@pytest.mark.parametrize('phase', ['castle_confirm', 'house_view', 'house_confirm'])
+def test_route_deferral_projects_only_in_its_fresh_scope(tmp_path, monkeypatch, phase):
+    from docich.hanjuku.flows import house
+    _, bot = setup(tmp_path)
+    mem = bot['policy']
+    mem.update(_run_identity=dict(bot['decision_trace']), month='4-5',
+               house={'phase': phase, 'source': 'PRIVATE'})
+    monkeypatch.setattr(house, '_house_route_problem', lambda _: ('PRIVATE', ['PRIVATE']))
+    assert house._defer_unsafe_house_route(mem)
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
+        'age_ticks': 0, 'code': 'route_unverified', 'phase': phase}
+    mem['tick'] += 401
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
+    mem['tick'] -= 401
+    mem['_run_identity'] = {**mem['_run_identity'], 'generation': 515}
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None

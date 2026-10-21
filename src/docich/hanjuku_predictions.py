@@ -193,6 +193,58 @@ def _load(root, seed):
     return state
 
 
+def _load_recoverable(root, seed):
+    """``_load`` for the owner-only recovery operator (#2216).
+
+    The ordinary tick must stay fail-closed, so a ledger it cannot validate is
+    never rewritten. That is exactly why a stalled round needs an operator: the
+    #2213 class is a record the module *itself* wrote and then refused. This
+    loader applies the same checks but classifies the durable terminal result
+    loosely, so a reviewed recovery can still cancel or sync the round it owns.
+
+    It stays strict about everything that decides *which* round is owned and
+    whether that ownership is well-formed: identity, thresholds, title, window,
+    nonce, status and the remote ids. It refuses anything else, and it never
+    repairs or rewrites the offending field.
+    """
+    state = read_record(root / FILE)
+    if not state:
+        return {'schema': 1, 'best_cleared': seed, 'round': None, 'mode': 'idle',
+                'next_poll_at': 0, 'last_poll_at': 0, 'error': None}
+    if (type(state.get('schema')) is not int or state['schema'] != 1
+            or state.get('mode') not in MODES or state.get('error') not in ERRORS | {None}):
+        raise ValueError('invalid predictions state')
+    progress.count(state.get('best_cleared'))
+    if state['best_cleared'] < seed:
+        state['best_cleared'] = seed
+    for key in ('next_poll_at', 'last_poll_at'):
+        _stamp(state.get(key))
+    row = state.get('round')
+    if row is not None:
+        progress.checked_identity(row)
+        winner(0, row.get('target'), row.get('middle'))
+        if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
+                or any(c not in '0123456789abcdef' for c in row['nonce'])
+                or type(row.get('attempted')) is not bool
+                or row.get('status') not in LIVE | DONE | {'INTENT'}
+                or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
+                or row.get('title') != _title(row['nonce'])
+                or row.get('outcome_titles')
+                   not in accepted_outcome_titles(row['target'], row['middle'])):
+            raise ValueError('invalid prediction intent')
+        if row.get('id') is not None:
+            ids = row.get('outcome_ids')
+            expected = len(row['outcome_titles'])
+            if (not isinstance(row['id'], str) or not 1 <= len(row['id']) <= 128
+                    or not isinstance(ids, list) or len(ids) != expected
+                    or len(set(ids)) != expected
+                    or not all(isinstance(i, str) and 1 <= len(i) <= 128 for i in ids)):
+                raise ValueError('invalid prediction ownership')
+        if row.get('result') is not None and not isinstance(row['result'], dict):
+            raise ValueError('invalid prediction result')
+    return state
+
+
 def _title(nonce):
     return f'半熟英雄：どこまでゲーム到達できるか？ #{nonce}'
 
@@ -290,6 +342,20 @@ def _no_contest(remote):
     """
     counted = _contested_outcomes(remote)
     return counted is not None and counted <= 1
+
+
+def _evidence_rank(remote):
+    """How much participation one candidate row proves; richer always wins.
+
+    A sparse ``CANCELED`` response that omits ``users``/``channel_points`` must
+    never be recorded in place of a source that still carries the counts: the
+    record would show 0 participants and 0 points while the real evidence is
+    deleted with the snapshot. Ranking keeps the best available source
+    regardless of the order the caller passes them in.
+    """
+    if _has_predictors(remote):
+        return 2
+    return 1 if _contested_outcomes(remote) is not None else 0
 
 
 def _record_settled(root, remote, now, client):
@@ -408,8 +474,7 @@ def _record_canceled(root, now, client, *, sources=()):
             leaderboard.extract(annotated)
         except leaderboard.LeaderboardError:
             raise APIError('invalid_response') from None
-        if candidate is None or (_has_predictors(annotated)
-                                 and not _has_predictors(candidate)):
+        if candidate is None or _evidence_rank(annotated) > _evidence_rank(candidate):
             candidate = annotated
     if candidate is None or not _has_predictors(candidate):
         prediction_id = next((s.get('id') for s in sources
@@ -419,7 +484,8 @@ def _record_canceled(root, now, client, *, sources=()):
             match = next((r for r in rows
                           if isinstance(r, dict) and r.get('id') == prediction_id), None)
             annotated = _canceled_candidate(match)
-            if annotated is not None and (candidate is None or _has_predictors(annotated)):
+            if annotated is not None and (candidate is None
+                                         or _evidence_rank(annotated) > _evidence_rank(candidate)):
                 candidate = annotated
     if candidate is None:
         raise APIError('invalid_response')

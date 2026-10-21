@@ -766,7 +766,7 @@ def _egg_inventory(mem, cur, kit):
             available, unavailable = carried - spent, None
         else:
             available, unavailable = 0, 'used'
-        prediction = reference.egg_drop_prediction(name, None)
+        prediction = reference.card_drop_prediction(name, None)
         rows.append({'name': name, 'id': prediction['id'],
                      'egg_drop': prediction['egg_drop'], 'drops': None,
                      'stock': count, 'carried': carried,
@@ -854,7 +854,7 @@ def _egg_plan(mem, cur):
     rows = _egg_inventory(mem, cur, kit)
     if total is not None:
         for row in rows:
-            prediction = reference.egg_drop_prediction(row['name'], total)
+            prediction = reference.card_drop_prediction(row['name'], total)
             row['drops'] = prediction['drops']
     plan['cards'] = rows
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。

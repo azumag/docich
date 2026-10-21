@@ -13,6 +13,8 @@ Sources:
 """
 from __future__ import annotations
 
+from docich.hanjuku_egg_reference import general_max_hp, general_debut_chapter
+
 # 切り札 basic stats: the whole gcgx kirihuda.html table (decimal ID 0..31).
 # Owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内部でデータとして持って」
 # → 全32札を保持し、gcgx kirihuda.html と https://wikiwiki.jp/hjksfc/切り札
@@ -342,6 +344,18 @@ GENERAL_STATS: dict[str, tuple[int, int, str, str, int]] = {
     'ヴィーナス': (82, 12, '3', 'スーパー', 2),  # 126
     'ゼウス': (85, 13, '0', 'ワンダー', 2),  # 127
 }
+
+# 騎馬 (wikiwiki 将軍ページの「馬」列、2026-10-20 確認)。ここに無い将軍は
+# 徒歩。騎馬は移動・突撃に有利なため、強制解雇の比較では同条件なら徒歩を先に
+# 弱いとみなす (Issue #2367)。
+GENERAL_HORSES: frozenset[str] = frozenset({
+    'ココット', 'ピスタチオ', 'カシュー', 'キッシュ', 'シェーブル', 'タルタル',
+    'ヘルメス', 'デーメーテール', 'ミュスカデ', 'エピィ', 'フェットチーネ',
+    'バーミセリ', 'フェデリーニ', 'バタール', 'バゲット', 'ブリオッシュ',
+    'バトウラ', 'ブレッツェル', 'マフィン', 'ベーグル', 'ブラウニー', 'マサラ',
+    'コンポート', 'グリッシーニ', 'オレガノ', 'エストラゴン', 'エッジ',
+    'ガーラント', 'バランタイン',
+})
 
 
 # gcgx shogun.html の将軍一覧から、GENERAL_STATS に無い表示項目だけを補う
@@ -834,7 +848,7 @@ def egg_drop_remainder(max_hp_sum: int) -> int:
     return max_hp_sum % EGG_DROP_MOD
 
 
-def egg_drop_prediction(card: str, max_hp_sum: int | None) -> dict:
+def card_drop_prediction(card: str, max_hp_sum: int | None) -> dict:
     """One card's display/decision prediction from the shared 卵落 arithmetic.
 
     ``drops`` is None whenever a required input is unknown; a missing value is
@@ -855,8 +869,7 @@ def can_drop_egg(card: str, max_hp_sum: int) -> bool:
     ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
     makes its summons unusable for the rest of the battle.
     """
-    value = EGG_DROP_VALUES.get(card)
-    return value is not None and value > max_hp_sum % EGG_DROP_MOD
+    return card_drop_prediction(card, max_hp_sum)['drops'] is True
 
 
 def egg_droppers(cards, max_hp_sum: int) -> list[str]:
@@ -867,6 +880,124 @@ def egg_droppers(cards, max_hp_sum: int) -> list[str]:
     """
     return sorted((card for card in dict.fromkeys(cards) if can_drop_egg(card, max_hp_sum)),
                   key=lambda card: (-EGG_DROP_VALUES[card], ALL_CARD_IDS.get(card, 99), card))
+
+
+def egg_drop_prediction(enemy_name: str | None, ally_name: str | None) -> dict:
+    """卵落予測の完全な計算結果。右ステータス表示と戦術で共用する。
+
+    threshold = (敵最大HP + 味方最大HP) % 16
+    成立条件 = 札の卵落値 > threshold
+
+    最大HPが不明な場合は threshold=None で返す (fail-closed)。
+    0で穴埋めしない。
+    """
+    e_hp = general_max_hp(enemy_name)
+    a_hp = general_max_hp(ally_name)
+    if e_hp is None or a_hp is None:
+        return {'enemy_max_hp': e_hp, 'ally_max_hp': a_hp,
+                'max_hp_sum': None, 'threshold': None, 'droppers': [],
+                '判定不能': True, '理由': 'max_hp_unknown'}
+    total = e_hp + a_hp
+    threshold = egg_drop_remainder(total)
+    return {'enemy_max_hp': e_hp, 'ally_max_hp': a_hp,
+            'max_hp_sum': total, 'threshold': threshold, 'droppers': [],
+            '判定不能': False, '理由': None}
+
+
+def card_egg_drop_info(card: str, enemy_name: str | None,
+                       ally_name: str | None) -> dict:
+    """札ごとの卵落判定。表示と戦術で同じ計算結果を使う。
+
+    「計算上落とせる」「敵が現在卵を持つ/使える」「実際に落とした」を区別する。
+    この関数は計算上の予測のみ。実際の使用・落下は呼び出し側が別途管理。
+    """
+    pred = egg_drop_prediction(enemy_name, ally_name)
+    verdict = card_drop_prediction(card, pred['max_hp_sum'])
+    value = verdict['egg_drop']
+    if verdict['drops'] is None:
+        return {**pred, 'card': card, '卵落値': value, 'drops': None,
+                '状態': '判定不能'}
+    drops = verdict['drops']
+    return {**pred, 'card': card, '卵落値': value, 'drops': drops,
+            '状態': '計算上落とせる' if drops else '不成立'}
+
+
+def right_status_data(enemy_name: str | None, ally_name: str | None,
+                      held_cards: list[str] | None = None,
+                      carried_cards: list[str] | None = None) -> dict:
+    """右ステータスオーバーレイ表示用データを集約する。
+
+    敵・味方将軍の詳細、所持切り札、卵落予測をまとめる。
+    held_cards: 現在の所持品（在庫全体）。carried_cards: この戦闘へ携行していて
+    実際に使える札。carried_cards が None の場合は held_cards と同じ扱い。
+    未携行の在庫を使用候補にしない。
+    """
+    pred = egg_drop_prediction(enemy_name, ally_name)
+    held = list(held_cards or [])
+    carried = list(carried_cards if carried_cards is not None else (held_cards or []))
+    droppers = egg_droppers(carried, pred['max_hp_sum']) if pred['max_hp_sum'] is not None else []
+    cards_info = []
+    for card in dict.fromkeys(held):
+        info = card_egg_drop_info(card, enemy_name, ally_name)
+        info['携行'] = card in carried
+        cards_info.append(info)
+    return {
+        'enemy': general_full_view(enemy_name),
+        'ally': general_full_view(ally_name),
+        'egg_drop': pred,
+        'droppers': droppers,
+        'cards': cards_info,
+    }
+
+
+# 将軍詳細 (gcgx shogun.html 2026-10-20 取得)。
+# GENERAL_STATS にない項目を補う。対抗は召喚応答確率、得意は季節・地形。
+# 右ステータスオーバーレイ表示用。
+GENERAL_DETAILS: dict[str, tuple[str, str, str, str]] = {
+    name: (f'{counter}%', aptitude or '－', personality, hobby)
+    for name, (counter, aptitude, personality, hobby) in GENERAL_TRAITS.items()
+}
+
+
+def general_details(name: str | None) -> dict | None:
+    """将軍の詳細データ (対抗、得意、性格、趣味)。無ければ None。"""
+    if name is None:
+        return None
+    row = GENERAL_DETAILS.get(name)
+    if row is None:
+        return None
+    return {'name': name, '対抗': row[0], '得意': row[1],
+            '性格': row[2], '趣味': row[3]}
+
+
+def general_full_view(name: str | None) -> dict | None:
+    """将軍の完全な表示データ。GENERAL_STATS + GENERAL_DEBUT + GENERAL_DETAILS。
+
+    右ステータスオーバーレイ表示用。最大HP・戦闘・対抗確率・思考・
+    エッグ種類・卵補正・得意・初登場話数・性格・趣味をまとめる。
+    """
+    if name is None:
+        return None
+    stats = general_strength(name)
+    hp = general_max_hp(name)
+    debut = general_debut_chapter(name)
+    details = general_details(name)
+    if stats is None and hp is None and details is None:
+        return None
+    result: dict = {'name': name}
+    if stats is not None:
+        result['戦闘'] = stats[1]
+        result['卵補正'] = stats[2]
+        result['エッグ種類'] = stats[3]
+        result['思考'] = stats[4]
+    if hp is not None:
+        result['最大HP'] = hp
+    if debut is not None:
+        result['初登場話数'] = debut
+    if details is not None:
+        result.update({'対抗': details['対抗'], '得意': details['得意'],
+                       '性格': details['性格'], '趣味': details['趣味']})
+    return result
 
 
 # 強い将軍の主判定 (owner 2026-10-03: 「まずは戦闘の値とHPでわかる」)。
@@ -902,6 +1033,61 @@ def general_profile(name: str | None) -> dict | None:
             'aptitude': aptitude, 'debut': GENERAL_DEBUT.get(name),
             'personality': personality, 'hobby': hobby,
             'has_egg': (GENERAL_EGGS.get(name) or (None, None))[0]}
+
+
+# 強制解雇で選ぶ「弱い将軍」の順序 (Issue #2367、owner 2026-10-20 20:45 採用)。
+# 採用した順序:
+#   1. 卵なし (静的なエッグ種別 '－')
+#   2. HP × 戦闘 が小さい (HP は最大HP。現在HPの負傷は使わない)
+#   3. 騎馬でない (GENERAL_HORSES に無い)
+#   4. 最大HP が低い
+#   5. 戦闘が低い
+#   6. 名前 (同値時の決定的な最終順)
+# 卵種別どうしの優劣は未確定のため順位に使わない。未読・残回数0・破損は
+# ここでは扱わない (静的な種別だけを見るので「卵なし」と混同しない)。
+# HP×戦闘はオーナー提案の候補式であり、この順序をテストで固定する。
+def general_weakness(name: str | None):
+    """弱い順の比較キー。静的データに無い名前は None (順位を確定しない)。"""
+    # 一覧の表示名 `どうし` は静的データでは `しゅじんこう`。賃金表
+    # (`fixed_wage`) と撤退判定 (`judgment.retreat`) と同じ別名規則を、
+    # ここでも一箇所だけ適用する。他の将軍のキーは変わらない。
+    canonical = 'しゅじんこう' if name == 'どうし' else name
+    stats = general_strength(canonical)
+    hp = general_max_hp(canonical)
+    if stats is None or hp is None:
+        return None
+    max_hp, combat, _bonus, egg, _thought = stats
+    if max_hp != hp:
+        return None  # 二つの静的HP表が食い違う名前は比較しない
+    eggless = egg == '－'
+    return (0 if eggless else 1, max_hp * combat,
+            1 if (canonical in GENERAL_HORSES) else 0, max_hp, combat, canonical)
+
+
+def weakest_general(names):
+    """候補一覧から最も弱い将軍を選ぶ。未知名が1つでもあれば確定しない。
+
+    返り値は (name, evidence)。name が None のときは、未知名や空の一覧を
+    evidence['unresolved'] に残し、既定カーソルを最弱とみなさない。
+    """
+    evidence = {'basis': 'eggless,hp_x_combat,not_mounted,max_hp,combat,name',
+                'candidates': [], 'unresolved': []}
+    if (not isinstance(names, (list, tuple)) or not names
+            or len(set(names)) != len(names)):
+        evidence['unresolved'] = ['empty_or_duplicate_list']
+        return None, evidence
+    ranked = []
+    for name in names:
+        key = general_weakness(name) if isinstance(name, str) else None
+        if key is None:
+            evidence['unresolved'].append(name)
+            continue
+        ranked.append((key, name))
+    evidence['candidates'] = [{'name': name, 'key': list(key)} for key, name in ranked]
+    if evidence['unresolved'] or len(ranked) != len(names):
+        return None, evidence
+    ranked.sort()
+    return ranked[0][1], evidence
 
 
 def strong_general(enemy: str | None, ally: str | None):

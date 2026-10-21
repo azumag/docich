@@ -152,6 +152,13 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `hanjuku_tactical.last_house_deferral` は直近1件の修理処理の保留記録です。
+  同じrun identity・章・月、400tick以内に限り、`age_ticks` と固定コードだけを出します。
+  `position_unread` は現在の屋根配置から位置を確認できず、`alignment_limit` は位置合わせ上限、
+  `route_unverified` は経路の安全性を確認できず保留した判定です。その他の保留は `other`。
+  `phase` は `castle_confirm` / `house_view` / `house_confirm` / `other` です。
+  close後も残る履歴であり、現在もキャンセル中、物理的に危険、または修理成功という証明ではありません。
+  名前・自由文・identityは出力せず、古い世代や月・不正な記録はnull、容量削減時も固定形式だけを維持します。
 - `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
   `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
   総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`
@@ -190,6 +197,20 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   presenter の pane は tmux window ごと消えるため、この記録が失敗理由を
   後から確認できる唯一の正規経路になる。request ID・runtime identity・
   自由文の本文は出さない。
+- `corners.tsuitate_corner` は同じ理由で `switch_error_code` を返す（#1992）。
+  衝立将棋の view は世代session（tmux）で動き、その pane は session ごと
+  消えるため、枠自身の state file に保存された `start_failed` /
+  `readiness_timeout` / `rollback_failed` などの切替エラーコードを正規の診断へ
+  投影する。値は
+  **固定の producer 語彙（GameSwitch の `ERROR_*` と ControlError のコード）の
+  allowlist に一致するときだけ**出し、未知・型違いは `null` にする。64文字に
+  収まる任意のトークンはメッセージ・識別子・資格情報を含み得るため、
+  bounded であっても生値は echo しない。soren91 と違い `switch_status` は
+  射影しない。`last_error` は保存済みの文言を200文字上限・redact済みで返すが、
+  起動失敗の根因詳細が含まれるとは限らない。失敗時に固定文だけが保存される
+  経路もあり、切替 receipt とは別の証拠として扱う。他コーナーの `last_error_code` は
+  `recovery_required` 以外を `null` に落とす射影なので、生の切替エラーコードを
+  読むときは `switch_error_code` を使う。
 - `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
   （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
   `volume_percent` / `player` の固定キーのみで、`player` は
@@ -851,7 +872,41 @@ journal最大32KiBは維持する。存在だけではIDの正当性や認証・
 `event=started` のままならhelper開始後に結果行が残らなかった状態。
 `event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
 視聴者に見える実表示は保証しない。Twitchのtitle/categoryはこのjournalへ保存しない。
-統合ログ `stream-game.log` / `stream_title_day.log` の読取り・出力もしない。
+この journal 投影自体は統合ログを読まない。次節の固定ログ観測は別の証拠として扱う。
+
+## タイトル更新の停止段階の read-only 観測（#789）
+
+`stream_title_attempts` は、既存の固定3ログ（Soren の
+`tmp/logs/stream_game.log` / `tmp/logs/stream_title_day.log` と、既存 docich
+state directory の `logs/stream-game.log`）の末尾だけを読む。環境変数による
+ログパス変更は追跡しない。設定済みrootの祖先を含めた全segmentをnofollowで開き、
+root以下の同一owner・他者書込不可、regular file・単一link、読取前後と再openの
+inode/metadata一致を要求する。1source最大32KiB・256行・末尾1行4KiB。
+`read_rejection` は既存の拒否を弱めず、root/子directoryのowner不一致・他者書込、
+fileの非regular・owner不一致・複数link・他者書込、root形式不正だけを固定enumで分離する。
+UID・path・例外本文は出さない。OSのopen失敗等は `unknown` のまま、読取guardを
+通過した場合は `none` とする。複数条件が不適合なら最初の拒否だけであり、全属性の証明や
+更新停止原因の診断ではない。`day_script` も同じ拒否理由だけを返し、既存statusは変えない。
+内容・URL・login・ID・path・HTTP bodyは返さず、公開producerの既知literalから
+固定の `observed_outcome` / `observed_reason` だけを生成する。最後の行が未知、
+途中書込、過大、不正UTF-8なら古い失敗を探し直さない。時刻が逆行した尾部も
+`ambiguous_order` としてunknownへ戻す。後続成功は旧失敗を上書きする。
+
+`record_status=fresh/stale` と `age_sec` はproducerのoffset無し時刻をhost localと
+仮定した値であり、`time_basis=host_local_unverified` を必ず付ける。staleでも
+最後に観測された既知理由は保持するが、現在の原因とはしない。journalのinvokedと
+120秒以内でも `journal_relation=time_window_only` に留め、同一runの証明にしない。
+`current_failure` は常に `unknown`。`credential_validation_failed` はproducerの
+client ID解決失敗文言の観測であり、token失効・ネットワーク失敗等を区別しない。
+ログのmtime、ファイル一致、古いresultだけで現在の原因や更新成功を断定しない。
+
+`day_script` は日次scriptの実modeとowner実行bitを観測するだけで、起動の証明では
+ない。`day_units` はsystem/user両scopeの既存 `soren-title-day.service` / `.timer` に
+固定propertyのread-only `systemctl show` を計4回（各timeout 1秒）実行し、許可enumと
+通常終了時のexit statusだけを返す。`Result` / `ExecMainStatus` は最後の実行の値で
+あり `result_freshness=unknown`。当日のtickと結び付けない。unitの追加・enable・restart、
+updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
+既存journal契約は変更しない。未知・読取不能はunknownとして残す。
 
 ## 出さないもの
 

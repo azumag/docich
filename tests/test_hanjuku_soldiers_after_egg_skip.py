@@ -25,8 +25,8 @@ def memory(count=10, gold=79):
     return mem
 
 
-@pytest.mark.parametrize('count,gold,expected', [(0, 79, 49), (10, 79, 40), (49, 79, 1),
-                                               (0, 45, 15), (10, 45, 15)])
+@pytest.mark.parametrize('count,gold,expected', [(0, 79, 50), (10, 79, 40), (49, 79, 1),
+                                               (0, 45, 45), (10, 45, 40)])
 def test_cached_zero_plan_opens_refill_after_unaffordable_recovery(count, gold, expected):
     mem = memory(count, gold)
     assert p.month_step(screen(gold), mem) == [p.pad('a')]
@@ -42,9 +42,9 @@ def test_cached_zero_plan_opens_refill_after_unaffordable_recovery(count, gold, 
 def test_new_skip_replans_in_the_same_observation_instead_of_exiting():
     # Above LOW_ARMY the recovery is still tried first; twenty or fewer
     # soldiers are refilled before it (test_hanjuku_low_army_refill_first).
-    mem = memory(30)
+    mem = memory(30, gold=49)  # 49G cannot pay the 50G recovery
     mem['shop'].update(egg='pending', closed=False)
-    assert p.month_step(screen(79), mem) == [p.pad('a')]
+    assert p.month_step(screen(49), mem) == [p.pad('a')]
     assert mem['shop']['soldiers'] == 20
     assert mem['shop']['egg'] == 'skipped'
     assert not mem.get('month_exit')
@@ -100,7 +100,7 @@ def test_old_count_cannot_authorize_a_fallback(field):
 
 
 @pytest.mark.parametrize('block', ['pending', 'paid', 'unverified', 'egg_unverified', 'ritual',
-                                    'recruit_opened', 'recruit_unverified', 'payroll',
+                                    'recruit_opened', 'recruit_unverified',
                                     'failed_check', 'corrupt_check', 'refill_requested', 'unknown_card'])
 def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
     mem = memory()
@@ -113,8 +113,6 @@ def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
         mem['month_sub'] = {'kind': 'egg', 'stage': 'recovering'}
     elif block.startswith('recruit_'):
         shop['recruit'] = block.removeprefix('recruit_')
-    elif block == 'payroll':
-        mem['recruit_payroll_pending'] = ['ココット']
     elif block.endswith('check') or block == 'refill_requested':
         mem['army_count_check'] = {'scope': deepcopy(mem['soldiers_seen_scope']),
             'stage': 'unverified' if block == 'failed_check' else 'unexpected' if block == 'corrupt_check' else 'measured',
@@ -126,8 +124,8 @@ def test_live_unverified_or_exhausted_transactions_are_not_rearmed(block):
     assert shop == before
 
 
-@pytest.mark.parametrize('gold,repair,cards,expected', [(79, 0, [], 40), (79, 50, [], 0),
-    (95, 50, [], 15), (79, 0, [['ブラッキー', 10]], 19), (30, 0, [], 0)])
+@pytest.mark.parametrize('gold,repair,cards,expected', [(79, 0, [], 40), (79, 50, [], 29),
+    (95, 50, [], 40), (79, 0, [['ブラッキー', 10]], 40), (30, 0, [], 30)])
 def test_shortfall_wages_repairs_and_required_cards_remain_reserved(gold, repair, cards, expected):
     mem = memory(gold=gold)
     mem['shop'].update(hero_repair_reserve=repair, items=cards, merchant_done=not cards)
@@ -183,3 +181,13 @@ def test_existing_deferral_loses_permission_when_observations_become_invalid(cha
         mem['army_count_check'] = {'scope': deepcopy(mem['soldiers_seen_scope']), 'stage': 'unverified'}
     assert not refresh_soldier_egg_deferral(mem, mem['shop'], header)
     assert not egg_deferred_for_soldiers(mem['shop'])
+
+
+def test_pending_payroll_alone_does_not_block_post_skip_soldiers():
+    mem = memory(count=0, gold=81)
+    mem['recruit_payroll_pending'] = ['ココット']
+    assert refresh_soldier_egg_deferral(mem, mem['shop'], screen(81).header)
+    assert mem['shop']['soldiers'] == 50
+    assert mem['shop']['soldiers_done'] is False
+    assert mem['recruit_payroll_pending'] == ['ココット']
+    assert not mem['shop'].get('soldier_receipt')

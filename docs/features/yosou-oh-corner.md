@@ -446,13 +446,81 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
   読み上げは従来どおり的中率ボードのみ（(c) は採らない）。実装は `yoso_view`（§3.1）。
 - **8-6（解決・本案）** 部門ごとの最低数: 的中率は `min_rounds`（既定 3）、
   参加・ポイント部門は `min_participations`（既定 1）。`min_rounds` を流用しない（§3.1）。
-- **8-7（未決 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの
+- **8-7（解決・本案 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの
   遠隔復旧経路。実測では WebUI の `POST /api/predictions/action`（`cancel` / `sync`）は
   *Soren 側* `twitch_predictions.sh` と `tmp/state/current_prediction.json` を操作する経路で、
-  半熟の durable ledger `hanjuku_predictions.json` は操作しない。したがって現状、半熟の
-  round を止める正規の遠隔操作は無く、オーナーが手元で操作するか、恒久修正を配備して
-  tick に受理させる以外にない。固定 operation を足すか WebUI 専用のまま制約を明記するかは
-  オーナー判断。連続失敗の可視化だけは診断へ実装済み（`docs/operations/runtime-diagnostics.md`）。
+  半熟の durable ledger `hanjuku_predictions.json` は操作しない。したがって半熟の round を
+  止める経路は WebUI には無く、owner-only operator に**固定 operation**
+  `cancel-prediction` / `sync-prediction`（`check-` 前置きで事前確認）を追加した。
+  実装は `ops/vm_actions/control_hanjuku_prediction.sh` →
+  `src/docich/hanjuku_prediction_control.py`、workflow は
+  `.github/workflows/corner-rotation-operator.yml`。連続失敗の可視化は診断へ実装済み
+  （`docs/operations/runtime-diagnostics.md`）。詳細は §8-7.1。
+
+#### 8-7.1 owner-only の予想 round 制御（2026-10-20）
+
+半熟の予想 round が「未検証の記録から settlement を作らない」fail-closed で止まったとき、
+オーナーは WebUI ではなく canonical operator workflow から復旧できる。
+
+- 固定 operation は4つ。`check-cancel-prediction` / `cancel-prediction` /
+  `check-sync-prediction` / `sync-prediction`。`expected_reservation` も
+  `outcome_index` も取らず、**prediction id・outcome index・任意コマンドを入力にしない**。
+- `cancel` は台帳が所有する round だけを remote で `CANCELED` にして返金し、ローカル所有を
+  解除する。不成立（`no-contest`）と証明できたときだけ参加実績を台帳へ記録する。
+- `sync` は台帳が所有する round を remote の権威状態へ合わせる。remote が既に
+  `RESOLVED` / `CANCELED` ならその結果を記録して所有を解除し、生きていれば実 id を再取り込みし、
+  remote に存在しなければ stale な所有だけを捨てる。**target / middle / 選択肢は変更しない。**
+- どちらも既に記録された round の照合のみを行う。新しい round を作らず、勝者を選ばず、
+  他コーナーの賭けに触れない。`check-` は同じ判定を読み取り専用で行い、対象が無ければ非0で拒否する。
+  **所有台帳を検証できない場合も `actionable=False` で拒否する**（apply 側も同じ台帳を
+  `ledger_unreadable` で拒否するため、check だけ成功扱いにしない）。
+- **round を消さず終端 tombstone（`status=CANCELED`）で残す。** 既存の `_advance` は
+  「同じ run が所有する終端 round があれば二つ目の賭けを開かない」ため、`round=None` にすると
+  そのガードが消え、同じ ready/active の run で次の tick が新しい予想を POST してしまう。
+  tombstone を残せば同一 run では再作成せず、**別 runtime の後続 run だけ**が通常どおり作成できる。
+- **記帳失敗を握り潰さない。** 不成立キャンセルの参加実績記帳が `leaderboard` で失敗したときは、
+  round を終端にせず未解決のまま残し（`mode=settling`、`outcome=canceled_record_pending`）、
+  取消前 snapshot も保持する。次の tick が remote の `CANCELED` を再観測して同じ prediction id を
+  1回だけ記帳する（未解決 round も二つ目の賭けを止める）。通常 tick の
+  `_save_cancel_snapshot` → PATCH → 記帳 → 証拠削除と同じ順序で、不可逆取消の前に証拠を保存する。
+- **不正な durable result を tombstone に残さない。** `_load` は DONE の row でも
+  `_checked_result` を呼ぶため、malformed な `result` を残したまま終端化すると次tickも
+  後続runtimeも `invalid_state` で止まる。operator は元の不正証拠を
+  `hanjuku_prediction_recovered_result_<予想IDのSHA-256>.json`（0600・原子的置換・64 KiB上限）へ
+  退避してから row の `result` を空にし、通常 loader が受理する tombstone へ収束させる。
+  証拠を保存できないときは `evidence_unpreservable` / `evidence_unavailable` で拒否し、
+  黙って捨てない。
+- **CANCELED 応答の shape に記帳根拠を依存させない。** CANCELED 応答が `users` /
+  `channel_points` を省いても、取消前に LOCKED の counts から保存した no-contest snapshot を
+  記帳根拠として引き継ぐ。証明できた source だけで `_record_canceled` を呼び、記帳できて
+  いない間は round を DONE にしない（snapshot を孤児にしない）。
+  さらに `_record_canceled` 自身が **証拠の濃さで candidate を選ぶ**（`_evidence_rank`:
+  `top_predictors` あり > counts あり > なし）。operator 側で filter しても、通常 tick は
+  `sources=(remote, snapshot)` を渡すため、sparse な CANCELED 応答が保存済みの人数・ポイントを
+  0/0 で上書き記帳して snapshot を消す経路が残る。tick 側でも濃い証拠が必ず勝つようにする。
+- **一時的な記帳失敗の未解決 row も通常 loader が受理できるようにする。** 記帳失敗で
+  `canceled_record_pending` / `resolved_record_pending` になった row は未解決のまま残すが、
+  malformed な `result` を保持したままだと次tickが `_load` で `invalid_state` になり、
+  snapshot を消費する再試行へ到達できない。operator は終端時だけでなく **pending 時も
+  `_quiesce_result` を通して**から永続化する。sync も拒否で終わらせず、同じ pending row を
+  永続化して次tickの再試行に引き継ぐ。
+- **remote の「不在」と「所有権不一致」を区別する。** 同じ prediction id を返すが title や
+  outcome id が一致しない場合は `remote_mismatch` で fail-closed し、ローカル所有を消さない。
+  GET が実際に対象 id を返さなかった場合だけ不在として扱う。
+- **本番 profile を明示的に束縛する。** gateway は固定 script を `DOCICH_CONFIG` を継承しない
+  限定環境で実行するため、`load_global(..., None)` は `config/docich.toml`（`state_dir=run`）を
+  選んでしまい本番の `config/docich.soren-live.toml`（`run-soren-live`）を操作しない。
+  script は `--config "$root/config/docich.soren-live.toml"` を渡し、モジュール側も既定で
+  この live config を選ぶ。
+- 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞は durable `result` が契約違反の
+  場合などで、tick の `_load` は fail-closed のまま拒否し続ける。operator だけが
+  `_load_recoverable` を使い、**所有権（identity / title / window / nonce / status / remote id）は
+  厳格に検証したまま** durable result の契約だけを緩く扱って当該 round を終わらせられる。
+  壊れた台帳そのものは修復も上書きもしない（`ledger_unreadable` で拒否）。
+- 認可は既存と同じ。owner 本人・`refs/heads/main`・`ref_protected`・確認文字列
+  `production`・workflow は canonical な `corner-rotation-operator.yml` のみ・本番 SHA 一致。
+  運用手順は `docs/corner-rotation.md`。
+
 
 ## 9. 検証
 
