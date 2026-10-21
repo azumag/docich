@@ -137,8 +137,10 @@ def test_pending_employed_generals_after_chapter_change_prevent_understated_payr
     mem.update(month='1-8',recruit_roster={'chapter':2,'month':'1-8','tick':100,
         'names':['どうし','ゼウス'],'wages':{'どうし':0,'ゼウス':9},'complete':True})
     assert r.economics(mem,{'アルマムーン'}) is None
-    s=shop();assert p._stop_uneconomic_recruit(mem,s)
-    assert mem['recruit_hold']['reason']=='pending_employees'
+    s=shop();s['key']='1-8'
+    assert p._stop_uneconomic_recruit(mem,s) is False
+    assert mem['recruit_payroll_pending']==NAMES[:6]
+    assert 'recruit_hold' not in mem
     state={'chapter':2,'phase':'roster','seen':NAMES[:6]};mem['house']=state;r.begin(mem,state)
     r.page(mem,NAMES[:6]);state['roster_wrapped']=True
     assert r.complete(mem,state) and not mem.get('recruit_payroll_pending')
@@ -687,3 +689,42 @@ def test_an_unread_castle_never_holds_recruitment_now(income):
     s = {'key': '1-7', 'recruit': 'pending'}
     assert p._stop_uneconomic_recruit(mem, s) is False
     assert s['recruit'] == 'pending'
+
+
+@pytest.mark.parametrize('gold,repair,reserved', [(200, 50, 50), (60, 50, 10), (50, 50, 0)])
+def test_completed_current_shortage_resumes_cached_membership_hold(gold, repair, reserved):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    mem['recruit_hold'] = {'reason': 'pending_employees', 'status': 'deferred_economy'}
+    current = shop()
+    current.update(recruit='deferred_economy', recruit_priority=False,
+                   reserve=0, hero_repair_reserve=repair, recruit_budget_version=2)
+    p._prioritise_recruit(mem, current, gold)
+    assert current['recruit'] == 'check'
+    assert current['recruit_priority'] is True
+    assert current['recruit_reserve'] == reserved
+    assert current['hero_repair_reserve'] == repair
+    assert mem['recruit_payroll_pending'] == ['ココット']
+    assert 'recruit_hold' not in mem
+    assert not mem.get('lost') and not mem.get('recruited')
+    assert r.economics(mem, {'アルマムーン'}) is None
+
+
+@pytest.mark.parametrize('change', ['partial', 'old_month', 'stale', 'enough'])
+def test_retained_members_do_not_make_unknown_or_sufficient_rosters_a_shortage(change):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    if change == 'partial':
+        mem['recruit_roster']['complete'] = False
+    elif change == 'old_month':
+        mem['recruit_roster']['month'] = '1-6'
+    elif change == 'stale':
+        mem['recruit_roster']['tick'] = -1000
+    else:
+        mem['recruit_roster']['names'] = NAMES
+    current = shop()
+    current['recruit'] = 'deferred_economy'
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == ('not_needed' if change == 'enough' else 'deferred_roster')
+    assert not current['recruit_priority']
+    assert mem['recruit_payroll_pending'] == ['ココット']
