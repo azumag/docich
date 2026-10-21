@@ -600,12 +600,13 @@ def _stop_uneconomic_recruit(mem, shop):
 
     Owner 2026-10-20: 給与収支が不明／赤字であることだけを理由に、必要な
     募集を保留しない。実価格・実残金・必要兵士・卵・修理の予約、未払い
-    receipt は従来どおり別のゲートで扱う。在籍メンバーの未確認
-    (recruit_payroll_pending) は収支ではなく名簿の同一性の問題なので残す。
+    receipt は従来どおり別のゲートで扱う。Owner 2026-10-21: 現在の
+    完全一覧で不足を確認できれば、前章の未確認メンバーを記録に残して募集する。
     """
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return False  # finish the existing conversation without guessing refunds
-    if not mem.get('recruit_payroll_pending'):
+    if (not mem.get('recruit_payroll_pending')
+            or (shop.get('key') == mem.get('month') and _recruit_shortage(mem))):
         mem.pop('recruit_hold', None)
         return False
     status = 'deferred_economy'
