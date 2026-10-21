@@ -95,7 +95,7 @@ age>0は仮説モデルでは現在の占有の確定証拠にしない。
 
 ## 6. 比較コマンド
 
-Node >=22.18.0（既存package.jsonの指定）を使用する。
+Node 22.23.4以上の対応済み版（既存package.jsonの指定）を使用する。
 
 ```sh
 cd workers/tsuitate-bot

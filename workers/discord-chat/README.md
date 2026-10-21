@@ -16,11 +16,11 @@ Discord Gatewayへ常時接続する会話BotのCloudflare実運用版です。W
 
 ## Build
 
-Node.js 22.18以上。
+`.node-version` に固定した Node.js 22.23.4を使用します。CIも同じバージョンを読みます。
 
 ```sh
 cd workers/discord-chat
-npm install
+npm ci
 npm run build:cf
 ```
 

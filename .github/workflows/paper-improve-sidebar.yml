@@ -3,12 +3,14 @@ name: PAPER improve sidebar contract
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - '.github/workflows/paper-improve-sidebar.yml'
   push:
     branches: [main]
     paths:
+      - '.node-version'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - '.github/workflows/paper-improve-sidebar.yml'
@@ -40,6 +42,7 @@ jobs:
           run="$(python3 .github/scripts/soren_gitlink_gate.py \
             --before "$BEFORE_SHA" \
             --after "$AFTER_SHA" \
+            --root-path '.node-version' \
             --root-path '.github/workflows/paper-improve-sidebar.yml' \
             --root-path '.github/scripts/soren_gitlink_gate.py' \
             --soren-path 'lib/direct_broadcast_overlay.mjs' \
@@ -58,4 +61,8 @@ jobs:
           persist-credentials: false
           submodules: false
       - run: git submodule update --init --depth 1 -- games/soviet_now
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - run: node --test games/soviet_now/tests/test_paper_improve_sidebar.mjs
