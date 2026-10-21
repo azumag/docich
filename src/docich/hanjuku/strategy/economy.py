@@ -77,7 +77,7 @@ def _low_army_refill(mem, shop, header):
     """A measured army of LOW_ARMY or fewer takes the month's cash first.
 
     Owner (2026-10-17): 兵士が20人以下の時は卵や将軍、切り札より補充を最優先。
-    Only the wage shortfall floor and the house repair money stay in hand; the
+    Only the house repair money stays in hand; the
     egg recovery hold, the hiring fee and unbought merchant cards wait for what
     the refill leaves (the merchant visit waits until the refill is settled).
     Recruitment waits for next month, as an empty army's always did. This is
@@ -109,7 +109,7 @@ def _low_army_refill(mem, shop, header):
     target = min(SOLDIER_CAP, max(0, total - count))
     amount = min(target, available)
     if amount <= 0:
-        return  # no permission to spend wages or repair money
+        return  # no cash remains outside repair reservations
     if shop.get('recruit') != 'done':
         shop['recruit'] = 'deferred_army'
     shop.update(recruit_priority=False, recruit_reserve=0)
@@ -128,7 +128,7 @@ def _low_army_refill(mem, shop, header):
                                  'cards_after': [row[0] for row in cards
                                                  if isinstance(row, (list, tuple)) and row]
                                                 if isinstance(cards, (list, tuple)) else None},
-                reason='実兵数が20人以下のため、卵回復・将軍募集・切り札購入より先に、賃金予備と修理費だけを残した資金で兵士を補充する')
+                reason='実兵数が20人以下のため、卵回復・将軍募集・切り札購入より先に、修理費だけを残した資金で兵士を補充する')
 
 
 def _soldier_target(mem, shop, header):
@@ -149,7 +149,7 @@ def _soldier_target(mem, shop, header):
         return SOLDIER_ENOUGH
     egg = (0 if shop.get('egg') in ('done', 'not_needed') else
            max(shop.get('reserve', 0), EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
-    held = (egg + repair + _egg_recovery_wage_floor(mem) + shop.get('recruit_reserve', 0)
+    held = (egg + repair + shop.get('recruit_reserve', 0)
             + sum(KNOWN_PRICES[name] * qty for name, qty in cards))
     key = _month_key(header) if header else None
     count = mem.get('soldiers_seen')
@@ -160,29 +160,27 @@ def _soldier_target(mem, shop, header):
 
 
 def _soldier_wage_hold(mem):
-    """Wages a soldier refill leaves in hand — never the whole payroll.
+    """Spending hold for wages: zero (owner 2026-10-20, Issue #2367).
 
-    ``_egg_recovery_wage_floor`` reserves the entire measured payroll so a
-    paid egg recovery is never declined (g713). Reusing it for soldiers kept
-    90G of 99G in hand while the measured army was 0 (g749 4-10), so only 9 of
-    the 50 target could be bought. Wages are settled at the month boundary out
-    of 収入 − 総賃金, and the documented buffer against a shortfall month is
-    ``WAGE_RESERVE`` (owner 2026-09-28: 将軍解雇はしない). A smaller measured
-    payroll is not over-reserved.
+    Necessary refills may use all current gold even if the balance ends at 0G.
+    The old measured-payroll/WAGE_RESERVE floor is kept as an observation in
+    ``_egg_recovery_wage_floor`` but no longer blocks a purchase.
     """
-    return min(_egg_recovery_wage_floor(mem), WAGE_RESERVE)
+    return WAGE_SPEND_HOLD
 
 
 def _soldier_spendable(mem, shop, header, *, recruit=True):
-    """One actual cash/payroll/reservation gate for planning and payment."""
+    """One actual cash/reservation gate for planning and payment."""
     if (not isinstance(header, dict)
             or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
             or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0
             or shop.get('key') != _month_key(header)
             or (mem.get('_run_identity') is not None
-                and mem.get('month') not in (None, shop.get('key')))
-            or mem.get('recruit_payroll_pending')):
+                and mem.get('month') not in (None, shop.get('key')))):
         return None
+    # Pending chapter arrivals cannot block soldier cash entirely (#2611).
+    # Necessary spending has no wage hold (#2367); measured reservations and
+    # payment verification still apply.
     repair = _house_repair_reserve(shop)
     egg, hiring = shop.get('reserve', 0), shop.get('recruit_reserve', 0) if recruit else 0
     first = low_army_first(shop)
@@ -214,17 +212,19 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
     # An unauthorised hiring fee must not shrink the necessary army and then
     # use that artificial spare cash to authorise itself. Keep the provisional
     # requirement for that gate; the actual digit confirmation is cash-capped.
-    payroll, gold = _egg_recovery_wage_floor(mem), (header or {}).get('gold')
+    gold = (header or {}).get('gold')
     if payment:
         available = _soldier_spendable(mem, shop, header)
         cap = min(cap, available if available is not None else 0)
-    elif payroll > WAGE_RESERVE and type(gold) is int:
-        # A large payroll reserves the documented shortfall floor, not its own
-        # full sum: the plan must not starve the army the same way payment would.
-        held = _month_held_reserve(shop) + shop.get('recruit_reserve', 0)
+    elif type(gold) is int:
+        # No payroll hold: the plan may use the cash left after the other
+        # necessary reservations, even down to 0G. The optional recruitment
+        # fee is not one of them: it must not shrink the necessary refill and
+        # then use that artificial spare cash to authorise itself (#2367).
+        held = _month_held_reserve(shop)
         if low_army_first(shop):
             held -= shop.get('reserve', 0)  # the egg hold waits behind a low army
-        cap = min(cap, max(0, gold - _soldier_wage_hold(mem) - held))
+        cap = min(cap, max(0, gold - held))
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
         value = shop.get(field)
         if type(value) is int and value >= 0:
@@ -265,11 +265,15 @@ def _soldiers_enough(mem, shop, header):
     count = mem.get('soldiers_seen')
     return (key is not None and key == shop.get('key') and mem.get('soldiers_seen_key') == key
             and type(count) is int and count >= _soldier_target(mem, shop, header))
-# The month boundary pays 収入 − 総賃金; ending a month at 0G forced a
-# dismissal in g358 (-1G) and g407 (-3G, 6 generals lost). Keep this much
-# gold unspent so a shortfall month cannot push the balance negative
-# (owner 2026-09-28: そもそも将軍解雇はしないで欲しい)。
+# Owner 2026-10-20 (Issue #2367): 給与のための資金温存を廃止する。毎月、
+# 必要な用途に所持金を使い切ってよい。支払後の残高が0Gになること自体を
+# 理由に兵士補充・卵回復・募集を止めない。強制解雇が起きた場合は最弱将軍を
+# 選ぶ (hanjuku_reference.weakest_general / flows.shop.discharge_step)。
+# 実際の価格・所持金・支払済みreceiptの照合は従来どおり維持する。
+# 必要支出は WAGE_SPEND_HOLD (0) を使う。任意の商人・築城は
+# WAGE_RESERVE と実測給与による従来の留保を維持する。
 WAGE_RESERVE = 30
+WAGE_SPEND_HOLD = 0
 # 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
@@ -314,8 +318,7 @@ def _egg_measured_cost(mem):
     nothing (g574 2-9: one unread name priced 50G against 55G on hand, the
     screen was never opened; 3-2: two names priced 100G, the screen was 50G).
     The monthly hold in ``_extras_reserve`` stays an upper bound and the quote
-    screen keeps its own wage floor, so opening cheap can never pay less than
-    the reservation.
+    screen checks actual cost and repair reservations before payment.
     """
     return EGG_RECOVER_COST * len(_depleted_eggs(mem))
 
@@ -364,8 +367,8 @@ def _extras_reserve(mem, header):
     if type(gold) is not int or gold < 0 or not cost:
         reserve = 0
     else:
-        # 卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
-        reserve = cost if gold >= cost else max(0, gold - WAGE_RESERVE)
+        # 卵へ温存（兵士は今月見送り）。給与の留保はしない (Issue #2367)。
+        reserve = min(cost, gold)
     return reserve, not _charted_purchase_ahead(mem, header)
 
 
@@ -442,7 +445,7 @@ def _prepare_recruit_egg_check(mem, shop, gold):
     shop['egg_cost'] = _egg_measured_cost(mem)
     cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
     if type(gold) is int:
-        shop['reserve'] = max(shop.get('reserve', 0), min(cost, max(0, gold - WAGE_RESERVE)))
+        shop['reserve'] = max(shop.get('reserve', 0), min(cost, gold))
 
 
 def _defer_recruit_for_egg(mem, shop):
@@ -457,7 +460,7 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     """Once each owned castle can be staffed, only real spare cash recruits.
 
     Keep the existing demand/economy checks. This extra gate reserves pending
-    purchases, soldiers, repair and wages; it never borrows the goninja floor.
+    purchases, soldiers and repair; it never borrows the goninja floor.
     """
     from ..os_layer.roster import fresh
     seen = fresh(mem)
@@ -479,20 +482,20 @@ def _recruit_spare_after_necessities(mem, shop, gold):
             or type(soldiers) is not int or soldiers < 0
             or type(repair) is not int or repair < 0):
         return None, evidence
-    held = (WAGE_RESERVE + soldiers + repair
+    held = (soldiers + repair
             + sum(KNOWN_PRICES[name] * quantity for name, quantity in cards))
     evidence.update(held=held, spare=gold - held)
     return evidence['spare'] >= RECRUIT_COST, evidence
 
 
 def _recruit_cash_floor(shop):
-    """Keep the menu's fee, wage and necessary reserves before any payment."""
+    """Keep the menu's fee and necessary reserves; no wage hold."""
     repair = _house_repair_reserve(shop)
     egg = (shop.get('reserve', 0) if shop.get('recruit_priority')
            and (shop.get('egg') in ('pending', 'check') or _egg_before_soldiers(shop)) else 0)
     if any(type(value) is not int or value < 0 for value in (repair, egg)):
         return None
-    return RECRUIT_COST + WAGE_RESERVE + repair + egg
+    return RECRUIT_COST + repair + egg
 
 
 def _recruit_dialog_cash_ready(mem, shop, gold):
@@ -514,14 +517,14 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
                  or (shop.get('soldier_receipt') or {}).get('status') == 'paid')
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if not completed and type(original) is int and original >= 0:
-        affordable = (max(0, gold - _egg_recovery_wage_floor(mem) - _month_held_reserve(shop)
+        affordable = (max(0, gold - _month_held_reserve(shop)
                          - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
                       if type(gold) is int and all(name in KNOWN_PRICES for name, _ in cards) else 0)
         shop['soldiers'] = min(original, affordable)
         shop['soldiers_done'] = shop['soldiers'] == 0  # no purchase claimed
     shop.update(recruit='deferred_cash', recruit_priority=False, recruit_reserve=0)
     _record(mem, 'recruit_cash_held', month=shop.get('key'), observed_metric=evidence,
-            reason='募集費・卵・修理・賃金予備を支払い直前にも確認し、城を守る人数がいる場合は必要兵士の予算も温存する')
+            reason='募集費・卵・修理の予約を支払い直前にも確認し、城を守る人数がいる場合は必要兵士の予算も温存する')
 
 
 def _recruit_target(mem):
@@ -593,40 +596,29 @@ def _recruit_shortage(mem):
 
 
 def _stop_uneconomic_recruit(mem, shop):
-    from ..os_layer.roster import economics
+    """Recruitment is not gated by the payroll/income balance (Issue #2367).
+
+    Owner 2026-10-20: 給与収支が不明／赤字であることだけを理由に、必要な
+    募集を保留しない。実価格・実残金・必要兵士・卵・修理の予約、未払い
+    receipt は従来どおり別のゲートで扱う。在籍メンバーの未確認
+    (recruit_payroll_pending) は収支ではなく名簿の同一性の問題なので残す。
+    """
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return False  # finish the existing conversation without guessing refunds
-    owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
-    economy = economics(mem, owned)
-    if economy is None:
-        # Unread castles only add income: a covering lower bound suffices
-        # (g684 2-2: ゴーメン unread, recruitment held every month).
-        bound = economics(mem, owned, lower_bound=True)
-        if bound and bound['castles_read'] and bound['income'] >= bound['wages'] + bound['additional_wage_max']:
-            economy = bound
-    # Owner approved ordinary observed income plus the existing cash reserves.
-    # Do not silently apply an unapproved permanent quarter-income factor.
-    sustainable = economy and economy['income'] >= economy['wages'] + economy['additional_wage_max']
-    if sustainable:
+    if not mem.get('recruit_payroll_pending'):
         mem.pop('recruit_hold', None)
         return False
-    status = 'deferred_economy' if economy is None else 'not_affordable'
+    status = 'deferred_economy'
     if shop.get('recruit') != status:
-        _record(mem, 'recruit_economy_held', month=shop.get('key'),
-                observed_metric={'economy': economy,
-                                 'pending_employees': mem.get('recruit_payroll_pending') or []},
-                expected_metric='募集後も賃金を収入で支払えることを確認',
-                reason=('実収入・同一scan総賃金が不明のため募集を保留し確認する' if economy is None
-                        else '募集後の賃金を安全側の収入で賄えないため募集を見送る'))
+        _record(mem, 'recruit_membership_held', month=shop.get('key'),
+                observed_metric={'pending_employees': mem.get('recruit_payroll_pending') or []},
+                reason='章替わり後の在籍メンバーが未確認のため、名簿を再確認するまで募集を保留')
     shop['recruit'] = status
     shop['recruit_priority'] = False
     mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
-                          'reason': ('pending_employees' if mem.get('recruit_payroll_pending')
-                                     else 'income_or_payroll_unknown' if economy is None else 'wages_exceed_income'),
-                          'status': status}
-    mem['recruit_roster_recheck'] = economy is None
+                          'reason': 'pending_employees', 'status': status}
+    mem['recruit_roster_recheck'] = True
     return True
-
 
 def _house_repair_reserve(shop):
     values = (shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0))
@@ -679,7 +671,7 @@ def _reserve_general_repair(mem, shop, gold):
         if all(n in KNOWN_PRICES for n, _ in cards):
             card_cost = sum(KNOWN_PRICES[n] * qty for n, qty in cards)
             shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
-                - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem) - shop.get('recruit_reserve', 0)))
+                - _month_held_reserve(shop) - shop.get('recruit_reserve', 0)))
             shop['soldiers_done'] = shop['soldiers'] == 0
     if changed:
         _record(mem, 'general_repair_funds_reserved', month=shop.get('key'),
@@ -691,14 +683,14 @@ def _reserve_general_repair(mem, shop, gold):
 def _reserve_hero_repair(mem, shop, gold):
     if not _hero_egg_broken(mem) or shop.get('hero_repair_reserve'):
         return
-    shop['hero_repair_reserve'] = 50  # cheapest measured house gift; wage is separate
+    shop['hero_repair_reserve'] = 50  # cheapest measured house gift; no wage hold
     items = [] if shop.get('merchant_done') else shop.get('items') or []
     card_cost = (sum(KNOWN_PRICES[n] * qty for n, qty in items)
                  if all(n in KNOWN_PRICES for n, _ in items) else None)
     if (not shop.get('soldiers_done') and type(gold) is int and card_cost is not None
             and not low_army_first(shop)):
         shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
-                               - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
+                               - _month_held_reserve(shop)
                                - shop.get('recruit_reserve', 0)))
         shop['soldiers_done'] = shop['soldiers'] == 0
     _record(mem, 'hero_repair_funds_reserved', month=shop.get('key'),
@@ -710,7 +702,7 @@ def _prioritise_recruit(mem, shop, gold):
     """Once per month, reserve a recruitment fee before optional soldiers.
 
     Includes existing cached shops on hotload. Original card purchases and
-    the existing egg/wage reserves are kept; unconfirmed deaths are not used.
+    the existing egg reserves are kept; unconfirmed deaths are not used.
     """
     if (egg_deferred_for_soldiers(shop)
             or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
@@ -737,7 +729,7 @@ def _prioritise_recruit(mem, shop, gold):
     # already shows the remaining balance.
     if shop.get('merchant_done'):
         card_cost = 0
-    available = (max(0, gold - card_cost - _month_held_reserve(shop) - WAGE_RESERVE)
+    available = (max(0, gold - card_cost - _month_held_reserve(shop))
                  if type(gold) is int and card_cost is not None else 0)
     budget = 0 if shop.get('recruit') == 'done' else min(RECRUIT_COST, available)
     shop['recruit_reserve'] = budget
@@ -788,7 +780,7 @@ def _plan_extras(mem, shop, reserve, recruit):
                       'recruit_if_left': RECRUIT_COST if recruit else None,
                       'recruit_before_soldiers': bool(shop.get('recruit_priority')),
                       'recruit_reserve': shop.get('recruit_reserve', 0)},
-                reason=('将軍不足時は募集費を兵士より先に確保し、卵回復・賃金予備も維持する'
+                reason=('将軍不足時は募集費を兵士より先に確保し、卵回復・修理の予約も維持する'
                         if shop.get('recruit_priority') else
                         '使用回数が減った卵の全回復費を兵士より先に確保し、必要な兵士の補充の後に余りがあれば将軍を募集'))
 
@@ -812,7 +804,7 @@ def _adjusted_plan(mem, header, key):
     unpriced = sorted({name for name, _ in items if name not in KNOWN_PRICES})
     reserve, recruit = _extras_reserve(mem, header)
     left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items) - reserve
-    soldiers = max(0, min(target, left - WAGE_RESERVE))
+    soldiers = max(0, min(target, left))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'chart_adjusted', 'soldiers_done': target == 0,
                           'soldiers_target': target, 'soldiers_from_gold': True,
@@ -904,7 +896,7 @@ def _base_month_plan(mem, header):
     if leftover is None:
         reserve = 0          # unpriced cards: no measured room for the egg
     soldiers = (spec['soldiers'] if leftover is None
-                else max(0, min(limit, leftover - reserve - WAGE_RESERVE)))
+                else max(0, min(limit, leftover - reserve)))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': variant,
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
@@ -927,7 +919,7 @@ def _soldier_refill_plan(mem, header, key):
         return None
     gold = header['gold']
     reserve, recruit = _extras_reserve(mem, header)
-    soldiers = min(SOLDIER_CAP, max(0, gold - reserve - WAGE_RESERVE))
+    soldiers = min(SOLDIER_CAP, max(0, gold - reserve))
     shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'soldier_refill_only', 'soldiers_done': soldiers == 0,
                           'gold_start': gold}
@@ -946,7 +938,7 @@ def _egg_estimate(shop):
 
     Zero is a real estimate (only unread recheck names remain) and must not
     fall back to a fee the game has not asked for; the quote screen carries its
-    own wage floor, so an optimistic estimate can open but never underpay.
+    own actual-cost and repair checks, so an optimistic estimate cannot authorize an unaffordable payment.
     """
     return shop['egg_cost'] if type(shop.get('egg_cost')) is int else EGG_RECOVER_COST
 
@@ -1049,10 +1041,11 @@ def _recruit_fee_observed(sub):
 def _hero_egg_wage_floor(mem):
     """Wage floor for the hero's own egg: this month's measured payroll.
 
-    WAGE_RESERVE (30G) is the unknown-payroll fallback that keeps generals from being
-    fired. g604 3-11 had 68G and a measured payroll of 16G (0+4+4+5+3), so the
-    blind floor refused the 50G that would have kept the hero alive. Only a
-    fresh, complete roster with every wage read lowers it; otherwise 30G.
+    The value remains a payroll observation, never a spending permission
+    (Issue #2367 uses ``WAGE_SPEND_HOLD`` at the gates). g604 3-11 had 68G and
+    a measured payroll of 16G (0+4+4+5+3), so the blind floor refused the
+    50G that would have kept the hero alive. Only a fresh, complete roster
+    with every wage read lowers it; otherwise 30G.
     """
     from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, payroll_hold
     receipt = fresh(mem)
@@ -1065,11 +1058,12 @@ def _hero_egg_wage_floor(mem):
 
 
 def _egg_recovery_wage_floor(mem):
-    """Use measured full current payroll for recovery, never a partial walk.
+    """Measured full current payroll (an observation, not a spending hold).
 
-    g713 had a real 100G quote, 112G, and the four-member payroll was 8G.
-    A blind 30G floor declined the affordable recovery. Large known payrolls
-    still reserve their entire sum instead of capping it at the fallback.
+    The old gate reserved this entire sum before recovery. Issue #2367 removes
+    that reservation; callers that spend must use ``WAGE_SPEND_HOLD``. This
+    function stays as the measured-payroll reading used by analysis and by
+    explicit shortfall checks.
     """
     from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, run_identity, payroll_hold
     receipt = fresh(mem)

@@ -75,6 +75,8 @@ jobs:
         run: python3 -m unittest discover -s ops/audio_priority/tests -v
       - name: macOS Soren91 agent service contracts
         run: python3 -m unittest discover -s ops/local/tests -v
+      - name: NetHack read-only acceptance evidence
+        run: python3 -m pytest -q ops/local/tests/test_nethack_acceptance_evidence.py
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
       - run: >-

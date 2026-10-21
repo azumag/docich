@@ -433,7 +433,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     elif kind=='map' and mem.get('chapter'):
         actions=map_flow.map_step(screen,mem,frame)
     elif kind=='discharge_menu':
-        actions=shop_flow.discharge_step(screen,mem)
+        actions=shop_flow.discharge_step(screen,mem,frame)
     elif kind=='gift_request':
         actions=prompts_flow.gift_step(screen,mem)
     elif kind=='summer_bonus':

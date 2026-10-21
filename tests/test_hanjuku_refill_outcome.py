@@ -228,10 +228,10 @@ def test_month_done_names_insufficient_funds_for_a_short_army():
     # g809 5-8: 5 soldiers at 65G with the hero's 50G house repair held.
     mem, header = _closing_month(5, 65, hero_repair_reserve=50)
     summary = monthly._refill_month_outcome(mem, mem['shop'], header)
-    assert summary['outcome'] == 'insufficient_funds' and summary['soldiers'] == 5
+    assert summary['outcome'] == 'not_attempted' and summary['soldiers'] == 5
     [rec] = outcomes(mem)
-    assert rec['resulting_event'] == 'insufficient_funds'
-    assert rec['observed_metric']['spendable'] == 0
+    assert rec['resulting_event'] == 'not_attempted'
+    assert rec['observed_metric']['spendable'] == 15  # 65 - 50, no wage hold
     assert rec['observed_metric']['repair'] == 50
 
 
