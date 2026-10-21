@@ -961,7 +961,23 @@ class SorenCoordinatorAdapter:
                         expected = None
                 if expected:
                     self._recover_resumed_loop(str(expected))
-            if not self._ack(payload):
+            ack = self._ack(payload)
+            should_proceed = False
+            if not ack:
+                # No broker request at all: verify live processes and HTTP.
+                should_proceed = True
+            elif self._is_expired_timeout_cleanup(payload):
+                # The broker rewrote its own expired cleanup request to
+                # ack=timeout (RC_EXPIRED): the request/ack identity still
+                # matches completely, no resource or control is held, and the
+                # broker's own deadline has passed. Proceed to verify live
+                # processes and HTTP.
+                should_proceed = True
+            # else: active request (accepted/waiting/stopping/stopped) or cancelled:
+            # do not bypass the normal lifecycle flow. Cancelled requests
+            # must be settled through adopt_failed_candidate which cancels
+            # and archives them before readiness is called.
+            if should_proceed:
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
                         with urllib.request.urlopen("http://127.0.0.1:8080/", timeout=1.0) as response:
@@ -970,6 +986,46 @@ class SorenCoordinatorAdapter:
                     except (urllib.error.URLError, OSError):
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+    @staticmethod
+    def _is_expired_timeout_cleanup(payload: dict) -> bool:
+        """True only for the broker's own fully-matched expired cleanup residue.
+
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED)
+        when polled. Request and ack are stored separately, so the ack alone
+        proves nothing: the request must still exist and both records must
+        carry the complete, identical boundary identity — the same
+        ``_round_boundary_identity`` contract the stop path pins (schema,
+        request_id, game, generation, deadline_epoch, deadline_at, and
+        ``operation`` unset, so a player_change request can never pose as a
+        plain cleanup). The residue must also hold nothing else: any resource
+        or control record means a runtime is held or a stop is in progress
+        and readiness must not bypass it (#1969 review; cf.
+        ``_failed_candidate_broker_state``). A still-valid request must not be
+        mislabelled: only the broker's own expired ``deadline_epoch`` is a
+        proven expired cleanup (#2061). A normal old cleanup may carry a
+        generation different from the current spec, so the match is
+        request-to-ack only — a spec-generation match is never substituted.
+        Any mismatched, extra, or malformed shape fails closed.
+        """
+        if not isinstance(payload, dict):
+            return False
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload for key in ("request", "ack", "resource", "control"))):
+            return False
+        request = payload.get("request")
+        ack = payload.get("ack")
+        if payload.get("resource") is not None or payload.get("control") is not None:
+            return False
+        if not isinstance(ack, dict) or str(ack.get("status") or "") != "timeout":
+            return False
+        try:
+            identity = SorenCoordinatorAdapter._round_boundary_identity(request)
+            if SorenCoordinatorAdapter._round_boundary_identity(ack) != identity:
+                return False
+        except AdapterError:
+            return False
+        return _request_deadline_passed(ack)
 
     def _paused_loop_identity(self) -> tuple[int, int] | None:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
@@ -1038,6 +1094,10 @@ class SorenCoordinatorAdapter:
         if matches is None or len(matches) != 1:
             return False
         started_at, pid, ticks = matches[0]
+        # If there's a pause marker for soren_loop.sh, the loop is not considered live.
+        # This catches player_change expiry where the pause marker remains.
+        if expected == "soren_loop.sh" and (self.root / "tmp/state/soren_loop.paused").exists():
+            return False
         if self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at:
             return True
         # An older instance is acceptable only if it is the very loop that was paused

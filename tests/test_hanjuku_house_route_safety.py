@@ -55,6 +55,8 @@ def test_enemy_on_repair_route_cannot_be_confirmed(route, phase):
     mem, _ = route
     assert confirm(mem, phase) == []
     assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'route_unverified'
+    assert mem['last_house_deferral']['phase'] == phase
     assert not mem['house'].get('departure_pending')
     assert mem['garrison']['source'] == ['ゼウス', 'どうし']
     assert not mem.get('sorties')
@@ -62,11 +64,25 @@ def test_enemy_on_repair_route_cannot_be_confirmed(route, phase):
                for r in mem['_records'])
 
 
+
+@pytest.mark.parametrize('gold,confirmed', [(49, False), (50, True), (79, True)])
+def test_necessary_repair_confirmation_uses_only_its_real_price(route, gold, confirmed):
+    mem, _ = route
+    mem['gold'] = gold
+    make_crossing_friendly(mem)
+    actions = confirm(mem)
+    assert (actions == [commands.pad('a')]) is confirmed
+    if not confirmed:
+        assert mem['house']['phase'] == 'close'
+        assert any(r['decision'] == 'house_deferred' for r in mem['_records'])
+
 def test_cursor_at_house_is_not_the_generals_origin(route):
     mem, _ = route
     mem['house']['phase'] = 'house_view'
     assert house._view_move(screen('world_map'), mem, None, (140, 140), 'house_confirm') == []
     assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'route_unverified'
+    assert mem['last_house_deferral']['phase'] == 'house_view'
 
 
 def test_enemy_well_outside_route_does_not_block_repair(route):

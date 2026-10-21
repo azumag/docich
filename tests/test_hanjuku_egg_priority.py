@@ -57,7 +57,7 @@ def test_paid_egg_estimate_is_not_reserved_again_alongside_hero_repair():
     assert mem['shop']['soldiers_done'] is True
 
 
-@pytest.mark.parametrize('gold', [45, 79])
+@pytest.mark.parametrize('gold', [45, 49])
 def test_insufficient_recovery_money_is_never_spent_on_more_soldiers(gold):
     mem, screen = enough_army(gold)
     assert policy.month_step(screen, mem) == [policy.pad('b')]

@@ -96,7 +96,9 @@ def test_unknown_glyph_cannot_turn_a_partial_egg_row_into_evidence():
 @pytest.mark.parametrize('gold,want', [(None, None), (79, None), (80, ('ピアス', 50)),
                                      (129, ('ピアス', 50)), (130, ('みずぎ', 100)),
                                      (229, ('みずぎ', 100)), (230, ('スカーフ', 200))])
-def test_purchase_budget_always_keeps_wages(gold, want):
+def test_gift_budget_can_still_apply_an_explicit_optional_reserve(gold, want):
+    # The broken-egg repair path passes no wage reserve; this only checks the
+    # reusable helper with an explicitly supplied optional reserve.
     assert house.affordable_gift(gold, p.WAGE_RESERVE) == want
 
 
@@ -529,6 +531,42 @@ def test_roster_open_retry_never_presses_x_on_unknown_screen():
     assert not any(r['decision']=='house_roster_open_retry' for r in mem.get('_records', []))
 
 
+
+@pytest.mark.parametrize('gold,dispatched', [(49, False), (50, True), (60, True), (79, True)])
+def test_necessary_broken_egg_repair_has_no_wage_hold(gold, dispatched):
+    mem = memory('leave_roster', pending=['ゼウス'])
+    mem['gold'] = gold
+    house._next_general(mem)
+    assert (mem['house']['phase'] != 'close') is dispatched
+    deferred = any(r['decision'] == 'house_general_deferred' for r in mem.get('_records', []))
+    assert deferred is (not dispatched)
+
+
+@pytest.mark.parametrize('gold,item', [(49, None), (50, 'ピアス'), (60, 'ピアス'), (79, 'ピアス')])
+def test_repair_gift_arrival_uses_the_real_price_without_wages(gold, item):
+    mem = memory('travel')
+    house.step(parse(gifts(gold=gold)), mem, gifts(gold=gold))
+    assert (mem['house'].get('purchase') or {}).get('item') == item
+    if item is None:
+        assert mem['house']['phase'] == 'decline'
+        assert any(r['decision'] == 'house_purchase_skipped' for r in mem['_records'])
+    else:
+        assert mem['house']['purchase']['cost'] == 50
+        assert mem['house']['phase'] == 'buy'
+
+
+@pytest.mark.parametrize('gold,selected', [(49, False), (50, True)])
+def test_repair_purchase_confirmation_uses_only_the_real_price(gold, selected):
+    mem = memory('buy')
+    mem['house']['purchase'] = {'item': 'ピアス', 'cost': 50, 'gold_before': 50,
+                                'month': mem.get('month')}
+    actions = house.step(parse(gifts(gold=gold, selected=0)), mem, gifts(gold=gold, selected=0))
+    assert (actions == [p.pad('a')]) is selected
+    if selected:
+        assert any(r['decision'] == 'house_purchase_requested' for r in mem['_records'])
+    else:
+        assert mem['house']['phase'] == 'close'
+
 def test_marching_general_dispatch_defers_until_arrival():
     mem = memory('leave_roster', pending=['ヴィーナス', 'ゼウス'])
     mem['gold'] = 250
@@ -667,12 +705,12 @@ def test_close_phase_concert_text_falls_back_to_ordinary():
 
 def test_unaffordable_dispatch_records_the_defer_before_closing():
     mem = memory('leave_roster', pending=['ゼウス'])
-    mem['gold'] = 31
+    mem['gold'] = 49
     house._next_general(mem)
     # Closing is right (the visit could not buy anything), but it used to end
     # without a trace and the owner just saw "never entered the house".
     assert mem['house']['phase'] == 'close'
     rec = [r for r in mem['_records'] if r['decision'] == 'house_general_deferred'][-1]
     metric = rec['observed_metric']
-    assert (metric['gold'], metric['pending'], metric['need']) == (31, ['ゼウス'], 80)
+    assert (metric['gold'], metric['pending'], metric['need']) == (49, ['ゼウス'], 50)
     assert mem['house']['pending'] == ['ゼウス']

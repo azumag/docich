@@ -75,7 +75,10 @@ def accusation_text() -> str:
 
 
 def reveal_text(culprit: str, method: str, motive: str) -> str:
-    return _REVEAL_TEXT.format(culprit=culprit, method=method, motive=motive)[:MAX_SPEECH]
+    text = f"答えの開示です。犯人は{culprit}でした。手法は{method}。"
+    if motive:
+        text += f"動機は{motive}。"
+    return text[:MAX_SPEECH]
 
 
 def _counts(total, *, skipped=0):
@@ -84,12 +87,13 @@ def _counts(total, *, skipped=0):
 
 def publish(g, *, kind: str, title: str, overlay_body: str, speech_text: str,
             request_id: str, audio_enabled: bool, speaker: str = "",
+            runtime_fence: dict | None = None, dedup_scope: str = "",
             overlay=append_event, speech=enqueue_audio_text, now=time.time) -> dict:
     result = {"overlay": _counts(1),
               "speech": _counts(1, skipped=0 if audio_enabled else 1)}
     event = {
         "ts": int(now()),
-        "category": "trpg",
+        "category": "game",
         "level": "info",
         "title": title[:OVERLAY_TITLE_LIMIT],
         "body": overlay_body[:OVERLAY_BODY_LIMIT],
@@ -103,7 +107,8 @@ def publish(g, *, kind: str, title: str, overlay_body: str, speech_text: str,
         result["overlay"]["failed"] += 1
     if audio_enabled:
         try:
-            speech(g, speech_text, context=CONTEXTS.get(kind, "trpg:intro"), speaker=speaker)
+            speech(g, speech_text, context=CONTEXTS.get(kind, "trpg:intro"), speaker=speaker,
+                   runtime_fence=runtime_fence, dedup_scope=dedup_scope)
             result["speech"]["sent"] += 1
         except Exception:
             result["speech"]["failed"] += 1

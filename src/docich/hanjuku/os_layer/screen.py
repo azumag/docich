@@ -11,7 +11,7 @@ import collections
 import hashlib
 import re
 
-from .font import UNKNOWN, TextLine, dark, joined, light, read_lines, row_masks
+from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks
 from .pixels import Frame
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
@@ -261,6 +261,69 @@ class Battle:
     ally_hp: int | None
 
 
+# ぶつかり合いの連打ゲージ (青ゲージ)。gcgx battle.html: ぶつかった際にバーが
+# 青くなるので、その間にA連打で踏ん張って前進しやすくなる。実測 (g809
+# decision-001/026/029/031、g684 frame-089/094 の白兵パネル): 各HP表示の下
+# y=195..203、敵側 x=24..86 / 味方側 x=152..214 の63px幅。赤系はゲージ残存
+# (g809 戦闘開始直後の両側)、緑系は消耗しきり (デュオニソス戦で敵側が数秒で
+# 緑へ遷移し戦闘を通して戻らない — gcgx/triplequotation の敵側決定的消費と
+# 一致)。接触時の「青」状態は保存実機フレーム480枚のどこにもなく、
+# CLASH_GAUGE_BLUE は空で始まる。実機の青フレームで校正するまで state
+# 'blue' は絶対に報告しない (Phase 1 契約: 未校正のpixel閾値を作らない)。
+CLASH_GAUGE_ROWS = range(195, 204)
+CLASH_GAUGE_BOX = {'enemy': (24, 86), 'ally': (152, 214)}
+CLASH_GAUGE_RED = ((205, 40, 16), (222, 80, 16))
+CLASH_GAUGE_GREEN = ((189, 206, 156), (148, 133, 139))
+CLASH_GAUGE_DARK_RED = ((164, 32, 16),)
+CLASH_GAUGE_BLUE: tuple = ()      # UNCALIBRATED: live blue frames only
+# 判定に必要な彩色の下限。メニューや会話で枠が隠れた観測を状態扱いしない。
+CLASH_GAUGE_MIN_FILL = 0.5
+
+
+@dataclass
+class ClashGauge:
+    """One side's measured 連打ゲージ bar; every field is a screen fact.
+
+    ``state`` maps the dominant tone through the measured palette tables.
+    ``'blue'`` (the contact window) can only appear once CLASH_GAUGE_BLUE
+    holds a live-calibrated palette, so an uncalibrated bot never reports
+    it. ``tones`` keeps the raw dominant colors for later calibration.
+    """
+
+    side: str                       # 'enemy' | 'ally'
+    box: tuple[int, int, int, int]
+    filled: float | None            # colored extent / measured bar width
+    tones: tuple
+    state: str | None               # 'red' | 'green' | 'dark_red' | 'blue' | None
+
+
+def _clash_gauge(frame: Frame, side: str) -> ClashGauge | None:
+    """One side's 連打ゲージ below the HP field, or None when it is absent."""
+    x0, x1 = CLASH_GAUGE_BOX[side]
+    y0, y1 = min(CLASH_GAUGE_ROWS), max(CLASH_GAUGE_ROWS)
+    tones: collections.Counter = collections.Counter()
+    colored = 0
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            pixel = frame.pixel(x, y)
+            if pixel in ((238, 238, 238), (213, 214, 197), (197, 198, 205),
+                         (189, 149, 131), (32, 32, 32)):
+                continue            # panel background and ink, not gauge fill
+            tones[pixel] += 1
+            colored += 1
+    width = (x1 - x0 + 1) * (y1 - y0 + 1)
+    filled = colored / width
+    if filled < CLASH_GAUGE_MIN_FILL:
+        return None                 # hidden or absent: no gauge fact
+    dominant = tuple(tone for tone, _ in tones.most_common(2))
+    state = next((name for name, table in (('blue', CLASH_GAUGE_BLUE),
+                                            ('red', CLASH_GAUGE_RED),
+                                            ('green', CLASH_GAUGE_GREEN),
+                                            ('dark_red', CLASH_GAUGE_DARK_RED))
+                  if tones and tones.most_common(1)[0][0] in table), None)
+    return ClashGauge(side, (x0, y0, x1, y1), filled, dominant, state)
+
+
 @dataclass
 class EggRow:
     name: str
@@ -286,11 +349,19 @@ class Screen:
     egg_rows: list[EggRow] = field(default_factory=list)
     # (味方, 敵) の兵士数。読めない側は None、フィールド計測なしは全体で None。
     field_soldiers: tuple[int | None, int | None] | None = None
+    # ぶつかり合いの連打ゲージ実測 (敵側・味方側)。パネルが無い時は空。
+    clash_gauges: list[ClashGauge] = field(default_factory=list)
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
     priest_ritual_scene: bool = False
     priest_ritual_dialogue: bool = False
+    # Positive pixel evidence only; raw lines retain all unknown message cells.
+    prose_attached_marks: frozenset[tuple[int, int]] = frozenset()
+    # Normalised RGB digest of the frame this screen came from. A flow may
+    # compare it with the previous observation to tell "the same picture came
+    # back" from a real redraw; Screen objects built by hand leave it None.
+    frame_sha256: str | None = None
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -670,6 +741,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     text = joined(lines)
     hand = find_hand(frame)
     screen = Screen(lines=lines, hand=hand, text=text)
+    screen.frame_sha256 = frame.digest()
     screen.header = _header(lines)
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
@@ -677,6 +749,8 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         # 召喚メニューのフレームでは _battle() は None (敵側は兵士ではなく
         # 召喚獣なので上書きしない)。読み取りは直近の通常戦闘フレームのもの。
         screen.field_soldiers = _field_soldiers(frame)
+        screen.clash_gauges = [g for g in (_clash_gauge(frame, side)
+                                           for side in ('enemy', 'ally')) if g]
     screen.menu_rows = _menu_rows(lines)
     box_rows = _box_rows(screen.menu_rows)
     if not screen.menu_rows:
@@ -716,6 +790,9 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'text':
+        screen.prose_attached_marks = attached_mark_cells(
+            frame, screen.lines, rect=(24, 135, 232, 176), masks=masks)
     if screen.kind not in _KNIGHT_MENU_KINDS and not _card_picker_rows(screen):
         # Palette pixels beside dialogue words are not a command cursor
         # (g745: the God's dialogue contributed nine knight-colour pixels).
@@ -828,6 +905,13 @@ def classify_text(s: Screen) -> str:
     if 'よろしいでっか' in t or 'なりまんな' in t:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
+        return 'gift_request'
+    # A partly unread request must not turn the unique bijin item menu into
+    # the merchant's three-price shop list. Require the entire fixed set.
+    gift_rows = [''.join(word for x, word in line.spans() if x >= 144)
+                 for line in s.lines]
+    gifts = [word for word in gift_rows if PRICE.fullmatch(word)]
+    if len(gifts) == 3 and set(gifts) == {'こうすい100G', 'くるま200G', 'いえ500G'}:
         return 'gift_request'
     if summer_bonus_seen(t):
         # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が

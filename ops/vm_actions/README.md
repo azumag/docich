@@ -96,6 +96,11 @@ body は次の3キーだけを持つ1個の JSON object です。余分なキー
 - out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
 - 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
 
+ゲスト OS 自体が無応答（SSH banner exchange タイムアウト + WebUI 無応答）のときは、この
+gateway を含む全 operation が使えない。復旧は
+`docs/operations/vm-guest-unresponsive-recovery.md` の帯域外通常再起動だけを使う
+（オーナー明示承認が前提。自動再起動・権限新設はしない）。
+
 ### turn-based 戦略を人手の PR で上書き反映する手順
 
 turn-based の `strategy.py` / `strategy_helpers/` / `best_score.txt` などは改善ループ（`eloop_improve.sh` → `strategy/persist.sh`）が**実機で書き**、管理 clone `/home/ubuntu/soren-persist` 経由で **専用 candidate branch `runtime/eloop-improve` を更新し、`soviet_now main` への PR を作成**します（**main へは直接 push しません**）。採用戦略は PR + CI + review を通ったものだけが main に入ります。

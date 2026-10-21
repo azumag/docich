@@ -32,13 +32,13 @@ TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', '
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
 
-BIJIN_MIN_GOLD = 1000   # 美女の依頼を断る所持金のしきい値（オーナー指示 2026-10-15）
+BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
 BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
 
-# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜207
+# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜208
 # （_trade_choice_pair と同じ帯）。本文の内側列だけを読み、パネル外枠のタイルは除く。
 PROSE_ROWS = range(135, 176)
 PROSE_COLUMNS = (24, 232)
@@ -55,28 +55,31 @@ def readable_prose_screen(screen: Screen) -> bool:
     実際に読める本文が1つ以上あり、かつ部分的にしか読めなかった行が無い時だけ真を返す。
 
     帯に本文が無い（所持金ヘッダだけ）頁と、全部が未読の頁はどちらも偽になる。
-    外枠が作る欠字だけの行は本文の証拠に数えない（読めた行が別にあれば解除できる）。
+    外枠は本文の内側列に含めない。濁点等はparseが原画像で付随markと確認したセル
+    だけを除き、内側の全UNKNOWN行も終了を示す証拠にはしない。
     """
     if screen.kind != 'text' or screen.hand is not None:
         return False
-    if any(176 <= line.y <= 207 for line in screen.lines):
-        return False
     x0, x1 = PROSE_COLUMNS
+    if any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+           for line in screen.lines):
+        return False
     readable = False
     for line in screen.lines:
         if line.y not in PROSE_ROWS:
             continue
-        cells = [ch for x, ch in line.cells if x0 <= x < x1]
+        cells = [ch for x, ch in line.cells if x0 <= x < x1
+                 and (x, line.y) not in screen.prose_attached_marks]
         known = [ch for ch in cells if ch != UNKNOWN and ch != ' ']
-        if known and UNKNOWN in cells:
-            return False   # 行頭・行末を欠いた本文は終了証拠にしない
+        if UNKNOWN in cells:
+            return False   # 行頭・行末の欠字も全未読本文行も終了証拠にしない
         if known:
             readable = True
     return readable
 
 
 def _trade_choice_pair(options):
-    band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
+    band = [(x, y, word) for x, y, word in options if 176 <= y <= 208]
     pairs = []
     for yes, no in TRADE_CHOICE_PAIRS:
         accepts = [row for row in band if row[2] == yes]
@@ -144,7 +147,9 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if screen.kind not in ('text', 'unknown'):
         return None
     options = _options(screen)
-    pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
+    pair = (None if any(ch == UNKNOWN for line in screen.lines
+                      if 176 <= line.y <= 208
+                      for x, ch in line.cells if PROSE_COLUMNS[0] <= x <= PROSE_COLUMNS[1])
             else _trade_choice_pair(options))
     labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
     if (guard.get('choice_seen') and readable_prose_screen(screen)
@@ -155,7 +160,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
         return None
     suspect_choice = (screen.hand is not None or pair is not None
                       or any(word in labels for _, _, word in options)
-                      or any(176 <= y <= 207 and not (
+                      or any(176 <= y <= 208 and not (
                           _trade_named_general(word) or any(tok in word for tok in TRADE_GUARD_TOKENS))
                              for _, y, word in options))
     if suspect_choice:
@@ -195,20 +200,20 @@ def _bijin_gold(screen: Screen):
 
 
 def bijin_guard_step(screen: Screen, mem, *, phase=None):
-    """美女の依頼: 所持金1000G以下・読取不明では必ず断る。
+    """1000G以上なら依頼を受けて家へ進み、それ以外・読取不明は断る。
 
-    Owner (2026-10-15): 美女イベントでお金に余裕がないとき（少なくとも
-    1000G以下）は必ず「いかん」で断る。依頼文は「〜お願いがあって来たの……
-    聞いてくれる?」（倒転王国 monthlyevent.html）。承諾側 うんデヘヘ！ を選ぶと
-    どれか ほしいなー → 香水100G/車200G/家500G の購入メニューへ進み、
-    半熟値が上がるのは家500Gだけで他は何も起きない。実機のかな書きに合わせ、
-    断り行は いかんッ/けえんな/けーんな を探す。
-
-    1000G超の裏付けが読めたときだけ従来の経路（承諾して最安品）へ返し、
-    それ以外は断り行を読んで選ぶ。断り行・現在行を確定できないときは
-    ブラインドAを押さず保留する（ゴニンジャーと同じフェイルセーフ）。
-    依頼文の読み上げ頁（選択肢がまだ見えない）は既存の進行に任せる。
+    選択肢と現在行を確認できない間は決定せず、既存の画面所有境界を保つ。
     """
+    if mem.get('bijin_gift_hold') is True:
+        if (mem.get('month_sub') or screen.kind in (
+                'map', 'map_target', 'world_map', 'month_menu', 'battle',
+                'battle_menu', 'egg_battle_menu', 'monster_menu')
+                or readable_prose_screen(screen)):
+            mem.pop('bijin_gift_hold', None)
+        elif screen.kind != 'gift_request':
+            # Losing the text classifier is not evidence that the item menu
+            # ended. Keep its owner across OCR misses instead of blind A/B.
+            return []
     guard = mem.get('bijin_guard')
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
@@ -222,7 +227,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             _record(mem, 'bijin_request_seen', screen=screen.kind,
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
                                      'gold': _bijin_gold(screen)},
-                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以下・読取不明なら必ず断る')
+                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以上なら家へ進み、未満・読取不明なら断る')
         guard['tick'] = tick
     if not isinstance(guard, dict):
         return None
@@ -236,9 +241,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         mem.pop('bijin_guard', None)
         return None
     gold = _bijin_gold(screen)
-    if gold is not None and gold > BIJIN_MIN_GOLD:
-        mem.pop('bijin_guard', None)  # 1000G超は従来どおり（承諾側。購入品の改善は別課題）
-        return None
+    accept = gold is not None and gold >= BIJIN_MIN_GOLD
     if not _is_bijin_request(screen.text):
         if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
             # A positively readable page without the request wording, without
@@ -259,7 +262,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             # request could be confirmed), so keep the pending episode held
             # instead of returning None and letting the generic A through.
             # Release only happens on an explicit end condition: a read
-            # decline/accept row, a gold reading over the floor, a new monthly
+            # decline/accept row, a new monthly
             # owner or a non-dialogue/battle/map screen.
             guard['held'] = True
             if not guard.get('unread_question_recorded'):
@@ -270,12 +273,12 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
                         reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
             return []
         return None
-    band = [word for _, y, word in _options(screen) if 176 <= y <= 207 and word]
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 208 and word]
     if screen.hand is None and not band:
         return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
     guard['choice_seen'] = True
     move = None
-    for label in BIJIN_DECLINE_TOKENS:
+    for label in (('うんデヘヘ', 'うむッ') if accept else BIJIN_DECLINE_TOKENS):
         move = menu_to(screen, label, exact=False)
         if move is not None:
             break
@@ -285,18 +288,18 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             guard['unread_choice_recorded'] = True
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'bijin_guard': True, 'gold': gold, 'text': screen.text[-80:]},
-                    reason='美女の依頼の断り行（いかんッ/けえんな）と現在行を確定できないため決定せず再観測')
+                    reason='美女の依頼の選択行と現在行を確定できないため決定せず再観測')
         return []
     if move != 'here':
         return [move]
     guard['chosen'] = True
     cur = _current(screen)
     _record(mem, 'prompt', choice=(cur[2] if cur else label), prompt=screen.text[-60:],
-            strategy_variant=('decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
+            strategy_variant=('accept_bijin_house' if accept else
+                              'decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
             observed_metric={'gold': gold},
-            reason=('所持金{}Gが1000G以下と読めたため美女の購入依頼を断る（いかん）'.format(gold)
-                    if gold is not None else
-                    '所持金を読めないため美女の購入依頼を見送る（1000G超を確認できるまでは買わない）'))
+            reason=('所持金1000G以上を確認したため依頼を受けて家を選ぶ' if accept else
+                    '所持金1000G以上を確認できないため依頼を断る'))
     return [pad('a')]
 
 
@@ -352,6 +355,39 @@ def yes_no_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _summer_bonus_choice_band(screen: Screen) -> bool:
+    """True while the 8月 prompt's own choice band can still be on screen.
+
+    ``confirmation_planned`` only says A was sent; it is not evidence that the
+    menu went away. The band is denied by its own drawn rows and by the choice
+    cursor the prompt always shows: either one means the 3-choice menu is still
+    up, so an unread row (まとめて解雇 included) must not be confirmed.
+
+    The band covers the third choice row at y=208, not 207: the upper two rows
+    and the hand can be the only things that disappear, and a lone 208 row is
+    still the menu.
+
+    Measured dialogue window (g825 evidence, 2ねん8がつ): every response page
+    keeps the panel's outer frame tiles — a single unknown cell at x=248 on
+    the band rows — so an edge-only row is a response page, not a choice row
+    (tests/fixtures/hanjuku/g825-summer-response.png). Only cells inside the
+    panel's inner columns (PROSE_COLUMNS) keep the menu alive: the label rows
+    (x=176) and the post-A fade (inner tiles at x=32..224,
+    g825-summer-post-a-fade.png) still re-observe; the border-only response
+    page does not.
+    """
+    if screen.hand is not None:
+        return True
+    x0, x1 = PROSE_COLUMNS
+    # The choice label's tail can land exactly on the inner column boundary
+    # (x=232): the tail is a real choice label cell, so the inner check must
+    # include it. The response page's outer frame stays at x=248 and is still
+    # denied. The x=232 case comes from a synthetic reproduction; the x=248
+    # outer-frame case comes from the measured g825 fixture.
+    return any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+               for line in screen.lines)
+
+
 def summer_bonus_continue(screen: Screen, mem):
     """Keep a known choice episode through partial text or cursor loss."""
     if screen.kind == 'summer_bonus':
@@ -378,6 +414,23 @@ def summer_bonus_continue(screen: Screen, mem):
             screen.kind = 'summer_bonus_message'
             _record(mem, 'summer_bonus_message', target=plan['target'],
                     reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
+        # A planned A is not evidence that the menu went away: the prompt's own
+        # question and a single unread tile both live in the prose band, so the
+        # band alone cannot distinguish the response page from the prompt. Only
+        # advance when the choice band itself is denied (see
+        # ``_summer_bonus_choice_band``): while the band or its hand can still be
+        # on screen, re-observe instead of confirming an unread choice.
+        elif plan and plan.get('confirmation_planned') and not same_menu:
+            band_gone = not _summer_bonus_choice_band(screen)
+            has_dialogue_content = any(
+                line.y in PROSE_ROWS and (line.cells or line.spans())
+                for line in screen.lines)
+            if band_gone and has_dialogue_content:
+                screen.kind = 'summer_bonus_message'
+                _record(mem, 'summer_bonus_message', target=plan['target'],
+                        reason='夏イベントの選択確定後に選択肢帯とカーソルが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
+            else:
+                return True  # the choice band cannot be denied; re-observe
         elif plan or old_choice:
             return True
     # A different recognized screen or the observed post-choice response ends
@@ -554,8 +607,8 @@ def observe_events(screen: Screen, mem):
 
 
 def gift_step(screen: Screen, mem):
-    """「なにを かいあたえますか?」: the chart resets here; the bot cannot, so
-    it buys the cheapest listed item and records the deviation."""
+    """美女は1000G以上で家を選ぶ。それ以外の贈り物は従来の方針。"""
+    mem.pop('bijin_gift_hold', None)
     items = []
     for line in screen.lines:
         # The live gift prompt shares the first price row. Restrict the
@@ -564,6 +617,28 @@ def gift_step(screen: Screen, mem):
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))
+    bijin = ('どれかほしい' in screen.text.replace(' ', '')
+             or any(name in ('こうすい', 'くるま', 'いえ') for _, name in items))
+    if bijin:
+        mem['bijin_gift_hold'] = True
+        gold = _bijin_gold(screen)
+        if gold is None or gold < BIJIN_MIN_GOLD:
+            for label in BIJIN_DECLINE_TOKENS:
+                move = menu_to(screen, label, exact=False)
+                if move is not None:
+                    return [pad('a')] if move == 'here' else [move]
+            return []  # Already in the item menu: never purchase without the cash condition.
+        houses = [(price, name) for price, name in items if name == 'いえ' and price == 500]
+        if len(houses) != 1:
+            return []
+        price, name = houses[0]
+        move = menu_to(screen, name, exact=False)
+        if move == 'here':
+            _record(mem, 'gift', strategy_variant='bijin_house', item=name, price=price,
+                    gold=gold, observed_metric={'price': price, 'affordable': True},
+                    reason='所持金1000G以上のため半熟値を上げる家を選ぶ')
+            return [pad('a')]
+        return [move] if move else []
     if not items:
         return []
     price, name = min(items)

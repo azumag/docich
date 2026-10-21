@@ -34,10 +34,12 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
         (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
+        (self.doc / "ops" / "audio_priority").mkdir(parents=True, exist_ok=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
         for rel in (
             "ops/vm_actions/collect_diagnostics.py",
+            "ops/vm_actions/recover_soren_game.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
             "src/docich/pulse_volume.py",
@@ -52,6 +54,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "ops/audio_priority/priority.py",
         ):
             src = ROOT / rel
             if src.is_file():
@@ -138,6 +141,25 @@ class DiagnosticsGatewayTests(unittest.TestCase):
                 # The production checkout the gateway builds must contain it.
                 self.assertTrue((ROOT / relative).is_file())
 
+        # Dynamically exec_module'd files are collector code too: the import
+        # regex above cannot see importlib loads, so audit them separately.
+        # A load like this outside DIAGNOSTICS_FILES would run unverified
+        # code inside the read-only diagnostics operation (#2345 review).
+        dynamic = set()
+        for match in re.finditer(r"spec_from_file_location\(", source):
+            window = source[match.start():match.start() + 500]
+            names = re.findall(r'"([^"]+\.py)"', window)
+            if names:
+                dynamic.add(names[-1])
+        self.assertTrue(dynamic, "collector must load at least one reviewed file dynamically")
+        for name in sorted(dynamic):
+            with self.subTest(dynamic=name):
+                matches = sorted(p for p in verified if p.endswith("/" + name) or p == name)
+                self.assertTrue(
+                    matches, f"{name} is exec_module'd by the collector but not drift-verified"
+                )
+                self.assertTrue((ROOT / matches[0]).is_file())
+
     def test_preview_diagnostics_is_rejected(self):
         proc = self.call(f"diagnostics docich preview {'b' * 40}")
         self.assertNotEqual(proc.returncode, 0)
@@ -195,6 +217,44 @@ class DiagnosticsGatewayTests(unittest.TestCase):
                     self.assertEqual(self.snapshot(self.soren), before)
                 finally:
                     path.write_bytes(original)
+
+    def test_dynamic_recovery_helper_drift_is_refused_read_only(self):
+        # The collector exec_modules recover_soren_game.py to share the
+        # founding-marker rule, so the helper is collector code even though
+        # no `from docich...` import mentions it (#2345 review): drifting
+        # only the helper must refuse diagnostics, while the unmodified
+        # runtime keeps passing.
+        helper = self.doc / "ops" / "vm_actions" / "recover_soren_game.py"
+        self.assertTrue(helper.is_file())
+        proc = self.call(f"diagnostics docich production {'b' * 40}")
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        original = helper.read_bytes()
+        before = self.snapshot(self.soren)
+        try:
+            helper.write_bytes(original + b"\n# unreviewed helper drift\n")
+            proc = self.call(f"diagnostics docich production {'b' * 40}")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("VM operation rejected", proc.stderr.decode())
+            self.assertEqual(self.snapshot(self.soren), before)
+        finally:
+            helper.write_bytes(original)
+
+    def test_audio_priority_priority_py_drift_is_refused_read_only(self):
+        # priority.py is loaded via exec_module() in collect_diagnostics, not via
+        # a `from docich...` import, so the generic import-drift guard does not
+        # cover it. It must be listed in DIAGNOSTICS_FILES so a modified copy is
+        # treated as tracked drift and the collector/runtime are never executed.
+        path = self.doc / "ops" / "audio_priority" / "priority.py"
+        original = path.read_bytes()
+        before = self.snapshot(self.soren)
+        try:
+            path.write_bytes(original + b"\n# unreviewed audio-priority drift\n")
+            proc = self.call(f"diagnostics docich production {'b' * 40}")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("VM operation rejected", proc.stderr.decode())
+            self.assertEqual(self.snapshot(self.soren), before)
+        finally:
+            path.write_bytes(original)
 
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"
@@ -269,6 +329,19 @@ class DiagnosticsSanitizerTests(unittest.TestCase):
             gateway._sanitize_diagnostics({"status": "ok", "bad": object()})
 
 
+class DiagnosticsJsonCapTests(unittest.TestCase):
+    def test_cap_raised_to_64kib_and_reason_code_mapped(self):
+        gateway = load_gateway()
+        self.assertEqual(gateway.DIAGNOSTICS_JSON_MAX, 65536)
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics output too large")),
+            "diagnostics_output_too_large",
+        )
+        # Boundary: the cap is exclusive on the > side.
+        self.assertFalse(65536 > gateway.DIAGNOSTICS_JSON_MAX)
+        self.assertTrue(65537 > gateway.DIAGNOSTICS_JSON_MAX)
+
+
 class DiagnosticsAuthorizeTests(unittest.TestCase):
     def run_auth(self, **overrides):
         env = {
@@ -314,6 +387,19 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_REF="feature").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
 
+    def test_audio_gap_measure_is_owner_only_production_main_without_extra_confirm(self):
+        # Bounded read-only 92s broadcast-audio measurement (docich #1811):
+        # same gating shape as cpu_profile/diagnostics -- owner-only dispatch
+        # on production/main, and never a confirm=production operation.
+        proc = self.run_auth(INPUT_OPERATION="audio_gap_measure")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("audio_gap_measure", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
     def test_loop_pause_release_is_owner_only_production_main_with_confirm(self):
         base = {"INPUT_OPERATION": "release_soren_loop_pause", "INPUT_CONFIRM": "production"}
         proc = self.run_auth(**base)
@@ -347,7 +433,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-            "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
+            "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, "
             "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
@@ -375,6 +461,25 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn("trusted owner-only privileged install path", text)
         self.assertNotIn("exec docich production $SHA\" 2>", text)
 
+
+    def test_workflow_distinguishes_cap_overflow_from_stale_gateway(self):
+        text = WF.read_text(encoding="utf-8")
+        # Known size-overflow case gets a distinct, fixed message (not the
+        # stale-gateway guidance) so operators do not misread a data-volume
+        # problem as an unactivated gateway.
+        self.assertIn("diagnostics_output_too_large", text)
+        self.assertIn("Diagnostics collector output exceeds the reviewed gateway JSON cap", text)
+        # The specific check must come before the generic rejection so the
+        # boundary is preserved: overflow -> fixed message, everything else ->
+        # the existing stale-gateway guidance (which still stops the run).
+        specific_idx = text.find("diagnostics_output_too_large")
+        generic_idx = text.find("Installed VM gateway does not accept diagnostics")
+        self.assertGreaterEqual(specific_idx, 0)
+        self.assertGreaterEqual(generic_idx, 0)
+        self.assertLess(specific_idx, generic_idx)
+        # General rejection still stops the run (no exec bypass).
+        self.assertIn("diagnostics-gateway.err", text)
+        self.assertNotIn("exec docich production $SHA\" 2>", text)
 
 if __name__ == "__main__":
     unittest.main()
