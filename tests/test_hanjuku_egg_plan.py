@@ -146,14 +146,16 @@ def test_a_spare_dropper_opens_the_battle_to_force_the_egg_drop():
 
 
 def test_a_charted_dropper_stays_with_the_chart_and_is_not_an_opening_tactic():
-    # チャート優先を維持 (#2364 方針): 1-A2 のフットバースはチャートで指定された
-    # 札なので、max HP 合計の判定が成立しても開幕の卵落には回さない。
-    state = mem('1-A2')
-    opening(state, 'ガルバンゾー', 30, 'しゅじんこう', 20)
+    # 82+30=112, 余り0。フットバースは成立してもチャートが所有する。
+    state = mem('1-V2', ally='ヴィーナス')
+    opening(state, 'ガルバンゾー', 30, 'ヴィーナス', 82)
     plan = state['battle']['egg_plan']
-    assert plan['max_hp_sum'] == plan['enemy_max_hp'] + plan['ally_max_hp']
+    assert plan['max_hp_sum'] == 112 and plan['remainder'] == 0
     assert 'フットバース' in plan['charted']
-    assert plan['dropper'] != 'フットバース'
+    assert 'フットバース' in plan['droppers']
+    assert next(row for row in plan['cards'] if row['name'] == 'フットバース')['drops'] is True
+    assert plan['dropper'] is None
+    assert policy._egg_drop_tactics(state, state['battle'], 'ガルバンゾー', plan) == []
     flow = state['battle'].get('card_flow')
     assert flow is None or not str(flow.get('tactic_id', '')).startswith('eggdrop:')
 
@@ -235,7 +237,7 @@ def test_boss_battles_are_excluded_and_eggless_or_used_eggs_do_not_fire():
     dropped = mem('1-C2', ally='ココット')
     opening(dropped, 'キッシュ', 26, 'ココット', 24)
     dropped['battle']['enemy_egg_drop_expected'] = True
-    assert policy._egg_plan(dropped, dropped['battle'])['verdict'] == 'dropped'
+    assert policy._egg_plan(dropped, dropped['battle'])['verdict'] == 'dropped_unconfirmed'
     assert policy._egg_plan(dropped, dropped['battle'])['dropper'] is None
     assert policy._egg_drop_tactics(dropped, dropped['battle'], 'キッシュ') == []
 
@@ -387,3 +389,11 @@ def test_battle_end_and_a_new_opponent_drop_the_old_plan_and_cards():
     plan = other['battle']['egg_plan']
     assert plan['enemy'] == 'キャラウェイ' and plan['verdict'] == 'no_egg'
     assert plan['dropper'] is None and plan['cards'] == []
+
+
+def test_non_threatening_egg_owner_has_documented_verdict():
+    state = mem('1-C2', ally='ココット')
+    opening(state, 'ミモザ', reference.general_profile('ミモザ')['max_hp'], 'ココット', 24)
+    plan = state['battle']['egg_plan']
+    assert plan['has_egg'] is True and plan['threat'] is False
+    assert plan['verdict'] == 'not_threat' and plan['dropper'] is None

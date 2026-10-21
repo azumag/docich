@@ -746,6 +746,7 @@ def _egg_inventory(mem, cur, kit):
     # cards_unclassified) の両方に載るため、札ごとに多い方の件数を使う。
     selected = cur.get('cards_selected') or []
     settled = [*(cur.get('cards_used') or []), *(cur.get('cards_unclassified') or [])]
+    sortie_spent = (mem.get('kit_spent') or {}).get(cur.get('step')) or []
     ordered = []
     for name in [*(kit or []), *sorted(stock, key=lambda n: (CARD_IDS.get(n, 99), str(n)))]:
         if isinstance(name, str) and name and name not in ordered:
@@ -757,7 +758,11 @@ def _egg_inventory(mem, cur, kit):
         count = count if type(count) is int and 0 <= count <= 99 else None
         if carried <= 0 and count == 0:
             continue                      # known absent, not an owned card
-        spent = max(selected.count(name), settled.count(name))
+        # _deploy_cards already removed settled sortie uses. Only this
+        # battle's overlapping settled entries may be credited: a prior
+        # battle's use must not cancel a new pending selection.
+        credited = min(settled.count(name), sortie_spent.count(name))
+        spent = max(selected.count(name), settled.count(name)) - credited
         if kit is None:
             available, unavailable = None, 'kit_unknown'
         elif carried <= 0:
@@ -831,7 +836,7 @@ def _egg_plan(mem, cur):
                        else 'unknown' if excluded or total is None or egg_state == 'unknown'
                        else 'no_egg' if egg_state == 'none'
                        else 'used' if egg_state == 'used'
-                       else 'dropped' if egg_state == 'dropped_unconfirmed'
+                       else 'dropped_unconfirmed' if egg_state == 'dropped_unconfirmed'
                        else 'not_threat' if plan['threat'] is False
                        else 'unknown' if plan['threat'] is None else 'not_droppable')
     # 出撃時の卵落計画 (#1553): 守備将軍の実測記録から出撃時に加えた卵落札。

@@ -4864,6 +4864,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v245-hero-repair-reservation",
             "hanjuku-chart-v247-house-cancel-diagnostics",
             "hanjuku-chart-v248-bijin-house-policy",
+            "hanjuku-chart-v249-shared-egg-plan",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

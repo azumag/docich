@@ -40,3 +40,43 @@ def test_two_separate_uses_still_consume_two_copies():
     r = row(_egg_inventory(mem, cur, ['グルミー', 'グルミー']), 'グルミー')
     assert r['available'] == 0
     assert r['unavailable'] == 'used'
+
+
+def test_real_plan_counts_pending_and_settled_uses_across_battles_once():
+    from docich import hanjuku_policy as policy
+    from docich.hanjuku_screen import Battle, Screen
+    from docich.hanjuku.judgment.battle import _egg_plan, _card_use_unclassified
+    card = 'ブラッキー'
+    mem = {'chapter': 1, 'month': '1-10', 'active': '1-C2', 'variant': 'chart',
+           'orders': {'1-C2': 'pending'}, 'picked': [], '_records': [],
+           'attack': {'general': 'ココット', 'castle': 'キカンドン',
+                      'side': 'attack', 'step': '1-C2'},
+           'card_override': {'1-C2': [card, card]}, 'card_stock': {card: 2}}
+    view = Screen(lines=[], hand=None, text='', kind='battle',
+                  battle=Battle('キッシュ', 26, 'ココット', 24))
+    policy.battle_step(view, mem); policy.battle_step(view, mem)
+    cur = mem['battle']
+    def count():
+        plan = _egg_plan(mem, cur)
+        return row(plan['cards'], card), plan
+    assert count()[0]['available'] == 2
+    cur['cards_selected'] = [card]
+    cur['card_flow'] = {'card': card, 'stage': 'announce', 'selection_planned': True}
+    assert count()[0]['available'] == 1
+    _card_use_unclassified(mem, cur, 'test transition')
+    remaining, plan = count()
+    assert plan['carried'] == [card]
+    assert remaining['available'] == 1 and remaining['usable'] is True
+    assert card in plan['droppers']
+    # A new battle retains the sortie expenditure, but resets local receipts.
+    next_cur = {**cur, 'cards_selected': [], 'cards_unclassified': [], 'cards_used': []}
+    assert row(_egg_plan(mem, next_cur)['cards'], card)['available'] == 1
+    next_cur['cards_selected'] = [card]
+    assert row(_egg_plan(mem, next_cur)['cards'], card)['available'] == 0
+    # Second use in the original battle: pending and settled both leave zero.
+    cur['cards_selected'].append(card)
+    cur['card_flow'] = {'card': card, 'stage': 'announce', 'selection_planned': True}
+    assert count()[0]['available'] == 0
+    _card_use_unclassified(mem, cur, 'second transition')
+    assert count()[0]['available'] == 0
+    assert count()[1]['droppers'] == []
