@@ -227,9 +227,26 @@ g747の2年4月は実兵0、70G、完全名簿の賃金6Gに対し、一覧に�
   卵ディニアル方針を決めて `battle_egg_plan` に残す（`_egg_plan`。`threat` が真の敵のみ記録）。
   携行札から `卵落 > (敵味方将軍の最大HP合計) mod 16` で落ちる札を選び、ID合計が47以下なら
   開幕卵も抑止する。**チャートがその札を指す戦闘では発火せず**（HPゲート・after_clash を壊さない）、
-  チャートに持たない卵落札だけを開幕に使い（`eggdrop:{step}:{card}`、同値は将軍ダメージが小さい札），
+  成立する携行卵落札を開幕に使い（2026-10-21オーナー指定: 同じ札の後続チャート指示より優先）（`eggdrop:{step}:{card}`、同値は将軍ダメージが小さい札），
   選択後の敵HP低下は `battle_egg_drop_unconfirmed` / `enemy_egg_drop_expected` として記録する。
   白兵ダメージと区別できないため、卵落・召喚不能は確定しない（v129）。
+- 右ステータスオーバーレイ（#2364）は、戦術と同じ `_egg_plan` の結果を `battle.egg_plan` に
+  残して描く。表示専用の再計算をしない。内容は次の3つ。
+  - 敵・味方の将軍: `general_profile` の9項目（戦闘・対抗・思考・エッグ種類・卵補正・得意・
+    初登場話数・性格・趣味）と最大HP。`battle.enemy_hp` / `battle.ally_hp` は現在HPとして別に扱い、
+    最大HPと混同しない。未収録の将軍は0で埋めず `None`（判定不能）にする。
+  - 切り札: `egg_plan.cards` の各行が実ID・卵落値・観測した在庫（`card_stock`、未観測はnull）・
+    携行枚数・使用可否を持つ。未携行・使用済み・ID不明の札は `usable=false` で、
+    `droppers`（＝未使用の携行札で計算上の落下条件を満たす候補）に入らない。
+    `dropper` はそこから敵卵状態・使用可否を考慮した開幕候補で、`droppers` と区別する。
+  - 卵落判定: 敵最大HP・味方最大HP・合計・余り・しきい値（余り+1）と `verdict`
+    （`droppable` / `not_droppable` / `no_egg` / `used` / `dropped_unconfirmed` / `excluded` /
+    `not_threat` / `unknown`）。`dropped_unconfirmed` は「選択後に敵HPが減った」までの推定で、実落下の確定ではない。
+  `card_drop_prediction(card, max_hp_sum)` をカードごとの共通判定とし、戦術・
+  `can_drop_egg`・既存表示用 `card_egg_drop_info` が同じ結果を参照する。
+  既存 `egg_drop_prediction(enemy_name, ally_name)` の引数と余りの契約は維持する。
+  `GENERAL_DETAILS` は128名の `GENERAL_TRAITS` から表示形式へ変換し、別表として手動更新しない。
+  表示面の描画・鮮度（30秒）・ゲーム切替時の撤去はSoren側の共有オーバーレイ契約に従う。
   出撃時の追加携行は、その城の守備将軍が前回戦闘パネルで実測済みの時だけ
   `dropper_card_kit` で卵落札を1枠に加える（#1553、`docs/hanjuku_egg_safe_melee.md`）。
 - 旧版の `enemy_egg_dropped=True` は戦闘観測で一度だけ無効化する。選択予定だけで卵リスクや救済確認を省略しない。

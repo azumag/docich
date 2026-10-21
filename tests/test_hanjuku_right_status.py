@@ -21,12 +21,14 @@ class TestGeneralFullView:
         assert ref.general_full_view(None) is None
         assert ref.general_full_view('存在しない将軍') is None
 
-    def test_general_details_missing(self):
-        # GENERAL_DETAILS にない将軍でも general_full_view は他データがあれば返す
+    def test_general_details_cover_previously_missing_general(self):
+        # 旧28名の表示テーブルに無かった将軍も共通128名から表示する
         v = ref.general_full_view('ゼウス')
         assert v is not None
         assert v['name'] == 'ゼウス'
-        assert '対抗' not in v  # details なし
+        assert v['対抗'] == '50%'
+        assert v['得意'] == '城攻'
+        assert v['エッグ種類'] == 'ワンダー'
 
 
 class TestEggDropPrediction:
@@ -137,3 +139,29 @@ class TestBoundaryTests:
         assert ref.egg_drop_threshold(80) == 1   # 80 % 16 = 0, +1 = 1
         assert ref.egg_drop_threshold(95) == 16  # 95 % 16 = 15, +1 = 16
         assert ref.egg_drop_threshold(117) == 6  # 117 % 16 = 5, +1 = 6
+
+
+def test_all_profiles_and_legacy_display_share_the_same_traits():
+    assert len(ref.GENERAL_DETAILS) == 128
+    for name in ref.GENERAL_STATS:
+        profile = ref.general_profile(name)
+        view = ref.general_full_view(name)
+        for legacy, field in (('最大HP', 'max_hp'), ('戦闘', 'combat'),
+                              ('卵補正', 'egg_bonus'), ('エッグ種類', 'egg_type'),
+                              ('思考', 'thought'), ('性格', 'personality'), ('趣味', 'hobby')):
+            assert view[legacy] == profile[field], (name, field)
+        assert view['対抗'] == f"{profile['counter']}%"
+        assert view['得意'] == (profile['aptitude'] or '－')
+
+
+@pytest.mark.parametrize('enemy,ally,total', [
+    ('ガルバンゾー', 'タピオカ', 80), ('しゅじんこう', 'ブラウニー', 95),
+    ('未知将軍', 'タピオカ', None)])
+def test_legacy_display_and_card_decision_share_prediction(enemy, ally, total):
+    assert ref.egg_drop_prediction(enemy, ally)['max_hp_sum'] == total
+    for card in ref.ALL_CARD_IDS:
+        decision = ref.card_drop_prediction(card, total)
+        display = ref.card_egg_drop_info(card, enemy, ally)
+        assert display['drops'] is decision['drops']
+        if total is not None:
+            assert ref.can_drop_egg(card, total) is decision['drops']
