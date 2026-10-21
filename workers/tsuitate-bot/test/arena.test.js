@@ -247,16 +247,46 @@ test("late foul ACK cannot overwrite acceptance proved by an advanced view", asy
   assert.equal(context.socket.packets("game:move").length, 2);
 });
 
-test("duplicate ACK cannot overwrite confirmed foul feedback", async (t) => {
+test("measurement fields: success ACK leaves no rejection reason", async (t) => {
   const context = setup(t);
   await begin(context);
-  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
-  await flush(context.session);
   context.socket.ack("game:move", { ok: true });
   await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
+  assert.ok(Number.isSafeInteger(context.session.record.decisions[0].decisionLatencyMs));
+  assert.ok(context.session.record.decisions[0].clocks);
+});
+
+test("measurement fields: error ACK stores fixed code, not raw text", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.ack("game:move", { ok: false, reason: "error", error: "fixture error" });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "unknown");
+  assert.equal(context.session.record.decisions[0].rejectionReason, "error");
+});
+
+test("measurement fields: timeout then accepted clears ack_error", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
+  await flush(context.session);
+  context.socket.ack("game:sync", { state: view({ moveNumber: 3 }) });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
+});
+
+test("measurement fields: timeout then foul sets foul reason", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
+  await flush(context.session);
+  context.socket.ack("game:sync", { state: view({ fouls: { you: 1, opponent: 0 } }) });
+  await flush(context.session);
   assert.equal(context.session.record.decisions[0].feedback, "foul");
-  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "foul");
-  assert.equal(context.socket.packets("game:move").length, 1);
+  assert.equal(context.session.record.decisions[0].rejectionReason, "foul");
 });
 
 test("a timed-out move remains unresolved after same-view sync, reconnect and process restore", async (t) => {
@@ -821,4 +851,27 @@ test("later verified result upgrades only an unknown game and preserves its evid
   assert.equal(report([dataset]).totals.incompleteHistory, 1);
   assert.equal(await store.refreshUnknownResults(async () => parsePublicResult(replay(), "test-game", "w")), 0);
   await assert.rejects(store.finish({ ...dataset, outcome: "loss" }), /conflicting_game_record/);
+});
+
+test("measurement fields: late timeout after accepted does not overwrite", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.server("game:state", advancedView(context.socket));
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
+});
+test("duplicate ACK cannot overwrite confirmed foul feedback", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
+  await flush(context.session);
+  context.socket.ack("game:move", { ok: true });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "foul");
+  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "foul");
+  assert.equal(context.socket.packets("game:move").length, 1);
 });
