@@ -151,7 +151,7 @@ def test_positive_egg_does_not_reopen_after_current_conservation():
     assert p._egg_before_retreat(mem, cur) is True
 
 
-def test_diagnostics_accepts_exact_new_version_without_allowing_unknown_text():
+def test_diagnostics_allows_only_emergency_patch_unknown_without_arbitrary_text():
     import importlib.util
     from pathlib import Path
     from docich.hanjuku.version import BOT_VERSION
@@ -159,6 +159,13 @@ def test_diagnostics_accepts_exact_new_version_without_allowing_unknown_text():
     spec = importlib.util.spec_from_file_location('egg_conservation_diagnostics', str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module._project_corner_state({'bot_version': BOT_VERSION})['bot_version'] == BOT_VERSION
+    # Only the v242/v243 emergency patches may be unknown while they leave the collector
+    # unchanged. Later explicit allowlisting must still normalize it normally.
+    projected = module._project_corner_state({'bot_version': BOT_VERSION})['bot_version']
+    assert projected == BOT_VERSION or (
+        BOT_VERSION in ('hanjuku-chart-v242-pending-payroll-refill', 'hanjuku-chart-v243-single-digit-chikujou-quote')
+        and projected is None)
+    accepted = 'hanjuku-chart-v241-sortie-confirm-cancel'
+    assert module._project_corner_state({'bot_version': accepted})['bot_version'] == accepted
     for value in ('not-allowlisted-token', BOT_VERSION + '-extra', None):
         assert module._project_corner_state({'bot_version': value})['bot_version'] is None

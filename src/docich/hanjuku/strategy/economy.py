@@ -176,9 +176,11 @@ def _soldier_spendable(mem, shop, header, *, recruit=True):
             or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0
             or shop.get('key') != _month_key(header)
             or (mem.get('_run_identity') is not None
-                and mem.get('month') not in (None, shop.get('key')))
-            or mem.get('recruit_payroll_pending')):
+                and mem.get('month') not in (None, shop.get('key')))):
         return None
+    # Pending chapter arrivals cannot block soldier cash entirely (#2611).
+    # Necessary spending has no wage hold (#2367); measured reservations and
+    # payment verification still apply.
     repair = _house_repair_reserve(shop)
     egg, hiring = shop.get('reserve', 0), shop.get('recruit_reserve', 0) if recruit else 0
     first = low_army_first(shop)

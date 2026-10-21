@@ -18,7 +18,11 @@ Observed sources (all read-only):
   - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
     fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
-    UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
+    UTC time, SHA and two nonsecret ID presence booleans only
+  - bounded tails of three fixed title-updater logs, classified in memory to
+    reviewed outcomes only, plus the daily script's mode and fixed user/system
+    unit states. Bodies, identities, URLs and arbitrary paths are never emitted;
+    historical observations never attest a current failure or the same run
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
@@ -3107,6 +3111,313 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     return result
 
 
+STREAM_TITLE_LOG_MAX_BYTES = 32 * 1024
+STREAM_TITLE_LOG_MAX_LINES = 256
+STREAM_TITLE_LOG_MAX_LINE_BYTES = 4096
+STREAM_TITLE_LOG_SOURCES = {
+    "game": ("soren", ("tmp", "logs", "stream_game.log"), "stream_game"),
+    "dispatch": ("state", ("logs", "stream-game.log"), "stream_game"),
+    "day": ("soren", ("tmp", "logs", "stream_title_day.log"), "stream_title"),
+}
+
+
+STREAM_TITLE_READ_REJECTIONS = frozenset({
+    "root_invalid", "root_owner_mismatch", "root_writable",
+    "directory_owner_mismatch", "directory_writable", "not_regular",
+    "file_owner_mismatch", "multiple_links", "file_writable",
+})
+
+
+class _StreamTitleUnsafe(ValueError):
+    """Carry a fixed metadata-only refusal without paths, IDs or raw errors."""
+
+    def __init__(self, reason):
+        super().__init__("unsafe title source")
+        self.reason = reason if reason in STREAM_TITLE_READ_REJECTIONS else "unknown"
+
+
+def _stream_title_open_fixed(root, parts):
+    """Open fixed sources through owned, non-writable-by-others directories.
+
+    Keep the parent descriptor for a post-read identity check. No environment
+    override, glob, symlink, device, FIFO or multiply linked file is accepted.
+    """
+    root = Path(root)
+    if not root.is_absolute() or ".." in root.parts:
+        raise _StreamTitleUnsafe("root_invalid")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(root.anchor, directory_flags)
+    fd = None
+    try:
+        # O_NOFOLLOW on a multi-component root protects only its final part.
+        # Traverse every component, including ancestors of the configured root.
+        for part in root.parts[1:]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        for part in (None, *parts[:-1]):
+            if part is not None:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                os.close(directory)
+                directory = child
+            info = os.fstat(directory)
+            stage = "root" if part is None else "directory"
+            if info.st_uid != os.getuid():
+                raise _StreamTitleUnsafe(stage + "_owner_mismatch")
+            if info.st_mode & 0o022:
+                raise _StreamTitleUnsafe(stage + "_writable")
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _StreamTitleUnsafe("not_regular")
+        if info.st_uid != os.getuid():
+            raise _StreamTitleUnsafe("file_owner_mismatch")
+        if info.st_nlink != 1:
+            raise _StreamTitleUnsafe("multiple_links")
+        if info.st_mode & 0o022:
+            raise _StreamTitleUnsafe("file_writable")
+        return fd, directory, info
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+        raise
+
+
+def _stream_title_file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_uid, info.st_mode, info.st_nlink)
+
+
+def _stream_title_log_observation(root, parts, prefix, now, sync):
+    """Report the newest complete log observation, not a current root cause.
+
+    The public producers have neither run IDs nor UTC offsets in these logs.
+    Host-local time is only an estimate; even a nearby journal timestamp is
+    explicitly time-window-only evidence. Retain stale observations, labelled
+    as such, but never search backwards for an old failure after a newer
+    success, unknown line, partial write or log rotation.
+    """
+    result = {"record_status": "unreadable", "observed_outcome": "unknown",
+              "observed_reason": "unknown", "age_sec": -1,
+              "time_basis": "host_local_unverified",
+              "journal_relation": "unknown", "tail_truncated": False,
+              "read_rejection": "unknown"}
+    fd = directory = None
+    try:
+        fd, directory, before = _stream_title_open_fixed(root, parts)
+        offset = max(0, before.st_size - STREAM_TITLE_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = bytearray()
+        while len(raw) < STREAM_TITLE_LOG_MAX_BYTES + 1:
+            chunk = os.read(fd, min(4096, STREAM_TITLE_LOG_MAX_BYTES + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(fd)
+        path_info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        # Also reopen the fixed traversal: replacing any ancestor during the
+        # read must not turn a historical inode into the current source.
+        check_fd, check_dir, reopened = _stream_title_open_fixed(root, parts)
+        os.close(check_fd)
+        os.close(check_dir)
+        identity = _stream_title_file_identity(before)
+        if any(_stream_title_file_identity(item) != identity
+               for item in (after, path_info, reopened)):
+            result["record_status"] = "changed"
+            return result
+        result["tail_truncated"] = offset > 0
+        if len(raw) > STREAM_TITLE_LOG_MAX_BYTES:
+            result["record_status"] = "changed"
+            return result
+        result["read_rejection"] = "none"
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+        return result
+    except _StreamTitleUnsafe as error:
+        result.update(record_status="unsafe", read_rejection=error.reason)
+        return result
+    except ValueError:
+        result["record_status"] = "unsafe"
+        return result
+    except OSError:
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    if not raw:
+        result["record_status"] = "empty"
+        return result
+    if not raw.endswith(b"\n"):
+        result["record_status"] = "incomplete"
+        return result
+    if offset:
+        cut = raw.find(b"\n")
+        raw = raw[cut + 1:] if cut >= 0 else b""
+    lines = raw.splitlines()
+    if len(lines) > STREAM_TITLE_LOG_MAX_LINES:
+        lines = lines[-STREAM_TITLE_LOG_MAX_LINES:]
+        result["tail_truncated"] = True
+    if not lines or len(lines[-1]) > STREAM_TITLE_LOG_MAX_LINE_BYTES:
+        result["record_status"] = "unrecognized"
+        return result
+    # Copied/rotated logs may append an older failure after a newer success.
+    # A timestamp regression in this bounded source makes ordering ambiguous;
+    # do not mistake the last physical line for the most recent execution.
+    previous_stamp = None
+    for item in lines:
+        header = re.match(rb"\[" + prefix.encode("ascii") + rb" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ", item)
+        if header:
+            try:
+                value = dt.datetime.strptime(header[1].decode("ascii"), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if previous_stamp is not None and value < previous_stamp:
+                result["record_status"] = "ambiguous_order"
+                return result
+            previous_stamp = value
+    try:
+        line = lines[-1].decode("utf-8", "strict")
+        match = re.fullmatch(r"\[" + prefix + r" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ([^\r\n\x00]*)", line)
+        if not match:
+            raise ValueError("unknown producer line")
+        stamp = dt.datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S").timestamp()
+    except (UnicodeError, ValueError, OverflowError, OSError):
+        result["record_status"] = "unrecognized"
+        return result
+    age = int(now - stamp)
+    result["age_sec"] = age
+    if age < -STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC:
+        result["record_status"] = "future"
+        return result
+    message = match[2]
+    reason = "unknown"
+    exact_failures = {
+        "ERROR: no token (set TWITCH_GAME_TOKEN, TWITCH_TITLE_TOKEN, TWITCH_BOT_TOKEN or TWITCH_PREDICTIONS_TOKEN)": "credential_missing",
+        "ERROR: TWITCH_BROADCASTER_ID not set": "broadcaster_missing",
+        "ERROR: no valid broadcaster credential with channel:manage:broadcast": "credential_candidates_rejected",
+        "ERROR: failed to choose public title body": "body_selection_failed",
+        "ERROR: failed to compose public title": "composition_failed",
+    }
+    starts = {
+        "ERROR: no client id (token invalid? resp: ": "credential_validation_failed",
+        "ERROR: public title helper not found: ": "helper_missing",
+        "ERROR: failed to fetch current channel (resp: ": "channel_read_failed",
+        "ERROR: failed to fetch current title (resp: ": "channel_read_failed",
+        "ERROR: PATCH failed (HTTP ": "channel_update_failed",
+        "ERROR: game toml not found: ": "game_config_missing",
+        "ERROR: [twitch].category_id が解決できません ": "category_unresolved",
+        "ERROR: failed to compute day N ": "day_computation_failed",
+    }
+    if message in exact_failures:
+        reason = exact_failures[message]
+    elif re.fullmatch(r"ERROR: token\(login=[^)\r\n]{1,128}\) lacks 'channel:manage:broadcast' scope\. TWITCH_GAME_TOKEN \(broadcaster の broadcast 付きトークン\) を設定してください。", message):
+        reason = "broadcast_scope_missing"
+    else:
+        reason = next((value for start, value in starts.items() if message.startswith(start)), "unknown")
+    outcome = "failure" if reason != "unknown" else "unknown"
+    if (message == "already up to date; no change needed"
+            or (prefix == "stream_title" and re.fullmatch(r"title already current for day [1-9][0-9]{0,8}; no change needed", message))):
+        outcome, reason = "unchanged", "none"
+    elif (message.startswith("OK: updated title=")
+          or (prefix == "stream_title" and message.startswith("OK: title updated -> "))):
+        outcome, reason = "twitch_updated", "none"
+    elif message.startswith("current: ") or (prefix == "stream_title" and message.startswith("current title: ")):
+        outcome, reason = "channel_read", "none"
+    elif message.startswith("desired title: "):
+        outcome, reason = "composed", "none"
+    elif re.fullmatch(r"using credential: TWITCH_(?:TITLE|PREDICTIONS|BOT)_TOKEN", message):
+        outcome, reason = "credential_selected", "none"
+    result.update(observed_outcome=outcome, observed_reason=reason)
+    result["record_status"] = (
+        "unrecognized" if outcome == "unknown"
+        else "stale" if age > STREAM_TITLE_SYNC_MAX_AGE_SEC else "fresh"
+    )
+    try:
+        journal_stamp = dt.datetime.strptime(sync["occurred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+        if sync.get("event") == "invoked":
+            result["journal_relation"] = (
+                "time_window_only" if 0 <= stamp - journal_stamp <= 120
+                else "not_correlated"
+            )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return result
+
+
+def _stream_title_day_script(soren):
+    result = {"record_status": "unreadable", "mode": None, "executable": None,
+              "read_rejection": "unknown"}
+    fd = directory = None
+    try:
+        fd, directory, info = _stream_title_open_fixed(soren, ("update_stream_title_day.sh",))
+        result.update(record_status="observed", mode=f"{stat.S_IMODE(info.st_mode):04o}",
+                      executable=bool(info.st_mode & stat.S_IXUSR), read_rejection="none")
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+    except _StreamTitleUnsafe as error:
+        result["read_rejection"] = error.reason
+    except (OSError, ValueError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    return result
+
+
+def _stream_title_day_unit(scope, kind):
+    # Result/exit_status are the manager's LAST execution, whose freshness and
+    # relationship to a title log are unproven, not evidence of today's tick.
+    result = {"load_state": "unknown", "active_state": "unknown",
+              "enabled_state": "unknown", "result": "unknown",
+              "exit_status": None, "result_freshness": "unknown"}
+    properties = ("LoadState", "ActiveState", "UnitFileState", "Result",
+                  "ExecMainCode", "ExecMainStatus")
+    answer = _systemctl_scope(scope, ["show", f"soren-title-day.{kind}",
+                                    "--property=" + ",".join(properties), "--no-pager"], timeout=1)
+    if answer is None or len(answer[1]) > 4096:
+        return result
+    values = {}
+    for line in answer[1].splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in properties or key in values:
+            return result
+        values[key] = value
+    allowed = {
+        "load_state": ("LoadState", {"loaded", "not-found", "error", "masked", "bad-setting", "merged", "stub"}),
+        "active_state": ("ActiveState", {"active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing"}),
+        "enabled_state": ("UnitFileState", {"enabled", "enabled-runtime", "disabled", "static", "masked", "masked-runtime", "linked", "linked-runtime", "alias", "indirect", "generated", "transient", "not-found", "bad"}),
+        "result": ("Result", {"success", "exit-code", "signal", "core-dump", "timeout", "watchdog", "start-limit-hit", "resources", "protocol", "exec-condition", "oom-kill"}),
+    }
+    for field, (key, choices) in allowed.items():
+        if values.get(key) in choices:
+            result[field] = values[key]
+    exit_status = values.get("ExecMainStatus", "")
+    if values.get("ExecMainCode") == "1" and re.fullmatch(r"[0-9]{1,3}", exit_status) and int(exit_status) <= 255:
+        result["exit_status"] = int(exit_status)
+    return result
+
+
+def _collect_stream_title_attempts(soren, state_dir, now, sync=None):
+    roots = {"soren": soren, "state": state_dir}
+    return {
+        "schema_version": 1,
+        "current_failure": "unknown",
+        "logs": {name: _stream_title_log_observation(roots[root], parts, prefix, now, sync)
+                 for name, (root, parts, prefix) in STREAM_TITLE_LOG_SOURCES.items()},
+        "day_script": _stream_title_day_script(soren),
+        "day_units": {scope: {kind: _stream_title_day_unit(scope, kind)
+                              for kind in ("service", "timer")}
+                      for scope in ("system", "user")},
+    }
+
+
 def _supervisor_directory(path, dir_fd=None):
     flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
              | getattr(os, "O_CLOEXEC", 0))
@@ -4547,6 +4858,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v236-readable-prose-boundary",
             "hanjuku-chart-v237-clash-gauge-dropper-carry",
             "hanjuku-chart-v238-queen-command-window",
+            "hanjuku-chart-v239-concert-picker-escape",
+            "hanjuku-chart-v241-sortie-confirm-cancel",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -4603,6 +4916,41 @@ def _project_soren91_corner(data):
         status if isinstance(status, str) and status in SWITCH_STATUSES else None
     )
     entry["switch_error_code"] = _bounded_str(data.get("last_error_code"), 64)
+    return entry
+
+
+_TSUITATE_SWITCH_ERROR_CODES = frozenset({
+    # Fixed GameSwitch ERROR_* values plus Tsuitate's local fallback and the
+    # ControlError codes it persists. Never echo a bounded-but-unknown token:
+    # arbitrary messages, identifiers or credentials can fit within 64 bytes.
+    "busy", "queued", "request_conflict", "invalid_game", "already_active",
+    "no_active_game", "invalid_rotation", "prepare_failed", "quiesce_failed",
+    "round_boundary_unsupported", "start_failed", "readiness_timeout",
+    "agent_start_failed", "rollback_failed", "state_corrupt",
+    "recovery_required", "probe_failed", "timeout", "internal",
+    "source_fence_lost", "switch_failed", "control_unavailable",
+    "control_not_configured", "invalid_beta_operation",
+    "token_not_configured", "run_locked", "run_mismatch",
+    "control_authentication_failed", "control_timeout", "terminal_unconfirmed",
+    "recovery_not_available", "recovery_checkpoint_invalid",
+    "terminal_result_unavailable", "terminal_storage_failure",
+})
+
+
+def _project_tsuitate_corner(data):
+    """Expose the persisted failure category, not a new recovery decision.
+
+    The generic last_error_code field intentionally classifies only
+    recovery_required. Preserve that contract while making known Tsuitate
+    producer codes observable under a separate field (docich#1992). The
+    existing last_error preview remains redacted and length-capped; unknown
+    codes are null rather than raw state content.
+    """
+    entry = _project_corner_state(data)
+    code = data.get("last_error_code")
+    entry["switch_error_code"] = (
+        code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
+    )
     return entry
 
 
@@ -5374,6 +5722,8 @@ def _collect_corner_files(state_dir, payload, now):
         if readable:
             if name == "soren91_corner":
                 entry.update(_project_soren91_corner(data))
+            elif name == "tsuitate_corner":
+                entry.update(_project_tsuitate_corner(data))
             else:
                 entry.update(_project_corner_state(data))
             if name == "retro_corner":
@@ -8304,11 +8654,102 @@ def _collect_hanjuku_resume(state_dir):
         return unavailable
 
 
+_HANJUKU_REFILL_ENUMS = {
+    'scope': frozenset({'current', 'unknown'}),
+    'count': frozenset({'zero', 'low', 'below_target', 'enough', 'unknown'}),
+    'basis': frozenset({'screen_total', 'observed_plus_paid_refill', 'unread_total',
+                        'unverified_refill', 'unknown'}),
+    'check': frozenset({'none', 'opening', 'requested', 'quantity_requested',
+                        'closing', 'measured', 'unverified', 'unknown'}),
+    'check_result': frozenset({'none', 'measured', 'unverified', 'unknown'}),
+    'outcome': frozenset({'none', 'cancelled', 'insufficient_funds', 'unverified',
+                          'attempt_limit', 'not_attempted', 'unknown'}),
+    'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
+    'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
+    'planned': frozenset({'zero', 'positive', 'unknown'}),
+    'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
+                         'deferred_army', 'deferred_egg', 'deferred_cash', 'deferred_roster',
+                         'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
+}
+_HANJUKU_REFILL_BOOLS = ('payroll_pending', 'low_priority', 'done', 'egg_hold', 'recruit_hold')
+
+
+def _compact_hanjuku_refill(value):
+    """Only fixed enums/bools survive: never a writer's reason or names."""
+    if not isinstance(value, dict) or value.get('scope') != 'current':
+        return {'scope': 'unknown'}
+    out = {key: value[key] if isinstance(value.get(key), str) and value[key] in allowed
+           else 'unknown' for key, allowed in _HANJUKU_REFILL_ENUMS.items()}
+    out.update({key: value.get(key) if type(value.get(key)) is bool else None
+                for key in _HANJUKU_REFILL_BOOLS})
+    return out
+
+
+def _project_hanjuku_refill(mem, active):
+    """Current-month recorded gates only, not a newly computed spend decision.
+
+    Caller already pins bot/run identity and a <=30s bot mtime. No extra file
+    or log is read. The writer's unverified receipt/ended attempt stays so.
+    """
+    identity = {key: active[key] for key in HANJUKU_TACTICAL_KEYS}
+    def same_identity(value):
+        return (isinstance(value, dict) and value.keys() == identity.keys()
+                and all(type(value[key]) is type(expected) and value[key] == expected
+                        for key, expected in identity.items()))
+    chapter, month, shop = mem.get('chapter'), mem.get('month'), mem.get('shop')
+    if (not same_identity(mem.get('_run_identity')) or type(chapter) is not int
+            or not 1 <= chapter <= 12 or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or not isinstance(shop, dict) or shop.get('key') != month):
+        return {'scope': 'unknown'}
+    def same_scope(value):
+        return (isinstance(value, list) and len(value) == 3 and same_identity(value[0])
+                and type(value[1]) is int and value[1] == chapter
+                and type(value[2]) is str and value[2] == month)
+    count = mem.get('soldiers_seen')
+    current = (same_scope(mem.get('soldiers_seen_scope')) and mem.get('soldiers_seen_key') == month
+               and type(count) is int and 0 <= count <= 1_000_000)
+    check, receipt = mem.get('army_count_check'), shop.get('soldier_receipt')
+    check_current = isinstance(check, dict) and same_scope(check.get('scope'))
+    low, pending = shop.get('low_army_refill'), mem.get('recruit_payroll_pending')
+    hero, general = shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0)
+    repair_valid = all(type(n) is int and 0 <= n <= 1_000_000 for n in (hero, general))
+    planned = shop.get('soldiers')
+    outcome = shop.get('refill_outcome')
+    out = {'scope': 'current',
+           'count': ('unknown' if not current else 'zero' if count == 0 else
+                     'low' if count <= 20 else 'below_target' if count < 50 else 'enough'),
+           'basis': mem.get('soldiers_seen_basis') if current else 'unknown',
+           'check': ('none' if check is None else check.get('stage') if isinstance(check, dict)
+                     and check_current else 'unknown'),
+           'check_result': ('none' if check is None else
+                            check.get('result', 'none') if check_current else 'unknown'),
+           'outcome': 'none' if outcome is None else outcome,
+           'receipt': ('none' if receipt is None or receipt is False else receipt.get('status')
+                       if isinstance(receipt, dict) and receipt.get('key') == month else 'unknown'),
+           'repair': ('unknown' if not repair_valid else 'both' if hero and general else
+                      'hero' if hero else 'general' if general else 'none'),
+           'planned': ('unknown' if type(planned) is not int or not 0 <= planned <= 99 else
+                       'positive' if planned else 'zero'),
+           'recruit': 'none' if shop.get('recruit') is None else shop['recruit'],
+           'payroll_pending': (False if pending is None else bool(pending) if isinstance(pending, list)
+                               and len(pending) <= 32 and all(isinstance(x, str) for x in pending) else None),
+           'low_priority': (False if low is None else low.get('active') if isinstance(low, dict)
+                            and type(low.get('version')) is int and low['version'] == 1
+                            and same_scope(low.get('scope')) else None),
+           'done': shop.get('soldiers_done')}
+    for field, key in (('egg_hold', 'reserve'), ('recruit_hold', 'recruit_reserve')):
+        value = shop.get(key, 0)
+        out[field] = bool(value) if type(value) is int and 0 <= value <= 1_000_000 else None
+    return _compact_hanjuku_refill(out)
+
+
 def _collect_hanjuku_tactical(state_dir, now):
-    """Chapter-1 fixed castle labels and last card prediction from a fresh run.
+    """Fresh fixed castle, card-prediction and monthly-refill records.
 
     These are the bot's recorded beliefs, not independently verified ownership
-    or roster. An absent garrison record remains unknown rather than empty.
+    or roster/payment. Castle labels remain chapter-1 only; refill gates do not
+    imply an input was received. An absent garrison remains unknown, not empty.
     """
     out = {'status': 'unavailable', 'basis': 'bot_record', 'age_sec': None}
     try:
@@ -8340,12 +8781,13 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not 1 <= mem['chapter'] <= 12):
             return {**out, 'status': 'unsupported_chapter'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
+        refill = _project_hanjuku_refill(mem, active)
         if mem['chapter'] != 1:
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment}
+                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -8380,7 +8822,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         out.update(status='ok', age_sec=int(age), chapter=1,
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
-                   last_card_assessment=assessment)
+                   last_card_assessment=assessment, refill=refill)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
@@ -10428,7 +10870,10 @@ def _diagnostics_budget(payload):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
+        refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if refill is not None:
+            payload['hanjuku_tactical']['refill'] = _compact_hanjuku_refill(refill)
     # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
     # their per-component/per-stream details and the latest NetHack result.
     # ``encoder`` and ``pulse_sink_inputs.attribution`` are never reduced here
@@ -10533,7 +10978,11 @@ def _diagnostics_budget(payload):
             text = _nethack_history_budget(payload)
             if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
                 break
-    return text
+    # JSON whitespace is not evidence. Keep the new bounded summary without
+    # pushing previously fitting envelopes over their byte budget; all values
+    # and the existing conservative detail-reduction order stay unchanged.
+    return json.dumps(json.loads(text), sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _collect_nethack_tiles(state_dir, now):
@@ -10651,11 +11100,15 @@ def main(argv):
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
+    title_sync = _collect_stream_title_sync(
+        soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+    )
     payload = {
         "status": _severity(workers, queues, ai, improvement, corners),
         "meta": meta,
-        "stream_title_sync": _collect_stream_title_sync(
-            soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+        "stream_title_sync": title_sync,
+        "stream_title_attempts": _collect_stream_title_attempts(
+            soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
