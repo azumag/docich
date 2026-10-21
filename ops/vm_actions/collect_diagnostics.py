@@ -1099,13 +1099,38 @@ def _audio_priority_thread_nice(proc_root, pid, tid):
         return None
 
 
+def _audio_priority_cgroup(proc_root, pid):
+    """Project the unified cgroup path of one audio process (#2008).
+
+    A read-only, bounded system path. It answers a question diagnostics could
+    not answer before: whether the shared PulseAudio server lives inside the
+    ``soren-bgm.service`` cgroup (killed by that unit's restart, 2026-10-11
+    05:55/08:05) or under the user manager as intended. Anything unexpected is
+    projected as None, never guessed.
+    """
+    raw = _read_text_capped(proc_root / str(pid) / "cgroup", limit=4096)
+    if not raw:
+        return None
+    for line in raw.splitlines():
+        # Unified hierarchy is the only line we read: "0::/system.slice/x.service".
+        if not line.startswith("0::"):
+            continue
+        path = line[3:].strip()
+        if not path.startswith("/") or len(path) > 256:
+            return None
+        if not all(ch.isalnum() or ch in "/@._:-" for ch in path):
+            return None
+        return path
+    return None
+
+
 def _audio_priority_scan(proc_root, uid, module):
     """One bounded /proc pass. Returns (targets, keeper, mirror):
     targets maps each keeper kind to a bounded summary, keeper is the keeper
     process dict, mirror is the hanjuku mirror ffplay summary."""
     targets = {
         kind: {"present": False, "processes": 0, "threads": 0,
-               "max_nice": None, "at_target": 0}
+               "max_nice": None, "at_target": 0, "cgroup": None}
         for kind in AUDIO_PRIORITY_KINDS
     }
     keeper = {"present": False, "pid": None, "threads": 0}
@@ -1169,6 +1194,10 @@ def _audio_priority_scan(proc_root, uid, module):
         summary["present"] = True
         if summary["processes"] < AUDIO_PRIORITY_MAX_PIDS_PER_KIND:
             summary["processes"] += 1
+        # The first process of each kind defines its owning cgroup; one bounded
+        # path per kind is what the #2008 safety question needs.
+        if summary["cgroup"] is None:
+            summary["cgroup"] = _audio_priority_cgroup(proc_root, pid)
         try:
             tids = os.listdir(base / "task")
         except OSError:

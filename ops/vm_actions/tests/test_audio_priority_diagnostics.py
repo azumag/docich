@@ -157,12 +157,14 @@ class FakeProcBuilder:
     def __init__(self, root):
         self.root = Path(root)
 
-    def process(self, pid, comm, argv, thread_nices=(0,)):
+    def process(self, pid, comm, argv, thread_nices=(0,), cgroup=None):
         base = self.root / str(pid)
         (base / "task" / str(pid)).mkdir(parents=True, exist_ok=True)
         (base / "comm").write_text(comm + "\n", encoding="utf-8")
         (base / "cmdline").write_bytes(
             b"\0".join(part.encode() for part in argv) + b"\0")
+        if cgroup is not None:
+            (base / "cgroup").write_text(cgroup, encoding="utf-8")
         for index, nice in enumerate(thread_nices):
             tid = pid if index == 0 else pid * 100 + index
             task = base / "task" / str(tid)
@@ -252,6 +254,82 @@ class AudioPriorityKeeperTests(unittest.TestCase):
             deployed_script=self.script, deployed_unit=self.unit)
         self.assertEqual(out["mirror"], {"present": True, "framerate": None})
 
+    def test_target_cgroup_projects_the_owning_unit(self):
+        # docich#2008: restarting soren-bgm kills anything inside its cgroup.
+        # Diagnostics could not previously tell whether the shared PulseAudio
+        # server lived there; this projection makes that decidable read-only,
+        # before any production restart.
+        self.proc.process(
+            201, "pulseaudio", ["/usr/bin/pulseaudio", "--daemon"],
+            thread_nices=(-10,),
+            cgroup="0::/system.slice/soren-bgm.service\n",
+        )
+        out = self.collect()
+        # The dangerous placement is reported verbatim, never hidden.
+        self.assertEqual(
+            out["targets"]["pulseaudio"]["cgroup"],
+            "/system.slice/soren-bgm.service",
+        )
+
+    def test_target_cgroup_projects_the_intended_user_unit(self):
+        self.proc.process(
+            211, "pulseaudio", ["/usr/bin/pulseaudio", "--daemon"],
+            thread_nices=(-10,),
+            cgroup="0::/user.slice/user-1001.slice/session.slice/pulseaudio.service\n",
+        )
+        out = self.collect()
+        self.assertEqual(
+            out["targets"]["pulseaudio"]["cgroup"],
+            "/user.slice/user-1001.slice/session.slice/pulseaudio.service",
+        )
+
+    def test_target_cgroup_first_process_of_a_kind_defines_it(self):
+        # Bounded: one path per kind, so two servers cannot inflate the field.
+        self.proc.process(221, "pulseaudio", ["/usr/bin/pulseaudio"],
+                          thread_nices=(-10,),
+                          cgroup="0::/user.slice/user-1001.slice/session.slice/pulseaudio.service\n")
+        self.proc.process(222, "pulseaudio", ["/usr/bin/pulseaudio"],
+                          thread_nices=(-10,),
+                          cgroup="0::/system.slice/other.service\n")
+        out = self.collect()
+        self.assertEqual(
+            out["targets"]["pulseaudio"]["cgroup"],
+            "/user.slice/user-1001.slice/session.slice/pulseaudio.service",
+        )
+        self.assertEqual(out["targets"]["pulseaudio"]["processes"], 2)
+
+    def test_target_cgroup_is_none_when_unreadable_or_unexpected(self):
+        # A missing file, a non-unified hierarchy, a relative path, an
+        # over-long path, or unsupported characters never become a guess.
+        self.proc.process(301, "pulseaudio", ["/usr/bin/pulseaudio"],
+                          thread_nices=(-10,))
+        self.assertEqual(self.collect()["targets"]["pulseaudio"]["cgroup"], None)
+
+        self.proc.process(302, "retroarch", ["/usr/bin/retroarch"],
+                          thread_nices=(0,),
+                          cgroup="1:name=systemd:/legacy.slice/x.service\n")
+        self.assertEqual(self.collect()["targets"]["retroarch"]["cgroup"], None)
+
+        self.proc.process(
+            303, "ffmpeg",
+            ["ffmpeg", "-f", "x11grab", "-i", ":99", "-f", "flv"],
+            thread_nices=(-10,), cgroup="0::relative/path\n")
+        self.assertEqual(
+            self.collect()["targets"]["encoder-ffmpeg"]["cgroup"], None
+        )
+
+        self.proc.process(304, "python3",
+                          ["python3", "-u", "-m", "docich.twica_encoder"],
+                          thread_nices=(0,),
+                          cgroup="0::/" + "a" * 300 + "\n")
+        self.assertEqual(self.collect()["targets"]["twica-feeder"]["cgroup"], None)
+
+        self.proc.process(305, "python3",
+                          ["python3", "-u", "-m", "docich.twica_encoder"],
+                          thread_nices=(0,),
+                          cgroup="0::/system.slice/ok.service; rm -rf /\n")
+        self.assertEqual(self.collect()["targets"]["twica-feeder"]["cgroup"], None)
+
     def test_target_summary_uses_priority_py_classification(self):
         # The keeper's own rules (loaded from the deployed tree) decide the
         # kinds; thread nices are summarized per kind.
@@ -297,16 +375,16 @@ class AudioPriorityKeeperTests(unittest.TestCase):
         targets = out["targets"]
         self.assertEqual(targets["retroarch"],
                          {"present": True, "processes": 1, "threads": 1,
-                          "max_nice": 0, "at_target": 0})
+                          "max_nice": 0, "at_target": 0, "cgroup": None})
         self.assertEqual(targets["pulseaudio"],
                          {"present": True, "processes": 1, "threads": 3,
-                          "max_nice": 0, "at_target": 2})
+                          "max_nice": 0, "at_target": 2, "cgroup": None})
         self.assertEqual(targets["encoder-ffmpeg"],
                          {"present": True, "processes": 1, "threads": 1,
-                          "max_nice": -10, "at_target": 1})
+                          "max_nice": -10, "at_target": 1, "cgroup": None})
         self.assertEqual(targets["twica-feeder"],
                          {"present": True, "processes": 1, "threads": 2,
-                          "max_nice": 0, "at_target": 0})
+                          "max_nice": 0, "at_target": 0, "cgroup": None})
         self.assertEqual(out["keeper"], {"present": True, "pid": 107, "threads": 1})
         self.assertEqual(out["mirror"], {"present": True, "framerate": 15})
         journal = out["journal"]
