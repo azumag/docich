@@ -1,9 +1,10 @@
-"""#2352: the ``game`` and NetHack adapters retire their own released owners.
+"""#2352, #2480: the ``game``, NetHack and Meriken adapters retire their own
+released owners.
 
 The common rotation calls ``settle_released_failure`` only after it re-proved
 the shared program slot free. These cases pin the adapter side: the call is
-delegated with the exact released request, stays scoped to ``game`` and
-``nethack``, and every other adapter (Meriken included) keeps its own separate
+delegated with the exact released request, stays scoped to ``game``,
+``nethack`` and ``meriken``, and every other adapter keeps its own separate
 recovery entry.
 """
 
@@ -65,6 +66,19 @@ class GameCornerReleasedSettleTests(unittest.TestCase):
         )
         self.assertEqual(manager.calls, [("r-1", "nethack")])
 
+    def test_settle_delegates_the_meriken_owner_unchanged(self):
+        # The automatic Meriken (soren91) slot owns soren91_corner.json; its
+        # released failed owner is retired by the same hook with the meriken
+        # corner id (#2480: same gap as NetHack #2478).
+        manager = _Manager(True)
+
+        self.assertIs(
+            _adapter("meriken", manager, corner_id="meriken", game="soren91")
+            .settle_released_failure("r-1"),
+            True,
+        )
+        self.assertEqual(manager.calls, [("r-1", "meriken")])
+
     def test_settle_returns_false_when_the_manager_refuses(self):
         manager = _Manager(False)
 
@@ -88,16 +102,25 @@ class GameCornerReleasedSettleTests(unittest.TestCase):
         )
         self.assertEqual(manager.calls, [("r-1", "nethack")])
 
+    def test_settle_forwards_the_meriken_deferred_answer_unchanged(self):
+        manager = _Manager(None)
+
+        self.assertIsNone(
+            _adapter("meriken", manager, corner_id="meriken", game="soren91")
+            .settle_released_failure("r-1")
+        )
+        self.assertEqual(manager.calls, [("r-1", "meriken")])
+
     def test_settle_requires_a_boolean_true_from_the_manager(self):
         # A truthy placeholder must not be reported as a settled owner.
         manager = _Manager("succeeded")
 
         self.assertIs(_adapter("game", manager).settle_released_failure("r-1"), False)
 
-    def test_settle_stays_scoped_to_the_game_and_nethack_adapters(self):
+    def test_settle_stays_scoped_to_the_game_nethack_and_meriken_adapters(self):
         manager = _Manager(True)
 
-        for catalog_adapter in ("meriken", "paper", "tsuitate", "weather", "yoso"):
+        for catalog_adapter in ("paper", "tsuitate", "weather", "yoso"):
             with self.subTest(adapter=catalog_adapter):
                 self.assertIs(
                     _adapter(catalog_adapter, manager).settle_released_failure("r-1"),
@@ -115,6 +138,15 @@ class GameCornerReleasedSettleTests(unittest.TestCase):
 
         self.assertIs(
             _adapter("nethack", manager, corner_id="nethack", game="nethack")
+            .settle_released_failure("r-1"),
+            False,
+        )
+
+    def test_settle_returns_false_for_a_meriken_corner_without_a_manager_hook(self):
+        manager = _ManagerWithoutSettle()
+
+        self.assertIs(
+            _adapter("meriken", manager, corner_id="meriken", game="soren91")
             .settle_released_failure("r-1"),
             False,
         )
