@@ -358,6 +358,10 @@ class Screen:
     priest_ritual_dialogue: bool = False
     # Positive pixel evidence only; raw lines retain all unknown message cells.
     prose_attached_marks: frozenset[tuple[int, int]] = frozenset()
+    # Normalised RGB digest of the frame this screen came from. A flow may
+    # compare it with the previous observation to tell "the same picture came
+    # back" from a real redraw; Screen objects built by hand leave it None.
+    frame_sha256: str | None = None
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -737,6 +741,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     text = joined(lines)
     hand = find_hand(frame)
     screen = Screen(lines=lines, hand=hand, text=text)
+    screen.frame_sha256 = frame.digest()
     screen.header = _header(lines)
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
@@ -900,6 +905,13 @@ def classify_text(s: Screen) -> str:
     if 'よろしいでっか' in t or 'なりまんな' in t:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
+        return 'gift_request'
+    # A partly unread request must not turn the unique bijin item menu into
+    # the merchant's three-price shop list. Require the entire fixed set.
+    gift_rows = [''.join(word for x, word in line.spans() if x >= 144)
+                 for line in s.lines]
+    gifts = [word for word in gift_rows if PRICE.fullmatch(word)]
+    if len(gifts) == 3 and set(gifts) == {'こうすい100G', 'くるま200G', 'いえ500G'}:
         return 'gift_request'
     if summer_bonus_seen(t):
         # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が

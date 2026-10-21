@@ -5,9 +5,11 @@ It never talks to Twitch, never mutates the case and never touches the stream
 encoder; the corner manager owns when this runtime exists.
 
 Unlike the weather and 予想王 information screens, this is a plain corner
-view: it uses the shared game-area viewport ``(x=0, y=90, 960x540)`` and keeps
-the status rails on air (AGENTS.md 配信ネイティブ情報画面の例外は天気予報と
-予想王のみ).
+view: it uses the shared game-area viewport ``(x=0, y=90, 960x540)``. While
+the case board owns the slot, the corner manager hides the OBS status rails
+for this corner only and shows them again on every exit (#2494, owner
+approval 2026-10-20); the full-screen exception remains 天気予報と予想王のみ
+(AGENTS.md).
 """
 from __future__ import annotations
 

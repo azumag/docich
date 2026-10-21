@@ -961,6 +961,162 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("PUT", "/api/config", body="x" * (webui.MAX_BODY_BYTES + 1))
         self.assertEqual(status, 413)
 
+    def test_early_403_with_unread_body_is_not_reset(self):
+        # issue #2415: 本文を読まずに返す早期 403 で、本文送信中のクライアントが
+        # RST (ConnectionResetError) を受けず応答を読めること。
+        import socket as _socket
+        # カーネル送信バッファを超えるが drain 上限 (_BODY_DRAIN_CAP_BYTES) 内の本文。
+        # 未読のまま close すると、送信中の sendall() が RST で失敗する。
+        body = b'{"values": {"PEAK_HOURS_TZ": "UTC", "PAD": "' + b"a" * (200 * 1024) + b'"}}'
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"403", buf.split(b"\r\n", 1)[0])
+
+    def test_early_404_with_unread_body_is_not_reset(self):
+        # issue #2415: 未知パスの 404 も本文を読まずに close しない。
+        import socket as _socket
+        body = b'{"pad": "' + b"a" * (200 * 1024) + b'"}'
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("POST /api/does-not-exist HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"404", buf.split(b"\r\n", 1)[0])
+
+    def test_early_401_with_oversized_declared_length_is_bounded(self):
+        # issue #2415: 早期エラー前の drain は上限超過の宣言長でも bounded に
+        # 打ち切り、本文を送らないクライアントで handler を占有しない。
+        import socket as _socket
+        import time as _time
+        self.g.webui.token = "supersecret123"
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            self.assertLess(_time.monotonic() - t0, 2.0, "401 が deadline 内に返らなかった")
+            self.assertIn(b"401", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+            self.g.webui.token = ""
+
+    def _raw_get_with_body(self, path, body):
+        # issue #2415 (do_GET): body を付けた GET を送り、応答の先頭行を返す。
+        # 送信中に RST が来ると sendall/recv が ConnectionResetError で落ちる。
+        import socket as _socket
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("GET " + path + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        return buf.split(b"\r\n", 1)[0]
+
+    def test_get_unauthorized_with_unread_body_is_not_reset(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            status_line = self._raw_get_with_body("/api/health", b"x" * (200 * 1024))
+        finally:
+            self.g.webui.token = ""
+        self.assertIn(b"401", status_line)
+
+    def test_get_root_with_unread_body_is_drained(self):
+        # RST の発生はタイミング依存で決定的に観測できないため、drain が宣言長で
+        # 呼ばれたことを数える (issue #2415)。修正前は呼ばれず必ず落ちる。
+        size = 200 * 1024
+        original = webui._Handler._drain_oversized_body
+        with mock.patch.object(webui._Handler, "_drain_oversized_body", autospec=True,
+                               side_effect=original) as drain:
+            status_line = self._raw_get_with_body("/", b"x" * size)
+        self.assertIn(b"200", status_line)
+        self.assertIn(mock.call(mock.ANY, size), drain.call_args_list)
+
+    def test_beta_control_oversized_body_is_not_reset(self):
+        # issue #2415 (_handle_beta_control): 長さ上限 (4096) を超える本文を読まずに
+        # 400 で返すと、送信中のクライアントが RST を受けて応答を読めない。
+        import socket as _socket
+        body = b"x" * (200 * 1024)
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            with mock.patch.object(webui._Handler, "_identity", return_value="operator"):
+                sock.sendall(
+                    ("POST /api/tsuitate-beta HTTP/1.1\r\n"
+                     "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                     "Content-Type: application/json\r\n"
+                     "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                     "Content-Length: " + str(len(body)) + "\r\n"
+                     "Connection: close\r\n\r\n").encode("ascii")
+                )
+                sock.sendall(body)
+                sock.settimeout(2.0)
+                buf = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"400", buf.split(b"\r\n", 1)[0])
+
     def test_put_config_body_too_large_no_body_returns_413_within_deadline(self):
         # 生ソケットで巨大 Content-Length を宣言し本文を送らない。
         # drain に deadline が無いと 413 が返らずハングする (review P2)。

@@ -1,11 +1,4 @@
-"""美女イベント（月イチ）: 所持金1000G以下・読取不明では必ず断る。
-
-Owner (2026-10-15): お金に余裕のないとき（少なくとも1000G以下）は必ず「いかん」
-で断る。倒転王国 monthlyevent.html: 依頼文は「〜お願いがあって来たの……
-聞いてくれる?」、選択は うんデヘヘ!（承諾 → どれか ほしいなー → 香水100G/
-車200G/家500G の購入メニュー）と けえんな!（断り）。半熟値が上がるのは家500G
-だけで、香水・車は何も起きない。
-"""
+"""美女イベント: 1000G以上なら家、それ以外・読取不明は断る。"""
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -87,12 +80,12 @@ def test_bijin_choice_is_already_declined_when_the_hand_rests_on_it():
     assert state['_records'][-1]['choice'] == 'けえんな!'
 
 
-def test_at_the_floor_is_declined_and_one_g_gold_above_keeps_the_existing_route():
-    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 1000G'))
-    assert actions == [policy.pad('down')]   # 1000G is still <= the floor
-    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 1001G'))
-    assert actions == [policy.pad('a')]      # over the floor: the legacy answer, as before
-    assert 'bijin_guard' not in state['policy']
+@pytest.mark.parametrize('gold', [1000, 1001, 2000])
+def test_at_or_above_floor_accepts_for_house(gold):
+    actions, state = decide_bijin(bijin_pixels(gold=f'1ねん 6のつき {gold}G'))
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'accept_bijin_house'
+
 
 
 def test_missing_hand_holds_the_readable_refusal_instead_of_legacy_a():

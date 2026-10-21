@@ -202,7 +202,7 @@ class GameCornerAdapter:
         return manager.reconcile_failed_rotation_start(request_id)
 
     def settle_released_failure(self, request_id):
-        """Retire the ``game``/NetHack owner the rotation proved released (#2352).
+        """Retire the ``game``/NetHack/Meriken owner the rotation proved released (#2352, #2480).
 
         The common rotation calls this only after it re-proved that the shared
         program slot holds nothing from that request. The ``game`` adapter and
@@ -212,8 +212,11 @@ class GameCornerAdapter:
         entry" argument for NetHack on 2026-10-16: the released ledger stays
         ``waiting`` while ``nethack-corner recover-failed-rotation`` only
         accepts the ``recovery_required`` latch, so no entry could retire the
-        owner and NetHack was never dispatched again. Meriken keeps its own
-        separate entry and stays out of scope. The manager re-reads the durable
+        owner and NetHack was never dispatched again. Meriken (soren91) has
+        the same gap: soren91-corner recover-failed is gated on the
+        recovery_required latch and cannot see the released ledger, so a
+        released failed Meriken owner would also never be retired (#2480).
+        The manager re-reads the durable
         release record of this exact request and re-proves the terminal receipt
         and the stable canonical owner under the shared store lock, so
         ``False`` leaves the current fail-closed state untouched.
@@ -223,7 +226,7 @@ class GameCornerAdapter:
         out of selection and retries), ``False`` not applicable.
         """
 
-        if getattr(self.corner, "adapter", None) not in {"game", "nethack"}:
+        if getattr(self.corner, "adapter", None) not in {"game", "nethack", "meriken"}:
             return False
         settle = getattr(self.manager, "settle_released_failure", None)
         if not callable(settle):
@@ -868,7 +871,12 @@ class MysteryCornerAdapter:
     """
 
     def __init__(self, g, corner):
-        from .mystery_corner import DEFAULT_DURATION_MINUTES, MAX_DURATION_MINUTES, MysteryCornerManager
+        from .mystery_corner import (
+            DEFAULT_DURATION_MINUTES,
+            MAX_DURATION_MINUTES,
+            MysteryCornerManager,
+            default_status_overlay_control,
+        )
         from .mystery_view import VIEW_NAME
 
         if corner.game != VIEW_NAME or corner.live_eligible is not False:
@@ -880,6 +888,7 @@ class MysteryCornerAdapter:
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
             audio_enabled=corner.audio_enabled,
+            status_overlay_control=default_status_overlay_control(g),
         )
         if self.manager.duration_minutes > MAX_DURATION_MINUTES:
             raise CornerExecutionError("Mystery duration exceeds the reviewed bound")
