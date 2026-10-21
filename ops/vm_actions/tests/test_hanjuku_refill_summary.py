@@ -141,6 +141,42 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.assertEqual(self.module._project_hanjuku_refill(
             self.policy, active)['roster'], 'complete_all_seen')
 
+    def test_roster_projection_matches_strategy_raw_and_completed_contract(self):
+        from docich.hanjuku.os_layer.roster import fresh
+        receipt = {'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+                   'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        survey = {'schema': 1, 'identity': deepcopy(OWNER), 'scope': [2, '3-3'],
+                  'receipt': deepcopy(receipt), 'dirty': {},
+                  'statuses': {'PRIVATE-name': {'general': 'PRIVATE-name', 'month': '3-3',
+                               'observed_chapter': 2, 'observed_tick': 95, 'broken': False}}}
+        cases = [dict(recruit_roster=receipt), dict(roster_survey=survey),
+                 dict(roster_survey=survey, tick=1000),
+                 dict(roster_survey=survey, house={'roster_started': 99}),
+                 dict(roster_survey=survey, house={'roster_started': 99}, recruit_roster=receipt)]
+        for field, value in (('schema', 2), ('scope', [2, '3-2']),
+                             ('identity', {**OWNER, 'generation': 888}),
+                             ('statuses', {}), ('dirty', {'PRIVATE-other': []}),
+                             ('dirty_revisions', {'PRIVATE-name': -1}),
+                             ('read_revisions', {'PRIVATE-name': True})):
+            invalid = deepcopy(survey); invalid[field] = value
+            cases.extend([dict(roster_survey=invalid),
+                          dict(roster_survey=invalid, recruit_roster=receipt)])
+        for field, value in (('observed_tick', 89), ('observed_chapter', 1),
+                             ('month', '3-2'), ('broken', 0)):
+            invalid = deepcopy(survey); invalid['statuses']['PRIVATE-name'][field] = value
+            cases.append(dict(roster_survey=invalid))
+        for changes in cases:
+            with self.subTest(changes=changes):
+                mem = deepcopy(self.policy); mem.update(deepcopy(changes))
+                before = deepcopy(mem)
+                expected = fresh(mem)
+                same_identity = lambda value: (isinstance(value, dict) and value == OWNER
+                    and value.keys() == OWNER.keys()
+                    and all(type(value[k]) is type(v) for k, v in OWNER.items()))
+                actual = self.module._hanjuku_refill_roster(mem, same_identity, 2, '3-3')
+                self.assertEqual(actual, expected)
+                self.assertEqual(mem, before)
+
     def test_scope_comparison_rejects_boolean_aliases(self):
         self.policy['chapter'] = 1
         for key in ('soldiers_seen_scope',):

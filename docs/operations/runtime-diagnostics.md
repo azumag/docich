@@ -1154,8 +1154,9 @@ ActionsのmaskでJSONやPIDが欠落した場合も、不明値を補って成�
 PID一致だけで公開映像・音声・ユーザー休止維持を証明したことにはせず、それぞれの
 受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。
 
-半熟の補充要約 `hanjuku_tactical.refill.roster` は、募集で使う同じread-onlyの
-`roster.fresh` による名簿の確認状態です。`unavailable` は有効な現在名簿なし、
+半熟の補充要約 `hanjuku_tactical.refill.roster` は、募集の `roster.fresh` と同じraw/completed-survey選択契約を、collector内で
+構造検証した名簿の確認状態です（botモジュールの追加importなし）。型を含むscope照合と
+契約比較テストを行います。`unavailable` は有効な現在名簿なし、
 `partial` は全件確認未完、`complete_no_pending` は全件確認済み・在籍確認待ちなし、
 `complete_all_seen` は全件確認済み・待ち対象が全て名簿に存在、`complete_missing` は
 全件確認済みでも待ち対象の一部が名簿に存在しない状態です。将軍名・人数・理由本文は
