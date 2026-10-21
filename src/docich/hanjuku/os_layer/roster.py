@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
@@ -269,6 +270,14 @@ def run_identity(raw):
     return {k: raw[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
 
 
+def _same_scope(chapter, month, mem):
+    return (type(chapter) is int and type(mem.get('chapter')) is int
+            and chapter > 0 and chapter == mem['chapter']
+            and type(month) is str and type(mem.get('month')) is str
+            and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is not None
+            and month == mem['month'])
+
+
 def completed_survey(mem):
     """Only a complete named-status walk, in the current observation's run."""
     return _status_survey(mem, 'roster_survey', complete=True)
@@ -286,7 +295,8 @@ def _status_survey(mem, key, *, complete):
     if (identity is None or not isinstance(survey, dict) or type(survey.get('schema')) is not int
             or survey['schema'] != 1
             or survey.get('identity') != identity
-            or survey.get('scope') != [mem.get('chapter'), mem.get('month')]
+            or not isinstance(survey.get('scope'), list) or len(survey['scope']) != 2
+            or not _same_scope(*survey['scope'], mem)
             or not isinstance(mem.get('month'), str) or not mem['month']):
         return None
     receipt = survey.get('receipt')
@@ -300,7 +310,7 @@ def _status_survey(mem, key, *, complete):
             or any(not isinstance(n, str) or not 1 <= len(n) <= 32 or '\ufffd' in n for n in names)
             or len(set(names)) != len(names) or set(statuses) != set(names)
             or receipt.get('identity') != identity
-            or receipt.get('chapter') != mem.get('chapter') or receipt.get('month') != mem.get('month')
+            or not _same_scope(receipt.get('chapter'), receipt.get('month'), mem)
             or type(receipt.get('tick')) is not int or type(mem.get('tick')) is not int
             or not 0 <= receipt['tick'] <= mem['tick']
             or not set(dirty) <= set(names)
@@ -309,7 +319,7 @@ def _status_survey(mem, key, *, complete):
                    for fields in dirty.values())
             or any(not isinstance(row, dict) or row.get('general') != name
                    or row.get('month') != mem.get('month')
-                   or row.get('observed_chapter') != mem.get('chapter')
+                   or not _same_scope(row.get('observed_chapter'), row.get('month'), mem)
                    or type(row.get('observed_tick')) is not int
                    or not receipt['tick'] <= row['observed_tick'] <= mem['tick']
                    or type(row.get('broken')) is not bool for name, row in statuses.items())):
@@ -380,7 +390,7 @@ def fresh(mem, *, include_completed=True):
     if ((identity is not None or receipt.get('identity') is not None)
             and receipt.get('identity') != identity):
         return None
-    if (receipt.get('chapter') != mem.get('chapter') or receipt.get('month') != mem.get('month')
+    if (not _same_scope(receipt.get('chapter'), receipt.get('month'), mem)
             or type(tick) is not int or type(now) is not int or not 0 <= now - tick < FRESH_TICKS
             or not isinstance(names, list) or not 1 <= len(names) <= MAX_GENERALS
             or any(not isinstance(n, str) or not n for n in names)

@@ -728,3 +728,42 @@ def test_retained_members_do_not_make_unknown_or_sufficient_rosters_a_shortage(c
     assert current['recruit'] == ('not_needed' if change == 'enough' else 'deferred_roster')
     assert not current['recruit_priority']
     assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+@pytest.mark.parametrize('side', ['current', 'receipt'])
+@pytest.mark.parametrize('field,value', [('chapter', True), ('chapter', 1.0),
+                                        ('month', '1-07'), ('month', '1-13'),
+                                        ('month', None)])
+def test_invalid_scope_cannot_release_retained_members(side, field, value):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    (mem if side == 'current' else mem['recruit_roster'])[field] = value
+    current = shop()
+    current['key'] = mem.get('month')
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == 'deferred_roster'
+    assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+@pytest.mark.parametrize('location', ['current', 'receipt', 'scope', 'status'])
+@pytest.mark.parametrize('value', [True, 2.0])
+def test_invalid_completed_survey_chapter_cannot_release_members(location, value):
+    from test_hanjuku_current_roster_budget import memory as surveyed_memory
+    mem = surveyed_memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    mem.pop('recruit_roster', None)
+    survey = mem['roster_survey']
+    if location == 'current':
+        mem['chapter'] = value
+    elif location == 'receipt':
+        survey['receipt']['chapter'] = value
+    elif location == 'scope':
+        survey['scope'][0] = value
+    else:
+        next(iter(survey['statuses'].values()))['observed_chapter'] = value
+    assert r.completed_survey(mem) is None
+    assert r.fresh(mem) is None
+    current = shop(); current['key'] = mem['month']
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == 'deferred_roster'
+    assert mem['recruit_payroll_pending'] == ['ココット']
