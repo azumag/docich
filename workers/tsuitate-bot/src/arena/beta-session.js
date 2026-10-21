@@ -355,8 +355,13 @@ export class BetaSession {
     if (!accepted) { this.sync(generation); return; }
     if (intent && prior && this.pendingIndex !== null) {
       const decision = this.record.decisions[this.pendingIndex];
-      if (view.moveNumber > intent.moveNumber && view.fouls.you === prior.fouls.you) decision.feedback = "accepted";
-      else if (view.moveNumber === intent.moveNumber && view.fouls.you > prior.fouls.you) decision.feedback = "foul";
+      if (view.moveNumber > intent.moveNumber && view.fouls.you === prior.fouls.you) {
+        decision.feedback = "accepted";
+        delete decision.rejectionReason;
+      } else if (view.moveNumber === intent.moveNumber && view.fouls.you > prior.fouls.you) {
+        decision.feedback = "foul";
+        decision.rejectionReason = "foul";
+      }
     }
     if (view.status === "ended") {
       this.terminalSeen = true;
@@ -434,6 +439,7 @@ export class BetaSession {
     }
     if (!this.gate.canMove) return;
     const epoch = this.socketEpoch;
+    const decisionStartedAt = Date.now();
     const observation = toBrainObservation(this.gate.view, this.captureEvidence(this.gate.view));
     if (!observation) {
       this.gate.needsSync = true;
@@ -463,8 +469,11 @@ export class BetaSession {
     const intent = this.gate.prepareMove(choice.usi);
     this.pendingIndex = this.record.decisions.length;
     const decisionIndex = this.pendingIndex;
+    const viewClocks = this.gate.view?.clocks ? { ...this.gate.view.clocks } : null;
+    const decisionLatencyMs = Math.max(0, Date.now() - decisionStartedAt);
     this.record.decisions.push({ moveNumber: observation.moveNumber, observation, usi: choice.usi,
-      features: choice.features, score: choice.score, feedback: "unknown" });
+      features: choice.features, score: choice.score, feedback: "unknown",
+      clocks: viewClocks, decisionLatencyMs, candidateCount: Number.isSafeInteger(choice.candidateCount) ? choice.candidateCount : null });
     // Persist before crossing the network boundary. A process crash cannot
     // erase the evidence that this exact move might already have been sent.
     await this.persist();
@@ -472,13 +481,28 @@ export class BetaSession {
       if (error) {
         this.gate.timeout(intent);
         this.log({ event: "move_ack_unknown" });
+        const decision = this.record.decisions[decisionIndex];
+        if (decision && decision.feedback === "unknown") {
+          decision.rejectionReason = "ack_error";
+        }
       } else {
         let valid = true;
         try { valid = this.gate.acknowledge(intent, ack); }
         catch { valid = false; this.gate.timeout(intent); this.log({ event: "invalid_move_ack" }); }
-        if (valid && ack?.ok === true) this.record.decisions[decisionIndex].feedback = "accepted";
-        else if (valid && ack?.ok === false && ack.reason === "foul" && Number.isInteger(ack.foulCount)
-            && ack.foulCount > 0 && ack.foulCount <= 10) this.record.decisions[decisionIndex].feedback = "foul";
+        if (valid && ack?.ok === true) {
+          this.record.decisions[decisionIndex].feedback = "accepted";
+          delete this.record.decisions[decisionIndex].rejectionReason;
+        } else if (valid && ack?.ok === false && ack.reason === "foul" && Number.isInteger(ack.foulCount)
+            && ack.foulCount > 0 && ack.foulCount <= 10) {
+          this.record.decisions[decisionIndex].feedback = "foul";
+          this.record.decisions[decisionIndex].rejectionReason = "foul";
+        } else if (valid && ack?.ok === false) {
+          this.record.decisions[decisionIndex].feedback = "unknown";
+          const reason = ack?.reason === "foul" ? "foul"
+            : ack?.reason === "error" ? "error"
+            : (typeof ack?.reason === "string" ? "error" : null);
+          if (reason) this.record.decisions[decisionIndex].rejectionReason = reason;
+        }
       }
       await this.persist();
       this.sync();
