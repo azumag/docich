@@ -238,3 +238,21 @@ def test_real_exit_receipt_reaches_projection_after_house_state_removed(tmp_path
     mem = json.loads(json.dumps(mem))
     assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
         'age_ticks': 0, 'code': 'position_unread', 'phase': 'house_confirm'}
+
+
+@pytest.mark.parametrize('phase', ['castle_confirm', 'house_view', 'house_confirm'])
+def test_route_deferral_projects_only_in_its_fresh_scope(tmp_path, monkeypatch, phase):
+    from docich.hanjuku.flows import house
+    _, bot = setup(tmp_path)
+    mem = bot['policy']
+    mem.update(_run_identity=dict(bot['decision_trace']), month='4-5',
+               house={'phase': phase, 'source': 'PRIVATE'})
+    monkeypatch.setattr(house, '_house_route_problem', lambda _: ('PRIVATE', ['PRIVATE']))
+    assert house._defer_unsafe_house_route(mem)
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
+        'age_ticks': 0, 'code': 'route_unverified', 'phase': phase}
+    mem['tick'] += 401
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
+    mem['tick'] -= 401
+    mem['_run_identity'] = {**mem['_run_identity'], 'generation': 515}
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
