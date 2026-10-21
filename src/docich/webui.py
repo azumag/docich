@@ -1839,6 +1839,11 @@ _CORNER_MANUAL_LAUNCHERS = {
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
 _CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg"})
+# hanjuku-hero (#2024) は非CLIゲームのため one-off runner を使えない。開始は
+# docich.hanjuku_corner / start-hanjuku と同じ共通 coordinator への durable 予約
+# (CornerRotationManager.queue_manual) で行う。adapter が game のままなので
+# game 名で判定する。停止は従来どおり runner/base stop 経路を使う。
+_CORNER_QUEUED_MANUAL_GAMES = frozenset({"hanjuku-hero"})
 # adapter -> (fixed WebUI error-code prefix, operator-facing label).
 _CORNER_QUEUED_MANUAL_LABELS = {
     "weather": ("weather", "天気"),
@@ -2154,7 +2159,8 @@ def _corner_manual_capabilities(g: GlobalConfig, row: Any) -> dict[str, Any]:
     """Describe direct WebUI controls without changing their authorization.
 
     ``manual`` remains the legacy start-or-stop selection flag. RetroArch can
-    still be stopped here even though the one-off start runner is CLI-only.
+    still be stopped here even though the one-off start runner is CLI-only;
+    hanjuku-hero starts through the common coordinator queue instead (#2024).
     """
     supported = (row.adapter in _CORNER_MANUAL_LAUNCHERS
                  or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS)
@@ -2167,10 +2173,13 @@ def _corner_manual_capabilities(g: GlobalConfig, row: Any) -> dict[str, Any]:
         except Exception:
             start, reason = False, "game-configuration-unavailable"
         else:
-            if game_adapter != "cli":
+            if row.game in _CORNER_QUEUED_MANUAL_GAMES:
+                # Start is queued like the other durable manual corners; the
+                # coordinator owns recovery/latch/conflict gates at queue time.
+                start = True
+            elif game_adapter != "cli":
                 start = False
-                reason = ("operator-workflow-required" if row.game == "hanjuku-hero"
-                          else "non-cli-manual-unsupported")
+                reason = "non-cli-manual-unsupported"
     return {"manual_start": start, "manual_stop": supported,
             "manual_start_reason": reason}
 
@@ -2210,7 +2219,9 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "manual": (row.adapter in _CORNER_MANUAL_LAUNCHERS
                            or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS),
                 **_corner_manual_capabilities(g, row),
-                "manual_mode": "queue" if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS else "runner",
+                "manual_mode": ("queue" if (row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS
+                                            or row.game in _CORNER_QUEUED_MANUAL_GAMES)
+                                else "runner"),
                 "duration_minutes": row.duration_minutes,
                 "eligible": row.id in eligible_ids,
                 "last_run_at": last,
@@ -2360,6 +2371,9 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     if row.adapter == "game" and action == "start":
         # The one-off retro runner is CLI-only and refuses others only after
         # the rotation reservation exists, latching rotation (2026-10-11).
+        # hanjuku-hero start never reaches this builder (queued above); keep the
+        # refusal here as well so a future caller cannot hand a non-CLI game to
+        # the runner again.
         from .config import load_game
         try:
             game_adapter = load_game(g, row.game).adapter
@@ -2367,8 +2381,7 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
             game_adapter = None  # the runner re-validates before reserving
         if game_adapter not in (None, "cli"):
             raise ValueError(
-                f"{row.game} は手動開始できません ({game_adapter})。半熟英雄は GitHub Actions の "
-                "Corner rotation operator → start-hanjuku で起動してください"
+                f"{row.game} は one-off runner では手動開始できません ({game_adapter})"
             )
     argv = [str(Path(g.repo_root) / "bin" / launcher)]
     # runner は既定で config/docich.toml を読む。webui と同じ config（本番は
@@ -4987,6 +5000,11 @@ class _Handler(BaseHTTPRequestHandler):
             return self._handle_scheduled_corner_action(row, action, data)
         if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:
             return self._handle_queued_corner_action(row, action, data)
+        if action == "start" and row.game in _CORNER_QUEUED_MANUAL_GAMES:
+            # hanjuku-hero (#2024): no duration, no one-off runner. The start
+            # request goes through the same durable common-coordinator
+            # reservation as docich.hanjuku_corner / start-hanjuku.
+            return self._handle_hanjuku_corner_start(row)
         duration = data.get("duration_minutes", CORNER_MANUAL_DURATION_DEFAULT)
         if isinstance(duration, bool) or not isinstance(duration, int):
             self._send_error_json(400, "invalid_duration", "duration_minutes must be an integer")
@@ -5032,6 +5050,71 @@ class _Handler(BaseHTTPRequestHandler):
             "duration_minutes": duration if action == "start" else None,
             "pid": proc.pid,
             "log": f"tmp/logs/corner_manual_{meta['id']}.log",
+        })
+        return 200
+
+    def _handle_hanjuku_corner_start(self, row) -> int:
+        """Queue the fixed Hanjuku start through the common coordinator (#2024).
+
+        docich.hanjuku_corner / start-hanjuku と同じ起動要求
+        (CornerRotationManager.queue_manual) を webui と同じ config/state で
+        実行する。分数は使わない（ゲームオーバーまで）。既存コーナーの
+        kill/restart はせず、重複要求は coordinator が拒否する。ok は
+        「試みた」ことではなく、書かれた状態ファイルで確定する（recover と
+        同じ契約）。失敗は予約前検証で拒否されるため rotation をラッチさせない。
+        """
+        from .corner_rotation import CornerRotationManager, RotationError
+
+        try:
+            outcome = CornerRotationManager(self.g).queue_manual(row.game)
+            status = outcome.get("status") if isinstance(outcome, dict) else None
+        except RotationError as exc:
+            reasons = {
+                "rotation_disabled": "ローテーションが無効です",
+                "recovery_required": "ローテーションの復旧が必要です",
+                "clock_regressed": "時計の逆行を検知しました",
+                "manual_queue_conflict": "別の手動予約、または異なる時刻の予約が残っています",
+                "hanjuku_not_eligible": "半熟英雄が無効・休止中、または現在利用できません",
+                "state_unavailable": "予約状態を読み取れません",
+            }
+            self._send_error_json(409, "hanjuku_manual_refused",
+                                  reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
+            return 409
+        except (OSError, ValueError):
+            self._send_error_json(409, "hanjuku_manual_unavailable",
+                                  "半熟英雄の開始要求を保存できませんでした")
+            return 409
+        except Exception:
+            self._send_error_json(500, "hanjuku_manual_failed",
+                                  "半熟英雄の開始要求を完了できませんでした")
+            return 500
+        # 予約の実在を durable state で確認する。inbox は queue_manual 直後の
+        # 待機中要求、ledger は inbox 取り込み後の queued_manual / 実行予約
+        # (manual_pending)。実行中 (pending) が同じゲームなら開始要求は受付済み。
+        inbox = _load_json_file(Path(self.g.state_dir) / "corner_manual_queue.json")
+        ledger = _load_json_file(Path(self.g.state_dir) / "corner_rotation.json")
+        reservations = [inbox] if isinstance(inbox, dict) else []
+        if isinstance(ledger, dict):
+            for key in ("queued_manual", "manual_pending", "pending"):
+                raw = ledger.get(key)
+                if isinstance(raw, dict):
+                    reservations.append(raw)
+        request_id = outcome.get("request_id") if isinstance(outcome, dict) else None
+        if (status != "queued" or outcome.get("corner") != row.id
+                or not isinstance(request_id, str) or not request_id
+                or not any(raw.get("corner") == row.id
+                           and raw.get("request_id") == request_id for raw in reservations)):
+            self._send_error_json(500, "hanjuku_start_unverified",
+                                  "開始要求の保存を確認できませんでした。状態欄を確認してください")
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "action": "start",
+            "status": status,
+            "corner": {"id": row.id, "adapter": row.adapter,
+                       "game": row.game, "target": "rotation"},
+            # 分数は使わない。終了はゲームオーバー（またはゲーム画面が300秒不変）。
+            "duration_minutes": None,
         })
         return 200
 
