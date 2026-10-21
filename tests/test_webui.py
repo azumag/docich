@@ -2710,6 +2710,35 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(inbox.read_bytes(), owner)
         popen.assert_not_called()
 
+    def test_hanjuku_start_uses_catalog_id_not_game_name_for_receipt(self):
+        self._write_hanjuku_catalog_config()
+        path = Path(self.g.config_path)
+        path.write_text(path.read_text().replace('id = "hanjuku-hero"', 'id = "hanjuku-slot"'))
+        self._write_rotation_state(status="ready", pending=None)
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]):
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-slot", "confirm": True})
+        self.assertEqual(status, 200, data)
+        inbox = json.loads((Path(self.g.state_dir) / "corner_manual_queue.json").read_text())
+        self.assertEqual(inbox["corner"], "hanjuku-slot")
+
+    def test_hanjuku_start_rejects_another_request_for_the_same_corner(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        inbox.write_text(json.dumps({"corner": "hanjuku-hero", "request_id": "old-request"}))
+        before = inbox.read_bytes()
+        with mock.patch("docich.corner_rotation.CornerRotationManager.queue_manual",
+                        return_value={"status": "queued", "corner": "hanjuku-hero",
+                                      "request_id": "new-request"}):
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "hanjuku_start_unverified")
+        self.assertNotIn("new-request", json.dumps(data))
+        self.assertEqual(inbox.read_bytes(), before)
+
     def test_hanjuku_start_refusal_never_latches_the_rotation(self):
         # 予約前検証 (#2024): 拒否は reservation を書く前に起き、rotation の
         # ledger を変更しない。ここが runner 方式の退行 (予約後拒否→ラッチ) の

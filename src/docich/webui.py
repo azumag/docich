@@ -5099,7 +5099,11 @@ class _Handler(BaseHTTPRequestHandler):
                 raw = ledger.get(key)
                 if isinstance(raw, dict):
                     reservations.append(raw)
-        if not any(raw.get("corner") == row.game for raw in reservations):
+        request_id = outcome.get("request_id") if isinstance(outcome, dict) else None
+        if (status != "queued" or outcome.get("corner") != row.id
+                or not isinstance(request_id, str) or not request_id
+                or not any(raw.get("corner") == row.id
+                           and raw.get("request_id") == request_id for raw in reservations)):
             self._send_error_json(500, "hanjuku_start_unverified",
                                   "開始要求の保存を確認できませんでした。状態欄を確認してください")
             return 500
