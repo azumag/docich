@@ -185,8 +185,14 @@ def _choose(screen, label, *, mem=None):
     return [pad('a')] if move == 'here' else [move] if move else []
 
 
-def _exit(mem, reason, *, limit=None):
+def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
     state = mem['house']
+    # A single diagnostic receipt survives close/finish; it never authorizes input.
+    mem['last_house_deferral'] = {
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'chapter': mem.get('chapter'), 'month': mem.get('month'),
+        'tick': mem.get('tick'), 'code': diagnostic_code,
+        'phase': state.get('phase')}
     if state['phase'].startswith('income_') or state['phase'] in {
             'month_open', 'open_roster', 'roster', 'status', 'roster_next', 'roster_advance', 'leave_roster'}:
         mem['recruit_roster_recheck'] = True
@@ -404,7 +410,7 @@ def _defer_unsafe_house_route(mem):
                              'target': HOUSE_TARGET.get(mem.get('chapter')),
                              'clearance_view_pixels': HOUSE_ROUTE_CLEARANCE},
             reason=reason)
-    _exit(mem, reason)
+    _exit(mem, reason, diagnostic_code='route_unverified')
     return True
 
 
@@ -1160,7 +1166,8 @@ def _repair_step(screen, mem, frame):
             if position is None or offset is None or not screen.marker:
                 reads = state.get('alignment_unread', 0)
                 if type(reads) is not int or not 0 <= reads < 2:
-                    return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留')
+                    return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                                 diagnostic_code='position_unread')
                 state['alignment_unread'] = reads + 1
                 return []
             target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
@@ -1168,7 +1175,8 @@ def _repair_step(screen, mem, frame):
             if any(abs(d) > 2 for d in delta):
                 moves = state.get('alignment_moves', 0)
                 if type(moves) is not int or not 0 <= moves < 8:
-                    return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留')
+                    return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
+                                 diagnostic_code='alignment_limit')
                 state['alignment_moves'] = moves + 1
                 axis = 0 if abs(delta[0]) >= abs(delta[1]) else 1
                 button = ('right' if delta[axis] > 0 else 'left') if axis == 0 else (

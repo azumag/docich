@@ -4862,6 +4862,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v241-sortie-confirm-cancel",
             "hanjuku-chart-v244-payroll-roster-weakest",
             "hanjuku-chart-v245-hero-repair-reservation",
+            "hanjuku-chart-v247-house-cancel-diagnostics",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -8746,6 +8747,40 @@ def _project_hanjuku_refill(mem, active):
     return _compact_hanjuku_refill(out)
 
 
+def _project_hanjuku_house_deferral(mem, active):
+    """Recent recorded cancellation, not proof of the physical reason or outcome."""
+    record = mem.get('last_house_deferral')
+    if not isinstance(record, dict):
+        return None
+    for identity in (mem.get('_run_identity'), record.get('identity')):
+        if (not isinstance(identity, dict) or any(
+                type(identity.get(k)) is not type(active.get(k)) or identity.get(k) != active.get(k)
+                for k in HANJUKU_TACTICAL_KEYS)):
+            return None
+    tick, observed = mem.get('tick'), record.get('tick')
+    if (type(tick) is not int or type(observed) is not int or observed < 0
+            or not 0 <= tick - observed <= 400
+            or type(record.get('chapter')) is not int or record['chapter'] != mem.get('chapter')
+            or not isinstance(mem.get('month'), str)
+            or not re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', mem['month'])
+            or record.get('month') != mem['month']):
+        return None
+    return _compact_hanjuku_house_deferral({
+        'age_ticks': tick - observed, 'code': record.get('code'), 'phase': record.get('phase')})
+
+
+def _compact_hanjuku_house_deferral(value):
+    if not isinstance(value, dict) or type(value.get('age_ticks')) is not int or not 0 <= value['age_ticks'] <= 400:
+        return None
+    code = value.get('code')
+    phase = value.get('phase')
+    return {'age_ticks': value['age_ticks'],
+            'code': code if isinstance(code, str) and code in (
+                'position_unread', 'alignment_limit', 'route_unverified', 'other') else 'unknown',
+            'phase': phase if isinstance(phase, str) and phase in (
+                'castle_confirm', 'house_view', 'house_confirm') else 'other'}
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -8784,12 +8819,13 @@ def _collect_hanjuku_tactical(state_dir, now):
             return {**out, 'status': 'unsupported_chapter'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
         refill = _project_hanjuku_refill(mem, active)
+        house_deferral = _project_hanjuku_house_deferral(mem, active)
         if mem['chapter'] != 1:
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill}
+                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -8824,7 +8860,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         out.update(status='ok', age_sec=int(age), chapter=1,
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
-                   last_card_assessment=assessment, refill=refill)
+                   last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
@@ -10873,7 +10909,11 @@ def _diagnostics_budget(payload):
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
         refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
+        house_deferral = (payload['hanjuku_tactical'].get('last_house_deferral')
+                          if isinstance(payload['hanjuku_tactical'], dict) else None)
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if house_deferral is not None:
+            payload['hanjuku_tactical']['last_house_deferral'] = _compact_hanjuku_house_deferral(house_deferral)
         if refill is not None:
             payload['hanjuku_tactical']['refill'] = _compact_hanjuku_refill(refill)
     # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
