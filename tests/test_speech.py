@@ -6,8 +6,9 @@ import struct
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import wave
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -90,6 +91,97 @@ class TestSanitize(SpeechBase):
         path.write_text("# comment\n安定性\tあんていせい\n", encoding="utf-8")
         pairs = speech.load_word_replace(path)
         self.assertEqual(pairs, [("安定性", "あんていせい")])
+
+
+class TestWordReplaceConfig(SpeechBase):
+    def setUp(self):
+        super().setUp()
+        self.dictionary = self.root / "games/soviet_now/config/voicevox_word_replace.txt"
+        self.dictionary.parent.mkdir(parents=True)
+        self.dictionary.write_text("地政学的\tちせいがくてき\n", encoding="utf-8")
+        self.env = {"VOICEVOX_WORD_REPLACE_FILE": str(self.dictionary)}
+
+    def test_repo_dictionary_has_priority_over_submodule(self):
+        local = self.root / "config/voicevox_word_replace.txt"
+        local.parent.mkdir()
+        local.write_text("地政学的\tローカル\n", encoding="utf-8")
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertEqual(cfg.word_replace_file, local)
+        self.assertEqual(speech.load_word_replace(cfg.word_replace_file), [("地政学的", "ローカル")])
+
+    def test_empty_repo_dictionary_does_not_fall_back(self):
+        local = self.root / "config/voicevox_word_replace.txt"
+        local.parent.mkdir()
+        local.write_text("", encoding="utf-8")
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertEqual(cfg.word_replace_file, local)
+        self.assertEqual(speech.load_word_replace(cfg.word_replace_file), [])
+
+    def test_missing_repo_dictionary_uses_explicit_submodule_dictionary(self):
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertEqual(cfg.word_replace_file, self.dictionary.resolve())
+        self.assertEqual(speech.load_word_replace(cfg.word_replace_file), [("地政学的", "ちせいがくてき")])
+
+    def test_relative_env_path_is_resolved_from_cwd(self):
+        with chdir(self.dictionary.parent.parent):
+            cfg = speech.SpeechConfig.from_env(
+                repo_root=self.root,
+                env={"VOICEVOX_WORD_REPLACE_FILE": "config/voicevox_word_replace.txt"},
+            )
+        self.assertEqual(cfg.word_replace_file, self.dictionary.resolve())
+
+    def test_dictionary_is_not_loaded_without_explicit_env(self):
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env={})
+        self.assertIsNone(cfg.word_replace_file)
+
+    def test_missing_submodule_dictionary_is_optional(self):
+        self.dictionary.unlink()
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertIsNone(cfg.word_replace_file)
+
+    def test_directory_cannot_be_used_as_dictionary(self):
+        self.dictionary.unlink()
+        self.dictionary.mkdir()
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertIsNone(cfg.word_replace_file)
+
+    def test_other_paths_are_not_accepted(self):
+        for path in (self.root / "external.txt", self.dictionary.with_name("other.txt")):
+            with self.subTest(path=path.name):
+                path.write_text("地政学的\t別辞書\n", encoding="utf-8")
+                cfg = speech.SpeechConfig.from_env(
+                    repo_root=self.root,
+                    env={"VOICEVOX_WORD_REPLACE_FILE": str(path)},
+                )
+                self.assertIsNone(cfg.word_replace_file)
+
+    def test_dictionary_symlink_cannot_escape_submodule(self):
+        outside = self.root / "external.txt"
+        outside.write_text("地政学的\t別辞書\n", encoding="utf-8")
+        self.dictionary.unlink()
+        self.dictionary.symlink_to(outside)
+        cfg = speech.SpeechConfig.from_env(repo_root=self.root, env=self.env)
+        self.assertIsNone(cfg.word_replace_file)
+
+    def test_submodule_directory_symlink_cannot_escape_repo(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        repo = self.root / "docich"
+        (repo / "games").mkdir(parents=True)
+        (repo / "games/soviet_now").symlink_to(outside, target_is_directory=True)
+        dictionary = outside / "config/voicevox_word_replace.txt"
+        dictionary.parent.mkdir()
+        dictionary.write_text("地政学的\t別辞書\n", encoding="utf-8")
+        cfg = speech.SpeechConfig.from_env(
+            repo_root=repo,
+            env={"VOICEVOX_WORD_REPLACE_FILE": str(repo / "games/soviet_now/config/voicevox_word_replace.txt")},
+        )
+        self.assertIsNone(cfg.word_replace_file)
+
+    def test_legacy_env_without_repo_root_is_preserved(self):
+        raw = "custom/dictionary.txt"
+        cfg = speech.SpeechConfig.from_env(env={"VOICEVOX_WORD_REPLACE_FILE": raw})
+        self.assertEqual(cfg.word_replace_file, Path(raw))
 
 
 class TestNYPause(SpeechBase):
@@ -239,6 +331,64 @@ class TestCliVoicevox(SpeechBase):
             encoding="utf-8",
         )
         return toml
+
+    def _synthesized_query_text(self, env):
+        toml = self._tmp_config()
+        source = "地政学的な話です。"
+        text = self.root / "in.txt"
+        text.write_text(source, encoding="utf-8")
+        output = self.root / "out.wav"
+        query_texts = []
+
+        def fake_post(url, data, timeout):
+            if "/audio_query?" in url:
+                query_texts.extend(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["text"])
+                return json.dumps({"accent_phrases": []}).encode()
+            if "/synthesis?" in url:
+                return _wav_bytes()
+            raise AssertionError(f"unexpected POST {url}")
+
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(cli, "_repo_root", return_value=self.root),
+            mock.patch.object(speech, "_http_get_bytes", return_value=b'"test"'),
+            mock.patch.object(speech, "_http_post_bytes", side_effect=fake_post),
+            mock.patch.object(speech.urllib.request, "urlopen", side_effect=AssertionError("real HTTP forbidden")),
+            redirect_stdout(io.StringIO()),
+        ):
+            rc = cli.main([
+                "--config", str(toml), "voicevox", "synth",
+                "-f", str(text), "-o", str(output),
+            ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(text.read_text(encoding="utf-8"), source)
+        with wave.open(str(output), "rb") as wav:
+            self.assertEqual(wav.getnframes(), 160)
+        return query_texts
+
+    def test_synth_applies_submodule_dictionary_before_audio_query(self):
+        dictionary = self.root / "games/soviet_now/config/voicevox_word_replace.txt"
+        dictionary.parent.mkdir(parents=True)
+        dictionary.write_text("地政学的\tちせいがくてき\n", encoding="utf-8")
+        self.assertEqual(
+            self._synthesized_query_text({"VOICEVOX_WORD_REPLACE_FILE": str(dictionary)}),
+            ["ちせいがくてきな話です。"],
+        )
+
+    def test_synth_keeps_repo_dictionary_priority(self):
+        local = self.root / "config/voicevox_word_replace.txt"
+        local.parent.mkdir()
+        local.write_text("地政学的\tローカル\n", encoding="utf-8")
+        dictionary = self.root / "games/soviet_now/config/voicevox_word_replace.txt"
+        dictionary.parent.mkdir(parents=True)
+        dictionary.write_text("地政学的\tちせいがくてき\n", encoding="utf-8")
+        self.assertEqual(
+            self._synthesized_query_text({"VOICEVOX_WORD_REPLACE_FILE": str(dictionary)}),
+            ["ローカルな話です。"],
+        )
+
+    def test_synth_works_when_no_dictionary_is_available(self):
+        self.assertEqual(self._synthesized_query_text({}), ["地政学的な話です。"])
 
     def test_voicevox_synth_dry_run(self):
         toml = self._tmp_config()

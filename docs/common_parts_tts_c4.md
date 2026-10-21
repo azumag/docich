@@ -33,6 +33,24 @@
 - CLI: `docich voicevox synth -f <text> -o out.wav [--dry-run]` /
   `docich voicevox speakers` (実装済み)
 
+#### 標準CLIの読み替え辞書選択（#2389）
+
+1. `<repo_root>/config/voicevox_word_replace.txt` がファイルとして存在すれば最優先する。
+   空の辞書も明示的な設定として扱い、submodule辞書へ切り替えたり結合したりしない。
+2. 上記がない場合、`VOICEVOX_WORD_REPLACE_FILE` が
+   `<repo_root>/games/soviet_now/config/voicevox_word_replace.txt` の実ファイルを指す場合だけ使う。
+   Sorenの `voicevox_tts.sh` はこの環境変数を渡す。相対パスは従来の環境変数指定と同じく
+   呼び出し時の作業ディレクトリから解決する。辞書・config・submoduleのシンボリックリンクで
+   固定位置の外へ移る指定、別名ファイル、未存在・ディレクトリは採用しない。
+3. 環境変数がない場合はsubmodule辞書を自動採用せず、従来どおり追加辞書なしで合成する。
+
+`repo_root` を渡さない既存の `SpeechConfig.from_env()` 利用では、環境変数のパスを
+そのまま保持する動作を維持する。標準CLIの許可対象をこのlegacy動作へ広げない。
+
+回帰テストは標準CLIから `audio_query` に渡る置換後テキストまでを、HTTPをモックして確認する。
+入力テキストファイルは変更しない。これは実音声の発音・アクセントの受入確認ではない。
+`--kana` 等の新しい指定は追加せず、辞書適用後にも残る誤読は実音声で別途確認する。
+
 ### 2.2 今回実装しないもの (S2/S3)
 
 - キューと再生は本番で広く使われている `say_enqueue.sh` のまま。docich は
@@ -53,8 +71,9 @@
 1. 合成は `-o <wav>` を必須とし、既定で再生しない (S3 は参照実行側に委ねる)
 2. `--dry-run` は合成せず argv/env を表示
 3. 外部コマンドを呼ばない (stdlib のみ)。シェル結合なし
-4. 読み替え辞書はサブモジュール内の `config/voicevox_word_replace.txt` のみを対象にし、
-   任意パスを渡さない
+4. 標準CLIの読み替え辞書は既存のdocich側 `config/voicevox_word_replace.txt` を優先し、
+   fallbackは明示指定されたサブモジュール内の `config/voicevox_word_replace.txt` のみに限定する
+   （§2.1）。任意パスを新たに許可しない
 5. `speakers` は読み取りのみ (合成しない)
 
 ## 4. 検証計画
