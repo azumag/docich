@@ -21,11 +21,15 @@ from docich.adapters.program import PAPER_VIEW_NAME  # noqa: E402
 from docich.stream_category import (  # noqa: E402
     PAPER_CATEGORY_ID,
     PAPER_CATEGORY_NAME,
+    MYSTERY_CATEGORY_ID,
+    MYSTERY_CATEGORY_NAME,
+    MYSTERY_VIEW_NAME,
     SCRIPT_NAME,
     StreamCategoryError,
     announce_running_view,
     announce_stream_game,
     announce_stream_paper,
+    announce_stream_mystery,
     announce_stream_flyhome,
     announce_running_view,
     FLYHOME_CATEGORY_ID,
@@ -123,6 +127,40 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         )
         self.assertNotIn("--game", call["argv"])
         self.assertNotIn("--title-prefix", call["argv"])
+
+    def test_mystery_view_uses_explicit_category_and_title(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_mystery(self.g, spawn=self._recorder))
+
+        call = self.spawned[0]
+        self.assertEqual(
+            call["argv"],
+            [
+                str(script.resolve()),
+                "--category-id",
+                MYSTERY_CATEGORY_ID,
+                "--category-name",
+                MYSTERY_CATEGORY_NAME,
+                "--activity", "AI探偵ミステリー",
+                "--strategy", "視聴者参加型の推理ゲーム！ みんなで犯人の謎を解き明かそう",
+            ],
+        )
+        self.assertEqual(MYSTERY_CATEGORY_ID, "509658")
+        self.assertEqual(MYSTERY_CATEGORY_NAME, "Just Chatting")
+        self.assertNotIn("--game", call["argv"])
+
+    def test_commit_hook_follows_the_mystery_view_and_restores_the_previous_game(
+            self) -> None:
+        self._install_script()
+
+        self.assertTrue(announce_running_view(self.g, MYSTERY_VIEW_NAME, spawn=self._recorder))
+        self.assertIn("--category-id", self.spawned[-1]["argv"])
+        self.assertNotIn("--game", self.spawned[-1]["argv"])
+
+        # The restore re-announces the displaced game through its own TOML.
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
 
     def test_flyhome_view_uses_its_own_category_and_title(self) -> None:
         script = self._install_script()

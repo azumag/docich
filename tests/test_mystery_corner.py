@@ -32,6 +32,8 @@ from docich.mystery_corner import (
     MAX_DURATION_MINUTES,
     MysteryCornerError,
     MysteryCornerManager,
+    PROGRAM_FLAG_NAME,
+    PROGRAM_FLAG_TTL_S,
     _noop_status_overlay_control,
 )
 from docich.mystery_participation import load_ledger
@@ -367,6 +369,59 @@ def test_mystery_corner_runs_a_solo_case_then_always_reveals_and_restores(tmp_pa
     assert entry["outcome"] == "completed" and entry["participants"] == 0
     assert entry["votes_total"] == 0 and entry["polls"] == 0
     assert entry["prediction"]["status"] == "skipped"
+
+
+def test_mystery_corner_suppresses_the_soren_radio_only_while_the_board_is_live(
+        tmp_path, quiet_narration):
+    # 2026-10-20 live run: a deferred radio segment started mid-case and cut
+    # the corner narration. The corner advertises the shared program flag for
+    # as long as it writes the board and removes its own flag on restore.
+    g, now, _factory, _store, switch = _setup(tmp_path)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(), switch, now, sleep)
+    manager = adapter.manager
+    flag = manager._program_flag_path()
+    legacy = manager._legacy_program_flag_path()
+    observed = []
+    original_write = manager._write_view
+
+    def write_view(*args, **kwargs):
+        original_write(*args, **kwargs)
+        observed.append(json.loads(flag.read_text())
+                        if flag.exists() and legacy.exists() else None)
+
+    manager._write_view = write_view
+    assert manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    assert observed and all(isinstance(item, dict) for item in observed)
+    assert all(item["kind"] == "mystery" for item in observed)
+    assert len({item["owner"] for item in observed}) == 1
+    last = observed[-1]
+    assert last["ends_at"] == last["progress_at"] + PROGRAM_FLAG_TTL_S
+    assert last["owner"] == last["request_id"]
+    assert not flag.exists() and not legacy.exists()
+
+
+def test_mystery_program_flag_never_deletes_another_owners_flag(tmp_path):
+    g, _now, _factory, _store, switch = _setup(tmp_path)
+    manager = _adapter(g, _corner(), switch, [0], lambda _s: None).manager
+    flag = manager._program_flag_path()
+    legacy = manager._legacy_program_flag_path()
+
+    manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
+    assert json.loads(flag.read_text())["owner"] == "owner-a"
+    assert json.loads(legacy.read_text())["owner"] == "owner-a"
+
+    manager._clear_program_flag({"rotation_request_id": "owner-b"})
+    assert flag.exists() and legacy.exists()
+
+    manager._clear_program_flag({"rotation_request_id": "owner-a"})
+    assert not flag.exists() and not legacy.exists()
+    # Clearing twice is harmless.
+    manager._clear_program_flag({"rotation_request_id": "owner-a"})
 
 
 def test_mystery_corner_polls_drive_the_investigation(tmp_path, quiet_narration):

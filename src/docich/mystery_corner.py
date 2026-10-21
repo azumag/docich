@@ -124,6 +124,18 @@ SESSION_ERRORS = frozenset({
 STATUS_OVERLAY_SCENE = "soren"
 STATUS_OVERLAY_CONTROL_TIMEOUT_S = 10.0
 
+#: Shared program-corner flag (Soren ``tmp/.program_corner_active``). While a
+#: program view owns the stream, the Soren radio must not generate or play its
+#: own segments: the 2026-10-20 live run had the deferred radio start in the
+#: middle of the case and cut the corner narration. The flag carries a sliding
+#: expiry refreshed on every board write; Soren treats a missing/expired flag
+#: as inactive, so a crashed corner resumes the radio after at most this TTL
+#: (fail-open). PAPER keeps its legacy flag name for backward compatibility,
+#: and this corner mirrors its payload into that legacy name until the shared
+#: Soren gate is deployed everywhere.
+PROGRAM_FLAG_NAME = ".program_corner_active"
+PROGRAM_FLAG_TTL_S = 1800.0
+
 
 def _status_overlay_sources():
     """OBS status-rail source names (soviet_now defaults, env-overridable)."""
@@ -294,19 +306,15 @@ class MysteryCornerManager:
             from .adapters import make_coordinator_adapter
             from .stream_category import commit_hook
 
-            announce_running_game = commit_hook(g)
-
-            def announce_after_commit(game):
-                # The synthetic view has no reviewed category/title mapping.
-                # Keep the displaced game's metadata while it is on screen; the
-                # normal hook runs again after restoration.
-                if game != VIEW_NAME:
-                    announce_running_game(game)
-
+            # The synthetic mystery view has its own reviewed title/category
+            # (AI探偵ミステリー / Just Chatting), so the normal post-commit hook
+            # must follow it instead of keeping the displaced game's metadata
+            # (2026-10-21 owner request). The same hook announces the previous
+            # game again when the restore commits.
             coordinator = GameSwitchCoordinator(
                 self.store,
                 lambda spec: make_coordinator_adapter(g, spec),
-                post_commit=announce_after_commit,
+                post_commit=commit_hook(g),
             )
         self.coordinator = coordinator
 
@@ -410,8 +418,10 @@ class MysteryCornerManager:
 
     def _mark_interrupted(self, state, reason):
         # Interrupted exits still hand the shared display back: show the
-        # status rails this corner hid before marking the state terminal.
+        # status rails this corner hid and let the radio resume before
+        # marking the state terminal.
         self._release_status_overlays(state)
+        self._clear_program_flag(state)
         state.update(status="interrupted", completed_at=self.clock(), end_reason=reason)
         state.pop("switch_request_id", None)
         state.pop("switch_status", None)
@@ -489,6 +499,73 @@ class MysteryCornerManager:
         else:
             state.pop("status_overlay_hidden_sources", None)
         self._save(state)
+
+    # --- Soren radio suppression (program-corner flag) ---------------------
+
+    def _program_flag_path(self):
+        from .trading.soren_output import resolve_soren_root
+
+        return resolve_soren_root(self.g) / "tmp" / PROGRAM_FLAG_NAME
+
+    def _legacy_program_flag_path(self):
+        """PAPER-era name, mirrored until the shared Soren gate is deployed."""
+        return self._program_flag_path().with_name(".paper_corner_active")
+
+    def _program_flag_owner(self, state):
+        owner = state.get("rotation_request_id")
+        return owner if isinstance(owner, str) and owner else ""
+
+    def _refresh_program_flag(self, state):
+        """Advertise this program corner to the Soren radio (best-effort).
+
+        The radio reads only ``ends_at``; the owner token lets this corner
+        avoid deleting a newer owner's flag. The legacy PAPER flag is mirrored
+        for a deployment that still runs the old Soren gate; a newer Soren
+        checks the shared flag first. Failures are swallowed: the radio treats
+        a missing/broken flag as inactive, and the sliding expiry bounds a
+        crashed corner to ``PROGRAM_FLAG_TTL_S``. Never raises.
+        """
+        try:
+            owner = self._program_flag_owner(state)
+            if not owner:
+                return
+            now = self.clock()
+            payload = {
+                "kind": "mystery",
+                "owner": owner,
+                "request_id": state.get("rotation_request_id"),
+                "started_at": state.get("started_at"),
+                "progress_at": now,
+                "ends_at": now + PROGRAM_FLAG_TTL_S,
+            }
+            for flag in (self._program_flag_path(), self._legacy_program_flag_path()):
+                try:
+                    flag.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write_json(flag, payload)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _clear_program_flag(self, state):
+        """Remove only this corner's flags; a newer owner's flag is kept."""
+        try:
+            owner = self._program_flag_owner(state)
+            if not owner:
+                return
+            for flag in (self._program_flag_path(), self._legacy_program_flag_path()):
+                try:
+                    current = json.loads(flag.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError):
+                    # Unreadable flags expire on their own; do not guess
+                    # ownership.
+                    continue
+                if isinstance(current, dict) and current.get("owner") == owner:
+                    flag.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # --- Start dispatch (yoso shape) ---------------------------------------
 
@@ -618,6 +695,10 @@ class MysteryCornerManager:
 
     def _write_view(self, state, case, session, *, phase, poll=None, prediction=None):
         """Best-effort bounded broadcast payload write (never raises)."""
+        # Keep the radio suppressed for as long as the board is being updated;
+        # the flag is refreshed before the write so a view failure cannot let
+        # the radio resume mid-corner.
+        self._refresh_program_flag(state)
         try:
             revealed = reveal(case) if session.get("revealed") else None
             board = public_board(
@@ -1327,6 +1408,7 @@ class MysteryCornerManager:
             state.pop("switch_status", None)
             self._save(state)
             self._release_status_overlays(state)
+            self._clear_program_flag(state)
             self._clear_stop_request()
             return "completed"
         if canonical.get("phase") == "draining" and self._matches_active(canonical, identity):
@@ -1376,6 +1458,7 @@ class MysteryCornerManager:
         state.pop("switch_status", None)
         self._save(state)
         self._release_status_overlays(state)
+        self._clear_program_flag(state)
         self._clear_stop_request()
         return "completed"
 
@@ -1415,6 +1498,7 @@ class MysteryCornerManager:
             # or the next rotation over this state file; once cleared, the
             # later entries call nothing again (review P2-1).
             self._release_status_overlays(state)
+            self._clear_program_flag(state)
         if state.get("rotation_request_id") == request_id:
             status = state.get("status")
             if status in {"completed", "interrupted"}:
