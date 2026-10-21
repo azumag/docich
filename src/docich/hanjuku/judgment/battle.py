@@ -1090,7 +1090,7 @@ def _melee_continuation_evidence(mem, cur):
     """An ordinary general may conserve an overwhelming current advantage.
 
     A scoped opening need not be above 70% of maximum HP: that percentage
-    alone does not erase a measured twofold advantage in HP, army and combat.
+    alone does not erase a measured twofold advantage in remaining force.
     Once our HP falls, require actual enemy HP/troop progress as before.
     This is a remaining-force heuristic, never a promised win or egg loss.
     """
@@ -1115,14 +1115,20 @@ def _melee_continuation_evidence(mem, cur):
             or any(type(n) is not int or n <= 0 for n in
                    (hp, enemy, start, enemy_start, maximum, enemy_maximum))
             or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
-            or not enemy <= enemy_start <= enemy_maximum
-            or hp <= enemy * 2):
+            or not enemy <= enemy_start <= enemy_maximum):
         return None
     balance = _melee_balance(cur)
     values = [balance[k] for k in ('ally_force', 'enemy_force', 'ally_melee_score', 'enemy_melee_score')]
     if (balance['soldiers_current'] is not True
             or any(type(n) is not int or n <= 0 for n in values)
             or values[0] <= 2 * values[1] or values[2] <= 2 * values[3]):
+        return None
+    # Low general HP alone must not spend an egg when both measured troop
+    # count and combat stat dominate. Keep the existing twofold total-force
+    # and combat-score margins, and the critical-HP floor above.
+    if hp <= enemy * 2 and not (
+            cur['ally_soldiers'] > cur['enemy_soldiers']
+            and balance['ally_combat'] > balance['enemy_combat']):
         return None
     opening_army = cur.get('melee_opening_army')
     army_known = (isinstance(opening_army, list) and len(opening_army) == 2
