@@ -1111,6 +1111,19 @@ health 記録は regular file・symlink拒否・16KiB上限で読み、記録の
 
 ### 共有PIDの保存済み診断比較（#2444）
 
+対象はSorenの固定 `tmp/state/direct_stream/status.json` の `pid` / `ffmpeg_pid` と
+`tmp/state/audio_worker.pid` です。全process走査やargv部分一致は行いません。
+所有者・生存start ticks・実行ファイル・固定script・親PIDを確認します。
+通常のencoderはdirect-stream runnerの子であるnative FFmpegを記録します。
+共通encoder経由では `ffmpeg_pid` はadapterなので、固定
+`run/twica-common/pipeline.json` のschema・adapter PID・boot/start ticks・ready・
+3秒未満のmonotonic heartbeatを照合し、runner → adapter → guardian → native FFmpeg
+の親子関係を確認します。`encoder` は実際のnative PID、`shared_stream` はrunnerと
+存在するadapter/guardianを含みます。argvやpathは診断結果に出しません。
+source・heartbeatで指すencoder・各processの同一性を再確認します。
+boot UUIDも取得前後で一致を要求します。読み取り失敗・停止・PID再利用・symlink・
+取得中の切替はpartialです。PulseAudio daemonだけの存続をaudio worker維持と扱いません。
+
 `ops/local/compare_shared_runtime_pids.py` はproductionへ接続せず、正規diagnosticsで
 保存したbefore/after JSONだけを比較します。`shared_runtime_pids` のschema 2、同じboot UUID、
 必須3役割の非空集合、PIDとstart ticks（ある場合はstarted_atも）の一致が必要です。

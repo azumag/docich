@@ -11080,75 +11080,9 @@ SHARED_RUNTIME_ROLES = ("shared_stream", "encoder", "audio")
 SHARED_RUNTIME_ROLE_LABELS = {
     "shared_stream": "shared stream / distribution",
     "encoder": "stream encoder",
-    "audio": "audio (pulseaudio)",
+    "audio": "audio worker",
 }
 SHARED_RUNTIME_MAX_PIDS = 64
-
-
-def _proc_start_ticks(proc_root, pid):
-    """Return (start_ticks, started_at_epoch_or_None) for one pid, or None."""
-    text = None
-    try:
-        with open(proc_root / str(pid) / "stat", "r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read(4096)
-    except OSError:
-        return None
-    if not text:
-        return None
-    rest = text.rsplit(")", 1)
-    if len(rest) != 2:
-        return None
-    fields = rest[1].split()
-    # starttime is field 22 (1-based) => index 19 (0-based) after the split.
-    if len(fields) < 20:
-        return None
-    try:
-        start_ticks = int(fields[19])
-    except (TypeError, ValueError):
-        return None
-    if start_ticks < 0:
-        return None
-    # best-effort started_at from /proc/stat btime (may be unavailable)
-    started_at = None
-    try:
-        with open(proc_root / "stat", "r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if line.startswith("btime "):
-                    btime = int(line.split()[1])
-                    clk_tck = os.sysconf("SC_CLK_TCK")
-                    started_at = btime + int(start_ticks / clk_tck)
-                    break
-    except (OSError, ValueError, AttributeError):
-        started_at = None
-    return start_ticks, started_at
-
-
-def _classify_shared_runtime_role(comm, argv):
-    """Fixed, closed classification. Returns one of SHARED_RUNTIME_ROLES or None."""
-    comm_l = (comm or "").strip().lower()
-    argv_l = " ".join(part for part in (argv or []) if isinstance(part, str)).lower()
-    # audio: pulseaudio daemon (and the audio priority keeper is separate)
-    if comm_l == "pulseaudio" or "pulseaudio" in argv_l:
-        return "audio"
-    # encoder: ffmpeg doing stream capture/encoding
-    if comm_l.startswith("ffmpeg") and (
-        "x11grab" in argv_l or "stream" in argv_l or "capture" in argv_l
-        or "gdigrab" in argv_l
-    ):
-        return "encoder"
-    # shared stream / distribution: shared overlay, direct stream, stream runner
-    if (
-        "shared-overlay" in argv_l
-        or "shared_overlay" in argv_l
-        or "direct_stream" in argv_l
-        or "direct-stream" in argv_l
-        or "stream_runner" in argv_l
-        or "stream-runner" in argv_l
-        or comm_l in {"soren-shared-overlay", "direct-stream", "stream-runner"}
-        or "shared" in comm_l
-    ):
-        return "shared_stream"
-    return None
 
 
 def _shared_runtime_boot_id(proc_root):
@@ -11172,93 +11106,175 @@ def _shared_runtime_boot_id(proc_root):
     return None
 
 
-def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
-    """Read-only projection of shared stream/encoder/audio PID sets.
+def _shared_runtime_sources(soren):
+    values = []
+    for parts in (('tmp', 'state', 'direct_stream', 'status.json'),
+                  ('tmp', 'state', 'audio_worker.pid')):
+        fd, directory, before = _stream_title_open_fixed(soren, parts)
+        try:
+            raw = os.read(fd, 262145)
+            after = os.fstat(fd)
+            linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+            if (len(raw) > 262144 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                    or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+                raise ValueError('changed runtime source')
+            values.append(raw)
+        finally:
+            os.close(fd)
+            os.close(directory)
+    stream = json.loads(values[0])
+    if not isinstance(stream, dict) or stream.get('running') is not True:
+        raise ValueError('stream unavailable')
+    audio = values[1].strip()
+    if not re.fullmatch(rb'[1-9][0-9]{0,9}', audio):
+        raise ValueError('audio unavailable')
+    pids = {'shared_stream': stream.get('pid'), 'encoder': stream.get('ffmpeg_pid'),
+            'audio': int(audio)}
+    if (any(type(pid) is not int or not 1 < pid <= 2**31-1 for pid in pids.values())
+            or len(set(pids.values())) != len(pids)):
+        raise ValueError('invalid runtime identities')
+    return pids
 
-    Emits, per fixed role, the sorted PID list together with the per-PID
-    start ticks (and best-effort started_at epoch) so before/after comparison
-    can exclude PID reuse. No argv, env, secrets or paths are emitted.
-    Partial read failures are reflected by scan_complete=False rather than
-    silently dropping a role.
-    """
-    if uid is None:
-        uid = os.geteuid()
-    roles = {role: [] for role in SHARED_RUNTIME_ROLES}
-    boot_id = _shared_runtime_boot_id(proc_root)
-    scan_complete = boot_id is not None
+
+def _shared_runtime_process(soren, proc_root, role, pid):
+    root = Path(proc_root).absolute()
+    directory = _supervisor_directory(root.anchor)
+    process = None
     try:
-        names = os.listdir(proc_root)
-    except OSError:
-        names = []
-        scan_complete = False
-    pids = []
-    for name in names:
-        if not name.isdigit():
-            continue
-        try:
-            pids.append(int(name))
-        except ValueError:
-            continue
-    pids.sort()
-    if len(pids) > 4096:
-        scan_complete = False
-    for pid in pids[:4096]:
-        base = proc_root / str(pid)
-        try:
-            owner = os.stat(base).st_uid
-        except OSError:
-            scan_complete = False
-            continue
-        if owner != uid:
-            continue
-        comm = None
-        try:
-            with open(base / "comm", "r", encoding="utf-8", errors="replace") as handle:
-                comm = handle.read(64)
-        except OSError:
-            scan_complete = False
-            continue
-        cmdline = None
-        try:
-            with open(base / "cmdline", "rb") as handle:
-                raw = handle.read(4096)
-            cmdline = [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
-        except OSError:
-            scan_complete = False
-            continue
-        role = _classify_shared_runtime_role(comm, cmdline)
-        if role is None:
-            continue
-        parsed = _proc_start_ticks(proc_root, pid)
-        if parsed is None:
-            # Partial: a role member whose start tick could not be read makes
-            # the whole role unusable for reuse-safe comparison.
-            scan_complete = False
-            continue
-        start_ticks, started_at = parsed
-        if len(roles[role]) >= SHARED_RUNTIME_MAX_PIDS:
-            scan_complete = False
-            continue
-        entry = {"pid": pid, "start_ticks": start_ticks}
-        if started_at is not None:
-            entry["started_at"] = started_at
-        roles[role].append(entry)
-    # Sort each role's entries by pid for deterministic output.
-    for role in roles:
-        roles[role].sort(key=lambda item: item["pid"])
-    section = {
-        "schema_version": 2,
-        "boot_id": boot_id,
-        "scan_complete": bool(scan_complete and _shared_runtime_boot_id(proc_root) == boot_id),
-        "roles": {},
-    }
-    for role in SHARED_RUNTIME_ROLES:
-        entries = roles[role]
-        section["roles"][role] = {
-            "count": len(entries),
-            "pids": [item["pid"] for item in entries],
-            "entries": entries,
-        }
+        for part in root.parts[1:]:
+            child = _supervisor_directory(part, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        process = _supervisor_directory(str(pid), dir_fd=directory)
+        info = os.fstat(process)
+        ticks = _supervisor_process_start(proc_root, pid, process)
+        if not 0 < ticks <= 2**63-1:
+            raise ValueError('invalid process start')
+        raw = _supervisor_read('cmdline', 4096, dir_fd=process)
+        if not raw.endswith(b'\0'):
+            raise ValueError('incomplete command')
+        argv = raw[:-1].split(b'\0')
+        exe = os.readlink('exe', dir_fd=process)
+        executable = Path(exe).name
+        cwd = os.readlink('cwd', dir_fd=process)
+        fields = _supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()
+        parent = int(fields[1])
+        process_kind = role
+        python = re.fullmatch(r'python3(?:\.[0-9]+)?', executable) is not None
+        if role in ('encoder', 'guardian'):
+            if cwd != str(soren):
+                raise ValueError('unexpected encoder cwd')
+            module = b'docich.twica_encoder' if role == 'guardian' else b'docich.twica_ffmpeg'
+            if python and len(argv) >= 3 and argv[1:3] == [b'-m', module]:
+                process_kind = 'guardian' if role == 'guardian' else 'adapter'
+            elif (role == 'encoder' and executable == 'ffmpeg' and argv
+                  and Path(os.fsdecode(argv[0])).name == 'ffmpeg'
+                  and b'x11grab' in argv and b'-progress' in argv):
+                process_kind = 'native'
+            else:
+                raise ValueError('unexpected encoder')
+        else:
+            expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
+            if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
+                    or role == 'audio' and executable != 'bash' or len(argv) < 2):
+                raise ValueError('unexpected interpreter')
+            script = Path(os.fsdecode(argv[1]))
+            cwd = os.readlink('cwd', dir_fd=process)
+            if not script.is_absolute():
+                if cwd != str(soren):
+                    raise ValueError('unexpected working directory')
+                script = Path(soren) / script
+            if script != Path(soren) / expected:
+                raise ValueError('unexpected script')
+        again = os.stat(str(pid), dir_fd=directory, follow_symlinks=False)
+        if ((info.st_dev, info.st_ino, info.st_uid) != (again.st_dev, again.st_ino, again.st_uid)
+                or ticks != _supervisor_process_start(proc_root, pid, process)
+                or raw != _supervisor_read('cmdline', 4096, dir_fd=process)
+                or exe != os.readlink('exe', dir_fd=process)
+                or cwd != os.readlink('cwd', dir_fd=process)
+                or parent != int(_supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()[1])):
+            raise ValueError('changed process identity')
+        return {'pid': pid, 'start_ticks': ticks, 'parent': parent, 'kind': process_kind}
+    finally:
+        if process is not None:
+            os.close(process)
+        os.close(directory)
+
+
+def _shared_runtime_pipeline(docich_root, adapter, boot_id, now_ns):
+    parts = ('twica-common', 'pipeline.json')
+    fd, directory, before = _stream_title_open_fixed(Path(docich_root) / 'run', parts)
+    try:
+        raw = os.read(fd, 4097)
+        after = os.fstat(fd)
+        linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if (len(raw) > 4096 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+            raise ValueError('changed pipeline')
+        data = json.loads(raw)
+        if (not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1
+                or type(data.get('pid')) is not int or data['pid'] != adapter['pid']
+                or data.get('identity') != f"{boot_id}:{adapter['start_ticks']}"
+                or type(data.get('monotonic_ns')) is not int
+                or not 0 <= now_ns - data['monotonic_ns'] < 3_000_000_000
+                or data.get('ready') is not True
+                or type(data.get('encoder_pid')) is not int or not 1 < data['encoder_pid'] <= 2**31-1):
+            raise ValueError('unverified pipeline')
+        # Health counters may advance between reads; identity may not.
+        return data['encoder_pid']
+    finally:
+        os.close(fd)
+        os.close(directory)
+
+
+def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id):
+    runner = _shared_runtime_process(soren, proc_root, 'shared_stream', pids['shared_stream'])
+    audio = _shared_runtime_process(soren, proc_root, 'audio', pids['audio'])
+    child = _shared_runtime_process(soren, proc_root, 'encoder', pids['encoder'])
+    if child['parent'] != runner['pid']:
+        raise ValueError('unrelated encoder')
+    shared = [runner]
+    if child['kind'] == 'adapter':
+        native_pid = _shared_runtime_pipeline(docich_root, child, boot_id, time.monotonic_ns())
+        native = _shared_runtime_process(soren, proc_root, 'encoder', native_pid)
+        if native['kind'] != 'native':
+            raise ValueError('native encoder missing')
+        guardian = _shared_runtime_process(soren, proc_root, 'guardian', native['parent'])
+        if guardian['parent'] != child['pid']:
+            raise ValueError('unrelated guardian')
+        shared.extend([child, guardian])
+    else:
+        native = child
+    records = {'shared_stream': shared, 'encoder': [native], 'audio': [audio]}
+    all_pids = [row['pid'] for rows in records.values() for row in rows]
+    if len(set(all_pids)) != len(all_pids):
+        raise ValueError('overlapping runtime identities')
+    return records
+
+
+def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Path('/proc'),
+                                 docich_root=PROD_ROOT):
+    """Fixed producer chain only; never enumerate processes or emit argv."""
+    roles = {role: {'count': 0, 'pids': [], 'entries': []} for role in SHARED_RUNTIME_ROLES}
+    boot_id = _shared_runtime_boot_id(proc_root)
+    section = {'schema_version': 2, 'scan_complete': False, 'boot_id': boot_id, 'roles': roles}
+    try:
+        if boot_id is None:
+            return section
+        soren = Path(soren).absolute()
+        pids = _shared_runtime_sources(soren)
+        entries = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
+        if (pids != _shared_runtime_sources(soren)
+                or entries != _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
+                or boot_id != _shared_runtime_boot_id(proc_root)):
+            return section
+        for role, rows in entries.items():
+            clean = [{'pid': row['pid'], 'start_ticks': row['start_ticks']}
+                     for row in sorted(rows, key=lambda row: row['pid'])]
+            roles[role] = {'count': len(clean), 'pids': [row['pid'] for row in clean], 'entries': clean}
+        section['scan_complete'] = True
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError, IndexError):
+        pass
     return section
 
 
@@ -11418,7 +11434,7 @@ def main(argv):
         "cpu_profile": _collect_cpu_profile(now),
         "audio_priority": _collect_audio_priority(),
         "audio_gaps": _collect_audio_gaps(now),
-        "shared_runtime_pids": _collect_shared_runtime_pids(),
+        "shared_runtime_pids": _collect_shared_runtime_pids(soren),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
