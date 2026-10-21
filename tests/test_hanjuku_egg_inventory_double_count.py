@@ -6,6 +6,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich.hanjuku.judgment.battle import _egg_inventory
 
@@ -80,3 +82,30 @@ def test_real_plan_counts_pending_and_settled_uses_across_battles_once():
     _card_use_unclassified(mem, cur, 'second transition')
     assert count()[0]['available'] == 0
     assert count()[1]['droppers'] == []
+
+
+@pytest.mark.parametrize('copies', [2, 3])
+def test_battle_step_settles_each_carried_copy_once(copies):
+    from docich import hanjuku_policy as policy
+    from docich.hanjuku_screen import Battle, Screen
+    from docich.hanjuku.judgment.battle import _egg_plan
+    card = 'ブラッキー'
+    mem = {'chapter': 1, 'month': '1-10', 'active': '1-C2', 'variant': 'chart',
+           'orders': {'1-C2': 'pending'}, 'picked': [], '_records': [],
+           'attack': {'general': 'ココット', 'castle': 'キカンドン',
+                      'side': 'attack', 'step': '1-C2'},
+           'card_override': {'1-C2': [card] * copies}, 'card_stock': {card: copies}}
+    view = Screen(lines=[], hand=None, text='', kind='battle',
+                  battle=Battle('キッシュ', 26, 'ココット', 24))
+    policy.battle_step(view, mem)
+    policy.battle_step(view, mem)
+    cur = mem['battle']
+    for used in range(1, copies + 1):
+        cur['cards_selected'].append(card)
+        cur['card_flow'] = {'card': card, 'stage': 'announce', 'selection_planned': True}
+        assert row(_egg_plan(mem, cur)['cards'], card)['available'] == copies - used
+        policy.battle_step(view, mem)
+        policy.battle_step(view, mem)
+        assert cur['cards_unclassified'].count(card) == used
+        assert row(_egg_plan(mem, cur)['cards'], card)['available'] == copies - used
+    assert not _egg_plan(mem, cur)['droppers']
