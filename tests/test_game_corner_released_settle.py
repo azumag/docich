@@ -8,9 +8,16 @@ delegated with the exact released request, stays scoped to ``game``,
 recovery entry.
 """
 
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from docich.corner_adapters import GameCornerAdapter
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from docich import config  # noqa: E402
+from docich.corner_adapters import GameCornerAdapter, MerikenCornerAdapter  # noqa: E402
 
 
 class _Corner:
@@ -150,6 +157,30 @@ class GameCornerReleasedSettleTests(unittest.TestCase):
             .settle_released_failure("r-1"),
             False,
         )
+
+    def test_settle_delegates_through_the_real_meriken_adapter_class(self):
+        # #2480 review nit: pin the decision on the REAL MerikenCornerAdapter
+        # class, not only the GameCornerAdapter.__new__ shape, so a future
+        # inherited override of settle_released_failure cannot silently
+        # narrow the meriken scope again. The (heavy) soren91 manager is
+        # replaced by a stand-in; the class under test only wires
+        # corner->manager and delegates.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir(parents=True)
+            (root / "config" / "docich.toml").write_text(
+                '[paths]\nstate_dir = "run"\ngames_dir = "config/games"\n',
+                encoding="utf-8",
+            )
+            g = config.load_global(root)
+            with mock.patch("docich.soren91_corner.Soren91CornerManager"):
+                adapter = MerikenCornerAdapter(
+                    g, _Corner("meriken", corner_id="meriken", game="soren91"))
+        manager = _Manager(True)
+        adapter.manager = manager
+
+        self.assertIs(adapter.settle_released_failure("r-1"), True)
+        self.assertEqual(manager.calls, [("r-1", "meriken")])
 
 
 if __name__ == "__main__":
