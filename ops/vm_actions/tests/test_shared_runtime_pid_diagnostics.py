@@ -218,6 +218,47 @@ class SharedRuntimePidTests(unittest.TestCase):
         with patch.object(self.mod, '_shared_runtime_pipeline', side_effect=changed):
             self.assertFalse(self.collect()['scan_complete'])
 
+    def test_failure_stage_is_fixed_and_does_not_expose_exception(self):
+        from unittest.mock import patch
+        self.producers()
+        for helper, stage in (('_shared_runtime_sources', 'producer_sources'),
+                              ('_shared_runtime_process', 'stream_process')):
+            with patch.object(self.mod, helper, side_effect=ValueError('PRIVATE /secret/path')):
+                result = self.collect()
+            self.assertFalse(result['scan_complete'])
+            self.assertEqual(result['failure_stage'], stage)
+            self.assertNotIn('PRIVATE', json.dumps(result))
+            self.assertFalse(self.mod.compare_shared_runtime_pids(result, result)['match'])
+            self.assertTrue(all(not row['entries'] for row in result['roles'].values()))
+
+    def test_second_chain_exception_stays_a_recheck_failure(self):
+        from unittest.mock import patch
+        self.producers()
+        original = self.mod._shared_runtime_process
+        for fail_call in (4, 5, 6):
+            calls = 0
+            def fail_on_recheck(*args):
+                nonlocal calls
+                calls += 1
+                if calls == fail_call:
+                    raise OSError('PRIVATE /secret/path')
+                return original(*args)
+            with self.subTest(fail_call=fail_call), patch.object(
+                    self.mod, '_shared_runtime_process', side_effect=fail_on_recheck):
+                result = self.collect()
+                self.assertEqual(result['failure_stage'], 'identity_recheck')
+                self.assertFalse(result['scan_complete'])
+                self.assertFalse(self.mod.compare_shared_runtime_pids(result, result)['match'])
+                self.assertNotIn('PRIVATE', json.dumps(result))
+                self.assertTrue(all(not row['entries'] for row in result['roles'].values()))
+
+    def test_pipeline_and_audio_failures_identify_stage(self):
+        file, record = self.pipeline()
+        file.write_text(json.dumps({**record, 'ready': False}))
+        self.assertEqual(self.collect()['failure_stage'], 'pipeline_receipt')
+        (self.proc/'102/cmdline').write_bytes(b'bash\0wrong.sh\0')
+        self.assertEqual(self.collect()['failure_stage'], 'audio_process')
+
     def receipt(self):
         return {'schema_version': 2, 'scan_complete': True,
                 'boot_id': '12345678-1234-1234-1234-123456789abc',
