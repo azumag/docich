@@ -4861,6 +4861,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v239-concert-picker-escape",
             "hanjuku-chart-v241-sortie-confirm-cancel",
             "hanjuku-chart-v244-payroll-roster-weakest",
+            "hanjuku-chart-v245-hero-repair-reservation",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
