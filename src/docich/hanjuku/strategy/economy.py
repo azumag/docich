@@ -680,7 +680,89 @@ def _reserve_general_repair(mem, shop, gold):
                 reason='在城・卵破損を確認した将軍の次の家修復費を募集・兵士・築城より先に確保する')
 
 
+def _hero_repair_defer_reason(mem):
+    """Keep an observed deferral until repair readiness is positively rechecked.
+
+    The latch is a spending policy, not a claim that old HP is still current.
+    Monthly roster-only reads do not invalidate it. A different run/chapter
+    does, and an active purchase/trip always retains ownership of its cash.
+    """
+    import re
+    from ..os_layer.roster import run_identity
+    def valid_month(value):
+        return isinstance(value, str) and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', value) is not None
+    identity = run_identity(mem.get('_run_identity'))
+    chapter = mem.get('chapter')
+    key = 'hero_repair_deferral'
+    deferred = mem.get(key)
+    if (identity is None or type(chapter) is not int
+            or not isinstance(deferred, dict)
+            or run_identity(deferred.get('run_identity')) != identity
+            or type(deferred.get('chapter')) is not int or deferred.get('chapter') != chapter
+            or deferred.get('reason') not in ('wounded', 'moving')
+            or type(deferred.get('observed_tick')) is not int
+            or type(mem.get('tick')) is not int
+            or not 0 <= deferred['observed_tick'] <= mem['tick']
+            or not valid_month(deferred.get('month'))):
+        mem.pop(key, None)
+        deferred = None
+    info = (mem.get('house_eggs') or {}).get(NAME)
+    now = mem.get('tick')
+    if (identity is not None and type(chapter) is int and isinstance(info, dict)
+            and run_identity(info.get('observed_run_identity')) == identity
+            and info.get('general') == NAME
+            and type(info.get('observed_chapter')) is int and info.get('observed_chapter') == chapter
+            and valid_month(mem.get('month')) and info.get('month') == mem.get('month')
+            and type(info.get('observed_tick')) is int and type(now) is int
+            and 0 <= info['observed_tick'] <= now
+            and now - info['observed_tick'] <= 400):
+        hp, maximum = info.get('hp'), info.get('max_hp')
+        known_hp = (type(hp) is int and type(maximum) is int
+                    and maximum > 0 and 0 <= hp <= maximum)
+        moving = (info.get('location_observed') is True
+                  and info.get('location') == 'field'
+                  and info.get('camp_observed') is not True)
+        ready = (known_hp and hp == maximum
+                 and info.get('location_observed') is True
+                 and (info.get('location') == 'castle'
+                      or info.get('camp_observed') is True))
+        if info.get('broken') is False or (info.get('broken') is True and ready):
+            mem.pop(key, None)
+            deferred = None
+        elif info.get('broken') is True and ((known_hp and hp < maximum) or moving):
+            deferred = {'run_identity': dict(identity), 'chapter': chapter,
+                        'reason': 'wounded' if known_hp and hp < maximum else 'moving',
+                        'observed_tick': info['observed_tick'], 'month': info['month']}
+            mem[key] = deferred
+    state = mem.get('house') or {}
+    if (mem.get('month_sub') or (state.get('general') == NAME and (
+            state.get('phase') not in (None, 'close')
+            or any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending'))))):
+        return None
+    return deferred['reason'] if deferred is not None else None
+
+
+def _hero_repair_floor(mem):
+    return 50 if _hero_egg_broken(mem) and _hero_repair_defer_reason(mem) is None else 0
+
+
 def _reserve_hero_repair(mem, shop, gold):
+    reason = _hero_repair_defer_reason(mem)
+    if reason is not None:
+        released = shop.get('hero_repair_reserve', 0)
+        if type(released) is not int or released < 0:
+            return  # malformed reservation is not spendable cash
+        previous = shop.get('hero_repair_deferred')
+        shop.update(hero_repair_reserve=0, hero_repair_deferred=reason)
+        if released or previous != reason:
+            _record(mem, 'hero_repair_funds_released', month=shop.get('key'),
+                    observed_metric={'released': released, 'building_floor_released': max(50, released),
+                                     'gold': gold, 'condition': reason,
+                                     'observed_tick': mem['hero_repair_deferral']['observed_tick'],
+                                     'observation_month': mem['hero_repair_deferral']['month']},
+                    reason='同一ラン・章で確認した修理不能による解放を、次の修理可能確認まで維持する')
+        return
+    shop.pop('hero_repair_deferred', None)
     if not _hero_egg_broken(mem) or shop.get('hero_repair_reserve'):
         return
     shop['hero_repair_reserve'] = 50  # cheapest measured house gift; no wage hold
@@ -977,6 +1059,9 @@ def _recruit_egg_ready(mem, shop):
 
 def _chikujou_reserve(mem, shop):
     """Only money left after unfinished necessities may fund optional building."""
+    hero_reserve = shop.get('hero_repair_reserve', 0)
+    if type(hero_reserve) is not int or hero_reserve < 0:
+        return None  # unknown repair cash cannot become optional spending
     def amount(value):
         return value if type(value) is int and value > 0 else 0
 
@@ -998,7 +1083,8 @@ def _chikujou_reserve(mem, shop):
     else:
         egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
                   EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))
-    repair = (max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
+    repair = ((0 if _hero_repair_defer_reason(mem) is not None else
+               max(amount(shop.get('hero_repair_reserve')), _hero_repair_floor(mem)))
               + (50 if _general_repair_targets(mem) else 0))
     soldiers = 0 if shop.get('soldiers_done') else amount(shop.get('soldiers'))
     # A recruit stopped as unneeded/unaffordable no longer holds its fee; a
