@@ -226,3 +226,56 @@ def test_actual_main_camp_observation_restores_repair_reservation():
     assert 'hero_repair_deferral' not in mem
     e._reserve_hero_repair(mem, mem['shop'], 65)
     assert mem['shop']['hero_repair_reserve'] == 50
+
+
+def test_house_field_status_in_camp_clears_latch_even_if_trip_later_closes():
+    from test_hanjuku_house import status, parse
+    from docich.hanjuku.flows import house
+    mem = memory(); e._reserve_hero_repair(mem, mem['shop'], 65)
+    mem['house'] = {'phase': 'field_read', 'general': p.NAME}
+    assert house._field_step(parse(status(p.NAME, main=False, hp=40, max_hp=40)), mem, None) == [p.pad('b')]
+    assert 'hero_repair_deferral' not in mem
+    mem.pop('house')
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    assert mem['shop']['hero_repair_reserve'] == 50
+
+
+def test_named_camp_recheck_full_field_status_restores_reservation():
+    from test_hanjuku_retreat_recheck import memory as retreat_memory, MAP, FRAME, main_menu
+    from test_hanjuku_chart_bot import camp_menu
+    from test_hanjuku_house import status, parse, roster
+    from docich.hanjuku.flows import house
+    mem = retreat_memory(p.NAME)
+    mem['month'] = '1-6'
+    house._observe_status(parse(status(p.NAME, hp=6)), mem)
+    assert mem['hero_repair_deferral']['reason'] == 'wounded'
+    mem['shop'] = {'key': '1-6', 'hero_repair_reserve': 0}
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=0)), mem, FRAME) == [p.pad('select')]
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(status(p.NAME, main=False, hp=85)), mem, FRAME) == [p.pad('b')]
+    assert 'hero_repair_deferral' not in mem
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    assert mem['shop']['hero_repair_reserve'] == 50
+
+
+@pytest.mark.parametrize('repaired', [False, True])
+def test_unknown_hp_does_not_hide_positive_movement_or_repaired_egg(repaired):
+    from test_hanjuku_house import status, parse
+    from docich.hanjuku.flows import camp_recheck as c
+    mem = memory(); mem['chapter'] = 1
+    if repaired:
+        mem['house_eggs'][p.NAME]['observed_chapter'] = 1
+        e._reserve_hero_repair(mem, mem['shop'], 65)
+    screen = parse(status(p.NAME, castle=repaired,
+                          egg='エラベルエッグ4' if repaired else 'こわれている'))
+    screen.lines = [r for r in screen.lines if r.y != 55]
+    c.observe_camp_status(screen, mem)
+    if repaired:
+        assert 'hero_repair_deferral' not in mem
+        assert mem['house_eggs'][p.NAME]['broken'] is False
+    else:
+        assert mem['hero_repair_deferral']['reason'] == 'moving'
+    assert not mem.get('recall')

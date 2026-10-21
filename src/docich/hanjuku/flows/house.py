@@ -275,11 +275,13 @@ def _survey_work(mem):
                for c in owned)
 
 
-def observe_hero_repair_status(info, mem):
+def observe_hero_repair_status(info, mem, *, in_camp=False):
     """Remember a validated named reading without changing recall/receipt state."""
     from ..strategy.economy import _hero_repair_defer_reason
     from ..os_layer.world import NAME
     if isinstance(info, dict) and info.get('general') == NAME:
+        if in_camp and info.get('location') == 'field':
+            info = {**info, 'camp_observed': True, 'location_observed': True}
         mem.setdefault('house_eggs', {})[NAME] = {
             **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
             'observed_tick': mem.get('tick'),
@@ -1408,7 +1410,9 @@ def _field_step(screen, mem, frame):
             return []
         if info['general'] != name or (not state.get('returning') and not info['broken']):
             return _exit(mem, '本人の卵割れまたは帰還対象を確認できないため操作を中止')
-        observe_hero_repair_status(info, mem)
+        field_panel = any(r.y == 31 and r.span(16, 80).strip() == name
+                          and r.span(80, 128) == 'しょうぐん' for r in screen.lines)
+        observe_hero_repair_status(info, mem, in_camp=field_panel)
         if not state.get('returning') and not _repair_hp_ready(info):
             state['returning'] = True
             _record(mem, 'recall_needed', observed_metric={'hp': info.get('hp'), 'max_hp': info.get('max_hp')},

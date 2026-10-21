@@ -314,7 +314,6 @@ def observe_camp_status(screen, mem):
     if (not main_panel or identity is None
             or type(now) is not int or now < 0 or type(chapter) is not int or chapter <= 0
             or type(header_chapter) is not int or header_chapter != chapter
-            or type(info.get('hp')) is not int or info['hp'] <= 0
             or not _clean_name(info['general'])):
         return
     actor = info['general']
@@ -322,6 +321,8 @@ def observe_camp_status(screen, mem):
     if isinstance(owner, dict) and owner.get('general') not in (None, actor):
         return  # another actor's requested status cannot adopt this page
     house.observe_hero_repair_status(info, mem)
+    if type(info.get('hp')) is not int or info['hp'] <= 0:
+        return
     scope = {'identity': identity, 'chapter': chapter}
     seen = mem.get('camp_status_seen')
     if not isinstance(seen, dict) or seen.get('scope') != scope:
@@ -558,7 +559,7 @@ def _named_step(screen, mem, frame, state):
         if not state.get('anonymous_recheck') and info['general'] != actor:
             _defer(mem, state, '指定本人と実ステータスが異なるため数量や帰還を更新しない')
             return [pad('b')]
-        house.observe_hero_repair_status(info, mem)
+        house.observe_hero_repair_status(info, mem, in_camp=True)
         if info.get('location') != 'castle':
             _observe_egg(mem, info)  # a blocked return must not discard an actual zero
         if type(info.get('hp')) is int and info['hp'] == 0:
