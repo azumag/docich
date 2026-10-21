@@ -1357,16 +1357,19 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [])
 
     def test_settle_released_failure_refuses_a_foreign_adapter_record(self):
-        # The widening for NetHack (#490) must not leak back: a ``nethack``
-        # release record never retires a retro ``game`` owner.
         mgr, coordinator, request_id = self._setup_quiesce_failed()
-        self._released_ledger(mgr, request_id, adapter="nethack")
         before = mgr._read_state()
+        # The widenings for NetHack (#490) and Meriken (#2480) must not leak
+        # back: their release records never retire a retro ``game`` owner.
+        for foreign_adapter in ("nethack", "meriken"):
+            with self.subTest(adapter=foreign_adapter):
+                self._released_ledger(mgr, request_id, adapter=foreign_adapter)
 
-        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+                self.assertIs(
+                    mgr.settle_released_failure(request_id, corner_id="robots"), False)
 
-        self.assertEqual(mgr._read_state(), before)
-        self.assertEqual(coordinator.calls, [])
+                self.assertEqual(mgr._read_state(), before)
+                self.assertEqual(coordinator.calls, [])
 
     def test_settle_released_failure_requires_the_rotation_owner_to_match(self):
         mgr, coordinator, request_id = self._setup_quiesce_failed()
