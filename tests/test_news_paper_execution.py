@@ -489,6 +489,49 @@ class ExecutionTests(unittest.TestCase):
     def test_spread_bps_helper(self):
         self.assertEqual(ex.spread_bps(observation(bid=D("999"), ask=D("1001"))), D("20"))
 
+    # -- review regressions (P1-1, P2-1, P2-2, P2-3) -----------------------
+
+    def test_other_asset_observation_never_fills(self):
+        # P1-1: an observation for another asset must not fill this order.
+        out = self.run_order(observations=[observation(asset="stocks:XTKS:OTHER")])
+        self.assertEqual(out.fills, ())
+        self.assertFalse(out.terminal)
+        self.assertIsNone(out.selected_observation_id)
+
+    def test_empty_book_skips_and_waits(self):
+        # P2-1: zero displayed size on an eligible observation is
+        # skip_and_wait, not a terminal cancel (N00 §3.4 市場群).
+        out = self.run_order(observations=[observation(ask_size=D("0"))])
+        self.assertEqual(out.fills, ())
+        self.assertEqual(out.status, "pending")
+        self.assertFalse(out.terminal)
+        self.assertIn("LIQUIDITY_INSUFFICIENT", out.reason_codes)
+        self.assertEqual(out.canceled_quantity, D("0"))
+        self.assertEqual(out.selected_observation_id, "quote_1")
+
+    def test_foreign_receipt_cancels_pending(self):
+        # P2-3: a receipt/order scope mismatch cancels the reservation.
+        out = self.run_order(order(receipt_id="receipt_other"),
+                             observations=[observation()])
+        self.assertEqual(out.fills, ())
+        self.assertEqual(out.status, "canceled")
+        self.assertTrue(out.terminal)
+        self.assertIn("ACCOUNT_SCOPE_MISMATCH", out.reason_codes)
+        self.assertEqual(out.canceled_quantity, D("200"))
+
+    def test_untrusted_fence_clock_cancels_pending(self):
+        # P2-2: a fence sampled with an untrusted clock is an isolation
+        # error and must not leave the reservation pending.
+        out = self.run_order(
+            observations=[observation()],
+            fence=fence(clock_quality=ex.ClockQuality(
+                synced=False, source="unknown", max_error_ms=1000)),
+        )
+        self.assertEqual(out.fills, ())
+        self.assertEqual(out.status, "canceled")
+        self.assertTrue(out.terminal)
+        self.assertIn("CLOCK_UNTRUSTED", out.reason_codes)
+
 
 if __name__ == "__main__":
     unittest.main()
