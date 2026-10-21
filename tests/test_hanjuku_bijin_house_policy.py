@@ -106,3 +106,23 @@ def test_item_hold_releases_on_explicit_foreground_end(kind):
     mem = {'bijin_gift_hold': True}
     assert policy.bijin_guard_step(Screen([], None, '', kind=kind), mem) is None
     assert 'bijin_gift_hold' not in mem
+
+
+def test_item_menu_hold_ends_with_the_cheapest_item_after_the_bound():
+    # The measured item menu has no refusal row: holding it leaves the frame
+    # unchanged until the 300 s corner watchdog ends the run (2026-10-21,
+    # end_reason=screen_stalled). The bound ends the event with the cheapest
+    # non-house item instead.
+    mem = {}
+    frame = gifts(999, 2)          # the hand rests on いえ500G
+    for _ in range(policy.BIJIN_GIFT_HOLD_MAX):
+        assert policy.gift_step(parse(frame), mem) == []
+    actions = policy.gift_step(parse(frame), mem)
+    assert actions == [policy.pad('up')]      # toward こうすい100G, never いえ
+    actions = policy.gift_step(parse(gifts(999, 0)), mem)
+    assert actions == [policy.pad('a')]
+    record = mem['_records'][-1]
+    assert record['strategy_variant'] == 'bijin_hold_bound_cheapest'
+    assert (record['item'], record['price']) == ('こうすい', 100)
+    assert record['deviation_reason'] == 'bijin_item_hold_bound'
+    assert 'bijin_gift_waits' not in mem
