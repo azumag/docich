@@ -515,21 +515,52 @@ class MysteryCornerManager:
         owner = state.get("rotation_request_id")
         return owner if isinstance(owner, str) and owner else ""
 
+    def _foreign_program_flag(self, flag, owner, now):
+        """True when ``flag`` belongs to a different, still-live corner.
+
+        A flag without an owner is the legacy PAPER format; while it is live it
+        must not be overwritten either. Unreadable/corrupt flags are treated as
+        ours to replace, matching the radio's fail-open parsing.
+        """
+        try:
+            current = json.loads(flag.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            return False
+        if not isinstance(current, dict):
+            return False
+        ends_at = current.get("ends_at")
+        if type(ends_at) not in (int, float) or ends_at <= now:
+            return False
+        current_owner = current.get("owner")
+        if not isinstance(current_owner, str):
+            current_owner = ""
+        return current_owner != owner
+
     def _refresh_program_flag(self, state):
         """Advertise this program corner to the Soren radio (best-effort).
 
         The radio reads only ``ends_at``; the owner token lets this corner
-        avoid deleting a newer owner's flag. The legacy PAPER flag is mirrored
-        for a deployment that still runs the old Soren gate; a newer Soren
-        checks the shared flag first. Failures are swallowed: the radio treats
-        a missing/broken flag as inactive, and the sliding expiry bounds a
-        crashed corner to ``PROGRAM_FLAG_TTL_S``. Never raises.
+        avoid deleting or overwriting a newer owner's flag. The legacy PAPER
+        flag is mirrored for a deployment that still runs the old Soren gate; a
+        newer Soren checks the shared flag first. Failures are swallowed: the
+        radio treats a missing/broken flag as inactive, and the sliding expiry
+        bounds a crashed corner to ``PROGRAM_FLAG_TTL_S``. Never raises.
         """
         try:
+            # No narration means nothing to protect: leave the radio alone.
+            if not self.audio_enabled:
+                return
             owner = self._program_flag_owner(state)
             if not owner:
                 return
             now = self.clock()
+            paths = (self._program_flag_path(), self._legacy_program_flag_path())
+            # A lost slot can still call _write_view for its reveal. Never
+            # overwrite the new owner's live flag in that path.
+            if any(self._foreign_program_flag(flag, owner, now) for flag in paths):
+                return
             payload = {
                 "kind": "mystery",
                 "owner": owner,
@@ -538,7 +569,7 @@ class MysteryCornerManager:
                 "progress_at": now,
                 "ends_at": now + PROGRAM_FLAG_TTL_S,
             }
-            for flag in (self._program_flag_path(), self._legacy_program_flag_path()):
+            for flag in paths:
                 try:
                     flag.parent.mkdir(parents=True, exist_ok=True)
                     atomic_write_json(flag, payload)
@@ -693,12 +724,18 @@ class MysteryCornerManager:
             raise MysteryCornerError("mystery end time is invalid")
         return ends_at - self.clock()
 
-    def _write_view(self, state, case, session, *, phase, poll=None, prediction=None):
-        """Best-effort bounded broadcast payload write (never raises)."""
+    def _write_view(self, state, case, session, *, phase, poll=None, prediction=None,
+                    refresh_flag=True):
+        """Best-effort bounded broadcast payload write (never raises).
+
+        ``refresh_flag=False`` is for the slot-lost reveal: the board may still
+        be written, but the next owner's radio flag must not be overwritten.
+        """
         # Keep the radio suppressed for as long as the board is being updated;
         # the flag is refreshed before the write so a view failure cannot let
         # the radio resume mid-corner.
-        self._refresh_program_flag(state)
+        if refresh_flag:
+            self._refresh_program_flag(state)
         try:
             revealed = reveal(case) if session.get("revealed") else None
             board = public_board(
@@ -846,10 +883,11 @@ class MysteryCornerManager:
         # even when an earlier phase blew up or the slot was taken away.
         self._ensure_prediction_settled(state, case, session)
         if interrupted == "moved":
-            # Our runtime is gone; record the reveal in state without narration.
+            # Our runtime is gone; record the reveal in state without narration
+            # and without touching the radio flag the new owner may hold.
             if not session.get("revealed"):
                 session["revealed"] = True
-                self._write_view(state, case, session, phase="reveal")
+                self._write_view(state, case, session, phase="reveal", refresh_flag=False)
                 self._save(state)
             self._record_run_ledger(state, case, session, end_reason="operator-moved-during-mystery")
             return self._mark_interrupted(state, "operator-moved-during-mystery")

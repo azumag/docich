@@ -381,7 +381,7 @@ def test_mystery_corner_suppresses_the_soren_radio_only_while_the_board_is_live(
     def sleep(seconds):
         now[0] += seconds
 
-    adapter = _adapter(g, _corner(), switch, now, sleep)
+    adapter = _adapter(g, _corner(audio_enabled=True), switch, now, sleep)
     manager = adapter.manager
     flag = manager._program_flag_path()
     legacy = manager._legacy_program_flag_path()
@@ -407,11 +407,17 @@ def test_mystery_corner_suppresses_the_soren_radio_only_while_the_board_is_live(
 
 def test_mystery_program_flag_never_deletes_another_owners_flag(tmp_path):
     g, _now, _factory, _store, switch = _setup(tmp_path)
-    manager = _adapter(g, _corner(), switch, [0], lambda _s: None).manager
+    manager = _adapter(g, _corner(audio_enabled=True), switch, [0],
+                       lambda _s: None).manager
     flag = manager._program_flag_path()
     legacy = manager._legacy_program_flag_path()
 
     manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
+    assert json.loads(flag.read_text())["owner"] == "owner-a"
+    assert json.loads(legacy.read_text())["owner"] == "owner-a"
+
+    # A live foreign flag is never overwritten by a corner that lost its slot.
+    manager._refresh_program_flag({"rotation_request_id": "owner-b", "started_at": 2})
     assert json.loads(flag.read_text())["owner"] == "owner-a"
     assert json.loads(legacy.read_text())["owner"] == "owner-a"
 
@@ -422,6 +428,16 @@ def test_mystery_program_flag_never_deletes_another_owners_flag(tmp_path):
     assert not flag.exists() and not legacy.exists()
     # Clearing twice is harmless.
     manager._clear_program_flag({"rotation_request_id": "owner-a"})
+
+
+def test_mystery_program_flag_is_not_advertised_without_corner_audio(tmp_path):
+    g, _now, _factory, _store, switch = _setup(tmp_path)
+    manager = _adapter(g, _corner(audio_enabled=False), switch, [0],
+                       lambda _s: None).manager
+
+    manager._refresh_program_flag({"rotation_request_id": "owner-a", "started_at": 1})
+    assert not manager._program_flag_path().exists()
+    assert not manager._legacy_program_flag_path().exists()
 
 
 def test_mystery_corner_polls_drive_the_investigation(tmp_path, quiet_narration):
