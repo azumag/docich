@@ -382,12 +382,16 @@ class TestNethackRunBoundary(NethackCornerTestBase):
             [("switch", "nethack"), ("switch", "robots")],
         )
         self.assertEqual(mgr.status().get("finish_reason"), "terminal")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 0.0)
+        self.assertIs(mgr.status().get("screen_readable"), True)
 
     def test_unchanged_screen_ends_after_stall_timeout(self):
         mgr, coordinator, clock = self._boundary_manager(["frozen screen"], stall_minutes=10)
         result = mgr.start()
         self.assertEqual(result.status, "completed")
         self.assertEqual(mgr.status().get("finish_reason"), "stalled")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 600.0)
+        self.assertIs(mgr.status().get("screen_readable"), True)
         self.assertGreaterEqual(
             (clock["now"] - self.now_value).total_seconds(),
             10 * 60,
@@ -396,6 +400,122 @@ class TestNethackRunBoundary(NethackCornerTestBase):
             coordinator.calls,
             [("switch", "nethack"), ("switch", "robots")],
         )
+
+    def test_unreadable_screen_uses_existing_guard_and_records_unreadability(self):
+        mgr, _coordinator, clock = self._boundary_manager([None], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("finish_reason"), "stalled")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(mgr.status().get("screen_readable"), False)
+        self.assertEqual((clock["now"] - self.now_value).total_seconds(), 60.0)
+
+    def test_read_failure_after_progress_does_not_reset_the_guard(self):
+        mgr, _coordinator, clock = self._boundary_manager(["map", None], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(mgr.status().get("screen_readable"), False)
+        self.assertEqual((clock["now"] - self.now_value).total_seconds(), 61.0)
+
+    def test_screen_change_resets_elapsed_instead_of_recording_run_duration(self):
+        mgr, _coordinator, clock = self._boundary_manager(
+            ["first map"] * 30 + ["second map"], stall_minutes=1,
+        )
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(mgr.status().get("screen_readable"), True)
+        self.assertEqual((clock["now"] - self.now_value).total_seconds(), 91.0)
+
+    def test_empty_capture_is_readable(self):
+        mgr, _coordinator, _clock = self._boundary_manager([""], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(mgr.status().get("screen_readable"), True)
+
+    def test_new_terminal_run_replaces_previous_stall_evidence(self):
+        mgr, _coordinator, _clock = self._boundary_manager([None], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertIs(mgr.status().get("screen_readable"), False)
+        mgr._runtime_screen = lambda: "You die..."
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("finish_reason"), "terminal")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 0.0)
+        self.assertIs(mgr.status().get("screen_readable"), True)
+
+    def test_queued_restore_preserves_the_original_stall_observation(self):
+        mgr, coordinator, clock = self._boundary_manager([None], stall_minutes=1)
+        original_switch = coordinator.switch
+        queued = []
+
+        def switch(game):
+            if game == "robots" and not queued:
+                queued.append(True)
+                return SimpleNamespace(status="queued", detail="restore pending")
+            return original_switch(game)
+
+        coordinator.switch = switch
+        self.assertEqual(mgr.start().status, "queued")
+        first = mgr.status()
+        self.assertEqual(first.get("status"), "restoring")
+        self.assertEqual(first.get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(first.get("screen_readable"), False)
+        clock["now"] += timedelta(seconds=120)
+        mgr._runtime_screen = Mock(side_effect=AssertionError("restore must not recapture"))
+        self.assertEqual(mgr.start().status, "completed")
+        final = mgr.status()
+        self.assertEqual(final.get("finish_reason"), "stalled")
+        self.assertEqual(final.get("screen_unchanged_seconds"), 60.0)
+        self.assertIs(final.get("screen_readable"), False)
+        mgr._runtime_screen.assert_not_called()
+
+    def test_stop_before_observation_does_not_inherit_previous_stall_evidence(self):
+        mgr, _coordinator, clock = self._boundary_manager([None], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(mgr.status().get("finish_reason"), "stalled")
+
+        def stop_before_capture():
+            with mgr._locked():
+                return mgr._finish_locked(mgr._read_state(), clock["now"])
+
+        mgr._rotation_stop_result = stop_before_capture
+        mgr._runtime_screen = Mock(side_effect=AssertionError("stopped before observation"))
+        self.assertEqual(mgr.start().status, "completed")
+        state = mgr.status()
+        for key in ("finish_reason", "screen_unchanged_seconds", "screen_readable"):
+            self.assertNotIn(key, state)
+        mgr._runtime_screen.assert_not_called()
+
+    def test_status_interruption_during_poll_does_not_fabricate_observation(self):
+        mgr, _coordinator, _clock = self._boundary_manager(["unused map"])
+
+        def interrupt_during_sleep(_seconds):
+            with mgr._locked():
+                state = mgr._read_state()
+                state["status"] = "interrupted"
+                mgr._write_state(state)
+
+        mgr._sleep = interrupt_during_sleep
+        mgr._runtime_screen = Mock(side_effect=AssertionError("interrupted before capture"))
+        self.assertEqual(mgr.start().status, "interrupted")
+        state = mgr.status()
+        for key in ("finish_reason", "screen_unchanged_seconds", "screen_readable"):
+            self.assertNotIn(key, state)
+        mgr._runtime_screen.assert_not_called()
+
+    def test_persisted_stall_observation_reaches_diagnostics_unchanged(self):
+        import importlib.util
+
+        mgr, _coordinator, _clock = self._boundary_manager([None], stall_minutes=1)
+        self.assertEqual(mgr.start().status, "completed")
+        persisted = json.loads(mgr.state_path.read_text(encoding="utf-8"))
+        collector_path = (Path(__file__).resolve().parents[1]
+                          / "ops/vm_actions/collect_diagnostics.py")
+        spec = importlib.util.spec_from_file_location("boundary_diagnostics", collector_path)
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        projected = collector._project_corner_state(persisted)
+        self.assertEqual(projected["finish_reason"], "stalled")
+        self.assertEqual(projected["screen_unchanged_seconds"], 60.0)
+        self.assertIs(projected["screen_readable"], False)
 
     def test_terminal_markers_are_specific(self):
         from docich.nethack_corner import _is_terminal_screen

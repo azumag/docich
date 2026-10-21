@@ -51,6 +51,7 @@ class CornerFinishReasonTests(unittest.TestCase):
             "screen_unchanged_seconds": 607.9,
         })
         self.assertIsNone(projected["finish_reason"])
+        self.assertIsNone(projected["screen_readable"])
         self.assertEqual(projected["screen_unchanged_seconds"], 607.9)
         self.assertEqual(projected["status"], "completed")
 
@@ -58,6 +59,36 @@ class CornerFinishReasonTests(unittest.TestCase):
         for reason in ("terminal", "stalled"):
             with self.subTest(reason=reason):
                 projected = self.module._project_corner_state({"finish_reason": reason})
+                self.assertIsNone(projected["screen_unchanged_seconds"])
+
+    def test_boundary_observation_scalars_are_projected_without_inference(self):
+        for reason, seconds, readable in (
+            ("stalled", 600.0, True), ("stalled", 605, False),
+            ("terminal", 0.0, True),
+        ):
+            with self.subTest(reason=reason, readable=readable):
+                projected = self.module._project_corner_state({
+                    "finish_reason": reason, "screen_unchanged_seconds": seconds,
+                    "screen_readable": readable,
+                })
+                self.assertEqual(projected["finish_reason"], reason)
+                self.assertEqual(projected["screen_unchanged_seconds"], seconds)
+                self.assertIs(projected["screen_readable"], readable)
+
+    def test_screen_readability_requires_an_exact_boolean(self):
+        for value in (None, 0, 1, "true", "false", [], {}, "token=DO-NOT-PUBLISH"):
+            with self.subTest(value_type=type(value).__name__):
+                projected = self.module._project_corner_state({"screen_readable": value})
+                self.assertIsNone(projected["screen_readable"])
+                self.assertNotIn("DO-NOT-PUBLISH", json.dumps(projected))
+
+    def test_unchanged_seconds_requires_a_finite_nonnegative_number(self):
+        for value in (None, True, False, -1, -0.1, float("nan"), float("inf"),
+                      -float("inf"), "600", [], {}):
+            with self.subTest(value_type=type(value).__name__):
+                projected = self.module._project_corner_state({
+                    "screen_unchanged_seconds": value,
+                })
                 self.assertIsNone(projected["screen_unchanged_seconds"])
 
     def test_automatic_and_manual_state_files_use_the_shared_read_only_projection(self):
@@ -69,6 +100,8 @@ class CornerFinishReasonTests(unittest.TestCase):
                 path = state_dir / (name + ".json")
                 path.write_text(json.dumps({
                     "status": "completed", "game": "nethack", "finish_reason": reason,
+                    "screen_unchanged_seconds": 600.0 if reason == "stalled" else 0.0,
+                    "screen_readable": reason == "terminal",
                 }), encoding="utf-8")
                 files[path] = (path.read_bytes(), path.stat().st_mtime_ns)
             output = {}
@@ -78,6 +111,10 @@ class CornerFinishReasonTests(unittest.TestCase):
                 self.module._collect_corner_files(state_dir, output, 1792471283)
             self.assertEqual(output["nethack_corner"]["finish_reason"], "stalled")
             self.assertEqual(output["nethack_corner_manual"]["finish_reason"], "terminal")
+            self.assertEqual(output["nethack_corner"]["screen_unchanged_seconds"], 600.0)
+            self.assertIs(output["nethack_corner"]["screen_readable"], False)
+            self.assertEqual(output["nethack_corner_manual"]["screen_unchanged_seconds"], 0.0)
+            self.assertIs(output["nethack_corner_manual"]["screen_readable"], True)
             for name in ("nethack_corner", "nethack_corner_manual"):
                 self.assertTrue(output[name]["present"])
                 self.assertTrue(output[name]["readable"])

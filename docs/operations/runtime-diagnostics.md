@@ -171,6 +171,21 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `corners.nethack_corner` / `corners.nethack_corner_manual` の `finish_reason` は
+  保存済みの `terminal` / `stalled` / `recover` / `force_recover` だけを投影する（#2579）。
+  `completed` やコーナーの所要時間から理由を補わない。
+  NetHack の画面監視が `terminal` / `stalled` を判定した時点で、同じ state に
+  `screen_unchanged_seconds` と `screen_readable` を記録する。
+  秒数は最後に異なる画面を取得してからの stall guard 経過時間で、まだ一度も取得できて
+  いなければ監視開始から計測する。取得失敗中も時間は進むため、同じ画面を継続して
+  視認できた時間や、ゲーム入力が無かった時間を証明する値ではない。
+  `screen_readable=true` は判定時の画面取得が成功したこと（空文字も含む）、`false` は
+  その取得が `None` だったことを示す。state ファイル自体の読取可否 `readable` とは別。
+  terminal 画面への変化を検出した場合は通常 `0.0` / `true` になる。
+  新規実行では前回値を引き継がず、同じ終了境界の復帰待ち・再試行では観測値を保つ。
+  時間指定の終了、画面を観測していない停止、旧バージョンの state は値を補わず `null`。
+  秒数は有限・非負の数値だけ、取得可否は boolean だけを許可し、欠落・型違いは `null`。
+  画面本文は保存・投影せず、監視中の定期書込や追加の画面取得も行わない。
 - `runtime_presentation` は **canonical が active とする runtime** の投影状態
   （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
   `reason` は `present=false` / `readable=false` の理由を固定enumで示す
