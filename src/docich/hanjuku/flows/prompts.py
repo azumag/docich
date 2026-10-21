@@ -37,6 +37,10 @@ BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
+# このイベントだけが使う固有の選択表記。依頼文の読み取りが欠けても、この選択行が
+# 選択肢帯に読めれば美女の依頼だと確定できる（月イチ画面の所有判定に使う）。
+BIJIN_NATIVE_ACCEPT_TOKENS = ('うんデヘヘ',)
+BIJIN_NATIVE_TOKENS = BIJIN_NATIVE_ACCEPT_TOKENS + ('けえんな', 'けーんな')
 
 # 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜208
 # （_trade_choice_pair と同じ帯）。本文の内側列だけを読み、パネル外枠のタイルは除く。
@@ -199,10 +203,18 @@ def _bijin_gold(screen: Screen):
     return gold
 
 
+def _bijin_native_choice(screen: Screen) -> bool:
+    """このイベント固有の選択行（うんデヘヘ/けえんな）が選択肢帯に読める。"""
+    return any(176 <= y <= 208 and word.startswith(token)
+               for _, y, word in _options(screen) for token in BIJIN_NATIVE_TOKENS)
+
+
 def bijin_guard_step(screen: Screen, mem, *, phase=None):
     """1000G以上なら依頼を受けて家へ進み、それ以外・読取不明は断る。
 
     選択肢と現在行を確認できない間は決定せず、既存の画面所有境界を保つ。
+    実測の月イチイベント画面は紅幕の会場で ``phase='concert'`` になるため、
+    依頼文か固有の選択行が見えている間は phase 境界より先に所有する。
     """
     if mem.get('bijin_gift_hold') is True:
         if (mem.get('month_sub') or screen.kind in (
@@ -217,16 +229,26 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     guard = mem.get('bijin_guard')
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
-    if mem.get('month_sub') or phase not in (None, 'dialogue'):
+    # The measured monthly event is drawn on the red-curtain scene: classify()
+    # returns 'concert' for the frame (gcgx ninja.png), never 'dialogue', so
+    # the old phase boundary skipped this guard in production and the
+    # generic A accepted the request. Take ownership whenever the request is
+    # on screen -- by its wording or by the event's own choice labels -- and
+    # keep the phase boundary only for unrelated frames. A pending monthly
+    # purchase still owns its own dialogue first (the event fires before the
+    # monthly command, so the two never share a frame in the measured flow).
+    native = _bijin_native_choice(screen)
+    request_seen = native or _is_bijin_request(screen.text)
+    if mem.get('month_sub') or (phase not in (None, 'dialogue') and not request_seen):
         mem.pop('bijin_guard', None)
         return None   # 月イチの購入額確定などの所有者を邪魔しない
     tick = int(mem.get('tick') or 0)
-    if _is_bijin_request(screen.text) and screen.kind in ('text', 'unknown', 'yes_no'):
+    if request_seen and screen.kind in ('text', 'unknown', 'yes_no'):
         if not isinstance(guard, dict):
             guard = mem['bijin_guard'] = {'tick': tick, 'chosen': False}
-            _record(mem, 'bijin_request_seen', screen=screen.kind,
+            _record(mem, 'bijin_request_seen', screen=screen.kind, phase=phase,
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
-                                     'gold': _bijin_gold(screen)},
+                                     'native_choice': native, 'gold': _bijin_gold(screen)},
                     reason='美女の依頼（月イチイベント）を検出。所持金1000G以上なら家へ進み、未満・読取不明なら断る')
         guard['tick'] = tick
     if not isinstance(guard, dict):
@@ -242,7 +264,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         return None
     gold = _bijin_gold(screen)
     accept = gold is not None and gold >= BIJIN_MIN_GOLD
-    if not _is_bijin_request(screen.text):
+    if not request_seen:
         if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
             # A positively readable page without the request wording, without
             # any bottom choice row and without a blinking hand is the same end
@@ -262,8 +284,8 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             # request could be confirmed), so keep the pending episode held
             # instead of returning None and letting the generic A through.
             # Release only happens on an explicit end condition: a read
-            # decline/accept row, a new monthly
-            # owner or a non-dialogue/battle/map screen.
+            # decline/accept row, a new monthly/frame owner or a map/battle
+            # screen. The monthly-event phase ('concert') does not release it.
             guard['held'] = True
             if not guard.get('unread_question_recorded'):
                 guard['unread_question_recorded'] = True
@@ -278,7 +300,8 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
     guard['choice_seen'] = True
     move = None
-    for label in (('うんデヘヘ', 'うむッ') if accept else BIJIN_DECLINE_TOKENS):
+    for label in (BIJIN_NATIVE_ACCEPT_TOKENS + ('うむッ',) if accept
+                  else BIJIN_DECLINE_TOKENS):
         move = menu_to(screen, label, exact=False)
         if move is not None:
             break
@@ -321,6 +344,23 @@ def yes_no_step(screen: Screen, mem):
         else:
             choice, reason, variant = ('いかんッ!', f'所持金が{GONINJA_MIN_GOLD}G未満のためゴニンジャーへの依頼を断る',
                                        'decline_goninja_below_floor')
+    elif _is_bijin_request(text):
+        # Owner rule (2026-10-15, 2026-10-21): the monthly 美女 request is
+        # declined unless the 1000G floor is proven. Its measured frame is
+        # phase 'concert' and a pending monthly owner can preempt
+        # bijin_guard_step, so this measured yes/no listing must apply the same
+        # floor instead of falling through to the default accept.
+        gold = _bijin_gold(screen)
+        metric = {'gold': gold, 'minimum_gold': BIJIN_MIN_GOLD}
+        if gold is not None and gold >= BIJIN_MIN_GOLD:
+            choice, reason, variant = ('うむッ!', '所持金1000G以上を確認したため美女の依頼を受ける',
+                                       'accept_bijin_house')
+        elif gold is None:
+            choice, reason, variant = ('いかんッ!', '所持金1000G以上を確認できないため美女の依頼を断る',
+                                       'decline_bijin_unread_gold')
+        else:
+            choice, reason, variant = ('いかんッ!', '所持金1000G未満のため美女の依頼を断る',
+                                       'decline_bijin_below_floor')
     elif 'はたしあい' in text or 'ごあいて' in text:
         # Owner decision (2026-09-25): accept. A duel fought with the blue
         # gauge spent properly is a near-certain win, so the hero no longer
@@ -350,7 +390,7 @@ def yes_no_step(screen: Screen, mem):
     if move is None:
         _record(mem, 'situation_held', screen=screen.kind,
                 observed_metric={'choice': choice, 'hand_visible': screen.hand is not None,
-                                 **({'goninja': metric} if metric else {})},
+                                 **({'prompt_metric': metric} if metric else {})},
                 reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
 
