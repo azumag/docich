@@ -8672,6 +8672,8 @@ _HANJUKU_REFILL_ENUMS = {
     'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
     'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
     'planned': frozenset({'zero', 'positive', 'unknown'}),
+    'roster': frozenset({'unavailable', 'partial', 'complete_no_pending',
+                          'complete_all_seen', 'complete_missing', 'unknown'}),
     'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
                          'deferred_army', 'deferred_egg', 'deferred_cash', 'deferred_roster',
                          'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
@@ -8721,7 +8723,26 @@ def _project_hanjuku_refill(mem, active):
     repair_valid = all(type(n) is int and 0 <= n <= 1_000_000 for n in (hero, general))
     planned = shop.get('soldiers')
     outcome = shop.get('refill_outcome')
-    out = {'scope': 'current',
+    # Use the same read-only freshness contract as recruitment. Only the
+    # relationship is public; names and historical membership stay private.
+    roster_gate = 'unknown'
+    try:
+        from docich.hanjuku.os_layer.roster import fresh
+        seen = fresh(mem)
+        valid_pending = (pending is None or isinstance(pending, list)
+                         and len(pending) <= 32
+                         and all(isinstance(n, str) and n for n in pending))
+        if seen is None:
+            roster_gate = 'unavailable'
+        elif seen.get('complete') is not True:
+            roster_gate = 'partial'
+        elif valid_pending:
+            roster_gate = ('complete_no_pending' if not pending else
+                           'complete_all_seen' if set(pending) <= set(seen['names'])
+                           else 'complete_missing')
+    except (ImportError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    out = {'scope': 'current', 'roster': roster_gate,
            'count': ('unknown' if not current else 'zero' if count == 0 else
                      'low' if count <= 20 else 'below_target' if count < 50 else 'enough'),
            'basis': mem.get('soldiers_seen_basis') if current else 'unknown',

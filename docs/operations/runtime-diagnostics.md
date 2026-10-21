@@ -1153,3 +1153,11 @@ python3 ops/local/compare_shared_runtime_pids.py --before before.json --after af
 ActionsのmaskでJSONやPIDが欠落した場合も、不明値を補って成功扱いしないでください。
 PID一致だけで公開映像・音声・ユーザー休止維持を証明したことにはせず、それぞれの
 受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。
+
+半熟の補充要約 `hanjuku_tactical.refill.roster` は、募集で使う同じread-onlyの
+`roster.fresh` による名簿の確認状態です。`unavailable` は有効な現在名簿なし、
+`partial` は全件確認未完、`complete_no_pending` は全件確認済み・在籍確認待ちなし、
+`complete_all_seen` は全件確認済み・待ち対象が全て名簿に存在、`complete_missing` は
+全件確認済みでも待ち対象の一部が名簿に存在しない状態です。将軍名・人数・理由本文は
+公開せず、不正な待ち対象は `unknown` とします。この診断は待ちフラグを解除せず、
+解雇や戦死を推定しません。出力予算による圧縮時も再検証して固定enumだけを残します。

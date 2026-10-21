@@ -20,7 +20,7 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.module = load_collector()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.runtime = self.root / 'runtimes' / OWNER['runtime_id']
         self.runtime.mkdir(parents=True)
         self.policy = {'_run_identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
@@ -76,11 +76,11 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(result, ensure_ascii=False).encode()), self.module.HARD_JSON_BYTES)
         self.assertNotIn('PRIVATE', json.dumps(result))
 
-    def test_summary_stays_below_four_hundred_bytes(self):
+    def test_summary_stays_below_four_hundred_fifty_bytes(self):
         value = {key: max(allowed, key=len) for key, allowed in self.module._HANJUKU_REFILL_ENUMS.items()}
         value['scope'] = 'current'
         value.update({key: False for key in self.module._HANJUKU_REFILL_BOOLS})
-        self.assertLessEqual(len(json.dumps(value, sort_keys=True).encode()), 400)
+        self.assertLessEqual(len(json.dumps(value, sort_keys=True).encode()), 450)
 
     def test_current_check_result_and_recruit_status_keep_writer_enums(self):
         self.policy['army_count_check'].update(stage='closing', result='unverified')
@@ -93,6 +93,33 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.write_records(); refill = self.collect()['refill']
         self.assertEqual(refill['check_result'], 'unknown')
         self.assertEqual(refill['recruit'], 'unknown')
+
+    def test_roster_gate_uses_current_membership_without_exposing_names(self):
+        self.policy['recruit_roster'] = {
+            'identity': deepcopy(OWNER), 'chapter': 2, 'month': '3-3',
+            'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        for pending, expected in ((None, 'complete_no_pending'),
+                                  (['PRIVATE-name'], 'complete_all_seen'),
+                                  (['PRIVATE-other'], 'complete_missing')):
+            self.policy['recruit_payroll_pending'] = pending
+            before = deepcopy(self.policy)
+            self.write_records()
+            refill = self.collect()['refill']
+            self.assertEqual(refill['roster'], expected)
+            self.assertNotIn('PRIVATE', json.dumps(refill))
+            self.assertEqual(self.policy, before)
+        self.policy['recruit_roster']['complete'] = False
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'partial')
+        self.policy['recruit_roster']['tick'] = -400
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
+        self.policy['recruit_roster'].update(tick=90, complete=True, month='3-2')
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
+        self.policy['recruit_roster'].update(month='3-3', identity={**OWNER, 'generation': 888})
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
 
     def test_scope_comparison_rejects_boolean_aliases(self):
         self.policy['chapter'] = 1
