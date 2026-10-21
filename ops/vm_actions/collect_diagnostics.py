@@ -11117,6 +11117,287 @@ def _collect_nethack_tiles(state_dir, now):
     return result
 
 
+SHARED_RUNTIME_ROLES = ("shared_stream", "encoder", "audio")
+SHARED_RUNTIME_ROLE_LABELS = {
+    "shared_stream": "shared stream / distribution",
+    "encoder": "stream encoder",
+    "audio": "audio worker",
+}
+SHARED_RUNTIME_MAX_PIDS = 64
+
+
+def _shared_runtime_boot_id(proc_root):
+    """Read only the fixed kernel boot UUID, with no symlink traversal."""
+    fd = None
+    try:
+        root = Path(proc_root).absolute()
+        fd = _supervisor_directory(root.anchor)
+        for part in (*root.parts[1:], 'sys', 'kernel', 'random'):
+            child = _supervisor_directory(part, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        value = _supervisor_read('boot_id', 64, dir_fd=fd).decode('ascii').strip()
+        if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
+            return value
+    except (OSError, ValueError, UnicodeError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return None
+
+
+def _shared_runtime_sources(soren):
+    values = []
+    for parts in (('tmp', 'state', 'direct_stream', 'status.json'),
+                  ('tmp', 'state', 'audio_worker.pid')):
+        fd, directory, before = _stream_title_open_fixed(soren, parts)
+        try:
+            raw = os.read(fd, 262145)
+            after = os.fstat(fd)
+            linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+            if (len(raw) > 262144 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                    or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+                raise ValueError('changed runtime source')
+            values.append(raw)
+        finally:
+            os.close(fd)
+            os.close(directory)
+    stream = json.loads(values[0])
+    if not isinstance(stream, dict) or stream.get('running') is not True:
+        raise ValueError('stream unavailable')
+    audio = values[1].strip()
+    if not re.fullmatch(rb'[1-9][0-9]{0,9}', audio):
+        raise ValueError('audio unavailable')
+    pids = {'shared_stream': stream.get('pid'), 'encoder': stream.get('ffmpeg_pid'),
+            'audio': int(audio)}
+    if (any(type(pid) is not int or not 1 < pid <= 2**31-1 for pid in pids.values())
+            or len(set(pids.values())) != len(pids)):
+        raise ValueError('invalid runtime identities')
+    return pids
+
+
+def _shared_runtime_process(soren, proc_root, role, pid):
+    root = Path(proc_root).absolute()
+    directory = _supervisor_directory(root.anchor)
+    process = None
+    try:
+        for part in root.parts[1:]:
+            child = _supervisor_directory(part, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        process = _supervisor_directory(str(pid), dir_fd=directory)
+        info = os.fstat(process)
+        ticks = _supervisor_process_start(proc_root, pid, process)
+        if not 0 < ticks <= 2**63-1:
+            raise ValueError('invalid process start')
+        raw = _supervisor_read('cmdline', 4096, dir_fd=process)
+        if not raw.endswith(b'\0'):
+            raise ValueError('incomplete command')
+        argv = raw[:-1].split(b'\0')
+        exe = os.readlink('exe', dir_fd=process)
+        executable = Path(exe).name
+        cwd = os.readlink('cwd', dir_fd=process)
+        fields = _supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()
+        parent = int(fields[1])
+        process_kind = role
+        python = re.fullmatch(r'python3(?:\.[0-9]+)?', executable) is not None
+        if role in ('encoder', 'guardian'):
+            if cwd != str(soren):
+                raise ValueError('unexpected encoder cwd')
+            module = b'docich.twica_encoder' if role == 'guardian' else b'docich.twica_ffmpeg'
+            if python and len(argv) >= 3 and argv[1:3] == [b'-m', module]:
+                process_kind = 'guardian' if role == 'guardian' else 'adapter'
+            elif (role == 'encoder' and executable == 'ffmpeg' and argv
+                  and Path(os.fsdecode(argv[0])).name == 'ffmpeg'
+                  and b'x11grab' in argv and b'-progress' in argv):
+                process_kind = 'native'
+            else:
+                raise ValueError('unexpected encoder')
+        else:
+            expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
+            if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
+                    or role == 'audio' and executable != 'bash' or len(argv) < 2):
+                raise ValueError('unexpected interpreter')
+            script = Path(os.fsdecode(argv[1]))
+            cwd = os.readlink('cwd', dir_fd=process)
+            if not script.is_absolute():
+                if cwd != str(soren):
+                    raise ValueError('unexpected working directory')
+                script = Path(soren) / script
+            if script != Path(soren) / expected:
+                raise ValueError('unexpected script')
+        again = os.stat(str(pid), dir_fd=directory, follow_symlinks=False)
+        if ((info.st_dev, info.st_ino, info.st_uid) != (again.st_dev, again.st_ino, again.st_uid)
+                or ticks != _supervisor_process_start(proc_root, pid, process)
+                or raw != _supervisor_read('cmdline', 4096, dir_fd=process)
+                or exe != os.readlink('exe', dir_fd=process)
+                or cwd != os.readlink('cwd', dir_fd=process)
+                or parent != int(_supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()[1])):
+            raise ValueError('changed process identity')
+        return {'pid': pid, 'start_ticks': ticks, 'parent': parent, 'kind': process_kind}
+    finally:
+        if process is not None:
+            os.close(process)
+        os.close(directory)
+
+
+def _shared_runtime_pipeline(docich_root, adapter, boot_id):
+    parts = ('twica-common', 'pipeline.json')
+    fd, directory, before = _stream_title_open_fixed(Path(docich_root) / 'run', parts)
+    try:
+        raw = os.read(fd, 4097)
+        after = os.fstat(fd)
+        linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if (len(raw) > 4096 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+            raise ValueError('changed pipeline')
+        data = json.loads(raw)
+        now_ns = time.monotonic_ns()  # Sample after the atomic heartbeat read.
+        if (not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1
+                or type(data.get('pid')) is not int or data['pid'] != adapter['pid']
+                or data.get('identity') != f"{boot_id}:{adapter['start_ticks']}"
+                or type(data.get('monotonic_ns')) is not int
+                or not 0 <= now_ns - data['monotonic_ns'] < 3_000_000_000
+                or data.get('ready') is not True
+                or type(data.get('encoder_pid')) is not int or not 1 < data['encoder_pid'] <= 2**31-1):
+            raise ValueError('unverified pipeline')
+        # Health counters may advance between reads; identity may not.
+        return data['encoder_pid']
+    finally:
+        os.close(fd)
+        os.close(directory)
+
+
+def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id):
+    runner = _shared_runtime_process(soren, proc_root, 'shared_stream', pids['shared_stream'])
+    audio = _shared_runtime_process(soren, proc_root, 'audio', pids['audio'])
+    child = _shared_runtime_process(soren, proc_root, 'encoder', pids['encoder'])
+    if child['parent'] != runner['pid']:
+        raise ValueError('unrelated encoder')
+    shared = [runner]
+    if child['kind'] == 'adapter':
+        native_pid = _shared_runtime_pipeline(docich_root, child, boot_id)
+        native = _shared_runtime_process(soren, proc_root, 'encoder', native_pid)
+        if native['kind'] != 'native':
+            raise ValueError('native encoder missing')
+        guardian = _shared_runtime_process(soren, proc_root, 'guardian', native['parent'])
+        if guardian['parent'] != child['pid']:
+            raise ValueError('unrelated guardian')
+        shared.extend([child, guardian])
+    else:
+        native = child
+    records = {'shared_stream': shared, 'encoder': [native], 'audio': [audio]}
+    all_pids = [row['pid'] for rows in records.values() for row in rows]
+    if len(set(all_pids)) != len(all_pids):
+        raise ValueError('overlapping runtime identities')
+    return records
+
+
+def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Path('/proc'),
+                                 docich_root=PROD_ROOT):
+    """Fixed producer chain only; never enumerate processes or emit argv."""
+    roles = {role: {'count': 0, 'pids': [], 'entries': []} for role in SHARED_RUNTIME_ROLES}
+    boot_id = _shared_runtime_boot_id(proc_root)
+    section = {'schema_version': 2, 'scan_complete': False, 'boot_id': boot_id, 'roles': roles}
+    try:
+        if boot_id is None:
+            return section
+        soren = Path(soren).absolute()
+        pids = _shared_runtime_sources(soren)
+        entries = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
+        if (pids != _shared_runtime_sources(soren)
+                or entries != _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
+                or boot_id != _shared_runtime_boot_id(proc_root)):
+            return section
+        for role, rows in entries.items():
+            clean = [{'pid': row['pid'], 'start_ticks': row['start_ticks']}
+                     for row in sorted(rows, key=lambda row: row['pid'])]
+            roles[role] = {'count': len(clean), 'pids': [row['pid'] for row in clean], 'entries': clean}
+        section['scan_complete'] = True
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError, IndexError):
+        pass
+    return section
+
+
+def _shared_runtime_pid_set(section):
+    """Validate the whole v2 receipt before comparing nonempty required roles."""
+    if (not isinstance(section, dict)
+            or set(section) != {'schema_version', 'boot_id', 'scan_complete', 'roles'}
+            or type(section.get('schema_version')) is not int or section['schema_version'] != 2
+            or section.get('scan_complete') is not True):
+        return None
+    boot = section.get('boot_id')
+    if not isinstance(boot, str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
+        return None
+    roles = section.get('roles')
+    if not isinstance(roles, dict) or set(roles) != set(SHARED_RUNTIME_ROLES):
+        return None
+    result, seen = {}, set()
+    for role in SHARED_RUNTIME_ROLES:
+        data = roles[role]
+        if not isinstance(data, dict) or set(data) != {'count', 'pids', 'entries'}:
+            return None
+        count, pids, entries = data['count'], data['pids'], data['entries']
+        if (type(count) is not int or not 1 <= count <= SHARED_RUNTIME_MAX_PIDS
+                or not isinstance(pids, list) or not isinstance(entries, list)
+                or len(pids) != count or len(entries) != count):
+            return None
+        values, projected = set(), []
+        for item in entries:
+            if not isinstance(item, dict) or set(item) not in (
+                    {'pid', 'start_ticks'}, {'pid', 'start_ticks', 'started_at'}):
+                return None
+            pid, ticks = item['pid'], item['start_ticks']
+            if (type(pid) is not int or not 1 < pid <= 2**31-1 or pid in seen
+                    or type(ticks) is not int or not 0 < ticks <= 2**63-1):
+                return None
+            started = item.get('started_at')
+            if 'started_at' in item and (type(started) is not int or not 0 < started <= 2**63-1):
+                return None
+            seen.add(pid)
+            projected.append(pid)
+            values.add((boot, pid, ticks, started))
+        if (any(type(pid) is not int for pid in pids)
+                or len(set(pids)) != count or set(pids) != set(projected)):
+            return None
+        result[role] = values
+    return result
+
+
+def compare_shared_runtime_pids(before, after):
+    """Fail-closed before/after comparison of shared runtime PID sets.
+
+    Accepts either full diagnostics dicts (with a ``shared_runtime_pids`` key)
+    or the section itself. Returns a dict with ``match`` (bool), the list of
+    mismatched roles, and a short ``reason``. Unknown/partial/missing sides
+    never count as a match.
+    """
+    if isinstance(before, dict) and "shared_runtime_pids" in before:
+        before = before["shared_runtime_pids"]
+    if isinstance(after, dict) and "shared_runtime_pids" in after:
+        after = after["shared_runtime_pids"]
+    before_set = _shared_runtime_pid_set(before)
+    after_set = _shared_runtime_pid_set(after)
+    if before_set is None or after_set is None:
+        return {
+            "match": False,
+            "mismatched_roles": list(SHARED_RUNTIME_ROLES),
+            "reason": "unavailable_or_partial",
+        }
+    mismatched = []
+    for role in SHARED_RUNTIME_ROLES:
+        if before_set[role] != after_set[role]:
+            mismatched.append(role)
+    if mismatched:
+        return {
+            "match": False,
+            "mismatched_roles": mismatched,
+            "reason": "pid_set_changed",
+        }
+    return {"match": True, "mismatched_roles": [], "reason": "ok"}
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -11195,6 +11476,7 @@ def main(argv):
         "cpu_profile": _collect_cpu_profile(now),
         "audio_priority": _collect_audio_priority(),
         "audio_gaps": _collect_audio_gaps(now),
+        "shared_runtime_pids": _collect_shared_runtime_pids(soren),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
