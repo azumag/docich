@@ -4870,6 +4870,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v249-shared-egg-plan",
             "hanjuku-chart-v250-low-hp-melee-advantage",
             "hanjuku-chart-v251-shared-egg-plan",
+            "hanjuku-chart-v252-current-roster-recruit",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
