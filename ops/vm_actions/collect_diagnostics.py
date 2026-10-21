@@ -1056,8 +1056,11 @@ def _audio_priority_scan(proc_root, uid, module):
             keeper = {"present": True, "pid": pid, "threads": threads}
             continue
         if comm == "ffplay" and "x11grab" in argv:
+            # presentation.py L484 launches the mirror ffplay with the
+            # single-dash "-framerate" (ffmpeg input option), not "--framerate";
+            # accept both spellings so the effective value is readable either way.
             for index, arg in enumerate(argv):
-                if arg == "--framerate" and index + 1 < len(argv):
+                if arg in ("--framerate", "-framerate") and index + 1 < len(argv):
                     try:
                         mirror = {"present": True,
                                   "framerate": min(max(int(argv[index + 1]), 0), 240)}

@@ -217,6 +217,41 @@ class AudioPriorityKeeperTests(unittest.TestCase):
                 script_path=self.script, unit_file=self.unit,
                 deployed_script=deployed_script, deployed_unit=deployed_unit)
 
+    def test_mirror_framerate_reads_the_single_dash_ffplay_option(self):
+        # presentation.py launches the mirror ffplay with the ffmpeg input
+        # option "-framerate" (single dash, docich#1811); the collector must
+        # read it as well as the double-dash spelling, otherwise the effective
+        # hanjuku mirror framerate projects as null (observed in production).
+        self.proc.process(201, "ffplay",
+                          ["ffplay", "-f", "x11grab", "-framerate", "15",
+                           "-draw_mouse", "0", "-video_size", "960x540", ":99"],
+                          thread_nices=(0,))
+        out = collector._collect_audio_priority(
+            proc_root=self.proc.root, uid=self.uid,
+            script_path=self.script, unit_file=self.unit,
+            deployed_script=self.script, deployed_unit=self.unit)
+        self.assertEqual(out["mirror"], {"present": True, "framerate": 15})
+
+    def test_mirror_framerate_keeps_the_double_dash_spelling(self):
+        self.proc.process(202, "ffplay",
+                          ["ffplay", "-f", "x11grab", "--framerate", "15", ":99"],
+                          thread_nices=(0,))
+        out = collector._collect_audio_priority(
+            proc_root=self.proc.root, uid=self.uid,
+            script_path=self.script, unit_file=self.unit,
+            deployed_script=self.script, deployed_unit=self.unit)
+        self.assertEqual(out["mirror"], {"present": True, "framerate": 15})
+
+    def test_mirror_framerate_non_integer_argument_is_null_not_crash(self):
+        self.proc.process(203, "ffplay",
+                          ["ffplay", "-f", "x11grab", "-framerate", "auto", ":99"],
+                          thread_nices=(0,))
+        out = collector._collect_audio_priority(
+            proc_root=self.proc.root, uid=self.uid,
+            script_path=self.script, unit_file=self.unit,
+            deployed_script=self.script, deployed_unit=self.unit)
+        self.assertEqual(out["mirror"], {"present": True, "framerate": None})
+
     def test_target_summary_uses_priority_py_classification(self):
         # The keeper's own rules (loaded from the deployed tree) decide the
         # kinds; thread nices are summarized per kind.
