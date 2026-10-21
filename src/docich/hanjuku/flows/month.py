@@ -491,7 +491,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
             cost = _egg_estimate(shop)
             floor = WAGE_SPEND_HOLD
             if NAME in _depleted_eggs(mem):
-                # Hero-only recovery (g604): 50G over this month's real payroll.
+                # Hero-only recovery (g604): 50G plus repair reservations.
                 cost, floor = min(cost, EGG_RECOVER_COST), WAGE_SPEND_HOLD
             elif any(observed_uses((mem.get('egg_uses') or {}).get(n)) in (0, 1)
                      for n in _egg_recovery_targets(mem)):
@@ -500,7 +500,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 shop[sub] = 'skipped'
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'cost': cost, 'gold': gold},
-                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                        reason='兵士補充の後の残金が卵の回復費と修理予約に足りないため見送る')
                 continue
         elif sub == 'recruit':
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
@@ -508,7 +508,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 _defer_recruit_cash(mem, shop, gold, evidence)
                 continue
             # Owner rule (2026-09-27): recruit only when the soldiers got
-            # their full 99 and the fee plus the wage reserve is still left.
+            # their full 99 and the fee plus necessary reservations is still left.
             floor = _recruit_cash_floor(shop)
             if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_ENOUGH
                     and not _soldiers_enough(mem, shop, screen.header))
@@ -527,9 +527,9 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
+                        reason=('募集費と卵回復・修理の予約が足りないため資金を温存して次月へ待つ'
                                 if shop.get('recruit_priority') else
-                                '必要な兵士の補充と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
+                                '必要な兵士の補充と他の必要予約の後に募集費が残っていないため将軍を募集しない'))
                 continue
         elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
               + 0):

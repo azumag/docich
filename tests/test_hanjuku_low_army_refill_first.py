@@ -50,6 +50,8 @@ def test_sixteen_soldiers_open_the_refill_before_cards_egg_and_recruit():
     record = next(r for r in mem['_records'] if r['decision'] == 'low_army_refill_plan')
     assert record['observed_metric']['soldiers'] == 16
     assert record['observed_metric']['refill'] == 34
+    assert '修理費だけを残した資金' in record['reason']
+    assert '賃金予備' not in record['reason']
     assert record['observed_metric']['cards_after'] == ['ブラッキー']
 
 
