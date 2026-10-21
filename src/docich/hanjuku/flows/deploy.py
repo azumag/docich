@@ -16,7 +16,7 @@ from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
-                                _measured_card_select, _options, _present_generals, _sortie_inventory)
+                                _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
 from ..os_layer.world import NAME, _en_route, _owned
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
@@ -685,12 +685,105 @@ def resume_sortie_step(screen: Screen, mem):
     return [pad('b')]
 
 
+SORTIE_CANCEL_READ_LIMIT = 12  # one bounded, identity-owned refusal episode
+
+
+def _sortie_decline_panel(screen):
+    """Recognize the measured refusal layout independently of carried cards.
+
+    The inventory reader intentionally requires the hand on YES. Reusing it
+    after moving down would reject NO and recreate the confirmation hold.
+    Unknown card names do not authorize departure, but need not prevent NO.
+    """
+    if screen.kind not in {'sortie_confirm', 'yes_no', 'text', 'unknown'}:
+        return False
+    rows = {line.y: line for line in screen.lines}
+    choices = {111: 'うむッ!', 127: 'いかんッ!'}
+    if any(tuple((x, ch) for x, ch in rows[y].cells if x >= 160) !=
+           tuple((160 + 8 * i, ch) for i, ch in enumerate(label))
+           for y, label in choices.items() if y in rows):
+        return False
+    return (31 in rows and rows[31].span(80, 128) == 'しょうぐん'
+            and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
+            and 95 in rows and rows[95].span(136, 184) == 'ーしゅつげき'
+            and rows[95].span(192, 240) == 'しますか?ー'
+            and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
+            and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
+
+
+def _cancelled_sortie_step(screen, mem, owner):
+    """Try NO once, only after a later observation reads its actual cursor.
+
+    This owns UI cancellation, never a departure, payment or stock receipt.
+    The owner remains until an observed map/castle backout. A missed input,
+    unread hand or animation cannot renew its finite observation budget.
+    """
+    reads = owner.get('decline_reads', 0)
+    reads = reads if type(reads) is int and 0 <= reads <= SORTIE_CANCEL_READ_LIMIT else SORTIE_CANCEL_READ_LIMIT
+    if reads >= SORTIE_CANCEL_READ_LIMIT:
+        _record(mem, 'situation_held', screen=screen.kind,
+                reason='出撃拒否の有限観測を終えても実画面の取消を確認できないため承認せず保留')
+        return []
+    owner['decline_reads'] = reads + 1
+    if screen.kind in {'general_list', 'card_select'}:
+        # Refusal may return through these existing sortie menus. B is only a
+        # bounded backout request; it does not establish arrival or completion.
+        owner.pop('decline_ready_tick', None)
+        return [pad('b')] if owner.get('decline_sent') is True else []
+    refusal_hands = ((138, 105, 156, 118), (138, 105, 158, 118),
+                     (138, 121, 156, 134), (138, 121, 158, 134))
+    if not _sortie_decline_panel(screen) or screen.hand not in refusal_hands:
+        owner.pop('decline_ready_tick', None)
+        _record(mem, 'situation_held', screen=screen.kind,
+                reason='出撃拒否の選択肢と現在カーソルを確認できないため承認せず保留')
+        return []
+    if owner.get('decline_sent') is True:
+        return []  # even a missed refusal A is not an unlimited confirm loop
+    current = _current(screen)
+    if current is None or current[2] not in {'うむッ!', 'いかんッ!'}:
+        owner.pop('decline_ready_tick', None)
+        return []
+    row = next(line for line in screen.lines if line.y == 31)
+    general = row.span(16, 80).strip()
+    if (not general or UNKNOWN in general
+            or general_max_hp('しゅじんこう' if general == NAME else general) is None
+            or owner.get('decline_general', general) != general):
+        owner.pop('decline_ready_tick', None)
+        return []  # a different actor cannot inherit the prior navigation
+    move = menu_to(screen, 'いかんッ!')
+    tick = mem.get('tick')
+    previous = owner.get('decline_ready_tick')
+    if move == 'here':
+        if (type(tick) is not int or type(previous) is not int or tick != previous + 1
+                or owner.get('decline_general') != general):
+            owner.pop('decline_ready_tick', None)
+            return []  # only a fresh readback of our previous direction may confirm
+        owner['decline_sent'] = True
+        _record(mem, 'sortie_cancel_requested', chart_step=owner['step'],
+                screen=screen.kind, observed_metric={'choice': 'いかんッ!', 'readings': reads + 1},
+                resulting_event='refusal_planned_not_yet_confirmed',
+                reason='別観測で拒否行のカーソルを確認したため出撃拒否を要求')
+        return [pad('a')]
+    if move is not None:
+        owner['decline_ready_tick'] = tick if type(tick) is int and tick >= 0 else None
+        owner['decline_general'] = general
+        return [move]  # visible row only; never guess a direction or confirm YES
+    owner.pop('decline_ready_tick', None)
+    return []
+
+
 def boss_stock_restart_step(screen: Screen, mem):
     """Keep ownership of a partly read sortie confirmation while backing out."""
     from ..os_layer.roster import run_identity
     if screen.kind in {'map', 'castle_menu'}:
         # These observed backouts finish the old UI episode before normal
         # map_step can open a new survey/Y view with a different owner.
+        owner = mem.get('boss_stock_cancelled')
+        if (isinstance(owner, dict) and owner.get('identity') == run_identity(mem.get('_run_identity'))
+                and owner.get('chapter') == mem.get('chapter')
+                and mem.get('active') in (None, owner.get('step'))):
+            _record(mem, 'sortie_cancel_backout_observed', screen=screen.kind,
+                    reason='自由マップまたは城メニューへの復帰を観測し出撃取消ownerを解除')
         for key in ('boss_stock_restart', 'boss_stock_cancelled', 'boss_stock_cancelled_identity',
                     'boss_card_hold', 'boss_card_hold_scope'):
             mem.pop(key, None)
@@ -704,7 +797,9 @@ def boss_stock_restart_step(screen: Screen, mem):
     cancelled = mem.get('boss_stock_cancelled')
     if cancelled:
         if isinstance(cancelled, dict) and (
-                mem.get('active') not in (None, cancelled.get('step'))
+                not isinstance(cancelled.get('step'), str) or not cancelled['step']
+                or type(cancelled.get('chapter')) is not int
+                or mem.get('active') not in (None, cancelled.get('step'))
                 or cancelled.get('chapter') != mem.get('chapter')
                 or 'identity' not in cancelled
                 or cancelled['identity'] != run_identity(mem.get('_run_identity'))):
@@ -720,7 +815,15 @@ def boss_stock_restart_step(screen: Screen, mem):
             mem.pop('boss_stock_cancelled', None)
             mem.pop('boss_stock_cancelled_identity', None)
             return None
-        if screen.kind in held_kinds or partial_confirmation:
+        owned_fragment = (isinstance(cancelled, dict)
+            and screen.kind in {'yes_no', 'text'}
+            and 31 in rows and rows[31].span(80, 128) == 'しょうぐん'
+            and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
+            and (111 in rows and rows[111].span(160, 200) == 'うむッ!'
+                 or 127 in rows and rows[127].span(160, 208) == 'いかんッ!'))
+        if screen.kind in held_kinds or partial_confirmation or owned_fragment:
+            if isinstance(cancelled, dict):
+                return _cancelled_sortie_step(screen, mem, cancelled)
             _record(mem, 'situation_held', screen=screen.kind,
                     reason='取り消し上限後も同じ出撃確認が残るため承認せず保留')
             return []
@@ -1088,6 +1191,16 @@ def deploy_step(screen: Screen, mem):
                             observed_metric={'carried': carried, 'planned': want},
                             reason='読み取れた携行札を実際の携行として出撃を承認（計画と不一致）')
             else:
+                if (_strict_boss_cards(order, mem) and misses[order['step']] >= SORTIE_CONFIRM_LIMIT
+                        and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
+                    from ..os_layer.roster import run_identity
+                    _hold_guarded_sortie(mem, order, 'sortie_confirmation_unconfirmed',
+                        '必須携行札を有限観測で確認できないため装備条件を変えず出撃拒否へ進む',
+                        {'carried': carried, 'planned': want, 'readings': SORTIE_CONFIRM_LIMIT})
+                    owner = mem['boss_stock_cancelled'] = {
+                        'step': order['step'], 'chapter': mem.get('chapter'),
+                        'identity': run_identity(mem.get('_run_identity'))}
+                    return _cancelled_sortie_step(screen, mem, owner)
                 return _hold_deploy(screen, mem, order,
                                     '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
         else:

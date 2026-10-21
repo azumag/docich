@@ -50,6 +50,13 @@ BATTLE_DRAW_HOLD_MAX = 3
 BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
                                 'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
                                 'monster_menu'})
+# The concert's optional music picker is closed with B, but a stale gold-
+# cursor match can keep the picker test true on a screen B never changes. On
+# 2026-10-10 17:45 UTC exactly that sent B 128 times until the 300 s
+# screen-stalled terminal ended the corner (#1996). After this many unchanged
+# observations with the same concert input, press A instead so the policy
+# itself leaves the screen rather than waiting for the stall watchdog.
+CONCERT_PICKER_REPEAT_MAX = 8
 
 
 def pad(button, ms=100):
@@ -175,7 +182,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         if previous_identity != identity:
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
+                        'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
                         'starter_party'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
@@ -326,8 +333,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     bijin_guard_hold = False
     if actions is None:
         actions = prompts_flow.bijin_guard_step(screen, mem, phase=phase)
-        bijin_guard_hold = (phase == 'dialogue' and actions == []
-                            and (mem.get('bijin_guard') or {}).get('held') is True)
+        bijin_guard_hold = (actions == [] and (
+            mem.get('bijin_gift_hold') is True or
+            phase == 'dialogue' and (mem.get('bijin_guard') or {}).get('held') is True))
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -426,7 +434,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     elif kind=='map' and mem.get('chapter'):
         actions=map_flow.map_step(screen,mem,frame)
     elif kind=='discharge_menu':
-        actions=shop_flow.discharge_step(screen,mem)
+        actions=shop_flow.discharge_step(screen,mem,frame)
     elif kind=='gift_request':
         actions=prompts_flow.gift_step(screen,mem)
     elif kind=='summer_bonus':
@@ -458,6 +466,27 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    # A concert picker that B cannot close must not consume the whole stall
+    # window. Count unchanged observations that produced the same picker B;
+    # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
+    # picker changes the frame on B, so its count never reaches the bound.
+    digest=frame.digest()
+    picker_watch=mem.get('concert_picker_watch') or {}
+    if phase=='concert' and actions==[pad('b')]:
+        repeat=(int(picker_watch.get('repeat') or 0)+1
+                if picker_watch.get('digest')==digest else 1)
+    else:
+        repeat=0
+    if repeat>=CONCERT_PICKER_REPEAT_MAX:
+        decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
+                       observed_metric={'unchanged_repeats':repeat,'frame_sha256':digest},
+                       reason='曲選択の金色カーソル検出がBで変化しないまま繰り返すため、Aへ切り替える')
+        actions=[pad('a')]
+        repeat=0
+    if repeat:
+        mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
+    else:
+        mem.pop('concert_picker_watch',None)
     # 保留の廃止: a screen that froze while we planned no input must not stay
     # that way. The streak counts only observations whose frame digest is one of
     # the two most recent distinct images -- the same evidence
@@ -466,7 +495,6 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
-    digest=frame.digest()
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
@@ -475,7 +503,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
-            and not sortie_cancel_hold
+            and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
+            and not (sortie_cancel_hold or (kind == 'sortie_confirm'
+                     and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)

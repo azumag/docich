@@ -60,6 +60,8 @@ def test_unknown_landing_never_uses_cached_target_and_closes_finitely(route, mon
         assert commands.pad('a') not in actions
         mem = json.loads(json.dumps(mem))
     assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'position_unread'
+    assert mem['last_house_deferral']['phase'] == 'house_confirm'
     assert not mem['house'].get('departure_pending') and not mem.get('sorties')
 
 
@@ -70,6 +72,7 @@ def test_ignored_field_alignment_is_bounded_across_json_resume(route, monkeypatc
         mem = json.loads(json.dumps(mem))
     assert house._repair_step(marker(164), mem, FRAME) == []
     assert mem['house']['phase'] == 'close' and not mem['house'].get('departure_pending')
+    assert mem['last_house_deferral']['code'] == 'alignment_limit'
     assert house.step(marker(164), mem, FRAME) == [commands.pad('b')]
 
 
