@@ -1155,3 +1155,8 @@ PID一致だけで公開映像・音声・ユーザー休止維持を証明し�
 受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。
 
 部分取得（scan_complete=false）時だけ、shared_runtime_pids.failure_stage に固定の検証段階名を出します。例は producer_sources、stream_process、audio_process、encoder_process、pipeline_receipt、native_encoder_process、guardian_process、source_recheck、identity_recheck です。例外本文・argv・ファイルパスは出しません。失敗段階は原因の断定やプロセス停止の証明ではなく、追加調査箇所の手掛かりです。成功時のschema 2と比較契約は不変で、部分取得同士を一致と扱いません。
+
+固定producer記録の取得で拒否した場合は、`failure_source`（stream/audio/identities/unknown）と
+`failure_reason`（既存の安全検査拒否理由、missing/permission_denied/io_error/changed/oversized/invalid_json/not_running/invalid_pid/unknown）も返します。
+記録本文・path・例外本文は出さず、安全検査の条件も変更しません。再読取時の拒否は
+`failure_stage=source_recheck`を維持します。成功時はこれらのfailure欄を追加しません。
