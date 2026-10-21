@@ -600,6 +600,9 @@ def select_observation(
         if observation.ingest_sequence in seen_sequences:
             raise ExecutionError("VALUE_OUT_OF_RANGE")
         seen_sequences.add(observation.ingest_sequence)
+        if observation.asset != order.asset:
+            # P1-1: a different asset's book must never fill this order.
+            continue
         if observation.identity == receipt.decision_quote:
             continue
         if observation.ingest_sequence <= receipt.input_cutoff_sequence:
@@ -735,7 +738,12 @@ def build_fills(
     target = min(order.remaining_quantity, capacity, affordable)
     target = round_lot_down(target, constraints.lot)
     if target <= 0:
-        code = "INSUFFICIENT_FUNDS" if side == "buy" else "INSUFFICIENT_INVENTORY"
+        # Lot rounding (or min quantity) rather than a funds shortfall: keep the
+        # reason code honest so no-trade audits are not distorted.
+        if affordable < order.remaining_quantity:
+            code = "INSUFFICIENT_FUNDS" if side == "buy" else "INSUFFICIENT_INVENTORY"
+        else:
+            code = "MIN_ORDER_NOT_MET"
         return (), order.remaining_quantity, code, ()
 
     # Allocate level by level in lot increments.
@@ -751,7 +759,10 @@ def build_fills(
         pending -= take
     total = sum((take for _, _, take in planned), ZERO)
     if total <= 0:
-        code = "INSUFFICIENT_FUNDS" if side == "buy" else "INSUFFICIENT_INVENTORY"
+        if affordable < order.remaining_quantity:
+            code = "INSUFFICIENT_FUNDS" if side == "buy" else "INSUFFICIENT_INVENTORY"
+        else:
+            code = "MIN_ORDER_NOT_MET"
         return (), order.remaining_quantity, code, ()
 
     gross = sum((take * execution_price(side, price, constraints) for _, price, take in planned), ZERO)
@@ -863,7 +874,13 @@ def execute_pending_order(
     now = _aware(now, "now")
 
     if order.receipt_id != receipt.receipt_id:
-        return _outcome(order, status=order.status, codes=("ACCOUNT_SCOPE_MISMATCH",), terminal=False)
+        return _outcome(
+            order,
+            status="canceled",
+            canceled=order.remaining_quantity,
+            codes=("ACCOUNT_SCOPE_MISMATCH",),
+            terminal=True,
+        )
 
     if not clock.trusted:
         # D10 EXECUTE: CLOCK_UNTRUSTED -> stop_new + cancel_pending.
@@ -904,6 +921,15 @@ def execute_pending_order(
     if fence is None or fence.receipt_id != order.receipt_id:
         # Fence not established yet: not eligible for evaluation, keep waiting.
         return _outcome(order, status=order.status, terminal=False)
+
+    if fence is not None and getattr(fence, "clock_quality", None) is not None and not fence.clock_quality.trusted:
+        return _outcome(
+            order,
+            status="canceled",
+            canceled=order.remaining_quantity,
+            codes=("CLOCK_UNTRUSTED",),
+            terminal=True,
+        )
 
     observation, codes = select_observation(
         order, receipt=receipt, fence=fence, observations=observations, clock=clock
@@ -953,6 +979,15 @@ def execute_pending_order(
             terminal=order.terminal,
         )
     if not fills:
+        if reason == "LIQUIDITY_INSUFFICIENT":
+            # Empty book: skip_and_wait per N00 §3.4 (do not cancel the reservation).
+            return _outcome(
+                order,
+                status=order.status,
+                codes=("LIQUIDITY_INSUFFICIENT",),
+                observation_id=observation.observation_id,
+                terminal=False,
+            )
         # Risk group after acceptance: shrink to zero and cancel the reservation.
         return _outcome(
             order,
