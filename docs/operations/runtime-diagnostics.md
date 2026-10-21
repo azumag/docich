@@ -152,6 +152,13 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `hanjuku_tactical.last_house_deferral` は直近1件の修理処理の保留記録です。
+  同じrun identity・章・月、400tick以内に限り、`age_ticks` と固定コードだけを出します。
+  `position_unread` は現在の屋根配置から位置を確認できず、`alignment_limit` は位置合わせ上限、
+  `route_unverified` は経路の安全性を確認できず保留した判定です。その他の保留は `other`。
+  `phase` は `castle_confirm` / `house_view` / `house_confirm` / `other` です。
+  close後も残る履歴であり、現在もキャンセル中、物理的に危険、または修理成功という証明ではありません。
+  名前・自由文・identityは出力せず、古い世代や月・不正な記録はnull、容量削減時も固定形式だけを維持します。
 - `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
   `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
   総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`

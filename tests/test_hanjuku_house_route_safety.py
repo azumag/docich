@@ -55,6 +55,8 @@ def test_enemy_on_repair_route_cannot_be_confirmed(route, phase):
     mem, _ = route
     assert confirm(mem, phase) == []
     assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'route_unverified'
+    assert mem['last_house_deferral']['phase'] == phase
     assert not mem['house'].get('departure_pending')
     assert mem['garrison']['source'] == ['ゼウス', 'どうし']
     assert not mem.get('sorties')
@@ -79,6 +81,8 @@ def test_cursor_at_house_is_not_the_generals_origin(route):
     mem['house']['phase'] = 'house_view'
     assert house._view_move(screen('world_map'), mem, None, (140, 140), 'house_confirm') == []
     assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'route_unverified'
+    assert mem['last_house_deferral']['phase'] == 'house_view'
 
 
 def test_enemy_well_outside_route_does_not_block_repair(route):
