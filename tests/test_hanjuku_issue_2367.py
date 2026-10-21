@@ -299,3 +299,37 @@ def test_monthly_scan_follows_a_full_page_scroll_and_counts_each_name_once():
     assert receipt['complete'] is True
     assert receipt['names'] == first + second
     assert len(receipt['names']) == len(set(receipt['names'])) == 10
+
+
+def test_seventh_required_dismissal_continues_then_paid_up_exits():
+    # Seven actual removals; each new complete one-row list proves that the
+    # preceding target disappeared. The old six-press cap stopped at Hestia.
+    names = ['ココット', 'ガルバンゾー', 'チコリ', 'ミルフィーユ',
+             'セルリアク', 'タピオカ', 'ヘスティア']
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    for index, name in enumerate(names):
+        actions, state = decide(discharge_frame([name]), state)
+        assert actions == [p.pad('a')]
+        assert state['policy']['discharge']['presses'] == index + 1
+        verified = [r for r in state['_records'] if r['decision'] == 'discharge_verified']
+        assert [r['general'] for r in verified] == ([] if index == 0 else [names[index - 1]])
+    actions, state = decide(discharge_frame(['ゼウス'], gold='0G'), state)
+    assert actions == [p.pad('b')]
+    verified = [r for r in state['_records'] if r['decision'] == 'discharge_verified']
+    assert [r['general'] for r in verified] == ['ヘスティア']
+    assert verified[0]['observed_metric']['basis'] == 'balance_nonnegative'
+    assert not any(r['decision'] == 'discharge_general' for r in state['_records'])
+
+
+def test_full_roster_discharge_budget_is_finite():
+    from docich.hanjuku.flows.shop import DISCHARGE_LIMIT
+    assert DISCHARGE_LIMIT == 32
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': [],
+                       'discharge': {'key': '2-8', 'presses': DISCHARGE_LIMIT, 'exits': 0,
+                                     'pending_target': 'ミント'}}}
+    actions, state = decide(discharge_frame(['ゼウス']), state)
+    assert actions == []
+    assert any(r.get('strategy_variant') == 'discharge_limit' for r in state['_records'])
+    verified = [r for r in state['_records'] if r['decision'] == 'discharge_verified']
+    assert [r['general'] for r in verified] == ['ミント']
+    assert verified[0]['observed_metric']['basis'] == 'complete_list_removal'

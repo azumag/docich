@@ -2098,11 +2098,10 @@ def test_paid_up_discharge_list_leaves_with_b_instead_of_discharging():
     assert actions and actions[0]['buttons'] == ['a']
 
 
-def test_forced_discharge_holds_after_monthly_limit_and_resets_next_month():
+def test_forced_discharge_does_not_repeat_an_unconfirmed_input_and_resets_next_month():
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
-    for _ in range(policy.DISCHARGE_LIMIT):
-        actions, state = decide(_discharge_canvas().frame(), state)
-        assert actions and actions[0]['buttons'] == ['a']
+    actions, state = decide(_discharge_canvas().frame(), state)
+    assert actions and actions[0]['buttons'] == ['a']
     actions, state = decide(_discharge_canvas().frame(), state)
     assert actions == []
     assert 'situation_held' in [r['decision'] for r in state['_records']]
