@@ -11269,19 +11269,29 @@ def _shared_runtime_pipeline(docich_root, adapter, boot_id):
         os.close(directory)
 
 
-def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id):
+def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, probe=None):
+    # Only collector-owned literal stage names may reach the public receipt.
+    probe = {} if probe is None else probe
+    probe['failure_stage'] = 'stream_process'
     runner = _shared_runtime_process(soren, proc_root, 'shared_stream', pids['shared_stream'])
+    probe['failure_stage'] = 'audio_process'
     audio = _shared_runtime_process(soren, proc_root, 'audio', pids['audio'])
+    probe['failure_stage'] = 'encoder_process'
     child = _shared_runtime_process(soren, proc_root, 'encoder', pids['encoder'])
+    probe['failure_stage'] = 'encoder_parent'
     if child['parent'] != runner['pid']:
         raise ValueError('unrelated encoder')
     shared = [runner]
     if child['kind'] == 'adapter':
+        probe['failure_stage'] = 'pipeline_receipt'
         native_pid = _shared_runtime_pipeline(docich_root, child, boot_id)
+        probe['failure_stage'] = 'native_encoder_process'
         native = _shared_runtime_process(soren, proc_root, 'encoder', native_pid)
         if native['kind'] != 'native':
             raise ValueError('native encoder missing')
+        probe['failure_stage'] = 'guardian_process'
         guardian = _shared_runtime_process(soren, proc_root, 'guardian', native['parent'])
+        probe['failure_stage'] = 'guardian_parent'
         if guardian['parent'] != child['pid']:
             raise ValueError('unrelated guardian')
         shared.extend([child, guardian])
@@ -11289,6 +11299,7 @@ def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id):
         native = child
     records = {'shared_stream': shared, 'encoder': [native], 'audio': [audio]}
     all_pids = [row['pid'] for rows in records.values() for row in rows]
+    probe['failure_stage'] = 'distinct_processes'
     if len(set(all_pids)) != len(all_pids):
         raise ValueError('overlapping runtime identities')
     return records
@@ -11299,22 +11310,28 @@ def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Pat
     """Fixed producer chain only; never enumerate processes or emit argv."""
     roles = {role: {'count': 0, 'pids': [], 'entries': []} for role in SHARED_RUNTIME_ROLES}
     boot_id = _shared_runtime_boot_id(proc_root)
-    section = {'schema_version': 2, 'scan_complete': False, 'boot_id': boot_id, 'roles': roles}
+    section = {'schema_version': 2, 'scan_complete': False, 'boot_id': boot_id, 'roles': roles,
+               'failure_stage': 'boot_identity'}
     try:
         if boot_id is None:
             return section
         soren = Path(soren).absolute()
+        section['failure_stage'] = 'producer_sources'
         pids = _shared_runtime_sources(soren)
-        entries = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
-        if (pids != _shared_runtime_sources(soren)
-                or entries != _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
-                or boot_id != _shared_runtime_boot_id(proc_root)):
+        entries = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, section)
+        section['failure_stage'] = 'source_recheck'
+        if pids != _shared_runtime_sources(soren):
+            return section
+        again = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, section)
+        section['failure_stage'] = 'identity_recheck'
+        if entries != again or boot_id != _shared_runtime_boot_id(proc_root):
             return section
         for role, rows in entries.items():
             clean = [{'pid': row['pid'], 'start_ticks': row['start_ticks']}
                      for row in sorted(rows, key=lambda row: row['pid'])]
             roles[role] = {'count': len(clean), 'pids': [row['pid'] for row in clean], 'entries': clean}
         section['scan_complete'] = True
+        section.pop('failure_stage')
     except (OSError, ValueError, TypeError, OverflowError, RecursionError, IndexError):
         pass
     return section
