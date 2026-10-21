@@ -906,6 +906,13 @@ def classify_text(s: Screen) -> str:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
         return 'gift_request'
+    # A partly unread request must not turn the unique bijin item menu into
+    # the merchant's three-price shop list. Require the entire fixed set.
+    gift_rows = [''.join(word for x, word in line.spans() if x >= 144)
+                 for line in s.lines]
+    gifts = [word for word in gift_rows if PRICE.fullmatch(word)]
+    if len(gifts) == 3 and set(gifts) == {'こうすい100G', 'くるま200G', 'いえ500G'}:
+        return 'gift_request'
     if summer_bonus_seen(t):
         # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が
         # 常に非選択なので yes_no とは別。free map cursor より先に見る。

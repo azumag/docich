@@ -748,13 +748,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v247-house-cancel-diagnostics'
+    assert state['bot_version'] == 'hanjuku-chart-v248-bijin-house-policy'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_hero_repair_reservation_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v247-house-cancel-diagnostics'
+    assert BOT_VERSION == 'hanjuku-chart-v248-bijin-house-policy'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -1001,15 +1001,15 @@ def test_unaffordable_gift_request_is_recognised_and_answered():
     mem = {}
     s = parse(c.frame())
     assert s.kind == 'gift_request'
-    assert policy.gift_step(s, mem)[0]['buttons'] == ['a']
-    assert mem['_records'][-1]['observed_metric'] == {'price': 100, 'affordable': False}
+    assert policy.gift_step(s, mem) == []
+    assert mem['bijin_gift_hold'] is True
 
 
-def test_bijin_request_at_the_gold_floor_declines_with_the_refusal_choice():
+def test_bijin_request_just_below_the_gold_floor_declines_with_the_refusal_choice():
     # 倒転王国 monthlyevent.html: her question carries custom choices
     # うんデヘヘ! (accept → 香水100G/車200G/家500G menu) / けえんな! (decline).
     c = Canvas()
-    c.text(48, 15, '1ねん 6のつき 1000G')
+    c.text(48, 15, '1ねん 6のつき 999G')
     c.text(24, 39, 'きょうは おねがいが あって きたの')
     c.text(24, 55, 'きいてくれる?')
     c.text(184, 183, 'うんデヘヘ!')
@@ -1018,7 +1018,7 @@ def test_bijin_request_at_the_gold_floor_declines_with_the_refusal_choice():
     mem = {}
     assert policy.bijin_guard_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
     d = Canvas()
-    d.text(48, 15, '1ねん 6のつき 1000G')
+    d.text(48, 15, '1ねん 6のつき 999G')
     d.text(24, 39, 'きょうは おねがいが あって きたの')
     d.text(24, 55, 'きいてくれる?')
     d.text(184, 183, 'うんデヘヘ!')
@@ -1052,8 +1052,8 @@ def test_bijin_request_above_the_floor_keeps_the_existing_route():
     c.text(184, 199, 'けえんな!')
     c.hand(162, 177)
     mem = {}
-    assert policy.bijin_guard_step(parse(c.frame()), mem) is None
-    assert 'bijin_guard' not in mem
+    assert policy.bijin_guard_step(parse(c.frame()), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'accept_bijin_house'
 
 
 def test_bijin_request_with_unreadable_gold_declines():
