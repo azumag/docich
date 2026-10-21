@@ -11232,33 +11232,60 @@ def _shared_runtime_boot_id(proc_root):
     return None
 
 
+class _SharedRuntimeSourceError(ValueError):
+    """Fixed producer and refusal enums; never publish raw errors or paths."""
+    def __init__(self, source, reason):
+        super().__init__('runtime source unavailable')
+        self.source = source if source in {'stream', 'audio', 'identities'} else 'unknown'
+        allowed = STREAM_TITLE_READ_REJECTIONS | {
+            'missing', 'permission_denied', 'io_error', 'changed', 'oversized',
+            'invalid_json', 'not_running', 'invalid_pid', 'unknown'}
+        self.reason = reason if reason in allowed else 'unknown'
+
+
 def _shared_runtime_sources(soren):
     values = []
-    for parts in (('tmp', 'state', 'direct_stream', 'status.json'),
-                  ('tmp', 'state', 'audio_worker.pid')):
-        fd, directory, before = _stream_title_open_fixed(soren, parts)
+    for source, parts in (('stream', ('tmp', 'state', 'direct_stream', 'status.json')),
+                          ('audio', ('tmp', 'state', 'audio_worker.pid'))):
+        fd = directory = None
         try:
+            fd, directory, before = _stream_title_open_fixed(soren, parts)
             raw = os.read(fd, 262145)
             after = os.fstat(fd)
             linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
-            if (len(raw) > 262144 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+            if len(raw) > 262144:
+                raise _SharedRuntimeSourceError(source, 'oversized')
+            if (_stream_title_file_identity(before) != _stream_title_file_identity(after)
                     or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
-                raise ValueError('changed runtime source')
+                raise _SharedRuntimeSourceError(source, 'changed')
             values.append(raw)
+        except _StreamTitleUnsafe as exc:
+            raise _SharedRuntimeSourceError(source, exc.reason) from None
+        except FileNotFoundError:
+            raise _SharedRuntimeSourceError(source, 'missing') from None
+        except PermissionError:
+            raise _SharedRuntimeSourceError(source, 'permission_denied') from None
+        except OSError:
+            raise _SharedRuntimeSourceError(source, 'io_error') from None
         finally:
-            os.close(fd)
-            os.close(directory)
-    stream = json.loads(values[0])
+            if fd is not None:
+                os.close(fd)
+            if directory is not None:
+                os.close(directory)
+    try:
+        stream = json.loads(values[0])
+    except (ValueError, UnicodeError):
+        raise _SharedRuntimeSourceError('stream', 'invalid_json') from None
     if not isinstance(stream, dict) or stream.get('running') is not True:
-        raise ValueError('stream unavailable')
+        raise _SharedRuntimeSourceError('stream', 'not_running')
     audio = values[1].strip()
     if not re.fullmatch(rb'[1-9][0-9]{0,9}', audio):
-        raise ValueError('audio unavailable')
+        raise _SharedRuntimeSourceError('audio', 'invalid_pid')
     pids = {'shared_stream': stream.get('pid'), 'encoder': stream.get('ffmpeg_pid'),
             'audio': int(audio)}
     if (any(type(pid) is not int or not 1 < pid <= 2**31-1 for pid in pids.values())
             or len(set(pids.values())) != len(pids)):
-        raise ValueError('invalid runtime identities')
+        raise _SharedRuntimeSourceError('identities', 'invalid_pid')
     return pids
 
 
@@ -11417,6 +11444,9 @@ def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Pat
             roles[role] = {'count': len(clean), 'pids': [row['pid'] for row in clean], 'entries': clean}
         section['scan_complete'] = True
         section.pop('failure_stage')
+    except _SharedRuntimeSourceError as exc:
+        section['failure_source'] = exc.source
+        section['failure_reason'] = exc.reason
     except (OSError, ValueError, TypeError, OverflowError, RecursionError, IndexError):
         pass
     return section
