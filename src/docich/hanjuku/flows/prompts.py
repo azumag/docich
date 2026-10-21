@@ -34,6 +34,13 @@ TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
 BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
 BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
+# A held request must never outlive the corner's 300 s unchanged-screen watchdog
+# (retro_corner end_reason='screen_stalled', 2026-10-21): after ~60 s without a
+# readable choice, decline by the measured row order (upper accept / lower
+# refuse). The purchase menu has no refusal row, so its own bound ends the event
+# with the cheapest non-house item (at most 100G) instead of stalling the run.
+BIJIN_GUARD_HOLD_MAX = 40
+BIJIN_GIFT_HOLD_MAX = 40
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
@@ -209,6 +216,66 @@ def _bijin_native_choice(screen: Screen) -> bool:
                for _, y, word in _options(screen) for token in BIJIN_NATIVE_TOKENS)
 
 
+def _bijin_choice_rows(screen: Screen):
+    """The two measured choice rows, readable or not (upper accept / lower refuse).
+
+    The glyphs can be lost to OCR while the rows and the hand stay visible; the
+    raw cells still give the two y positions. Anything other than exactly two
+    rows is not the measured request (e.g. the three-row purchase menu).
+    """
+    rows = sorted({line.y for line in screen.lines
+                   if 176 <= line.y <= 208 and line.cells})
+    return rows if len(rows) == 2 else None
+
+
+def _bijin_decline_by_position(screen: Screen):
+    """One press toward the measured refusal row; 'a' when already on it.
+
+    Never guesses an accept: without a readable hand or the two measured rows
+    this returns None and the caller keeps observing.
+    """
+    rows = _bijin_choice_rows(screen)
+    if rows is None:
+        return None
+    target = rows[1]          # うんデヘヘ above / けえんな below (measured)
+    cur = _current(screen)
+    if cur is None or min(abs(cur[1] - y) for y in rows) > 2:
+        return None
+    if abs(cur[1] - target) <= 2:
+        return 'a'
+    return 'down' if target > cur[1] else 'up'
+
+
+def _bijin_hold_fallback(screen: Screen, mem, guard, gold):
+    """Bounded fail-safe for a held request: decline by the measured rows.
+
+    The corner ends after 300 s without a screen change, so an unreadable choice
+    may not hold forever. After ``BIJIN_GUARD_HOLD_MAX`` observations (~60 s),
+    move to the lower (refusal) row and confirm it. A move is returned first so
+    the next observation can confirm; no A is sent without a visible hand.
+    """
+    held = int(guard.get('held_ticks') or 0) + 1
+    guard['held_ticks'] = held
+    if held <= BIJIN_GUARD_HOLD_MAX:
+        return None
+    move = _bijin_decline_by_position(screen)
+    if move is None:
+        if not guard.get('bound_unactionable'):
+            guard['bound_unactionable'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'bijin_guard': True, 'gold': gold, 'held_observations': held},
+                    reason='美女の保留上限に達したが、選択行と手を読めず位置でも断れない')
+        return None
+    if move == 'a':
+        guard['chosen'] = True
+        _record(mem, 'prompt', choice='けえんな（位置）', prompt=screen.text[-60:],
+                strategy_variant='decline_bijin_position',
+                observed_metric={'gold': gold, 'held_observations': held},
+                reason='美女の選択行を読めないまま保留上限を超えたため、実測の行順（下=断り）で断る')
+        return [pad('a')]
+    return [pad(move)]
+
+
 def bijin_guard_step(screen: Screen, mem, *, phase=None):
     """1000G以上なら依頼を受けて家へ進み、それ以外・読取不明は断る。
 
@@ -222,6 +289,7 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
                 'battle_menu', 'egg_battle_menu', 'monster_menu')
                 or readable_prose_screen(screen)):
             mem.pop('bijin_gift_hold', None)
+            mem.pop('bijin_gift_waits', None)
         elif screen.kind != 'gift_request':
             # Losing the text classifier is not evidence that the item menu
             # ended. Keep its owner across OCR misses instead of blind A/B.
@@ -265,6 +333,9 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     gold = _bijin_gold(screen)
     accept = gold is not None and gold >= BIJIN_MIN_GOLD
     if not request_seen:
+        if screen.kind == 'gift_request':
+            mem.pop('bijin_guard', None)
+            return None   # the purchase menu has its own bounded owner (gift_step)
         if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
             # A positively readable page without the request wording, without
             # any bottom choice row and without a blinking hand is the same end
@@ -287,6 +358,9 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             # decline/accept row, a new monthly/frame owner or a map/battle
             # screen. The monthly-event phase ('concert') does not release it.
             guard['held'] = True
+            action = _bijin_hold_fallback(screen, mem, guard, gold)
+            if action is not None:
+                return action
             if not guard.get('unread_question_recorded'):
                 guard['unread_question_recorded'] = True
                 _record(mem, 'situation_held', screen=screen.kind,
@@ -307,12 +381,17 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
             break
     if move is None:
         guard['held'] = True
+        action = _bijin_hold_fallback(screen, mem, guard, gold)
+        if action is not None:
+            return action
         if not guard.get('unread_choice_recorded'):
             guard['unread_choice_recorded'] = True
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'bijin_guard': True, 'gold': gold, 'text': screen.text[-80:]},
                     reason='美女の依頼の選択行と現在行を確定できないため決定せず再観測')
         return []
+    guard.pop('held_ticks', None)
+    guard.pop('bound_unactionable', None)
     if move != 'here':
         return [move]
     guard['chosen'] = True
@@ -646,6 +725,36 @@ def observe_events(screen: Screen, mem):
     _observe_soldier_receipt(screen, mem, directly_seen=seen if m else None)
 
 
+def _bijin_gift_bound(screen: Screen, mem, gold, items):
+    """Bounded escape for the measured purchase menu (no refusal row).
+
+    Only an item choice ends this menu; a hold without input would leave the
+    frame unchanged until the 300 s corner watchdog ends the run (retro_corner
+    end_reason='screen_stalled', 2026-10-21, 907G). After
+    ``BIJIN_GIFT_HOLD_MAX`` observations (~60 s), end the event with the
+    cheapest readable non-house item (こうすい100G), never いえ. This can spend
+    at most 100G and only fires after the decision to not buy the house.
+    """
+    waits = int(mem.get('bijin_gift_waits') or 0) + 1
+    mem['bijin_gift_waits'] = waits
+    if waits <= BIJIN_GIFT_HOLD_MAX:
+        return []
+    candidates = [(price, name) for price, name in items if name != 'いえ']
+    if not candidates:
+        return []
+    price, name = min(candidates)
+    move = menu_to(screen, name, exact=False)
+    if move == 'here':
+        mem.pop('bijin_gift_waits', None)
+        _record(mem, 'gift', strategy_variant='bijin_hold_bound_cheapest',
+                item=name, price=price, gold=gold, deviation_reason='bijin_item_hold_bound',
+                observed_metric={'price': price, 'waits': waits,
+                                 'affordable': gold is not None and gold >= price},
+                reason='美女の購入画面で家（または断り）を確定できないまま保留上限を超えたため、最安品でイベントを終える（停滞によるrun終了を防ぐ）')
+        return [pad('a')]
+    return [move] if move else []
+
+
 def gift_step(screen: Screen, mem):
     """美女は1000G以上で家を選ぶ。それ以外の贈り物は従来の方針。"""
     mem.pop('bijin_gift_hold', None)
@@ -666,19 +775,24 @@ def gift_step(screen: Screen, mem):
             for label in BIJIN_DECLINE_TOKENS:
                 move = menu_to(screen, label, exact=False)
                 if move is not None:
+                    mem.pop('bijin_gift_waits', None)
                     return [pad('a')] if move == 'here' else [move]
-            return []  # Already in the item menu: never purchase without the cash condition.
+            # Already in the item menu: never purchase the house without the
+            # cash condition; the bound ends the menu cheaply if it never clears.
+            return _bijin_gift_bound(screen, mem, gold, items)
         houses = [(price, name) for price, name in items if name == 'いえ' and price == 500]
         if len(houses) != 1:
-            return []
+            return _bijin_gift_bound(screen, mem, gold, items)
         price, name = houses[0]
         move = menu_to(screen, name, exact=False)
         if move == 'here':
+            mem.pop('bijin_gift_waits', None)
             _record(mem, 'gift', strategy_variant='bijin_house', item=name, price=price,
                     gold=gold, observed_metric={'price': price, 'affordable': True},
                     reason='所持金1000G以上のため半熟値を上げる家を選ぶ')
             return [pad('a')]
         return [move] if move else []
+    mem.pop('bijin_gift_waits', None)
     if not items:
         return []
     price, name = min(items)

@@ -389,3 +389,31 @@ def test_a_held_request_suppresses_the_no_input_fallback_in_the_event_phase():
     assert actions == []
     assert state['policy']['bijin_guard']['held'] is True
     assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+def test_unreadable_choice_labels_decline_by_the_measured_rows_after_the_bound():
+    # The corner ends after 300 s without a screen change, so a held request may
+    # not wait forever. After the bounded hold the measured row order (upper
+    # accept / lower refuse) and the visible hand select the refusal.
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_screen import parse
+    rows = ('????????', '????????')
+    frame = monthly_event_pixels(gold='1ねん 6のつき 500G', rows=rows)
+    assert parse(frame).kind == 'text'
+    state = {'policy': {'tick': 10}}
+    for n in range(policy.BIJIN_GUARD_HOLD_MAX):
+        state['policy']['tick'] = 11 + n
+        actions, state = decide(frame, state)
+        assert actions == []
+        assert state['policy']['bijin_guard']['held'] is True
+    state['policy']['tick'] += 1
+    actions, state = decide(frame, state)
+    assert actions == [policy.pad('down')]     # toward the lower refusal row
+    moved = monthly_event_pixels(gold='1ねん 6のつき 500G', rows=rows, selected=1)
+    state['policy']['tick'] += 1
+    actions, state = decide(moved, state)
+    assert actions == [policy.pad('a')]
+    record = state['_records'][-1]
+    assert record['strategy_variant'] == 'decline_bijin_position'
+    assert record['choice'] == 'けえんな（位置）'
+    assert record['observed_metric']['held_observations'] > policy.BIJIN_GUARD_HOLD_MAX
