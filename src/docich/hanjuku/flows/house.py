@@ -281,7 +281,8 @@ def _observe_status(screen, mem):
         name = info['general']
         mem.setdefault('house_eggs', {})[name] = {
             **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
-            'observed_tick': mem.get('tick')}
+            'observed_tick': mem.get('tick'),
+            'observed_run_identity': receipts.run_identity(mem.get('_run_identity'))}
         if info['uses'] is not None:
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']

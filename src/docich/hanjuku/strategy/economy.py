@@ -680,7 +680,59 @@ def _reserve_general_repair(mem, shop, gold):
                 reason='在城・卵破損を確認した将軍の次の家修復費を募集・兵士・築城より先に確保する')
 
 
+def _hero_repair_defer_reason(mem):
+    """Only a fresh, same-run inability can release the hero's house fee.
+
+    Unknown HP/location and merely being outside the house are not proof of
+    inability. Castle residents can be dispatched; an active trip owns its fee.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    info = (mem.get('house_eggs') or {}).get(NAME)
+    state = mem.get('house') or {}
+    if (identity is None or not isinstance(info, dict)
+            or info.get('observed_run_identity') != identity
+            or info.get('general') != NAME or info.get('broken') is not True
+            or type(mem.get('chapter')) is not int
+            or info.get('observed_chapter') != mem.get('chapter')
+            or not mem.get('month') or info.get('month') != mem.get('month')
+            or mem.get('month_sub')
+            or (state.get('general') == NAME and (
+                state.get('phase') not in (None, 'close')
+                or any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending'))))):
+        return None
+    observed, now = info.get('observed_tick'), mem.get('tick')
+    if not (type(observed) is int and type(now) is int and 0 <= observed <= now
+            and now - observed <= 400):
+        return None
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    if type(hp) is int and type(maximum) is int and 0 <= hp < maximum:
+        return 'wounded'
+    if (info.get('location_observed') is True and info.get('location') == 'field'
+            and info.get('camp_observed') is not True):
+        return 'moving'
+    return None
+
+
+def _hero_repair_floor(mem):
+    return 50 if _hero_egg_broken(mem) and _hero_repair_defer_reason(mem) is None else 0
+
+
 def _reserve_hero_repair(mem, shop, gold):
+    reason = _hero_repair_defer_reason(mem)
+    if reason is not None:
+        released = shop.get('hero_repair_reserve', 0)
+        if type(released) is not int or released < 0:
+            return  # malformed reservation is not spendable cash
+        previous = shop.get('hero_repair_deferred')
+        shop.update(hero_repair_reserve=0, hero_repair_deferred=reason)
+        if released or previous != reason:
+            _record(mem, 'hero_repair_funds_released', month=shop.get('key'),
+                    observed_metric={'released': released, 'gold': gold, 'condition': reason,
+                                     'observed_tick': (mem.get('house_eggs') or {})[NAME]['observed_tick']},
+                    reason='同一ラン・章・月の新しい観測で修理不能を確認したため主人公の修理予約を解放する')
+        return
+    shop.pop('hero_repair_deferred', None)
     if not _hero_egg_broken(mem) or shop.get('hero_repair_reserve'):
         return
     shop['hero_repair_reserve'] = 50  # cheapest measured house gift; no wage hold
@@ -998,7 +1050,8 @@ def _chikujou_reserve(mem, shop):
     else:
         egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
                   EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))
-    repair = (max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
+    repair = ((0 if _hero_repair_defer_reason(mem) is not None else
+               max(amount(shop.get('hero_repair_reserve')), _hero_repair_floor(mem)))
               + (50 if _general_repair_targets(mem) else 0))
     soldiers = 0 if shop.get('soldiers_done') else amount(shop.get('soldiers'))
     # A recruit stopped as unneeded/unaffordable no longer holds its fee; a
