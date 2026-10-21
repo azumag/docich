@@ -63,8 +63,8 @@ def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     """
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
-    suffix = {"paper-view": "AIの検証配信",
-              SPECIAL_VIEW_NAME: FLYHOME_TITLE_SUFFIX}.get(game, "AIプレイ配信")
+    from .stream_title_context import challenge_phrase
+    suffix = FLYHOME_TITLE_SUFFIX if game == SPECIAL_VIEW_NAME else challenge_phrase(game)
     if g is not None and game == SPECIAL_VIEW_NAME:
         settings = _special_settings(g)
         return ["--activity", settings["title"], "--strategy", settings["title_suffix"]]

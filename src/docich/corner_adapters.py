@@ -202,23 +202,28 @@ class GameCornerAdapter:
         return manager.reconcile_failed_rotation_start(request_id)
 
     def settle_released_failure(self, request_id):
-        """Retire the retro ``game`` owner the rotation proved released (#2352).
+        """Retire the ``game``/NetHack owner the rotation proved released (#2352).
 
         The common rotation calls this only after it re-proved that the shared
-        program slot holds nothing from that request. Scoped to the ``game``
-        adapter: Meriken and NetHack own separate state files and separate
-        fixed recovery entries, so this change does not widen their authority.
-        The manager re-reads the durable release record of this exact request
-        and re-proves the terminal receipt and the stable canonical owner under
-        the shared store lock, so ``False`` leaves the current fail-closed
-        state untouched.
+        program slot holds nothing from that request. The ``game`` adapter and
+        the NetHack adapter are in scope: both own a state file whose released
+        failed owner otherwise blocks every later dispatch with run_rotation's
+        owner inspection. Production falsified the "separate fixed recovery
+        entry" argument for NetHack on 2026-10-16: the released ledger stays
+        ``waiting`` while ``nethack-corner recover-failed-rotation`` only
+        accepts the ``recovery_required`` latch, so no entry could retire the
+        owner and NetHack was never dispatched again. Meriken keeps its own
+        separate entry and stays out of scope. The manager re-reads the durable
+        release record of this exact request and re-proves the terminal receipt
+        and the stable canonical owner under the shared store lock, so
+        ``False`` leaves the current fail-closed state untouched.
 
         The manager's answer is forwarded unchanged: ``True`` retired, ``None``
         proved but not retired yet (the rotation keeps this shared state file
         out of selection and retries), ``False`` not applicable.
         """
 
-        if getattr(self.corner, "adapter", None) != "game":
+        if getattr(self.corner, "adapter", None) not in {"game", "nethack"}:
             return False
         settle = getattr(self.manager, "settle_released_failure", None)
         if not callable(settle):
@@ -469,6 +474,10 @@ class RetiredCornerObserver:
         "tsuitate": "tsuitate_corner.json",
         "yoso": "yoso_corner.json",
         "doushi": "doushi_corner.json",
+        "puyo": "puyo_program.json",
+        "mystery": "mystery_corner.json",
+        "lawsim": "lawsim_corner.json",
+        "trpg": "trpg_corner_state.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -762,6 +771,189 @@ class DoushiCornerAdapter:
         return self.manager.resources_released()
 
 
+class PuyoCornerAdapter:
+    """Bounded ぷよぷよクローン self-play view through the shared slot.
+
+    Read-only display of one played offline match (Issue #698, default
+    disabled and manual_only). No audio, no fetch and no live_eligible run.
+    """
+
+    def __init__(self, g, corner):
+        from .puyo_program import DEFAULT_DURATION_MINUTES, PuyoProgramManager
+        from .puyo_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Puyo identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = PuyoProgramManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+            audio_enabled=(corner.audio_enabled if type(corner.audio_enabled) is bool
+                           else False),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
+class TrpgCornerAdapter:
+    """Bounded participatory TRPG / murder-mystery view through the shared slot.
+
+    Manual-only; the catalog's audio opt-in is passed to the lifecycle owner.
+    """
+
+    def __init__(self, g, corner):
+        from .trpg_program import DEFAULT_DURATION_MINUTES, TrpgProgramManager
+        from .trpg_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Trpg identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = TrpgProgramManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+            audio_enabled=corner.audio_enabled,
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
+class MysteryCornerAdapter:
+    """Bounded AI探偵ミステリー case session through the shared slot.
+
+    One deterministic case per slot: viewers pick investigation actions via
+    Twitch polls and wager on the culprit with a channel-point prediction.
+    The engine owns the solution; this adapter only owns the lifecycle.
+    """
+
+    def __init__(self, g, corner):
+        from .mystery_corner import (
+            DEFAULT_DURATION_MINUTES,
+            MAX_DURATION_MINUTES,
+            MysteryCornerManager,
+            default_status_overlay_control,
+        )
+        from .mystery_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Mystery identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = MysteryCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+            audio_enabled=corner.audio_enabled,
+            status_overlay_control=default_status_overlay_control(g),
+        )
+        if self.manager.duration_minutes > MAX_DURATION_MINUTES:
+            raise CornerExecutionError("Mystery duration exceeds the reviewed bound")
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
+class LawSimCornerAdapter:
+    """Bounded 共産主義法律シミュレーター display through the shared slot.
+
+    Same shape as doushi minus speech: the narration/TTS chain is not wired for
+    this corner, so the adapter fails closed on ``audio_enabled`` (follow-up
+    card in docs/features/communist-law-simulator.md).
+    """
+
+    def __init__(self, g, corner):
+        from .lawsim_corner import DEFAULT_DURATION_MINUTES, LawSimCornerManager
+        from .lawsim_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("LawSim identity/safety contract mismatch")
+        if corner.audio_enabled is not False:
+            raise CornerExecutionError("LawSim corner does not support audio_enabled yet")
+        self.g, self.corner = g, corner
+        self.manager = LawSimCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -771,6 +963,10 @@ ADAPTERS = {
     "tsuitate": TsuitateCornerAdapter,
     "yoso": YosoCornerAdapter,
     "doushi": DoushiCornerAdapter,
+    "puyo": PuyoCornerAdapter,
+    "trpg": TrpgCornerAdapter,
+    "mystery": MysteryCornerAdapter,
+    "lawsim": LawSimCornerAdapter,
 }
 
 

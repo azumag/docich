@@ -9,6 +9,8 @@ Triggers and player-castle override:
 https://triplequotation.web.fc2.com/Analyze/SFC_EggHero/EggHero.html#GS_EggAI
 See also the local README section 敵将軍の卵使用判定.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, replace
 
 

@@ -112,18 +112,18 @@ def test_shortage_unpaid_fee_confirmation_keeps_wages(gold):
 def test_shortage_fee_confirmation_rechecks_repair_and_exact_floor(repair, extra):
     state = open_recruit(300)
     state['policy']['shop']['hero_repair_reserve'] = repair
-    gold = p.RECRUIT_COST + p.WAGE_RESERVE + repair + state['policy']['shop'].get('reserve', 0) + extra
+    gold = p.RECRUIT_COST + repair + state['policy']['shop'].get('reserve', 0) + extra
     actions, state = decide(fee_confirmation(gold), state)
     assert actions == [p.pad('b' if extra < 0 else 'a')]
     assert bool(state['policy']['month_sub'].get('aborted')) == (extra < 0)
 
 
-@pytest.mark.parametrize('gold', [129, 130])
+@pytest.mark.parametrize('gold', [99, 100])
 def test_unpaid_fee_keeps_the_entry_egg_reserve(gold):
     state = open_recruit(300)
     state['policy']['shop']['reserve'] = 50
     actions, state = decide(fee_confirmation(gold), state)
-    assert actions == [p.pad('b' if gold < 130 else 'a')]
+    assert actions == [p.pad('b' if gold < 100 else 'a')]
     assert 'recruit_paid_gold' not in state['policy']['month_sub']
 
 

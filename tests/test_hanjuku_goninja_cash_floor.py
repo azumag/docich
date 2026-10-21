@@ -1,4 +1,4 @@
-"""Goninja's 1000G floor survives monthly owners and the no-input fallback.
+"""Goninja's 300G floor survives monthly owners and the no-input fallback.
 
 Synthetic native glyphs/cursors only; no game or input transport is involved.
 """
@@ -63,9 +63,10 @@ def owned_state(owner):
 
 
 @pytest.mark.parametrize('gold,choice,variant', [
-    (999, 'いかんッ!', 'decline_goninja_below_floor'),
-    (1000, 'うむッ!', 'accept_goninja'),
-    (1001, 'うむッ!', 'accept_goninja'),
+    (0, 'いかんッ!', 'decline_goninja_below_floor'),
+    (299, 'いかんッ!', 'decline_goninja_below_floor'),
+    (300, 'うむッ!', 'accept_goninja'),
+    (301, 'うむッ!', 'accept_goninja'),
     (None, 'いかんッ!', 'decline_goninja_unreadable'),
 ])
 @pytest.mark.parametrize('cursor_y', [177, 193])
@@ -81,7 +82,7 @@ def test_cash_floor_at_policy_boundary(gold, choice, variant, cursor_y):
         assert record['choice'] == choice
         assert record['strategy_variant'] == variant
         assert record['observed_metric'] == (
-            {'gold': gold, 'minimum_gold': 1000} if gold is not None else None)
+            {'gold': gold, 'minimum_gold': 300} if gold is not None else None)
 
 
 @pytest.mark.parametrize('gold', [None, True, False, -1, 1000.0, '1000'])
@@ -107,9 +108,10 @@ def test_cash_floor_does_not_depend_on_chart_prices_or_reserves():
 @pytest.mark.parametrize('background', [False, True])
 @pytest.mark.parametrize('owner', [None, 'recruit', 'month_exit'])
 @pytest.mark.parametrize('gold,choice,variant', [
-    (999, 'いかんッ!', 'decline_goninja_below_floor'),
-    (1000, 'うむッ!', 'accept_goninja'),
-    (1001, 'うむッ!', 'accept_goninja'),
+    (0, 'いかんッ!', 'decline_goninja_below_floor'),
+    (299, 'いかんッ!', 'decline_goninja_below_floor'),
+    (300, 'うむッ!', 'accept_goninja'),
+    (301, 'うむッ!', 'accept_goninja'),
     (None, 'いかんッ!', 'decline_goninja_unreadable'),
 ])
 def test_goninja_floor_overrides_monthly_acceptance_owner(background, owner, gold, choice, variant):
@@ -131,7 +133,7 @@ def test_goninja_floor_overrides_monthly_acceptance_owner(background, owner, gol
 
 @pytest.mark.parametrize('background', [False, True])
 @pytest.mark.parametrize('owner', [None, 'recruit', 'month_exit'])
-@pytest.mark.parametrize('gold', [999, 1000, None])
+@pytest.mark.parametrize('gold', [299, 300, None])
 @pytest.mark.parametrize('cursor', ['missing', 'ambiguous'])
 def test_unreadable_goninja_cursor_never_falls_back_to_accept(background, owner, gold, cursor):
     frame = offer(gold, background=background, cursor=cursor)
@@ -151,7 +153,7 @@ def test_unreadable_goninja_cursor_never_falls_back_to_accept(background, owner,
 @pytest.mark.parametrize('prompt', ['しょうぐんをぼしゅうしますか?',
                                     'よろしいですかな?', 'ごあいてをしましょうか?'])
 def test_other_prompts_do_not_borrow_goninja_cash_floor(background, owner, prompt):
-    actions, state = decide(offer(999, background=background, prompt=prompt), owned_state(owner))
+    actions, state = decide(offer(299, background=background, prompt=prompt), owned_state(owner))
     assert actions == [policy.pad('a')]
     assert not any('goninja' in row['strategy_variant'] for row in state['_records'])
 
@@ -273,3 +275,40 @@ def test_a_previously_observed_recruit_fee_survives_a_later_goninja_deduction():
     result = next(r for r in state['_records'] if r['decision'] == 'recruit')
     assert result['observed_metric']['fee_receipt_gold'] == 1000
     assert result['deviation_reason'] is None
+
+
+@pytest.mark.parametrize('gold', [300, 301])
+def test_latest_owner_floor_accepts_the_existing_goninja_offer_at_three_hundred(gold):
+    actions, state = decide(offer(gold), owned_state(None))
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'accept_goninja'
+
+
+def test_unknown_header_digit_never_uses_remembered_rich_funds():
+    frame = offer(300, cursor='decline'); c = Canvas(); c.rgb = bytearray(frame.rgb)
+    x = 16 + len('2ねん11のつき') * 8
+    for y in range(15, 23):
+        for xx in range(x, x + 8): c.put(xx, y, (50, 30, 10))
+    c.tile(x, 15, 0x0123456789ABCDEF)
+    assert parse(c.frame()).header is None
+    actions, state = decide(c.frame(), owned_state(None))
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'decline_goninja_unreadable'
+
+
+def test_rich_funds_do_not_override_the_existing_extra_gift_refusal():
+    mem = {'chapter': 1, '_records': []}
+    screen = parse(offer(301, cursor='decline', prompt='50Gでいいか?'))
+    assert policy.yes_no_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_extra_gift'
+
+
+def test_current_lower_or_missing_funds_override_the_previous_rich_offer():
+    state = owned_state(None)
+    _, state = decide(offer(301), state)
+    actions, state = decide(offer(299, cursor='decline'), state)
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'decline_goninja_below_floor'
+    actions, state = decide(offer(None, cursor='decline'), state)
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'decline_goninja_unreadable'

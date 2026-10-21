@@ -13,6 +13,9 @@ ${_comment_persona}
 		【コメント前後文脈（今回のコメント群）】
 		${comment_batch_context}
 
+【あなた自身が投稿したチャット発言（返信対象ではない）】
+${self_chat_context}
+
 		【機械抽出した戦略アドバイス候補】
 		${strategy_advice_candidates}
 		※ ここに候補がある場合は、そのコメントを見落とさず返答し、戦略助言なら必ず ===ADVICE=== にも反映すること

@@ -1159,6 +1159,69 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
                 self.assertEqual(mgr._read_state()["status"], "failed")
                 self.assertEqual(coordinator.calls, [])
 
+
+    def test_recover_failed_returns_noop_when_canonical_is_recovery_required(self):
+        """#1983: recover_failed() must return 'noop' (not 'failed') when the
+        canonical phase is 'recovery_required', so that the
+        recover_corner_rotation.sh script proceeds to step 2 (corner-rotation
+        recover) which allows rotation-side recovery assessment."""
+        mgr, coordinator = self.manager(["sorengame"])
+        request_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=request_id,
+            switch_request_id=request_id,
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            last_error="canonical stateの復旧が必要です",
+            last_error_code="recovery_required",
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(
+            phase="ready",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+        # Create a correlated receipt so _restore_failure_candidate returns False
+        # and the test actually reaches the recovery_required branch
+        accepted = mgr.store.accept_request(request_id, "switch", "robots")
+        result = {
+            "request_id": request_id, "operation": "switch", "status": "failed",
+            "from_game": "sorengame", "to_game": "robots",
+            "generation": accepted.generation, "error_code": "recovery_required",
+            "detail": "canonical stateの復旧が必要です",
+        }
+        mgr.store.finish_request(request_id, "failed", result)
+        # Now set canonical to recovery_required to test the target branch
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(
+            phase="recovery_required",
+            next_generation=2,
+            operation=None,
+            request_id=None,
+            deadline_at=None,
+            active=self._runtime("sorengame", 1),
+        )
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed()
+
+        # Must return "noop" so the script proceeds to step 2
+        self.assertEqual(result.status, "noop")
+        # Corner-side recovery must be skipped (no coordinator calls)
+        self.assertEqual(coordinator.calls, [])
+        # State must remain "failed" (latch is not cleared by corner-side)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+
     def test_other_failed_error_codes_keep_the_existing_recovery_path(self):
         mgr, coordinator, _rid = self._setup_quiesce_failed(
             error_code="recovery_required", receipt_error="recovery_required")
@@ -1289,6 +1352,18 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
 
         self.assertIs(
             mgr.settle_released_failure(str(uuid.uuid4()), corner_id="robots"), False)
+
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_released_failure_refuses_a_foreign_adapter_record(self):
+        # The widening for NetHack (#490) must not leak back: a ``nethack``
+        # release record never retires a retro ``game`` owner.
+        mgr, coordinator, request_id = self._setup_quiesce_failed()
+        self._released_ledger(mgr, request_id, adapter="nethack")
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
 
         self.assertEqual(mgr._read_state(), before)
         self.assertEqual(coordinator.calls, [])

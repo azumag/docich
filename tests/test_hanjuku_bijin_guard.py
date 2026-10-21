@@ -1,16 +1,11 @@
-"""美女イベント（月イチ）: 所持金1000G以下・読取不明では必ず断る。
-
-Owner (2026-10-15): お金に余裕のないとき（少なくとも1000G以下）は必ず「いかん」
-で断る。倒転王国 monthlyevent.html: 依頼文は「〜お願いがあって来たの……
-聞いてくれる?」、選択は うんデヘヘ!（承諾 → どれか ほしいなー → 香水100G/
-車200G/家500G の購入メニュー）と けえんな!（断り）。半熟値が上がるのは家500G
-だけで、香水・車は何も起きない。
-"""
+"""美女イベント: 1000G以上なら家、それ以外・読取不明は断る。"""
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import json
+
+import pytest
 
 from docich import hanjuku_policy as policy
 
@@ -41,6 +36,24 @@ def bijin_state():
     return {'policy': {'tick': 10}}
 
 
+def prose_pixels(*, prose='むらの ひとは はなしている', prose_x=24, tiles=()):
+    """A bottom panel with an unrelated readable page and no choice band.
+
+    ``tiles`` places raw unread tiles, which is how a partly read body and a
+    fully unread body are built: ``joined()`` strips the row edges, so those
+    frames are exactly the ones ``screen.text`` cannot describe.
+    """
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(48, 15, '1ねん 6のつき 500G')
+    if prose:
+        canvas.text(prose_x, 151, prose)
+    for x, y in tiles:
+        canvas.tile(x, y, 0x0123456789ABCDEF)
+    return canvas.frame()
+
+
 def decide_bijin(frame, state=None):
     from docich.hanjuku_bot import classify, decide
     from docich.hanjuku_screen import parse
@@ -67,12 +80,12 @@ def test_bijin_choice_is_already_declined_when_the_hand_rests_on_it():
     assert state['_records'][-1]['choice'] == 'けえんな!'
 
 
-def test_at_the_floor_is_declined_and_one_g_gold_above_keeps_the_existing_route():
-    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 1000G'))
-    assert actions == [policy.pad('down')]   # 1000G is still <= the floor
-    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 1001G'))
-    assert actions == [policy.pad('a')]      # over the floor: the legacy answer, as before
-    assert 'bijin_guard' not in state['policy']
+@pytest.mark.parametrize('gold', [1000, 1001, 2000])
+def test_at_or_above_floor_accepts_for_house(gold):
+    actions, state = decide_bijin(bijin_pixels(gold=f'1ねん 6のつき {gold}G'))
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'accept_bijin_house'
+
 
 
 def test_missing_hand_holds_the_readable_refusal_instead_of_legacy_a():
@@ -156,12 +169,17 @@ def test_a_readable_page_without_the_request_releases_the_held_episode():
     # prose screen" boundary as well. Without it, `bijin_guard_hold` keeps the
     # no-input fallback suppressed on an unrelated readable page (orchestrator
     # L407) and the bot sends nothing at all, on every observation.
+    from docich.hanjuku_screen import parse
     state = bijin_state()
     actions, state = decide_bijin(bijin_pixels(hand=False), state)
     assert actions == []
     assert state['policy']['bijin_guard']['choice_seen'] is True
-    # No request wording, no choice band, no hand: positively readable end.
-    actions, state = decide_bijin(bijin_pixels(question=False, rows=(), hand=False), state)
+    # No request wording, no choice band, no hand and an actually readable body:
+    # the end evidence is read from the raw cells (PR #2325 review), so the page
+    # has to carry prose and cannot be the header alone.
+    frame = prose_pixels()
+    assert parse(frame).kind == 'text'
+    actions, state = decide_bijin(frame, state)
     assert actions == [policy.pad('a')]
     assert 'bijin_guard' not in state['policy']
 
@@ -170,17 +188,62 @@ def test_a_partly_unread_unrelated_page_still_holds_without_a_blind_a():
     # The release above needs a positively readable page: one UNKNOWN cell is
     # enough to keep the episode held, so the owner review's blind A cannot
     # come back through this boundary.
-    from test_hanjuku_chart_bot import Canvas, GREEN
     from docich.hanjuku_screen import parse
     state = bijin_state()
     actions, state = decide_bijin(bijin_pixels(hand=False), state)
     assert actions == []
-    canvas = Canvas((0, 0, 0))
-    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
-    canvas.text(48, 15, '1ねん 6のつき 500G')
-    canvas.text(24, 151, 'むらの ひとは はなしている')
-    canvas.tile(24 + 8 * 3, 151, 0x0123456789ABCDEF)   # one unread cell in the prose
-    frame = canvas.frame()
+    frame = prose_pixels(tiles=((24 + 8 * 3, 151),))   # one unread cell in the prose
+    assert parse(frame).kind == 'text'
+    actions, state = decide_bijin(frame, state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+@pytest.mark.parametrize('tiles, prose_x', [
+    (((24, 151),), 32),      # the body lost its leading cell
+    (((136, 151),), 24),     # the body lost its trailing cell
+])
+def test_a_body_that_lost_an_edge_cell_keeps_the_hold(tiles, prose_x):
+    # `joined()` strips UNKNOWN from both ends of every row, so both pages still
+    # read as prose in `screen.text`. The old `UNKNOWN not in flat` check
+    # released the pending request here and handed the page to the generic A.
+    from docich.hanjuku_screen import parse
+    from docich.hanjuku_font import UNKNOWN
+    state = bijin_state()
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    frame = prose_pixels(prose_x=prose_x, tiles=tiles)
+    screen = parse(frame)
+    assert screen.kind == 'text'
+    assert UNKNOWN not in screen.text          # the aggregate hides the gap
+    actions, state = decide_bijin(frame, state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+def test_a_header_only_page_keeps_the_hold():
+    # The gold header alone leaves `screen.text` non-empty, so the old boundary
+    # released a page whose body was never read (PR #2325 review, P1).
+    from docich.hanjuku_screen import parse
+    state = bijin_state()
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    frame = prose_pixels(prose='')
+    assert parse(frame).kind == 'text'
+    actions, state = decide_bijin(frame, state)
+    assert actions == []
+    assert state['policy']['bijin_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+def test_a_body_that_is_entirely_unread_keeps_the_hold():
+    from docich.hanjuku_screen import parse
+    state = bijin_state()
+    actions, state = decide_bijin(bijin_pixels(hand=False), state)
+    assert actions == []
+    frame = prose_pixels(prose='', tiles=tuple((24 + 8 * i, 151) for i in range(4)))
     assert parse(frame).kind == 'text'
     actions, state = decide_bijin(frame, state)
     assert actions == []

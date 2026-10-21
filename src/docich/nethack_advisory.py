@@ -133,6 +133,7 @@ def _fallback_narration(decision: PolicyDecision) -> str:
     fixed = {
         "survival_emergency": "体力が危険域です。安全な画面では . で1ターン待機します。",
         "status_emergency": "危険な状態異常が見えています。安全な画面では . で1ターン進めます。",
+        "status_recovery": "危険な状態異常に対して祈りによる回復を試みます。",
         "food_emergency": "空腹が危険域です。安全な画面では . で1ターン進めます。",
         "prompt_decision": "選択を求められています。内容を確認してから回答します。",
         "assess_contact": "近くに生物がいます。安全な退避または通常の接触を選びます。",

@@ -19,8 +19,8 @@ Chromium は版によって legacy の `--disable-translate` と新しい `Trans
 gate のどちらかしか見ないことがあるため、**両方**を落とす。片方だけの view を増やさない。
 
 日本語ページはこれに加えて `--lang=ja-JP`（`JAPANESE_LANG_ARG`）を渡す。docich の
-`paper-view` / `market-view` / `weather-view` / `tsuitate-view` / `yosou-view` は
-すべて日本語ページである。
+`paper-view` / `market-view` / `weather-view` / `tsuitate-view` / `yosou-view` /
+`doushi-view` / `mystery-view` はすべて日本語ページである。
 
 ## 2. 配信HTMLの宣言
 
@@ -61,7 +61,8 @@ secret をログ・HTML・API 応答・子コーナー環境へは出さない�
 ## 4. 適用範囲と例外
 
 - 対象: docich が配信のために開く HTML view（`ProgramViewAdapter` 系の
-  `paper-view` / `market-view` / `weather-view` / `tsuitate-view` / `yosou-view`）。
+  `paper-view` / `market-view` / `weather-view` / `tsuitate-view` / `yosou-view` /
+  `doushi-view` / `mystery-view`）。
 - NetHack tiles GUI（`nethack_tiles_supervisor.py`）はゲーム自身のUIなので翻訳抑止の
   2引数だけを適用し、`--lang=ja-JP` は付けない。
 - Soren91 の視聴は ffplay（動画）でブラウザではないため対象外。

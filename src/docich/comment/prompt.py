@@ -28,7 +28,7 @@ MIXED_TEMPLATE_VARS = (
     "comment_batch_context", "strategy_advice_candidates", "comment_advice_candidates",
     "codex_advice_candidates", "comment_advice_context", "previous_comments_context",
     "recent_spoken_comment_context", "viewer_memory_context", "comment_followup_hints",
-    "past_topics", "celebration_history_context", "comment_thumbnail_ocr_context",
+    "past_topics", "self_chat_context", "celebration_history_context", "comment_thumbnail_ocr_context",
     "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE", "SOVIET_CREATION_HISTORY_FILE",
     "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context", "_comment_ui_memo",
     "_comment_channel_intro", "_comment_length_policy", "sing_reference", "_prediction_cycle_games",
@@ -38,7 +38,7 @@ CATEGORY_TEMPLATE_VARS = (
     "current_time", "time_period", "comment_batch_context", "strategy_advice_candidates",
     "comment_advice_candidates", "codex_advice_candidates", "comment_advice_context",
     "previous_comments_context", "recent_spoken_comment_context", "viewer_memory_context",
-    "comment_followup_hints", "past_topics", "celebration_history_context",
+    "comment_followup_hints", "past_topics", "self_chat_context", "celebration_history_context",
     "comment_thumbnail_ocr_context", "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE",
     "SOVIET_CREATION_HISTORY_FILE", "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context",
     "_comment_ui_memo", "_comment_channel_intro", "_comment_length_policy", "sing_reference",
@@ -147,6 +147,7 @@ def with_defaults(ctx: dict) -> dict:
         out[name] = sanitize_context(default(name, value))
     out["celebration_history_context"] = default("celebration_history_context", NONE)
     out["comment_thumbnail_ocr_context"] = sanitize_context(default("comment_thumbnail_ocr_context", NONE))
+    out["self_chat_context"] = sanitize_context(default("self_chat_context", NONE))
     out["game_state_context"] = sanitize_context(default("game_state_context", "（取得失敗）"))
     out["comment_ops_context"] = sanitize_context(default("comment_ops_context", "（取得失敗）"))
     return out

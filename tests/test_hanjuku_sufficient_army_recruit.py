@@ -36,14 +36,13 @@ def test_skip_reopens_cash_check_then_recruits_from_real_menu(count):
     assert mem['shop']['soldiers'] == 0
 
 
-def test_skip_does_not_spend_the_wage_floor_or_retry_forever():
+def test_skip_opens_recruitment_without_a_wage_floor():
     mem, screen = stalled_month()
     policy.quantity_step(screen, mem, soldiers=True)
     for _ in range(3):
         policy.month_step(parse(month_canvas(79, on='しょうぐんぼしゅう')), mem)
-    assert mem['shop']['recruit'] == 'deferred_cash'
-    assert (mem.get('month_sub') or {}).get('kind') != 'recruit'
-    assert sum(d['decision'] == 'recruit_cash_held' for d in mem['_records']) == 1
+    assert mem['shop']['recruit'] == 'opened'
+    assert (mem.get('month_sub') or {}).get('kind') == 'recruit'
 
 
 @pytest.mark.parametrize('count,seen', [(49, '1-7'), (133, '1-6'), (None, '1-7')])

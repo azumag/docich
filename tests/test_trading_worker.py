@@ -126,7 +126,83 @@ class FakeTriangleGateway:
         return {symbol: all_books[symbol] for symbol in symbols}
 
 
+class FlakyStrategyGateway(FakeStrategyGateway):
+    """Fails the first fetch for BAD/JPY, then succeeds (transient hiccup)."""
+
+    def __init__(self):
+        super().__init__(one_bad_symbol=False)
+        self.markets["BAD/JPY"] = _market("BAD/JPY")
+        self.frames["BAD/JPY"] = _frame("BAD/JPY")
+        self.fail_once = {"BAD/JPY"}
+        self.fetch_counts: dict[str, int] = {}
+
+    def fetch_market_frames(self, symbols, *, timeframe, limit, now):
+        symbol = list(symbols)[0]
+        self.fetch_counts[symbol] = self.fetch_counts.get(symbol, 0) + 1
+        if symbol in self.fail_once:
+            self.fail_once.discard(symbol)
+            raise RuntimeError("transient public history failure")
+        return {symbol: self.frames.get(symbol, _frame(symbol))}
+
+
 class TestPaperWorkerCycle(unittest.TestCase):
+    def test_cycle_retries_a_transient_fetch_failure_and_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            gateway = FlakyStrategyGateway()
+            result = run_worker_cycle(
+                g,
+                gateway=gateway,
+                cycle_index=1,
+                now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.frame_error_count, 0)
+            self.assertNotIn("frame_fetch_error", result.error_codes)
+            self.assertEqual(gateway.fetch_counts.get("BAD/JPY"), 2)
+            status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["market_freshness"]["BAD/JPY"]["quality"], "fresh")
+
+    def test_cycle_counts_a_symbol_that_keeps_failing_only_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            result = run_worker_cycle(
+                g,
+                gateway=FakeStrategyGateway(one_bad_symbol=True),
+                cycle_index=1,
+                now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.frame_error_count, 1)
+            self.assertIn("frame_fetch_error", result.error_codes)
+
+    def test_cycle_counts_unretried_failure_when_budget_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            gateway = FlakyStrategyGateway()
+            calls = {"n": 0}
+
+            def monotonic_fn():
+                calls["n"] += 1
+                # First call sets the deadline; subsequent main-loop calls stay
+                # under budget; the retry-phase call exhausts it.
+                if calls["n"] <= 5:
+                    return 0.0
+                return 10_000.0
+
+            result = run_worker_cycle(
+                g,
+                gateway=gateway,
+                cycle_index=1,
+                now=NOW,
+                observation_now_fn=lambda: NOW,
+                monotonic_fn=monotonic_fn,
+            )
+            self.assertEqual(result.frame_error_count, 1)
+            self.assertIn("frame_fetch_error", result.error_codes)
+            status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["market_freshness"]["BAD/JPY"]["reason_code"], "fetch_error")
+
     def test_cycle_isolates_bad_frame_and_reuses_thirty_percent_allocator(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp), capital=10000)

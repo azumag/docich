@@ -5,11 +5,15 @@ import re
 
 from ..os_layer.screen import Screen
 from ... import hanjuku_chart as chart
+from ...hanjuku_reference import weakest_general
 from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
+from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
+from ..os_layer.roster import fixed_wage
 from ..strategy.bargains import merchant_card_spendable, plan_bargains
+from ..strategy.boss_cards import note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
@@ -267,6 +271,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                             strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
                             reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
                                     if extra else 'チャート/予算計画どおりの個数を確認して購入'))
+                    note_card_purchase(mem, want[0], value)  # a boss card returns to its kit
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
                     shop['want'] = None
@@ -314,12 +319,62 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 
 
 # ---------------------------------------------------------------- prompts
-DISCHARGE_LIMIT = 6              # A presses per month while the balance is negative
+DISCHARGE_LIMIT = 32             # at most the full roster, one confirmed removal at a time
+DISCHARGE_SCAN_LIMIT = 20        # preserve the existing bounded cursor walk
 DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
 
 
-def discharge_step(screen: Screen, mem):
-    """Forced discharge list: dismiss generals only while the balance is negative.
+def discharge_candidates(screen):
+    """Read the forced-discharge list, or None when any row is not proven.
+
+    The measured list is one name per 16px row at x=24 from y=47. A partial or
+    unknown name invalidates the whole list: the weakest candidate cannot be
+    confirmed from an incomplete set. The list may scroll; callers accumulate
+    rows across fresh frames rather than assuming one page is the whole army.
+    """
+    if screen.kind != 'discharge_menu':
+        return None
+    names = []
+    for y in range(47, 160, 16):
+        row = next((line for line in screen.lines if line.y == y), None)
+        if row is None:
+            continue
+        name = row.span(24, 96).strip()
+        if not name:
+            continue
+        if UNKNOWN in name or re.search(r'[\d\s]', name) or fixed_wage(name) is None:
+            return None
+        names.append(name)
+    if not names or len(set(names)) != len(names):
+        return None
+    return names
+
+
+def _discharge_scroll_end(screen, frame, names):
+    """Native last-page proof for the discharge list (same green list panel).
+
+    The discharge list shows one name per 16px row from y=47. A full eight-row
+    page whose cursor sits on the last row still needs the native up-arrow and
+    empty down-arrow slot; a stalled cursor alone is not an end proof.
+    """
+    from ..os_layer.phase import green
+    if (frame is None or frame.width != 256 or frame.height != 224
+            or len(names) != 8 or screen.selected != names[-1]
+            or not screen.hand or not 137 <= screen.hand[1] <= 160):
+        return False
+    return (all(min(frame.pixel(x, y)) >= 240
+                for y in range(30, 34) for x in range(195 - (y - 30), 196 + (y - 30)))
+            and all(green(*frame.pixel(x, y))
+                    for y in range(159, 162) for x in range(192, 199))
+            and all(max(frame.pixel(x, 162)) <= 8 for x in range(192, 199))
+            and all(170 <= frame.pixel(x, 163)[0] <= 220
+                    and 110 <= frame.pixel(x, 163)[1] <= 170
+                    and 50 <= frame.pixel(x, 163)[2] <= 100
+                    for x in range(192, 199)))
+
+
+def discharge_step(screen: Screen, mem, frame=None):
+    """Forced discharge list: dismiss the weakest general only while in debt.
 
     Wages come out at the month boundary; a negative balance forces
     dismissing generals (their 賃金 becomes cash) until it is back to at
@@ -327,8 +382,14 @@ def discharge_step(screen: Screen, mem):
     unreadable (the game prints ー1G and the header only matches digits) and
     B is refused. Once the balance is non-negative the header gold parses:
     leave with B instead of dismissing more generals (owner 2026-09-28:
-    そもそも将軍解雇はしないで欲しい). A list that refuses every bounded B
-    press holds for the screen-stall terminal.
+    そもそも将軍解雇はしないで欲しい).
+
+    Issue #2367 (owner 2026-10-20): if a dismissal is forced, choose the
+    weakest general instead of the default cursor. The list is scanned from
+    the same fresh frames, the cursor is moved to the candidate and the
+    selection is re-read before A. A name or cursor that cannot be read never
+    confirms a candidate. One general at a time is dismissed, then the list
+    and the balance are re-observed; a paid-up balance leaves with B.
     """
     month = re.search(r'(\d+)ねん(\d+)のつき', screen.text)
     key = f'{month[1]}-{month[2]}' if month else None
@@ -339,6 +400,11 @@ def discharge_step(screen: Screen, mem):
         state = {'key': key, 'presses': 0, 'exits': 0}
     mem['discharge'] = state
     if paid_up:
+        pending = state.pop('pending_target', None)
+        if pending is not None:
+            _record(mem, 'discharge_verified', general=pending,
+                    observed_metric={'month': key, 'gold': gold, 'basis': 'balance_nonnegative'},
+                    reason='解雇要求後に残高が非負になり強制解雇が解消したことを確認（候補消失の確認とは区別）')
         exits = int(state.get('exits') or 0)
         if exits >= DISCHARGE_EXIT_LIMIT:
             if not state.get('held'):
@@ -353,17 +419,134 @@ def discharge_step(screen: Screen, mem):
                                  'selected': screen.selected},
                 reason='所持金が0以上になったため解雇を続けずBで画面を出る')
         return [pad('b')]
-    if state['presses'] >= DISCHARGE_LIMIT:
-        if not state.get('held'):
-            state['held'] = True
-            _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
-                    observed_metric={'month': key, 'presses': state['presses']},
-                    reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
+
+    names = discharge_candidates(screen)
+    if names is None or screen.selected not in names:
+        # An unread name/cursor is not proof that this is the weakest entry.
+        if not state.get('unverified'):
+            state['unverified'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    strategy_variant='discharge_unverified',
+                    observed_metric={'month': key, 'selected': screen.selected,
+                                     'names': names},
+                    reason='解雇候補の名前またはカーソルを読めないため最弱将軍を確定せず入力を保留')
         return []
-    state['presses'] += 1
-    _record(mem, 'discharge_general', general=screen.selected,
-            strategy_variant='forced_discharge_default_cursor',
-            observed_metric={'month': key, 'presses': state['presses'],
-                             'hand': list(screen.hand) if screen.hand else None},
-            reason='所持金不足で将軍の解雇を強制されたため既定カーソルの将軍を解雇')
-    return [pad('a')]
+    selected = screen.selected
+    scan = [n for n in (state.get('scan') or []) if isinstance(n, str)]
+    scan = list(dict.fromkeys([*scan, *names]))
+    state['scan'] = scan
+    phase = state.get('phase') or 'scan'
+    if phase == 'select_move':
+        phase = state['phase'] = 'select'
+    if phase == 'after':
+        phase = state['phase'] = 'scan'
+    if phase in ('scan', 'scan_move'):
+        state['moves'] = int(state.get('moves') or 0) + 1
+        wrapped = (selected == scan[0] and state.get('moved') is True
+                   and len(scan) > len(names))
+        proven = (len(names) < 8 or wrapped
+                  or _discharge_scroll_end(screen, frame, names))
+        if not proven:
+            if state['moves'] > DISCHARGE_SCAN_LIMIT:
+                if not state.get('scan_held'):
+                    state['scan_held'] = True
+                    _record(mem, 'situation_held', screen=screen.kind,
+                            strategy_variant='discharge_scan_unproven',
+                            observed_metric={'month': key, 'candidates': scan,
+                                             'moves': state['moves'],
+                                             'selected': selected},
+                            reason='解雇候補の一覧端を証明できないため、未走査ページを残したまま最弱を確定しない')
+                return []
+            state['moved'] = True
+            state['phase'] = 'scan_move'
+            return [pad('down')]
+        pending = state.get('pending_target')
+        if pending is not None:
+            if pending in scan:
+                # A is a request, not a receipt. Never repeat it while the
+                # previous target is still in the complete candidate list.
+                if not state.get('removal_held'):
+                    state['removal_held'] = True
+                    _record(mem, 'situation_held', screen=screen.kind,
+                            strategy_variant='discharge_removal_unverified',
+                            observed_metric={'month': key, 'target': pending},
+                            reason='前の解雇対象が候補一覧に残るため、成立未確認として決定入力を重ねない')
+                for field in ('scan', 'moved', 'moves'):
+                    state.pop(field, None)
+                state['phase'] = 'scan'
+                return []
+            _record(mem, 'discharge_verified', general=pending,
+                    observed_metric={'month': key, 'basis': 'complete_list_removal'},
+                    reason='完全な解雇候補一覧から前の対象が消えたことを確認')
+            state.pop('pending_target', None)
+            state.pop('removal_held', None)
+        if state['presses'] >= DISCHARGE_LIMIT:
+            if not state.get('held'):
+                state['held'] = True
+                _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
+                        observed_metric={'month': key, 'presses': state['presses']},
+                        reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
+            return []
+        target, evidence = weakest_general(scan)
+        if target is None:
+            if not state.get('unresolved'):
+                state['unresolved'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        strategy_variant='discharge_unresolved',
+                        observed_metric={'month': key, 'unresolved': evidence['unresolved']},
+                        reason='候補に静的データの無い将軍がいるため最弱を確定せず入力を保留')
+            return []
+        state['target'] = target
+        state['ranking'] = evidence['candidates']
+        state['phase'] = 'select'
+        phase = 'select'
+    if phase == 'select':
+        target = state.get('target')
+        if not isinstance(target, str) or target not in scan:
+            state['phase'] = 'scan'
+            return []
+        moves = int(state.get('cursor_moves') or 0)
+        if moves > DISCHARGE_SCAN_LIMIT:
+            if not state.get('cursor_held'):
+                state['cursor_held'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        strategy_variant='discharge_cursor_unreached',
+                        observed_metric={'month': key, 'target': target,
+                                         'selected': selected, 'moves': moves},
+                        reason='最弱候補へカーソルを移動できないため解雇を確定せず入力を保留')
+            return []
+        if selected != target:
+            state['cursor'] = selected
+            state['cursor_moves'] = moves + 1
+            if target in names:
+                return [pad('down' if names.index(target) > names.index(selected) else 'up')]
+            # The candidate is on an earlier/later page. Walk the real list
+            # back to it instead of re-reading this page forever.
+            target_index = scan.index(target)
+            if target_index < scan.index(names[0]):
+                return [pad('up')]
+            if target_index > scan.index(names[-1]):
+                return [pad('down')]
+            state['phase'] = 'scan'
+            return []
+        state['presses'] = int(state['presses']) + 1
+        _record(mem, 'discharge_general', general=target,
+                strategy_variant='weakest_general',
+                observed_metric={'month': key, 'presses': state['presses'],
+                                 'selected': selected, 'target': target,
+                                 'candidates': scan, 'ranking': state.get('ranking'),
+                                 'hand': list(screen.hand) if screen.hand else None},
+                reason='所持金不足で強制解雇のため、最弱将軍をカーソルで確認して解雇を要求。成立は未確認')
+        state['pending_target'] = target
+        state.pop('scan', None)
+        state.pop('ranking', None)
+        state.pop('target', None)
+        state.pop('still', None)
+        state.pop('moved', None)
+        state.pop('last', None)
+        state.pop('moves', None)
+        state.pop('cursor_moves', None)
+        state.pop('cursor', None)
+        state['phase'] = 'after'
+        return [pad('a')]
+    return []

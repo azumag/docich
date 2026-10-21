@@ -15,7 +15,7 @@ from docich.game_switch import DeadlineExceededError, GameSwitchCoordinator, Gam
 
 class TestSorenCoordinatorAdapter(unittest.TestCase):
     def make_adapter(self, root: Path) -> SorenCoordinatorAdapter:
-        (root / "lib").mkdir()
+        (root / "lib").mkdir(exist_ok=True)
         (root / "lib/game_lifecycle.py").write_text("# broker\n")
         (root / "game_lifecycle_control.sh").write_text("#!/bin/sh\n")
         game = SimpleNamespace(
@@ -131,7 +131,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 cancelled[0] = True
                 return 0, self.boundary_payload("boundary")
             with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), patch.object(adapter, "_broker", side_effect=broker):
-                with self.assertRaises(DeadlineExceededError):
+                with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
                     adapter._wait_round_boundary(self.boundary_payload("accepted")["request"], time.monotonic() + 30, cancel)
 
     def test_boundary_poll_rejects_inconsistent_request_and_ack_or_return_code(self):
@@ -159,9 +159,74 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 cancel = SimpleNamespace(is_set=lambda: cancel_set)
                 with patch.object(adapter, "_status", side_effect=status), patch.object(adapter, "_broker", side_effect=lambda *args: calls.append(args)):
                     # Enter the wait with a valid receipt, then a cancelled or expired call.
-                    with self.assertRaises(DeadlineExceededError):
+                    with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
                         adapter._wait_round_boundary(receipt["request"], time.monotonic() - (1 if not cancel_set else -30), cancel)
                 self.assertEqual(calls, [])
+
+    def test_expired_waiting_boundary_names_the_cleanup_in_the_error(self):
+        """#2061: a waiting handover past *its own* deadline must be named.
+
+        The broker only rewrites an expired request to ack=timeout when
+        something polls it, so a wedged cleanup keeps answering waiting until
+        the caller's deadline.  The message reaches the canonical
+        last_error.detail, so it must identify the expired waiting cleanup
+        instead of a bare deadline.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            # The broker's own request deadline is already in the past.  One
+            # epoch for all three records: the identity is compared exactly.
+            past = time.time() - 600
+            expired = self.boundary_payload("accepted", deadline_epoch=past)
+            stale = self.boundary_payload("waiting", deadline_epoch=past)
+            with patch.object(adapter, "_status", return_value=stale), \
+                    patch.object(adapter, "_broker", return_value=(1, stale)):
+                with self.assertRaises(DeadlineExceededError) as ctx:
+                    adapter._wait_round_boundary(expired["request"], time.monotonic() + 0.05, None)
+            message = str(ctx.exception)
+            self.assertIn("期限切れ", message)
+            self.assertIn("expired waiting cleanup", message)
+            self.assertIn(expired["request"]["request_id"], message)
+
+    def test_a_still_valid_request_deadline_keeps_the_plain_message(self):
+        """A slow match answering waiting is a plain deadline, not a wedge.
+
+        Only the broker's own expired deadline proves the #2061 cleanup; a
+        still-valid request must not be mislabelled as an expired cleanup.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")  # deadline_epoch = 2030
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(1, self.boundary_payload("waiting"))):
+                with self.assertRaises(DeadlineExceededError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 0.05, None)
+            message = str(ctx.exception)
+            self.assertNotIn("expired waiting cleanup", message)
+            self.assertNotIn("期限切れ", message)
+
+    def test_broker_expired_boundary_names_the_request_deadline(self):
+        """A broker ack=timeout (RC_EXPIRED) is an expired cleanup, not a mystery."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(2, self.boundary_payload("timeout"))):
+                with self.assertRaises(AdapterError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 30, None)
+            message = str(ctx.exception)
+            self.assertIn("request deadline", message)
+            self.assertIn("expired waiting cleanup", message)
+
+    def test_a_terminal_ack_is_still_refused_without_claiming_an_expiry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            receipt = self.boundary_payload("accepted")
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), \
+                    patch.object(adapter, "_broker", return_value=(3, self.boundary_payload("failed"))):
+                with self.assertRaises(AdapterError) as ctx:
+                    adapter._wait_round_boundary(receipt["request"], time.monotonic() + 30, None)
+            self.assertNotIn("expired waiting cleanup", str(ctx.exception))
 
     def test_reconfigure_player_commits_only_after_prepared_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -320,6 +385,343 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             )
             with patch("docich.adapters.soren.subprocess.run", return_value=result):
                 self.assertFalse(adapter.alive(time.monotonic() + 30, None))
+
+    def test_readiness_proceeds_when_broker_timeout_ack_deadline_passed(self):
+        """#1969: readiness proceeds when broker has timeout ack with expired deadline.
+
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED)
+        when its deadline_epoch has passed. This is a proven expired cleanup.
+        Readiness must not hang; it should verify live processes and HTTP.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600  # deadline long passed
+            expired_timeout_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            # Simulate live processes and HTTP 200
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(expired_timeout_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                adapter.readiness(time.monotonic() + 0.1, None)
+            mock_urlopen.assert_called_once()
+
+    def test_readiness_blocks_on_timeout_ack_before_deadline(self):
+        """#1969: readiness does NOT proceed for timeout ack whose deadline is still valid.
+
+        A slow match may answer waiting until its deadline; if the broker
+        prematurely returned timeout (or test simulates it), readiness must
+        not treat it as expired and must wait for the deadline.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            future = time.time() + 3600  # deadline still valid
+            valid_timeout_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-valid", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": future,
+                            "deadline_at": "2030-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-valid", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": future,
+                        "deadline_at": "2030-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(valid_timeout_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                # Deadline short to fail fast if readiness incorrectly proceeds
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_cancelled_ack_even_if_deadline_passed(self):
+        """#1969: cancelled ack must not be silently ignored in readiness.
+
+        Cancelled requests are settled through adopt_failed_candidate which
+        cancels and archives them before calling readiness. Readiness must
+        not bypass this by treating cancelled as "no ack".
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            cancelled_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
+                        "generation": 7, "status": "cancelled", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(cancelled_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_cancelled_ack_before_deadline(self):
+        """#1969: cancelled ack before deadline must not be treated as expired."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            future = time.time() + 3600
+            cancelled_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": future,
+                            "deadline_at": "2030-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-cancelled", "game": "sorengame",
+                        "generation": 7, "status": "cancelled", "deadline_epoch": future,
+                        "deadline_at": "2030-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(cancelled_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_mismatched_request_and_timeout_ack(self):
+        """#1969: new request + old expired timeout ack must NOT be treated as expired.
+
+        If broker ACK write fails after a new request is created, the payload
+        may contain a new request but an old expired timeout ack. The complete
+        identity (schema, request_id, game, generation, deadline) must match
+        between request and ack, otherwise readiness must not proceed
+        (fail-closed).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            mismatched_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-new", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": time.time() + 3600,
+                            "deadline_at": "2030-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-old", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(mismatched_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_player_change_request_expiry(self):
+        """#1969: an expired player_change request is not a launchable expired cleanup.
+
+        The broker rewrites any expired request to ack=timeout (RC_EXPIRED),
+        including a player_change request. The player_change operation rides on
+        the request record itself, so the full boundary identity (operation
+        unset) must reject it even when no control record exists and no pause
+        marker remains: the uncleared player_change transaction must never be
+        identified with the plain expired cleanup (#1969 review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            player_change_expired_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z",
+                            "operation": "player_change"},
+                "ack": {"schema": 1, "request_id": "req-pc", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(player_change_expired_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_uncleared_pause_marker(self):
+        """#1969: an uncleared pause marker is not a launchable state.
+
+        A parked soren_loop still shows a live process, and readiness's
+        live-process check alone cannot tell a running loop from a parked
+        one. When the lifecycle pause marker remains (for example after an
+        interrupted player_change or stop), readiness must not succeed even
+        over a fully-matched expired cleanup (#1969 review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            past = time.time() - 3600
+            expired_cleanup_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-expired", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            pause_dir = root / "tmp/state"
+            pause_dir.mkdir(parents=True, exist_ok=True)
+            (pause_dir / "soren_loop.paused").write_text("lifecycle:req-expired")
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(expired_cleanup_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_blocks_on_in_progress_stop_control(self):
+        """#1969: any control record means a stop is in progress; fail closed.
+
+        Even a control record that matches the expired request's identity is
+        an in-progress stop-after-boundary, the same residue
+        ``_failed_candidate_broker_state`` refuses as "timeout with control".
+        The readiness bypass must refuse it too instead of accepting a
+        matching control (#1969 review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            past = time.time() - 3600
+            control_in_progress_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                            "generation": 7, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                        "generation": 7, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": {"schema": 1, "request_id": "req-stop", "game": "sorengame",
+                            "generation": 7},
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(control_in_progress_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                with self.assertRaises(DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            mock_urlopen.assert_not_called()
+
+    def test_readiness_proceeds_for_old_cleanup_generation(self):
+        """#1969: a normal old cleanup may carry a generation other than the spec's.
+
+        The expired residue belongs to the request that created it, which can
+        be an older switch attempt. The identity match is request-to-ack only;
+        a spec-generation match must never be substituted for it (#1969
+        review).
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            self.assertNotEqual(adapter.spec.generation, 6)
+            past = time.time() - 3600
+            old_cleanup_payload = {
+                "schema": 1,
+                "request": {"schema": 1, "request_id": "req-old-cleanup", "game": "sorengame",
+                            "generation": 6, "deadline_epoch": past,
+                            "deadline_at": "2020-01-01T00:00:00Z"},
+                "ack": {"schema": 1, "request_id": "req-old-cleanup", "game": "sorengame",
+                        "generation": 6, "status": "timeout", "deadline_epoch": past,
+                        "deadline_at": "2020-01-01T00:00:00Z"},
+                "resource": None,
+                "control": None,
+            }
+            adapter._singleton_process_identity = Mock(
+                side_effect=lambda name: (123, 1000) if name == "soren_loop.sh" else (124, 1001))
+            adapter._process_matches = Mock(
+                side_effect=lambda name: [(time.time() - 100, 123, 1000)] if name == "soren_loop.sh"
+                else [(time.time() - 100, 124, 1001)])
+
+            with patch("docich.adapters.soren.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(old_cleanup_payload), stderr="")), \
+                    patch("docich.adapters.soren.urllib.request.urlopen") as mock_urlopen:
+                mock_response = SimpleNamespace(status=200)
+                mock_urlopen.return_value.__enter__.return_value = mock_response
+                adapter.readiness(time.monotonic() + 0.1, None)
+            mock_urlopen.assert_called_once()
 
     def test_materialize_fresh_starts_only_matching_stopped_request(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1201,6 +1603,139 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
             self.assertLessEqual(len(text), 8192 + 512)
 
+    def test_resumed_loop_identity_carries_across_adapter_instances(self):
+        """#2061 review: identity captured during cleanup must survive a new instance."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-2")
+            adapter_a = self.make_adapter(root)
+            adapter_a._request_id = "req-2"
+            adapter_a._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter_a, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter_a.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_a._resumed_loop, (4242, 777))
+            pause.unlink()
+            adapter_b = self.make_adapter(root)
+            self.assertIsNone(adapter_b._resumed_loop)
+            identity = {"request_id": "req-2", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None,
+                        "resource": {**identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter_b.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter_b._resumed_loop, (4242, 777))
+
+    def test_resumed_loop_recovery_rejects_mismatched_request_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text(
+                json.dumps({"request_id": "req-other", "identity": [4242, 777]}))
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
+
+    def test_resumed_loop_recovery_rejects_malformed_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text("not json")
+            adapter = self.make_adapter(root)
+            adapter._recover_resumed_loop("req-2")
+            self.assertIsNone(adapter._resumed_loop)
+
+    def test_mismatched_snapshot_rejected_by_materialize_stays_rejected_after_archive(self):
+        """#2061 review P2: materialize rejects mismatched snapshot; readiness must not recover it."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.resumed").write_text(
+                json.dumps({"request_id": "req-other", "identity": [4242, 777]}))
+            adapter = self.make_adapter(root)
+            # broker reports the current (different) stopped request
+            current_identity = {"request_id": "req-current", "game": "sorengame", "generation": 7}
+            outputs = [{"request": current_identity, "ack": None,
+                        "resource": {**current_identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertIsNone(adapter._resumed_loop)
+            # broker archived: readiness sees no request/ack
+            archived = {"schema": 1, "request": None, "ack": None, "resource": None}
+            adapter._status = Mock(return_value=archived)
+            with patch.object(adapter, "_live_process", return_value=False), \
+                    patch("docich.adapters.soren.time.sleep", return_value=None):
+                with self.assertRaises(__import__('docich.game_switch', fromlist=['DeadlineExceededError']).DeadlineExceededError):
+                    adapter.readiness(time.monotonic() + 0.05, None)
+            self.assertIsNone(adapter._resumed_loop)
+
+
+    def test_cleanup_captures_paused_loop_identity_for_later_marker_loss(self):
+        """#2061: stop-time capture survives candidate cleanup consuming the marker."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-2")
+            adapter._request_id = "req-2"
+            adapter._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
+            # Candidate cleanup consumes the marker afterwards; captured identity stays.
+            pause.unlink()
+            self.assertEqual(adapter._paused_loop_identity(), None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
+
+    def test_cleanup_does_not_overwrite_already_captured_paused_loop_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            adapter._resumed_loop = (111, 222)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.paused").write_text("lifecycle:req-2")
+            adapter._request_id = "req-2"
+            adapter._status = Mock(side_effect=[
+                self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"),
+            ])
+            with patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)), \
+                    patch("docich.adapters.soren.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")):
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (111, 222))
+
+    def test_materialize_preserves_captured_identity_when_marker_absent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            adapter._resumed_loop = (4242, 777)
+            identity = {"request_id": "req-9", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None,
+                        "resource": {**identity, "status": "stopped"}},
+                       {"status": "starting"}]
+            def fake_run(argv, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(adapter._resumed_loop, (4242, 777))
 
 if __name__ == "__main__":
     unittest.main()

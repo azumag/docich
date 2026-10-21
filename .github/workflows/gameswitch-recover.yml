@@ -1,35 +1,57 @@
-name: gameswitch-recover
+name: GameSwitch recover
+
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Fixed operation name
+        description: Fixed operation name (recover_gameswitch)
         required: true
-        type: string
+        default: recover_gameswitch
+        type: choice
+        options: [recover_gameswitch]
       phase:
-        description: Canonical GameSwitch phase (recovery_required or failed)
+        description: Declared canonical GameSwitch phase (failed or recovery_required)
         required: true
-        type: string
+        type: choice
+        options: [failed, recovery_required]
       cleanup_pending:
-        description: Cleanup pending flag (true or false)
+        description: Declared cleanup-pending flag observed by the owner
         required: true
-        type: string
+        type: choice
+        options: [true, false]
       confirm:
-        description: Type production to confirm
+        description: Type production to confirm this production recover
         required: true
+        default: ''
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: gameswitch-recover-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
-  authorize:
-    runs-on: ubuntu-latest
-    outputs:
-      decision: ${{ steps.auth.outputs.decision }}
+  recover:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - name: Authorize fixed GameSwitch recover
+      - name: Checkout trusted recovery code from the event main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize fixed owner recovery
         id: auth
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -43,32 +65,134 @@ jobs:
           GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
           GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
-          GITHUB_SHA: ${{ github.sha }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
           INPUT_OPERATION: ${{ inputs.operation }}
           INPUT_PHASE: ${{ inputs.phase }}
           INPUT_CLEANUP_PENDING: ${{ inputs.cleanup_pending }}
           INPUT_CONFIRM: ${{ inputs.confirm }}
-        run: |
-          python3 ops/vm_actions/authorize_gameswitch_recover.py >> "$GITHUB_OUTPUT"
+        run: python3 control/ops/vm_actions/authorize_gameswitch_recover.py
 
-  recover:
-    needs: authorize
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Execute fixed GameSwitch recover
+      - name: Require the event to remain current protected main
+        shell: bash
         env:
-          DECISION: ${{ needs.authorize.outputs.decision }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 - "$DECISION" <<'PY'
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git -C control rev-parse HEAD)" == "$SHA" ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+          bash -n control/ops/vm_actions/gameswitch_recover.sh
+
+      - name: Configure pinned SSH transport
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          work="$RUNNER_TEMP/gameswitch-recover"
+          install -m 700 -d "$work/ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$work/ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$work/ssh/known_hosts"
+          chmod 600 "$work/ssh/key" "$work/ssh/known_hosts"
+          printf 'GAME_SWITCH_SSH_PORT=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal the event SHA
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/gameswitch-recover"
+          ssh_args=(-F /dev/null -T -p "$GAME_SWITCH_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
           import json, sys
-          decision = json.loads(sys.argv[1])
-          print(f"authorized: {decision['operation']} phase={decision['phase']} cleanup_pending={decision['cleanup_pending']}")
+          data = json.loads(sys.argv[1])
+          if data.get("status") != "configured" or data.get("sha") != sys.argv[2]:
+              raise SystemExit("production is not exactly the event SHA")
           PY
-          # The canonical CLI is executed with a bounded timeout.
-          # Shared delivery and audio are never touched.
-          # The actual recovery command is executed on the production VM
-          # via the existing VM operations infrastructure.
+
+      - name: Run the fixed GameSwitch recover on production
+        id: recover
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+          GS_PHASE: ${{ steps.auth.outputs.phase }}
+          GS_PENDING: ${{ steps.auth.outputs.cleanup_pending }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/gameswitch-recover"
+          ssh_args=(-F /dev/null -T -p "$GAME_SWITCH_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          # The helper is a fixed reviewed script from the trusted main
+          # checkout. The stdin preamble carries only the authorized fixed
+          # declaration (phase and cleanup_pending); no arbitrary command,
+          # unit or argument is ever sent. Shared display/audio/stream units
+          # are never touched and command output stays in the VM-private
+          # exec log.
+          umask 077
+          { printf 'GS_RECOVER_PHASE=%s\nGS_RECOVER_CLEANUP_PENDING=%s\n' "$GS_PHASE" "$GS_PENDING"
+            cat control/ops/vm_actions/gameswitch_recover.sh
+          } > "$work/payload"
+          set +e
+          (ulimit -f 16; timeout --kill-after=5s 560s \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" \
+              "exec docich production $SHA") \
+            < "$work/payload" \
+            > "$work/recover.stdout" 2> "$work/recover.stderr"
+          rc=$?
+          set -e
+          if (( rc != 0 )); then
+            case "$rc" in
+              2 | 64) reason="invalid_request" ;;
+              3 | 25) reason="invalid_runtime" ;;
+              70) reason="recovery_pending" ;;
+              71) reason="recovery_rejected" ;;
+              72) reason="invalid_result" ;;
+              80) reason="declared_mismatch" ;;
+              81) reason="unknown_drift" ;;
+              82) reason="ownership_missing" ;;
+              *) reason="transport_failure" ;;
+            esac
+            echo "::error::GameSwitch recovery refused: $reason (exit $rc)"
+            tail -n 5 "$work/recover.stderr" >&2 || true
+            exit 1
+          fi
+          rm -f "$work/payload" "$work/recover.stdout" "$work/recover.stderr"
+
+      - name: Confirm production is still the event SHA
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/gameswitch-recover"
+          ssh_args=(-F /dev/null -T -p "$GAME_SWITCH_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          if data.get("status") != "configured" or data.get("sha") != sys.argv[2]:
+              raise SystemExit("production baseline moved during the recovery")
+          PY
+
+      - name: Clear runner staging
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/gameswitch-recover"

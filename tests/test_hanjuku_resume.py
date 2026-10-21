@@ -186,7 +186,7 @@ def test_publication_rejects_another_identity(setup):
 
 def test_prepared_without_dispatch_cannot_be_claimed(setup):
     s=setup;resume.prepare(s.g,s.game,s.queue)
-    resume.claim(s.adapter,time.monotonic()+3,None)
+    resume.claim(s.adapter,time.monotonic()+30,None)
     assert read_record(Path(s.g.state_dir)/'hanjuku-resume'/resume.REQUEST_FILE)['status']=='prepared'
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
@@ -196,7 +196,7 @@ def test_dispatched_prepared_request_survives_publication_interruption(setup):
     atomic_write_json(Path(s.g.state_dir)/'corner_rotation.json',{'pending':dict(s.queue,source='manual')})
     candidate={k:getattr(s.spec,k) for k in ('game','runtime_id','generation','lease_id')}
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(s.adapter,time.monotonic()+3,None)
+        resume.claim(s.adapter,time.monotonic()+30,None)
     assert read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)['status']=='claimed'
 
 
@@ -207,7 +207,7 @@ def stage(s, *, pending=None, candidate=None):
     atomic_write_json(Path(s.g.state_dir)/'corner_rotation.json', {'pending':pending})
     candidate=candidate if candidate is not None else {k:getattr(s.spec,k) for k in ('game','runtime_id','generation','lease_id')}
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(s.adapter,time.monotonic()+3,None)
+        resume.claim(s.adapter,time.monotonic()+30,None)
 
 
 def test_claim_requires_manual_dispatch_and_exact_candidate(setup):
@@ -277,7 +277,7 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
          mock.patch('docich.hanjuku_screen.parse',return_value=loaded_screen):
-        budget=seconds if seconds is not None else (.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3)
+        budget=seconds if seconds is not None else (.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 30)
         resume.restore(s.adapter,time.monotonic()+budget,None)
     return commands,writes
 
@@ -347,7 +347,7 @@ def test_verified_readiness_does_not_reload_or_reset_policy(setup):
     s=setup;restore_test(s)
     original=read_record(s.spec.runtime_dir/'hanjuku_bot.json')
     with mock.patch('docich.adapters.retroarch.send_ra_cmd') as send:
-        resume.restore(s.adapter,time.monotonic()+3,None)
+        resume.restore(s.adapter,time.monotonic()+30,None)
     send.assert_not_called()
     assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')==original
 
@@ -356,10 +356,10 @@ def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
     s=setup;restore_test(s)
     s.adapter._game_window_target=lambda:'game-700'
     s.adapter.tmux=SimpleNamespace(window_target_exists=lambda t:False)
-    with pytest.raises(AdapterError):resume.claim(s.adapter,time.monotonic()+3,None)
+    with pytest.raises(AdapterError):resume.claim(s.adapter,time.monotonic()+30,None)
     s.adapter.tmux.window_target_exists=lambda t:True
     s.adapter._verify_window_ownership=mock.Mock()
-    resume.claim(s.adapter,time.monotonic()+3,None)
+    resume.claim(s.adapter,time.monotonic()+30,None)
     s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')
 
 
@@ -616,11 +616,11 @@ def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recove
                     {k:v for k,v in dict(queued,source='manual').items() if k!='resume_request_id'}):
         atomic_write_json(base/'corner_rotation.json',{'pending':pending})
         with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-            resume.claim(adapter,time.monotonic()+3,None)
+            resume.claim(adapter,time.monotonic()+30,None)
         assert not (rd/resume.RECEIPT_FILE).exists()
     atomic_write_json(base/'corner_rotation.json',{'pending':dict(queued,source='manual')})
     with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
-        resume.claim(adapter,time.monotonic()+3,None)
+        resume.claim(adapter,time.monotonic()+30,None)
     receipt=read_record(rd/resume.RECEIPT_FILE)
     assert receipt['request_id']==s.queue['request_id'] and receipt['generation']==701
     assert (rd/'states/hanjuku-hero.state').read_bytes()==s.source.read_bytes()

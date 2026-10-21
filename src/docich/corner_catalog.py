@@ -167,6 +167,85 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("doushi duration_minutes must be an integer 1-14")
+        elif item.adapter == "puyo":
+            # ぷよぷよクローン offline self-play view (Issue #698). Default
+            # disabled and manual-only until the owner approves auto rotation;
+            # audio/fetch/live settings are out of scope for this adapter.
+            if item.id != "puyo-corner" or item.game != "puyo-view":
+                raise CornerCatalogError("puyo requires id=puyo-corner and game=puyo-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "puyo accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "puyo stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("puyo requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
+        elif item.adapter == "trpg":
+            # Participatory TRPG / murder-mystery view (Issue #684, PR-3).
+            # Automatic rotation stays disabled; audio is the separate opt-in.
+            if item.id != "trpg-corner" or item.game != "trpg-view":
+                raise CornerCatalogError(
+                    "trpg requires id=trpg-corner and game=trpg-view"
+                )
+            if item.fetch_on_start:
+                raise CornerCatalogError(
+                    "trpg accepts no fetch_on_start"
+                )
+            if type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "trpg accepts only a boolean audio_enabled"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "trpg stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("trpg requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("trpg duration_minutes must be an integer 1-14")
+        elif item.adapter == "mystery":
+            # Participatory AI探偵ミステリー: one deterministic case per slot.
+            # The duration is the whole-case budget (1-45 minutes; the manager's
+            # session reserve keeps the reveal + restore inside it) and speech
+            # is a separate opt-in. No weather-only settings. The manager
+            # enforces the same bound, so a future config change cannot widen
+            # it without this file's review.
+            if item.id != "mystery" or item.game != "mystery-view":
+                raise CornerCatalogError("mystery requires id=mystery and game=mystery-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "mystery accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 45):
+                raise CornerCatalogError("mystery duration_minutes must be an integer 1-45")
+        elif item.adapter == "lawsim":
+            # Auto-rotation-enabled 共産主義法律シミュレーター view (#697, 2026-10-18
+            # owner approval). Same shape as doushi minus speech: narration/TTS is
+            # not wired, so audio_enabled must stay false and weather-only
+            # settings are rejected.
+            if item.id != "communist-law-simulator" or item.game != "lawsim-view":
+                raise CornerCatalogError(
+                    "lawsim requires id=communist-law-simulator and game=lawsim-view"
+                )
+            if item.fetch_on_start or item.audio_enabled is not False:
+                raise CornerCatalogError(
+                    "lawsim accepts neither fetch_on_start nor audio_enabled (speech is not wired yet)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("lawsim duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

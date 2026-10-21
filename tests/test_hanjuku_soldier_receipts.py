@@ -164,7 +164,7 @@ def test_confirmed_count_drives_egg_reserve_and_summer_loss_choice():
     policy.observe_events(observed, mem)
     assert mem['soldiers_seen'] == 64
     mem['egg_uses'] = {'ココット': 0}
-    assert policy._extras_reserve(mem, {'year': 1, 'month': 8, 'gold': 45})[0] == 45 - policy.WAGE_RESERVE
+    assert policy._extras_reserve(mem, {'year': 1, 'month': 8, 'gold': 45})[0] == 45  # no wage hold
     from test_hanjuku_summer_bonus import prompt_canvas
     frame = prompt_canvas()
     screen = parse(frame)

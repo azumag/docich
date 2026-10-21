@@ -24,6 +24,58 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - preview command は `bubblewrap` で network と production filesystem から分離した一時コピー上で実行します。
 - production command の stdout/stderr は Actions log に返さず、VM private logへ mode 0600 で保存します。command input に token/password を直接書かないでください。
 
+## Owner-only PAPER issue command bridge（ChatGPT connector）
+
+`.github/workflows/paper-corner-operator.yml` は `workflow_dispatch` に加えて、owner が作成した command Issue **#293** の body 編集（`issues: edited`）でも起動できます。GitHub connector が `workflow_dispatch` を直接叩けない場合に、Issue 編集を固定操作の入口にするための経路です。
+
+### Command schema（完全一致）
+
+body は次の3キーだけを持つ1個の JSON object です。余分なキーは拒否されます。
+
+```json
+{"operation":"start","confirm":"production","nonce":"20261018-example"}
+```
+
+- `operation`: `start` または `reload-worker` のみ。
+- `confirm`: 完全一致で `production`。
+- `nonce`: `[A-Za-z0-9._:-]{1,64}`。監査・相関用で、現在 replay の一意性検査はありません。
+- `duration_minutes` は廃止済みで、`start` / `reload-worker` のどちらでも受け付けません。
+- body は JSON として解析され、shell へは渡されません。token / password / 任意 command を書かないでください。
+
+### 実行の性質と安全境界
+
+- owner login + immutable actor ID `9018513`、`github.triggering_actor == azumag`、protected `main`、main 上の workflow copy、Issue #293、Issue 作者が owner であることを検証します。
+- 操作前に production が現在の protected main と完全一致（`status=configured` かつ SHA 一致）することを要求します。
+- **body の編集が実行トリガーです。** 編集後に別の確認ダイアログはありません。編集＝本番操作要求として扱ってください。
+- `issues: edited` は Issue が closed でも配送され得ます。現在の workflow と authorizer は Issue が `open` のときだけ許可し、closed #293 の編集は skip / fail-closed します。bridge を使うときは #293 を再オープンしてください。
+- VM 側は reviewed な固定 launcher のみを実行し、stdout/stderr は VM private log に留めます。
+
+### body を安全に更新する手順
+
+編集が本番実行になるため、次のいずれかを使います。通常は A を推奨します。
+
+**A. workflow を一時停止して編集する（推奨）**
+
+1. owner が workflow を無効化する:
+   `gh workflow disable paper-corner-operator.yml --repo azumag/docich`
+2. #293 の body を新しい JSON に更新する（`duration_minutes` を入れない）。
+3. body が上記 schema と完全一致することを確認する。
+4. workflow を有効化する:
+   `gh workflow enable paper-corner-operator.yml --repo azumag/docich`
+5. 有効化だけでは実行されません。実行するときは、準備ができた時点で nonce を変えるなど body をもう一度編集します。その `edited` がトリガーです。
+
+**B. no-op の `validate` operation を追加する（将来の選択肢）**
+
+- authorization と production SHA 一致だけを確認し、VM を変更しない `validate` operation を追加できれば、body を安全に試験できます。**本改訂では未実装**です。`validate` を allowlist / workflow に追加する reviewed PR が入るまで、この operation は使えません。
+
+**C. bridge を新しい Issue に移行する**
+
+- 新しい owner 作成 Issue を用意し、`ops/vm_actions/authorize_paper_corner.py` の `COMMAND_ISSUE` と `.github/workflows/paper-corner-operator.yml` の issue number guard を更新し、回帰テストを追加して main へ merge します。移行までは #293 だけが受け付けられます。
+
+### #293 の現在の状態
+
+#293 は 2026-10-17 に実装完了として close 済みです。body には旧 schema の `duration_minutes` が残っているため、そのまま編集すると authorization で fail-closed します。closed のままの編集は新しい guard で skip されます。bridge を使う場合は、#293 を再オープンし、上の A の手順で body を更新してください。closed 中に操作が必要な場合は、#293 を再オープンせず owner の `workflow_dispatch` を使ってください。
+
 ## Production deployment
 
 `/home/ubuntu/docich` は既存 Git worktree を維持します。production payload は tar 上書きではなく Git bundle です。
@@ -43,6 +95,11 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - production checkout へ remote を追加して `git pull` / `git reset --hard origin/main` をしない。更新は docich main への merge → `VM operations` deploy のみ。
 - out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
 - 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
+
+ゲスト OS 自体が無応答（SSH banner exchange タイムアウト + WebUI 無応答）のときは、この
+gateway を含む全 operation が使えない。復旧は
+`docs/operations/vm-guest-unresponsive-recovery.md` の帯域外通常再起動だけを使う
+（オーナー明示承認が前提。自動再起動・権限新設はしない）。
 
 ### turn-based 戦略を人手の PR で上書き反映する手順
 

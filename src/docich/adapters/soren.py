@@ -19,6 +19,21 @@ from ..game_switch import (
 from .base import AdapterError
 
 
+def _request_deadline_passed(ack: dict) -> bool:
+    """Whether the broker's own request deadline has already passed.
+
+    ``waiting`` alone never proves an expired cleanup: a slow match keeps
+    answering ``waiting`` while its request is still valid.  Only a request
+    whose ``deadline_epoch`` has passed is the #2061 wedge (issue #2061).
+    """
+    raw = ack.get("deadline_epoch") if isinstance(ack, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return False
+    if not math.isfinite(raw):
+        return False
+    return float(raw) <= time.time()
+
+
 class SorenCoordinatorAdapter:
     name = "soren"
 
@@ -44,6 +59,7 @@ class SorenCoordinatorAdapter:
         self._resumed_loop: tuple[int, int] | None = None
         self._last_command_output = ""
         self._completed_stop_receipt: dict | None = None
+        self._expected_resumed_request_id: str | None = None
 
     def _check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
@@ -171,24 +187,61 @@ class SorenCoordinatorAdapter:
         A runner waiting for MOVE after founding STOP cannot reach its normal
         post-game boundary poll. The coordinator drives the same broker check;
         only the broker decides whether its fresh evidence permits a boundary.
+
+        A handover that keeps answering ``waiting`` past *its own* request
+        deadline is the #2061 wedge: nothing polls the broker, so it never
+        rewrites its ack to ``timeout``.  That failure names the expired waiting
+        cleanup, because the message reaches the canonical
+        ``last_error.detail`` and the read-only diagnostics.
+
+        ``waiting`` alone is not proof, though: a slow match keeps answering
+        ``waiting`` while its request is still valid, and that must stay a plain
+        deadline.  The cross-check is the broker's own ``deadline_epoch``, which
+        the receipt identity already pins.  Exception types are unchanged, so
+        the coordinator's error codes are unchanged.
         """
-        while True:
-            self._check(deadline, cancel)
-            ack = self._checked_round_boundary_ack(self._status(deadline, cancel), receipt)
-            status = ack.get("status")
-            if status == "boundary":
+        observed = ""
+        last_ack: dict = {}
+
+        def check() -> None:
+            try:
                 self._check(deadline, cancel)
+            except DeadlineExceededError as exc:
+                if observed in {"accepted", "waiting"} and _request_deadline_passed(last_ack):
+                    raise DeadlineExceededError(
+                        f"Soren lifecycle boundaryが期限切れの{observed} cleanupのままです "
+                        f"(expired waiting cleanup, request={receipt.get('request_id')})"
+                    ) from exc
+                raise
+
+        while True:
+            check()
+            ack = self._checked_round_boundary_ack(self._status(deadline, cancel), receipt)
+            last_ack = ack
+            observed = str(ack.get("status") or "")
+            if observed == "boundary":
+                check()
                 return
-            if status not in {"accepted", "waiting"}:
+            if observed not in {"accepted", "waiting"}:
                 raise AdapterError("Soren lifecycle boundaryを待機できない状態です")
 
-            self._check(deadline, cancel)
+            check()
             rc, payload = self._broker("boundary", receipt["request_id"], deadline, cancel)
             ack = self._checked_round_boundary_ack(payload, receipt)
-            self._check(deadline, cancel)
-            if rc == 0 and ack.get("status") == "boundary":
+            last_ack = ack
+            observed = str(ack.get("status") or "")
+            check()
+            if rc == 0 and observed == "boundary":
                 return
-            if rc != 1 or ack.get("status") != "waiting":
+            if observed == "timeout":
+                # The broker rewrote its ack because the request deadline
+                # expired (RC_EXPIRED). The cleanup can never reach a boundary,
+                # so name the expiry instead of a generic refusal.
+                raise AdapterError(
+                    "Soren lifecycle boundaryのrequest deadlineが期限切れです "
+                    f"(expired waiting cleanup, request={receipt.get('request_id')})"
+                )
+            if rc != 1 or observed != "waiting":
                 raise AdapterError("Soren lifecycle boundaryを確定できません")
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
@@ -819,13 +872,26 @@ class SorenCoordinatorAdapter:
             reason = self._classify_stop_failure(self._last_command_output)
             self._record_command_output("stop-after-boundary", request_id, rc)
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
-        self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
-        self._completed_stop_receipt = receipt
-        # Capture the paused loop identity while the marker is still present.
-        # Candidate cleanup may consume the marker before materialize runs,
-        # so preserve it here (issue #2061).
+        # Capture the paused loop identity immediately after stop-after-boundary
+        # returns, before _wait_status (which may allow candidate cleanup to
+        # consume the marker).  The marker is created during
+        # stop-after-boundary, so it should exist now.
+        # (issue #2061)
         if self._resumed_loop is None:
             self._resumed_loop = self._paused_loop_identity()
+        self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
+        self._completed_stop_receipt = receipt
+        # Persist the captured identity so a later adapter instance (the real
+        # recovery path creates a new instance) can recover it.  Tied to the
+        # stop receipt's request_id to avoid stale reuse (issue #2061).
+        if self._resumed_loop is not None:
+            try:
+                path = self._resumed_loop_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"request_id": request_id,
+                                           "identity": list(self._resumed_loop)}))
+            except (OSError, TypeError, ValueError):
+                pass
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
@@ -842,6 +908,19 @@ class SorenCoordinatorAdapter:
             request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
+            # Keep the expected request identity (verified before fresh-start
+            # archives the broker record) so readiness can still verify a
+            # persisted snapshot after the broker record is gone (issue #2061).
+            self._expected_resumed_request_id = request_id
+            try:
+                path = self._resumed_loop_path()
+                if path.exists():
+                    data = json.loads(path.read_text())
+                    if isinstance(data, dict):
+                        data["expected_request_id"] = request_id
+                        path.write_text(json.dumps(data))
+            except (OSError, ValueError, TypeError):
+                pass
             # An irreversible stopped runtime must prove that its game workers
             # were born after this fresh start.  A cancelled rollback restores
             # the already-running previous runtime, so applying that timestamp
@@ -849,6 +928,8 @@ class SorenCoordinatorAdapter:
             # recovered.
             if ack.get("status") == "stopped" or not ack:
                 self._fresh_started_at = time.time()
+                if self._resumed_loop is None:
+                    self._recover_resumed_loop(request_id)
                 # Stop pauses soren_loop.sh instead of killing it, and fresh-start only
                 # clears the pause.  That loop is the same legitimate instance, so remember
                 # it; otherwise the freshness fence below can never accept it and the
@@ -864,7 +945,39 @@ class SorenCoordinatorAdapter:
         while True:
             self._check(deadline, cancel)
             payload = self._status(deadline, cancel)
-            if not self._ack(payload):
+            if self._resumed_loop is None:
+                ack = self._ack(payload)
+                rid = str(ack.get("request_id") or "")
+                if not rid:
+                    req = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+                    rid = str(req.get("request_id") or "")
+                expected = self._expected_resumed_request_id
+                if not expected:
+                    try:
+                        data = json.loads(self._resumed_loop_path().read_text())
+                        if isinstance(data, dict):
+                            expected = data.get("expected_request_id")
+                    except (OSError, ValueError, TypeError):
+                        expected = None
+                if expected:
+                    self._recover_resumed_loop(str(expected))
+            ack = self._ack(payload)
+            should_proceed = False
+            if not ack:
+                # No broker request at all: verify live processes and HTTP.
+                should_proceed = True
+            elif self._is_expired_timeout_cleanup(payload):
+                # The broker rewrote its own expired cleanup request to
+                # ack=timeout (RC_EXPIRED): the request/ack identity still
+                # matches completely, no resource or control is held, and the
+                # broker's own deadline has passed. Proceed to verify live
+                # processes and HTTP.
+                should_proceed = True
+            # else: active request (accepted/waiting/stopping/stopped) or cancelled:
+            # do not bypass the normal lifecycle flow. Cancelled requests
+            # must be settled through adopt_failed_candidate which cancels
+            # and archives them before readiness is called.
+            if should_proceed:
                 if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
                         with urllib.request.urlopen("http://127.0.0.1:8080/", timeout=1.0) as response:
@@ -874,11 +987,84 @@ class SorenCoordinatorAdapter:
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    @staticmethod
+    def _is_expired_timeout_cleanup(payload: dict) -> bool:
+        """True only for the broker's own fully-matched expired cleanup residue.
+
+        The broker rewrites an expired request's ack to "timeout" (RC_EXPIRED)
+        when polled. Request and ack are stored separately, so the ack alone
+        proves nothing: the request must still exist and both records must
+        carry the complete, identical boundary identity — the same
+        ``_round_boundary_identity`` contract the stop path pins (schema,
+        request_id, game, generation, deadline_epoch, deadline_at, and
+        ``operation`` unset, so a player_change request can never pose as a
+        plain cleanup). The residue must also hold nothing else: any resource
+        or control record means a runtime is held or a stop is in progress
+        and readiness must not bypass it (#1969 review; cf.
+        ``_failed_candidate_broker_state``). A still-valid request must not be
+        mislabelled: only the broker's own expired ``deadline_epoch`` is a
+        proven expired cleanup (#2061). A normal old cleanup may carry a
+        generation different from the current spec, so the match is
+        request-to-ack only — a spec-generation match is never substituted.
+        Any mismatched, extra, or malformed shape fails closed.
+        """
+        if not isinstance(payload, dict):
+            return False
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload for key in ("request", "ack", "resource", "control"))):
+            return False
+        request = payload.get("request")
+        ack = payload.get("ack")
+        if payload.get("resource") is not None or payload.get("control") is not None:
+            return False
+        if not isinstance(ack, dict) or str(ack.get("status") or "") != "timeout":
+            return False
+        try:
+            identity = SorenCoordinatorAdapter._round_boundary_identity(request)
+            if SorenCoordinatorAdapter._round_boundary_identity(ack) != identity:
+                return False
+        except AdapterError:
+            return False
+        return _request_deadline_passed(ack)
+
     def _paused_loop_identity(self) -> tuple[int, int] | None:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
         if not (self.root / "tmp/state/soren_loop.paused").exists():
             return None
         return self._singleton_process_identity("soren_loop.sh")
+
+    def _resumed_loop_path(self) -> Path:
+        return self.root / "tmp" / "state" / "soren_loop.resumed"
+
+    def _recover_resumed_loop(self, request_id: str | None = None) -> None:
+        """Recover a paused-loop identity persisted by another adapter instance.
+
+        The real recovery path creates a fresh adapter instance, so an
+        in-memory ``_resumed_loop`` from cleanup is not available there.
+        The identity was persisted (tied to the stop receipt's request_id)
+        during cleanup; accept it only when it matches the current stopped
+        request, preserving the fail-closed contract (issue #2061).
+        """
+        if self._resumed_loop is not None:
+            return
+        if not request_id:
+            return
+        try:
+            raw = self._resumed_loop_path().read_text()
+            data = json.loads(raw)
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        persisted_request = data.get("request_id")
+        if persisted_request != request_id:
+            return
+        identity = data.get("identity")
+        if not isinstance(identity, list) or len(identity) != 2:
+            return
+        if not all(type(x) is int for x in identity):
+            return
+        self._resumed_loop = (identity[0], identity[1])
 
     def _process_matches(self, expected: str) -> list[tuple[float, int, int]] | None:
         matches: list[tuple[float, int, int]] = []
@@ -908,6 +1094,10 @@ class SorenCoordinatorAdapter:
         if matches is None or len(matches) != 1:
             return False
         started_at, pid, ticks = matches[0]
+        # If there's a pause marker for soren_loop.sh, the loop is not considered live.
+        # This catches player_change expiry where the pause marker remains.
+        if expected == "soren_loop.sh" and (self.root / "tmp/state/soren_loop.paused").exists():
+            return False
         if self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at:
             return True
         # An older instance is acceptable only if it is the very loop that was paused

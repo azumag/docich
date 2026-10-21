@@ -38,14 +38,22 @@ driver() {
     sleep 2
     [ -n "$PANE" ] || continue
     text="$(tmux capture-pane -p -t "$PANE" 2>/dev/null)" || continue
+    # Game Over retains the Level/Score HUD without a running match (#2392).
+    in_play=0
+    case "$text" in
+      *"Game Over"*|*"Press any key..."*) ;;
+      *"Level:"*) in_play=1 ;;
+    esac
+    # Accept the final HUD while the match is unrecorded, but never re-seed
+    # max_score from a finished pane after recording it.
     cur="$(printf '%s' "$text" | grep -oE 'Score: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
-    if [ -n "$cur" ]; then
+    if [ -n "$cur" ] && { [ "$in_play" = "1" ] || [ "$seen_game" = "1" ]; }; then
       # Strip leading zeros for POSIX $(( )) (dash has no base#number syntax
       # and treats leading-zero literals as octal, so e.g. 8/9 would fail).
       cur="$(printf '%s' "$cur" | sed 's/^0*//')"
       [ -z "$cur" ] && cur=0
-      if [ "$seen_game" = "1" ] && [ "$cur" -lt "$max_score" ]; then
-        # The score only ever falls when a new match has begun.  Any key the
+      if [ "$in_play" = "1" ] && [ "$seen_game" = "1" ] && [ "$cur" -lt "$max_score" ]; then
+        # A score drop during play means a new match has begun.  Any key the
         # brain had already in flight when "Game Over" appeared restarts the
         # game at once ("... or any other key to play again"), so this driver
         # may never see that screen: flush the finished match here instead.
@@ -59,9 +67,9 @@ driver() {
         max_score="$cur"
       fi
     fi
-    case "$text" in
-      *"Level:"*) seen_game=1 ;;
-    esac
+    if [ "$in_play" = "1" ]; then
+      seen_game=1
+    fi
     case "$text" in
       *"Game Over"*)
         if [ "$seen_game" = "1" ]; then

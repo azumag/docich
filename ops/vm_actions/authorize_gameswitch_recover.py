@@ -57,6 +57,10 @@ def main() -> None:
         fail("invalid workflow SHA")
     if env.get("GITHUB_EVENT_NAME", "") != "workflow_dispatch":
         fail("unsupported event")
+    # The existing owner-only contract requires the explicit production
+    # confirmation on every operation, including this fixed one.
+    if env.get("INPUT_CONFIRM") != "production":
+        fail("production confirmation required")
     if env.get("INPUT_OPERATION", "") != OPERATION:
         fail("unsupported operation")
     phase = env.get("INPUT_PHASE", "")
@@ -80,6 +84,9 @@ def main() -> None:
             out.write("ref=main\n")
             out.write(f"phase={phase}\n")
             out.write(f"cleanup_pending={cleanup_pending}\n")
+            # A single-line JSON decision so every declared output exists and
+            # the workflow can report the authorized declaration verbatim.
+            out.write(f"decision={json.dumps(result, separators=(',', ':'))}\n")
     print(json.dumps(result, separators=(",", ":")))
 
 

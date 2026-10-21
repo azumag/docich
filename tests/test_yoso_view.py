@@ -4,6 +4,8 @@ from __future__ import annotations
 import http.client
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +26,7 @@ from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.yoso_view import (  # noqa: E402
     DEFAULT_PORT,
+    HTML,
     VIEW_NAME,
     YosoViewError,
     board,
@@ -188,6 +191,126 @@ def test_view_serves_broadcast_html_and_a_runtime_bound_projection(served):
 
     status, _ = _get(port, "/nope")
     assert status == 404
+
+
+def test_view_rotates_the_five_independent_boards_in_one_table(served):
+    """#933 (a): 1枚の表を部門ごとに切り替え、5指標をすべて出せること。"""
+    _state, port, _lease = served
+
+    status, html = _get(port, "/broadcast")
+    assert status == 200
+    for label in ("予想的中率", "賭けたポイント数", "得たポイント数",
+                  "失ったポイント数", "賭けた回数"):
+        assert label in html
+    assert "data.boards" in html and "BOARD_SECONDS" in html
+
+    status, raw = _get(port, "/api/yosou")
+    data = json.loads(raw)
+    assert status == 200 and set(data["boards"]) == set(lb.METRICS)
+    # 部門ごとに独立したランキングで、同じ行をそのまま使い回していない。
+    assert data["boards"]["hit_rate"][0]["user_name"] == "Alice"
+
+
+NODE = shutil.which("node")
+VIEW_SCRIPT = HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+
+# The shipped inline script runs in node with DOM/fetch/timer doubles. The 18s
+# board timer and the 2s poll timer are captured, not waited on, so the test can
+# drive the exact sequence the reviewer reproduced on #2435.
+TIMER_HARNESS = r"""
+const out = {};
+let fetches = 0;
+let mode = 'ok';
+const ROW = {rank: 1, user_name: 'Alice', hit_rate: 1, rounds: 3, hits: 3,
+             used: 100, won: 300, lost: 0, refunded: 0, participations: 3, net: 200};
+const DATA = {
+  ok: true, rounds: 3, viewers: 1, min_rounds: 3, min_participations: 1,
+  ranking: [ROW],
+  boards: {hit_rate: [ROW], staked: [ROW], won: [ROW], lost: [ROW], plays: [ROW]},
+};
+globalThis.fetch = async () => {
+  fetches += 1;
+  if (mode === 'fail') throw new Error('network');
+  return {ok: true, json: async () => DATA};
+};
+globalThis.AbortSignal = {timeout: () => null};
+globalThis.addEventListener = () => {};
+globalThis.innerWidth = 960;
+globalThis.innerHeight = 540;
+const timers = [];
+globalThis.setInterval = (fn, ms) => { timers.push({fn, ms}); return timers.length; };
+function el() {
+  return {textContent: '', hidden: false, style: {}, className: '',
+          replaceChildren() {}, append() {}, appendChild() {}};
+}
+const elements = new Map();
+globalThis.document = {
+  getElementById(id) {
+    if (!elements.has(id)) elements.set(id, el());
+    return elements.get(id);
+  },
+  createElement() { return el(); },
+};
+const byId = (id) => document.getElementById(id);
+// showUnavailable(true) sets hidden=false; the pause is visible only then.
+const paused = () => byId('unavailable').hidden === false;
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+const pollTimer = () => timers.find((timer) => timer.ms === 2000);
+const boardTimer = () => timers.find((timer) => timer.ms === 18000);
+(async () => {
+__SCRIPT__
+  await settle();
+  out.after_success = {paused: paused(), fetches, state: byId('state').textContent};
+
+  mode = 'fail';
+  pollTimer().fn();
+  await settle();
+  out.after_failure = {paused: paused(), fetches, state: byId('state').textContent};
+
+  const tag = byId('board-tag').textContent;
+  boardTimer().fn(); boardTimer().fn(); boardTimer().fn();
+  await settle();
+  out.after_switches = {
+    paused: paused(), fetches,
+    tag_changed: byId('board-tag').textContent !== tag,
+  };
+
+  mode = 'ok';
+  pollTimer().fn();
+  await settle();
+  out.after_recovery = {paused: paused(), fetches, state: byId('state').textContent};
+
+  out.timer_ms = timers.map((timer) => timer.ms);
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is required to execute the shipped view script")
+def test_a_board_switch_never_clears_the_unavailable_pause():
+    """#2435 P2: 休止表示は取得成功の render だけで解除する。
+
+    ``draw()`` は18秒の部門切替タイマーからも呼ばれる。成功→失敗のあと部門を
+    切り替えただけで休止が解けると、成功した再取得がないまま古い表が見えてしまう。
+    """
+    completed = subprocess.run(
+        [NODE, "-"], input=TIMER_HARNESS.replace("__SCRIPT__", VIEW_SCRIPT),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    out = json.loads(completed.stdout)
+
+    assert out["timer_ms"] == [18000, 2000]
+    assert out["after_success"] == {
+        "paused": False, "fetches": 1, "state": "確定済みの予想を集計したランキング"}
+    assert out["after_failure"] == {
+        "paused": True, "fetches": 2, "state": "台帳を再確認中"}
+    # 部門切替は表を描き直すが、取得も休止の解除もしない。
+    assert out["after_switches"] == {
+        "paused": True, "fetches": 2, "tag_changed": True}
+    # 成功した再取得だけが休止を解く。
+    assert out["after_recovery"] == {
+        "paused": False, "fetches": 3, "state": "確定済みの予想を集計したランキング"}
 
 
 def test_view_rejects_a_foreign_host_header(served):

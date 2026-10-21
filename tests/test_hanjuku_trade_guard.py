@@ -293,6 +293,35 @@ def test_a_readable_different_prose_screen_releases_the_previous_trade_choice():
     assert 'trade_guard' not in state['policy']
 
 
+@pytest.mark.parametrize('tiles, prose_x', [
+    (((24, 151),), 32),      # the prose lost its leading cell
+    (((88, 151),), 24),      # the prose lost its trailing cell
+])
+def test_a_prose_body_that_lost_an_edge_cell_keeps_the_trade_hold(tiles, prose_x):
+    # The release boundary above is the same one bijin_guard copies, so it has
+    # the same hole: `joined()` strips UNKNOWN from both ends of every row and
+    # `UNKNOWN not in flat` therefore released a partly read page (PR #2325
+    # review, P1). Read the raw cells of the message band instead.
+    import json
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    from docich.hanjuku_font import UNKNOWN
+    from docich.hanjuku_screen import parse
+    _, state = decide_trade(trade_pixels(question=False, hand=False))
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(prose_x, 151, 'おはなしがつづく')
+    for x, y in tiles:
+        canvas.tile(x, y, 0x0123456789ABCDEF)
+    frame = canvas.frame()
+    screen = parse(frame)
+    assert screen.kind == 'text'
+    assert UNKNOWN not in screen.text          # the aggregate hides the gap
+    actions, state = decide_trade(frame, json.loads(json.dumps(state)))
+    assert actions == []
+    assert state['policy']['trade_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
 def test_a_new_monthly_owner_clears_a_previous_trade_hold():
     from docich.hanjuku_screen import parse
     _, state = decide_trade(trade_pixels(hand=False))

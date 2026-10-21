@@ -21,7 +21,7 @@ from . import procs
 from .actions import Action
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
-from .nethack_policy import NethackLayeredPolicy, _has_any, _visible_creature_contact
+from .nethack_policy import MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, SEVERE_RECOVERY_COMMAND, _has_any, _visible_creature_contact
 from .nethack_strategy import (
     StrategicProposal,
     StrategicRequest,
@@ -222,8 +222,8 @@ def _allowed_kinds(intent: str) -> frozenset[str]:
         return frozenset({"inspect", "answer_prompt"})
     if intent == "survival_emergency":
         return frozenset({"rest", "inspect", "consume", "equip", "use"})
-    if intent in {"status_emergency", "food_emergency"}:
-        return frozenset({"inspect", "consume", "equip", "use"})
+    if intent in {"status_emergency", "status_recovery", "food_emergency"}:
+        return frozenset({"inspect", "consume", "equip", "use", "pray"})
     if intent == "stairs_decision":
         return frozenset({"rest", "inspect", "ascend", "descend"})
     if intent in {"assess_contact", "exploration_blocked"}:
@@ -306,6 +306,25 @@ def evaluate_proposal(
                 proposal=proposal,
             )
 
+    if proposal.kind == "pray":
+        if (
+            request.intent not in {"status_emergency", "status_recovery"}
+            or current_observation.prompt not in {"none", "more"}
+            or current_observation.player is None
+            or current_observation.vitals.dungeon_level is None
+            or current_observation.vitals.dungeon_level > MAX_PRAY_DUNGEON_LEVEL
+            or current_observation.vitals.hp is None
+            or current_observation.vitals.hp <= 0
+            or current_observation.vitals.hp_max is None
+            or current_observation.vitals.hp_max <= 0
+            or not _has_any(current_observation, NethackLayeredPolicy._SEVERE_CONDITIONS)
+        ):
+            return ProposalEvaluation(
+                status="rejected",
+                reason="prayer recovery requires a severe status on a complete, non-Gehennom frame",
+                proposal=proposal,
+            )
+
     if proposal.kind != "answer_prompt" and current_observation.prompt not in {"none", "more"}:
         return ProposalEvaluation(
             status="rejected",
@@ -325,6 +344,12 @@ def execution_plan(evaluation: ProposalEvaluation) -> ExecutionPlan:
             allowed=True,
             reason="rest is the explicit one-turn wait command",
             actions=(Action(type="text", text="."),),
+        )
+    if evaluation.proposal.kind == "pray":
+        return ExecutionPlan(
+            allowed=True,
+            reason="prayer is the reviewed recovery command for severe status",
+            actions=(Action(type="text", text=SEVERE_RECOVERY_COMMAND),),
         )
     return ExecutionPlan(
         allowed=False,

@@ -67,10 +67,13 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
+        camp = (x == 24 and y == 39 and any(r.y == 151
+                and r.span(24, 232).replace(' ', '') == 'キャンプしています' for r in screen.lines))
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
+                **({'camp_observed': True} if camp else {}),
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': any(phrase in screen.text for phrase in
+                'location_observed': camp or any(phrase in screen.text for phrase in
                                          ('しろのなかにいます', 'いどうしています'))}
     return None
 
@@ -182,8 +185,14 @@ def _choose(screen, label, *, mem=None):
     return [pad('a')] if move == 'here' else [move] if move else []
 
 
-def _exit(mem, reason, *, limit=None):
+def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
     state = mem['house']
+    # A single diagnostic receipt survives close/finish; it never authorizes input.
+    mem['last_house_deferral'] = {
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'chapter': mem.get('chapter'), 'month': mem.get('month'),
+        'tick': mem.get('tick'), 'code': diagnostic_code,
+        'phase': state.get('phase')}
     if state['phase'].startswith('income_') or state['phase'] in {
             'month_open', 'open_roster', 'roster', 'status', 'roster_next', 'roster_advance', 'leave_roster'}:
         mem['recruit_roster_recheck'] = True
@@ -272,17 +281,33 @@ def _survey_work(mem):
                for c in owned)
 
 
+def observe_hero_repair_status(info, mem, *, in_camp=False):
+    """Remember a validated named reading without changing recall/receipt state."""
+    from ..strategy.economy import _hero_repair_defer_reason
+    from ..os_layer.world import NAME
+    if isinstance(info, dict) and info.get('general') == NAME:
+        if in_camp and info.get('location') == 'field':
+            info = {**info, 'camp_observed': True, 'location_observed': True}
+        mem.setdefault('house_eggs', {})[NAME] = {
+            **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
+            'observed_tick': mem.get('tick'),
+            'observed_run_identity': receipts.run_identity(mem.get('_run_identity'))}
+        _hero_repair_defer_reason(mem)
+
+
 def _observe_status(screen, mem):
     info = general_status(screen)
     if info:
         name = info['general']
         mem.setdefault('house_eggs', {})[name] = {
             **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
-            'observed_tick': mem.get('tick')}
+            'observed_tick': mem.get('tick'),
+            'observed_run_identity': receipts.run_identity(mem.get('_run_identity'))}
         if info['uses'] is not None:
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
         receipts.status_observed(mem, mem['house_eggs'][name])
+        observe_hero_repair_status(info, mem)
         _record(mem, 'egg_seen', observed_metric=info, reason='将軍のステータスで卵の状態を確認')
     return info
 
@@ -385,27 +410,27 @@ def _defer_unsafe_house_route(mem):
                              'target': HOUSE_TARGET.get(mem.get('chapter')),
                              'clearance_view_pixels': HOUSE_ROUTE_CLEARANCE},
             reason=reason)
-    _exit(mem, reason)
+    _exit(mem, reason, diagnostic_code='route_unverified')
     return True
 
 
 def _next_general(mem):
     from ... import hanjuku_chart as chart
     from ..os_layer.world import _owned
-    from ..strategy.economy import WAGE_RESERVE
+    from ..strategy.economy import WAGE_SPEND_HOLD
     state = mem['house']
     pending = state.get('pending') or []
     if not pending:
         _phase(state, 'close')
         return
-    if not affordable_gift(mem.get('gold'), WAGE_RESERVE):
+    if not affordable_gift(mem.get('gold'), WAGE_SPEND_HOLD):
         # Without this record an unaffordable trip closes silently and the
         # owner sees "the general never entered the house" with no evidence
         # (g530 2026-10-01 09:20:30: ゼウス broken, gold≈18-31 < 80).
         _record(mem, 'general_deferred',
                 observed_metric={'gold': mem.get('gold'), 'pending': list(pending),
-                                 'need': min(cost for _, cost in GIFTS) + WAGE_RESERVE},
-                reason='所持金では家の贈り物と賃金予備を賄えないため派遣せず保留（次スキャンで再判定）')
+                                 'need': min(cost for _, cost in GIFTS) + WAGE_SPEND_HOLD},
+                reason='所持金では破損卵の修理費（家の贈り物）を賄えないため派遣せず保留（次スキャンで再判定）')
         _phase(state, 'close')
         return
     name = pending.pop(0)
@@ -437,6 +462,75 @@ def _next_general(mem):
         _phase(state, 'find_castle')
     else:
         _phase(state, 'find_field')
+
+
+def _month_count(screen, mem, state, frame):
+    """Monthly roster count: names from the list and scroll only (Issue #2367).
+
+    The monthly check needs the number of resident generals, not their HP,
+    egg type, remaining uses or location. Every visible name on each fresh
+    page is merged into this scan; no status screen is opened. A page shorter
+    than the native eight rows ends the list on screen, a wrapped cursor proves
+    a full walk and the native scroll-end frame proves the last page. An
+    unproven end leaves ``complete`` false and the existing retry cap applies.
+    """
+    from ..os_layer.commands import pad
+    names = roster(screen)
+    if names is None or screen.selected not in names:
+        return []
+    selected = screen.selected
+    if not state.get('seen'):
+        state['roster_first_general'] = selected if selected == 'どうし' and screen.hand[1] == 33 else None
+        state['singleton_first_page'] = _singleton_page(screen, frame)
+    for name in names:
+        if name not in state.get('seen', []):
+            state.setdefault('seen', []).append(name)
+    if _roster_scroll_end(screen, frame):
+        state['roster_end_observed'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    if (len(state['seen']) >= 2 and state.get('month_moved')
+            and selected == state['seen'][0]):
+        state['roster_wrapped'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    if len(names) < receipts.VISIBLE_NAME_ROWS:
+        state['roster_end_observed'] = True
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    state['selected'] = selected
+    state['month_moved'] = True
+    _phase(state, 'roster_advance')
+    return [pad('down')]
+
+
+def _month_count_advance(screen, mem, state, frame):
+    """Follow a list scroll without opening any general's status screen."""
+    from ..os_layer.commands import pad
+    names = roster(screen)
+    if names is None or screen.selected not in names:
+        state['month_advance_observations'] = 0
+        return []
+    if screen.selected != state.get('selected'):
+        state.pop('month_advance_observations', None)
+        _phase(state, 'roster')
+        return []
+    observations = int(state.get('month_advance_observations') or 0) + 1
+    state['month_advance_observations'] = observations
+    if observations >= 2:
+        # A stalled cursor is not proof of the list end: the native
+        # continuation page g749-11428 shows a full eight-row page whose
+        # Down has not moved yet. Only a wrap, a short page or the native
+        # scroll-end frame proves the end. Leave incomplete otherwise.
+        _record(mem, 'month_roster_end_unproven',
+                observed_metric={'generals': list(state.get('seen') or []),
+                                 'observations': observations,
+                                 'selected': screen.selected,
+                                 'last_visible': names[-1]},
+                reason='月次の一覧でスクロール端の証拠を得られないため、読めた名前だけを残して未完了で終了')
+        _phase(state, 'leave_roster')
+        return [pad('b')]
+    return [pad('down')]
 
 
 def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
@@ -612,6 +706,11 @@ def step(screen, mem, frame):
             return None
         return _exit(mem, '完了確認の月・ラン・名簿が無効になったため部分再確認を中断')
     phase = state['phase']
+    if state.get('month_scan') and phase == 'month_open' and screen.kind == 'main_menu':
+        # The information menu was already open on this frame (no navigation
+        # was needed from the month menu); continue with its しょうぐん row.
+        _phase(state, 'open_roster')
+        phase = 'open_roster'
     # The monthly main-menu survey returns to the same monthly menu, never
     # starts a repair trip, and gives the ordinary spending policy the next
     # observation. Delayed pre-open monthly frames do not start another flow.
@@ -733,6 +832,8 @@ def step(screen, mem, frame):
             return actions
         return []
     if phase == 'roster':
+        if state.get('month_scan'):
+            return _month_count(screen, mem, state, frame)
         names = roster(screen)
         if names is None:
             return []
@@ -785,6 +886,8 @@ def step(screen, mem, frame):
         _phase(state, 'roster_advance')
         return [pad('down')]
     if phase == 'roster_advance':
+        if state.get('month_scan'):
+            return _month_count_advance(screen, mem, state, frame)
         names = roster(screen)
         if names is None:
             state['roster_end_observations'] = 0
@@ -920,7 +1023,7 @@ def _repair_step(screen, mem, frame):
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
     from ..os_layer.world import _owned
-    from ..strategy.economy import WAGE_RESERVE
+    from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
@@ -1033,7 +1136,7 @@ def _repair_step(screen, mem, frame):
             return []
         if not _repair_hp_ready(info):
             return _exit(mem, '派遣確定前に全快HPを確認できないため出撃を取り消す')
-        if not affordable_gift(mem.get('gold'), WAGE_RESERVE):
+        if not affordable_gift(mem.get('gold'), WAGE_SPEND_HOLD):
             return _exit(mem, '派遣前に修理資金が不足したため出撃を取り消す')
         if _defer_unsafe_house_route(mem):
             return []
@@ -1043,7 +1146,8 @@ def _repair_step(screen, mem, frame):
         return actions
     if phase == 'out_target':
         if screen.kind == 'map_target':
-            _phase(state, 'house_view')
+            state.pop('target_observation', None)
+            _phase(state, 'house_view', alignment_unread=0, alignment_moves=0)
             return [pad('y')]
         return []
     if phase == 'house_view':
@@ -1052,9 +1156,37 @@ def _repair_step(screen, mem, frame):
         if screen.kind == 'map_target':
             if _defer_unsafe_house_route(mem):
                 return []
+            from ..os_layer.world import observed_cursor_cell
+            from ..os_layer.navigation import Y_JUMP_OFFSET, MAX_HOLD_FRAMES
+            # A on the Y view only proposes a landing. Measure the current
+            # field marker before committing this unit's movement; the old
+            # integrated cursor / house_view phase cannot authorize that A.
+            position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
+            offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
+            if position is None or offset is None or not screen.marker:
+                reads = state.get('alignment_unread', 0)
+                if type(reads) is not int or not 0 <= reads < 2:
+                    return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                                 diagnostic_code='position_unread')
+                state['alignment_unread'] = reads + 1
+                return []
+            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
+            delta = [target[a] - position[a] for a in (0, 1)]
+            if any(abs(d) > 2 for d in delta):
+                moves = state.get('alignment_moves', 0)
+                if type(moves) is not int or not 0 <= moves < 8:
+                    return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
+                                 diagnostic_code='alignment_limit')
+                state['alignment_moves'] = moves + 1
+                axis = 0 if abs(delta[0]) >= abs(delta[1]) else 1
+                button = ('right' if delta[axis] > 0 else 'left') if axis == 0 else (
+                          'down' if delta[axis] > 0 else 'up')
+                return [pad(button, min(MAX_HOLD_FRAMES, abs(delta[axis])))]
+            state['target_observation'] = {'position': position, 'target': target, 'tick': mem.get('tick')}
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
-                    observed_metric={'view': HOUSE_TARGET[mem['chapter']]},
+                    observed_metric={'view': HOUSE_TARGET[mem['chapter']], 'field_position': position,
+                                     'field_target': target, 'basis': 'current_two_roof_constellation'},
                     reason='卵が壊れた本人をあたしの家へ派遣する入力を確定')
             return [pad('a')]
         return []
@@ -1088,9 +1220,9 @@ def _repair_step(screen, mem, frame):
                     observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold')},
                     reason='家の贈り物一覧と価格を実画面で確認')
             gold = (screen.header or {}).get('gold')
-            gift = affordable_gift(gold, WAGE_RESERVE)
+            gift = affordable_gift(gold, WAGE_SPEND_HOLD)
             if not gift:
-                _record(mem, 'purchase_skipped', reason='到着時の所持金では賃金を残せないため購入しない')
+                _record(mem, 'purchase_skipped', reason='到着時の所持金では破損卵の修理費（実費）を支払えないため購入しない')
                 _phase(state, 'decline')
                 return []
             state['purchase'] = {'item': gift[0], 'cost': gift[1], 'gold_before': gold,
@@ -1105,7 +1237,7 @@ def _repair_step(screen, mem, frame):
             return []
         buy = state['purchase']
         gold = (screen.header or {}).get('gold')
-        if type(gold) is not int or gold < buy['cost'] + WAGE_RESERVE:
+        if type(gold) is not int or gold < buy['cost'] + WAGE_SPEND_HOLD:
             return _exit(mem, '購入直前の所持金を確認できないため購入しない')
         move = menu_to(screen, buy['item'], exact=False)
         if move == 'here':
@@ -1286,6 +1418,9 @@ def _field_step(screen, mem, frame):
             return []
         if info['general'] != name or (not state.get('returning') and not info['broken']):
             return _exit(mem, '本人の卵割れまたは帰還対象を確認できないため操作を中止')
+        field_panel = any(r.y == 31 and r.span(16, 80).strip() == name
+                          and r.span(80, 128) == 'しょうぐん' for r in screen.lines)
+        observe_hero_repair_status(info, mem, in_camp=field_panel)
         if not state.get('returning') and not _repair_hp_ready(info):
             state['returning'] = True
             _record(mem, 'recall_needed', observed_metric={'hp': info.get('hp'), 'max_hp': info.get('max_hp')},

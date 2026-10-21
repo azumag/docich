@@ -31,6 +31,43 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   production の任意コマンド結果を Actions へ公開してはならない。
 - `stream_title_sync` は Soren の owner-only journal 1ファイルだけを読む。最大32KiB、最新行だけを許可schemaで検証し、現在の Soren gitlink SHA と一致し15分以内の記録に限って platform enum / skip reason を表示する。
 
+## ゲスト OS 無応答時は diagnostics を使えない
+
+diagnostics は SSH gateway とゲスト OS 上の collector に依存する。SSH の banner exchange が
+タイムアウトし管理 WebUI も応答しない状態では、この経路は復旧にも原因調査にも使えない。
+その場合は `docs/operations/vm-guest-unresponsive-recovery.md` の帯域外通常再起動
+（オーナー明示承認・通常再起動・公開 A/V 再受入）に従う。
+
+復旧後は diagnostics の固定 field と時刻を Issue へ転記する。Actions の run 履歴は
+失われることがあり、run ID だけでは後から証拠を再取得できない。
+
+## 汎用 PID helper の診断専用契約（#2469 follow-up）
+
+`ops/vm_actions/safe_pid_cleanup.py` は、既存 API 名
+`safe_unlink_pid_file()` / `safe_cleanup_stale_pid_files()` を維持するが、
+PID ファイルを unlink しない。戻り値の success は常に `False`。
+dead/zombie PID と観測しても `cleanup_disabled:no_writer_lock` を返す。
+live PID は `pid_alive`、その他の guard 不成立は従来の理由コードを返す。
+`dry_run=True` も同じ診断であり、`deleted` / `would_delete` は返さない。
+
+writer と共有する排他契約がないため、存在・stat・inode の再確認だけでは
+最終検査から unlink までの置換競合を防げない。診断結果は観測時点の情報であり、
+後から同じパスを削除してよい根拠にしない。実際の cleanup は、writer との協調を
+含む別途レビュー済みの所有 lifecycle に属する。この helper は gateway の
+`diagnostics` collector に組み込まれておらず、soviet_now の専用 cleanup helper とも別実装。
+
+ローカル fixture での CLI 例:
+
+```sh
+python3 ops/vm_actions/safe_pid_cleanup.py /path/to/test-root
+python3 ops/vm_actions/safe_pid_cleanup.py --dry-run /path/to/test-root
+```
+
+root 省略時は `/home/ubuntu/soren`。`--dry-run` は互換引数で、指定の有無・順序によらず
+診断のみ。走査対象は `tmp/state/*.pid` と `tmp/.soren_loop.lock/pid`。
+結果は `SKIP: <path> (<reason>)` と表示する。終了コード 0 は走査の完了を示し、
+cleanup の成功・対象の不存在・すべての読み取りの成功を保証しない。
+
 ## Output 契約
 
 ```json
@@ -77,6 +114,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                                                      "generation_matches_owner": true}, ...},
               "soren_game": {"present": true, "readable": true, "state": "MOVE",
                              "age_sec": 2, "founding_seen": false,
+                             "founding_marker_current": false,
+                             "founding_marker_stale": false,
                              "make_soren_count": 0, "game_count": 12,
                              "score": 117, "pieces_count": 16,
                              "runner_pid": 1234, "runner_alive": true},
@@ -89,9 +128,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
                      "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
-  "runtime_presentation": {"present": true, "readable": true, "active_runtime": true,
-                           "status": "ready", "display": ":1", "window": "2097160",
+  "runtime_presentation": {"present": true, "readable": true, "reason": "ok",
+                           "active_runtime": true, "status": "ready",
+                           "display": ":1", "window": "2097160",
                            "width": 299, "height": 224, "age_sec": 12},
+  "encoder": {"schema_version": 1, "present": true, "readable": true,
+              "source": "twica_common", "state": "running", "ready": true,
+              "frames_sent": 123456, "fps": 29.97, "progress_age_sec": 2,
+              "out_time_sec": 98765, "reason": "ok"},
   "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
             "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
             "served_reachable": true, "served_matches_deployed": true,
@@ -108,6 +152,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `hanjuku_tactical.last_house_deferral` は直近1件の修理処理の保留記録です。
+  同じrun identity・章・月、400tick以内に限り、`age_ticks` と固定コードだけを出します。
+  `position_unread` は現在の屋根配置から位置を確認できず、`alignment_limit` は位置合わせ上限、
+  `route_unverified` は経路の安全性を確認できず保留した判定です。その他の保留は `other`。
+  `phase` は `castle_confirm` / `house_view` / `house_confirm` / `other` です。
+  close後も残る履歴であり、現在もキャンセル中、物理的に危険、または修理成功という証明ではありません。
+  名前・自由文・identityは出力せず、古い世代や月・不正な記録はnull、容量削減時も固定形式だけを維持します。
 - `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
   `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
   総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`
@@ -122,6 +173,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   のcanonical phaseは自動でリセットしない。
 - `runtime_presentation` は **canonical が active とする runtime** の投影状態
   （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
+  `reason` は `present=false` / `readable=false` の理由を固定enumで示す
+  （`ok` / `status_unknown` / `no_active_runtime` / `active_unreadable` /
+  `runtime_id_invalid` / `record_absent` / `record_unreadable`）。
   `status` は `starting` / `ready` / `presentation_failed` / `cleanup_failed` / `stopped` の
   固定enumに限定し、`display` / `window` / `width` / `height` は形式検証済みの値、
   `age_sec` は記録ファイルのmtimeからの経過秒。`groups`（pid）・argv・path・自由文は出さない。
@@ -132,6 +186,31 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
   通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
   `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
+- `corners.soren91_corner` は meriken（soren91）枠のライフサイクルと、その枠を
+  終わらせた切替の結果を出す（#1221）。`status` / `game` / `previous_game` /
+  `completed_at` / `end_reason` は他コーナーと同じ固定射影で、加えて
+  `switch_status`（`queued` / `succeeded` / `failed` / `rolled_back` の固定enum、
+  未知は `null`）と `switch_error_code`（枠が記録した切替エラーコード。
+  `readiness_timeout` 等。64文字上限・redact済み）を返す。`last_error` は
+  200文字上限・redact済みの詳細で、`readiness_timeout` の場合は
+  **原因**（例 `status=viewer_timeout, viewer_wait_sec=240`）を含む。
+  presenter の pane は tmux window ごと消えるため、この記録が失敗理由を
+  後から確認できる唯一の正規経路になる。request ID・runtime identity・
+  自由文の本文は出さない。
+- `corners.tsuitate_corner` は同じ理由で `switch_error_code` を返す（#1992）。
+  衝立将棋の view は世代session（tmux）で動き、その pane は session ごと
+  消えるため、枠自身の state file に保存された `start_failed` /
+  `readiness_timeout` / `rollback_failed` などの切替エラーコードを正規の診断へ
+  投影する。値は
+  **固定の producer 語彙（GameSwitch の `ERROR_*` と ControlError のコード）の
+  allowlist に一致するときだけ**出し、未知・型違いは `null` にする。64文字に
+  収まる任意のトークンはメッセージ・識別子・資格情報を含み得るため、
+  bounded であっても生値は echo しない。soren91 と違い `switch_status` は
+  射影しない。`last_error` は保存済みの文言を200文字上限・redact済みで返すが、
+  起動失敗の根因詳細が含まれるとは限らない。失敗時に固定文だけが保存される
+  経路もあり、切替 receipt とは別の証拠として扱う。他コーナーの `last_error_code` は
+  `recovery_required` 以外を `null` に落とす射影なので、生の切替エラーコードを
+  読むときは `switch_error_code` を使う。
 - `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
   （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
   `volume_percent` / `player` の固定キーのみで、`player` は
@@ -146,13 +225,40 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `unparsable`）。gateway は `XDG_RUNTIME_DIR` を渡さないため、collector は
   `/run/user/<uid>/pulse/native` が socket のときだけそこを明示する。
   固定(owner-only)な mute 解除 operation は本 projection に含めない。
+  `attribution` は同じ stream 集合の固定軸集計で、`by_player`（`bridge-ffplay` /
+  `retroarch` / `browser` / `speech-worker` / `monitor-capture` /
+  `stream-capture` / `other` / `unknown`）と `by_role`（`media.role` の13語彙のうち
+  実在するもの + `unattributed`）を返す。`media.role` は通常設定されないため
+  `by_role` は補助で、所有主体の切り分けは `by_player` で行う。
+  `streams` が出力予算で省略されても `attribution` は残す（`output_omitted=true`）。
+  詳細リストは `PULSE_SINK_INPUTS_MAX`（8件）で打ち切り、`truncated` で示す。
+- `external_video` は receiver の状態と `frame_fresh` に加え、最終フレームの
+  mtime からの経過秒を `frame_age_sec` として返す（0〜604800秒にクランプ、
+  フレームが無い/未来時刻は `null`）。`frame_fresh=false` は「受信していない」を
+  意味し、`frame_age_sec=null` は「フレームが存在しない」を意味する。
+- `encoder` はエンコーダの送信ハートビートを固定射影する。供給元は TwiCa 共通
+  アダプタの `run/twica-common/pipeline.json` と Soren `direct_stream` の
+  `tmp/state/direct_stream/status.json` で、fresh な方を優先する（TwiCa 5秒、
+  direct_stream 15秒）。`state` / `ready` / `frames_sent` / `fps` /
+  `progress_age_sec` / `out_time_sec` のみを返し、`source` は
+  `twica_common` / `direct_stream` / `none`。`reason` は `ok` / `absent` /
+  `stale` / `unreadable` / `invalid_schema`。供給元の記録には配信設定と
+  再接続先チャンネルが含まれるため、**allowlistの数値・enumキーだけを写し、
+  元のdictは保持しない**。URL・キー・チャンネル名・PIDは出さない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
 - `corners.soren_game` は試合状態の固定enum（`MOVE`/`DROP`/`WAITING`/`STOP`/
-  `GAMEOVER`）、state更新からの秒数、建国markerの有無、試合数、score、駒数、
+  `GAMEOVER`）、state更新からの秒数、建国markerの有無と帰属、試合数、score、駒数、
   試合runnerのPID/生存だけを出す。盤面内容、ログ、入力、生成文は出さない。
-  `STOP` が古くても `founding_seen=true` の場合は通常の試合終了と判定しない。
+  markerの帰属は `founding_marker_current` / `founding_marker_stale` で判定する。
+  `founding_seen` は実在のみを表し、前の試合のmarkerでも `true` になる
+  （#2345 では前の試合のmarkerを実在だけで建国中と誤判定し、復旧が約15時間
+  遅れた）。`STOP` が古くても `founding_marker_current=true`（現試合の建国）の
+  場合は通常の試合終了と判定しない。`founding_marker_stale=true` なら通常の
+  試合終了として扱ってよい。`founding_marker_current` / `founding_marker_stale`
+  が `null`（ruleを取得できず帰属が不明）のときは、`founding_seen=true` を
+  建国中の疑いとして従来どおり通常の試合終了と判定しない。
 - `tracked_drift` は deploy を拒否させる `git_clean(root)==false` の内訳を、
   **固定カテゴリとcounterだけ**で帰属する（#412）。`parent_tracked_dirty` /
   `owned_submodule_head_mismatch` / `owned_submodule_tracked_dirty` /
@@ -365,7 +471,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `paper_corner.json` の `degraded` は
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
-  production checkout 内に制約する。
+  production checkout 内に制約する。同 `state_dir` 配下の `scores/<game>.jsonl` は
+  固定6ゲームの末尾 64 KiB だけを読み、件数・連続重複長・直近5件に要約する
+  （`corners.retro_scores`。後述「レトロ枠のスコアログ投影」）。
 - Hanjukuの `retro_corner.bot_version` は固定許可値だけを表示する。従来の v1/v2 に加え、
   `hanjuku-chart-v129-battle-card-progress` / `hanjuku-chart-v130-summer-cursor-evidence` /
   `hanjuku-chart-v131-defense-month-economy` を許可する。
@@ -438,20 +546,35 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
   本projectionは固定の出力予算（36KiB）を超えても保持する。1KiB未満で固定・
   自動利用無く、「進んでいるcornerか同じ操作のループか」だけを区別できる唯一の
-  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後48KiB）に近づく場合
+  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後64KiB）に近づく場合
   のみstatus=output_omittedへ置き換える（`HARD_JSON_BYTES` = 56KiB）。
 - 出力予算とcpu_profile: 固定envelope（`runtime_registry.MAX_JSON_BYTES` = 36KiB）は
-  gatewayの48KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
+  gatewayの64KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
   base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
   予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
   `cpu_profile`の行・Soren91のgroup・`scene_narration`・`hanjuku_tactical`・
-  `pulse_sink_inputs` の順に削る。`decision_plans` はこの soft 予算では削らず、
+  `pulse_sink_inputs`（`streams`のみ。`attribution` は残す）の順に削る。
+  `encoder` はこの予算では削らない。`decision_plans` はこの soft 予算では削らず、
   gatewayのhard上限時のみ削る。残る最大要素が `cpu_profile` なので、
   ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
-  （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
-  `components_omitted`/`spawns_omitted` として残し、既存 `components_truncated` は
-  書き換えない。縮めても収まらない場合の最終形は budget を超えるが、
-  gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
+  （producerはbusiest順に並べるので先頭が重い行）。さらに5行へ縮める
+  floor（`CPU_PROFILE_FLOOR_COMPONENTS`/`CPU_PROFILE_FLOOR_SPAWNS` = 5）を
+  適用する。NetHackの古い履歴を落としても収まらない場合は、
+  **latest NetHack結果より先に** `components`/`spawns` を全削除する
+  （`_cpu_profile_detail_drop`。latest結果は optional な CPU/audio 詳細より
+  後に落とす優先順位）。omitted行数は `components_omitted`/`spawns_omitted`
+  として累積し、既存 `components_truncated` は書き換えない。
+  一方で1行要約はこの予算の全段階で削除対象外です: `cpu_top`（上位3
+  components＋others集計）と `spawn_top`（上位3 spawn経路）。合成fixtureでの
+  値部分は `cpu_top` が通常58B・長ラベル条件217B、`spawn_top` が通常75B・
+  長ラベル条件375B（JSONキー等の増分は別）。これらはpayload全体の本番上限
+  保証ではないため、lists が全削除されても上位消費と spawn 経路は読める
+  （azumag/docich#970）。
+  縮めても収まらない場合、`HARD_JSON_BYTES`（56KiB）を超えたまま返すと gateway が
+  診断操作ごと closed で拒否するため、最後に `corners` を先頭とする
+  `_HARD_DROP_ORDER` の順にセクション単位で `status=output_omitted` へ落とす
+  （#2533）。それでも収まらない場合は残りの top-level セクションを大きい順に
+  落とす（`meta` は残す）。
   profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
@@ -507,6 +630,39 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   **severity には加算しない**（webui は任意コンポーネント）。deploy 済みなのに
   別プロセスがポートを掴んで旧 UI を出し続ける case を `served_matches_deployed=false` +
   `listener_is_unit=false` で検出する（`restart_webui` operation の終了コード14と同じ状態）。
+
+## レトロ枠のスコアログ投影（#2392）
+
+`diagnostics.corners.retro_scores` は、配信のスコア統計パネルの元になる
+`<state_dir>/scores/<game>.jsonl`（1試合終了につき1レコード）の**末尾だけ**を
+固定ゲーム集合（`gnurobots` / `ninvaders` / `nsnake` / `bastet` / `moon-buggy` /
+`pacman4console`）について投影する。試合終了画面が残ったまま wrapper が
+在プレイと誤認し続けると、同じ確定スコアが poll ごとに追記される。この回帰を
+正規の read-only 経路で照合できるようにするのが目的で、public リポジトリでは
+`exec` が使えないため、この投影が唯一の観測点になる。
+
+- ゲーム名は固定タプルからのみ導出し、state・リクエスト由来のパスや basename を使わない。
+- regular file のみ（symlink は `present=false`）。読むのは末尾 64 KiB（行数上限 2000 は
+  極端に短い行への安全弁。実レコードは約 70〜90 バイトのため通常は全行走査）。
+  窓を外れた場合は `truncated=true` とし、欠落を不在として扱わない。
+- 出すのは `present` / `readable` / `records`（窓内の有効レコード数）/
+  `invalid`（解釈できない行数）/ `truncated` / `sources`（`agent` / `live` /
+  `wrapper` と、それ以外をまとめた `other` の件数のみ）/
+  `max_same_score_run`（同一スコアが連続した最長長。重複記録の署名）/
+  `last`（直近5件の `ts` / `score` / `source`）/ `age_sec`。
+- `score` は 0〜10^9 の整数のみ有効。0点の試合も1レコードとして数える。
+  ts 以外の自由文・clip id・hash・path・例外本文・追加フィールドは出さない。
+- `records` と `max_same_score_run` は**走査窓の中の集計**であり、
+  「重複した試合数」そのものではない。
+  `truncated=false`（ログ全体を走査）なら、コーナー実行前後の
+  **`records` の差分**が追記レコード数そのものになる。受入はこの差分で読み、
+  `max_same_score_run` は poll ごとの重複追記の署名として読む。
+  `truncated=true` のとき `records` は下限値にしかならないため差分の基準にせず、
+  `last` と `max_same_score_run` を主に見る。
+- severity には加算しない。HARD_JSON_BYTES を超える場合だけ
+  `{"status": "output_omitted"}` に縮退する（通常は数 KiB 未満）。
+  縮退の判定は直前の `decision_plans` 縮退を再計測した後に行う
+  （同縮退だけで hard ceiling 以下に戻る場合は `retro_scores` を保持する）。
 
 ## Soren91 投下間の read-only 集計
 
@@ -595,6 +751,73 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
   secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
   遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
+- `completed_runs`は予算縮退でrecordsが全て省略されても比較できるよう、
+  scan中に観測した**全ての**有効terminal recordに対する集計`summary`
+  （`terminal_status_counts` / `score_present_count` / `analysis_error_counts`）を
+  常に返す。recordsの省略はこのsummaryに影響しない。terminal recordごとの
+  `analysis_error`は、run producerの固定理由コード（`xlogfile-missing` /
+  `xlogfile-truncated` / `no-new-player-xlog-record`）のみそのまま投影し、
+  未知のproducer値は固定token `other` に集約して出力しない。型も検証し、
+  list/dict 等の非文字列値は frozenset 照合に入らず `other` に集約されるため、
+  1 record の不正値で診断全体が落ちることはない（#2515 review）。
+
+## NetHack xlogfile writer 契約の read-only 投影（#753）
+
+`nethack_xlog` は、terminal facts の正本である xlogfile への書込みが
+生産側（NetHack 3.6.x の `topten()`）で静かに失われる条件を、
+owner-only `diagnostics` の固定 collector から観測する。
+
+NetHack 3.6.x (Linux) の xlog 書込みは `link(xlogfile, xlogfile_lock)` の成功が前提で、
+(1) xlogfile が存在しない場合は ENOENT で書込みを skip し自動作成もしない、
+(2) 残置された `xlogfile_lock` hard link（プロセス死亡時の残骸）がある場合は
+EEXIST リトライ 10 秒後に無言で skip する。どちらも run store 側からは
+`ended_unknown` + `analysis_error` としてしか観測できないため、
+この投影が path/permission 契約の第一次証拠になる。
+
+- 収集元は production の tracked `config/games/nethack.toml` から解決した固定 path
+  （既定は `/var/games/nethack/` 配下）と、その兄弟契約ファイル
+  （`xlogfile` / `xlogfile_lock` / `logfile` / `logfile_lock` / `record`）、
+  親 playground・save_dir・dump_dir のみ。任意 path・環境変数・argv は追わない。
+- 各 path は `lstat`（symlink を追わない）で存在/種別/size/mtime/mode/uid/gid/nlink のみ。
+  不在は `{"exists": false}` だけを返し、null の羅列で予算を消費しない。
+  `xlogfile_lock`・`logfile_lock` には対象との同 inode 判定（dev+ino 一致 boolean）を付け、
+  残置 lock と共有 hard link を区別する。path 名・内容・hash は出力しない。
+- `launchers` は固定 2 path（`/usr/games/nethack` / `/usr/local/bin/nethack`）の
+  lstat・symlink 先（文字種検証済み）・script 先頭 4KiB からの allowlist 変数
+  （`HACKDIR` 等 4 key）のみ。`alternates` は固定 2 path
+  （`/var/lib/nethack/xlogfile` / `/usr/games/lib/nethackdir/xlogfile`）の lstat のみ。
+- `xlog_siblings` は playground の `xlogfile*` 名（字種検証済み、最大8件、名前順）の
+  size/mtime のみ。`binaries` は `dpkg-query -L`（固定2 package）と launcher symlink 先から
+  実体 binary（最大2件）を解決し、8MiB 上限で `xlogfile` という文字列の compile-in 有無を
+  見る（binary 内容は出力しない）。読み取り量は残り byte 数で制限し、needle は
+  256KiB read 境界を跨いでも needle長-1 byte の重なり保持で検出する。
+  `binary_scan_complete=false` は上限打切りや file 短縮で全文走査ではないことを示し、
+  その negative は確定値ではない。
+- `save_dir_entries` は dirfd + `O_NOFOLLOW` で player save file の個数と最新 mtime だけを
+  数える（最大128エントリ、symlink は数えない）。
+- `processes` は `/proc` の `comm` が `nethack` の稼働 process（最大4件）について
+  pid / 実効 uid / 実効 gid / starttime ticks のみ。cmdline・environment・fd は読まない。
+- `packages` は固定2 package 名（`nethack-common` / `nethack-console`）の
+  `dpkg-query -W` 結果（package / version / installed）のみ。失敗時は `available=false`。
+- `sysconf` は `/etc/nethack/sysconf` から `xlogfile` / `logfile` / `dumplogfile` の
+  3 key だけを case-insensitive に読み、安全な文字種の value のみ投影する
+  （それ以外は `configured` に key 名だけ残し value は `null`）。
+  他の key・コメント・行数は出力しない。
+- `xlog` は xlogfile の末尾最大64KiBを読み、**完全行のみ**から
+  完全行数・先頭切詰め有無・最終/先頭 record の数値 field（starttime / endtime / points /
+  turns / maxlvl / achieve）と `name_matches_player` boolean だけを導出する。
+  先頭切詰め時は window 先頭の行途中断片を完全行として数えず、最初の改行以降だけを
+  対象化する（改行が無ければ完全行 0）。読めない xlogfile は `{"readable": false}` のみ。
+  `record_span`（最古 record の `starttime` / 最新 record の `endtime` / 完全行数）は
+  #753 の timeline 証拠であり、soft budget の縮退でも落とさない。
+  death 文字列・player 名・生の行内容は出力しない。
+- `findings` は導出 boolean（`xlog_lock_present` / `xlog_lock_shares_inode` /
+  `xlog_file_shared_hardlink`）のみ。原因の確定は人間の判断であり、
+  collector は修復・削除・権限変更を一切行わない。
+- 予算縮退では、stat 系の lock/permission 証拠と `record_span` が最後まで残る。省略対象は
+  tail の先頭/最終 record 詳細・binaries・siblings・processes・sysconf values の
+  各 optional detail（`*_omitted` marker 付き）だけで、それらは他の optional detail と
+  同じ段階で先に落ちる。セクション全体の collapse は hard ceiling の最終手段のみ。
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
@@ -649,7 +872,41 @@ journal最大32KiBは維持する。存在だけではIDの正当性や認証・
 `event=started` のままならhelper開始後に結果行が残らなかった状態。
 `event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
 視聴者に見える実表示は保証しない。Twitchのtitle/categoryはこのjournalへ保存しない。
-統合ログ `stream-game.log` / `stream_title_day.log` の読取り・出力もしない。
+この journal 投影自体は統合ログを読まない。次節の固定ログ観測は別の証拠として扱う。
+
+## タイトル更新の停止段階の read-only 観測（#789）
+
+`stream_title_attempts` は、既存の固定3ログ（Soren の
+`tmp/logs/stream_game.log` / `tmp/logs/stream_title_day.log` と、既存 docich
+state directory の `logs/stream-game.log`）の末尾だけを読む。環境変数による
+ログパス変更は追跡しない。設定済みrootの祖先を含めた全segmentをnofollowで開き、
+root以下の同一owner・他者書込不可、regular file・単一link、読取前後と再openの
+inode/metadata一致を要求する。1source最大32KiB・256行・末尾1行4KiB。
+`read_rejection` は既存の拒否を弱めず、root/子directoryのowner不一致・他者書込、
+fileの非regular・owner不一致・複数link・他者書込、root形式不正だけを固定enumで分離する。
+UID・path・例外本文は出さない。OSのopen失敗等は `unknown` のまま、読取guardを
+通過した場合は `none` とする。複数条件が不適合なら最初の拒否だけであり、全属性の証明や
+更新停止原因の診断ではない。`day_script` も同じ拒否理由だけを返し、既存statusは変えない。
+内容・URL・login・ID・path・HTTP bodyは返さず、公開producerの既知literalから
+固定の `observed_outcome` / `observed_reason` だけを生成する。最後の行が未知、
+途中書込、過大、不正UTF-8なら古い失敗を探し直さない。時刻が逆行した尾部も
+`ambiguous_order` としてunknownへ戻す。後続成功は旧失敗を上書きする。
+
+`record_status=fresh/stale` と `age_sec` はproducerのoffset無し時刻をhost localと
+仮定した値であり、`time_basis=host_local_unverified` を必ず付ける。staleでも
+最後に観測された既知理由は保持するが、現在の原因とはしない。journalのinvokedと
+120秒以内でも `journal_relation=time_window_only` に留め、同一runの証明にしない。
+`current_failure` は常に `unknown`。`credential_validation_failed` はproducerの
+client ID解決失敗文言の観測であり、token失効・ネットワーク失敗等を区別しない。
+ログのmtime、ファイル一致、古いresultだけで現在の原因や更新成功を断定しない。
+
+`day_script` は日次scriptの実modeとowner実行bitを観測するだけで、起動の証明では
+ない。`day_units` はsystem/user両scopeの既存 `soren-title-day.service` / `.timer` に
+固定propertyのread-only `systemctl show` を計4回（各timeout 1秒）実行し、許可enumと
+通常終了時のexit statusだけを返す。`Result` / `ExecMainStatus` は最後の実行の値で
+あり `result_freshness=unknown`。当日のtickと結び付けない。unitの追加・enable・restart、
+updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
+既存journal契約は変更しない。未知・読取不能はunknownとして残す。
 
 ## 出さないもの
 
@@ -708,6 +965,27 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 
+### 解決器の限界（実測）
+
+参照を pin しない代わりに解決器へ依存するときは、次の限界を前提にする。
+
+- **探索範囲は run の発生量に依存する。** `--scan`（既定 30）は完了した
+  `workflow_dispatch` run を新しい順に調べるため、30 件が遡る範囲は実測で
+  約 5 時間分だった（2026-10-16 の 12 時間で `vm-operations.yml` は 68 run）。
+  それより古い diagnostics run を探すときは `--scan` を明示的に増やすか、
+  対象の `databaseId` を直接使う。
+- **`--dump-json` の出力は JSON として再パースできない場合がある。** secret
+  masking は数値や日付の途中にも `***` を入れるためで、実測した 1 回の出力に
+  35 箇所あった（`"at":1792176165.***7505`、`"ends_at":"2026-10-16T***:14:58"` 等）。
+  `***` を保持したまま必要な固定 field を抜き出す消費側を前提にする。この性質は
+  回帰テストが固定する既知契約で、パース失敗は不具合ではない。
+- **最後の diagnostics run が古いと log の保持期限で解決できないことがある。**
+  artifact/log retention は 1 日（`actions/permissions/artifact-and-log-retention`
+  の実測値）で、log を読めない候補は解決器が skip する。実測では 1.6 日前の run は
+  取得でき、15 日前の run は HTTP 410 だった。長期間 diagnostics run が無いと
+  「run は存在するのに正規参照を解決できない」状態になりうる。run の消滅（#1881）
+  と合わせ、古い参照を保存して使い回さない。
+
 owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.yml`、
 `.github/workflows/hanjuku-evidence-query.yml`、
 `.github/workflows/hanjuku-evidence-export.yml`）はそれぞれ専用の concurrency group
@@ -715,9 +993,17 @@ owner起動の evidence workflow（`.github/workflows/soren91-evidence-export.ym
 `hanjuku-evidence-export-<repo>`）を持ち、scheduled `vm-storage-monitor` と同一 group
 を共有しない。#1922 のとおり、開始しない queued run が shared group を占有して
 以降の owner 起動要求をすべて cancel させ、証跡を取得できなくなるからである。
-monitor 側は引き続き `vm-storage-monitor-<repo>` を維持し、VM 操作の直列化は
+monitor 側は `vm-storage-monitor-v2-<repo>` を持つ。VM 操作の直列化は
 gateway の固定 `vm-operations.lock` が担うため、group は二重の防御であり、失敗時に
 owner の read-only 証跡取得まで止める必要はない。
+
+旧名 `vm-storage-monitor-<repo>` は 2026-10-15 まで owner 起動 evidence workflow と
+共有していた group で、その間に開始しない queued run が占有した状態が残り、evidence
+側が専用 group へ移った後も monitor だけが同じ group へ到着し続けた。結果として
+scheduled monitor の run は 2026-10-02 以降 job を作らない `pending` / `cancelled`
+のまま停止した（#2376）。group 名は 2026-10-17 に `vm-storage-monitor-v2-<repo>` へ
+更新し、wedge した group 状態から離脱した。production control lane を
+`vm-operations-v2-<repo>` へ移した #1875 と同じ処置である。旧名は再利用しない。
 
 `.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
 diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
@@ -817,3 +1103,53 @@ boolean / 有界整数だけで示す。出すのは `retry_delay_seconds`（0�
 記録の本文・視聴者名は出力しない。これは検証ロジックの再実装ではなく、
 決定的な記録の所在を示す有界な分類であり、修正の要否は実測と
 `docs/features/yosou-oh-corner.md` の記録契約に従って判断する。
+
+### 半熟英雄の予想 tick の連続失敗（#2216）
+
+`hanjuku_predictions` に `health` を足す（`hanjuku_predictions_health.json` が在る場合だけ）。
+ledger 自体を `_load` が拒否すると tick は ledger を書き換えられないため、連続失敗は
+別の有界記録に残す。出すのは `present` / `readable` と、`consecutive_errors`
+（0〜1000000。error mode の tick で +1、error 以外の tick で 0）、
+`last_error`（`error` と同じ固定語彙、無ければ null）、`last_ok_at`
+（最後に error 以外で tick が完了した時刻、無ければ null）だけ。
+health の読み書き失敗は予想の結果・ledger・API 呼び出しを変えない。
+health 記録は regular file・symlink拒否・16KiB上限で読み、記録の本文や
+任意文字列は投影しない。
+
+### 共有PIDの保存済み診断比較（#2444）
+
+対象はSorenの固定 `tmp/state/direct_stream/status.json` の `pid` / `ffmpeg_pid` と
+`tmp/state/audio_worker.pid` です。全process走査やargv部分一致は行いません。
+所有者・生存start ticks・実行ファイル・固定script・親PIDを確認します。
+通常のencoderはdirect-stream runnerの子であるnative FFmpegを記録します。
+共通encoder経由では `ffmpeg_pid` はadapterなので、固定
+`run/twica-common/pipeline.json` のschema・adapter PID・boot/start ticks・ready・
+3秒未満のmonotonic heartbeatを照合し、runner → adapter → guardian → native FFmpeg
+の親子関係を確認します。`encoder` は実際のnative PID、`shared_stream` はrunnerと
+存在するadapter/guardianを含みます。argvやpathは診断結果に出しません。
+source・heartbeatで指すencoder・各processの同一性を再確認します。
+boot UUIDも取得前後で一致を要求します。読み取り失敗・停止・PID再利用・symlink・
+取得中の切替はpartialです。PulseAudio daemonだけの存続をaudio worker維持と扱いません。
+
+`ops/local/compare_shared_runtime_pids.py` はproductionへ接続せず、正規diagnosticsで
+保存したbefore/after JSONだけを比較します。`shared_runtime_pids` のschema 2、同じboot UUID、
+必須3役割の非空集合、PIDとstart ticks（ある場合はstarted_atも）の一致が必要です。
+役割や配列の順序には依存しません。欠落・旧schema・部分取得・不正な数値・重複PID・
+count/entries/pidsの不整合は、両側が同じでも成功になりません。
+
+1. 個別に実行権限を確認したadopt/recoverの直前に正規VM operationsのread-only
+   `diagnostics` を取得し、sanitized JSONを `before.json` に保存します。
+2. 対象と権限を確認した既存operatorでadopt/recoverを実行します。この比較CLIは
+   operatorの実行や実failed窓の作成、restart/kill/cleanupを行いません。
+3. 直後の同じ正規diagnosticsを `after.json` に保存し、次を実行します。
+
+```sh
+python3 ops/local/compare_shared_runtime_pids.py --before before.json --after after.json
+```
+
+両ファイルは診断全体、`status=diagnosed` のgateway envelope、または対象sectionを渡せます。
+1 MiB上限で読み、結果は固定reason・不一致役割・matchだけです。exit 0だけが一致、
+非0は受入不成立です。元run/attempt/SHAとbefore/after、固定結果を関連付けて保存してください。
+ActionsのmaskでJSONやPIDが欠落した場合も、不明値を補って成功扱いしないでください。
+PID一致だけで公開映像・音声・ユーザー休止維持を証明したことにはせず、それぞれの
+受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。

@@ -21,6 +21,7 @@ from . import (
     procs,
     speech,
     tts,
+    vrchat_osc,
 )
 
 from .comment import pipeline as comment_pipeline  # noqa: E402
@@ -85,6 +86,7 @@ USER_ERRORS = (
     trading_cli.TradingCliError,
     paper_ai_canary.PaperAiCanaryError,
     tts.TtsError,
+    vrchat_osc.VrOscError,
 )
 
 
@@ -352,6 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trading_cli.configure_parser(p_trading)
 
+    p_vr = sub.add_parser(
+        "vr-osc", help="VRChat アバターと OSC で双方向連携する (VR同志)"
+    )
+    vrchat_osc.configure_parser(p_vr)
+
     p_webui = sub.add_parser("webui", help="モデルチェーン / バックオフ管理 Web UI を起動する (Tailscale経由)")
     p_webui.add_argument("--bind", metavar="ADDR", help="バインドアドレス (既定 127.0.0.1)")
     p_webui.add_argument("--port", type=int, metavar="PORT", help="ポート (既定 8787)")
@@ -448,6 +455,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return model_output_guard.main()
     if command == "trading":
         return trading_cli.run_args(args, repo_root=_repo_root(), global_config=g)
+    if command == "vr-osc":
+        return vrchat_osc.run_args(args, repo_root=g.repo_root, state_dir=g.state_dir)
     if command == "webui":
         from .webui import run_webui
 

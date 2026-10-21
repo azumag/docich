@@ -41,12 +41,15 @@ from pathlib import Path
 from .. import procs
 from .. import soren91_renderer as renderer_hosts
 from ..game_switch import (
+    CanonicalStateStore,
     DeadlineExceededError,
+    RUNTIME_IDENTITY_KEYS,
     ReadinessTimeoutError,
     RuntimeSpec,
+    StateCorruptError,
 )
 from .base import AdapterError
-from .cli_game import CliCoordinatorAdapter
+from .cli_game import PRESENTATION_FAILURE_FILE, CliCoordinatorAdapter
 
 DEFAULT_AGENT_BASE_URL_ENV = "SOREN91_MACOS_AGENT_BASE_URL"
 DEFAULT_AGENT_TOKEN_ENV = "SOREN91_LOCAL_AGENT_TOKEN"
@@ -413,6 +416,15 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             "-i", self.listener_srt_url(),
         ]
 
+    def _presentation_failure_path(self) -> Path:
+        """The SRT viewer may never appear (no first frame from the renderer).
+
+        This adapter is the one whose game window depends on a remote viewer,
+        so it records the presenter's own reason; without it a vanished game
+        window is indistinguishable from a materialize failure (docich#1221).
+        """
+        return self.spec.runtime_dir / PRESENTATION_FAILURE_FILE
+
     def _xterm_command(self) -> list[str]:
         inner = self._viewer_command_inner()
         d = self.g.display
@@ -426,6 +438,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 # arrives (Chrome boot + game load take a minute or more), so
                 # the presenter gets a longer viewer budget than local games.
                 "--viewer-wait-sec", str(self.viewer_wait_sec),
+                "--failure-state", str(self._presentation_failure_path()),
                 *(["--sdl-software-render"] if self.sdl_software_render else []),
                 *(["--audio-sink", self.audio_sink] if self.audio_sink else []),
                 "--", *inner,
@@ -823,17 +836,25 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             if time.monotonic() >= grace_until or time.monotonic() >= deadline:
                 raise AdapterError("SRT port が解放されませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
-        # Always restore the main game's Twitch category/title when a soren91
-        # corner ends. The old `_twitch_synced` guard cannot work here: the
-        # coordinator drives materialize (start) and cleanup through different
-        # adapter instances, and the manual cross-process `stop` does too, so
-        # the in-memory flag set at start is gone by cleanup and the title was
-        # left at [Soren91] after every corner (observed in production). The
-        # restore is idempotent (a no-op when already [Soren]) and the main
-        # game is always `restore_twitch_game` after a soren91 corner.
+        # A standalone stop/idle returns to the external base game, including
+        # through a fresh adapter. But the coordinator also retries retiring
+        # cleanup AFTER committing another runtime and its metadata hook.
+        # That active identity owns the title/category, even for a new lease
+        # or generation of soren91 itself. Read under the caller's switch lock;
+        # do not reacquire it from this adapter worker thread.
         if self.restore_twitch_game:
-            self._sync_twitch(self.restore_twitch_game)
-            self._twitch_synced = False
+            try:
+                state, _ = CanonicalStateStore(self.g.state_dir).load()
+            except StateCorruptError:
+                # Metadata is best-effort: unknown ownership must neither
+                # overwrite the stream nor undo the resource teardown above.
+                return
+            active = state.get("active")
+            if active is None or all(
+                active[key] == getattr(self.spec, key) for key in RUNTIME_IDENTITY_KEYS
+            ):
+                self._sync_twitch(self.restore_twitch_game)
+                self._twitch_synced = False
 
     def _clear_stale_bot_stop(self) -> None:
         """Remove a stale bot stop flag from the isolated bot cwd.

@@ -24,7 +24,8 @@ from .nethack_exploration import (
 )
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
-    NethackLayeredPolicy, PolicyDecision, STEP_OUT_INTENTS, _has_any,
+    MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, PRAY_RECOVERY_STEPS, PolicyDecision,
+    SEVERE_RECOVERY_COMMAND, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
@@ -170,6 +171,17 @@ def assert_production_safe(
         # Any complete frame may spend one wait turn (owner decision
         # 2026-09-23); turn_ready is what keeps `.` from answering a prompt.
         allowed = turn_ready(obs) and key == "."
+    elif intent == "status_recovery":
+        # Reviewed prayer recovery (#759): exactly one `#` on a complete frame
+        # with a visible severe status and a non-Gehennom dungeon level.  An
+        # adjacent creature deliberately does not change the treatment.
+        level = obs.vitals.dungeon_level
+        allowed = (
+            key == SEVERE_RECOVERY_COMMAND
+            and turn_ready(obs)
+            and level is not None
+            and level <= MAX_PRAY_DUNGEON_LEVEL
+        )
     elif intent == "open_door_start":
         allowed = key == "o" and _next_unattempted_door(obs, attempted_doors) is not None
     elif intent == "open_door_direction":
@@ -202,6 +214,9 @@ class NethackProgressResolver:
         self._door_result_pending: _DoorTarget | None = None
         self._door_result_raw_text: str | None = None
         self._door_result_unchanged_captures = 0
+        self._pray_step: int | None = None
+        self._pray_expected: str | None = None
+        self._pray_spent = False
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
         target = self._pending_door
@@ -237,6 +252,13 @@ class NethackProgressResolver:
         self._door_result_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
+        if turn_ready(obs) and not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+            # Only a *complete* severe-free frame is reviewed evidence that the
+            # prayer episode ended (cured or otherwise resolved).  A frame
+            # whose status block is missing (a pager, a partial capture) also
+            # shows no condition; treating that as improvement would re-arm the
+            # budget and let the same status be prayed for again.
+            self._pray_spent = False
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
         if self._pending_door is not None and obs.prompt == "none":
@@ -294,6 +316,12 @@ class NethackProgressResolver:
             self._failed.clear()
             self._scene = scene
             self._pending = None
+            # Keep the prayer continuation (``_pray_step`` / ``_pray_expected``)
+            # and ``_pray_spent``: an unrelated map change (a distant cell, a
+            # rejected fresh capture) must not abandon a half-typed extended
+            # command or re-arm the one-prayer budget.  The step is dropped
+            # only when its expected prompt is gone (checked in ``_resolve``),
+            # and the budget only by a complete severe-free frame.
             return
         if self._pending is None:
             return
@@ -323,6 +351,24 @@ class NethackProgressResolver:
     def assert_action_safe(
         self, decision: PolicyDecision, obs: NethackObservation, explorer
     ) -> None:
+        if decision.intent == "status_recovery":
+            if len(decision.actions) != 1 or decision.actions[0].type != "text":
+                raise RuntimeError("production action must be one literal text key")
+            key = decision.actions[0].text
+            if self._pray_expected is not None:
+                if key != self._pray_expected:
+                    raise RuntimeError("reviewed prayer continuation key is unexpected")
+                return
+            level = obs.vitals.dungeon_level
+            if (
+                key != SEVERE_RECOVERY_COMMAND
+                or not turn_ready(obs)
+                or level is None
+                or level > MAX_PRAY_DUNGEON_LEVEL
+                or not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS)
+            ):
+                raise RuntimeError("production action violates its observed context")
+            return
         assert_production_safe(
             decision,
             obs,
@@ -357,6 +403,21 @@ class NethackProgressResolver:
                 self._clear_pending_door()
                 return
             key = decision.actions[0].text
+            if decision.intent == "status_recovery":
+                if key == SEVERE_RECOVERY_COMMAND and self._pray_expected is None:
+                    # The extended command has started; the reviewed word and
+                    # the paranoid_confirmation answer follow one key per
+                    # frame.  Spend the single-per-episode prayer budget now.
+                    self._pray_step = 0
+                    self._pray_spent = True
+                elif self._pray_expected is not None and key == self._pray_expected:
+                    # Transport acked: consume the key we peeked in ``_resolve``.
+                    self._pray_expected = None
+                    if self._pray_step is not None:
+                        self._pray_step += 1
+                        if self._pray_step >= len(PRAY_RECOVERY_STEPS):
+                            self._pray_step = None
+                return
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
                 self._answered_prompt = obs.raw_text
             elif key in MOVE_KEYS:
@@ -373,6 +434,27 @@ class NethackProgressResolver:
         return PolicyDecision("strategic", "progress_blocked", reason, requires_llm=True)
 
     def _resolve(self, decision: PolicyDecision, obs: NethackObservation, explorer) -> PolicyDecision:
+        # A reviewed prayer command spans several single-character inputs
+        # ('#' then the word `pray` + Enter, then the paranoid_confirmation
+        # answer).  While it is in progress, finish it before considering a new
+        # policy decision so the game never receives a half-typed command.
+        if self._pray_step is not None:
+            if self._pray_step >= len(PRAY_RECOVERY_STEPS):
+                self._pray_step = None
+                self._pray_expected = None
+            else:
+                key, predicate = PRAY_RECOVERY_STEPS[self._pray_step]
+                if predicate(obs):
+                    # Peek only: the key is consumed once the send is acked
+                    # (``sent``).  A rejected/discarded plan keeps it so the
+                    # next replanning re-sends the same key instead of skipping.
+                    self._pray_expected = key
+                    return self._action("status_recovery", "continue the reviewed prayer recovery", key)
+                # The prompt this key expected is gone or changed: abandon the
+                # half-typed command and fail closed rather than inventing
+                # further keystrokes.
+                self._pray_step = None
+                self._pray_expected = None
         decline = decline_prompt(obs)
         if decline == "decline_attack":
             decision = self._action(decline, "decline an observed attack confirmation", "n")
@@ -381,6 +463,8 @@ class NethackProgressResolver:
             and self._answered_prompt == obs.raw_text
         ):
             return self._hold("prompt already answered; waiting for a new frame")
+        if decision.intent == "status_recovery" and self._pray_spent:
+            return self._hold("prayer recovery already spent for this severe episode")
         if self._pending_door is not None:
             if obs.prompt == "direction":
                 if _door_target_matches(obs, self._pending_door):

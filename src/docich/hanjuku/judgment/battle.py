@@ -667,6 +667,31 @@ SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミ�
 SURVIVAL_RANK = {card: index for index, card in enumerate(SURVIVAL_CARDS)}
 
 
+def _egg_max_hp(cur):
+    """(enemy max HP, ally max HP, exclusion reason) for this battle (#2364).
+
+    The fixed char.csv HP is the max HP; the battle panel's current HP is not
+    used. The hero uses the remembered full-strength ``ref_ally_hp`` when it
+    exists. A boss/normal-general boundary or an unknown general returns a
+    reason and no arithmetic, so the display can say 対象外/判定不能 instead of
+    filling a missing max HP with the current HP or 0.
+    """
+    enemy = cur.get('enemy')
+    if isinstance(enemy, str) and (enemy in reference.BOSS_GENERALS
+                                   or enemy in chart.BOSSES.values()):
+        return None, None, 'boss'
+    ally_max = cur.get('ref_ally_hp')
+    if type(ally_max) is not int or ally_max <= 0:
+        ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
+        ally_max = general_max_hp(ally_name)
+    enemy_max = general_max_hp(enemy)
+    if type(enemy_max) is not int or enemy_max <= 0:
+        return None, ally_max, 'enemy_unknown'
+    if type(ally_max) is not int or ally_max <= 0:
+        return enemy_max, None, 'ally_unknown'
+    return enemy_max, ally_max, None
+
+
 def _egg_drop_evidence(cur, card):
     """This battle's 卵落 fit for ``card``, or None when max HP is unknown.
 
@@ -676,13 +701,7 @@ def _egg_drop_evidence(cur, card):
     ``ref_ally_hp``) and fails closed to the fixed priority when the general
     is unknown.
     """
-    if cur.get('enemy') in reference.BOSS_GENERALS:
-        return None  # normal-general egg-drop arithmetic is not boss evidence
-    ally_max = cur.get('ref_ally_hp')
-    if type(ally_max) is not int or ally_max <= 0:
-        ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
-        ally_max = general_max_hp(ally_name)
-    enemy_max = general_max_hp(cur.get('enemy'))
+    enemy_max, ally_max, _ = _egg_max_hp(cur)
     value = reference.egg_drop_value(card)
     if value is None or any(type(n) is not int or n <= 0 for n in (enemy_max, ally_max)):
         return None
@@ -713,6 +732,54 @@ def _carried_kit(mem, cur):
     return None if order is None else _deploy_cards(order, mem)
 
 
+def _egg_inventory(mem, cur, kit):
+    """Bounded display/decision rows for the observed cards (#2364).
+
+    ``card_stock`` is the observed inventory, ``kit`` the cards this sortie
+    actually carried. A card in stock but not in the kit is *not* usable in
+    this battle, while an unobserved stock entry stays null instead of 0.
+    Duplicate carried cards are counted, and a card already used/selected is
+    not offered again. One shared row feeds both the card and the tactic.
+    """
+    stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+    # 1回の使用は選択時 (cards_selected) と結果確定時 (cards_used /
+    # cards_unclassified) の両方に載るため、札ごとに多い方の件数を使う。
+    selected = cur.get('cards_selected') or []
+    settled = [*(cur.get('cards_used') or []), *(cur.get('cards_unclassified') or [])]
+    sortie_spent = (mem.get('kit_spent') or {}).get(cur.get('step')) or []
+    ordered = []
+    for name in [*(kit or []), *sorted(stock, key=lambda n: (CARD_IDS.get(n, 99), str(n)))]:
+        if isinstance(name, str) and name and name not in ordered:
+            ordered.append(name[:24])
+    rows = []
+    for name in ordered[:40]:
+        carried = (kit or []).count(name)
+        count = stock.get(name)
+        count = count if type(count) is int and 0 <= count <= 99 else None
+        if carried <= 0 and count == 0:
+            continue                      # known absent, not an owned card
+        # _deploy_cards already removed settled sortie uses. Only this
+        # battle's overlapping settled entries may be credited: a prior
+        # battle's use must not cancel a new pending selection.
+        credited = min(settled.count(name), sortie_spent.count(name))
+        spent = max(selected.count(name), settled.count(name)) - credited
+        if kit is None:
+            available, unavailable = None, 'kit_unknown'
+        elif carried <= 0:
+            available, unavailable = 0, 'not_carried'
+        elif carried > spent:
+            available, unavailable = carried - spent, None
+        else:
+            available, unavailable = 0, 'used'
+        prediction = reference.card_drop_prediction(name, None)
+        rows.append({'name': name, 'id': prediction['id'],
+                     'egg_drop': prediction['egg_drop'], 'drops': None,
+                     'stock': count, 'carried': carried,
+                     'available': available, 'usable': (available or 0) > 0,
+                     'unavailable': unavailable})
+    return rows
+
+
 def _egg_plan(mem, cur):
     """将軍の最大HPと携行切り札の卵落を組み合わせた、この戦闘の卵ディニアル計画。
 
@@ -721,6 +788,11 @@ def _egg_plan(mem, cur):
     gcgx: 携行札のID合計が48以上だと敵が先に卵を使い、「卵落 > 敵・味方将軍の
     最大HP合計 mod 16」で命中した札は敵の卵を落として以後の召喚を封じる。
     将軍名・最大HP・携行が判明しない項目は fail-closed で None のまま残す。
+
+    #2364: 右ステータス表示と開幕戦術が同じ計算を参照するよう、両将軍の
+    最大HP・余り・札ごとの予測・卵の状態も同じ plan に残す。チャートが指す
+    札も「卵を落とせる携行札」としては除外しない (HPゲートや after_clash の
+    札を開幕の卵落へ回すかは flows.battle の優先順位で決める)。
     """
     enemy = cur.get('enemy')
     side = cur.get('side')
@@ -728,43 +800,114 @@ def _egg_plan(mem, cur):
     triggers = enemy_egg_triggers(enemy, player_castle_defense=defense)
     kit = _carried_kit(mem, cur)
     ids = None if kit is None else [CARD_IDS.get(card) for card in kit]
-    plan = {'threat': _egg_threat(triggers), 'has_egg': triggers.has_egg,
+    enemy_max, ally_max, excluded = _egg_max_hp(cur)
+    total = (enemy_max + ally_max
+             if type(enemy_max) is int and type(ally_max) is int else None)
+    # 敵卵の状態: 静的な保有能力と、この戦闘で観測した使用/落下推定を分ける。
+    # どちらも「実際に落とした」確定証跡ではない (既存の egg_drop_watch と同じ)。
+    if triggers.has_egg is False:
+        egg_state = 'none'
+    elif triggers.has_egg is None:
+        egg_state = 'unknown'
+    elif cur.get('enemy_egg_drop_expected') is True:
+        egg_state = 'dropped_unconfirmed'
+    elif cur.get('egg_battle') or cur.get('card_summon_observed'):
+        egg_state = 'used'
+    else:
+        egg_state = 'available'
+    plan = {'enemy': enemy, 'ally': cur.get('ally'),
+            'threat': _egg_threat(triggers), 'has_egg': triggers.has_egg,
+            'egg_state': egg_state,
             'kit_known': kit is not None, 'carried': list(kit or []),
             'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
             'deny_opening_egg': None,
-            'max_hp_sum': None, 'threshold': None, 'droppers': [], 'dropper': None,
-            'egg_drop': None, 'triggers': asdict(triggers)}
-    if kit is None:
-        return plan
+            'enemy_max_hp': enemy_max, 'ally_max_hp': ally_max,
+            'max_hp_sum': total,
+            'remainder': total % reference.EGG_DROP_MOD if total is not None else None,
+            'threshold': reference.egg_drop_threshold(total) if total is not None else None,
+            'cards': [], 'droppers': [], 'dropper': None, 'charted': [],
+            'excluded': excluded,
+            'egg_drop': None, 'sortie_dropper': None, 'triggers': asdict(triggers),
+            'enemy_profile': reference.general_profile(enemy if isinstance(enemy, str) else None),
+            'ally_profile': reference.general_profile(
+                'しゅじんこう' if cur.get('ally') == NAME else
+                (cur.get('ally') if isinstance(cur.get('ally'), str) else None))}
+    # The display validates profile identity against the live battle name.
+    # Hero stats use the canonical table row, but its label and carried max
+    # HP must match the value used by the battle plan.
+    if cur.get('ally') == NAME and plan['ally_profile'] is not None:
+        plan['ally_profile'].update(name=NAME, max_hp=ally_max)
+    plan['verdict'] = ('excluded' if excluded == 'boss'
+                       else 'unknown' if excluded or total is None or egg_state == 'unknown'
+                       else 'no_egg' if egg_state == 'none'
+                       else 'used' if egg_state == 'used'
+                       else 'dropped_unconfirmed' if egg_state == 'dropped_unconfirmed'
+                       else 'not_threat' if plan['threat'] is False
+                       else 'unknown' if plan['threat'] is None else 'not_droppable')
+    # 出撃時の卵落計画 (#1553): 守備将軍の実測記録から出撃時に加えた卵落札。
+    # 実測した敵が記録と一致する時だけ計画を残し、同じ算出 (max_hp_sum /
+    # threshold) になったことを 'agreement' で残す。一致しない戦闘では計画を
+    # 使わず (fail-closed)、矛盾を戦闘ごとに1回だけ記録する。
+    sortie_kit = (mem.get('dropper_card_kit') or {}).get(cur.get('step'))
+    if isinstance(sortie_kit, dict) and isinstance(sortie_kit.get('card'), str):
+        if kit is not None and sortie_kit['card'] in kit and sortie_kit.get('defender') == enemy:
+            plan['sortie_dropper'] = {'card': sortie_kit['card'], 'defender': enemy,
+                                      'max_hp_sum': sortie_kit.get('max_hp_sum'),
+                                      'threshold': sortie_kit.get('threshold')}
+        elif kit is not None and sortie_kit.get('defender') not in (None, enemy) and not cur.get('sortie_dropper_mismatch_seen'):
+            cur['sortie_dropper_mismatch_seen'] = True
+            _record(mem, 'sortie_dropper_mismatch', **_battle_labels(cur), enemy=enemy,
+                    expected_metric={'defender': sortie_kit.get('defender'),
+                                     'card': sortie_kit['card']},
+                    observed_metric={'battle_enemy': enemy},
+                    reason='出撃時の卵落計画は別の守備将軍向けのため、この戦闘では計画を使わず実測した敵で算出する')
+    rows = _egg_inventory(mem, cur, kit)
+    if total is not None:
+        for row in rows:
+            prediction = reference.card_drop_prediction(row['name'], total)
+            row['drops'] = prediction['drops']
+    plan['cards'] = rows
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
-    plan['deny_opening_egg'] = plan['id_sum'] is not None and plan['id_sum'] < ENEMY_EGG_CARD_ID_SUM
-    evidence = {card: _egg_drop_evidence(cur, card) for card in kit}
-    known = next((evidence[card] for card in kit if evidence.get(card)), None)
-    if not known:
+    if kit is not None:
+        plan['deny_opening_egg'] = plan['id_sum'] is not None and plan['id_sum'] < ENEMY_EGG_CARD_ID_SUM
+    if isinstance(plan['sortie_dropper'], dict):
+        # 出撃時と戦闘時で同じ対戦相手なら同じ算出になるはず (#1553)。
+        plan['sortie_dropper']['agreement'] = (
+            plan['sortie_dropper'].get('max_hp_sum') == plan['max_hp_sum']
+            and plan['sortie_dropper'].get('threshold') == plan['threshold'])
+    if total is None or kit is None:
+        cur['egg_plan'] = plan
         return plan
-    plan['max_hp_sum'] = known['max_hp_sum']
-    plan['threshold'] = known['threshold']
-    plan['droppers'] = reference.egg_droppers(kit, known['max_hp_sum'])
-    if not (plan['threat'] and plan['droppers']):
+    plan['droppers'] = [row['name'] for row in rows
+                        if row['usable'] and row['drops'] is True]
+    # この戦闘のチャートが指す札。除外には使わないが、選択理由として残す。
+    plan['charted'] = sorted({t['card'] for t in _tactics(mem, cur.get('step'))
+                              if t.get('step') in (None, cur.get('step'))
+                              and t.get('enemy') in (None, enemy)})
+    if not (plan['threat'] is True and plan['droppers']
+            and egg_state == 'available'):
+        cur['egg_plan'] = plan
         return plan
-    # チャートがこの札を指す戦闘はチャートのタイミングを優先し、指していない札だけを
-    # 開幕の卵ディニアルに回す (HPゲートや after_clash を壊さないため)。
-    charted = {t['card'] for t in _tactics(mem, cur.get('step'))
-               if t.get('step') in (None, cur.get('step')) and t['enemy'] in (None, enemy)}
-    free = [card for card in plan['droppers'] if card not in charted]
-    if not free:
-        return plan
+    # Owner 2026-10-21: 成立する開幕卵落を後続チャートの札予約より優先する。
+    free = list(plan['droppers'])
     # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
-    plan['dropper'] = min(free, key=lambda card: (
+    plan['dropper'] = None if not free else min(free, key=lambda card: (
         -reference.egg_drop_value(card),
         reference.CARDS.get(card, {}).get('general_damage') or 0,
         SURVIVAL_RANK.get(card, len(SURVIVAL_CARDS)), CARD_IDS.get(card, 99)))
-    plan['egg_drop'] = evidence.get(plan['dropper'])
+    if plan['dropper'] is not None:
+        plan['egg_drop'] = _egg_drop_evidence(cur, plan['dropper'])
+        plan['verdict'] = 'droppable'
+    plan['egg_drop_free'] = bool(free)
+    cur['egg_plan'] = plan
     return plan
 
 
 def _egg_drop_tactics(mem, cur, enemy, plan=None):
-    """卵を落とせる携行札を開幕に使う戦術 (チャートがこの札を指していない時だけ)。"""
+    """成立する未使用の携行札を、後続チャートより先に開幕で使う。
+
+    未知・不成立・卵なし・使用不能は発動しない。実メニューで再確認する。
+    """
     plan = _egg_plan(mem, cur) if plan is None else plan
     card = plan.get('dropper')
     if not card:
@@ -1068,7 +1211,7 @@ def _melee_continuation_evidence(mem, cur):
     """An ordinary general may conserve an overwhelming current advantage.
 
     A scoped opening need not be above 70% of maximum HP: that percentage
-    alone does not erase a measured twofold advantage in HP, army and combat.
+    alone does not erase a measured twofold advantage in remaining force.
     Once our HP falls, require actual enemy HP/troop progress as before.
     This is a remaining-force heuristic, never a promised win or egg loss.
     """
@@ -1093,14 +1236,20 @@ def _melee_continuation_evidence(mem, cur):
             or any(type(n) is not int or n <= 0 for n in
                    (hp, enemy, start, enemy_start, maximum, enemy_maximum))
             or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
-            or not enemy <= enemy_start <= enemy_maximum
-            or hp <= enemy * 2):
+            or not enemy <= enemy_start <= enemy_maximum):
         return None
     balance = _melee_balance(cur)
     values = [balance[k] for k in ('ally_force', 'enemy_force', 'ally_melee_score', 'enemy_melee_score')]
     if (balance['soldiers_current'] is not True
             or any(type(n) is not int or n <= 0 for n in values)
             or values[0] <= 2 * values[1] or values[2] <= 2 * values[3]):
+        return None
+    # Low general HP alone must not spend an egg when both measured troop
+    # count and combat stat dominate. Keep the existing twofold total-force
+    # and combat-score margins, and the critical-HP floor above.
+    if hp <= enemy * 2 and not (
+            cur['ally_soldiers'] > cur['enemy_soldiers']
+            and balance['ally_combat'] > balance['enemy_combat']):
         return None
     opening_army = cur.get('melee_opening_army')
     army_known = (isinstance(opening_army, list) and len(opening_army) == 2
@@ -1397,7 +1546,7 @@ def _default_retreat_needed(cur):
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')
-            and not _healthy_melee_advantage(cur)):
+            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -1412,6 +1561,33 @@ def _hero_retreat_needed(cur):
     """Value-aware ordinary retreat with the existing special-case guards."""
     from .retreat import retreat_needed
     return retreat_needed(cur)
+
+
+def _pre_summon_hp_advantage(cur):
+    """Owner policy: a clear HP lead can keep melee after a resource probe.
+
+    Reverse the existing 70%-HP disadvantage boundary. This is a willingness
+    to continue before a summon, not a combat estimate or a promise of a win.
+    Unknown armies stay unknown; no soldier count is needed or manufactured.
+    """
+    from .retreat import _resources_exhausted, _strength, retreat_profile, STRONG_RETREAT_HP
+
+    profile, enemy_stats = retreat_profile(cur), _strength(cur.get('enemy'))
+    if (profile['class'] in ('hero', 'unknown') or enemy_stats is None
+            or cur.get('side') != 'attack'
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_damage_rescue_needed') or cur.get('event_duel')
+            or (cur.get('hero_retreat') or {}).get('selected')
+            or not _resources_exhausted(cur)):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    floor = STRONG_RETREAT_HP if profile['class'] == 'strong' else GENERAL_CRITICAL_RETREAT_HP
+    return (type(hp) is int and floor < hp <= profile['max_hp']
+            and type(enemy) is int and 0 < enemy <= enemy_stats[0]
+            and enemy * 10 <= hp * BEHIND_EGG_RATIO_TENTHS)
 
 
 def _healthy_melee_advantage(cur):
@@ -1559,6 +1735,26 @@ def _defender_last_resort(mem, cur):
         return False
     return (hp <= start <= ally_max and enemy <= enemy_start <= enemy_max
             and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
+
+
+def _defender_summon_last_resort(mem, cur, reading):
+    """The current exposed defender can take the same risky last chance.
+
+    Monster HP is kept separate from both generals' ordinary HP. This uses
+    a current bound reading, never the stale opponent HP from before summon.
+    """
+    if (not reading or not cur.get('okunote_only_observed')
+            or cur.get('side') != 'defense' or cur.get('ally') in (None, 'だいじん')
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values() or cur.get('planned_cards') or cur.get('card_flow')):
+        return False
+    hp, enemy = reading.get('ally_hp'), reading.get('enemy_monster_hp')
+    starts = (cur.get('start_ally_hp'), cur.get('start_enemy_hp'))
+    return (type(hp) is int and type(enemy) is int and 0 < hp <= OKUNOTE_MAX_SELF_DAMAGE
+            and all(type(v) is int and v > 0 for v in starts)
+            and type(general_max_hp(cur.get('enemy'))) is int
+            and 0 < enemy <= 999 and reading.get('enemy_monster') in reference.MONSTER_SKILLS
+            and (reading['enemy_monster'] == 'ダークエルフ' or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS))
 
 
 def _hold_general_loss_metric(mem):

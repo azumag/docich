@@ -134,16 +134,17 @@ def test_native_healthy_advantage_does_not_retreat_after_resource_probe(file, di
     assert not cur.get('hero_retreat')
 
 
-@pytest.mark.parametrize('change', [
-    {'ally_hp': 12}, {'card_soldiers_current': False}, {'ally_soldiers': None},
-    {'enemy_soldiers': None}, {'enemy_soldiers': 20}, {'card_hp_unread': True},
-    {'egg_battle': True}, {'card_summon_observed': True}, {'ally': p.NAME},
+@pytest.mark.parametrize('change,needed', [
+    ({'ally_hp': 12}, True), ({'card_soldiers_current': False}, False),
+    ({'ally_soldiers': None}, False), ({'enemy_soldiers': None}, False),
+    ({'enemy_soldiers': 20}, False), ({'card_hp_unread': True}, True),
+    ({'egg_battle': True}, True), ({'card_summon_observed': True}, True), ({'ally': p.NAME}, True),
 ])
-def test_unknown_or_dangerous_state_keeps_existing_retreat_protection(change):
+def test_unknown_armies_do_not_erase_hp_lead_but_danger_keeps_retreat_protection(change, needed):
     cur = {'ally': 'ヴィーナス', 'enemy': 'カシュー', 'ally_hp': 82, 'enemy_hp': 19,
            'start_ally_hp': 82, 'start_enemy_hp': 19, 'side': 'attack',
            'planned_cards': [], 'card_soldiers_current': True,
            'ally_soldiers': 2, 'enemy_soldiers': 3,
            'survival': {'exhausted': True, 'cards_uncertain': False}, **change}
     assert not p._healthy_melee_advantage(cur)
-    assert p._hero_retreat_needed(cur)
+    assert p._hero_retreat_needed(cur) is needed

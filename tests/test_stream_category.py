@@ -94,7 +94,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "nethack",
                 "--games-dir",
                 str(Path(self.g.games_dir).resolve()),
-                "--activity", "NetHack", "--strategy", "AIプレイ配信",
+                "--activity", "NetHack", "--strategy", "AIが迷宮を探索！ 道具と知恵で生き延びられるか",
             ],
         )
         # The script loads its own .env from the Soren root, so it must run
@@ -118,7 +118,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
         self.assertNotIn("--game", call["argv"])
@@ -260,7 +260,7 @@ class TestRunningView(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
 
@@ -303,7 +303,7 @@ class TestRunningView(StreamCategoryTestBase):
 
     def test_unknown_safe_id_is_explicit_and_bad_ids_are_rejected(self) -> None:
         self.assertEqual(viewer_title_args("new-game"),
-                         ["--activity", "new-game", "--strategy", "AIプレイ配信"])
+                         ["--activity", "new-game", "--strategy", "AIはどこまで進めるか？ 試行錯誤のゲーム挑戦"])
         for game in ("", "../secret", "x;id", "bad name"):
             with self.assertRaises(ValueError):
                 viewer_title_args(game)
@@ -323,6 +323,13 @@ class TestRunningView(StreamCategoryTestBase):
         script = self.soren / SCRIPT_NAME
         shutil.copyfile(source, script)
         script.chmod(0o755)
+        # The updater composes public titles through lib/stream_title_public.py
+        # and fails closed when it is missing (docich#789). Mirror the deployed
+        # soren layout — script plus its lib/ — instead of a stripped copy.
+        helper = Path(__file__).resolve().parents[1] / "games/soviet_now/lib/stream_title_public.py"
+        self.assertTrue(helper.is_file(), "pinned soviet_now lacks the public title helper")
+        (self.soren / "lib").mkdir(exist_ok=True)
+        shutil.copyfile(helper, self.soren / "lib" / "stream_title_public.py")
         stub_dir = self.root / "stub-bin"
         stub_dir.mkdir()
         result = self.root / "patch.json"
@@ -337,7 +344,7 @@ class TestRunningView(StreamCategoryTestBase):
             " pathlib.Path(a[a.index('-o')+1]).write_text('')\n"
             " print('204',end='')\n"
             "elif any('oauth2/validate' in x for x in a):\n"
-            " print(json.dumps({'client_id':'test','login':'test','scopes':['channel:manage:broadcast']}))\n"
+            " print(json.dumps({'client_id':'test','login':'test','user_id':'test-only','scopes':['channel:manage:broadcast']}))\n"
             "else:\n"
             " print(json.dumps({'data':[{'title':'OLD PRIVATE WORK','game_id':'1','game_name':'Old'}]}))\n",
             encoding="utf-8",

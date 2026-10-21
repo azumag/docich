@@ -148,11 +148,13 @@ def test_trade_words_without_both_choices_do_not_take_over_recruit_dialogue():
 
 
 @pytest.mark.parametrize('background', [False, True])
-@pytest.mark.parametrize('gold', [59, None])
+@pytest.mark.parametrize('gold', [49, None])
 def test_nontrade_unpaid_recruit_confirmation_still_checks_its_balance(background, gold):
     frame = confirmation(background=background, trade=False, gold=gold)
     actions, state = decide(frame, owned_state('recruit'))
-    assert actions == ([] if gold is None and not background else [policy.pad('b')])
+    expected = ([] if gold is None and not background else
+                [policy.pad('b')] if gold == 49 else [policy.pad('a')])
+    assert actions == expected
     assert not state['policy']['month_sub'].get('recruit_paid_gold')
     assert not any(row['strategy_variant'] == 'decline_general_trade'
                    for row in state['_records'])

@@ -134,3 +134,56 @@ def test_arrival_observation_has_its_own_finite_budget_across_saved_state(monkey
         mem=json.loads(json.dumps(mem));mem['tick']+=c.ARRIVAL_RETRY_TICKS
     assert p.camp_recall_step(MAP,mem,FRAME) is None
     assert not mem.get('recall')
+
+
+@pytest.mark.parametrize('attempts', [0, 1, 2])
+@pytest.mark.parametrize('reads', [3, 4, -1, True])
+def test_sent_return_cannot_fall_back_to_camp_search_after_arrival_budget(attempts, reads, monkeypatch):
+    mem = memory(); row = mem['retreat_rechecks'][ACTOR]
+    row.update(attempts=attempts, arrival_reads=reads)
+    before = deepcopy(row)
+    monkeypatch.setattr(p, 'own_camps', lambda _: [])
+    for _ in range(5):
+        assert p.camp_recall_step(MAP, mem, FRAME) is None
+        assert not mem.get('recall')
+        assert mem['retreat_rechecks'][ACTOR] == before
+        mem = json.loads(json.dumps(mem)); mem['tick'] += c.ARRIVAL_RETRY_TICKS
+    assert not any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
+
+
+def test_sent_actor_does_not_block_another_actors_unsent_recheck(monkeypatch):
+    mem = memory(); row = mem['retreat_rechecks'][ACTOR]
+    row.update(attempts=1, arrival_reads=3)
+    mem['retreat_rechecks']['ゼウス'] = {
+        'identity': deepcopy(row['identity']), 'chapter': 2, 'tick': row['tick'],
+        'retry_after': row['retry_after'], 'attempts': 0, 'status': 'needs_observation'}
+    monkeypatch.setattr(p, 'own_camps', lambda _: [])
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert mem['recall']['general'] == 'ゼウス'
+    assert mem['retreat_rechecks'][ACTOR]['attempts'] == 1
+
+
+def test_anonymous_view_cannot_restore_a_sent_actors_return_budget():
+    from test_hanjuku_chart_bot import camp_menu
+    mem = memory(); row = mem['retreat_rechecks'][ACTOR]
+    row.update(attempts=1, arrival_reads=3)
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    assert not mem['recall'].get('retreat_recheck')
+    assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(status(ACTOR, main=False, hp=16)), mem, FRAME) == [p.pad('b')]
+    assert not mem.get('recall')
+    assert row['attempts'] == 1 and row['arrival_reads'] == 3
+
+
+def test_same_observed_camp_stays_suppressed_after_sent_arrival_budget_is_spent():
+    from test_hanjuku_camp_proof_binding import opened
+    mem = memory(); row = mem['retreat_rechecks'][ACTOR]
+    row.update(attempts=1, arrival_reads=3)
+    proof = deepcopy(opened()['recall']['camp_observation'])
+    proof.update(identity=deepcopy(row['identity']), chapter=2)
+    row['camp_observation'] = proof
+    before = deepcopy(row)
+    for _ in range(5):
+        assert p.camp_recall_step(MAP, mem, FRAME) is None
+        assert not mem.get('recall') and mem['retreat_rechecks'][ACTOR] == before
+        mem = json.loads(json.dumps(mem)); mem['tick'] += c.ARRIVAL_RETRY_TICKS

@@ -8,6 +8,7 @@ plans: the strategy layer reads them to choose orders.
 from __future__ import annotations
 
 from .screen import Screen, castle_roofs
+from .pixels import Frame
 from ... import hanjuku_chart as chart
 from ..decision_log import _record, _tally
 from .readers import STATUS_NAMES, _cursor
@@ -51,6 +52,31 @@ def _localize(roofs, castles, predicted_cam):
     if support < 2 and predicted_cam and -neg_drift > 80:
         return None
     return cam, name
+
+
+def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
+    """A current two-roof constellation, without cached motion or Y intent."""
+    if screen.kind not in ('map', 'map_target') or not isinstance(frame, Frame):
+        return None
+    cursor = _cursor(screen)
+    if cursor is None:
+        return None
+    cells = chart.castles(mem.get('chapter') or 0)
+    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
+    candidates = {}
+    for roof in roofs:
+        for x, y in cells.values():
+            cam = (x - roof['target'][0], y - roof['target'][1])
+            support = sum(any(abs(r['target'][0] + cam[0] - cx)
+                              + abs(r['target'][1] + cam[1] - cy) <= max_error
+                              for cx, cy in cells.values()) for r in roofs)
+            candidates[cam] = support
+    if not candidates or max(candidates.values()) < 2:
+        return None
+    best = [cam for cam, support in candidates.items() if support == max(candidates.values())]
+    if any(abs(cam[0] - best[0][0]) + abs(cam[1] - best[0][1]) > ambiguity for cam in best):
+        return None
+    return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
 def update_world(screen: Screen, mem, frame, goal_name=None):
@@ -192,6 +218,8 @@ def observe_owners(mem, roofs, cam):
             if castle not in lost:
                 lost.append(castle)
             (mem.get('garrison') or {}).pop(castle, None)
+            # Ownership changed hands: the remembered defender is stale.
+            (mem.get('castle_defenders') or {}).pop(castle, None)
             _record(mem, 'castle_lost_observed', castle=castle,
                     observed_metric={'roof': kind, 'readings': count},
                     resulting_event=f'lost:{castle}',
@@ -268,6 +296,10 @@ def _apply_world_flags(mem, flags):
         # still treated it as ours and fell back to it.
         # A successful retake can also put home in captured. Remove that old
         # receipt even when a hotloaded state already has home_lost=True.
+        if home in captured or home not in (mem.get('lost') or []):
+            # A completed defense loss already recorded the current capturer.
+            # Only a new ownership loss invalidates that defender evidence.
+            (mem.get('castle_defenders') or {}).pop(home, None)
         mem['captured'] = captured = [c for c in captured if c != home]
         if not mem.get('home_lost'):
             changed.append(('lost', home))
@@ -289,6 +321,8 @@ def _apply_world_flags(mem, flags):
             if castle not in lost:
                 lost.append(castle)
             (mem.get('garrison') or {}).pop(castle, None)
+            # Ownership changed hands: the remembered defender is stale.
+            (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
         elif owner == 'own' and castle not in captured:
             captured.append(castle)

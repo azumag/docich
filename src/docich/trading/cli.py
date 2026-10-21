@@ -23,7 +23,7 @@ from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
 from .strategy_store import load_strategy_policy
-from .status import build_public_status, write_public_status
+from .status import build_public_status, freshness_summary_payload, write_public_status
 from .settlement import MultiLegSettlement, settlement_observation_id, simulate_multileg_settlement
 
 
@@ -45,7 +45,7 @@ _PUBLIC_STATUS_KEYS = {
     "eligible_symbols", "capital_reference", "deployed_reference", "open_positions",
     "recent_fills", "skipped_reason_codes", "signal_summary", "worker_summary",
     "heartbeat_at", "snapshot_seq", "snapshot_generated_at",
-    "market_freshness", "coverage",
+    "market_freshness", "freshness_summary", "coverage",
 }
 _SIGNAL_SUMMARY_KEYS = {"candidate_count", "selected_count", "rejected_count", "strategy_ids", "candidate_reason_codes"}
 _WORKER_SUMMARY_KEYS = {
@@ -205,6 +205,11 @@ def _safe_existing_status(path: Path) -> dict[str, Any]:
         {str(symbol): dict(entry) for symbol, entry in freshness.items()
          if isinstance(entry, dict)}
         if isinstance(freshness, dict) else {}
+    )
+    summary = data.get("freshness_summary", {})
+    safe["freshness_summary"] = (
+        dict(summary) if (isinstance(summary, dict) and "total" in summary)
+        else freshness_summary_payload(safe["market_freshness"])
     )
     coverage = data.get("coverage", {})
     safe["coverage"] = dict(coverage) if isinstance(coverage, dict) else {}

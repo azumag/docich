@@ -39,6 +39,7 @@ CONTEXT_NAMES = [
     "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE", "SOVIET_CREATION_HISTORY_FILE",
     "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context", "_comment_ui_memo",
     "_comment_channel_intro", "_comment_length_policy", "sing_reference", "_prediction_cycle_games",
+    "self_chat_context",
 ]
 
 COMMENTS_BLOCK = ("viewer_a: 音声が聞こえません\n"
@@ -301,7 +302,7 @@ def generate(sn, commit, out_path):
                      "codex_advice_candidates", "comment_advice_context", "previous_comments_context",
                      "recent_spoken_comment_context", "viewer_memory_context", "comment_followup_hints",
                      "celebration_history_context", "comment_thumbnail_ocr_context", "game_state_context",
-                     "comment_ops_context"]
+                     "comment_ops_context", "self_chat_context"]
     defaults = []
     for case in ({}, {name: f"値 {name}\nError: drop me\n残す" for name in default_names}):
         dump = ('python3 -c \'import json,os,sys;print(json.dumps({n: os.environ.get(n) for n in sys.argv[1:]}))\' '

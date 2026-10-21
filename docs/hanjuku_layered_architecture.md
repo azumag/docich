@@ -167,7 +167,7 @@ import しない（層契約テストで禁止）。
 | #2040 卵なし城防衛の召喚前救済がHP期限だけでは間に合わない | 救済を始める時期の判断 | 判断層 `judgment/battle.py`（`_defender_egg_window` / `_defender_last_resort`）。召喚選択中の識別はOS層 `readers` |
 | #2076 クイーン戦の将軍コマンドで下入力が効かない | メニュー所有者と入力受付区間、効かない入力の検出 | 手順層 `flows/battle_menus.py` とOS層 `commands`（`_battle_menu_to`）。#1353 の「入力意図・送信・効果の分離」を適用する候補 |
 | #1996 コンサート画面でB連打ループ | 画面分類と既定入力 | OS層 `os_layer/phase.py`（`classify` の concert 判定）と調停 `orchestrator.legacy_actions` |
-| #1553 青ゲージの画素検出と卵落札携行 | 画素の読取と携行札の計画 | OS層 `readers` と戦略層 `strategy/kit.py` |
+| #1553 青ゲージの画素検出と卵落札携行 | 画素の読取と携行札の計画 | OS層 `screen`（`ClashGauge`・`hanjuku_clash_gauge` 校正ツール）と戦略層 `strategy/kit.py`（`_sortie_defender`・`_with_extra_card`）。守備将軍の記録は手順層 `flows/battle.py`（`castle_defenders`） |
 | #1608 夏イベントの応答文が未読の場合の復旧 | 未読の応答と復旧手順 | 手順層 `flows/prompts.py`（`summer_bonus_*`）とOS層 `readers` |
 
 ### 並行中のPRとの関係

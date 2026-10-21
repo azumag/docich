@@ -23,7 +23,7 @@ def test_wounded_overwhelming_melee_refutes_the_old_opening_hp_retreat():
     cur = duel()
     assert p._unarmed_clash_risk(cur)
     assert cur['ally_hp'] * 10 <= cur['start_ally_hp'] * 7
-    assert rules._default_retreat_needed(deepcopy(cur)) is True
+    assert rules._default_retreat_needed(deepcopy(cur)) is False
     assert p._hero_retreat_needed(cur) is False
     assert cur['retreat_assessment']['reason'] == 'measured_remaining_force_advantage'
     mem = {'battle': cur, 'chapter': 1}
@@ -163,3 +163,79 @@ def test_defense_menu_does_not_send_a_retreat_input():
     mem = {'chapter': 1, 'battle': cur}
     assert p._hero_retreat_open(mem, cur) is None
     assert p._hero_retreat_menu(menu(selected=2), mem, cur) is None
+
+
+def pre_summon():
+    # Synthetic 59/40 boundary case, not a reconstruction of g839's frame.
+    return duel(ally='アマンディーヌ', enemy='ソーピニヨン', hp=59, enemy_hp=40,
+                ally_soldiers=None, enemy_soldiers=None)
+
+
+@pytest.mark.parametrize('hp,enemy_hp,advantage', [
+    (59, 40, True), (50, 35, True), (49, 35, False),
+    (41, 40, False), (40, 40, False), (39, 40, False),
+])
+def test_pre_summon_clear_hp_lead_uses_the_existing_inverse_seventy_percent_boundary(hp, enemy_hp, advantage):
+    cur = pre_summon(); cur.update(ally_hp=hp, enemy_hp=enemy_hp)
+    assert p._unarmed_clash_risk(cur)
+    assert rules._pre_summon_hp_advantage(cur) is advantage
+    assert p._hero_retreat_needed(cur) is not advantage
+    mem = {'battle': cur, 'chapter': 1}
+    if advantage:
+        assert p._hero_retreat_open(mem, cur) is None
+        assert p._hero_retreat_menu(menu(selected=2), mem, cur) is None
+        assert not cur.get('hero_retreat')
+
+
+@pytest.mark.parametrize('ours,theirs,current', [(None, None, False), (6, None, True),
+    (None, 6, True), (0, 6, True), (True, 20, False)])
+def test_hp_exception_never_invents_missing_armies_or_a_combat_advantage(ours, theirs, current):
+    cur = pre_summon(); cur.update(ally_soldiers=ours, enemy_soldiers=theirs,
+                                  card_soldiers_current=current)
+    before = deepcopy(cur)
+    assert rules._pre_summon_hp_advantage(cur)
+    assert not p._healthy_melee_advantage(cur)  # the stronger old force claim stays false
+    assert not p._hero_retreat_needed(cur)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers'], cur['card_soldiers_current']) == (
+        before['ally_soldiers'], before['enemy_soldiers'], before['card_soldiers_current'])
+
+
+@pytest.mark.parametrize('change', [
+    {'ally': p.NAME}, {'ally': 'しゅじんこう'}, {'ally': '未確認'}, {'enemy': '未確認'},
+    {'enemy': 'クイーン'}, {'side': 'defense'}, {'side': None},
+    {'egg_battle': True, 'egg_retreat_needed': True}, {'card_summon_observed': True},
+    {'hero_retreat': {'selected': 1}}, {'card_hp_unread': True},
+    {'card_context_unclassified': True}, {'card_damage_rescue_needed': True},
+    {'event_duel': True}, {'card_flow': {'stage': 'announce'}},
+    {'planned_cards': ['ゼンマイン']}, {'own_egg_positive_observed': True},
+    {'survival': {'exhausted': False}},
+    {'survival': {'exhausted': True, 'cards_uncertain': True}},
+    {'ally_hp': None}, {'enemy_hp': None}, {'ally_hp': True}, {'enemy_hp': False},
+    {'ally_hp': 0}, {'enemy_hp': 0}, {'ally_hp': 60}, {'enemy_hp': 49},
+    {'ally_hp': '59'}, {'enemy_hp': 40.0},
+])
+def test_pre_summon_hp_exception_does_not_override_special_unread_or_resource_guards(change):
+    cur = pre_summon(); cur.update(change)
+    assert not rules._pre_summon_hp_advantage(cur)
+    assert p._hero_retreat_needed(cur) == rules._default_retreat_needed(deepcopy(cur))
+
+
+@pytest.mark.parametrize('ally,hp,enemy_hp,advantage', [
+    ('アマンディーヌ', 12, 5, False), ('アマンディーヌ', 13, 5, True),
+    ('ゼウス', 18, 5, False), ('ゼウス', 19, 5, True),
+])
+def test_hp_advantage_keeps_the_critical_and_strong_general_floors(ally, hp, enemy_hp, advantage):
+    cur = pre_summon(); cur.update(ally=ally, ally_hp=hp, enemy_hp=enemy_hp)
+    assert rules._pre_summon_hp_advantage(cur) is advantage
+    assert p._hero_retreat_needed(cur) is not advantage
+
+
+def test_hp_exception_is_recomputed_after_damage_and_actual_summoning():
+    import json
+    cur = pre_summon()
+    assert not p._hero_retreat_needed(cur)
+    cur = json.loads(json.dumps(cur))
+    cur['ally_hp'] = 41
+    assert p._hero_retreat_needed(cur)
+    cur.update(ally_hp=59, egg_battle=True, egg_retreat_needed=True)
+    assert p._hero_retreat_needed(cur)

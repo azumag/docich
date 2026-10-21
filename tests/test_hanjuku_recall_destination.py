@@ -50,6 +50,23 @@ def test_distance_tie_prefers_hero_and_nearby_castle_beats_far_hero():
     assert p._recall_goal(mem) == 'ジョンリギ'
 
 
+def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(monkeypatch):
+    import json
+    # SFC units move straight to their destination. Manhattan distance chose
+    # ゴーメン (309) over キカンドン (312), although the direct squared
+    # distances are respectively60381 and52034. This origin is synthetic.
+    mem = memory([370, 840]); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    at(monkeypatch, 'アルマムーン')
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
+    assert mem['recall']['goal'] == 'キカンドン'
+    mem = json.loads(json.dumps(mem))
+    at(monkeypatch, 'キカンドン')
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert mem['recall']['stage'] == 'await_dispatch'
+    assert mem['recall']['goal'] == 'キカンドン'
+    assert not mem['recall'].get('input_sent')  # planned A is not a sent receipt
+
+
 @pytest.mark.parametrize('change', ['marching', 'unknown', 'duplicate', 'enemy'])
 def test_unconfirmed_hero_is_not_used_as_a_merge_target(change):
     mem = memory(); mem['garrison'] = {'ゴーメン': [p.NAME]}
