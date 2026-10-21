@@ -11111,7 +11111,7 @@ def _proc_start_ticks(proc_root, pid):
     # best-effort started_at from /proc/stat btime (may be unavailable)
     started_at = None
     try:
-        with open(proc_root.parent / "stat", "r", encoding="utf-8", errors="replace") as handle:
+        with open(proc_root / "stat", "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 if line.startswith("btime "):
                     btime = int(line.split()[1])
@@ -11151,6 +11151,27 @@ def _classify_shared_runtime_role(comm, argv):
     return None
 
 
+def _shared_runtime_boot_id(proc_root):
+    """Read only the fixed kernel boot UUID, with no symlink traversal."""
+    fd = None
+    try:
+        root = Path(proc_root).absolute()
+        fd = _supervisor_directory(root.anchor)
+        for part in (*root.parts[1:], 'sys', 'kernel', 'random'):
+            child = _supervisor_directory(part, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        value = _supervisor_read('boot_id', 64, dir_fd=fd).decode('ascii').strip()
+        if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
+            return value
+    except (OSError, ValueError, UnicodeError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return None
+
+
 def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
     """Read-only projection of shared stream/encoder/audio PID sets.
 
@@ -11163,7 +11184,8 @@ def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
     if uid is None:
         uid = os.geteuid()
     roles = {role: [] for role in SHARED_RUNTIME_ROLES}
-    scan_complete = True
+    boot_id = _shared_runtime_boot_id(proc_root)
+    scan_complete = boot_id is not None
     try:
         names = os.listdir(proc_root)
     except OSError:
@@ -11178,6 +11200,8 @@ def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
         except ValueError:
             continue
     pids.sort()
+    if len(pids) > 4096:
+        scan_complete = False
     for pid in pids[:4096]:
         base = proc_root / str(pid)
         try:
@@ -11223,8 +11247,9 @@ def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
     for role in roles:
         roles[role].sort(key=lambda item: item["pid"])
     section = {
-        "schema_version": 1,
-        "scan_complete": bool(scan_complete),
+        "schema_version": 2,
+        "boot_id": boot_id,
+        "scan_complete": bool(scan_complete and _shared_runtime_boot_id(proc_root) == boot_id),
         "roles": {},
     }
     for role in SHARED_RUNTIME_ROLES:
@@ -11238,32 +11263,47 @@ def _collect_shared_runtime_pids(proc_root=Path("/proc"), uid=None):
 
 
 def _shared_runtime_pid_set(section):
-    """Return {role: frozenset of (pid, start_ticks)} or None if unusable."""
-    if not isinstance(section, dict):
+    """Validate the whole v2 receipt before comparing nonempty required roles."""
+    if (not isinstance(section, dict)
+            or set(section) != {'schema_version', 'boot_id', 'scan_complete', 'roles'}
+            or type(section.get('schema_version')) is not int or section['schema_version'] != 2
+            or section.get('scan_complete') is not True):
         return None
-    if section.get("scan_complete") is not True:
+    boot = section.get('boot_id')
+    if not isinstance(boot, str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
         return None
-    roles = section.get("roles")
-    if not isinstance(roles, dict):
+    roles = section.get('roles')
+    if not isinstance(roles, dict) or set(roles) != set(SHARED_RUNTIME_ROLES):
         return None
-    result = {}
+    result, seen = {}, set()
     for role in SHARED_RUNTIME_ROLES:
-        role_data = roles.get(role)
-        if not isinstance(role_data, dict):
+        data = roles[role]
+        if not isinstance(data, dict) or set(data) != {'count', 'pids', 'entries'}:
             return None
-        entries = role_data.get("entries")
-        if not isinstance(entries, list):
+        count, pids, entries = data['count'], data['pids'], data['entries']
+        if (type(count) is not int or not 1 <= count <= SHARED_RUNTIME_MAX_PIDS
+                or not isinstance(pids, list) or not isinstance(entries, list)
+                or len(pids) != count or len(entries) != count):
             return None
-        s = set()
+        values, projected = set(), []
         for item in entries:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or set(item) not in (
+                    {'pid', 'start_ticks'}, {'pid', 'start_ticks', 'started_at'}):
                 return None
-            pid = item.get("pid")
-            ticks = item.get("start_ticks")
-            if type(pid) is not int or type(ticks) is not int:
+            pid, ticks = item['pid'], item['start_ticks']
+            if (type(pid) is not int or not 1 < pid <= 2**31-1 or pid in seen
+                    or type(ticks) is not int or not 0 < ticks <= 2**63-1):
                 return None
-            s.add((pid, ticks))
-        result[role] = s
+            started = item.get('started_at')
+            if 'started_at' in item and (type(started) is not int or not 0 < started <= 2**63-1):
+                return None
+            seen.add(pid)
+            projected.append(pid)
+            values.add((boot, pid, ticks, started))
+        if (any(type(pid) is not int for pid in pids)
+                or len(set(pids)) != count or set(pids) != set(projected)):
+            return None
+        result[role] = values
     return result
 
 

@@ -1108,3 +1108,28 @@ ledger 自体を `_load` が拒否すると tick は ledger を書き換えら�
 health の読み書き失敗は予想の結果・ledger・API 呼び出しを変えない。
 health 記録は regular file・symlink拒否・16KiB上限で読み、記録の本文や
 任意文字列は投影しない。
+
+### 共有PIDの保存済み診断比較（#2444）
+
+`ops/local/compare_shared_runtime_pids.py` はproductionへ接続せず、正規diagnosticsで
+保存したbefore/after JSONだけを比較します。`shared_runtime_pids` のschema 2、同じboot UUID、
+必須3役割の非空集合、PIDとstart ticks（ある場合はstarted_atも）の一致が必要です。
+役割や配列の順序には依存しません。欠落・旧schema・部分取得・不正な数値・重複PID・
+count/entries/pidsの不整合は、両側が同じでも成功になりません。
+
+1. 個別に実行権限を確認したadopt/recoverの直前に正規VM operationsのread-only
+   `diagnostics` を取得し、sanitized JSONを `before.json` に保存します。
+2. 対象と権限を確認した既存operatorでadopt/recoverを実行します。この比較CLIは
+   operatorの実行や実failed窓の作成、restart/kill/cleanupを行いません。
+3. 直後の同じ正規diagnosticsを `after.json` に保存し、次を実行します。
+
+```sh
+python3 ops/local/compare_shared_runtime_pids.py --before before.json --after after.json
+```
+
+両ファイルは診断全体、`status=diagnosed` のgateway envelope、または対象sectionを渡せます。
+1 MiB上限で読み、結果は固定reason・不一致役割・matchだけです。exit 0だけが一致、
+非0は受入不成立です。元run/attempt/SHAとbefore/after、固定結果を関連付けて保存してください。
+ActionsのmaskでJSONやPIDが欠落した場合も、不明値を補って成功扱いしないでください。
+PID一致だけで公開映像・音声・ユーザー休止維持を証明したことにはせず、それぞれの
+受入証拠を別に残します。実failed窓での自然な受入証拠がなければIssueは未完了です。
