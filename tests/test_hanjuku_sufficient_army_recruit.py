@@ -45,6 +45,23 @@ def test_skip_opens_recruitment_without_a_wage_floor():
     assert (mem.get('month_sub') or {}).get('kind') == 'recruit'
 
 
+@pytest.mark.parametrize('gold,repair,opens', [(86, 0, True), (49, 0, False),
+                                            (99, 50, False), (100, 50, True)])
+def test_current_roster_shortage_reopens_membership_hold_at_real_month_menu(gold, repair, opens):
+    mem, screen = stalled_month()
+    policy.quantity_step(screen, mem, soldiers=True)
+    mem['recruit_payroll_pending'] = ['カシュー']
+    mem['recruit_hold'] = {'reason': 'pending_employees', 'status': 'deferred_economy'}
+    mem['shop'].update(recruit='deferred_economy', recruit_priority=False,
+                       hero_repair_reserve=repair)
+    actions = policy.month_step(parse(month_canvas(gold, on='しょうぐんぼしゅう')), mem)
+    assert ((mem.get('month_sub') or {}).get('kind') == 'recruit') is opens
+    assert (actions == [policy.pad('a')]) is opens
+    assert mem['recruit_payroll_pending'] == ['カシュー']
+    assert mem['shop']['hero_repair_reserve'] == repair
+    assert not mem.get('recruited')  # opening is not a hire or payment receipt
+
+
 @pytest.mark.parametrize('count,seen', [(49, '1-7'), (133, '1-6'), (None, '1-7')])
 def test_unfulfilled_or_unread_army_never_releases_original_budget(count, seen):
     mem, screen = stalled_month(count, seen)
