@@ -90,6 +90,30 @@ def test_two_decimal_rounded_probability_sum_is_accepted():
         assert validate_response(clean, req, profile) == clean
 
 
+@pytest.mark.parametrize("label_count,tolerance", [(2, .01), (6, .03), (14, .05)])
+@pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("offset,accepted", [(-1e-6, True), (0, True), (1e-6, False)])
+def test_probability_sum_tolerance_boundaries(label_count, tolerance, direction, offset, accepted):
+    labels = {f"label{i}": f"Label {i}" for i in range(label_count)}
+    probabilities = {label: (1 + direction * (tolerance + offset)) / label_count
+                     for label in labels}
+    profile = resolve_route()
+    request = {"model": profile.requested_model, "state": "synthetic", "questions": {
+        "gate": {"type": "choice", "instructions": "gate", "criteria": labels},
+    }}
+    response = {"model": profile.requested_model, "answers": {
+        "gate": {"type": "choice", "choice": "label0", "confidence": .9,
+                 "probabilities": probabilities},
+    }, "usage": {"input_tokens": 2, "output_tokens": 1}}
+    if accepted:
+        clean = validate_response(response, request, profile)
+        assert clean == response
+        assert validate_response(clean, request, profile) == clean
+    else:
+        with pytest.raises(ValueError, match="invalid_response"):
+            validate_response(response, request, profile)
+
+
 @pytest.mark.parametrize("overrides", [
     {label: 0.0 for label in FIXTURE["response"]["answers"]["c1"]["probabilities"]},
     {"stream_bug_report": 0.5},
