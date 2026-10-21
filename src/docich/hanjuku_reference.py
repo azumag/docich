@@ -358,6 +358,144 @@ GENERAL_HORSES: frozenset[str] = frozenset({
 })
 
 
+# gcgx shogun.html の将軍一覧から、GENERAL_STATS に無い表示項目だけを補う
+# (fetched 2026-10-20; SFC ID 0..127 の128名)。値は (対抗%, 得意, 性格, 趣味)。
+# 対抗は「自軍がエグモンを召喚している際に対抗してエッグを使用する確率」で、
+# 一般的な卵使用率ではない。得意は季節・地形 ('夏２', '城攻' など) をそのまま
+# 保持し、'－' は空文字。HP・戦闘・補正・エッグ種別・思考・初登場話数は
+# GENERAL_STATS / GENERAL_DEBUT を正本とし、ここへ重複して持たない。
+GENERAL_TRAITS: dict[str, tuple[int, str, str, str]] = {
+    'しゅじんこう': (50, '', '甘えんぼ', 'つまみぐい'),  # 0
+    'キャラウェイ': (50, '夏２', '変な奴', 'ヘヴィメタル'),  # 1
+    'クミン': (50, '', '弱気', 'たてごと'),  # 2
+    'コリアンダー': (50, '', '楽天家', 'ハニワ'),  # 3
+    'バジル': (50, '森', '強気', 'ディスコ'),  # 4
+    'ミント': (50, '冬１', '弱気', 'たべあるき'),  # 5
+    'パプリカ': (50, '森', '自己陶酔', 'カジノ'),  # 6
+    'シナモン': (50, '山', '楽天家', 'よあそび'),  # 7
+    'ヘーゼル': (50, '水中', '和風', 'すいえい'),  # 8
+    'ガルバンゾー': (50, '平地', '強気', 'サッカー'),  # 9
+    'ラズベリー': (50, '森', '献身的', 'おんがく'),  # 10
+    'ピスタチオ': (50, '秋１', 'オタク', 'れきし'),  # 11
+    'マカデミア': (50, '', '弱気', 'サーフィン'),  # 12
+    'カシュー': (50, '', '一般的', 'ボクシング'),  # 13
+    'クランベリー': (50, '森', '身勝手', 'パラグライダー'),  # 14
+    'ガスパチョ': (50, '', 'オタク', 'にんぎょう'),  # 15
+    'ビシソワーズ': (50, '森', 'オタク', 'おっかけ'),  # 16
+    'タピオカ': (50, '', '自己陶酔', 'サバイバルゲーム'),  # 17
+    'キッシュ': (50, '洞窟', '身勝手', 'カルトクイズ'),  # 18
+    'ロックフォール': (50, '', '自己陶酔', 'アイドル'),  # 19
+    'シェーブル': (50, '平地', '献身的', 'ジョギング'),  # 20
+    'アマンディーヌ': (50, '森', '弱気', 'ケーキづくり'),  # 21
+    'チコリ': (75, '', '一般的', 'パッチワーク'),  # 22
+    'ビーツ': (75, '', '超世間的', 'ぜん'),  # 23
+    'セルリアク': (75, '城守', '泣き虫', 'カラオケ'),  # 24
+    'アンディーブ': (25, '夏１', 'お調子者', 'ボディービル'),  # 25
+    'リーキ': (50, '春２', '一般的', 'えいがかんしょう'),  # 26
+    'トレビス': (25, '水中', '強気', 'ダイビング'),  # 27
+    'アルファルファ': (50, '森', '和風', 'あいきどう'),  # 28
+    'タルタル': (25, '', '楽天家', 'かていさいえん'),  # 29
+    'ヘルメス': (25, '城攻', 'うぬぼれ屋', 'かたな'),  # 30
+    'リースリング': (50, '冬２', '変な奴', 'ショッピング'),  # 31
+    'デュオニソス': (25, '春２', '説教臭い', 'まじゅつ'),  # 32
+    'アルテミス': (75, '春１', '強気', 'バンデット'),  # 33
+    'キャンディー': (75, '森', '弱気', 'りょこう'),  # 34
+    'シャルドネ': (25, '夏１', '強気', 'さけ'),  # 35
+    'ソーピニヨン': (25, '', '一般的', 'ゴルフ'),  # 36
+    'ピオーネ': (25, '', '変な奴', 'ハードロック'),  # 37
+    'ヘラ': (25, '城守', '説教臭い', 'ぶつぞう'),  # 38
+    'セミヨン': (75, '', '泣き虫', 'なつメロ'),  # 39
+    'ポワソン': (25, '水中', '自己陶酔', 'ベースギター'),  # 40
+    'デーメーテール': (25, '', '献身的', 'テコンドー'),  # 41
+    'ユイートル': (25, '水中', '強気', 'エレキギター'),  # 42
+    'ヘパイストス': (75, '', '説教臭い', 'しんやのドライブ'),  # 43
+    'エシャロット': (25, '', '弱気', 'にちようだいく'),  # 44
+    'ミュスカデ': (25, '平地', 'うぬぼれ屋', 'ゲームセンター'),  # 45
+    'アテナ': (25, '城守', '強気', 'あさシャン'),  # 46
+    'エピィ': (25, '冬２', '和風', 'カブキ'),  # 47
+    'ポセイドン': (25, '水中', '一般的', 'パンクロック'),  # 48
+    'ペコリーノ': (25, '', '一般的', 'じだいげき'),  # 49
+    'アポロン': (25, '城攻', 'うぬぼれ屋', 'ワイン'),  # 50
+    'ジェラート': (0, '森', 'うぬぼれ屋', 'ながでんわ'),  # 51
+    'ミルフィーユ': (50, '森', '甘えんぼ', 'きつねがり'),  # 52
+    'ヘスティア': (50, '水中', '献身的', 'ヨット'),  # 53
+    'キール': (50, '', '楽天家', 'てんもんがく'),  # 54
+    'ライム': (50, '', '献身的', 'ふくしょく'),  # 55
+    'レモン': (50, '森', '泣き虫', 'こびじゅつ'),  # 56
+    'フェットチーネ': (50, '春１', '泣き虫', 'しんりんよく'),  # 57
+    'バーミセリ': (50, '山', '身勝手', 'やまあるき'),  # 58
+    'カペリーニ': (50, '夏１', '身勝手', 'プロレス'),  # 59
+    'ブカティーニ': (50, '', '身勝手', 'ローラーブレード'),  # 60
+    'ナストリーニ': (50, '森', '自己陶酔', 'ピアノ'),  # 61
+    'ラビオリ': (50, '', '自己陶酔', 'スケートボード'),  # 62
+    'フェデリーニ': (50, '', '弱気', 'ケーキづくり'),  # 63
+    'カシス': (50, '', '泣き虫', 'マージャン'),  # 64
+    'グレナデン': (50, '', '身勝手', 'オカルト'),  # 65
+    'チキータ': (50, '冬１', '変な奴', 'カエルのかいぼう'),  # 66
+    'ランプータン': (50, '夏２', '一般的', 'スコッチ'),  # 67
+    'ドリアン': (50, '夏１', '一般的', 'エアーガン'),  # 68
+    'マスカット': (50, '秋１', '楽天家', 'ランバダ'),  # 69
+    'マンゴスチン': (75, '', '自己陶酔', 'いじめ'),  # 70
+    'バタール': (50, '', 'お調子者', 'パズル'),  # 71
+    'バゲット': (50, '', 'オタク', 'すうがく'),  # 72
+    'ブリオッシュ': (75, '', '弱気', 'がくもんぜんぱん'),  # 73
+    'バトウラ': (50, '', '楽天家', 'ぶつりがく'),  # 74
+    'ブレッツェル': (50, '', '楽天家', 'ひるね'),  # 75
+    'マフィン': (50, '', '泣き虫', 'さんぽ'),  # 76
+    'ベーグル': (50, '', '弱気', 'きかがく'),  # 77
+    'ミモザ': (75, '森', '甘えんぼ', 'ダジャレ'),  # 78
+    'ショコラ': (75, '', '変な奴', 'いっぱつギャグ'),  # 79
+    'プラリネ': (75, '森', 'お調子者', 'ダイエット'),  # 80
+    'ブラマンジェ': (75, '洞窟', '和風', 'こもんじょ'),  # 81
+    'シフォン': (75, '', '一般的', 'れんきんじゅつ'),  # 82
+    'シュゼット': (50, '', '一般的', '‥‥なビデオ'),  # 83
+    'ブラウニー': (50, '', '弱気', 'おつきみ'),  # 84
+    'キャロット': (75, '', '和風', 'いご'),  # 85
+    'マサラ': (50, '', '和風', 'つり'),  # 86
+    'バラクーダ': (50, '', '超世間的', 'しょうぎ'),  # 87
+    'コンポート': (75, '', '超世間的', 'しゃきょう'),  # 88
+    'ギー': (50, '春２', '一般的', 'はいく'),  # 89
+    'グリッシーニ': (50, '', '強気', 'いくさ'),  # 90
+    'シュガー': (50, '春１', '超世間的', 'ちゃのゆ'),  # 91
+    'オレガノ': (25, '', '強気', 'トライアスロン'),  # 92
+    'ジキタリス': (75, '', '一般的', 'かていいりょう'),  # 93
+    'ローズマリー': (25, '森', '超世間的', 'カンフー'),  # 94
+    'マーマレード': (25, '春２', 'オタク', 'パソコン'),  # 95
+    'サフラン': (25, '', 'オタク', 'こんちゅう'),  # 96
+    'アニス': (25, '森', '楽天家', 'かせきひょうほん'),  # 97
+    'エストラゴン': (25, '', 'オタク', 'ポップアート'),  # 98
+    'エッジ': (50, '', '楽天家', 'バーボン'),  # 99
+    'リディア': (50, '森', '強気', 'アメフト'),  # 100
+    'ガーラント': (50, '', '泣き虫', 'おはなみ'),  # 101
+    'カイン': (50, '', '一般的', 'だいリーグ'),  # 102
+    'グレイ': (50, '', '強気', 'せんそうゲーム'),  # 103
+    'レオンハルト': (50, '城攻', '自己陶酔', 'かくとうぎ'),  # 104
+    'フリオニール': (50, '城攻', 'うぬぼれ屋', 'ポエム'),  # 105
+    'サムソー': (50, '', '一般的', 'ハッキング'),  # 106
+    'ハバティー': (50, '', '献身的', 'ながでんわ'),  # 107
+    'マリボー': (75, '', '献身的', 'キャンプファイア'),  # 108
+    'ラクレット': (50, '森', '一般的', 'ジルバ'),  # 109
+    'エダム': (50, '', '泣き虫', 'どくしょ'),  # 110
+    'リゴット': (50, '', '献身的', 'ぶんつう'),  # 111
+    'ブリー': (75, '', '一般的', 'ビリヤード'),  # 112
+    'マルガリータ': (50, '森', 'うぬぼれ屋', 'ミントチョコ'),  # 113
+    'ジン': (50, '', '一般的', 'ゴーカート'),  # 114
+    'マラスキーノ': (50, '森', '自己陶酔', 'たまごりょうり'),  # 115
+    'アクアビット': (50, '', '一般的', 'カクテル'),  # 116
+    'ラ ターシュ': (50, '', '自己陶酔', 'サボテン'),  # 117
+    'バランタイン': (50, '', '自己陶酔', 'インテリア'),  # 118
+    'カミュ': (50, '森', '泣き虫', 'ドライフラワー'),  # 119
+    'クイーン': (75, '', 'うぬぼれ屋', 'くつコレクション'),  # 120
+    'プリンス': (75, '', 'うぬぼれ屋', 'アスレティック'),  # 121
+    'にせヒーロー': (75, '', '甘えんぼ', 'いたずら'),  # 122
+    'せいめいたい': (75, '', '一般的', 'かいでんぱ'),  # 123
+    'だいじん': (50, '', '説教臭い', 'かんぷまさつ'),  # 124
+    'ココット': (75, '平地', '泣き虫', 'じょうば'),  # 125
+    'ヴィーナス': (50, '森', '一般的', 'テニス'),  # 126
+    'ゼウス': (50, '城攻', '一般的', 'ぶどうぜんぱん'),  # 127
+}
+
+
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
 # Each unit knows exactly two skills; MONSTER_EFFECT_SKILLS is the global set
 # of skills whose effect flag is non-empty (duplicates agree on the flag).
@@ -700,14 +838,38 @@ def egg_drop_value(card: str) -> int | None:
     return EGG_DROP_VALUES.get(card)
 
 
+def egg_drop_remainder(max_hp_sum: int) -> int:
+    """The max-HP-sum value the 卵落 comparison uses: sum mod 16 (#2364).
+
+    The display names this ``余り``; ``egg_drop_threshold`` is its +1 form
+    (the smallest 卵落 that passes). Keeping both avoids teaching the card an
+    off-by-one rule: equality with the remainder does not drop the egg.
+    """
+    return max_hp_sum % EGG_DROP_MOD
+
+
+def card_drop_prediction(card: str, max_hp_sum: int | None) -> dict:
+    """One card's display/decision prediction from the shared 卵落 arithmetic.
+
+    ``drops`` is None whenever a required input is unknown; a missing value is
+    never filled with 0. The battle tactics use ``can_drop_egg`` on the same
+    inputs, so the card cannot show a different verdict from the decision.
+    """
+    value = EGG_DROP_VALUES.get(card)
+    if type(max_hp_sum) is not int or max_hp_sum <= 0 or value is None:
+        return {'name': card, 'id': ALL_CARD_IDS.get(card), 'egg_drop': value,
+                'drops': None}
+    return {'name': card, 'id': ALL_CARD_IDS.get(card), 'egg_drop': value,
+            'drops': value > egg_drop_remainder(max_hp_sum)}
+
+
 def can_drop_egg(card: str, max_hp_sum: int) -> bool:
     """True when this card's 卵落 exceeds the HP-sum remainder (gcgx rule).
 
     ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
     makes its summons unusable for the rest of the battle.
     """
-    value = EGG_DROP_VALUES.get(card)
-    return value is not None and value > max_hp_sum % EGG_DROP_MOD
+    return card_drop_prediction(card, max_hp_sum)['drops'] is True
 
 
 def egg_droppers(cards, max_hp_sum: int) -> list[str]:
@@ -736,7 +898,7 @@ def egg_drop_prediction(enemy_name: str | None, ally_name: str | None) -> dict:
                 'max_hp_sum': None, 'threshold': None, 'droppers': [],
                 '判定不能': True, '理由': 'max_hp_unknown'}
     total = e_hp + a_hp
-    threshold = total % EGG_DROP_MOD
+    threshold = egg_drop_remainder(total)
     return {'enemy_max_hp': e_hp, 'ally_max_hp': a_hp,
             'max_hp_sum': total, 'threshold': threshold, 'droppers': [],
             '判定不能': False, '理由': None}
@@ -750,11 +912,12 @@ def card_egg_drop_info(card: str, enemy_name: str | None,
     この関数は計算上の予測のみ。実際の使用・落下は呼び出し側が別途管理。
     """
     pred = egg_drop_prediction(enemy_name, ally_name)
-    value = egg_drop_value(card)
-    if pred['threshold'] is None or value is None:
+    verdict = card_drop_prediction(card, pred['max_hp_sum'])
+    value = verdict['egg_drop']
+    if verdict['drops'] is None:
         return {**pred, 'card': card, '卵落値': value, 'drops': None,
                 '状態': '判定不能'}
-    drops = value > pred['threshold']
+    drops = verdict['drops']
     return {**pred, 'card': card, '卵落値': value, 'drops': drops,
             '状態': '計算上落とせる' if drops else '不成立'}
 
@@ -791,34 +954,8 @@ def right_status_data(enemy_name: str | None, ally_name: str | None,
 # GENERAL_STATS にない項目を補う。対抗は召喚応答確率、得意は季節・地形。
 # 右ステータスオーバーレイ表示用。
 GENERAL_DETAILS: dict[str, tuple[str, str, str, str]] = {
-    'しゅじんこう': ('50%', '－', '甘えんぼ', 'つまみぐい'),
-    'キャラウェイ': ('50%', '夏２', '変な奴', 'ヘヴィメタル'),
-    'クミン': ('50%', '－', '弱気', 'たてごと'),
-    'コリアンダー': ('50%', '－', '楽天家', 'ハニワ'),
-    'バジル': ('50%', '森', '強気', 'ディスコ'),
-    'ミント': ('50%', '冬１', '弱気', 'たべあるき'),
-    'パプリカ': ('50%', '森', '自己陶酔', 'カジノ'),
-    'シナモン': ('50%', '山', '楽天家', 'よあそび'),
-    'ヘーゼル': ('50%', '水中', '和風', 'すいえい'),
-    'ガルバンゾー': ('50%', '平地', '強気', 'サッカー'),
-    'ラズベリー': ('50%', '森', '献身的', 'おんがく'),
-    'ピスタチオ': ('50%', '秋１', 'オタク', 'れきし'),
-    'マカデミア': ('50%', '－', '弱気', 'サーフィン'),
-    'カシュー': ('50%', '－', '一般的', 'ボクシング'),
-    'クランベリー': ('50%', '森', '身勝手', 'パラグライダー'),
-    'ガスパチョ': ('50%', '－', 'オタク', 'にんぎょう'),
-    'ビシソワーズ': ('50%', '森', 'オタク', 'おっかけ'),
-    'タピオカ': ('50%', '－', '自己陶酔', 'サバイバルゲーム'),
-    'キッシュ': ('50%', '洞窟', '身勝手', 'カルトクイズ'),
-    'ロックフォール': ('50%', '－', '自己陶酔', 'アイドル'),
-    'シェーブル': ('50%', '平地', '献身的', 'ジョギング'),
-    'アマンディーヌ': ('50%', '森', '弱気', 'ケーキづくり'),
-    'チコリ': ('75%', '－', '一般的', 'パッチワーク'),
-    'ビーツ': ('75%', '－', '超世間的', 'ぜん'),
-    'セルリアク': ('75%', '城守', '泣き虫', 'カラオケ'),
-    'アンディーブ': ('25%', '夏１', 'お調子者', 'ボディービル'),
-    'リーキ': ('50%', '春２', '一般的', 'えいがかんしょう'),
-    'トレビス': ('25%', '水中', '強気', 'ダイビング'),
+    name: (f'{counter}%', aptitude or '－', personality, hobby)
+    for name, (counter, aptitude, personality, hobby) in GENERAL_TRAITS.items()
 }
 
 
@@ -851,6 +988,7 @@ def general_full_view(name: str | None) -> dict | None:
     if stats is not None:
         result['戦闘'] = stats[1]
         result['卵補正'] = stats[2]
+        result['エッグ種類'] = stats[3]
         result['思考'] = stats[4]
     if hp is not None:
         result['最大HP'] = hp
@@ -870,6 +1008,31 @@ STRONG_GENERAL_HP_GAP = 20         # 敵の最大HPが味方をこの値以上�
 def general_strength(name: str | None):
     """gcgx shogun.html の (HP, 戦闘, 補正, エッグ種別, 思考)。表に無ければ None。"""
     return GENERAL_STATS.get(name) if name else None
+
+
+def general_profile(name: str | None) -> dict | None:
+    """A general's display record from the static tables (#2364).
+
+    Nine requested fields plus the name: 戦闘・対抗・思考・エッグ種類・卵補正・
+    得意・初登場話数・性格・趣味, and the fixed max HP. Existing tables remain
+    the single source: GENERAL_STATS (HP/戦闘/補正/エッグ/思考), GENERAL_TRAITS
+    (対抗/得意/性格/趣味), GENERAL_DEBUT (初登場話数), GENERAL_EGGS (卵の有無).
+    An unlisted name returns None instead of a zero-filled profile, so callers
+    can show 判定不能 rather than inventing stats.
+    """
+    if not isinstance(name, str) or name not in GENERAL_STATS:
+        return None
+    stats, traits = GENERAL_STATS.get(name), GENERAL_TRAITS.get(name)
+    if stats is None or traits is None:
+        return None
+    from .hanjuku_egg_reference import GENERAL_DEBUT, GENERAL_EGGS
+    hp, combat, egg_bonus, egg_type, thought = stats
+    counter, aptitude, personality, hobby = traits
+    return {'name': name, 'max_hp': hp, 'combat': combat, 'counter': counter,
+            'thought': thought, 'egg_type': egg_type, 'egg_bonus': egg_bonus,
+            'aptitude': aptitude, 'debut': GENERAL_DEBUT.get(name),
+            'personality': personality, 'hobby': hobby,
+            'has_egg': (GENERAL_EGGS.get(name) or (None, None))[0]}
 
 
 # 強制解雇で選ぶ「弱い将軍」の順序 (Issue #2367、owner 2026-10-20 20:45 採用)。
