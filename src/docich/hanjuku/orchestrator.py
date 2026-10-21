@@ -333,8 +333,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     bijin_guard_hold = False
     if actions is None:
         actions = prompts_flow.bijin_guard_step(screen, mem, phase=phase)
-        bijin_guard_hold = (phase == 'dialogue' and actions == []
-                            and (mem.get('bijin_guard') or {}).get('held') is True)
+        bijin_guard_hold = (actions == [] and (
+            mem.get('bijin_gift_hold') is True or
+            phase == 'dialogue' and (mem.get('bijin_guard') or {}).get('held') is True))
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -502,6 +503,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
+            and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
