@@ -50,29 +50,33 @@ def test_recheck_only_month_gates_on_zero_and_still_opens_the_check():
     assert mem['month_sub']['kind'] == 'egg'
 
 
-def test_recheck_only_check_still_yields_to_the_wage_reserve():
+def test_recheck_only_check_opens_even_with_little_cash_no_wage_hold():
     mem, shop = plan(25, uses={'どうし': 4}, recheck=['ピスタチオ'])
     screen = parse(month_canvas(25, on='へいしほじゅう'))
-    assert policy._month_extra(screen, mem, shop) is None
-    assert shop['egg'] == 'skipped'
-    assert 'egg_recover_skip' in decisions(mem)
+    # A recheck costs nothing to open; Issue #2367 removed the wage hold that
+    # used to skip this probe at 25G.
+    assert policy._month_extra(screen, mem, shop) is not None
+    assert shop['egg'] != 'skipped'
+    assert 'egg_recover_skip' not in decisions(mem)
 
 
-def test_measured_price_refuses_a_screen_it_cannot_finish():
+def test_measured_price_opens_a_probe_it_can_pay_one_at_a_time():
     mem, shop = plan(70, uses={'キッシュ': 2, 'ゼウス': 1})
     assert shop['egg_cost'] == 100 and shop['egg'] == 'pending'
     screen = parse(month_canvas(70, on='たまごのかいふく'))
-    assert policy._month_extra(screen, mem, shop, egg_only=True) is None
-    assert shop['egg'] == 'skipped'
+    # Opening the recovery screen pays nothing. 70G can still pay one 50G
+    # recovery, so the probe is allowed; the real quote decides the rest.
+    assert policy._month_extra(screen, mem, shop, egg_only=True) == [policy.pad('a')]
+    assert shop['egg'] != 'skipped'
 
 
 @pytest.mark.parametrize('gold,quote,expected', [
-    (100, '2こで100Gになりまんな', 'b'),   # would leave 0G: the wage floor is gone
-    (130, '2こで100Gになりまんな', 'a'),
-    (60, '1こで50Gになりまんな', 'b'),
-    (80, '1こで50Gになりまんな', 'a'),
+    (99, '2こで100Gになりまんな', 'b'),
+    (100, '2こで100Gになりまんな', 'a'),   # may leave 0G
+    (49, '1こで50Gになりまんな', 'b'),
+    (50, '1こで50Gになりまんな', 'a'),     # may leave 0G
 ])
-def test_quote_never_spends_the_wage_reserve(gold, quote, expected):
+def test_quote_spends_current_gold_without_a_wage_reserve(gold, quote, expected):
     c = Canvas()
     c.text(72, 15, f'1ねん 7のつき {gold}G')
     c.text(24, 183, quote)

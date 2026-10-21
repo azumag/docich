@@ -16,12 +16,12 @@ def memory(count=17, gold=130, uses=4):
     return mem, header
 
 
-@pytest.mark.parametrize('count,expected', [(0, 50), (17, 33), (49, 1), (50, 0), (60, 0)])
+@pytest.mark.parametrize('count,expected', [(0, 50), (17, 33), (49, 1), (50, 50), (60, 40)])
 def test_normal_cash_adds_only_the_shortfall_to_fifty(count, expected):
     mem, header = memory(count=count, gold=100)
     shop = p._plan(mem, header)
     assert shop['soldiers'] == expected
-    assert shop['soldier_total_target'] == 50
+    assert shop['soldier_total_target'] == (100 if count >= 50 else 50)
 
 
 @pytest.mark.parametrize('count,expected', [(17, 83), (50, 50), (60, 40), (99, 1), (100, 0)])
@@ -45,7 +45,7 @@ def test_depleted_egg_is_checked_before_troops_even_with_a_small_army():
 def test_unaffordable_recovery_never_consumes_its_money_on_troops():
     mem, header = memory(uses=1, gold=45)
     shop = p._plan(mem, header)
-    assert shop['reserve'] == 15 and shop['soldiers'] == 0
+    assert shop['reserve'] == 45 and shop['soldiers'] == 0
     for _ in range(4): p.month_step(parse(month_canvas(45, on='へいしほじゅう')), mem)
     assert shop['soldiers_done'] and not shop.get('soldier_receipt')
 

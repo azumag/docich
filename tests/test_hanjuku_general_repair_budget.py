@@ -29,9 +29,9 @@ def plan(mem, gold=84):
 def test_cached_plan_keeps_one_house_gift_and_wages_for_any_broken_general(name):
     mem = memory(name)
     shop = plan(mem)
-    assert shop['soldiers'] == 4
+    assert shop['soldiers'] == 34  # 84G - 50G house fee, no wage hold
     assert p._chikujou_reserve(mem, dict(shop, soldiers_done=True)) == 80
-    assert p._recruit_cash_floor(shop) == 130
+    assert p._recruit_cash_floor(shop) == 100
 
 
 def test_measured_native_16g_quote_is_declined_before_consuming_repair_fund():
