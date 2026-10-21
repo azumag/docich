@@ -94,7 +94,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "nethack",
                 "--games-dir",
                 str(Path(self.g.games_dir).resolve()),
-                "--activity", "NetHack", "--strategy", "AIプレイ配信",
+                "--activity", "NetHack", "--strategy", "AIが迷宮を探索！ 道具と知恵で生き延びられるか",
             ],
         )
         # The script loads its own .env from the Soren root, so it must run
@@ -118,7 +118,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
         self.assertNotIn("--game", call["argv"])
@@ -260,7 +260,7 @@ class TestRunningView(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
 
@@ -303,7 +303,7 @@ class TestRunningView(StreamCategoryTestBase):
 
     def test_unknown_safe_id_is_explicit_and_bad_ids_are_rejected(self) -> None:
         self.assertEqual(viewer_title_args("new-game"),
-                         ["--activity", "new-game", "--strategy", "AIプレイ配信"])
+                         ["--activity", "new-game", "--strategy", "AIはどこまで進めるか？ 試行錯誤のゲーム挑戦"])
         for game in ("", "../secret", "x;id", "bad name"):
             with self.assertRaises(ValueError):
                 viewer_title_args(game)
