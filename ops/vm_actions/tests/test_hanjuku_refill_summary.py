@@ -121,6 +121,26 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.write_records()
         self.assertEqual(self.collect()['refill']['roster'], 'unavailable')
 
+    def test_roster_scope_rejects_numeric_type_aliases(self):
+        active = {**OWNER, 'generation': 1}
+        self.policy.update(_run_identity=active, chapter=1)
+        receipt = {'identity': deepcopy(active), 'chapter': 1, 'month': '3-3',
+                   'tick': 90, 'names': ['PRIVATE-name'], 'complete': True}
+        for field, value in (('generation', 1.0), ('generation', True),
+                             ('chapter', 1.0), ('chapter', True)):
+            with self.subTest(field=field, value=value):
+                seen = deepcopy(receipt)
+                if field == 'generation':
+                    seen['identity'][field] = value
+                else:
+                    seen[field] = value
+                self.policy['recruit_roster'] = seen
+                refill = self.module._project_hanjuku_refill(self.policy, active)
+                self.assertEqual(refill['roster'], 'unavailable')
+        self.policy['recruit_roster'] = receipt
+        self.assertEqual(self.module._project_hanjuku_refill(
+            self.policy, active)['roster'], 'complete_all_seen')
+
     def test_scope_comparison_rejects_boolean_aliases(self):
         self.policy['chapter'] = 1
         for key in ('soldiers_seen_scope',):

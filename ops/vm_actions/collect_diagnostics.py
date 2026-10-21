@@ -8732,7 +8732,9 @@ def _project_hanjuku_refill(mem, active):
         valid_pending = (pending is None or isinstance(pending, list)
                          and len(pending) <= 32
                          and all(isinstance(n, str) and n for n in pending))
-        if seen is None:
+        if (seen is None or not same_identity(seen.get('identity'))
+                or type(seen.get('chapter')) is not int or seen['chapter'] != chapter
+                or type(seen.get('month')) is not str or seen['month'] != month):
             roster_gate = 'unavailable'
         elif seen.get('complete') is not True:
             roster_gate = 'partial'
