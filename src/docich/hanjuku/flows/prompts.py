@@ -204,6 +204,16 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
 
     選択肢と現在行を確認できない間は決定せず、既存の画面所有境界を保つ。
     """
+    if mem.get('bijin_gift_hold') is True:
+        if (mem.get('month_sub') or screen.kind in (
+                'map', 'map_target', 'world_map', 'month_menu', 'battle',
+                'battle_menu', 'egg_battle_menu', 'monster_menu')
+                or readable_prose_screen(screen)):
+            mem.pop('bijin_gift_hold', None)
+        elif screen.kind != 'gift_request':
+            # Losing the text classifier is not evidence that the item menu
+            # ended. Keep its owner across OCR misses instead of blind A/B.
+            return []
     guard = mem.get('bijin_guard')
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation

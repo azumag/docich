@@ -7,11 +7,12 @@ from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_bijin_guard import bijin_pixels, decide_bijin
 
 
-def gifts(gold=1000, selected=0, house='いえ500G'):
+def gifts(gold=1000, selected=0, house='いえ500G', prompt=True):
     c = Canvas()
     if gold is not None:
         c.text(48, 15, f'1ねん 6のつき {gold}G')
-    c.text(24, 39, 'どれか ほしいなー')
+    if prompt:
+        c.text(24, 39, 'どれか ほしいなー')
     for y, text in zip((167, 183, 199), ('こうすい100G', 'くるま200G', house)):
         c.text(168, y, text)
     c.hand(146, (161, 177, 193)[selected])
@@ -61,3 +62,47 @@ def test_public_pixel_path_selects_house_and_does_not_fallback_on_unread_menu():
     actions, state = decide(frame, state)
     assert actions == []
     assert not any(r.get('decision') == 'no_input_fallback' for r in state['_records'])
+
+
+@pytest.mark.parametrize('gold', [999, 1000, 1001])
+def test_complete_bijin_menu_routes_without_readable_request(gold):
+    from docich.hanjuku_bot import decide, NO_INPUT_HOLD_MAX
+    frame = gifts(gold, 2, prompt=False)
+    assert parse(frame).kind == 'gift_request'
+    state = {'policy': {'tick': 10}, 'no_input_frames': [frame.digest()],
+             'no_input_streak': NO_INPUT_HOLD_MAX}
+    actions, state = decide(frame, state)
+    assert actions == ([] if gold < 1000 else [policy.pad('a')])
+    assert not any(r.get('decision') == 'no_input_fallback' for r in state['_records'])
+
+
+def test_changed_item_set_without_request_is_not_bijin_proof():
+    assert parse(gifts(1000, 2, house='コート500G', prompt=False)).kind == 'shop_list'
+
+
+@pytest.mark.parametrize('gold,house', [(999, 'いえ500G'), (None, 'いえ500G'), (1000, '????500G')])
+def test_item_hold_survives_unread_observation_and_json_resume(gold, house):
+    from docich.hanjuku_bot import decide, NO_INPUT_HOLD_MAX
+    from test_hanjuku_bijin_guard import prose_pixels
+    actions, state = decide(gifts(gold, 2, house), {'policy': {'tick': 10}})
+    assert actions == [] and state['policy']['bijin_gift_hold'] is True
+    state = json.loads(json.dumps(state))
+    frame = Canvas((0, 0, 0)).frame()
+    state.update(no_input_frames=[frame.digest()], no_input_streak=NO_INPUT_HOLD_MAX)
+    for _ in range(3):
+        actions, state = decide(frame, state)
+        assert actions == [] and state['policy']['bijin_gift_hold'] is True
+        assert not any(r.get('decision') == 'no_input_fallback' for r in state['_records'])
+    # A positively readable different page releases the episode.
+    actions, state = decide(prose_pixels(), state)
+    assert 'bijin_gift_hold' not in state['policy']
+    assert actions == [policy.pad('a')]
+
+
+@pytest.mark.parametrize('kind', ['map', 'map_target', 'world_map', 'month_menu',
+                                  'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu'])
+def test_item_hold_releases_on_explicit_foreground_end(kind):
+    from docich.hanjuku_screen import Screen
+    mem = {'bijin_gift_hold': True}
+    assert policy.bijin_guard_step(Screen([], None, '', kind=kind), mem) is None
+    assert 'bijin_gift_hold' not in mem
