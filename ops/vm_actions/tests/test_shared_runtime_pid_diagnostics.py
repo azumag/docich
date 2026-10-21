@@ -73,6 +73,56 @@ class SharedRuntimePidTests(unittest.TestCase):
             self.assertNotIn(private, text)
         self.assertTrue(self.mod.compare_shared_runtime_pids(sec, sec)['match'])
 
+    def test_source_refusal_reports_fixed_source_and_reason_only(self):
+        self.producers()
+        state = self.soren / 'tmp/state'
+        stream = state / 'direct_stream/status.json'
+        audio = state / 'audio_worker.pid'
+        original = stream.read_bytes()
+        cases = [
+            ('stream', 'directory_writable', lambda: state.chmod(0o770), lambda: state.chmod(0o700)),
+            ('audio', 'missing', audio.unlink, lambda: audio.write_text('102')),
+            ('audio', 'invalid_pid', lambda: audio.write_text('PRIVATE-secret'), lambda: audio.write_text('102')),
+            ('stream', 'invalid_json', lambda: stream.write_text('PRIVATE-secret'), lambda: stream.write_bytes(original)),
+            ('stream', 'not_running', lambda: stream.write_text('{}'), lambda: stream.write_bytes(original)),
+        ]
+        for source, reason, change, restore in cases:
+            with self.subTest(source=source, reason=reason):
+                try:
+                    change()
+                    sec = self.collect()
+                    self.assertFalse(sec['scan_complete'])
+                    self.assertEqual(sec['failure_stage'], 'producer_sources')
+                    self.assertEqual(sec['failure_source'], source)
+                    self.assertEqual(sec['failure_reason'], reason)
+                    self.assertNotIn('PRIVATE', json.dumps(sec))
+                    self.assertNotIn(str(self.soren), json.dumps(sec))
+                finally:
+                    restore()
+        sec = self.collect()
+        self.assertTrue(sec['scan_complete'])
+        self.assertFalse(any(k.startswith('failure_') for k in sec))
+
+    def test_source_recheck_preserves_phase_and_fixed_refusal(self):
+        from unittest.mock import patch
+        self.producers()
+        original = self.mod._shared_runtime_sources
+        calls = 0
+        def source(root):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise self.mod._SharedRuntimeSourceError('audio', 'missing')
+            return original(root)
+        with patch.object(self.mod, '_shared_runtime_sources', side_effect=source):
+            sec = self.collect()
+        self.assertEqual(sec['failure_stage'], 'source_recheck')
+        self.assertEqual(sec['failure_source'], 'audio')
+        self.assertEqual(sec['failure_reason'], 'missing')
+        self.assertFalse(self.mod.compare_shared_runtime_pids(sec, sec)['match'])
+        unsafe = self.mod._SharedRuntimeSourceError('PRIVATE-source', 'PRIVATE-reason')
+        self.assertEqual((unsafe.source, unsafe.reason), ('unknown', 'unknown'))
+
     def test_unrelated_processes_never_enter_fixed_sets(self):
         self.producers()
         self._make_proc(104, os.getuid(), 'python3', ['python3', 'test_pulseaudio_helpers.py', 'direct_stream', 'shared'], 4000)
