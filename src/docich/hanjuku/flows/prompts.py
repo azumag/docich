@@ -750,7 +750,7 @@ def _bijin_gift_bound(screen: Screen, mem, gold, items):
                 item=name, price=price, gold=gold, deviation_reason='bijin_item_hold_bound',
                 observed_metric={'price': price, 'waits': waits,
                                  'affordable': gold is not None and gold >= price},
-                reason='美女の購入画面は断れず、保留上限を超えたため最安品でイベントを終える（停滞によるrun終了を防ぐ）')
+                reason='美女の購入画面で家（または断り）を確定できないまま保留上限を超えたため、最安品でイベントを終える（停滞によるrun終了を防ぐ）')
         return [pad('a')]
     return [move] if move else []
 
