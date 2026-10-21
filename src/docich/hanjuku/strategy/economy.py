@@ -728,7 +728,8 @@ def _reserve_hero_repair(mem, shop, gold):
         shop.update(hero_repair_reserve=0, hero_repair_deferred=reason)
         if released or previous != reason:
             _record(mem, 'hero_repair_funds_released', month=shop.get('key'),
-                    observed_metric={'released': released, 'gold': gold, 'condition': reason,
+                    observed_metric={'released': released, 'building_floor_released': max(50, released),
+                                     'gold': gold, 'condition': reason,
                                      'observed_tick': (mem.get('house_eggs') or {})[NAME]['observed_tick']},
                     reason='同一ラン・章・月の新しい観測で修理不能を確認したため主人公の修理予約を解放する')
         return
@@ -1029,6 +1030,9 @@ def _recruit_egg_ready(mem, shop):
 
 def _chikujou_reserve(mem, shop):
     """Only money left after unfinished necessities may fund optional building."""
+    hero_reserve = shop.get('hero_repair_reserve', 0)
+    if type(hero_reserve) is not int or hero_reserve < 0:
+        return None  # unknown repair cash cannot become optional spending
     def amount(value):
         return value if type(value) is int and value > 0 else 0
 

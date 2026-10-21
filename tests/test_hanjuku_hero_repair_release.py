@@ -106,3 +106,21 @@ def test_real_month_menu_reopens_low_army_refill_after_release():
     assert mem['shop']['soldiers_done'] is False
     assert p.month_step(screen(65, on='へいしほじゅう'), mem) == [p.pad('a')]
     assert not mem['shop'].get('soldier_receipt')
+
+
+@pytest.mark.parametrize('bad', ['50', True, -1, None])
+def test_malformed_reservation_never_becomes_optional_spending(bad):
+    mem = memory(); mem['shop']['hero_repair_reserve'] = bad
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    assert mem['shop']['hero_repair_reserve'] is bad
+    assert e._soldier_spendable(mem, mem['shop'], header()) is None
+    assert e._chikujou_reserve(mem, mem['shop']) is None
+
+
+@pytest.mark.parametrize('stored', [0, 20, 50, 60])
+def test_log_distinguishes_stored_cash_from_implicit_building_floor(stored):
+    mem = memory(); mem['shop']['hero_repair_reserve'] = stored
+    e._reserve_hero_repair(mem, mem['shop'], 65)
+    detail = mem['_records'][-1]['observed_metric']
+    assert detail['released'] == stored
+    assert detail['building_floor_released'] == max(50, stored)
