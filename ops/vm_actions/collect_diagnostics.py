@@ -11242,7 +11242,7 @@ def _shared_runtime_process(soren, proc_root, role, pid):
         os.close(directory)
 
 
-def _shared_runtime_pipeline(docich_root, adapter, boot_id, now_ns):
+def _shared_runtime_pipeline(docich_root, adapter, boot_id):
     parts = ('twica-common', 'pipeline.json')
     fd, directory, before = _stream_title_open_fixed(Path(docich_root) / 'run', parts)
     try:
@@ -11253,6 +11253,7 @@ def _shared_runtime_pipeline(docich_root, adapter, boot_id, now_ns):
                 or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
             raise ValueError('changed pipeline')
         data = json.loads(raw)
+        now_ns = time.monotonic_ns()  # Sample after the atomic heartbeat read.
         if (not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1
                 or type(data.get('pid')) is not int or data['pid'] != adapter['pid']
                 or data.get('identity') != f"{boot_id}:{adapter['start_ticks']}"
@@ -11276,7 +11277,7 @@ def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id):
         raise ValueError('unrelated encoder')
     shared = [runner]
     if child['kind'] == 'adapter':
-        native_pid = _shared_runtime_pipeline(docich_root, child, boot_id, time.monotonic_ns())
+        native_pid = _shared_runtime_pipeline(docich_root, child, boot_id)
         native = _shared_runtime_process(soren, proc_root, 'encoder', native_pid)
         if native['kind'] != 'native':
             raise ValueError('native encoder missing')

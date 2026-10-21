@@ -160,6 +160,28 @@ class SharedRuntimePidTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(out))
         self.assertTrue(self.mod.compare_shared_runtime_pids(out, out)['match'])
 
+    def test_heartbeat_updated_during_open_uses_read_completion_time(self):
+        file, record = self.pipeline()
+        from unittest.mock import patch
+        original = self.mod._stream_title_open_fixed
+        clock = [1000]
+        def opened(root, parts):
+            if parts[-1] == 'pipeline.json':
+                clock[0] += 1
+                file.write_text(json.dumps({**record, 'monotonic_ns': clock[0]}))
+            return original(root, parts)
+        with patch.object(self.mod, '_stream_title_open_fixed', side_effect=opened), \
+                patch.object(self.mod.time, 'monotonic_ns', side_effect=lambda: clock[0]):
+            self.assertTrue(self.collect()['scan_complete'])
+
+    def test_future_and_expired_heartbeat_are_partial(self):
+        file, record = self.pipeline()
+        from unittest.mock import patch
+        with patch.object(self.mod.time, 'monotonic_ns', return_value=4_000_000_000):
+            for stamp in (4_000_000_001, 1_000_000_000):
+                file.write_text(json.dumps({**record, 'monotonic_ns': stamp}))
+                self.assertFalse(self.collect()['scan_complete'])
+
     def test_wrong_parent_or_pipeline_evidence_is_partial(self):
         file, record = self.pipeline()
         for change in ({'schema': True}, {'pid': 999}, {'identity': 'wrong'},
