@@ -86,7 +86,7 @@ class LiveProgressTests(TitleContextTests):
         (self.root/'game_switch.json').write_text(json.dumps(dict(phase='ready', active=identity)))
         runtime = self.root/'runtimes'/'g9-abcdef'
         runtime.mkdir(parents=True, exist_ok=True)
-        run = dict(identity, playing=True, observed_at=time.time())
+        run = dict(identity, schema=1, frame_sha256='b'*64, playing=True, observed_at=time.time(), terminal_candidate=False, terminal_reason=None)
         run.update(changes)
         (runtime/'hanjuku_run.json').write_text(json.dumps(run))
         (runtime/'hanjuku_progress.json').write_text(json.dumps(dict(identity, schema=1, cleared=2, ambiguous=False, frame_sha256='a'*64)))
@@ -103,7 +103,7 @@ class LiveProgressTests(TitleContextTests):
         import time
         for changes in ({'observed_at':time.time()-120}, {'observed_at':float('nan')},
                         {'observed_at':time.time()+120}, {'playing':False},
-                        {'lease_id':'old'}, {'generation':True}, {'terminal_candidate':{'reason':'end'}}):
+                        {'lease_id':'old'}, {'generation':True}, {'schema':None}, {'schema':True}, {'schema':999}, {'frame_sha256':'bad'}, {'terminal_candidate':{'reason':'end'}}):
             with self.subTest(changes=changes):
                 self.live(**changes)
                 self.assertIsNone(self.phrase('hanjuku-hero'))

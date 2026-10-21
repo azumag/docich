@@ -89,6 +89,13 @@ def _active_hanjuku_progress(state_dir: Path) -> str | None:
     if any(type(row.get(k)) is not type(active[k]) or row.get(k) != active[k]
            for row in (run, progress) for k in keys):
         return None
+    digest = run.get('frame_sha256')
+    if (type(run.get('schema')) is not int or run['schema'] != 1
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(c not in '0123456789abcdef' for c in digest)
+            or run.get('terminal_candidate') is not False
+            or 'terminal_reason' not in run or run['terminal_reason'] is not None):
+        return None
     observed = run.get('observed_at')
     if (type(observed) not in (float, int) or not math.isfinite(observed)
             or not 0 <= time.time() - observed <= 60
