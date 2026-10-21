@@ -1086,7 +1086,7 @@ def test_the_y_view_silent_without_markers():
     assert not decisions(mem, 'world_map_units')
 
 
-def test_a_winter_map_without_readable_roofs_trusts_the_confirmed_jump(monkeypatch):
+def test_a_winter_map_without_readable_roofs_cannot_confirm_a_cached_jump(monkeypatch):
     # g421 18:13: winter repainted the map, the G stood on フーリック's castle,
     # no roof was read and the jump was reopened six times.
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
@@ -1095,7 +1095,7 @@ def test_a_winter_map_without_readable_roofs_trusts_the_confirmed_jump(monkeypat
     marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
     mem = {'chapter': 2, '_records': [], 'y_jumped': {'2-Z1': 'フーリック'}}
     assert policy._align_on_roof(marker, mem, FRAME, ('enemy',), '2-Z1:target') == 'on'
-    assert policy._target_roof_under_marker(marker, mem, FRAME, order) is True
+    assert policy._target_roof_under_marker(marker, mem, FRAME, order) is False
     # Without a jump to that castle there is still no confirmation by guesswork.
     assert policy._target_roof_under_marker(marker, {'chapter': 2, '_records': []}, FRAME, order) is False
 
@@ -1485,3 +1485,28 @@ def test_a_recent_world_map_enemy_flag_vetoes_a_roof_capture(flag_age, captured)
     assert ('スペンソニア' in mem['captured']) is captured
     vetoes = decisions(mem, 'castle_owned_vetoed')
     assert (len(vetoes) == 1) is (not captured)
+
+
+@pytest.mark.parametrize('missing', ['frame', 'marker'])
+def test_target_confirmation_requires_current_image_and_marker(missing):
+    order = {'step': '2-Z1', 'target': 'フーリック'}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target',
+                    marker=None if missing == 'marker' else (140, 120))
+    mem = {'chapter': 2, 'y_jumped': {'2-Z1': 'フーリック'}}
+    assert not policy._target_roof_under_marker(marker, mem, None if missing == 'frame' else FRAME, order)
+
+
+def test_arrived_navigation_with_cached_jump_cannot_send_sortie_to_open_ground(monkeypatch):
+    order = {'step': '2-Z1', 'general': 'ゼウス', 'source': 'アルマムーン',
+             'target': 'フーリック', 'cards': (), 'after': None, 'note': 'test'}
+    mem = {'chapter': 2, '_records': [], 'y_jumped': {'2-Z1': 'フーリック'}}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    monkeypatch.setattr(policy, '_order', lambda _mem: order)
+    monkeypatch.setattr(policy, '_near_goal', lambda *a: False)
+    monkeypatch.setattr(policy, '_want_y_jump', lambda *a: False)
+    monkeypatch.setattr(policy, 'nav_step', lambda *a: 'arrived')
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *a: [])
+    assert policy.target_step(marker, mem, FRAME) == []
+    assert mem['target_miss']['2-Z1'] == 1
+    assert not mem.get('launched') and not mem.get('sorties')
+    assert decisions(mem, 'target_not_under_marker')

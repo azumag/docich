@@ -472,14 +472,14 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
     """
     s = _cursor(screen)
     if not s or frame is None:
-        return True
+        return False
     if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
         # Accept it only when a Y jump placed the marker on it.
         return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
     roofs = castle_roofs(frame)
-    if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
-        return True                           # winter palette: trust the Y jump (g421 18:13)
+    # A prior Y jump is a navigation hint, not current evidence of a roof.
+    # An unread winter palette must withhold confirmation too.
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX

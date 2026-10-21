@@ -189,6 +189,8 @@ def test_confirmed_card_names_record_selected_and_planned_generals_separately():
 def test_launch_record_uses_selected_general_and_keeps_chart_general(monkeypatch):
     mem = memory()
     mem.update(active='1-A2', orders={'1-A2': 'pending'}, general_override={'1-A2': 'ゼウス'})
+    # This record/context unit test supplies already-verified target evidence.
+    monkeypatch.setattr(policy, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     rec = mem['_records'][-1]
@@ -261,6 +263,8 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
     mem['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
     mem['general_override'] = {'1-B1': 'どうし'}
+    # This record/context unit test supplies already-verified target evidence.
+    monkeypatch.setattr(policy, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     assert mem['launched']['けっかい']['general'] == 'ゼウス'
@@ -299,6 +303,8 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
     if retry:
         mem['retry_context'] = {'1-A2': context}
     nav_results = iter([[policy.pad('down')], 'arrived'])
+    # This record/context unit test supplies already-verified target evidence.
+    monkeypatch.setattr(policy, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(policy, 'nav_step', lambda *args: next(nav_results))
     screens = [menu('castle_menu', ['しゅつげき']),
                menu('general_list', ['ゼウス', 'どうし']),
@@ -986,6 +992,8 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     # Hot-load/adopted-plan bookkeeping cannot relabel the already confirmed
     # unit. Even a changed override must keep the selected companion.
     mem['general_override']['1-B1'] = 'どうし'
+    # Actor binding test: navigation and target evidence are supplied.
+    monkeypatch.setattr(policy, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     assert mem['sorties']['1-B1']['general'] == mem['launched']['けっかい']['general'] == 'ゼウス'
