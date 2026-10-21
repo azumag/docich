@@ -166,3 +166,47 @@ def test_diagnostics_allows_current_policy_without_arbitrary_text():
     assert module._project_corner_state({'bot_version': accepted})['bot_version'] == accepted
     for value in ('not-allowlisted-token', BOT_VERSION + '-extra', None):
         assert module._project_corner_state({'bot_version': value})['bot_version'] is None
+
+
+def leek_memory(hp=15):
+    """Synthetic report-shaped state; enemy/counts are not a captured run."""
+    mem = memory(hp=hp, enemy_hp=20, soldiers=(6, 0))
+    cur = mem['battle']
+    cur['ally'] = cur['melee_opening_scope'][1] = 'リーキ'
+    mem['egg_uses'] = {'リーキ': 1}
+    return mem
+
+
+@pytest.mark.parametrize('hp', [13, 15, 20])
+@pytest.mark.parametrize('side', ['attack', 'defense'])
+def test_leek_low_hp_keeps_egg_with_observed_army_and_combat_advantage(hp, side):
+    mem = leek_memory(hp)
+    cur = mem['battle']
+    cur['side'] = side
+    evidence = _melee_continuation_evidence(mem, cur)
+    assert evidence['ally_combat'] > evidence['enemy_combat']
+    assert evidence['ally_force'] > 2 * evidence['enemy_force']
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    assert cur['survival']['egg_attempted'] is False
+    assert mem['egg_uses']['リーキ'] == 1
+
+
+@pytest.mark.parametrize('change', [
+    {'ally_hp': 12}, {'ally_soldiers': None}, {'enemy_soldiers': None},
+    {'card_soldiers_current': False}, {'ally_soldiers': 0},
+    {'enemy_soldiers': 6}, {'card_summon_observed': True},
+    {'egg_battle': True}, {'card_hp_unread': True},
+    {'ally_hp': 14},  # Our HP falls without any enemy progress.
+])
+def test_leek_low_hp_conservation_requires_current_advantage(change):
+    mem = leek_memory()
+    mem['battle'].update(change)
+    assert not p._hold_melee_egg(mem, mem['battle'], {'たまごをつかう'})
+
+
+def test_leek_low_hp_conservation_ends_at_critical_hp():
+    mem = leek_memory(13)
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    mem['battle']['ally_hp'] = 12
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('a')]
+    assert mem['battle']['survival']['egg_attempted'] is True
