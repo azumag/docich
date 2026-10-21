@@ -145,8 +145,8 @@ def test_a_spare_dropper_opens_the_battle_to_force_the_egg_drop():
     assert not state['battle'].get('enemy_egg_dropped')
 
 
-def test_a_charted_dropper_stays_with_the_chart_and_is_not_an_opening_tactic():
-    # 82+30=112, 余り0。フットバースは成立してもチャートが所有する。
+def test_a_charted_dropper_takes_opening_priority_and_is_not_spent_twice():
+    # 82+30=112, 余り0。owner指定で成立札をチャートより先に使う。
     state = mem('1-V2', ally='ヴィーナス')
     opening(state, 'ガルバンゾー', 30, 'ヴィーナス', 82)
     plan = state['battle']['egg_plan']
@@ -154,10 +154,19 @@ def test_a_charted_dropper_stays_with_the_chart_and_is_not_an_opening_tactic():
     assert 'フットバース' in plan['charted']
     assert 'フットバース' in plan['droppers']
     assert next(row for row in plan['cards'] if row['name'] == 'フットバース')['drops'] is True
-    assert plan['dropper'] is None
-    assert policy._egg_drop_tactics(state, state['battle'], 'ガルバンゾー', plan) == []
-    flow = state['battle'].get('card_flow')
-    assert flow is None or not str(flow.get('tactic_id', '')).startswith('eggdrop:')
+    assert plan['dropper'] == 'フットバース'
+    view = screen('ガルバンゾー', 30, 'ヴィーナス', 82)
+    policy.battle_step(view, state)
+    cur = state['battle']
+    assert cur['card_flow']['tactic_id'].startswith('eggdrop:')
+    cur['cards_selected'] = ['フットバース']
+    cur['card_flow'].update(stage='announce', selection_planned=True)
+    from docich.hanjuku.judgment.battle import _card_use_unclassified
+    _card_use_unclassified(state, cur, 'opening card selected')
+    cur['clashed'] = True
+    policy.battle_step(view, state)
+    assert cur.get('card_flow') is None
+    assert not policy._egg_plan(state, cur)['droppers']
 
 
 def test_the_display_plan_and_the_tactic_use_the_same_max_hp_arithmetic():

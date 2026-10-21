@@ -883,9 +883,8 @@ def _egg_plan(mem, cur):
             and egg_state == 'available'):
         cur['egg_plan'] = plan
         return plan
-    # チャートが指す札は開幕の卵落に回さない (チャート優先の維持、#2364 方針)。
-    # 除外は選択のみに適用し、判定 (droppers/threshold) は全携行札で残す。
-    free = [card for card in plan['droppers'] if card not in plan['charted']]
+    # Owner 2026-10-21: 成立する開幕卵落を後続チャートの札予約より優先する。
+    free = list(plan['droppers'])
     # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
     plan['dropper'] = None if not free else min(free, key=lambda card: (
         -reference.egg_drop_value(card),
@@ -900,12 +899,9 @@ def _egg_plan(mem, cur):
 
 
 def _egg_drop_tactics(mem, cur, enemy, plan=None):
-    """チャートが指していない卵落札を開幕に使う戦術 (#2364)。
+    """成立する未使用の携行札を、後続チャートより先に開幕で使う。
 
-    チャート優先を維持する: チャートが同じ札をHPゲートや after_clash で指す
-    戦闘では発動しない (plan['dropper'] は指されていない札だけから選ぶ)。
-    その競合の優先順位は未決で、Issue #2364 は完了にしない。
-    不成立・判定不能・卵なし・使用不能では発動しない。
+    未知・不成立・卵なし・使用不能は発動しない。実メニューで再確認する。
     """
     plan = _egg_plan(mem, cur) if plan is None else plan
     card = plan.get('dropper')

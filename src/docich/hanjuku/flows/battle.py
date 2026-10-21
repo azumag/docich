@@ -555,18 +555,30 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
                           else mem.get('card_override', {}).get(cur.get('step')) or [])]
-    # 卵ディニアル札はチャートの戦術より後ろに置く（チャートが指す札・タイミングを
-    # 優先し、チャートが指していない携行札だけを開幕の卵落に使う）。
+    # 元の並びはtactic ID用に保ち、実行順だけ救済extra→成立する開幕卵落→
+    # チャート/強敵札とする（2026-10-21オーナー指定）。
     egg_plan = _egg_plan(mem, cur)
     tactics = [*extra, *_tactics(mem, cur.get('step')),
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
     done = cur.setdefault('tactics_done', [])
-    for index, tactic in enumerate(tactics):
+    # Preserve original indexes (chart tactic IDs) while prioritizing egg drop.
+    ordered = sorted(enumerate(tactics), key=lambda item: (
+        0 if item[0] < len(extra) else 1 if item[1].get('egg_drop_only') else 2))
+    for index, tactic in ordered:
         tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if not _tactic_enemy_ok(tactic, b.enemy, cur) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
+            continue
+        # A card consumed by the opening tactic cannot be spent again by the
+        # later chart; another carried copy remains eligible.
+        inventory = next((row for row in egg_plan.get('cards', [])
+                          if row['name'] == tactic['card']), None)
+        consumed = [*(cur.get('cards_selected') or []),
+                    *((mem.get('kit_spent') or {}).get(cur.get('step')) or [])]
+        if (tactic['card'] in consumed and egg_plan.get('kit_known')
+                and (inventory is None or inventory.get('available') == 0)):
             continue
         if (tactic.get('boss_only')
                 and not _boss_tactics_allowed(mem, cur)):
