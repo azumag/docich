@@ -210,3 +210,17 @@ def test_leek_low_hp_conservation_ends_at_critical_hp():
     mem['battle']['ally_hp'] = 12
     assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('a')]
     assert mem['battle']['survival']['egg_attempted'] is True
+
+
+def test_low_hp_army_margin_does_not_excuse_inferior_general_combat():
+    mem = memory(hp=13, enemy_hp=7, soldiers=(6, 0))
+    cur = mem['battle']
+    cur.update(ally='クミン', enemy='リーキ')
+    cur['melee_opening_scope'][1:3] = ['クミン', 'リーキ']
+    mem['egg_uses'] = {'クミン': 1}
+    balance = p._melee_balance(cur)
+    assert balance['ally_force'] > 2 * balance['enemy_force']
+    assert balance['ally_melee_score'] > 2 * balance['enemy_melee_score']
+    assert balance['ally_combat'] < balance['enemy_combat']
+    assert _melee_continuation_evidence(mem, cur) is None
+    assert not p._hold_melee_egg(mem, cur, {'たまごをつかう'})
