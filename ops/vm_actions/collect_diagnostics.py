@@ -11322,8 +11322,8 @@ def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Pat
         section['failure_stage'] = 'source_recheck'
         if pids != _shared_runtime_sources(soren):
             return section
-        again = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, section)
         section['failure_stage'] = 'identity_recheck'
+        again = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
         if entries != again or boot_id != _shared_runtime_boot_id(proc_root):
             return section
         for role, rows in entries.items():

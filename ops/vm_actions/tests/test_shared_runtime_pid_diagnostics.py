@@ -231,6 +231,27 @@ class SharedRuntimePidTests(unittest.TestCase):
             self.assertFalse(self.mod.compare_shared_runtime_pids(result, result)['match'])
             self.assertTrue(all(not row['entries'] for row in result['roles'].values()))
 
+    def test_second_chain_exception_stays_a_recheck_failure(self):
+        from unittest.mock import patch
+        self.producers()
+        original = self.mod._shared_runtime_process
+        for fail_call in (4, 5, 6):
+            calls = 0
+            def fail_on_recheck(*args):
+                nonlocal calls
+                calls += 1
+                if calls == fail_call:
+                    raise OSError('PRIVATE /secret/path')
+                return original(*args)
+            with self.subTest(fail_call=fail_call), patch.object(
+                    self.mod, '_shared_runtime_process', side_effect=fail_on_recheck):
+                result = self.collect()
+                self.assertEqual(result['failure_stage'], 'identity_recheck')
+                self.assertFalse(result['scan_complete'])
+                self.assertFalse(self.mod.compare_shared_runtime_pids(result, result)['match'])
+                self.assertNotIn('PRIVATE', json.dumps(result))
+                self.assertTrue(all(not row['entries'] for row in result['roles'].values()))
+
     def test_pipeline_and_audio_failures_identify_stage(self):
         file, record = self.pipeline()
         file.write_text(json.dumps({**record, 'ready': False}))
