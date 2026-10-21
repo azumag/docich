@@ -421,7 +421,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -434,6 +434,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/start_hanjuku_corner.sh",
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
+            "control/ops/vm_actions/control_hanjuku_prediction.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",

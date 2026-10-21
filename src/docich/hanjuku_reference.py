@@ -13,6 +13,8 @@ Sources:
 """
 from __future__ import annotations
 
+from docich.hanjuku_egg_reference import general_max_hp, general_debut_chapter
+
 # 切り札 basic stats: the whole gcgx kirihuda.html table (decimal ID 0..31).
 # Owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内部でデータとして持って」
 # → 全32札を保持し、gcgx kirihuda.html と https://wikiwiki.jp/hjksfc/切り札
@@ -704,6 +706,148 @@ def egg_droppers(cards, max_hp_sum: int) -> list[str]:
     """
     return sorted((card for card in dict.fromkeys(cards) if can_drop_egg(card, max_hp_sum)),
                   key=lambda card: (-EGG_DROP_VALUES[card], ALL_CARD_IDS.get(card, 99), card))
+
+
+def egg_drop_prediction(enemy_name: str | None, ally_name: str | None) -> dict:
+    """卵落予測の完全な計算結果。右ステータス表示と戦術で共用する。
+
+    threshold = (敵最大HP + 味方最大HP) % 16
+    成立条件 = 札の卵落値 > threshold
+
+    最大HPが不明な場合は threshold=None で返す (fail-closed)。
+    0で穴埋めしない。
+    """
+    e_hp = general_max_hp(enemy_name)
+    a_hp = general_max_hp(ally_name)
+    if e_hp is None or a_hp is None:
+        return {'enemy_max_hp': e_hp, 'ally_max_hp': a_hp,
+                'max_hp_sum': None, 'threshold': None, 'droppers': [],
+                '判定不能': True, '理由': 'max_hp_unknown'}
+    total = e_hp + a_hp
+    threshold = total % EGG_DROP_MOD
+    return {'enemy_max_hp': e_hp, 'ally_max_hp': a_hp,
+            'max_hp_sum': total, 'threshold': threshold, 'droppers': [],
+            '判定不能': False, '理由': None}
+
+
+def card_egg_drop_info(card: str, enemy_name: str | None,
+                       ally_name: str | None) -> dict:
+    """札ごとの卵落判定。表示と戦術で同じ計算結果を使う。
+
+    「計算上落とせる」「敵が現在卵を持つ/使える」「実際に落とした」を区別する。
+    この関数は計算上の予測のみ。実際の使用・落下は呼び出し側が別途管理。
+    """
+    pred = egg_drop_prediction(enemy_name, ally_name)
+    value = egg_drop_value(card)
+    if pred['threshold'] is None or value is None:
+        return {**pred, 'card': card, '卵落値': value, 'drops': None,
+                '状態': '判定不能'}
+    drops = value > pred['threshold']
+    return {**pred, 'card': card, '卵落値': value, 'drops': drops,
+            '状態': '計算上落とせる' if drops else '不成立'}
+
+
+def right_status_data(enemy_name: str | None, ally_name: str | None,
+                      held_cards: list[str] | None = None,
+                      carried_cards: list[str] | None = None) -> dict:
+    """右ステータスオーバーレイ表示用データを集約する。
+
+    敵・味方将軍の詳細、所持切り札、卵落予測をまとめる。
+    held_cards: 現在の所持品（在庫全体）。carried_cards: この戦闘へ携行していて
+    実際に使える札。carried_cards が None の場合は held_cards と同じ扱い。
+    未携行の在庫を使用候補にしない。
+    """
+    pred = egg_drop_prediction(enemy_name, ally_name)
+    held = list(held_cards or [])
+    carried = list(carried_cards if carried_cards is not None else (held_cards or []))
+    droppers = egg_droppers(carried, pred['max_hp_sum']) if pred['max_hp_sum'] is not None else []
+    cards_info = []
+    for card in dict.fromkeys(held):
+        info = card_egg_drop_info(card, enemy_name, ally_name)
+        info['携行'] = card in carried
+        cards_info.append(info)
+    return {
+        'enemy': general_full_view(enemy_name),
+        'ally': general_full_view(ally_name),
+        'egg_drop': pred,
+        'droppers': droppers,
+        'cards': cards_info,
+    }
+
+
+# 将軍詳細 (gcgx shogun.html 2026-10-20 取得)。
+# GENERAL_STATS にない項目を補う。対抗は召喚応答確率、得意は季節・地形。
+# 右ステータスオーバーレイ表示用。
+GENERAL_DETAILS: dict[str, tuple[str, str, str, str]] = {
+    'しゅじんこう': ('50%', '－', '甘えんぼ', 'つまみぐい'),
+    'キャラウェイ': ('50%', '夏２', '変な奴', 'ヘヴィメタル'),
+    'クミン': ('50%', '－', '弱気', 'たてごと'),
+    'コリアンダー': ('50%', '－', '楽天家', 'ハニワ'),
+    'バジル': ('50%', '森', '強気', 'ディスコ'),
+    'ミント': ('50%', '冬１', '弱気', 'たべあるき'),
+    'パプリカ': ('50%', '森', '自己陶酔', 'カジノ'),
+    'シナモン': ('50%', '山', '楽天家', 'よあそび'),
+    'ヘーゼル': ('50%', '水中', '和風', 'すいえい'),
+    'ガルバンゾー': ('50%', '平地', '強気', 'サッカー'),
+    'ラズベリー': ('50%', '森', '献身的', 'おんがく'),
+    'ピスタチオ': ('50%', '秋１', 'オタク', 'れきし'),
+    'マカデミア': ('50%', '－', '弱気', 'サーフィン'),
+    'カシュー': ('50%', '－', '一般的', 'ボクシング'),
+    'クランベリー': ('50%', '森', '身勝手', 'パラグライダー'),
+    'ガスパチョ': ('50%', '－', 'オタク', 'にんぎょう'),
+    'ビシソワーズ': ('50%', '森', 'オタク', 'おっかけ'),
+    'タピオカ': ('50%', '－', '自己陶酔', 'サバイバルゲーム'),
+    'キッシュ': ('50%', '洞窟', '身勝手', 'カルトクイズ'),
+    'ロックフォール': ('50%', '－', '自己陶酔', 'アイドル'),
+    'シェーブル': ('50%', '平地', '献身的', 'ジョギング'),
+    'アマンディーヌ': ('50%', '森', '弱気', 'ケーキづくり'),
+    'チコリ': ('75%', '－', '一般的', 'パッチワーク'),
+    'ビーツ': ('75%', '－', '超世間的', 'ぜん'),
+    'セルリアク': ('75%', '城守', '泣き虫', 'カラオケ'),
+    'アンディーブ': ('25%', '夏１', 'お調子者', 'ボディービル'),
+    'リーキ': ('50%', '春２', '一般的', 'えいがかんしょう'),
+    'トレビス': ('25%', '水中', '強気', 'ダイビング'),
+}
+
+
+def general_details(name: str | None) -> dict | None:
+    """将軍の詳細データ (対抗、得意、性格、趣味)。無ければ None。"""
+    if name is None:
+        return None
+    row = GENERAL_DETAILS.get(name)
+    if row is None:
+        return None
+    return {'name': name, '対抗': row[0], '得意': row[1],
+            '性格': row[2], '趣味': row[3]}
+
+
+def general_full_view(name: str | None) -> dict | None:
+    """将軍の完全な表示データ。GENERAL_STATS + GENERAL_DEBUT + GENERAL_DETAILS。
+
+    右ステータスオーバーレイ表示用。最大HP・戦闘・対抗確率・思考・
+    エッグ種類・卵補正・得意・初登場話数・性格・趣味をまとめる。
+    """
+    if name is None:
+        return None
+    stats = general_strength(name)
+    hp = general_max_hp(name)
+    debut = general_debut_chapter(name)
+    details = general_details(name)
+    if stats is None and hp is None and details is None:
+        return None
+    result: dict = {'name': name}
+    if stats is not None:
+        result['戦闘'] = stats[1]
+        result['卵補正'] = stats[2]
+        result['思考'] = stats[4]
+    if hp is not None:
+        result['最大HP'] = hp
+    if debut is not None:
+        result['初登場話数'] = debut
+    if details is not None:
+        result.update({'対抗': details['対抗'], '得意': details['得意'],
+                       '性格': details['性格'], '趣味': details['趣味']})
+    return result
 
 
 # 強い将軍の主判定 (owner 2026-10-03: 「まずは戦闘の値とHPでわかる」)。

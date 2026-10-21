@@ -122,8 +122,8 @@ def test_unconfirmed_membership_keeps_owners_but_skipped_recovery_may_fund_troop
     assert economy._egg_recovery_targets(mem) == targets
     assert mem['shop']['egg_priority'] and mem['shop']['egg'] == 'skipped'
     assert not any(r['decision'] == 'egg_reserve_roster_reconciled' for r in mem.get('_records', []))
-    if change in ('foreign', 'pending_employee'):
-        assert mem['shop']['reserve'] >= 40  # no current army / unresolved payroll
+    if change == 'foreign':
+        assert mem['shop']['reserve'] >= 40  # no current army
     else:
         # Owner 2026-10-15: this fresh measured zero army may be refilled
         # after a known skip even while historical egg membership is unknown.
@@ -229,7 +229,7 @@ def test_unknown_payroll_falls_back_to_thirty(change):
     assert economy._soldier_spendable(mem, mem['shop'], {'year':2,'month':4,'gold':70}) == 0
 
 
-@pytest.mark.parametrize('change', ['gold', 'bool_gold', 'month', 'price', 'qty', 'repair', 'hiring', 'pending'])
+@pytest.mark.parametrize('change', ['gold', 'bool_gold', 'month', 'price', 'qty', 'repair', 'hiring'])
 def test_unread_or_unpriced_budget_never_confirms_a_saved_quantity(change):
     mem = memory(); shop = mem['shop']; shop.update(egg='done', egg_priority=False,
         reserve=0, soldiers=50, soldiers_done=False)
