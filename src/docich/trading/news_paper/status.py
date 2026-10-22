@@ -106,9 +106,12 @@ def _existing_ledger_path(state_dir: str | Path, run_id: str, scenario_id: str) 
     current = Path(path.anchor)
     for part in (*path.parts[1:], DB_FILE_NAME):
         current = current / part
-        if not os.path.lexists(current):
+        try:
+            info = os.lstat(current)
+        except (FileNotFoundError, NotADirectoryError):
             return None
-        info = os.lstat(current)
+        except PermissionError as exc:
+            raise StatusError("STORE_UNAVAILABLE") from exc
         if stat.S_ISLNK(info.st_mode):
             raise StatusError("STATE_PATH_FORBIDDEN")
         if part == DB_FILE_NAME:
@@ -120,8 +123,21 @@ def _existing_ledger_path(state_dir: str | Path, run_id: str, scenario_id: str) 
 
 
 def _open_ro(path: Path) -> sqlite3.Connection | None:
+    """Open the dedicated store read-only.
+
+    A clean (checkpointed) store is opened with ``immutable=1`` so that SQLite
+    creates neither ``-wal`` nor ``-shm`` and even a read-only directory works.
+    When a ``-wal`` exists (a live/recent writer), the WAL read path is used
+    instead; SQLite may then attach its own index sidecars, but the database
+    itself is still never written.
+    """
+
+    wal = path.with_name(path.name + "-wal")
+    suffix = "?mode=ro" if os.path.exists(wal) else "?mode=ro&immutable=1"
     try:
-        connection = sqlite3.connect(_sqlite_ro_uri(path), uri=True, timeout=5.0)
+        connection = sqlite3.connect(
+            "file:" + urllib.parse.quote(str(path), safe="/") + suffix, uri=True, timeout=5.0
+        )
         connection.execute("SELECT 1").fetchone()
         return connection
     except sqlite3.Error:
@@ -162,13 +178,16 @@ def _receipt_block(connection: sqlite3.Connection, account_id: str) -> dict[str,
     reasons: dict[str, int] = {}
     latest_decision_at: str | None = None
     uncommitted = 0
-    for status, reason_codes, decision_at, committed_at in connection.execute(
-        "SELECT status, reason_codes, decision_at, receipt_committed_at "
+    abandoned = 0
+    for status, reason_codes, decision_at, committed_at, abandoned_at in connection.execute(
+        "SELECT status, reason_codes, decision_at, receipt_committed_at, abandoned_at "
         "FROM decision_receipts WHERE account_id = ?",
         (account_id,),
     ):
         counts[status] = counts.get(status, 0) + 1
-        if status == "accepted" and committed_at is None:
+        if abandoned_at is not None:
+            abandoned += 1
+        elif status == "accepted" and committed_at is None:
             uncommitted += 1
         if latest_decision_at is None or str(decision_at) > latest_decision_at:
             latest_decision_at = str(decision_at)
@@ -187,6 +206,7 @@ def _receipt_block(connection: sqlite3.Connection, account_id: str) -> dict[str,
         "reason_counts": [{"code": code, "count": count} for code, count in top],
         "latest_decision_at": latest_decision_at,
         "accepted_uncommitted": uncommitted,
+        "abandoned": abandoned,
     }
 
 
@@ -275,10 +295,22 @@ def _health_block_missing() -> dict[str, object]:
     }
 
 
-def _health_block(path: Path, now: datetime) -> dict[str, object]:
+def _health_block(
+    path: Path, now: datetime, *, run_id: str, scenario_id: str, account_id: str
+) -> dict[str, object]:
     payload = _read_health(path)
     if payload is None:
         return _health_block_missing()
+    # The heartbeat file is shared by every run under one state root: never
+    # project another run/scenario/account as this one's worker state.
+    for key, expected in (
+        ("run_id", run_id),
+        ("scenario_id", scenario_id),
+        ("account_id", account_id),
+    ):
+        value = payload.get(key)
+        if not isinstance(value, str) or value != expected:
+            return _health_block_missing()
     queue = None
     if any(
         key in payload
@@ -382,12 +414,6 @@ def build_status(
     moment = now if now is not None else datetime.now(timezone.utc)
     if moment.tzinfo is None:
         raise StatusError("CLOCK_UNTRUSTED")
-    health_path = (
-        Path(health_file)
-        if health_file is not None
-        else Path(state_dir) / "news-paper" / HEALTH_FILE_NAME
-    )
-    worker = _health_block(health_path, moment)
     try:
         ledger_path = _existing_ledger_path(state_dir, run_id, scenario_id)
     except StatusError as exc:
@@ -397,9 +423,17 @@ def build_status(
             run_id=run_id,
             scenario_id=scenario_id,
             account_id=account_id,
-            worker=worker,
+            worker=_health_block_missing(),
             reason=exc.code,
         )
+    health_path = (
+        Path(health_file)
+        if health_file is not None
+        else Path(state_dir) / "news-paper" / HEALTH_FILE_NAME
+    )
+    worker = _health_block(
+        health_path, moment, run_id=run_id, scenario_id=scenario_id, account_id=account_id
+    )
     if ledger_path is None:
         return _empty_status(
             _STATE_EMPTY,
@@ -492,20 +526,63 @@ def build_status(
     }
 
 
+def _identity_from_config(path: str) -> tuple[str, str, str, str]:
+    import tomllib
+
+    try:
+        data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise StatusError("VALUE_OUT_OF_RANGE") from exc
+    for section in ("worker", "dashboard"):
+        block = data.get(section)
+        if not isinstance(block, dict):
+            continue
+        keys = ("state_dir", "run_id", "scenario_id", "account_id")
+        if all(isinstance(block.get(key), str) and block[key] for key in keys):
+            return block["state_dir"], block["run_id"], block["scenario_id"], block["account_id"]
+    raise StatusError("VALUE_OUT_OF_RANGE")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="docich-news-paper-status")
-    parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--scenario-id", required=True)
-    parser.add_argument("--account-id", required=True)
+    parser.add_argument("--config", default=None, help="derive the identity from this TOML")
+    parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--scenario-id", default=None)
+    parser.add_argument("--account-id", default=None)
     parser.add_argument("--health-file", default=None)
     args = parser.parse_args(argv)
     try:
+        if args.config is not None:
+            state_dir, run_id, scenario_id, account_id = _identity_from_config(args.config)
+        else:
+            if not all((args.state_dir, args.run_id, args.scenario_id, args.account_id)):
+                raise StatusError("VALUE_OUT_OF_RANGE")
+            state_dir, run_id, scenario_id, account_id = (
+                args.state_dir,
+                args.run_id,
+                args.scenario_id,
+                args.account_id,
+            )
+    except StatusError as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": STATUS_SCHEMA_VERSION,
+                    "state": _STATE_BLOCKED,
+                    "reason_code": exc.code,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    try:
         status = build_status(
-            args.state_dir,
-            args.run_id,
-            args.scenario_id,
-            args.account_id,
+            state_dir,
+            run_id,
+            scenario_id,
+            account_id,
             health_file=args.health_file,
         )
     except StatusError as exc:
@@ -514,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
             "state": _STATE_BLOCKED,
             "reason_code": exc.code,
         }
+        print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+        return 1
     print(json.dumps(status, ensure_ascii=False, sort_keys=True))
     return 0
 

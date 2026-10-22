@@ -23,7 +23,10 @@ main にマージ済みのもの（`ledger.py` / `manager.py` / `risk.py` / `exe
 
 ```sh
 bin/docich-news-paper worker --config config/news-paper.toml [--once]
-bin/docich-news-paper status --config ...   # 実際は status 用引数（--state-dir 等）
+# status: --config は state_dir/run_id/scenario_id/account_id を持つTOMLでのみ使える。
+# 明示引数形式（常に使える）:
+bin/docich-news-paper status --state-dir /abs/state --run-id R --scenario-id S --account-id A
+bin/docich-news-paper status --config /abs/news-paper.toml
 bin/docich-news-paper dashboard --config config/news-paper.toml
 ```
 
@@ -81,7 +84,11 @@ bin/docich-news-paper dashboard --config config/news-paper.toml
 
 `build_status(state_dir, run_id, scenario_id, account_id)` は専用 `paper.sqlite3` を
 **`mode=ro`** で開く。DB/accountが無ければ `state="empty"`、パス逸脱は `blocked`、破損等は
-`unavailable` を返し、**ディレクトリ/DB/WALを作成しない**。返す値はallowlistのみ:
+`unavailable` を返し、**ディレクトリ/DBを作成しない**。cleanな（`-wal`の無い）storeは
+`immutable=1` で読み `-wal`/`-shm` も作らない。稼働中で `-wal` がある場合のみSQLiteのWAL
+読み取り経路を使い、このときSQLiteが自前のindex sidecarを添付し得る（DB本体は書き換えない）。
+heartbeatは `run_id`/`scenario_id`/`account_id` が要求と一致する場合だけ投影する。返す値は
+allowlistのみ:
 
 - `mode` / `live_eligible` / `run` / `scenario` / `account` / `phase` / `entries_disabled`
 - `account`（cash等）・`positions`・`fills`・`valuation`（`stale`含む）

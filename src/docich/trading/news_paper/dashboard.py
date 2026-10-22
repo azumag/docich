@@ -19,6 +19,7 @@ import argparse
 import html
 import json
 import signal
+import socket
 import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -235,6 +236,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Allow", "GET, HEAD")
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", _CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -243,6 +247,9 @@ class _Handler(BaseHTTPRequestHandler):
     do_PUT = _read_only  # noqa: N815
     do_DELETE = _read_only  # noqa: N815
     do_PATCH = _read_only  # noqa: N815
+    do_OPTIONS = _read_only  # noqa: N815
+    do_TRACE = _read_only  # noqa: N815
+    do_CONNECT = _read_only  # noqa: N815
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - API
         return
@@ -261,8 +268,15 @@ def make_server(
             config.state_dir, config.run_id, config.scenario_id, config.account_id
         )
 
-    handler = type("Handler", (_Handler,), {"status_provider": staticmethod(provider if status_provider is None else status_provider)})
-    return HTTPServer((config.host, config.port), handler)
+    handler = type(
+        "Handler",
+        (_Handler,),
+        {"status_provider": staticmethod(provider if status_provider is None else status_provider)},
+    )
+    server_class = HTTPServer
+    if ":" in config.host:
+        server_class = type("HTTPServer6", (HTTPServer,), {"address_family": socket.AF_INET6})
+    return server_class((config.host, config.port), handler)
 
 
 def serve(

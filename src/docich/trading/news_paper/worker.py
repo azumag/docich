@@ -270,11 +270,16 @@ def load_config(path: str | Path) -> WorkerConfig | None:
         raise WorkerConfigError("STATE_PATH_FORBIDDEN")
     clock = _table(_require(block, "clock_quality"), "clock_quality")
     _reject_unknown(clock, frozenset({"synced", "source", "max_error_ms"}), "clock_quality")
-    quality = ClockQuality(
-        synced=_bool(_require(clock, "synced"), "synced"),
-        source=_text(_require(clock, "source"), "source", limit=16),
-        max_error_ms=_int(_require(clock, "max_error_ms"), "max_error_ms", minimum=0),
-    )
+    try:
+        quality = ClockQuality(
+            synced=_bool(_require(clock, "synced"), "synced"),
+            source=_text(_require(clock, "source"), "source", limit=16),
+            max_error_ms=_int(_require(clock, "max_error_ms"), "max_error_ms", minimum=0),
+        )
+    except WorkerConfigError:
+        raise
+    except ValueError as exc:
+        raise WorkerConfigError(getattr(exc, "code", "VALUE_OUT_OF_RANGE")) from exc
     if not quality.trusted:
         # CLOCK_UNTRUSTED: new decisions must not start on an unproven clock.
         raise WorkerConfigError("CLOCK_UNTRUSTED")
@@ -289,17 +294,26 @@ def load_config(path: str | Path) -> WorkerConfig | None:
         ),
         "risk",
     )
-    policy = RiskPolicy(
-        version=_text(_require(risk, "version"), "version", limit=64),
-        max_positions=_int(_require(risk, "max_positions"), "max_positions", minimum=1),
-        max_gross_exposure=_dec(_require(risk, "max_gross_exposure"), "max_gross_exposure"),
-        per_asset_exposure_cap=_dec(
-            _require(risk, "per_asset_exposure_cap"), "per_asset_exposure_cap"
-        ),
-        daily_loss_limit=_dec(_require(risk, "daily_loss_limit"), "daily_loss_limit"),
-        drawdown_limit=_dec(_require(risk, "drawdown_limit"), "drawdown_limit"),
-    )
+    try:
+        policy = RiskPolicy(
+            version=_text(_require(risk, "version"), "version", limit=64),
+            max_positions=_int(_require(risk, "max_positions"), "max_positions", minimum=1),
+            max_gross_exposure=_dec(_require(risk, "max_gross_exposure"), "max_gross_exposure"),
+            per_asset_exposure_cap=_dec(
+                _require(risk, "per_asset_exposure_cap"), "per_asset_exposure_cap"
+            ),
+            daily_loss_limit=_dec(_require(risk, "daily_loss_limit"), "daily_loss_limit"),
+            drawdown_limit=_dec(_require(risk, "drawdown_limit"), "drawdown_limit"),
+        )
+    except WorkerConfigError:
+        raise
+    except ValueError as exc:
+        raise WorkerConfigError(getattr(exc, "code", "VALUE_OUT_OF_RANGE")) from exc
     instruments = _load_instruments(raw.get("instruments", {}))
+    cash = _dec(_require(block, "initial_cash_jpy"), "initial_cash_jpy", positive=True)
+    if cash.adjusted() >= 18:
+        # The ledger stores decimals as bounded text; fail closed up front.
+        raise WorkerConfigError("VALUE_OUT_OF_RANGE")
     return WorkerConfig(
         state_dir=state_dir,
         run_id=_id(_text(_require(block, "run_id"), "run_id"), "run_id"),
@@ -310,9 +324,7 @@ def load_config(path: str | Path) -> WorkerConfig | None:
         queue_deadline_seconds=_int(
             _require(block, "queue_deadline_seconds"), "queue_deadline_seconds", minimum=1
         ),
-        initial_cash_jpy=_dec(
-            _require(block, "initial_cash_jpy"), "initial_cash_jpy", positive=True
-        ),
+        initial_cash_jpy=cash,
         entries_disabled=_bool(_require(block, "entries_disabled"), "entries_disabled"),
         execution_delay_ms=_int(_require(block, "execution_delay_ms"), "execution_delay_ms"),
         worker_lock_timeout_seconds=_int(
@@ -321,7 +333,7 @@ def load_config(path: str | Path) -> WorkerConfig | None:
         clock_quality=quality,
         risk_policy=policy,
         constraints=instruments,
-        worker_id=_text(block.get("worker_id", "n07"), "worker_id", limit=64),
+        worker_id=_id(_text(block.get("worker_id", "n07"), "worker_id", limit=64), "worker_id"),
     )
 
 
@@ -407,8 +419,8 @@ class ObservationQueue:
         return True
 
     def drain(self, now: datetime) -> list[MarketObservation]:
-        ordered = sorted(self._items, key=lambda entry: (-entry.priority, entry.deadline))
-        self._items = []
+        items, self._items = self._items, []
+        ordered = sorted(items, key=lambda entry: (-entry.priority, entry.deadline))
         drained: list[MarketObservation] = []
         for entry in ordered:
             if entry.deadline <= now:
@@ -531,15 +543,22 @@ class NewsPaperWorker:
         self._started_at: datetime | None = None
         self._instance_token = uuid.uuid4().hex[:12]
         self._last_prices: dict[str, Decimal] = {}
+        self._last_quote_at: dict[str, datetime] = {}
         self._last_market_available_at: datetime | None = None
         self._last_fill_at: datetime | None = None
         self._last_error_code: str | None = None
         self._status = STATUS_IDLE
+        self._failed = False
 
     @property
     def phase(self) -> str:
         """Last health ``status`` written by this instance (for CLI exit code)."""
         return self._status
+
+    @property
+    def failed(self) -> bool:
+        """True when a fatal store/clock error ended the loop."""
+        return self._failed
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -601,7 +620,7 @@ class NewsPaperWorker:
         thread = self._ingest_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=5.0)
-        if self._ledger is not None:
+        if self._ledger is not None and not self._failed:
             try:
                 self._write_heartbeat(_now(self._clock), status=STATUS_STOPPING)
             except Exception:  # noqa: BLE001 - never mask shutdown
@@ -630,13 +649,13 @@ class NewsPaperWorker:
             return
         try:
             observations = source.poll()
+            now = _now(self._clock)
+            deadline = now + timedelta(seconds=self.config.queue_deadline_seconds)
+            for observation in observations:
+                self._queue.push(observation, deadline=deadline)
         except Exception:  # noqa: BLE001 - a source failure is a fixed code
             self._last_error_code = "SOURCE_TIMEOUT"
             return
-        now = _now(self._clock)
-        deadline = now + timedelta(seconds=self.config.queue_deadline_seconds)
-        for observation in observations:
-            self._queue.push(observation, deadline=deadline)
 
     # -- cycle --------------------------------------------------------------
 
@@ -655,8 +674,9 @@ class NewsPaperWorker:
         for observation in observations:
             by_asset.setdefault(observation.asset, []).append(observation)
         for observation in observations:
-            price = (observation.bid + observation.ask) / 2
+            price = ((observation.bid + observation.ask) / 2).quantize(Decimal("0.00000001"))
             self._last_prices[observation.asset] = price
+            self._last_quote_at[observation.asset] = observation.market_available_at
             if (
                 self._last_market_available_at is None
                 or observation.market_available_at > self._last_market_available_at
@@ -682,7 +702,14 @@ class NewsPaperWorker:
 
     def run(self) -> None:
         """Cycle until stopped. Fatal store/clock errors end the loop."""
-        self.start()
+        try:
+            self.start()
+        except (LedgerError, OSError) as exc:
+            # Do not write health here: a lock conflict belongs to the other
+            # worker's heartbeat, and a store failure has no verified store.
+            self._last_error_code = getattr(exc, "code", "STORE_UNAVAILABLE")
+            self._failed = True
+            return
         try:
             while not self._stop.is_set():
                 started = self._monotonic()
@@ -690,6 +717,7 @@ class NewsPaperWorker:
                     self.run_once()
                 except OSError:
                     self._last_error_code = "STORE_UNAVAILABLE"
+                    self._failed = True
                     try:
                         self._write_heartbeat(_now(self._clock), status=STATUS_FAILED)
                     except Exception:  # noqa: BLE001
@@ -698,6 +726,7 @@ class NewsPaperWorker:
                 except LedgerError as exc:
                     self._last_error_code = exc.code
                     if exc.code in FATAL_CODES:
+                        self._failed = True
                         try:
                             self._write_heartbeat(_now(self._clock), status=STATUS_FAILED)
                         except Exception:  # noqa: BLE001
@@ -719,7 +748,8 @@ class NewsPaperWorker:
             try:
                 rows = connection.execute(
                     "SELECT order_id, asset, side, status, expires_at FROM paper_orders "
-                    "WHERE status IN ('pending', 'partially_filled')"
+                    "WHERE account_id = ? AND status IN ('pending', 'partially_filled')",
+                    (self.config.account_id,),
                 ).fetchall()
             finally:
                 connection.close()
@@ -784,7 +814,12 @@ class NewsPaperWorker:
             return 0
         assert self._manager is not None
         accepted = 0
-        for request in self._candidates.candidates(now):
+        try:
+            candidates = self._candidates.candidates(now)
+        except Exception:  # noqa: BLE001 - N03 outage is a fixed code
+            self._last_error_code = "CLASSIFIER_UNAVAILABLE"
+            return 0
+        for request in candidates:
             try:
                 view: ReceiptView = self._manager.submit_candidate(request)
             except LedgerError as exc:
@@ -803,16 +838,22 @@ class NewsPaperWorker:
         stale = False
         for asset, (quantity, average_cost) in account.positions.items():
             price = self._last_prices.get(asset)
-            if price is None:
-                price = average_cost
+            quoted_at = self._last_quote_at.get(asset)
+            constraints = self.config.constraints.get(asset)
+            if price is None or quoted_at is None or constraints is None:
+                # No quote ever seen, or no approved constraints: never fresh.
                 stale = True
+                if price is None:
+                    price = average_cost
+            else:
+                age = Decimal(str((now - quoted_at).total_seconds()))
+                if age < 0 or age > constraints.max_quote_age_seconds:
+                    stale = True
             positions_value += quantity * price
         equity = account.cash + positions_value
         self._ledger.record_valuation(
             account_id=self.config.account_id,
-            valuation_id=(
-                f"val:{self.config.run_id}:{self.config.scenario_id}:{self._instance_token}:{self._seq}"
-            ),
+            valuation_id=f"val:{self._instance_token}:{self._seq}",
             as_of=now,
             positions_value=positions_value,
             total_equity=equity,
@@ -873,11 +914,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     worker = NewsPaperWorker(config)
     if args.once:
-        worker.start()
+        try:
+            worker.start()
+        except (LedgerError, OSError, ExecutionError) as exc:
+            code = getattr(exc, "code", "STORE_UNAVAILABLE")
+            print(json.dumps({"state": "failed", "reason_code": code}, ensure_ascii=False))
+            return 1
         try:
             summary = worker.run_once()
-        except (LedgerError, OSError) as exc:
+        except (LedgerError, OSError, ExecutionError) as exc:
             code = getattr(exc, "code", "STORE_UNAVAILABLE")
+            worker._failed = True  # noqa: SLF001 - fixed failure record
+            try:
+                worker._write_heartbeat(_now(worker._clock), status=STATUS_FAILED)  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
             print(json.dumps({"state": "failed", "reason_code": code}, ensure_ascii=False))
             return 1
         finally:
@@ -891,9 +942,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     worker.run()
-    if worker.phase == STATUS_FAILED:
-        return 1
-    return 0
+    return 1 if worker.failed else 0
 
 
 if __name__ == "__main__":

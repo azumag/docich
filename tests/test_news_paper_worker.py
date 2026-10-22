@@ -14,9 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from docich.trading.news_paper.execution import InstrumentConstraints, MarketObservation
-from docich.trading.news_paper.ledger import LedgerError
-from docich.trading.news_paper.manager import DecisionRequest
+import docich.trading.news_paper.worker as worker_module
+from docich.trading.news_paper.execution import (
+    ClockQuality,
+    InstrumentConstraints,
+    MarketObservation,
+)
+from docich.trading.news_paper.ledger import LedgerError, NewsLedger
+from docich.trading.news_paper.manager import DecisionRequest, ManagerPolicy, PaperManager
+from docich.trading.news_paper.risk import RiskPolicy
 from docich.trading.news_paper.worker import (
     NewsPaperWorker,
     ObservationQueue,
@@ -155,6 +161,7 @@ def _request(
     *,
     receipt_id: str = "receipt1",
     side: str = "buy",
+    account_id: str = "acct1",
     decision_quote: tuple[str, str, datetime, str] | None = None,
     cutoff: int = 1,
     expires_seconds: int = 600,
@@ -164,7 +171,7 @@ def _request(
         receipt_id=receipt_id,
         run_id="run1",
         scenario_id="scenario1",
-        account_id="acct1",
+        account_id=account_id,
         decision_at=T0,
         manager_seen_at=T0,
         input_cutoff_sequence=cutoff,
@@ -483,3 +490,162 @@ def test_source_failure_is_a_fixed_code_and_does_not_queue(tmp_path: Path) -> No
     worker._poll_source()  # a source outage must not raise or stall the loop
     assert worker._last_error_code == "SOURCE_TIMEOUT"
     assert len(worker._queue) == 0
+
+
+class _StreamFailSource:
+    def poll(self):
+        def stream():
+            yield _observation(seq=1, event_seconds=-10)
+            raise RuntimeError("mid-stream")
+
+        return stream()
+
+
+class _BrokenCandidates:
+    def candidates(self, now):
+        raise RuntimeError("n03 down")
+
+
+def _risk_policy() -> RiskPolicy:
+    return RiskPolicy(
+        version="fixture-risk-v1",
+        max_positions=3,
+        max_gross_exposure=Decimal("3000000"),
+        per_asset_exposure_cap=Decimal("1000000"),
+        daily_loss_limit=Decimal("20000"),
+        drawdown_limit=Decimal("50000"),
+    )
+
+
+def test_valuation_goes_stale_when_the_last_quote_ages(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    decision_quote = _observation(seq=1, event_seconds=-60, digest="d").identity
+    worker = NewsPaperWorker(
+        config,
+        clock=lambda: T0,
+        candidates=_Candidates([[_request(decision_quote=decision_quote)]]),
+    )
+    worker.start()
+    try:
+        worker.run_once(now=T0)
+        worker.enqueue(_observation(seq=3, event_seconds=15, digest="f"))
+        assert worker.run_once(now=T(20))["fills"] == 1
+        # Same instance: the cached quote is now older than max_quote_age_seconds.
+        worker.run_once(now=T(200))
+    finally:
+        worker.stop()
+    latest = _rows(_db(tmp_path), "SELECT stale FROM valuations ORDER BY rowid DESC LIMIT 1")
+    assert latest == [(1,)]
+
+
+def test_fatal_error_keeps_failed_heartbeat_and_nonzero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0)
+
+    def boom(*args, **kwargs):
+        raise LedgerError("SCHEMA_VERSION_UNSUPPORTED")
+
+    monkeypatch.setattr(worker, "run_once", boom)
+    worker.run()
+    assert worker.failed is True
+    health = json.loads((tmp_path / "state" / "news-paper" / "health.json").read_text())
+    assert health["status"] == "failed"
+
+    def fake_run(self) -> None:
+        self._failed = True
+
+    monkeypatch.setattr(worker_module.NewsPaperWorker, "run", fake_run)
+    assert main(["--config", str(_write_config(tmp_path))]) == 1
+
+
+def test_worker_only_touches_its_own_account(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    setup = NewsPaperWorker(config, clock=lambda: T0)
+    setup.start()
+    setup.stop()
+
+    ledger = NewsLedger.open(
+        tmp_path / "state", "run1", "scenario1", clock=lambda: T0, worker_id="test"
+    )
+    try:
+        ledger.create_account(
+            account_id="acct2", run_id="run1", scenario_id="scenario1", initial_cash="1000000"
+        )
+        manager = PaperManager(
+            ledger,
+            clock=lambda: T0,
+            clock_quality=ClockQuality(synced=True, source="injected", max_error_ms=1000),
+            risk_policy=_risk_policy(),
+            policy=ManagerPolicy(execution_delay_ms=Decimal("0")),
+        )
+        assert (
+            manager.submit_candidate(
+                _request(receipt_id="r-acct2", account_id="acct2", event_group="evt-acct2")
+            ).status
+            == "accepted"
+        )
+    finally:
+        ledger.close()
+
+    disabled = load_config(_write_config(tmp_path, entries_disabled="true"))
+    assert disabled is not None
+    other = NewsPaperWorker(disabled, clock=lambda: T0)
+    other.start()
+    try:
+        other.run_once(now=T(10))
+    finally:
+        other.stop()
+    # The other account's pending buy must not be canceled by this worker.
+    assert _rows(
+        _db(tmp_path), "SELECT status FROM paper_orders WHERE account_id = 'acct2'"
+    ) == [("pending",)]
+    assert _rows(_db(tmp_path), "SELECT COUNT(*) FROM cancel_events") == [(0,)]
+
+
+def test_invalid_clock_source_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(WorkerConfigError) as excinfo:
+        load_config(_write_config(tmp_path, clock_source="gps"))
+    assert excinfo.value.code == "VALUE_OUT_OF_RANGE"
+
+
+def test_source_stream_failure_is_recorded(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0, source=_StreamFailSource())
+    worker._poll_source()
+    assert worker._last_error_code == "SOURCE_TIMEOUT"
+    assert len(worker._queue) == 1  # the item yielded before the failure stays queued
+
+
+def test_broken_candidate_seam_is_a_fixed_code(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0, candidates=_BrokenCandidates())
+    worker.start()
+    try:
+        summary = worker.run_once(now=T0)
+    finally:
+        worker.stop()
+    assert summary["accepted"] == 0
+    assert summary["last_error_code"] == "CLASSIFIER_UNAVAILABLE"
+
+
+def test_long_valid_ids_do_not_break_valuation(tmp_path: Path) -> None:
+    long_id = "x" * 100
+    config = load_config(
+        _write_config(tmp_path, run_id=long_id, scenario_id=long_id, account_id=long_id)
+    )
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0)
+    worker.start()
+    try:
+        worker.run_once(now=T0)
+    finally:
+        worker.stop()
+    db = tmp_path / "state" / "news-paper" / "runs" / long_id / long_id / "paper.sqlite3"
+    assert _rows(db, "SELECT COUNT(*) FROM valuations") == [(1,)]

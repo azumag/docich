@@ -183,3 +183,22 @@ def test_default_provider_reports_empty_state(tmp_path: Path) -> None:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_every_non_get_method_is_405_with_security_headers(tmp_path: Path) -> None:
+    config = DashboardConfig(
+        state_dir=tmp_path, run_id="run1", scenario_id="scenario1", account_id="acct1", port=0
+    )
+    server = make_server(config, status_provider=lambda: {"state": "ok"})
+    thread = _serve(server)
+    try:
+        for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE"):
+            code, headers, _ = _request(server, "/", method=method)
+            assert code == 405, method
+            assert headers["X-Content-Type-Options"] == "nosniff", method
+            assert "Content-Security-Policy" in headers, method
+            assert headers["Referrer-Policy"] == "no-referrer", method
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
