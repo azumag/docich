@@ -45,6 +45,12 @@ python3 /usr/local/libexec/azumag-vm-ops/audio_priority/priority.py --once --dry
 - 正規の観測経路(§10): read-only `diagnostics` の `audio_priority` セクションが、root所有コピーと配備ツリーのSHA-256一致、
   service の enabled/active、keeper プロセス、対象スレッドのnice、journal要約(24hの reniced/warning件数)、
   半熟ミラーの実効 framerate を返す。`audio_gaps` セクションは固定ヘルパーによる92秒測定の投影を返す。
+- `targets.<kind>` は `present` / `processes` / `threads` / `max_nice` / `at_target` に加えて `cgroup`
+  （その kind で最初に見つかったプロセスの unified cgroup パス。`/` 始まり・256文字上限・
+  `[A-Za-z0-9/@._:-]` のみ。それ以外は `null`）を返す(#2008)。目的は、共有 PulseAudio が
+  `soren-bgm.service` の cgroup 内に居るか（=その unit の再起動で巻き添えに kill される配置か）を
+  **再起動前に read-only で判定できる**ようにすること。2026-10-11 05:55/08:05 の音声喪失は
+  この配置が原因だった。`cgroup` は所有配置の事実だけを示し、音声が正しく鳴っていることの証明ではない。
 - 92秒測定の実行: owner-only workflow「VM operations」の `operation=audio_gap_measure`, `target=production` が
   `ops/vm_actions/run_audio_gap_measure_once.sh` を実行し、collector の `audio_gaps` 投影だけを返す
   (生録音やコマンド出力はVM外に出ない。モニターに音が流れていない場合は0件ではなく測定失敗になる)。

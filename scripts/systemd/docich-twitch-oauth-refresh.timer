@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the broadcaster Twitch token every 15 minutes
+
+[Timer]
+OnActiveSec=1min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+Unit=docich-twitch-oauth-refresh.service
+
+[Install]
+WantedBy=timers.target

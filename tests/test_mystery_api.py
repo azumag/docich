@@ -136,3 +136,17 @@ def test_vote_helpers_are_total_and_deterministic():
     assert poll_choice_votes({"choices": [{"title": "a"}]}) is None
     assert poll_choice_votes({"choices": [{"title": "a", "votes": -1}]}) is None
     assert poll_choice_votes({"choices": [{"title": "a", "votes": True}]}) is None
+
+
+def test_rotated_token_in_soren_env_wins_over_inherited_environment(tmp_path, monkeypatch):
+    soren = tmp_path / "soren"
+    soren.mkdir()
+    (soren / ".env").write_text(
+        "TWITCH_POLLS_TOKEN=fresh-rotated\nEXPLORE_MODE=1\n", encoding="utf-8")
+    monkeypatch.setattr(mystery_api, "resolve_soren_root", lambda g: soren)
+    monkeypatch.setenv("TWITCH_POLLS_TOKEN", "stale-inherited")
+    monkeypatch.setenv("EXPLORE_MODE", "0")
+    values = mystery_api.poll_settings(_g(tmp_path))
+    assert values["TWITCH_POLLS_TOKEN"] == "fresh-rotated"
+    # Non-token settings keep the existing environment-first precedence.
+    assert values["EXPLORE_MODE"] == "0"

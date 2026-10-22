@@ -151,7 +151,7 @@ def test_positive_egg_does_not_reopen_after_current_conservation():
     assert p._egg_before_retreat(mem, cur) is True
 
 
-def test_diagnostics_accepts_exact_new_version_without_allowing_unknown_text():
+def test_diagnostics_allows_current_policy_without_arbitrary_text():
     import importlib.util
     from pathlib import Path
     from docich.hanjuku.version import BOT_VERSION
@@ -159,6 +159,68 @@ def test_diagnostics_accepts_exact_new_version_without_allowing_unknown_text():
     spec = importlib.util.spec_from_file_location('egg_conservation_diagnostics', str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module._project_corner_state({'bot_version': BOT_VERSION})['bot_version'] == BOT_VERSION
+    # The current policy must be identifiable; arbitrary text stays rejected.
+    projected = module._project_corner_state({'bot_version': BOT_VERSION})['bot_version']
+    assert projected == BOT_VERSION
+    accepted = 'hanjuku-chart-v241-sortie-confirm-cancel'
+    assert module._project_corner_state({'bot_version': accepted})['bot_version'] == accepted
     for value in ('not-allowlisted-token', BOT_VERSION + '-extra', None):
         assert module._project_corner_state({'bot_version': value})['bot_version'] is None
+
+
+def leek_memory(hp=15):
+    """Synthetic report-shaped state; enemy/counts are not a captured run."""
+    mem = memory(hp=hp, enemy_hp=20, soldiers=(6, 0))
+    cur = mem['battle']
+    cur['ally'] = cur['melee_opening_scope'][1] = 'リーキ'
+    mem['egg_uses'] = {'リーキ': 1}
+    return mem
+
+
+@pytest.mark.parametrize('hp', [13, 15, 20])
+@pytest.mark.parametrize('side', ['attack', 'defense'])
+def test_leek_low_hp_keeps_egg_with_observed_army_and_combat_advantage(hp, side):
+    mem = leek_memory(hp)
+    cur = mem['battle']
+    cur['side'] = side
+    evidence = _melee_continuation_evidence(mem, cur)
+    assert evidence['ally_combat'] > evidence['enemy_combat']
+    assert evidence['ally_force'] > 2 * evidence['enemy_force']
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    assert cur['survival']['egg_attempted'] is False
+    assert mem['egg_uses']['リーキ'] == 1
+
+
+@pytest.mark.parametrize('change', [
+    {'ally_hp': 12}, {'ally_soldiers': None}, {'enemy_soldiers': None},
+    {'card_soldiers_current': False}, {'ally_soldiers': 0},
+    {'enemy_soldiers': 6}, {'card_summon_observed': True},
+    {'egg_battle': True}, {'card_hp_unread': True},
+    {'ally_hp': 14},  # Our HP falls without any enemy progress.
+])
+def test_leek_low_hp_conservation_requires_current_advantage(change):
+    mem = leek_memory()
+    mem['battle'].update(change)
+    assert not p._hold_melee_egg(mem, mem['battle'], {'たまごをつかう'})
+
+
+def test_leek_low_hp_conservation_ends_at_critical_hp():
+    mem = leek_memory(13)
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    mem['battle']['ally_hp'] = 12
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('a')]
+    assert mem['battle']['survival']['egg_attempted'] is True
+
+
+def test_low_hp_army_margin_does_not_excuse_inferior_general_combat():
+    mem = memory(hp=13, enemy_hp=7, soldiers=(6, 0))
+    cur = mem['battle']
+    cur.update(ally='クミン', enemy='リーキ')
+    cur['melee_opening_scope'][1:3] = ['クミン', 'リーキ']
+    mem['egg_uses'] = {'クミン': 1}
+    balance = p._melee_balance(cur)
+    assert balance['ally_force'] > 2 * balance['enemy_force']
+    assert balance['ally_melee_score'] > 2 * balance['enemy_melee_score']
+    assert balance['ally_combat'] < balance['enemy_combat']
+    assert _melee_continuation_evidence(mem, cur) is None
+    assert not p._hold_melee_egg(mem, cur, {'たまごをつかう'})

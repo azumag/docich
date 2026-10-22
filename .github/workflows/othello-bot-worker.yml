@@ -3,11 +3,13 @@ name: Othello Bot Worker
 on:
   pull_request:
     paths:
+      - ".node-version"
       - "workers/othello-bot/**"
       - ".github/workflows/othello-bot-worker.yml"
   push:
     branches: [main]
     paths:
+      - ".node-version"
       - "workers/othello-bot/**"
       - ".github/workflows/othello-bot-worker.yml"
 
@@ -31,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version-file: .node-version
       - name: Install dependencies (none pinned; stdlib node:test only)
         run: npm install --no-audit --no-fund
       - name: Run room, rules and HTTP routing tests

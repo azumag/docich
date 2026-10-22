@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".node-version"
       - '.github/workflows/twica-common*.yml'
       - 'bin/docich-twica-*'
       - 'deploy/twica-common/**'
@@ -22,6 +23,7 @@ on:
   push:
     branches: [main]
     paths:
+      - ".node-version"
       - '.github/workflows/twica-common*.yml'
       - 'bin/docich-twica-*'
       - 'deploy/twica-common/**'
@@ -61,6 +63,7 @@ jobs:
           run="$(python3 .github/scripts/soren_gitlink_gate.py \
             --before "$BEFORE_SHA" \
             --after "$AFTER_SHA" \
+            --root-path '.node-version' \
             --root-path '.github/workflows/twica-common*.yml' \
             --root-path 'bin/docich-twica-*' \
             --root-path 'deploy/twica-common/**' \
@@ -88,6 +91,10 @@ jobs:
           submodules: false
       - name: Check out exact reviewed Soren integration
         run: git submodule update --init --depth 1 -- games/soviet_now
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - name: Install isolated test dependencies
         run: |
           python3 -m venv .ci-twica-venv

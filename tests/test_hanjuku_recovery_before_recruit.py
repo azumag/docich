@@ -47,7 +47,7 @@ def test_explicit_recovery_not_needed_unlocks_recruitment():
     assert mem['month_sub']['kind'] == 'recruit'
 
 
-@pytest.mark.parametrize('gold', [45, 79])
+@pytest.mark.parametrize('gold', [45, 49])
 def test_unaffordable_recovery_never_falls_through_to_recruitment_or_reopens_forever(gold):
     mem = memory(gold, uses=0)
     screen = parse(month_canvas(gold, on='しょうぐんぼしゅう'))
@@ -121,8 +121,8 @@ def test_declined_real_quote_stays_unverified_and_does_not_spend_on_recruitment(
 
 
 def test_new_month_retries_a_previously_deferred_recovery_before_recruitment():
-    mem = memory(79, uses=0)
-    policy.month_step(parse(month_canvas(79, on='しょうぐんぼしゅう')), mem)
+    mem = memory(49, uses=0)
+    policy.month_step(parse(month_canvas(49, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['recruit'] == 'deferred_egg'
     mem['month'] = '1-8'
     mem['tick'] += 1
@@ -132,7 +132,7 @@ def test_new_month_retries_a_previously_deferred_recovery_before_recruitment():
     assert mem['month_sub']['kind'] == 'egg'
 
 
-@pytest.mark.parametrize('count,allowed', [(2, True), (3, False), (4, False)])
+@pytest.mark.parametrize('count,allowed', [(2, True), (3, True), (4, True)])
 def test_one_general_per_owned_castle_adds_the_spare_cash_gate(count, allowed):
     from docich import hanjuku_roster as roster
     names = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット'][:count]
@@ -144,8 +144,8 @@ def test_one_general_per_owned_castle_adds_the_spare_cash_gate(count, allowed):
     assert result is allowed
     assert evidence['owned_castles'] == 3 and evidence['generals'] == count
     if count >= 3:
-        assert evidence['spare'] == 49
-        assert policy._recruit_spare_after_necessities(mem, shop, 100)[0] is True
+        assert evidence['spare'] == 99 - 20  # only the planned soldiers are held
+        assert policy._recruit_spare_after_necessities(mem, shop, 70)[0] is True
 
 
 @pytest.mark.parametrize('gold', [None, False])
@@ -188,7 +188,7 @@ def test_spare_gate_preserves_pending_cards_house_repair_and_wages():
     mem = memory()
     shop = {'items': [['ブラッキー', 1]], 'soldiers': 20, 'soldiers_done': False,
             'hero_repair_reserve': 50, 'egg': 'done'}
-    held = policy.WAGE_RESERVE + 20 + 50 + policy.KNOWN_PRICES['ブラッキー']
+    held = 20 + 50 + policy.KNOWN_PRICES['ブラッキー']
     assert policy._recruit_spare_after_necessities(mem, shop, held + 49)[0] is False
     assert policy._recruit_spare_after_necessities(mem, shop, held + 50)[0] is True
 
@@ -199,11 +199,11 @@ def test_staffed_castles_cannot_create_spare_by_cutting_the_soldier_budget(statu
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     assert shop['soldiers_before_recruit'] == 50
     shop.update(egg='not_needed', recruit=status)
-    policy._month_extra(parse(month_canvas(101, on='しょうぐんぼしゅう')),
-                        mem, shop, recruit_only=True)
-    assert shop['recruit'] == 'deferred_cash'
-    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
-    assert 'month_sub' not in mem
+    assert policy._month_extra(parse(month_canvas(101, on='しょうぐんぼしゅう')),
+                               mem, shop, recruit_only=True) == [policy.pad('a')]
+    # 50 soldiers + 50 fee exactly uses the 101G; no wage reserve is held.
+    assert shop['recruit'] == 'opened'
+    assert shop['soldiers'] == 50 and mem['month_sub']['kind'] == 'recruit'
 
 
 def test_a_legacy_recruit_budget_without_its_original_soldier_target_is_not_spare():
@@ -243,24 +243,27 @@ def test_already_paid_recruitment_is_finished_without_guessing_a_refund():
     assert mem['shop']['egg'] == 'unverified'
 
 
-def test_resuming_a_recruitment_intro_also_obeys_the_extra_cash_gate():
+def test_resuming_a_recruitment_intro_opens_without_a_wage_hold():
     from test_hanjuku_chart_bot import recruit_overlay_memory, recruit_overlay_screen
     mem = recruit_overlay_memory()
-    mem['shop'].update(egg='not_needed', recruit='unverified', soldiers=100, soldiers_done=False)
-    assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert mem['shop']['recruit'] == 'deferred_cash'
+    mem['shop'].update(egg='not_needed', recruit='unverified')
+    assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('a')]
+    assert mem['shop']['recruit'] == 'opened'
+    assert mem['shop']['soldiers'] == 99  # the existing plan is not cut for wages
 
 
-def test_cutting_the_soldier_budget_to_zero_is_not_a_completed_refill():
+def test_optional_recruit_fee_never_shrinks_the_necessary_soldier_plan():
     mem = memory(80)
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80})
-    assert shop['soldiers'] == 0 and shop['soldiers_done'] is True
-    assert shop['soldiers_before_recruit'] == 50 and shop['soldiers_before_recruit_done'] is False
+    # The 50G fee reservation may not cut the 50 necessary soldiers: the plan
+    # keeps the need and defers the optional recruitment instead.
+    assert shop['soldiers_before_recruit'] == 50
     shop['egg'] = 'not_needed'
-    policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem)
-    assert shop['recruit'] == 'deferred_cash'
+    assert policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem) == [policy.pad('down')]
     assert shop['soldiers'] == 50 and shop['soldiers_done'] is False
-    assert (mem.get('month_sub') or {}).get('kind') != 'recruit'
+    assert shop['recruit'] == 'deferred_cash' and shop['recruit_reserve'] == 0
+    assert 'month_sub' not in mem
+    assert 80 - shop['soldiers'] < policy.RECRUIT_COST
 
 
 def test_soldier_restoration_clamps_to_the_real_post_recovery_balance():
@@ -269,19 +272,19 @@ def test_soldier_restoration_clamps_to_the_real_post_recovery_balance():
     policy.month_step(parse(month_canvas(200, on='たまごのかいふく')), mem)
     mem['month_sub'].update(full_selected=True, quoted_cost=100, left_menu=True)
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
-    assert mem['shop']['recruit'] == 'deferred_cash'
+    assert mem['shop']['recruit'] == 'opened'
     assert mem['shop']['soldiers'] == 50
-    assert 100 - mem['shop']['soldiers'] >= policy.WAGE_RESERVE
+    assert 100 - mem['shop']['soldiers'] - policy.RECRUIT_COST == 0
 
 
-def test_cash_deferral_restores_the_same_affordable_budget_when_resuming_intro():
+def test_resuming_an_intro_opens_when_soldiers_and_fee_fit_the_cash():
     from test_hanjuku_chart_bot import recruit_overlay_screen
     mem = memory(101)
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     shop.update(egg='not_needed', recruit='unverified', recruit_measured_budget=True)
-    assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
-    assert shop['recruit_priority'] is False
+    assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('a')]
+    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 50
+    assert mem['month_sub']['kind'] == 'recruit'
 
 
 def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
@@ -290,9 +293,9 @@ def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     shop.update(egg='not_needed', recruit='opened')
     mem['month_sub'] = {'kind': 'recruit', 'gold_before': 101, 'key': '1-7', 'presses': 0}
-    assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 50
-    assert shop['recruit_reserve'] == 0
+    assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('a')]
+    assert shop['recruit'] == 'opened' and shop['soldiers'] == 50
+    assert shop['recruit_reserve'] == 50
 
 
 def test_partly_used_unaffordable_eggs_do_not_hold_a_short_army_recruitment():

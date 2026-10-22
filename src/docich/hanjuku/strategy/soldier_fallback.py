@@ -59,7 +59,7 @@ def refresh_soldier_egg_deferral(mem, shop, header):
     proposal = dict(shop, reserve=0, recruit_reserve=0)
     available = _soldier_spendable(mem, proposal, header, recruit=False)
     if available is None:
-        return False  # unread funds/payroll or unpriced necessities cannot pay
+        return False  # unread funds or unpriced necessities cannot pay
     count = mem['soldiers_seen']
     if DEFERRAL_KEY in shop:
         if (not isinstance(state, dict) or type(state.get('version')) is not int
@@ -85,7 +85,7 @@ def refresh_soldier_egg_deferral(mem, shop, header):
         _record(mem, 'soldier_refill_after_egg_skip', month=shop['key'],
                 observed_metric={'soldiers': count, 'gold': header['gold'],
                                  'refill': amount, 'released_egg_reserve': state['previous_reserve']},
-                reason='卵回復を見送っても兵士不足は放置せず、賃金予備・修理・必要品を残して補充する。支払いと人数増加は未確定')
+                reason='卵回復を見送っても兵士不足は放置せず、修理・必要品を残して補充する。支払いと人数増加は未確定')
     state['active'] = True
     shop.update(reserve=0, recruit_priority=False, recruit_reserve=0)
     if shop.get('recruit') != 'done':

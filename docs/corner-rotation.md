@@ -692,15 +692,71 @@ status / timestamps / counts だけを投影し、視聴者名やランキング
 ### Soren 予想の台帳記録（`soren_predictions.tick`、#933 PR-2b）
 
 common timer の `tick()` は半熟英雄の予想 tick の隣で `soren_predictions.tick(g)` を呼ぶ。
-Soren の `twitch_predictions.sh` が resolve 成功時に追記する
+Soren の `twitch_predictions.sh` が追記する
 `<soren_root>/tmp/state/prediction_resolved.jsonl`（最大50行）を bounded に読み、
-`record_resolved(corner='soren')` で台帳へ冪等に記録する。
+`record_settled(corner='soren')` で台帳へ冪等に記録する。行は resolve 成功時の
+`RESOLVED` row と、不成立キャンセル時の理由付き `CANCELED` row（`cancel_reason`
+は固定語彙 `no-contest` のみ。PR-6）。理由の無い `CANCELED` row と理由を持つ
+`RESOLVED` row は handoff 全体を拒否する。
 変更の無いファイルは `<state_dir>/soren_predictions_cursor.json` の size/mtime で飛ばすため、
 毎分の timer が台帳を読み直さない。symlink・oversize・契約違反の行は記録せず固定コードを返し、
 台帳の read/write に失敗した tick は cursor を進めないので同じ row を再試行する。
 この tick は best-effort で、失敗しても rotation の tick は止めない。
 診断は `prediction_leaderboard`（rounds/viewers の件数のみ）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
+
+### 半熟予想 round の owner-only 復旧（`cancel-prediction` / `sync-prediction`、#2216）
+
+半熟の予想 round が「未検証の記録から settlement を作らない」fail-closed で止まったとき、
+WebUI の `POST /api/predictions/action` では復旧できない（あの経路はSoren側の
+`twitch_predictions.sh` と `tmp/state/current_prediction.json` を操作し、半熟の durable
+ledger `hanjuku_predictions.json` は触らない）。正規の遠隔復旧は canonical な
+`corner-rotation-operator` workflow の固定 operation 4つ。
+
+| operation | 動作 |
+| --- | --- |
+| `check-cancel-prediction` | cancel の対象が居るかを読み取り専用で確認する。対象が無ければ非0で拒否 |
+| `cancel-prediction` | 台帳が所有する round を remote で `CANCELED` にして返金し、ローカル所有を解除する |
+| `check-sync-prediction` | sync の対象が居るかを読み取り専用で確認する |
+| `sync-prediction` | 所有 round を remote の権威状態へ合わせる（終了済みなら結果を記録して解除、生きていれば実 id を再取り込み、不在なら stale 所有だけを捨てる） |
+
+- 手順: まず `check-<op>-prediction` を流して対象が居ることを確認し、次に同じ `<op>-prediction`
+  を流す。`confirm` は `production`。
+- 入力は `operation` と `confirm` だけ。**prediction id・outcome index・任意コマンドは取らない。**
+  認可は owner 本人・`refs/heads/main`・`ref_protected`・本番 SHA 一致・canonical workflow のみ
+  （`ops/vm_actions/authorize_corner_rotation.py`）。
+- 両操作とも**既に記録された round の照合だけ**を行う。新しい round を作らず、勝者を選ばず、
+  target / middle / 選択肢を変えず、他コーナーの賭けに触れない。
+- round は消さず `status=CANCELED` の終端 tombstone として残す。これが同一 run での
+  二つ目の賭けを止める（別 runtime の後続 run は通常どおり作成できる）。
+  参加実績の記帳に失敗したときは未解決のまま残し、次の tick が同じ id を1回だけ記帳する。
+- remote が同じ id を別 shape（title / outcome id）で返す場合は `remote_mismatch` で拒否し、
+  ローカル所有を消さない。GET が対象 id を返さない場合だけ不在として扱う。
+- malformed な durable `result` は tombstone に残さない。元の不正証拠を
+  `hanjuku_prediction_recovered_result_<予想IDのSHA-256>.json` へ退避してから row の `result` を
+  空にし、通常 loader が受理する終端 row に収束させる（残すと次tickも後続runtimeも
+  `invalid_state` で止まる）。証拠を保存できなければ拒否する。
+- 不成立キャンセルの記帳根拠は CANCELED 応答の shape に依存させない。応答が counts を
+  省いても、取消前に保存した no-contest snapshot から記帳する。記帳できるまで DONE にしない。
+  通常 tick も `sources=(remote, snapshot)` を渡すため、`_record_canceled` は証拠の濃さ
+  （`top_predictors` あり > counts あり > なし）で candidate を選び、sparse な応答で
+  保存済みの人数・ポイントを 0/0 に劣化させない。
+- 一時的な記帳失敗で未解決のまま残る row（`*_record_pending`）も、malformed な `result` を
+  保持していると次tickが `_load` で `invalid_state` になり再試行できない。終端時だけでなく
+  pending 時も証拠を退避してから永続化する。
+- `check-` は所有台帳を検証できない場合も拒否する（apply と同じ判定）。
+- 本番 profile は script が `--config config/docich.soren-live.toml` で明示的に束縛する
+  （gateway 環境は `DOCICH_CONFIG` を継承しない）。
+- 恒久修正 (#2213) で終端理由の受理集合は一致済み。残る停滞（durable `result` の契約違反など）は
+  tick の `_load` が fail-closed のまま拒否し続けるので、operator だけが
+  `_load_recoverable` を使う。**所有権は厳格に検証したまま** durable result の契約だけを
+  緩く扱う。壊れた台帳そのものは修復も上書きもせず `ledger_unreadable` で拒否する。
+- 実装: `ops/vm_actions/control_hanjuku_prediction.sh` →
+  `src/docich/hanjuku_prediction_control.py`（check は
+  `src/docich/hanjuku_prediction_control_check.py`）。固定コードだけを返し、
+  token・remote payload・視聴者名・台帳本文は出さない。
+- 連続失敗の可視化は診断の `hanjuku_predictions.health`（`consecutive_errors` /
+  `last_error` / `last_ok_at`）で見る（`docs/operations/runtime-diagnostics.md`）。
 
 ### 不成立キャンセルの参加実績と5指標ランキング（#933 PR-5）
 
@@ -756,10 +812,15 @@ seed から確定し、コミットメント（SHA-256）を配信ボードへ�
 CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
 差し引いた予算内にクランプする。
 
-表示は 960×540 viewport の読み取り専用 view（loopback 8807、配信ネイティブ全画面例外の
-対象外）。view は corner が書く `mystery_view.json`（0600・256KiB上限・atomic）だけを
-読み、generation 束縛で別世代には出ない。ナレーションは `[mystery_corner].narration_agents`
-が非空のときだけ共有 LLM dispatch を使い、失敗時は定型文へ fallback する。reveal は常に定型文。
+表示は読み取り専用 view（loopback 8807）で、天気予報・予想王と同じ配信ネイティブ
+全画面例外として `(0, 0, display.width, display.height)`（本番 1280×720）に提示する
+（2026-10-21 オーナー依頼。`display.width/height` が無い環境は 960×540 viewport へ
+fallback）。commit 時は配信タイトル・カテゴリを `AI探偵ミステリー` / Just Chatting へ
+切り替え、復帰時に前のゲームへ戻す。コーナー中は Soren の共有フラグ
+`tmp/.program_corner_active` でラジオの新規生成と deferred 再生を止める。view は corner が
+書く `mystery_view.json`（0600・256KiB上限・atomic）だけを読み、generation 束縛で別世代には
+出ない。ナレーションは `[mystery_corner].narration_agents` が非空のときだけ共有 LLM
+dispatch を使い、失敗時は定型文へ fallback する。reveal は常に定型文。
 セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
 interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
 `docs/features/mystery-corner.md`。

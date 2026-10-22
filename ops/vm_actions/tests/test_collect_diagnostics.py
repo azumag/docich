@@ -3553,6 +3553,63 @@ def test_hanjuku_prediction_ownership_is_absent_without_an_owned_round(tmp_path)
     assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
 
 
+def test_hanjuku_prediction_health_projects_only_the_bounded_streak(tmp_path):
+    module = load_collector()
+    assert "health" not in module._collect_hanjuku_predictions(tmp_path)
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 7, "last_error": "invalid_state",
+        "last_ok_at": 1000, "body": "DO-NOT-PUBLISH"}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health == {"present": True, "readable": True, "consecutive_errors": 7,
+                      "last_error": "invalid_state", "last_ok_at": 1000}
+    assert "DO-NOT-PUBLISH" not in json.dumps(health)
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "consecutive_errors": -3, "last_error": "owner-secret", "last_ok_at": "x"}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["consecutive_errors"] is None
+    assert health["last_error"] is None
+    assert health["last_ok_at"] is None
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text("not-json")
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health == {"present": True, "readable": False, "consecutive_errors": None,
+                      "last_error": None, "last_ok_at": None}
+
+
+def test_hanjuku_prediction_health_rejects_unhashable_and_huge_values(tmp_path):
+    module = load_collector()
+    # Unhashable last_error (array/dict) must not raise TypeError and must project None.
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 3, "last_error": ["invalid_state"],
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_error"] is None
+    assert health["consecutive_errors"] == 3
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 3, "last_error": {"x": "invalid_state"},
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_error"] is None
+
+    # Huge integer clocks must not raise OverflowError and must project None.
+    huge = 10 ** 400
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 1, "last_error": "invalid_state",
+        "last_ok_at": huge}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_ok_at"] is None
+    assert health["last_error"] == "invalid_state"
+
+    # Huge consecutive_errors must project None (bounded).
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": huge, "last_error": "invalid_state",
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["consecutive_errors"] is None
+
+
 def _prediction_memory_module(source):
     """Execute only the projection's AST with a memory-only filesystem."""
     import ast
