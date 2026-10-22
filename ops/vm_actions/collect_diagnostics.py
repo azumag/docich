@@ -8110,6 +8110,12 @@ def _collect_nethack_agent_log(state_dir, now):
 
 
 NETHACK_PANE_LINES = 14
+# NetHack draws its message row -- and therefore ``--More--`` -- on the TOP
+# screen row, which the tail-only capture structurally misses (#2271). The
+# head rows are captured separately and bounded to the message row plus the
+# row the marker is pushed onto: ``more()`` moves it there once the cursor
+# reaches ``CO - 8``. Two redacted lines add under a kilobyte.
+NETHACK_PANE_HEAD_LINES = 2
 NETHACK_PANE_LINE_LIMIT = 240
 _TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
 _RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
@@ -8145,6 +8151,35 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
     }
 )
 _BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
+
+
+def _capture_tmux_pane_head(target, *, head_lines=NETHACK_PANE_HEAD_LINES):
+    """Read the first visible rows of one pane read-only; never sends input.
+
+    The NetHack message/pager row is the top screen row, so a tail-only
+    capture cannot distinguish "a ``--More--`` the brain failed to answer"
+    from "a decision loop returning no action" (#2271). Return the leading
+    ``head_lines`` rows as-is: blank rows are preserved as empty strings so
+    row 0 stays row 0, which makes "no message row displayed" readable.
+    """
+    if not isinstance(target, str) or _TMUX_TARGET_RE.fullmatch(target) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [
+        _redact_text(line, NETHACK_PANE_LINE_LIMIT)
+        for line in proc.stdout.splitlines()[:head_lines]
+    ]
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -10105,6 +10140,11 @@ def _collect_nethack_panes(state_dir, now):
     this channel. The NetHack TTY lives in the runtime's birth/process window,
     not the presentation xterm window, so capture every window by name plus the
     resolved process and agent panes. Never sends tmux input.
+
+    ``game_head`` carries the leading rows of the same game pane so the
+    message/pager row -- structurally outside the 14-line tail -- is visible
+    enough to tell an unanswered ``--More--`` from a zero-action decision loop
+    (#2271).
     """
     result = {
         "present": False,
@@ -10112,6 +10152,7 @@ def _collect_nethack_panes(state_dir, now):
         "active_game": None,
         "windows": [],
         "game": [],
+        "game_head": [],
         "agent": [],
     }
     try:
@@ -10147,6 +10188,7 @@ def _collect_nethack_panes(state_dir, now):
     candidates = [name for name in names if name not in {game_window, agent_window}]
     if len(candidates) == 1:
         result["game"] = _capture_tmux_pane(f"{session}:{candidates[0]}")
+        result["game_head"] = _capture_tmux_pane_head(f"{session}:{candidates[0]}")
     result["agent"] = _capture_tmux_pane(f"{session}:{agent_window}")
     return result
 

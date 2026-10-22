@@ -188,6 +188,23 @@ def _more_marker_on_next_row(raw_lines: list[str], cols: int) -> bool:
     )
 
 
+_MORE_ROW_SUFFIX_RE = re.compile(r"--more--$", re.IGNORECASE)
+
+
+def _more_marker_on_message_row(message: str) -> bool:
+    """True when the top row itself ends with the bare pager marker.
+
+    ``more()`` keeps ``--More--`` on the message row while the cursor is still
+    below ``CO - 8``, so a ~71-column message plus the marker fills the row.
+    The wrap heuristic then saw a full-width row above a non-blank map row and
+    classified a pageable statement as ``unknown`` forever (#2271): NetHack is
+    turn-based, the frame never changed without input, and the run stalled
+    until the corner's stall guard fired. Only a trailing bare marker counts;
+    question-bearing rows keep their precedence in :func:`_prompt_kind`.
+    """
+    return _MORE_ROW_SUFFIX_RE.search(message.strip()) is not None
+
+
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # Only row zero is the unambiguous message region of the classic TTY.
     # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
@@ -317,9 +334,14 @@ def normalize_tty(
         if re.search(rf"(?<![A-Za-z]){re.escape(condition.lower())}(?![A-Za-z])", status_lower)
     )
     more_on_next_row = _more_marker_on_next_row(raw_lines, cols)
+    # A trailing marker on the message row itself is a visible pager signal and
+    # must not be lost to the wrap heuristic (see _more_marker_on_message_row).
+    more_on_message_row = _more_marker_on_message_row(message)
     prompt = _prompt_kind(
         message,
-        may_wrap=False if more_on_next_row else _message_may_wrap(raw_lines, cols),
+        may_wrap=False
+        if (more_on_next_row or more_on_message_row)
+        else _message_may_wrap(raw_lines, cols),
     )
     # Preserve every top-row prompt signal before accepting the next-row marker.
     if more_on_next_row and prompt == "none":
