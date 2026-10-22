@@ -27,7 +27,6 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from .classification import (
-    ClassifierError,
     _fraction,
     _hex64,
     _id,
