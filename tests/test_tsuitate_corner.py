@@ -588,6 +588,94 @@ def test_rollback_failed_start_stays_latched_while_the_plane_needs_recovery(tmp_
     assert json.loads(manager.path.read_text())["status"] == "failed"
 
 
+def test_settle_released_failure_retires_the_recorded_failed_owner(tmp_path):
+    # #1992: the rotation's released-skip path calls the settle with the
+    # state's own recorded request once its ledger proof passes, so the
+    # 2026-10-16 owner is retired through the reviewed reconcile proof.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+
+    assert manager.settle_released_failure(request_id) is True
+
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert state["rotation_request_id"] == request_id
+    # The terminal receipt stays the evidence and is never rewritten.
+    assert manager.store.receipts.load(request_id)["status"] == "failed"
+
+
+def test_settle_released_failure_refuses_a_newer_requests_release(tmp_path):
+    # #2352 discipline: a release record for a newer request of this corner
+    # (the one run_rotation refused before any state write) is never
+    # permission to retire the older recorded owner.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    before = json.loads(manager.path.read_text())
+
+    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    assert json.loads(manager.path.read_text()) == before
+
+
+def test_settle_released_failure_keeps_an_unproven_owner_latched(tmp_path):
+    # The released-skip path passes the state's own request, so this must
+    # reach reconcile and be refused there (canonical owned by another game).
+    from docich.game_switch import runtime_names
+
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    names = runtime_names(2)
+    canonical["active"] = {
+        "game": "nethack", "runtime_id": "g2-abcdef", "generation": 2,
+        "lease_id": str(uuid.uuid4()), "adapter": "cli",
+        "game_window": names.game_window, "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:20:00Z",
+    }
+    manager.store.canonical.save(canonical)
+
+    assert manager.settle_released_failure(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("active_key", ["started_at", "view_runtime_identity"])
+def test_settle_released_failure_ignores_a_state_that_became_active(tmp_path, active_key):
+    # Each activation guard is pinned on its own: the request still matches,
+    # so only the guard under test can produce the refusal.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    state = json.loads(manager.path.read_text())
+    if active_key == "started_at":
+        state["started_at"] = 1000.5
+    else:
+        state["view_runtime_identity"] = {"game": VIEW_NAME, "runtime_id": "g9-x",
+                                          "generation": 9, "lease_id": str(uuid.uuid4())}
+    manager._save(state)
+
+    assert manager.settle_released_failure(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_settle_released_failure_ignores_a_terminal_state(tmp_path):
+    # The recorded request still matches, so the status guard is what refuses.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    state = json.loads(manager.path.read_text())
+    state["status"] = "completed"
+    manager._save(state)
+
+    assert manager.settle_released_failure(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "completed"
+
+
+def test_adapter_settle_released_failure_delegates_to_the_manager(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    assert adapter.state_path == manager.path
+
+    assert adapter.settle_released_failure(request_id) is True
+
+    assert json.loads(manager.path.read_text())["status"] == "interrupted"
+
+
 def _runtime(identity, names):
     return {
         **identity,
