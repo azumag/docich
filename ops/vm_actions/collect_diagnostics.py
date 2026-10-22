@@ -6306,7 +6306,8 @@ def _collect_retro_program_queues(soren):
 def _collect_prediction_leaderboard(state_dir):
     """Counts only; the 予想王 ledger never exposes viewer names or titles."""
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0}
+    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
+             "canceled": 0, "soren_canceled": 0}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -6322,7 +6323,13 @@ def _collect_prediction_leaderboard(state_dir):
             or not isinstance(data.get("rounds"), dict)):
         return entry
     viewers = set()
+    canceled = soren_canceled = 0
     for round_ in data["rounds"].values():
+        if isinstance(round_, dict) and round_.get("status") == "CANCELED":
+            # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
+            canceled += 1
+            if round_.get("corner") == "soren":
+                soren_canceled += 1
         predictors = round_.get("predictors") if isinstance(round_, dict) else None
         if not isinstance(predictors, list):
             continue
@@ -6330,7 +6337,8 @@ def _collect_prediction_leaderboard(state_dir):
             if isinstance(item, dict) and isinstance(item.get("user_id"), str):
                 viewers.add(item["user_id"])
     entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
-                 viewers=min(len(viewers), 100000))
+                 viewers=min(len(viewers), 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
     return entry
 
 

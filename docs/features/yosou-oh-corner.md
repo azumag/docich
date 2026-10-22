@@ -361,7 +361,7 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
      変更が無い tick は cursor で飛ばし、`record_resolved(corner='soren')` で冪等に記録する。
      symlink・oversize・契約違反の行は記録せず固定コード（`handoff-*` / `leaderboard`）を返し、
      台帳書き込みに失敗した tick は cursor を進めないので同じ row を再試行する。
-     診断は `prediction_leaderboard` の件数（rounds/viewers）と `soren_predictions` の
+     診断は `prediction_leaderboard` の件数（rounds/viewers/canceled/soren_canceled）と `soren_predictions` の
      存在・行数のみを投影する。回帰: `tests/test_soren_predictions.py`、
      `ops/vm_actions/tests/test_collect_diagnostics.py`、soviet_now `tests/test_prediction_resolved.py`。
 3. **PR-3（実装済み）**: `yoso` adapter ＋ view ＋ catalog 登録（既定無効）。
