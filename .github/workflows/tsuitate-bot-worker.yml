@@ -3,11 +3,13 @@ name: Tsuitate Bot Worker
 on:
   pull_request:
     paths:
+      - ".node-version"
       - "workers/tsuitate-bot/**"
       - ".github/workflows/tsuitate-bot-worker.yml"
   push:
     branches: [main]
     paths:
+      - ".node-version"
       - "workers/tsuitate-bot/**"
       - ".github/workflows/tsuitate-bot-worker.yml"
 
@@ -31,9 +33,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version-file: .node-version
       - name: Install Cloudflare CLI and local runtime dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
       - name: Build Cloudflare Worker without deploying
         run: ./node_modules/.bin/cf build
       - name: Run protocol fixtures and local workerd integration checks

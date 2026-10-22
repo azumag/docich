@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
       - 'conftest.py'
@@ -56,6 +57,9 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: 'requirements*.txt'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Install system dependencies

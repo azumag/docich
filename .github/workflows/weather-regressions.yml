@@ -3,6 +3,7 @@ name: Weather relay CI
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'config/docich.soren-live.toml'
       - 'src/docich/weather.py'
       - 'src/docich/weather_view.py'
@@ -34,6 +35,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.node-version'
       - 'config/docich.soren-live.toml'
       - 'src/docich/weather.py'
       - 'src/docich/weather_view.py'
@@ -92,6 +94,7 @@ jobs:
           run="$(python3 .github/scripts/soren_gitlink_gate.py \
             --before "$BEFORE_SHA" \
             --after "$AFTER_SHA" \
+            --root-path '.node-version' \
             --root-path 'src/docich/weather.py' \
             --root-path 'src/docich/weather_view.py' \
             --root-path 'src/docich/weather_corner.py' \
@@ -135,6 +138,10 @@ jobs:
           persist-credentials: false
       - name: Install existing test dependencies
         run: python3 -m pip install -r requirements-test.txt
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - name: Require Node for DOM-free UI regression tests
         run: node --version
       - name: Forecast, lifecycle, and GameSwitch contracts

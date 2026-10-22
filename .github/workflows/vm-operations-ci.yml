@@ -3,6 +3,7 @@ name: VM operations CI
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'ops/**'
       - 'deploy/**'
       - 'containers/**'
@@ -21,6 +22,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.node-version'
       - 'ops/**'
       - 'deploy/**'
       - 'containers/**'
@@ -77,6 +79,10 @@ jobs:
         run: python3 -m unittest discover -s ops/local/tests -v
       - name: NetHack read-only acceptance evidence
         run: python3 -m pytest -q ops/local/tests/test_nethack_acceptance_evidence.py
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
       - run: >-
