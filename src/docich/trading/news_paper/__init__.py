@@ -10,6 +10,11 @@ N06 implements the next-observation IOC execution model in
 :mod:`docich.trading.news_paper.execution`; N05 owns the dedicated ledger,
 risk gate, reservations and durable decision receipts in
 :mod:`docich.trading.news_paper.ledger` / ``risk`` / ``manager``.
+
+N03 implements the bounded rule classification, the NewsSignal builder and
+the A/B/C price-news composition in :mod:`docich.trading.news_paper.classification`,
+:mod:`docich.trading.news_paper.signals` and
+:mod:`docich.trading.news_paper.composition`.
 """
 from .execution import (
     EXECUTION_MODEL_VERSION,
@@ -93,4 +98,76 @@ __all__ = [
     "round_lot_down",
     "select_observation",
     "spread_bps",
+]
+
+from .classification import (
+    CLASSIFIER_POLICY_VERSION,
+    ClassifierError,
+    ClassificationRequest,
+    ClassificationResult,
+    FixtureClassifierPolicy,
+    HostEnvelope,
+    LLM_ENABLED,
+    RequestTracker,
+    RuleClassifier,
+    build_envelope,
+    decode_classification_request,
+    decode_classification_result,
+    strict_json_loads,
+)
+from .signals import (
+    EvidenceRecord,
+    FixtureSignalPolicy,
+    NewsSignal,
+    SignalBuilder,
+    SignalError,
+    compute_expires_at,
+    decode_news_signal,
+)
+from .composition import (
+    ARM_A,
+    ARM_B,
+    ARM_C,
+    CompositionOutcome,
+    CompositionResult,
+    FixtureComposerPolicy,
+    InMemoryEventUseStore,
+    JustifiedReevaluation,
+    PriceCandidate,
+    compose,
+    reevaluation_permitted,
+)
+
+__all__ += [
+    "ARM_A",
+    "ARM_B",
+    "ARM_C",
+    "CLASSIFIER_POLICY_VERSION",
+    "ClassificationRequest",
+    "ClassificationResult",
+    "ClassifierError",
+    "CompositionOutcome",
+    "CompositionResult",
+    "EvidenceRecord",
+    "FixtureClassifierPolicy",
+    "FixtureComposerPolicy",
+    "FixtureSignalPolicy",
+    "HostEnvelope",
+    "InMemoryEventUseStore",
+    "JustifiedReevaluation",
+    "LLM_ENABLED",
+    "NewsSignal",
+    "PriceCandidate",
+    "RequestTracker",
+    "RuleClassifier",
+    "SignalBuilder",
+    "SignalError",
+    "build_envelope",
+    "compose",
+    "compute_expires_at",
+    "decode_classification_request",
+    "decode_classification_result",
+    "decode_news_signal",
+    "reevaluation_permitted",
+    "strict_json_loads",
 ]
