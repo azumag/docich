@@ -1,0 +1,66 @@
+# News PAPER research lane (parent #769 / delegation unit N07).
+#
+# Opt-in only. This file never enables a real broker, live order or VM unit.
+# While `enabled` is false (or the section is absent) the worker, status and
+# dashboard are inert: no directory, database, socket, child process or
+# network activity is created, and no existing setting is touched.
+#
+# To enable: set `enabled = true` and supply EVERY value below explicitly.
+# There are no defaults for operational numbers (N00 v2 §5: they are not
+# approved yet). A missing or invalid value makes the worker refuse to start
+# (fail-closed) — that is intentional, not a bug.
+
+[worker]
+enabled = false
+# mode = "paper"                    # fixed; any other value is rejected
+# run_id = "run-demo-001"           # [A-Za-z0-9][A-Za-z0-9_.:-]{0,127}
+# scenario_id = "scenario-demo-001"
+# account_id = "account-demo-001"
+# state_dir = "/absolute/path"      # absolute only; symlinks / ".." rejected
+# cycle_seconds = 5
+# queue_size = 64
+# queue_deadline_seconds = 30
+# initial_cash_jpy = "1000000"      # virtual research cash; never moved from an existing account
+# entries_disabled = false          # true stops new news entries + cancels pending buys
+# execution_delay_ms = 0            # extra latency added once by T2 (not_before)
+# worker_lock_timeout_seconds = 10
+# worker_id = "n07"
+#
+# [worker.clock_quality]
+# synced = true
+# source = "ntp"                    # ntp | vm_clock | injected (unknown => CLOCK_UNTRUSTED)
+# max_error_ms = 1000               # N00 v2 §3.5 confirmed tolerance
+#
+# [risk]
+# version = "fixture-risk-v1"
+# max_positions = 3
+# max_gross_exposure = "3000000"
+# per_asset_exposure_cap = "1000000"
+# daily_loss_limit = "20000"
+# drawdown_limit = "50000"
+#
+# [instruments."stocks:XTKS:DEMO"]  # one table per approved asset
+# version = "fixture-constraints-v1"
+# market = "stocks"                 # stocks | fx
+# quote_currency = "JPY"
+# lot = "100"
+# min_quantity = "100"
+# min_notional = "100000"
+# price_tick = "1"
+# fee_bps = "1"
+# fee_min = "1"
+# slippage_bps = "2"
+# spread_limit_bps = "100"
+# participation_rate = "1"
+# max_quote_age_seconds = "60"
+# volatility_limit_bps = null
+# max_order_notional = null
+
+[dashboard]
+enabled = false
+# state_dir = "/absolute/path"      # same state root the worker uses
+# run_id = "run-demo-001"
+# scenario_id = "scenario-demo-001"
+# account_id = "account-demo-001"
+# host = "127.0.0.1"                # loopback only; other hosts are rejected
+# port = 8799

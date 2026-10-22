@@ -1,0 +1,44 @@
+name: News paper contracts
+on:
+  pull_request:
+    paths:
+      - 'src/docich/trading/news_paper/**'
+      - 'tests/test_news_paper*.py'
+      - 'config/news-paper.toml'
+      - 'bin/docich-news-paper'
+      - 'scripts/systemd/docich-news-paper-*'
+      - 'docs/operations/news-paper-worker.md'
+      - '.github/workflows/news-paper.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/docich/trading/news_paper/**'
+      - 'tests/test_news_paper*.py'
+      - 'config/news-paper.toml'
+      - 'bin/docich-news-paper'
+      - 'scripts/systemd/docich-news-paper-*'
+      - 'docs/operations/news-paper-worker.md'
+      - '.github/workflows/news-paper.yml'
+permissions:
+  contents: read
+
+concurrency:
+  group: news-paper-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  news-paper-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Offline news paper contracts
+        env:
+          PYTHONPATH: src
+        run: python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_news_paper*.py' -v
+      - name: Compile and launcher syntax
+        run: |
+          python3 -m compileall -q src/docich/trading/news_paper
+          bash -n bin/docich-news-paper

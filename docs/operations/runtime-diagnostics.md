@@ -1051,6 +1051,18 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
 
+### News PAPER worker（N07）
+
+docich-local の研究worker（`src/docich/trading/news_paper/worker.py`）は
+`ops/vm_actions/runtime_registry.py`（soviet_now側のworker/queue lane/pid規約）へは登録しない。
+health/status/queue の契約は `docs/operations/news-paper-worker.md` を正本とする。
+
+- statusは専用 `paper.sqlite3` を **`mode=ro`** で読むallowlist投影で、DB/ディレクトリを作成・変更しない。
+- heartbeatは `health.json` の durable な `heartbeat_at` から age を計算し、mtimeを鮮度に使わない。
+- 診断へ出すのは固定codeと投影値のみ。raw記事・prompt・モデル出力・URL・秘密を出さない。
+- VM配備時のhealth/queue/diagnostics統合とOS隔離の実測は N09 で審査する（未統合をruntime readyと
+  呼ばない）。
+
 ## Twitch OAuth status observation
 
 `twitch_oauth` は固定の `state_dir/twitch_oauth/status.json` だけを最大4096 bytesで読み、
