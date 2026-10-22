@@ -5091,8 +5091,13 @@ def _project_tsuitate_corner(data):
         code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
     )
     refusal = data.get("settle_refused_reason")
+    # Only a still-failed owner has a meaningful refusal: after the settle (or
+    # any other terminal path) retires it, the persisted reason is stale and
+    # must not sit next to `interrupted` as if it still applied.
     entry["settle_refused_reason"] = (
-        refusal if isinstance(refusal, str) and refusal in _TSUITATE_SETTLE_REFUSALS
+        refusal if (entry.get("status") == "failed"
+                    and isinstance(refusal, str)
+                    and refusal in _TSUITATE_SETTLE_REFUSALS)
         else None
     )
     return entry

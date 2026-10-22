@@ -350,6 +350,35 @@ def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
     assert 'DO-NOT-PUBLISH' not in json.dumps(result,ensure_ascii=False)
 
 
+def test_tsuitate_settle_refusal_vocabulary_matches_the_corner():
+    # Drift guard: a reason the corner can emit but the collector does not
+    # allowlist would be silently projected as null, which is exactly the
+    # blindness this field exists to remove (#1992).
+    from docich import tsuitate_corner
+    module=load_collector()
+
+    assert set(tsuitate_corner.SETTLE_REFUSAL_REASONS) == set(module._TSUITATE_SETTLE_REFUSALS)
+
+
+def test_tsuitate_corner_hides_a_stale_refusal_after_convergence(tmp_path):
+    # The reason is only meaningful while the owner is still failed; after a
+    # settle the persisted value is stale and must not appear next to
+    # `interrupted`.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'interrupted','game':'tsuitate-view',
+        'end_reason':'released-failure-before-retry',
+        'settle_refused_reason':'other-owner'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['status']=='interrupted'
+    assert entry['settle_refused_reason'] is None
+
+
 def test_tsuitate_corner_refuses_an_unknown_settle_refusal(tmp_path):
     module=load_collector()
     state_dir=tmp_path/'run'

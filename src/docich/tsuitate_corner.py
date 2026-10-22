@@ -50,6 +50,18 @@ BETA_TERMINAL = frozenset({"stopped", "finished", "queue_timeout"})
 # A single match must never hold the shared program slot forever. The queue
 # wait and the connect/disconnect deadlines live in the Worker; this bound
 # covers the match itself, which the remote site controls.
+# Fixed vocabulary of the reason a released failed owner is not retired yet
+# (#1992). diagnostics publishes exactly this set, so the two lists must stay
+# in step; a regression test compares them.
+SETTLE_REFUSAL_REASONS = frozenset({
+    "not-failed",
+    "other-owner",
+    "became-active",
+    "canonical-unstable",
+    "canonical-busy",
+    "canonical-owns-view",
+    "receipt-open",
+})
 DEFAULT_MAX_MATCH_SECONDS = 1800.0
 MAX_MATCH_SECONDS_LIMIT = 24 * 3600.0
 
