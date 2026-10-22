@@ -616,6 +616,8 @@ def test_settle_released_failure_refuses_a_newer_requests_release(tmp_path):
 
 
 def test_settle_released_failure_keeps_an_unproven_owner_latched(tmp_path):
+    # The released-skip path passes the state's own request, so this must
+    # reach reconcile and be refused there (canonical owned by another game).
     from docich.game_switch import runtime_names
 
     manager, request_id, _previous = _failed_rollback_setup(tmp_path)
@@ -630,29 +632,35 @@ def test_settle_released_failure_keeps_an_unproven_owner_latched(tmp_path):
     }
     manager.store.canonical.save(canonical)
 
-    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    assert manager.settle_released_failure(request_id) is False
     assert json.loads(manager.path.read_text())["status"] == "failed"
 
 
-def test_settle_released_failure_ignores_a_state_that_became_active(tmp_path):
+@pytest.mark.parametrize("active_key", ["started_at", "view_runtime_identity"])
+def test_settle_released_failure_ignores_a_state_that_became_active(tmp_path, active_key):
+    # Each activation guard is pinned on its own: the request still matches,
+    # so only the guard under test can produce the refusal.
     manager, request_id, _previous = _failed_rollback_setup(tmp_path)
     state = json.loads(manager.path.read_text())
-    state["started_at"] = 1000.5
-    state["view_runtime_identity"] = {"game": VIEW_NAME, "runtime_id": "g9-x",
-                                      "generation": 9, "lease_id": str(uuid.uuid4())}
+    if active_key == "started_at":
+        state["started_at"] = 1000.5
+    else:
+        state["view_runtime_identity"] = {"game": VIEW_NAME, "runtime_id": "g9-x",
+                                          "generation": 9, "lease_id": str(uuid.uuid4())}
     manager._save(state)
 
-    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    assert manager.settle_released_failure(request_id) is False
     assert json.loads(manager.path.read_text())["status"] == "failed"
 
 
 def test_settle_released_failure_ignores_a_terminal_state(tmp_path):
+    # The recorded request still matches, so the status guard is what refuses.
     manager, request_id, _previous = _failed_rollback_setup(tmp_path)
     state = json.loads(manager.path.read_text())
     state["status"] = "completed"
     manager._save(state)
 
-    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    assert manager.settle_released_failure(request_id) is False
     assert json.loads(manager.path.read_text())["status"] == "completed"
 
 
