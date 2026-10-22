@@ -280,6 +280,11 @@ class ArmMetrics:
     partial_fills: int = 0
     unresolved_positions: int = 0
     data_gaps_seconds: float = 0.0
+    # Price age display (N08-R5): worst per-position mark age in seconds relative
+    # to the last equity observation. None when any mark_ts is missing
+    # (unverifiable) or there are no positions. The "stale" threshold is an
+    # owner judgment-table value and is intentionally NOT defaulted here.
+    mark_age_seconds: Optional[float] = None
     # Reproducibility
     evaluation_digest: str = ""
 
@@ -323,10 +328,29 @@ class ComparisonGate:
         # Arms with identical initial capital but different performance will have different
         # avg_equity. Do NOT flag as mismatch. Initial capital comparison requires
         # explicit initial_capital field (not currently in ArmMetrics).
-        # Check manifest version binding (both arms must share the same manifest versions)
+        # Check manifest version binding (both arms share this manifest's declared
+        # versions; empty declared versions make the comparison unattributable).
+        conditions = {
+            "cost_allocation_a": arm_a.cost_breakdown.cost_allocation_method,
+            "cost_allocation_b": arm_b.cost_breakdown.cost_allocation_method,
+            "exit_commission_bps_a": str(arm_a.cost_breakdown.exit_commission_bps),
+            "exit_commission_bps_b": str(arm_b.cost_breakdown.exit_commission_bps),
+            "exit_slippage_bps_a": str(arm_a.cost_breakdown.exit_slippage_bps),
+            "exit_slippage_bps_b": str(arm_b.cost_breakdown.exit_slippage_bps),
+        }
         if manifest is not None:
-            # Record manifest versions in conditions for transparency
-            pass
+            declared = {
+                "manifest_risk_version": manifest.risk_version,
+                "manifest_cost_version": manifest.cost_version,
+                "manifest_execution_version": manifest.execution_version,
+                "manifest_policy_version": manifest.policy_version,
+            }
+            missing = sorted(name for name, value in declared.items() if not value)
+            if missing:
+                violations.append(
+                    "manifest version fields missing: " + ", ".join(missing)
+                )
+            conditions.update(declared)
         # Check synthetic/historical mixing
         if arm_a.policy_tracking.synthetic_historical_results or arm_b.policy_tracking.synthetic_historical_results:
             violations.append("synthetic_historical_results present in primary evaluation")
@@ -335,14 +359,7 @@ class ComparisonGate:
         return ComparisonGate(
             cost_risk_fill_match=len(violations) == 0,
             synthetic_mixed=any("synthetic" in v for v in violations),
-            conditions={
-                "cost_allocation_a": arm_a.cost_breakdown.cost_allocation_method,
-                "cost_allocation_b": arm_b.cost_breakdown.cost_allocation_method,
-                "exit_commission_bps_a": str(arm_a.cost_breakdown.exit_commission_bps),
-                "exit_commission_bps_b": str(arm_b.cost_breakdown.exit_commission_bps),
-                "exit_slippage_bps_a": str(arm_a.cost_breakdown.exit_slippage_bps),
-                "exit_slippage_bps_b": str(arm_b.cost_breakdown.exit_slippage_bps),
-            },
+            conditions=conditions,
             violations=violations
         )
 
@@ -720,6 +737,23 @@ def build_arm_metrics(
     unresolved = len(positions)
     data_gaps = sum(e.get("data_gap_seconds", 0) for e in news_events)
 
+    # Price age display (N08-R5): worst per-position mark age relative to the
+    # last equity observation. Any position without mark_ts leaves the age
+    # unverifiable (None) rather than zero — missing data is not zeroed.
+    mark_age = None
+    if positions and equity_series:
+        ref_ts = equity_series[-1][0]
+        ages = []
+        all_marked = True
+        for pos in positions.values():
+            mark_ts = pos.get("mark_ts")
+            if mark_ts is None:
+                all_marked = False
+                break
+            ages.append(max(0.0, float(ref_ts) - float(mark_ts)))
+        if all_marked and ages:
+            mark_age = max(ages)
+
     # Unrealized PnL - None if any position missing mark or invalid
     unrealized_pnl = None
     estimated_exit_cost = None
@@ -799,6 +833,7 @@ def build_arm_metrics(
         partial_fills=partial_fills,
         unresolved_positions=unresolved,
         data_gaps_seconds=data_gaps,
+        mark_age_seconds=mark_age,
         evaluation_digest=eval_digest,
     )
     return metrics
@@ -953,6 +988,14 @@ def run_evaluation(
     remaining_items = 0
     limitations = ["primary_evidence_only", "live_eligible_false", "no_existing_policy_writes"]
     limitations += comparison_gate.violations or []
+
+    # N08-R8: a declared holdout boundary is not enforced by this module version.
+    # Record it as a limitation (fail-open display, fail-closed honesty) instead
+    # of silently ignoring the declared value.
+    if manifest.holdout_start_ts:
+        limitations.append(
+            "holdout_start_ts declared but holdout boundary not enforced in this module version"
+        )
 
     # Check min_independent_events against PolicyTracking.independent_events (not unique_eligible)
     tracked_independent = policy_tracking.independent_events

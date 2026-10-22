@@ -704,5 +704,133 @@ class TestReviewResiduals(unittest.TestCase):
         self.assertNotEqual(r_a.arm_a.policy_tracking.independent_events, r_b.arm_a.policy_tracking.independent_events)
 
 
+class TestVersionBindingAndMarkAge(unittest.TestCase):
+    """N08 version binding in the gate + mark age display (R5/R8 follow-ups)."""
+
+    def _manifest(self, risk_version="r"):
+        return EvaluationManifest(
+            ledger_revision="x", evidence_digest="y", classification_version="c",
+            price_version="p", risk_version=risk_version, cost_version="co",
+            execution_version="e", policy_version="pol", model_version="m",
+            eval_start_ts=0.0, eval_end_ts=3600.0, min_coverage_fraction=0.0,
+            min_independent_events=0,
+        )
+
+    def _arm(self, cap="1000", fee="10"):
+        return ArmMetrics(
+            label="A",
+            cost_breakdown=CostBreakdown(cost_allocation_method="pro_rata", exit_commission_bps=D(fee)),
+            news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+            avg_equity_jpy=D(cap),
+        )
+
+    def test_gate_records_declared_versions(self):
+        m = self._manifest()
+        g = ComparisonGate().check(self._arm(), self._arm(), m)
+        self.assertTrue(g.cost_risk_fill_match)
+        self.assertEqual(g.conditions.get("manifest_risk_version"), "r")
+        self.assertEqual(g.conditions.get("manifest_execution_version"), "e")
+
+    def test_gate_flags_missing_declared_versions(self):
+        bad = self._manifest(risk_version="")
+        g = ComparisonGate().check(self._arm(), self._arm(), bad)
+        self.assertFalse(g.cost_risk_fill_match)
+        self.assertTrue(any("manifest version fields missing" in v for v in g.violations))
+
+    def test_gate_without_manifest_unchanged(self):
+        g = ComparisonGate().check(self._arm(), self._arm())
+        self.assertTrue(g.cost_risk_fill_match)
+        self.assertNotIn("manifest_risk_version", g.conditions)
+
+    def test_mark_age_displayed(self):
+        eq = [(0.0, D("1000")), (1000.0, D("1000"))]
+        positions = {"TEST": {"side": 1, "qty": "10", "entry": "100", "mark": "105", "mark_ts": 900.0}}
+        m = build_arm_metrics([], eq, positions, [], [], CostBreakdown(cost_allocation_method="pro_rata"),
+                              PolicyTracking(), "A", D("1000"))
+        self.assertAlmostEqual(m.mark_age_seconds, 100.0, places=3)
+
+    def test_mark_age_unverifiable_without_mark_ts(self):
+        eq = [(0.0, D("1000")), (1000.0, D("1000"))]
+        positions = {"TEST": {"side": 1, "qty": "10", "entry": "100", "mark": "105"}}
+        m = build_arm_metrics([], eq, positions, [], [], CostBreakdown(cost_allocation_method="pro_rata"),
+                              PolicyTracking(), "A", D("1000"))
+        self.assertIsNone(m.mark_age_seconds)
+
+    def test_holdout_limitation_recorded(self):
+        m = self._manifest()
+        m_holdout = replace(m, holdout_start_ts=1800.0)
+        cb = CostBreakdown(cost_allocation_method="pro_rata")
+        pt = PolicyTracking(independent_events=1)
+        eq = [(0.0, D("1000")), (3600.0, D("1000"))]
+        news = [{"event_id": "e1", "eligible": True, "observation_gap_seconds": 0}]
+        r = run_evaluation(m_holdout, [], eq, {}, [], news, [], eq, {}, [], news, cb, cb, pt,
+                           D("1000"), D("1000"), "t")
+        self.assertTrue(any("holdout_start_ts declared but holdout boundary not enforced" in l
+                            for l in r.limitations))
+
+
+class TestRunExportVerifyRegression(unittest.TestCase):
+    """E2E: run_evaluation -> export -> verify_reproducibility on real outputs.
+
+    Guards the single-schema contract between the export digest and the
+    reproducibility digest so the two paths cannot silently diverge again.
+    """
+
+    def _manifest(self):
+        return EvaluationManifest(
+            ledger_revision="x", evidence_digest="y", classification_version="c",
+            price_version="p", risk_version="r", cost_version="co",
+            execution_version="e", policy_version="pol", model_version="m",
+            eval_start_ts=0.0, eval_end_ts=3600.0, min_coverage_fraction=0.0,
+            min_independent_events=0,
+        )
+
+    def _arms(self, total_operating="0"):
+        cb = CostBreakdown(cost_allocation_method="pro_rata", total_operating_cost_jpy=D(total_operating))
+        pt = PolicyTracking(independent_events=1)
+        eq = [(0.0, D("1000")), (3600.0, D("1000"))]
+        news = [{"event_id": "e1", "eligible": True, "observation_gap_seconds": 0}]
+        arm_a = build_arm_metrics([], eq, {}, [], news, cb, pt, "A", D("1000"))
+        arm_b = build_arm_metrics([], eq, {}, [], news, cb, pt, "B", D("1000"))
+        return arm_a, arm_b, eq, news
+
+    def _verify(self, manifest, arm_a_prev, arm_a_curr, arm_b_prev, arm_b_curr, eq, news):
+        return verify_reproducibility(
+            manifest,
+            [], eq, {}, news, arm_a_prev,
+            [], eq, {}, news, arm_a_curr,
+            [], eq, {}, news, arm_b_prev,
+            [], eq, {}, news, arm_b_curr,
+        )
+
+    def test_e2e_same_inputs_reproducible(self):
+        manifest = self._manifest()
+        a1, b1, eq, news = self._arms()
+        a2, b2, _, _ = self._arms()
+        result = run_evaluation(manifest, [], eq, {}, [], news, [], eq, {}, [], news,
+                                CostBreakdown(cost_allocation_method="pro_rata"),
+                                CostBreakdown(cost_allocation_method="pro_rata"),
+                                PolicyTracking(independent_events=1), D("1000"), D("1000"), "t")
+        self.assertFalse(result.live_eligible)
+        out = self._verify(manifest, a1, a2, b1, b2, eq, news)
+        self.assertTrue(out["reproducible"])
+        self.assertEqual(a1.evaluation_digest, a2.evaluation_digest)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "eval.json"
+            export_evaluation(result, p)
+            data = json.loads(p.read_text())
+            self.assertFalse(data["live_eligible"])
+            self.assertIn("arm_a", data)
+            self.assertIn("arm_b", data)
+
+    def test_e2e_cost_change_breaks_repro(self):
+        manifest = self._manifest()
+        a1, b1, eq, news = self._arms(total_operating="0")
+        a2, b2, _, _ = self._arms(total_operating="100")
+        out = self._verify(manifest, a1, a2, b1, b2, eq, news)
+        self.assertFalse(out["reproducible"])
+        self.assertNotEqual(a1.evaluation_digest, a2.evaluation_digest)
+
+
 if __name__ == "__main__":
     unittest.main()
