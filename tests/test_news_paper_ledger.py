@@ -529,6 +529,16 @@ class ApplyAccountingTest(unittest.TestCase):
         self.assertEqual(snap.cash, cash_after_buy + D("302968"))
         self.assertNotIn("stocks:XTKS:DEMO", snap.positions)
 
+    def test_negative_equity_valuation_is_recorded(self):
+        # Losses are recorded, never hidden behind an invalid value (D8).
+        self.ledger.record_valuation(
+            account_id="paper_news_demo", valuation_id="val_neg",
+            as_of="2026-09-18T01:00:00.000000Z",
+            positions_value="0", total_equity="-5000",
+        )
+        history = self.ledger.equity_history("paper_news_demo")
+        self.assertEqual(history[-1][1], D("-5000"))
+
     def test_audit_is_append_only_and_payload_allowlisted(self):
         self.ledger.apply_execution(outcome(fills=(fill(),)))
         rows = self.ledger._conn.execute(

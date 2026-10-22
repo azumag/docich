@@ -126,6 +126,22 @@ class LimitCodesTest(unittest.TestCase):
         decision = buy(account=held, quantity_cap=D("200"))
         self.assertTrue(decision.accepted)
 
+    def test_pending_buy_occupies_a_position_slot(self):
+        # An accepted (pending) new entry holds its slot until it settles, so
+        # a concurrent accept on a different asset cannot breach the limit.
+        pending = account(cash_reserved=D("300331"),
+                          pending_buy_assets=frozenset({"stocks:XTKS:OTHER"}))
+        decision = buy(account=pending, asset="stocks:XTKS:NEW",
+                       policy=RiskPolicy(
+                           version="fixture-risk-v1", max_positions=1,
+                           max_gross_exposure=D("10000000"),
+                           per_asset_exposure_cap=D("10000000"),
+                           daily_loss_limit=D("999999"),
+                           drawdown_limit=D("999999"),
+                       ))
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason_codes, ("POSITION_LIMIT",))
+
     def test_gross_exposure_caps_sizing(self):
         policy = RiskPolicy(
             version="fixture-risk-v1", max_positions=5,

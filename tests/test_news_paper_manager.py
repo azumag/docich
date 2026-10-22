@@ -319,6 +319,58 @@ class FillPathTest(ManagerTestCase):
         self.assertIn("MIN_ORDER_NOT_MET", outcome.reason_codes)
 
 
+class ConcurrentAcceptTest(ManagerTestCase):
+    def test_concurrent_accepts_never_overreserve_cash(self):
+        """Two simultaneous candidates compete for one cash pool: the second
+        sizes down to the remaining headroom and total reservations never
+        exceed the account cash (issue #782: no cap breach on same-time
+        accepts)."""
+        first = self.manager.submit_candidate(request())
+        assert first.status == "accepted"
+        second = self.manager.submit_candidate(
+            request(receipt_id="receipt_002", event_group_id="event_002",
+                    quantity_cap=D("5000"))
+        )
+        assert second.status == "accepted", second.reason_codes
+        snap = self.ledger.account_snapshot("paper_news_demo")
+        self.assertLessEqual(snap.cash_reserved, snap.cash)
+        self.assertGreater(snap.cash_available, 0)
+        first_qty = D(str(self.ledger.order_row(first.order_ref)["requested_quantity"]))
+        second_qty = D(str(self.ledger.order_row(second.order_ref)["requested_quantity"]))
+        self.assertEqual(first_qty, D("300"))
+        # Sizing shrank the second candidate to the remaining cash headroom
+        # (600 = floor((699669 - fee headroom) / unit cost, lot 100)) instead
+        # of letting it touch the first order's reserved cash.
+        self.assertEqual(second_qty, D("600"))
+        self.assertLessEqual(snap.cash_reserved, snap.cash)
+
+    def test_pending_slot_limit_holds_concurrent_new_asset(self):
+        from docich.trading.news_paper.risk import RiskPolicy
+
+        tight = PaperManager(
+            self.ledger,
+            clock_quality=ClockQuality(True, "injected", 1000),
+            risk_policy=RiskPolicy(
+                version="fixture-risk-v1", max_positions=1,
+                max_gross_exposure=D("10000000"),
+                per_asset_exposure_cap=D("10000000"),
+                daily_loss_limit=D("999999"), drawdown_limit=D("999999"),
+            ),
+        )
+        first = tight.submit_candidate(request())
+        assert first.status == "accepted"
+        second = tight.submit_candidate(
+            request(receipt_id="receipt_002", event_group_id="event_002",
+                    asset="stocks:XTKS:NEW")
+        )
+        self.assertEqual(second.status, "held")
+        self.assertEqual(second.reason_codes, ("POSITION_LIMIT",))
+        # the first pending order is untouched
+        self.assertEqual(
+            self.ledger.order_row(first.order_ref)["status"], "pending"
+        )
+
+
 class RecoveryAndRestartTest(ManagerTestCase):
     def test_restart_reuses_fence_and_journal(self):
         view = self.manager.submit_candidate(request())

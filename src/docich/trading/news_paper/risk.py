@@ -205,9 +205,14 @@ def evaluate(*, account: AccountState, side: str, asset: str, ref_price: Decimal
         per_asset_after += quantity * ref_price
     if per_asset_after > policy.per_asset_exposure_cap:
         return RiskDecision(accepted=False, reason_codes=("CURRENCY_EXPOSURE_LIMIT",))
-    if side == "buy" and asset not in account.positions \
-            and len(account.positions) >= policy.max_positions:
-        return RiskDecision(accepted=False, reason_codes=("POSITION_LIMIT",))
+    if side == "buy" and asset not in account.positions:
+        # Filled positions *and* pending new entries occupy slots: accepting
+        # two new assets concurrently must not exceed the position limit
+        # (issue #782: simultaneous accepts never breach the caps).
+        occupied = set(account.positions) | set(account.pending_buy_assets)
+        occupied.discard(asset)
+        if len(occupied) >= policy.max_positions:
+            return RiskDecision(accepted=False, reason_codes=("POSITION_LIMIT",))
 
     estimated_notional = quantity * ref_price
     if side == "buy":

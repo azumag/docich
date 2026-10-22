@@ -334,6 +334,7 @@ class AccountState:
     positions: Mapping[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
     cash_reserved: Decimal = ZERO
     inventory_reserved: Mapping[str, Decimal] = field(default_factory=dict)
+    pending_buy_assets: frozenset[str] = frozenset()
     mode: str = MODE
     live_eligible: bool = LIVE_ELIGIBLE
 
@@ -700,6 +701,7 @@ class NewsLedger:
         }
         cash_reserved = ZERO
         inventory_reserved: dict[str, Decimal] = {}
+        pending_buy_assets: set[str] = set()
         for kind, asset, quantity, amount in self._conn.execute(
             "SELECT kind, asset, quantity, amount FROM reservations "
             "WHERE account_id = ? AND released_at IS NULL",
@@ -707,6 +709,8 @@ class NewsLedger:
         ):
             if kind == "cash":
                 cash_reserved += D(amount)
+                # A pending buy occupies a position slot until it settles.
+                pending_buy_assets.add(asset)
             else:
                 inventory_reserved[asset] = inventory_reserved.get(asset, ZERO) + D(quantity)
         return AccountState(
@@ -721,6 +725,7 @@ class NewsLedger:
             positions=positions,
             cash_reserved=cash_reserved,
             inventory_reserved=inventory_reserved,
+            pending_buy_assets=frozenset(pending_buy_assets),
         )
 
     def record_valuation(self, *, account_id: str, valuation_id: str, as_of: str | datetime,
@@ -730,7 +735,10 @@ class NewsLedger:
         valuation_id = _id(valuation_id, "valuation_id")
         snapshot = self.account_snapshot(account_id)
         positions_value_dec = _dec(positions_value)
-        equity = _dec(total_equity)
+        # Total equity may legitimately go negative in a total-loss scenario;
+        # losses are recorded, never hidden behind an invalid value (parent
+        # #769 D8). positions_value stays non-negative (long-only v1).
+        equity = _dec(total_equity, signed=True)
         with self._write_txn() as cur:
             cur.execute(
                 "INSERT INTO valuations(valuation_id, account_id, as_of, cash, positions_value, "
