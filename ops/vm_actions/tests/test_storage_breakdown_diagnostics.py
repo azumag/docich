@@ -175,6 +175,9 @@ class StorageBreakdownTests(unittest.TestCase):
             self.prod,
             home_root=self.home,
             voicevox_root=self.voicevox,
+            sys_tmp=self.base / "tmp",
+            var_log=self.base / "varlog",
+            swap_file=self.base / "swapfile",
             max_entries=max_entries,
         )
 
@@ -191,7 +194,7 @@ class StorageBreakdownTests(unittest.TestCase):
 
         result = self.collect()
 
-        self.assertEqual(result["version"], 1)
+        self.assertEqual(result["version"], 2)
         self.assertTrue(result["categories_overlap"])
         self.assertEqual(result["opencode_default"]["present_count"], 2)
         self.assertTrue(result["opencode_default"]["db"]["present"])
@@ -408,6 +411,165 @@ class StorageArchiveFormatContractTests(unittest.TestCase):
         self.assertFalse(result["scan_complete"])
 
 
+class StorageBreakdownV2Tests(unittest.TestCase):
+    """Version 2 fixed roots (azumag/docich#2583).
+
+    Each new root must stay bounded, symlink-safe and identity-free, and a
+    root that does not exist on the scanned host must report present=false
+    with a complete scan instead of pretending zero bytes were verified.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.home = self.base / "home"
+        self.soren = self.home / "soren"
+        self.prod = self.home / "docich"
+        self.voicevox = self.base / "voicevox"
+        self.sys_tmp = self.base / "tmp"
+        self.var_log = self.base / "varlog"
+        self.swapfile = self.base / "swapfile"
+        for path in (self.soren, self.prod, self.voicevox, self.sys_tmp, self.var_log):
+            path.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, path, size):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        return path
+
+    def collect(self, max_entries=1000):
+        return collector._collect_storage_breakdown(
+            self.soren,
+            self.prod,
+            home_root=self.home,
+            voicevox_root=self.voicevox,
+            sys_tmp=self.sys_tmp,
+            var_log=self.var_log,
+            swap_file=self.swapfile,
+            max_entries=max_entries,
+        )
+
+    def test_version_is_2_and_absent_fixed_roots_report_present_false(self):
+        # The var_log root always exists on a real host, so it is redirected
+        # to a directory that itself stays empty here; only its journal child
+        # is asserted absent below.
+        result = self.collect()
+
+        self.assertEqual(result["version"], 2)
+        # Nothing exists under the fixture home beyond soren/docich/voicevox,
+        # so every version 2 root is honestly absent instead of zero-looking.
+        for category in (
+            "gateway_state",
+            "alt_checkout_tmp_sync",
+            "alt_checkout_soren_src",
+            "system_journal",
+            "docich_git_objects",
+            "docich_git_objects_pack",
+        ):
+            item = result[category]
+            self.assertFalse(item["present"], category)
+            self.assertTrue(item["scan_complete"], category)
+            self.assertEqual(item["count"], 0, category)
+            self.assertEqual(item["allocated_bytes"], 0, category)
+        # The var_log and sys_tmp roots themselves exist (setUp) but stay
+        # empty here: present, complete, and honestly zero.
+        for category in ("system_log", "sys_tmp"):
+            item = result[category]
+            self.assertTrue(item["present"], category)
+            self.assertTrue(item["scan_complete"], category)
+            self.assertEqual(item["allocated_bytes"], 0, category)
+        self.assertFalse(result["swapfile"]["present"])
+        self.assertTrue(result["swapfile"]["scan_complete"])
+
+    def test_gateway_state_system_roots_and_swapfile_are_counted(self):
+        self.write(self.home / ".local/state/github-vm-ops/bundles/x.bundle", 5000)
+        self.write(self.var_log / "journal/abc/system.journal", 3000)
+        self.write(self.var_log / "soren-loop.log", 2000)
+        self.swapfile.write_bytes(b"s" * 4096)
+        self.write(self.sys_tmp / "scratch.bin", 1000)
+
+        result = self.collect()
+
+        gateway = result["gateway_state"]
+        self.assertTrue(gateway["present"])
+        self.assertTrue(gateway["scan_complete"])
+        self.assertGreaterEqual(gateway["allocated_bytes"], 5000)
+        journal = result["system_journal"]
+        self.assertTrue(journal["present"])
+        self.assertGreaterEqual(journal["allocated_bytes"], 3000)
+        system_log = result["system_log"]
+        self.assertTrue(system_log["present"])
+        # system_log contains the journal tree (overlap by design).
+        self.assertGreater(system_log["allocated_bytes"], journal["allocated_bytes"])
+        self.assertTrue(result["swapfile"]["present"])
+        self.assertGreaterEqual(result["swapfile"]["allocated_bytes"], 4096)
+        self.assertTrue(result["sys_tmp"]["present"])
+        self.assertGreaterEqual(result["sys_tmp"]["allocated_bytes"], 1000)
+
+    def test_alternative_checkouts_are_counted_when_present(self):
+        self.write(self.sys_tmp / "opencode/docich-sync/.git/objects/x", 4000)
+        self.write(self.home / "soren-src/README.md", 500)
+
+        result = self.collect()
+
+        self.assertTrue(result["alt_checkout_tmp_sync"]["present"])
+        self.assertTrue(result["alt_checkout_tmp_sync"]["scan_complete"])
+        self.assertGreaterEqual(result["alt_checkout_tmp_sync"]["allocated_bytes"], 4000)
+        self.assertTrue(result["alt_checkout_soren_src"]["present"])
+        self.assertGreaterEqual(result["alt_checkout_soren_src"]["allocated_bytes"], 500)
+
+    def test_docich_git_subcategories_stay_within_the_git_tree(self):
+        git_dir = self.prod / ".git"
+        self.write(git_dir / "objects/pack/pack-abc.pack", 6000)
+        self.write(git_dir / "objects/loose-xyz", 1000)
+        self.write(git_dir / "HEAD", 10)
+
+        result = self.collect()
+
+        objects = result["docich_git_objects"]
+        pack = result["docich_git_objects_pack"]
+        self.assertTrue(objects["present"])
+        self.assertTrue(pack["present"])
+        self.assertGreater(objects["allocated_bytes"], pack["allocated_bytes"])
+        self.assertGreater(objects["count"], pack["count"])
+        git_total = result["docich_git"]
+        self.assertGreater(git_total["allocated_bytes"], objects["allocated_bytes"])
+
+    def test_symlink_version_2_root_is_not_followed_and_fails_closed(self):
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.write(outside / "large.bin", 1024 * 1024)
+        gateway = self.home / ".local/state/github-vm-ops"
+        gateway.parent.mkdir(parents=True)
+        gateway.symlink_to(outside, target_is_directory=True)
+
+        result = self.collect()
+        item = result["gateway_state"]
+
+        self.assertTrue(item["present"])
+        self.assertFalse(item["scan_complete"])
+        self.assertEqual(item["symlink_entries"], 1)
+        self.assertLess(item["allocated_bytes"], 1024 * 1024)
+        self.assertNotIn(str(outside), json.dumps(result))
+
+    def test_serialized_v2_breakdown_stays_bounded(self):
+        # The gateway caps the whole diagnostics JSON at 65,536 bytes
+        # (#2537); the storage section must stay a small fixed fraction of
+        # that even with the version 2 categories added.
+        self.write(self.home / ".local/state/github-vm-ops/bundles/x.bundle", 5000)
+        self.write(self.var_log / "journal/abc/system.journal", 3000)
+        self.swapfile.write_bytes(b"s" * 4096)
+
+        result = self.collect()
+        encoded = json.dumps(result)
+
+        self.assertLess(len(encoded.encode()), 8192)
+        self.assertNotIn(str(self.base), encoded)
+
+
 class StorageSummaryTests(unittest.TestCase):
 
     def test_renders_fixed_opencode_caller_attribution_only(self):
@@ -594,6 +756,73 @@ class StorageSummaryTests(unittest.TestCase):
             self.assertIn("strategy_archive_plain_count=0", context)
             self.assertIn("strategy_archive_compressed_count=0", context)
             self.assertIn("strategy_archive_compressed_share_pct=0", context)
+
+
+    def test_v2_renders_new_fixed_root_keys(self):
+        # #2583: version 2 payloads project the new fixed roots with the same
+        # fixed key shape; no path, filename or identity is ever emitted.
+        leaf = {"present": True, "scan_complete": True, "count": 3, "allocated_bytes": 777}
+        breakdown = {"version": 2}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = {**leaf, "allocated_bytes": 900 + len(category)}
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        self.assertIn("gateway_state_complete=1", context)
+        self.assertIn("gateway_state_bytes=913", context)
+        self.assertIn("gateway_state_count=3", context)
+        self.assertIn("system_journal_complete=1", context)
+        self.assertIn("swapfile_complete=1", context)
+        self.assertIn("sys_tmp_complete=1", context)
+        self.assertIn("docich_git_objects_pack_complete=1", context)
+        self.assertNotIn("/", context)
+        self.assertNotIn("home", context)
+
+    def test_v2_incomplete_root_flags_the_shared_incomplete(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        breakdown["sys_tmp"] = {**leaf, "scan_complete": False}
+
+        _available, incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(incomplete, 1)
+        self.assertIn("sys_tmp_complete=0", context)
+
+    def test_v1_breakdown_does_not_invent_v2_keys(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 123}
+        breakdown = {"version": 1, "soren_logs": leaf}
+
+        available, incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        self.assertIn("soren_logs_bytes=123", context)
+        for category in summary.V2_TREE_CATEGORIES:
+            self.assertNotIn(f"{category}_complete", context)
+        # Missing v2 keys must not be charged against the shared incomplete
+        # flag while the deployed collector is still version 1.
+        self.assertNotIn("gateway_state", context)
+
+    def test_v2_context_keys_are_unique(self):
+        leaf = {"present": True, "scan_complete": True, "count": 2, "allocated_bytes": 55}
+        breakdown = {"version": 2, "soren_logs": leaf}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        keys = [pair.split("=", 1)[0] for pair in context.split(",")]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_unsupported_breakdown_version_is_unavailable(self):
+        available, incomplete, context = summary.render(
+            {"storage_breakdown": {"version": 3, "soren_logs": {}}}
+        )
+        self.assertEqual((available, incomplete), (0, 1))
+        self.assertEqual(context, "storage_breakdown_unavailable=1")
 
 
 if __name__ == "__main__":

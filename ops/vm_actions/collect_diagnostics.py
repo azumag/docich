@@ -641,22 +641,38 @@ def _collect_storage_breakdown(
     *,
     home_root=None,
     voicevox_root=Path("/opt/voicevox"),
+    sys_tmp=Path("/tmp"),
+    var_log=Path("/var/log"),
+    swap_file=Path("/swapfile"),
     max_entries=STORAGE_MAX_ENTRIES,
 ):
     """Fixed, bounded, identity-free storage attribution.
 
     Categories overlap by design and must not be summed. No file content is
     read, symlinks are never followed, and partial scans are marked incomplete.
+
+    Version 2 (azumag/docich#2583) adds the fixed roots version 1 could not
+    see, so the unattributed share of a decline window becomes attributable:
+    the gateway's own state tree (bundles and preview releases), the known
+    alternative checkouts, the system fixed areas (journal, /var/log, the
+    swapfile), /tmp, and fixed subcategories of the production .git that
+    separate repack churn from retained history. The container layers
+    (/var/lib/docker) stay out on purpose: the collector uid cannot traverse
+    them, and a permanently unreadable root would flip the shared incomplete
+    flag forever instead of attributing bytes.
     """
     soren = Path(soren)
     prod_root = Path(prod_root)
     home = Path(home_root) if home_root is not None else soren.parent
     voicevox_root = Path(voicevox_root)
+    sys_tmp = Path(sys_tmp)
+    var_log = Path(var_log)
+    swap_file = Path(swap_file)
     default_db = home / ".local" / "share" / "opencode" / "opencode.db"
     worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
 
     return {
-        "version": 1,
+        "version": 2,
         "categories_overlap": True,
         "max_entries_per_tree": int(max_entries),
         "opencode_default": _storage_db_family(default_db),
@@ -684,6 +700,24 @@ def _collect_storage_breakdown(
         ),
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
+        # ---- version 2 fixed roots (azumag/docich#2583) ----
+        "gateway_state": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops", max_entries=max_entries
+        ),
+        "alt_checkout_tmp_sync": _storage_tree_usage(
+            sys_tmp / "opencode" / "docich-sync", max_entries=max_entries
+        ),
+        "alt_checkout_soren_src": _storage_tree_usage(home / "soren-src", max_entries=max_entries),
+        "system_journal": _storage_tree_usage(var_log / "journal", max_entries=max_entries),
+        "system_log": _storage_tree_usage(var_log, max_entries=max_entries),
+        "swapfile": _storage_file_usage(swap_file),
+        "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
+        "docich_git_objects": _storage_tree_usage(
+            prod_root / ".git" / "objects", max_entries=max_entries
+        ),
+        "docich_git_objects_pack": _storage_tree_usage(
+            prod_root / ".git" / "objects" / "pack", max_entries=max_entries
+        ),
     }
 
 
