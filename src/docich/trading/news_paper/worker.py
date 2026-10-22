@@ -66,6 +66,7 @@ FATAL_CODES = frozenset(
     {"STORE_UNAVAILABLE", "SCHEMA_VERSION_UNSUPPORTED", "STATE_PATH_FORBIDDEN", "CLOCK_UNTRUSTED"}
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_MONEY_QUANTUM = Decimal("0.00000001")
 
 
 class WorkerConfigError(ValueError):
@@ -311,8 +312,8 @@ def load_config(path: str | Path) -> WorkerConfig | None:
         raise WorkerConfigError(getattr(exc, "code", "VALUE_OUT_OF_RANGE")) from exc
     instruments = _load_instruments(raw.get("instruments", {}))
     cash = _dec(_require(block, "initial_cash_jpy"), "initial_cash_jpy", positive=True)
-    if cash.adjusted() >= 18:
-        # The ledger stores decimals as bounded text; fail closed up front.
+    if cash.adjusted() >= 18 or cash.as_tuple().exponent < -8:
+        # The ledger stores money as bounded 8-decimal text; fail closed up front.
         raise WorkerConfigError("VALUE_OUT_OF_RANGE")
     return WorkerConfig(
         state_dir=state_dir,
@@ -815,7 +816,7 @@ class NewsPaperWorker:
         assert self._manager is not None
         accepted = 0
         try:
-            candidates = self._candidates.candidates(now)
+            candidates = tuple(self._candidates.candidates(now))
         except Exception:  # noqa: BLE001 - N03 outage is a fixed code
             self._last_error_code = "CLASSIFIER_UNAVAILABLE"
             return 0
@@ -850,7 +851,8 @@ class NewsPaperWorker:
                 if age < 0 or age > constraints.max_quote_age_seconds:
                     stale = True
             positions_value += quantity * price
-        equity = account.cash + positions_value
+        positions_value = positions_value.quantize(_MONEY_QUANTUM).normalize()
+        equity = (account.cash + positions_value).quantize(_MONEY_QUANTUM).normalize()
         self._ledger.record_valuation(
             account_id=self.config.account_id,
             valuation_id=f"val:{self._instance_token}:{self._seq}",

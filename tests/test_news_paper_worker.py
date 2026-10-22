@@ -649,3 +649,62 @@ def test_long_valid_ids_do_not_break_valuation(tmp_path: Path) -> None:
         worker.stop()
     db = tmp_path / "state" / "news-paper" / "runs" / long_id / long_id / "paper.sqlite3"
     assert _rows(db, "SELECT COUNT(*) FROM valuations") == [(1,)]
+
+
+class _IteratorFailCandidates:
+    def candidates(self, now):
+        def stream():
+            raise RuntimeError("iterator down")
+            yield  # pragma: no cover
+
+        return stream()
+
+
+def test_candidate_iterator_failure_is_a_fixed_code(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0, candidates=_IteratorFailCandidates())
+    worker.start()
+    try:
+        summary = worker.run_once(now=T0)
+    finally:
+        worker.stop()
+    assert summary["accepted"] == 0
+    assert summary["last_error_code"] == "CLASSIFIER_UNAVAILABLE"
+
+
+def test_valuation_money_is_quantized_to_eight_decimals(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    worker = NewsPaperWorker(config, clock=lambda: T0)
+
+    class _FakeLedger:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def account_snapshot(self, account_id: str):
+            from docich.trading.news_paper.ledger import AccountState
+
+            return AccountState(
+                account_id=account_id,
+                run_id="run1",
+                scenario_id="scenario1",
+                quote_currency="JPY",
+                initial_cash=Decimal("1000000"),
+                cash=Decimal("1000000"),
+                revision=1,
+                created_at="2026-10-22T12:00:00.000000Z",
+                positions={ASSET: (Decimal("6659.186"), Decimal("150.12345678"))},
+            )
+
+        def record_valuation(self, **kwargs: object) -> None:
+            self.calls.append(kwargs)
+
+    fake = _FakeLedger()
+    worker._ledger = fake  # noqa: SLF001 - fixture ledger
+    worker._last_prices = {ASSET: Decimal("150.12345678")}
+    worker._last_quote_at = {ASSET: T0}
+    worker._record_valuation(T0)
+    values = fake.calls[0]
+    for key in ("positions_value", "total_equity"):
+        assert Decimal(str(values[key])).as_tuple().exponent >= -8, key

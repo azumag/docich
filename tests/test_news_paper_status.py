@@ -402,3 +402,18 @@ account_id = "acct1"
     assert main(["--config", str(path)]) == 0
     output = json.loads(capsys.readouterr().out.strip())
     assert output["state"] == "empty"
+
+
+def test_status_reads_a_live_wal_store(tmp_path: Path) -> None:
+    ledger = NewsLedger.open(
+        tmp_path / "state", "run1", "scenario1", clock=lambda: T0, worker_id="n07"
+    )
+    try:
+        ledger.create_account(
+            account_id="acct1", run_id="run1", scenario_id="scenario1", initial_cash="1000000"
+        )
+        status = build_status(tmp_path / "state", "run1", "scenario1", "acct1")
+        assert status["state"] == "ok"
+        assert status["account"]["cash"] == "1000000"
+    finally:
+        ledger.close()

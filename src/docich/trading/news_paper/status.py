@@ -19,6 +19,8 @@ Contract (issue #784):
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import sqlite3
@@ -34,6 +36,7 @@ LIVE_ELIGIBLE = False
 STATUS_SCHEMA_VERSION = 1
 HEALTH_FILE_NAME = "health.json"
 DB_FILE_NAME = "paper.sqlite3"
+WORKER_LOCK_NAME = "worker.lock"
 _MAX_REASON_CODES = 16
 
 _STATE_OK = "ok"
@@ -122,26 +125,58 @@ def _existing_ledger_path(state_dir: str | Path, run_id: str, scenario_id: str) 
     return current
 
 
-def _open_ro(path: Path) -> sqlite3.Connection | None:
-    """Open the dedicated store read-only.
+def _open_ro(
+    path: Path, *, state_dir: Path
+) -> tuple[sqlite3.Connection | None, int | None]:
+    """Open the dedicated store read-only, returning the connection and a lock fd.
 
     A clean (checkpointed) store is opened with ``immutable=1`` so that SQLite
     creates neither ``-wal`` nor ``-shm`` and even a read-only directory works.
-    When a ``-wal`` exists (a live/recent writer), the WAL read path is used
-    instead; SQLite may then attach its own index sidecars, but the database
-    itself is still never written.
+    When a worker currently holds ``worker.lock`` (or a ``-wal`` exists), the
+    WAL read path is used instead; the caller keeps a shared flock for the
+    duration of the read so the writer cannot start/checkpoint mid-read.
     """
 
     wal = path.with_name(path.name + "-wal")
-    suffix = "?mode=ro" if os.path.exists(wal) else "?mode=ro&immutable=1"
+    immutable = not os.path.exists(wal)
+    lock_fd: int | None = None
+    lock_path = state_dir / "news-paper" / WORKER_LOCK_NAME
+    if immutable and os.path.exists(lock_path):
+        try:
+            fd = os.open(lock_path, os.O_RDWR)
+        except OSError:
+            immutable = False
+        else:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                immutable = False
+            else:
+                lock_fd = fd
+    suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     try:
         connection = sqlite3.connect(
             "file:" + urllib.parse.quote(str(path), safe="/") + suffix, uri=True, timeout=5.0
         )
         connection.execute("SELECT 1").fetchone()
-        return connection
+        return connection, lock_fd
     except sqlite3.Error:
-        return None
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(lock_fd)
+        return None, None
+
+
+def _release_lock(lock_fd: int | None) -> None:
+    if lock_fd is None:
+        return
+    with contextlib.suppress(OSError):
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    with contextlib.suppress(OSError):
+        os.close(lock_fd)
 
 
 def _account_block(connection: sqlite3.Connection, account_id: str) -> dict[str, object] | None:
@@ -443,7 +478,7 @@ def build_status(
             account_id=account_id,
             worker=worker,
         )
-    connection = _open_ro(ledger_path)
+    connection, lock_fd = _open_ro(ledger_path, state_dir=Path(os.path.realpath(state_dir)))
     if connection is None:
         return _empty_status(
             _STATE_UNAVAILABLE,
@@ -488,6 +523,7 @@ def build_status(
         )
     finally:
         connection.close()
+        _release_lock(lock_fd)
 
     market_seconds = _age_seconds(moment, worker.get("last_market_available_at"))  # type: ignore[arg-type]
     return {
