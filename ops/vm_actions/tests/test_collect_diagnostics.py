@@ -1386,7 +1386,11 @@ class CollectorContractTests(CollectorFixture):
         self.assertGreater(size, 30 * jsonl_scan_window_bytes())
         proc = self.run_collector()
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertLessEqual(len(proc.stdout.encode()), 32768)
+        # The bound protects that this fixture's output does not grow with the
+        # ~300MB telemetry input. It is not the gateway cap itself (65,536 per
+        # #2537): the fixed attribution sections (storage breakdown version 2
+        # adds the #2583 roots) sit below it with a wide margin.
+        self.assertLessEqual(len(proc.stdout.encode()), 40960)
         data = json.loads(proc.stdout)
         self.assertLessEqual(len(data["ai"]["recent_events"]), 20)
         # The scanned tail is real telemetry, not the sparse hole.
