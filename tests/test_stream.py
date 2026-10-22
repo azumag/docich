@@ -284,3 +284,31 @@ class TestNativeCaptions(StreamTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThreads(StreamTestBase):
+    def test_threads_flag_present_with_default(self):
+        g = self._load('[stream]\nmode = "null"\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        idx = cmd.index("-threads")
+        self.assertEqual(cmd[idx + 1], "2")
+
+    def test_threads_configurable(self):
+        g = self._load('[stream]\nmode = "null"\nthreads = 1\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        idx = cmd.index("-threads")
+        self.assertEqual(cmd[idx + 1], "1")
+
+    def test_filter_threads_flag_present(self):
+        g = self._load('[stream]\nmode = "null"\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        # filter_threads はフィルタがある場合のみ出るため、キャプション有効で確認
+        g2 = self._load(
+            '[stream]\nmode = "null"\n\n[captions]\nenabled = true\nsocket_path = "/tmp/cc.sock"\n'
+        )
+        with mock.patch("docich.stream._resolve_binary", return_value="/usr/bin/ffmpeg"), mock.patch(
+            "docich.stream.caption_capability", return_value=(True, "ok")
+        ):
+            cmd2 = stream.build_ffmpeg_cmd(g2, captions_enabled=True)
+        idx = cmd2.index("-filter_threads")
+        self.assertEqual(cmd2[idx + 1], "1")
