@@ -205,6 +205,35 @@ def _more_marker_on_message_row(message: str) -> bool:
     return _MORE_ROW_SUFFIX_RE.search(message.strip()) is not None
 
 
+_PROMPT_STEM_RE = re.compile(
+    r"\s*(?:really\b|(?:would|could|should|do|did|can|will|are) you\b)"
+)
+_BRACKET_PROMPT_RE = re.compile(r"\[[^\]]+\]")
+_MENU_PAGE_RE = re.compile(r"\((?:end|\d+ of \d+)\)")
+
+
+def _is_sentence_message(msg: str) -> bool:
+    """True for a sentence-terminated message that is not an input prompt.
+
+    #2271: a resumed run reprinted the dust engraving
+    ``Something is written here in the dust. You read: "?d acra ??m".``.
+    The blanket "the message contains ``?``" rule classified that statement as
+    a blocking question, so the brain held with zero actions for the whole run
+    and the corner's stall guard ended it. Real NetHack prompts end with
+    ``?``, ``)`` or ``:`` -- never a sentence period -- and every specific
+    prompt form keeps its precedence above. A trailing ``.`` therefore marks
+    prose, not an input request.
+    """
+    if not msg.rstrip().endswith("."):
+        return False
+    return not (
+        _PROMPT_STEM_RE.match(msg)
+        or msg.rstrip().endswith(":")
+        or _BRACKET_PROMPT_RE.search(msg)
+        or _MENU_PAGE_RE.search(msg)
+    )
+
+
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # Only row zero is the unambiguous message region of the classic TTY.
     # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
@@ -226,7 +255,9 @@ def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # behind them. Never interpret a movement key (notably diagonal y/n) as an
     # answer. A known question takes precedence over a stale More marker.
     if (
-        "?" in msg
+        # A sentence-terminated statement may quote '?' (engravings, rumors)
+        # without asking anything; treating it as a prompt froze #2271 runs.
+        ("?" in msg and not _is_sentence_message(msg))
         or msg.rstrip().endswith(":")
         or re.search(r"\[[^\]]+\]", msg)
         or re.search(r"\((?:end|\d+ of \d+)\)", msg)
