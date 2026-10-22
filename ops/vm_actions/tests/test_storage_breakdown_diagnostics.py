@@ -475,12 +475,16 @@ class StorageBreakdownV2Tests(unittest.TestCase):
             self.assertEqual(item["count"], 0, category)
             self.assertEqual(item["allocated_bytes"], 0, category)
         # The var_log and sys_tmp roots themselves exist (setUp) but stay
-        # empty here: present, complete, and honestly zero.
+        # empty here: present, complete, and only the directory's own blocks.
+        # The allocated size of an empty directory is filesystem-specific
+        # (ext4 reports 4096, APFS reports 0), so the exact byte total is not
+        # asserted; what must hold is that the tree is complete and counted.
         for category in ("system_log", "sys_tmp"):
             item = result[category]
             self.assertTrue(item["present"], category)
             self.assertTrue(item["scan_complete"], category)
-            self.assertEqual(item["allocated_bytes"], 0, category)
+            self.assertEqual(item["count"], 1, category)
+            self.assertLess(item["allocated_bytes"], 8192, category)
         self.assertFalse(result["swapfile"]["present"])
         self.assertTrue(result["swapfile"]["scan_complete"])
 
