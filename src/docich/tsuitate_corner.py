@@ -1185,6 +1185,32 @@ class TsuitateCornerManager:
         except (OSError, ValueError, GameSwitchBusyError, TsuitateCornerError):
             return False
 
+    def settle_released_failure(self, request_id):
+        """Retire a failed owner after rotation proved its slot released.
+
+        The rotation's released-skip path calls this with the state's own
+        recorded request after its ledger proof passes, so the strict
+        caller-request match (paper/doushi, #2341) reaches the 2026-10-16
+        owner here (#1992). A release record for a *newer* request of this
+        corner is never permission to retire an older owner (#2352), and a
+        state that already became active is out of scope (doushi's settle
+        applies the same guards). The retirement itself goes through
+        :meth:`reconcile_failed_start`, which rechecks the terminal receipt
+        and the stable canonical owner and stays fail-closed otherwise.
+        """
+        try:
+            state = self._read_state()
+        except (OSError, ValueError):
+            return False
+        if (
+            state.get("status") != "failed"
+            or state.get("rotation_request_id") != request_id
+            or state.get("started_at") is not None
+            or state.get("view_runtime_identity") is not None
+        ):
+            return False
+        return self.reconcile_failed_start(request_id)
+
     def stop(self):
         from .corner_catalog import rotation_enabled
         from .corner_rotation import stop_manual
