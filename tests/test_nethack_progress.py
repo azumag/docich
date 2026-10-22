@@ -1095,3 +1095,35 @@ def test_prayer_continuation_survives_a_map_difference():
 
     replanned = agent.decide(_obs(_far_change(getlin)))
     assert [a.text for a in replanned] == ["p"]
+
+
+def test_dust_engraving_message_no_longer_freezes_the_agent():
+    """#2271 production run 2026-10-23 01:02 JST (608 s, finish_reason stalled).
+
+    The resumed game reprinted ``Something is written here in the dust. You
+    read: "?d acra ??m".``. The blanket "contains ?" rule classified it as a
+    blocking question, so every cycle resolved to ``prompt_decision`` with no
+    action (production trace: repeated_hold=300, hold_streak=300). It is prose:
+    the agent must resume acting.
+    """
+    agent = brain()
+    text = frame(message='Something is written here in the dust. You read: "?d acra ??m".')
+    assert act(agent, text) in (["h"], ["j"], ["k"], ["l"], ["y"], ["u"], ["b"], ["n"], ["."])
+    assert agent.last_progress_decision.intent in {
+        "explore_step", "retreat_step", "rest_turn", "bump_creature",
+    }
+
+
+@pytest.mark.parametrize("message", [
+    "Really save? [yn] (n)",
+    "Really attack the kitten? [yn] (n)",
+    "What do you want to eat? [a-z or ?*]",
+    'Something is written here in the dust. You read: "?d acra ??m". [yn]',
+])
+def test_a_real_prompt_still_never_becomes_gameplay_after_the_prose_fix(message):
+    """The prose fix must not turn a real prompt into an exploration move."""
+    agent = brain()
+    act(agent, frame(message=message))
+    assert agent.last_progress_decision.intent not in {
+        "explore_step", "retreat_step", "rest_turn", "bump_creature",
+    }
