@@ -603,6 +603,28 @@ def test_repeated_policy_hold_emits_one_bounded_stall_diagnostic(capsys):
     assert "Unknown question" not in stderr
 
 
+def test_long_zero_action_streak_keeps_the_stall_reason_in_a_bounded_tail(capsys):
+    """#2271: the once-per-fingerprint line scrolls out of the pane tail.
+
+    A stalled run showed only ``0 件のアクション`` lines in the captured tail,
+    so the hold reason was unrecoverable. The same bounded line is re-emitted
+    on the streak bound while the frame itself keeps changing slightly.
+    """
+    agent = brain()
+    for index in range(agent._STALL_HOLD_REEMIT_EVERY * 2 + 3):
+        # A changing message keeps the fingerprint unstable, which used to
+        # suppress the per-fingerprint diagnostic entirely.
+        assert act(agent, frame(message=f"Unknown question {index}?")) == []
+    stderr = capsys.readouterr().err
+    assert stderr.count("[nethack-stall]") == 2
+    assert "hold_streak=20" in stderr
+    assert "hold_streak=40" in stderr
+    assert "Unknown question" not in stderr
+    # Producing an action clears the streak and re-arms the diagnostic.
+    assert act(agent, frame(message="A message --More--")) == [" "]
+    assert agent._hold_streak == 0
+
+
 def test_repeated_startup_hold_is_diagnosed_without_gameplay_input(capsys):
     agent = NethackPolicyBrain(SimpleNamespace(), SimpleNamespace(
         name="nethack",

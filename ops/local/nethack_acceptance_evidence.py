@@ -18,10 +18,16 @@ What the current collector can and cannot prove (checked 2026-10-20):
   This proves only that a positive action count was logged in the capture;
   it does not prove pager passage, map changes, or turn progress.
 - ``nethack_panes.game`` is the game pane tail (last 14 non-blank lines). The
-  ``--More--`` prompt renders on the top screen row, so the pager text is
-  structurally outside that window. A capture is therefore never failed for a
-  missing pager string; it is reported as unavailable, which is a collector
-  limitation rather than a corner defect.
+  ``--More--`` prompt renders on the top screen row, which is structurally
+  outside that window, so the tail alone cannot carry the pager text.
+- ``nethack_panes.game_head`` is the leading rows of the same game pane, added
+  (2026-10-22) so the message/pager row itself is visible. The tail-only
+  capture could not distinguish "a ``--More--`` the brain failed to answer"
+  from "a decision loop returning no action" (#2271), which is exactly the
+  distinction this judge needs. When the head is present the pager marker is
+  evaluated there; when only an older collector's document is available the
+  helper reports the pager as unavailable instead of failing the capture, so a
+  capture is still never failed for a missing pager string.
 - The capture must be taken *while* the corner is active. After the run ends the
   panes are empty and ``active_game`` returns to the previous game, so a
   post-run capture cannot attest the run's action counts.
@@ -162,6 +168,9 @@ def evaluate(doc):
     active_game = _dig(diag, "nethack_panes", "active_game")
     agent_lines = _as_lines(_dig(diag, "nethack_panes", "agent"))
     game_lines = _as_lines(_dig(diag, "nethack_panes", "game"))
+    game_head_raw = _dig(diag, "nethack_panes", "game_head")
+    game_head = _as_lines(game_head_raw)
+    head_captured = isinstance(game_head_raw, list)
     windows = _as_lines(_dig(diag, "nethack_panes", "windows"))
 
     counts, masked = _action_counts(agent_lines)
@@ -174,8 +183,12 @@ def evaluate(doc):
     else:
         status = STATUS_UNKNOWN
 
-    # Pager text is expected to be absent by construction; report, never fail.
-    pager_seen = any(_MORE_RE.search(line) for line in game_lines + agent_lines)
+    # Pager text is reported, never required: with the head rows captured it is
+    # directly evaluable (#2271), and an older tail-only document still degrades
+    # to "unavailable" instead of failing the capture.
+    pager_seen = any(
+        _MORE_RE.search(line) for line in game_head + game_lines + agent_lines
+    )
     vitals_seen = any(_VITALS_RE.search(line) for line in game_lines)
 
     reasons = []
@@ -209,8 +222,10 @@ def evaluate(doc):
         "trailing_zero_run": zero_run,
         "pane_windows": windows,
         "game_pane_lines": len(game_lines),
+        "game_head_captured": head_captured,
+        "game_head_lines": len(game_head),
         "pager_text_visible": pager_seen,
-        "pager_text_expected_visible": False,
+        "pager_text_expected_visible": head_captured,
         "vitals_visible": vitals_seen,
         "reasons": reasons,
     }
@@ -230,7 +245,11 @@ def render(verdict):
         f"game pane lines: {verdict['game_pane_lines']}"
         f" (vitals visible: {verdict['vitals_visible']})",
         f"pager text visible: {verdict['pager_text_visible']}"
-        " (not expected: top row is outside the 14-line tail)",
+        + (
+            f" (message row captured: {verdict['game_head_lines']} head line(s))"
+            if verdict.get("game_head_captured")
+            else " (unavailable: this document has no message-row head capture)"
+        ),
     ]
     for reason in verdict["reasons"]:
         lines.append(f"note: {reason}")

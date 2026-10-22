@@ -68,7 +68,6 @@ def test_complete_gameplay_on_budget_boundary_is_not_discarded(cause):
     "What do you want to call a potion?",
     "Unknown question?",
     "Inventory:",
-    "You see a scroll. --More--",
     "Do you want a tutorial? [yn] (n)",
 ])
 def test_exhaustion_does_not_authorize_prompts_with_stale_map(message):
@@ -76,6 +75,37 @@ def test_exhaustion_does_not_authorize_prompts_with_stale_map(message):
     obs = frame(message)
     assert obs.player is not None and obs.vitals.hp == 8
     assert obs.prompt != "none"
+    assert startup.consider(obs) == []
+    assert startup.state == "exhausted"
+    assert startup.actions == 0
+
+
+@pytest.mark.parametrize("cause", ["time", "observations", "actions"])
+def test_exhausted_startup_delegates_a_resume_pager_to_the_policy(cause):
+    """#2271: a vitals-backed pager must not latch [] forever after the budget.
+
+    The gate answers exactly this frame before exhaustion; blocking it
+    afterwards wedged three consecutive resumed runs (map drawn, 0 actions,
+    608 s stall guard) because NetHack advances only when the hero acts.
+    Delegation itself sends no key and mutates no gate state: the reviewed
+    policy surface owns one space per distinct page.
+    """
+    startup = exhausted_startup(cause)
+    counters = (startup.observations, startup.actions, startup.started_at)
+    pager = frame("You see a scroll. --More--")
+    assert pager.prompt == "more"
+    assert startup.consider(pager) is None
+    assert startup.state == "exhausted"
+    assert (startup.observations, startup.actions, startup.started_at) == counters
+
+
+def test_exhausted_startup_still_blocks_a_pager_without_resume_evidence():
+    startup = exhausted_startup("time")
+    pager = frame("You see a scroll. --More--")
+    lines = pager.raw_text.splitlines()
+    lines[22] = lines[23] = ""
+    obs = normalize_tty("\n".join(lines))
+    assert obs.prompt == "more" and obs.vitals.hp is None
     assert startup.consider(obs) == []
     assert startup.state == "exhausted"
     assert startup.actions == 0
