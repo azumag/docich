@@ -5064,6 +5064,14 @@ _TSUITATE_SWITCH_ERROR_CODES = frozenset({
 })
 
 
+_TSUITATE_SETTLE_REFUSALS = frozenset({
+    # Fixed vocabulary of the reason the released-owner settle refused once
+    # (docich#1992). Only these are published; an unknown string is null.
+    "not-failed", "other-owner", "became-active", "canonical-unstable",
+    "canonical-busy", "canonical-owns-view", "receipt-open",
+})
+
+
 def _project_tsuitate_corner(data):
     """Expose the persisted failure category, not a new recovery decision.
 
@@ -5072,11 +5080,20 @@ def _project_tsuitate_corner(data):
     producer codes observable under a separate field (docich#1992). The
     existing last_error preview remains redacted and length-capped; unknown
     codes are null rather than raw state content.
+
+    ``settle_refused_reason`` is the corner's own fixed reason for refusing to
+    retire a released failed owner. It exists so a settle that does not fire is
+    diagnosable from diagnostics alone instead of needing another guess cycle.
     """
     entry = _project_corner_state(data)
     code = data.get("last_error_code")
     entry["switch_error_code"] = (
         code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
+    )
+    refusal = data.get("settle_refused_reason")
+    entry["settle_refused_reason"] = (
+        refusal if isinstance(refusal, str) and refusal in _TSUITATE_SETTLE_REFUSALS
+        else None
     )
     return entry
 

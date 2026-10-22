@@ -16,6 +16,7 @@ from .game_switch import (
     ERROR_SOURCE_FENCE_LOST,
     ERROR_START_FAILED,
     ERROR_TIMEOUT,
+    TERMINAL_RECEIPT_STATUSES,
     GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
@@ -1188,28 +1189,85 @@ class TsuitateCornerManager:
     def settle_released_failure(self, request_id):
         """Retire a failed owner after rotation proved its slot released.
 
-        The rotation's released-skip path calls this with the state's own
-        recorded request after its ledger proof passes, so the strict
-        caller-request match (paper/doushi, #2341) reaches the 2026-10-16
-        owner here (#1992). A release record for a *newer* request of this
-        corner is never permission to retire an older owner (#2352), and a
-        state that already became active is out of scope (doushi's settle
-        applies the same guards). The retirement itself goes through
-        :meth:`reconcile_failed_start`, which rechecks the terminal receipt
-        and the stable canonical owner and stays fail-closed otherwise.
+        Mirrors the paper/doushi contract (#2341): the state's own recorded
+        request is the only candidate (a release record for a *newer* request
+        is never permission to retire an older owner, #2352), a state that
+        already became active is out of scope, and the canonical owner is
+        re-checked here.
+
+        An **absent** receipt is tolerated while a **non-terminal** one
+        refuses. Delegating to :meth:`reconcile_failed_start` was too strict
+        (#2655): it demands the terminal receipt that proves the rollback, and
+        the 2026-10-16 receipt is old enough for the bounded receipt store to
+        prune, so the owner stayed latched forever (#1992). Doushi's reviewed
+        settle tolerates the same absent receipt for the same reason.
+
+        A refusal is recorded as one fixed-vocabulary reason in the state so
+        the next diagnosis does not have to guess which proof failed.
         """
         try:
-            state = self._read_state()
-        except (OSError, ValueError):
+            request_id = self._request_id(request_id)
+        except TsuitateCornerError:
             return False
+        try:
+            with self.store.lock(exclusive=True):
+                state = self._read_state()
+                refusal = self._settle_refusal(state, request_id)
+                if refusal is not None:
+                    self._record_settle_refusal(state, refusal)
+                    return False
+                state.update(
+                    status="interrupted",
+                    completed_at=state.get("completed_at") or self.clock(),
+                    end_reason="released-failure-before-retry",
+                )
+                state.pop("settle_refused_reason", None)
+                state.pop("switch_request_id", None)
+                state.pop("switch_status", None)
+                self._save(state)
+                self._clear_stop_request()
+                return True
+        except (OSError, ValueError, GameSwitchBusyError, TsuitateCornerError):
+            return False
+
+    def _settle_refusal(self, state, request_id):
+        """Return the fixed reason this released owner cannot be retired."""
+
+        if state.get("status") != "failed":
+            return "not-failed"
+        if state.get("rotation_request_id") != request_id:
+            return "other-owner"
+        if state.get("started_at") is not None:
+            return "became-active"
+        if state.get("view_runtime_identity") is not None:
+            return "became-active"
+        canonical, missing = self.store.canonical.load()
+        if missing or not _stable(canonical):
+            return "canonical-unstable"
         if (
-            state.get("status") != "failed"
-            or state.get("rotation_request_id") != request_id
-            or state.get("started_at") is not None
-            or state.get("view_runtime_identity") is not None
+            canonical.get("operation") is not None
+            or canonical.get("request_id") is not None
+            or canonical.get("deadline_at") is not None
         ):
-            return False
-        return self.reconcile_failed_start(request_id)
+            return "canonical-busy"
+        active = canonical.get("active")
+        if not isinstance(active, dict) or active.get("game") == VIEW_NAME:
+            return "canonical-owns-view"
+        receipt = self.store.receipts.load(request_id)
+        if (isinstance(receipt, dict)
+                and receipt.get("status") not in TERMINAL_RECEIPT_STATUSES):
+            # A queued request also lands here: receipts.queued() derives from
+            # these same rows, so a separate FIFO branch would be unreachable.
+            return "receipt-open"
+        return None
+
+    def _record_settle_refusal(self, state, reason):
+        """Persist one fixed reason without rewriting an unchanged value."""
+
+        if state.get("settle_refused_reason") == reason:
+            return
+        state["settle_refused_reason"] = reason
+        self._save(state)
 
     def stop(self):
         from .corner_catalog import rotation_enabled

@@ -590,18 +590,31 @@ def test_rollback_failed_start_stays_latched_while_the_plane_needs_recovery(tmp_
 
 def test_settle_released_failure_retires_the_recorded_failed_owner(tmp_path):
     # #1992: the rotation's released-skip path calls the settle with the
-    # state's own recorded request once its ledger proof passes, so the
-    # 2026-10-16 owner is retired through the reviewed reconcile proof.
+    # state's own recorded request once its ledger proof passes.
     manager, request_id, _previous = _failed_rollback_setup(tmp_path)
 
     assert manager.settle_released_failure(request_id) is True
 
     state = json.loads(manager.path.read_text())
     assert state["status"] == "interrupted"
-    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert state["end_reason"] == "released-failure-before-retry"
     assert state["rotation_request_id"] == request_id
+    assert "settle_refused_reason" not in state
     # The terminal receipt stays the evidence and is never rewritten.
     assert manager.store.receipts.load(request_id)["status"] == "failed"
+
+
+def test_settle_released_failure_retires_when_the_receipt_was_pruned(tmp_path):
+    # The regression this fix exists for: the 2026-10-16 receipt is old enough
+    # for the bounded receipt store to prune, and delegating to
+    # reconcile_failed_start (which demands it) latched the owner forever.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    (manager.store.receipts.directory / f"{request_id}.json").unlink()
+    assert manager.store.receipts.load(request_id) is None
+
+    assert manager.settle_released_failure(request_id) is True
+
+    assert json.loads(manager.path.read_text())["status"] == "interrupted"
 
 
 def test_settle_released_failure_refuses_a_newer_requests_release(tmp_path):
@@ -612,28 +625,47 @@ def test_settle_released_failure_refuses_a_newer_requests_release(tmp_path):
     before = json.loads(manager.path.read_text())
 
     assert manager.settle_released_failure(str(uuid.uuid4())) is False
-    assert json.loads(manager.path.read_text()) == before
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == before["status"] == "failed"
+    assert state["settle_refused_reason"] == "other-owner"
 
 
-def test_settle_released_failure_keeps_an_unproven_owner_latched(tmp_path):
-    # The released-skip path passes the state's own request, so this must
-    # reach reconcile and be refused there (canonical owned by another game).
-    from docich.game_switch import runtime_names
+def test_settle_released_failure_refuses_an_open_receipt(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    receipt = manager.store.receipts.load(request_id)
+    receipt["status"] = "queued"
+    receipt["result"] = None  # a non-terminal receipt carries no result
+    manager.store.receipts.save(receipt)
 
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "receipt-open"
+
+
+def test_settle_released_failure_refuses_while_the_view_owns_the_canonical(tmp_path):
     manager, request_id, _previous = _failed_rollback_setup(tmp_path)
     canonical, _ = manager.store.canonical.load()
-    names = runtime_names(2)
-    canonical["active"] = {
-        "game": "nethack", "runtime_id": "g2-abcdef", "generation": 2,
-        "lease_id": str(uuid.uuid4()), "adapter": "cli",
-        "game_window": names.game_window, "agent_window": names.agent_window,
-        "adapter_session": names.adapter_session,
-        "started_at": "2026-10-07T05:20:00Z",
-    }
+    canonical["active"] = {**canonical["active"], "game": VIEW_NAME}
     manager.store.canonical.save(canonical)
 
     assert manager.settle_released_failure(request_id) is False
-    assert json.loads(manager.path.read_text())["status"] == "failed"
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "canonical-owns-view"
+
+
+def test_settle_released_failure_refuses_an_unstable_canonical(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    canonical.update(phase="failed", operation="switch", request_id=str(uuid.uuid4()),
+                     deadline_at=None)
+    manager.store.canonical.save(canonical)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] in {"canonical-unstable", "canonical-busy"}
 
 
 @pytest.mark.parametrize("active_key", ["started_at", "view_runtime_identity"])
@@ -650,7 +682,9 @@ def test_settle_released_failure_ignores_a_state_that_became_active(tmp_path, ac
     manager._save(state)
 
     assert manager.settle_released_failure(request_id) is False
-    assert json.loads(manager.path.read_text())["status"] == "failed"
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "became-active"
 
 
 def test_settle_released_failure_ignores_a_terminal_state(tmp_path):
@@ -661,7 +695,9 @@ def test_settle_released_failure_ignores_a_terminal_state(tmp_path):
     manager._save(state)
 
     assert manager.settle_released_failure(request_id) is False
-    assert json.loads(manager.path.read_text())["status"] == "completed"
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "completed"
+    assert state["settle_refused_reason"] == "not-failed"
 
 
 def test_adapter_settle_released_failure_delegates_to_the_manager(tmp_path):

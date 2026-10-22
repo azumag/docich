@@ -330,6 +330,42 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
     assert unknown['end_reason'] is None
 
 
+def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
+    # #1992: a released failed owner that the settle refused must be readable
+    # from diagnostics alone, so a settle that does not fire does not need
+    # another guess cycle. Only the fixed vocabulary is published.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed','game':'tsuitate-view','previous_game':'sorengame',
+        'last_error_code':'timeout','switch_request_id':'DO-NOT-PUBLISH',
+        'settle_refused_reason':'other-owner','completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['switch_error_code']=='timeout'
+    assert entry['settle_refused_reason']=='other-owner'
+    assert 'DO-NOT-PUBLISH' not in json.dumps(result,ensure_ascii=False)
+
+
+def test_tsuitate_corner_refuses_an_unknown_settle_refusal(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'settle_refused_reason':'leak token=SUPERSECRET123'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['settle_refused_reason'] is None
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+
+
 def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
     # The corner is manual-only, so diagnostics is the only place an operator can
     # read why a match ended. Dropping the tsuitate vocabulary or the settled
