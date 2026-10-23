@@ -76,6 +76,7 @@ jobs:
       - name: Restore CI workflow and push fix commit
         shell: bash
         run: |
+          git fetch --depth=1 origin main:refs/remotes/origin/main
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
