@@ -46,8 +46,9 @@ _PROGRESS_INTENTS = frozenset({
     "hold_low_hp", "hold_impaired", "inspect_screen", "assess_contact",
     "explore_step", "exploration_blocked", "progress_blocked", "rest_turn",
     "retreat_step", "bump_creature", "open_door_start", "open_door_direction",
+    "descend_stairs",
 })
-_PROGRESS_KEYS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .")
+_PROGRESS_KEYS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .>")
 _PROGRESS_PROMPTS = frozenset({"none", "more", "yes_no", "direction", "selection", "text", "unknown"})
 
 

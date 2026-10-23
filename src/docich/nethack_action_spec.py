@@ -167,6 +167,8 @@ def precondition(name: str, ctx: ActionContext) -> bool:
         )
     if head == "inventory_food":
         return food_item(ctx.inventory) is not None
+    if head == "on_down_stairs":
+        return ctx.explorer.memory.standing_on_down_stairs(obs)
     if head == "safe_step":
         # A direction prompt blocks plan_step, but the observable map is the
         # same; evaluate as if no prompt were up.

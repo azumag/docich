@@ -69,9 +69,12 @@ adjacent_attackable / no_adjacent_attackable
 adjacent_closed_door
 inventory_food
 safe_step / no_safe_step
+on_down_stairs
 ```
 
 `no_safe_step` は `explorer.plan_step(replace(obs, prompt="none")) is None` のとき True です。`safe_step` と対称で、direction prompt は評価時だけ `none` に置き換えます。policy と trace verifier は同じ `precondition()` を呼び、既存 explorer の判定を再利用します。player や dungeon level が不明な場合も planner は None を返すため、search は別途 `player_visible` と `prompt:none` を要求します。
+
+`on_down_stairs` は `explorer.memory` が同じ階で実際に `>` を目視した座標に hero が立っているときだけ True です（#2666）。単一 frame では足元が `@` に隠れるため、現在の frame の glyph からは判定しません。
 
 postconditions（before/after frame に対して評価）:
 
@@ -110,7 +113,9 @@ predicate は `nethack_canary_tactics` と同じ判定関数を使うため、po
 
 ## 単一 frame の検証境界
 
-**player の足元 glyph は `@` に隠れるため、「階段の上に立っている」という precondition は単一 frame から検証できません。現在の P6c trace 検証ではその条件を証明できないため、descent 系は当面 auto-promote 対象外です。** 近傍に `>` が見えることと player がその上にいることは同じではありません。
+**player の足元 glyph は `@` に隠れるため、「階段の上に立っている」という precondition は単一 frame から検証できません。** そこで `descend_stairs`（priority 84、`effect=keys`、`key_pattern=[">"]`）は、`explorer.memory` が同じ階で目視した `>` タイルに hero がいる場合だけ成立する `on_down_stairs` を precondition にします（#2666）。近傍に `>` が見えることと player がその上にいることは同じではありません。
+
+`on_down_stairs` は複数 frame の観測履歴を必要とするため、catalog の構文テストが通っても、単一 frame だけを与えた trace 検証では `precondition_not_met` に落ちます。descent を含む trace を verified にするには、同じ explorer memory を verifier に渡す経路が必要で、それまでは **descent は auto-promote 対象外**のままです。catalog の `descend_stairs` は本番と同じ reviewed code 経路（`NethackExplorer` の記憶）で実行され、`assert_canary_safe` は catalog の key_pattern だけを許可します。
 
 `effect=keys` と `key_pattern=[">"]` の構文テストが通っても、階段上にいる証拠にはなりません。条件を `player_visible` だけへ弱めると形式上 verify できても安全な降下を検証したことにはなりません。履歴や追加観測による足元の証拠と、その reviewed verifier が必要です。
 

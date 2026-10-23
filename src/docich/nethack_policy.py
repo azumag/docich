@@ -110,6 +110,17 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
 
 SEVERE_RECOVERY_COMMAND = "#"
 
+# NetHack's "go down the stairs" command. Reviewed in #2666: the action is
+# only produced when exploration memory already saw a '>' on the hero's own
+# tile, and on a down staircase the game descends immediately. Used anywhere
+# else the game answers "You can't go down here." without changing the turn,
+# so the decision is never guessed from the current frame alone (the hero
+# glyph hides the terrain).
+DESCEND_COMMAND = ">"
+# NetHack's refusal line when the hero is not on a staircase. It proves the
+# remembered tile is stale, so the tile is forgotten instead of retried.
+DESCEND_REFUSAL = "can't go down here"
+
 # Reviewed prayer recovery (#759).  Verified against the production canary's
 # NetHack 5.0.0 TTY (same source and nethackrc as containers/nethack-canary):
 #   '#'            -> the extended-command getlin prompt (top line shows "#")
@@ -272,6 +283,26 @@ class NethackLayeredPolicy:
                 reason="player glyph is not uniquely visible; do not guess a move",
             )
 
+        # A refused descent proves the remembered tile is stale (for example a
+        # previous run's level layout). Forget it before choosing a new action
+        # so the hero never re-sends '>' on a tile that is not a staircase.
+        if DESCEND_REFUSAL in obs.message.lower():
+            self.explorer.memory.forget_down_stairs(obs)
+
+        # Descending is the only way a run leaves Dlvl 1 (#2666). It is
+        # deliberately checked before the adjacent-creature hold: standing on
+        # the down staircase is already a safe, reviewed progression action,
+        # and it neither moves into the creature nor attacks it. The tile is
+        # proven from exploration memory because the hero glyph replaces the
+        # staircase on the current frame.
+        if turn_ready(obs) and self.explorer.memory.standing_on_down_stairs(obs):
+            return PolicyDecision(
+                layer="midlevel",
+                intent="descend_stairs",
+                reason="player stands on a remembered down-staircase",
+                actions=(Action(type="text", text=DESCEND_COMMAND),),
+            )
+
         if _visible_creature_contact(obs):
             return PolicyDecision(
                 layer="midlevel",
@@ -323,6 +354,14 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
         and len(decision.actions) == 1
         and decision.actions[0].type == "text"
         and decision.actions[0].text in MOVE_KEYS
+    ):
+        return
+    if (
+        decision.layer == "midlevel"
+        and decision.intent == "descend_stairs"
+        and len(decision.actions) == 1
+        and decision.actions[0].type == "text"
+        and decision.actions[0].text == DESCEND_COMMAND
     ):
         return
     if (
