@@ -975,8 +975,11 @@ class RuntimeHealthTests(unittest.TestCase):
         # The projection fixture injects the runtime block; assert the real
         # function's shape here so a renamed key cannot pass CI silently.
         answers = {}
+        unavailable = mock.Mock(returncode=1, stdout="")
         with mock.patch.object(collector, "_systemctl_user",
-                               side_effect=self.systemctl_answers(answers)):
+                               side_effect=self.systemctl_answers(answers)), \
+                mock.patch.object(collector.subprocess, "run",
+                                  return_value=unavailable):
             runtime = collector._collect_host_metrics_runtime(NOW)
         self.assertEqual(set(runtime), RUNTIME_KEYS)
         self.assertEqual(set(runtime["journal"]), JOURNAL_KEYS)
@@ -985,6 +988,8 @@ class RuntimeHealthTests(unittest.TestCase):
         self.assertEqual(runtime["timer_state"], "unknown")
         self.assertIsNone(runtime["timer_enabled"])
         self.assertIsNone(runtime["service_result"])
+        # journalctl exists on the CI runner and even answers for this user, so
+        # the probe must be injected too or the test is not hermetic.
         self.assertEqual(runtime["journal"]["readable"], False)
 
     def test_unreadable_journal_is_fixed_shape_and_not_healthy(self):
