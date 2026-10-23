@@ -59,4 +59,5 @@ def test_hanjuku_resume_control_is_explicit_in_webui_resources():
     html = webui.INDEX_HTML
     assert 'id="corners-resume-latest"' in html
     assert 'action:"resume-latest"' in html
+    assert 'c.game==="hanjuku-hero"' in html
     assert "通常の開始予約は新規開始のままです" in html
