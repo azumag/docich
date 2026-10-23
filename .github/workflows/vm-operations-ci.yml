@@ -17,6 +17,7 @@ on:
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/vm-deploy-blocker-alert.yml'
       - '.github/workflows/gameswitch-adopt.yml'
 
   push:
@@ -36,6 +37,7 @@ on:
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/vm-deploy-blocker-alert.yml'
       - '.github/workflows/gameswitch-adopt.yml'
 
 
