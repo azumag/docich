@@ -5070,6 +5070,7 @@ class _Handler(BaseHTTPRequestHandler):
         同じ契約）。失敗は予約前検証で拒否されるため rotation をラッチさせない。
         """
         from .corner_rotation import CornerRotationManager, RotationError
+        from .adapters.base import AdapterError
 
         try:
             manager = CornerRotationManager(self.g)
@@ -5091,6 +5092,14 @@ class _Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             self._send_error_json(409, "hanjuku_manual_unavailable",
                                   "半熟英雄の開始要求を保存できませんでした")
+            return 409
+        except AdapterError:
+            if resume_latest:
+                self._send_error_json(409, "hanjuku_resume_unavailable",
+                                      "最新セーブから再開できる検証済み状態を確認できませんでした")
+            else:
+                self._send_error_json(409, "hanjuku_manual_unavailable",
+                                      "半熟英雄の開始条件を確認できませんでした")
             return 409
         except Exception:
             self._send_error_json(500, "hanjuku_manual_failed",

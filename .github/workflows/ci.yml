@@ -16,74 +16,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  materialize-hanjuku-resume-refusal-fix:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/webui-hanjuku-resume-refusal'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          submodules: false
-          persist-credentials: true
-      - name: Apply reviewed Hanjuku resume refusal patch
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(text, old, new, label):
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected 1 match, got {count}")
-              return text.replace(old, new, 1)
-
-          webui_path = Path('src/docich/webui.py')
-          text = webui_path.read_text(encoding='utf-8')
-          text = replace_once(
-              text,
-              '        from .corner_rotation import CornerRotationManager, RotationError\n\n        try:\n',
-              '        from .corner_rotation import CornerRotationManager, RotationError\n        from .adapters.base import AdapterError\n\n        try:\n',
-              'adapter error import',
-          )
-          text = replace_once(
-              text,
-              '        except (OSError, ValueError):\n            self._send_error_json(409, "hanjuku_manual_unavailable",\n                                  "半熟英雄の開始要求を保存できませんでした")\n            return 409\n        except Exception:\n',
-              '        except (OSError, ValueError):\n            self._send_error_json(409, "hanjuku_manual_unavailable",\n                                  "半熟英雄の開始要求を保存できませんでした")\n            return 409\n        except AdapterError:\n            if resume_latest:\n                self._send_error_json(409, "hanjuku_resume_unavailable",\n                                      "最新セーブから再開できる検証済み状態を確認できませんでした")\n            else:\n                self._send_error_json(409, "hanjuku_manual_unavailable",\n                                      "半熟英雄の開始条件を確認できませんでした")\n            return 409\n        except Exception:\n',
-              'adapter error handling',
-          )
-          webui_path.write_text(text, encoding='utf-8')
-
-          test_path = Path('tests/test_webui_hanjuku_resume.py')
-          test = test_path.read_text(encoding='utf-8')
-          test = replace_once(
-              test,
-              'from docich import corner_rotation, webui\n',
-              'from docich import corner_rotation, webui\nfrom docich.adapters.base import AdapterError\n',
-              'test import',
-          )
-          test += '''\n\ndef test_hanjuku_resume_adapter_refusal_is_a_safe_conflict(tmp_path, monkeypatch):\n    class RefusingManager:\n        def __init__(self, config):\n            self.config = config\n\n        def queue_manual(self, game, **kwargs):\n            assert game == "hanjuku-hero"\n            assert kwargs == {"resume_latest": True}\n            raise AdapterError("private checkpoint detail must not escape")\n\n    monkeypatch.setattr(corner_rotation, "CornerRotationManager", RefusingManager)\n    handler, _ = _handler(tmp_path)\n    error = {}\n    handler._send_error_json = lambda status, code, message: error.update(\n        status=status, code=code, message=message\n    )\n    row = SimpleNamespace(id="hanjuku-hero", game="hanjuku-hero", adapter="game")\n\n    assert handler._handle_hanjuku_corner_start(row, resume_latest=True) == 409\n    assert error == {\n        "status": 409,\n        "code": "hanjuku_resume_unavailable",\n        "message": "最新セーブから再開できる検証済み状態を確認できませんでした",\n    }\n    assert "private checkpoint" not in error["message"]\n'''
-          test_path.write_text(test, encoding='utf-8')
-          PY
-          python3 -m compileall -q src tests
-      - name: Restore CI workflow and push fix commit
-        shell: bash
-        run: |
-          git fetch --depth=1 origin main:refs/remotes/origin/main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/docich/webui.py tests/test_webui_hanjuku_resume.py .github/workflows/ci.yml
-          git commit -m 'fix(webui): classify Hanjuku resume refusal'
-          git push origin HEAD:${{ github.head_ref }}
-
   python-syntax:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
