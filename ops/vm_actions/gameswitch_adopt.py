@@ -173,10 +173,20 @@ def verify_ownership(root: Path, state: dict) -> None:
             EX_OWNERSHIP_MISSING, f"failed receipt {receipt_path} is unreadable: {exc}")
     if not isinstance(receipt, dict) or receipt.get("request_id") != request_id:
         raise FixedRecoverExit(EX_OWNERSHIP_MISSING, "failed receipt owns another request")
+    # The durable receipt keeps the terminal facts under ``result`` (the same
+    # shape the canonical writer uses for ``last_result``); only the receipt
+    # status and identity are top-level. Reading error_code/to_game from the
+    # top level silently refused every real rollback failure (#2670).
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        raise FixedRecoverExit(EX_OWNERSHIP_MISSING, "failed receipt has no immutable result")
     last = state["last_result"]
-    if (receipt.get("status") != "failed" or receipt.get("error_code") != "rollback_failed"
-            or receipt.get("to_game") != last.get("to_game")
-            or receipt.get("generation") != last.get("generation")):
+    if (receipt.get("status") != "failed"
+            or result.get("status") != "failed"
+            or result.get("request_id") != request_id
+            or result.get("error_code") != "rollback_failed"
+            or result.get("to_game") != last.get("to_game")
+            or result.get("generation") != last.get("generation")):
         raise FixedRecoverExit(
             EX_OWNERSHIP_MISSING, "failed receipt is not the immutable rollback failure")
 
