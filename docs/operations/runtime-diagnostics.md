@@ -964,7 +964,8 @@ soviet_now の `strategy/persist.sh` は採用のたびに `soren-persist/.git/p
 git 操作・修復・runtime 変更は行わない。
 
 - 収集元: `<soren>/../soren-persist/.git/persist-status.json` と
-  `<soren>/tmp/state/strategy_persist_last_failure.json`。
+  `<soren>/tmp/state/strategy_persist_last_failure.json`。パスは production の
+  既定配置に固定しており、`SOREN_PERSIST_REPO` を変更した環境は対象外。
 - `result` は `ok` / `no-change` / `no-op` / `fail` / `unknown` の固定 enum。
   `reason` は `none`, `clone_missing`, `invalid_message`, `invalid_branch`,
   `gh_missing`, `identity_setup_failed`, `fetch_failed`, `remote_head_failed`,
