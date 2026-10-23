@@ -33,7 +33,9 @@ HISTORY_LIMIT = 100
 STAGE_DIR = "staged_scenarios"
 MAX_STAGE_FILES = 32
 PROGRAM_STATE_FILENAME = "trpg_corner_state.json"
-MAX_STAGE_BYTES = core.MAX_BYTES
+MAX_GENERATED_OUTPUT_BYTES = core.MAX_BYTES
+MAX_STAGE_BYTES = core.MAX_BYTES + 64 * 1024
+MAX_HISTORY_BYTES = 2 * 1024 * 1024
 
 
 def generation_agents(settings: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -163,7 +165,7 @@ def preview_scenario(settings: Mapping[str, Any], *, duration_minutes: int = 8,
                      env: Mapping[str, str] | None = None) -> dict:
     """Cheap eligibility/preflight proof; never invokes a model."""
 
-    generation_agents(settings, env)  # validate the configured type only
+    generation_agents(settings, env)
     return deterministic_scenario("eligibility-preview", duration_minutes=duration_minutes)
 
 
@@ -206,12 +208,10 @@ def _stage_path(g, request_id: str) -> Path:
     return _stage_dir(g) / f"{request_id}.json"
 
 
-def _atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
-                         separators=(",", ":")).encode("utf-8")
-    if len(encoded) > MAX_STAGE_BYTES:
-        raise core.TrpgCornerError("staged trpg scenario is too large")
-    fd, tmp_name = tempfile.mkstemp(prefix=".scenario-", dir=path.parent)
+def _atomic_private_bytes(path: Path, encoded: bytes, *, max_bytes: int) -> None:
+    if len(encoded) > max_bytes:
+        raise core.TrpgCornerError("private trpg scenario data is too large")
+    fd, tmp_name = tempfile.mkstemp(prefix=".trpg-", dir=path.parent)
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -228,26 +228,30 @@ def _atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
+def _atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    _atomic_private_bytes(path, encoded, max_bytes=MAX_STAGE_BYTES)
+
+
 def _record_history(g, metadata: Mapping[str, Any], story: Mapping[str, Any]) -> None:
     directory = _private_dir(g)
     history = directory / HISTORY_FILE
     lock_path = directory / HISTORY_LOCK
     row = {**metadata, "scenario": story}
-    encoded = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded_row = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     try:
         with lock_path.open("a", encoding="utf-8") as lock:
             os.chmod(lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             lines = []
             if history.exists():
+                if history.stat().st_size > MAX_HISTORY_BYTES:
+                    raise core.TrpgCornerError("trpg scenario audit is too large")
                 lines = history.read_text(encoding="utf-8").splitlines()[-(HISTORY_LIMIT - 1):]
-            lines.append(encoded)
-            _atomic_private_json(history, {"rows": lines})
-            # Keep the public contract JSONL while using the same private atomic write.
-            temp = history.with_suffix(".jsonl.tmp")
-            temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            os.chmod(temp, 0o600)
-            os.replace(temp, history)
+            lines.append(encoded_row)
+            encoded = ("\n".join(lines) + "\n").encode("utf-8")
+            _atomic_private_bytes(history, encoded, max_bytes=MAX_HISTORY_BYTES)
     except OSError as exc:
         raise core.TrpgCornerError("trpg scenario audit write failed") from exc
 
@@ -308,7 +312,8 @@ def generate_scenario(g, request_id: str, settings: Mapping[str, Any], *, durati
             )
             if not result.ok:
                 raise AiError(result.failure_kind or result.detail or "trpg scenario generation failed")
-            if not isinstance(result.output, str) or len(result.output.encode("utf-8")) > MAX_STAGE_BYTES:
+            if (not isinstance(result.output, str)
+                    or len(result.output.encode("utf-8")) > MAX_GENERATED_OUTPUT_BYTES):
                 raise core.TrpgCornerError("generated trpg scenario output is too large")
             candidate = json.loads(result.output)
             story = validate_generated_scenario(candidate, duration_minutes=duration_minutes)
@@ -345,7 +350,6 @@ def ensure_staged_scenario(g, request_id: str, settings: Mapping[str, Any], *, d
         g, request_id, settings, duration_minutes=duration_minutes,
         generator=generator, env=env,
     )
-    # Audit first. A staged answer never exists without a durable audit record.
     _record_history(g, metadata, story)
     stage = {
         "schema": 1,
