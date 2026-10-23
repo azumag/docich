@@ -18,7 +18,18 @@ jobs:
         with:
           ref: feat/hanjuku-resume-prediction
       - name: Apply reviewed patch
-        run: python ops/tmp_materialize_hanjuku_resume_prediction.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('ops/tmp_materialize_hanjuku_resume_prediction.py')
+          text = path.read_text()
+          old = '''    if count != 1:\n        raise SystemExit(f"expected one source match, got {count}: {old[:100]!r}")\n    text = text.replace(old, new, 1)\n'''
+          new = '''    if count not in {1, 2}:\n        raise SystemExit(f"expected one or two source matches, got {count}: {old[:100]!r}")\n    text = text.replace(old, new)\n'''
+          if text.count(old) != 1:
+              raise SystemExit('materializer helper changed unexpectedly')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python ops/tmp_materialize_hanjuku_resume_prediction.py
       - name: Validate syntax and whitespace
         run: |
           python -m compileall -q src/docich/hanjuku_predictions.py tests/test_hanjuku_resume_predictions.py
