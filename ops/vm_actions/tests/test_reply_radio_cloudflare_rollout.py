@@ -15,20 +15,41 @@ def persistent_block(text: str) -> str:
 
 
 class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
-    def test_rollout_shell_is_valid_and_retry_epoch(self):
+    def test_rollout_shell_is_valid_and_v4_epoch(self):
         run = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2026-10-24-v3\n")
+        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2026-10-24-v4\n")
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("paths:\n      - 'ops/vm_actions/reply_radio_cloudflare_rollout_epoch'", workflow)
-        self.assertIn("2026-10-24-v3", workflow)
-        self.assertIn("verified-web-production-rollout-v3-${{ github.repository }}", workflow)
+        self.assertIn("2026-10-24-v4", workflow)
+        self.assertIn("verified-web-production-rollout-v4-${{ github.repository }}", workflow)
         self.assertIn("github.actor_id == 9018513", workflow)
         self.assertIn("github.triggering_actor == 'azumag'", workflow)
         self.assertIn("github.ref_protected == true", workflow)
         self.assertIn('data.get("status") == "configured"', workflow)
         self.assertIn('data.get("sha") == sys.argv[2]', workflow)
         self.assertIn('exec docich production $SHA', workflow)
+
+    def test_secret_free_capability_diagnostics_precede_network(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        diagnostic = text.index("from docich.trading.paper_ai_canary import readiness")
+        comment = text.index("from docich.comment_classifier import web_batch")
+        radio = text.index("python3 -P -m docich.radio.consumer")
+        backup = text.index("backup_file=\"$(mktemp")
+        self.assertLess(diagnostic, comment)
+        self.assertLess(comment, radio)
+        self.assertLess(radio, backup)
+        for name, code in (
+            ("search_account_configured", 73),
+            ("search_credential_present", 74),
+            ("direct_account_configured", 75),
+            ("direct_credential_present", 76),
+        ):
+            self.assertIn(f'(\"{name}\", {code})', text)
+        self.assertIn('if [[ -n "${CLOUDFLARE_API_TOKEN_FILE:-}" ]]', text)
+        self.assertIn("|| exit 77", text)
+        self.assertIn("exit 78", text)
+        self.assertIn("exit 79", text)
 
     def test_real_canaries_precede_mutation_and_roll_back_on_failure(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -43,6 +64,10 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
         self.assertIn("rollback_needed=1", text)
         self.assertIn("restart_radio_worker.sh", text)
         self.assertIn("restart_chat_kick_workers.sh", text)
+        self.assertIn("exit 80", text)
+        self.assertIn("exit 81", text)
+        self.assertIn("exit 82", text)
+        self.assertIn("exit 83", text)
 
     def test_rollout_owns_required_feature_gates_but_not_provider_route(self):
         text = SCRIPT.read_text(encoding="utf-8")
