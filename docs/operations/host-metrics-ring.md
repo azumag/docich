@@ -17,7 +17,8 @@
 | ファイル上限 | 256 KiB（`MAX_BYTES`）。超過時は最新 200 行へ圧縮 |
 | 1 行の上限 | 4096 B（超過行は捨てる。切り詰めて書かない） |
 | 保存先 | `/home/ubuntu/.local/state/docich/host-metrics/ring.jsonl`（mode 0600・dir 0700） |
-| 書き込み | 1 サンプル = 1 回の `O_APPEND` 書き込み。上限超過時だけ temp+`os.replace` で圧縮 |
+| 書き込み | 1 サンプル = 1 回の `O_APPEND` 書き込み（`flock` 直列化・fsync 付き）。
+電源断で末尾改行が無いときは `\n` を 1 つ補修してから追記する。上限超過時だけ temp+`os.replace` で圧縮 |
 
 - **tmpfs に置かない。** runtime の `state_dir`（`run-soren-live/`）とも分離する。
   どちらも再起動や掃除で消え得るため、事後調査の証拠にはならない。

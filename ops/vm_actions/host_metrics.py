@@ -13,9 +13,13 @@ Contract (``ops/vm_actions/host_metrics_contract.md`` is authoritative):
   - Ring file ``<home>/.local/state/docich/host-metrics/ring.jsonl``, file mode
     ``0600``, directory mode ``0700``; ``<home>`` is the runtime user's passwd
     entry, never ``$HOME`` (the gateway exec channel may scrub it). One compact,
-    sorted-key JSON object per line. Appends are a single ``O_APPEND`` write
-    followed by ``fsync`` (a frozen guest may never flush the page cache), so a
-    torn write can never corrupt older points. When the ring has more than
+    sorted-key JSON object per line. The whole append (and any compaction) runs
+    under ``flock`` on the state directory, and the ring is opened ``O_RDWR |
+    O_APPEND`` so a tail left without its newline by a power cut is repaired
+    with one ``\n`` before the new record: a torn write can never corrupt older
+    points, nor glue the next one to them. The write itself is a single
+    ``O_APPEND`` write followed by ``fsync`` (a frozen guest may never flush the
+    page cache). When the ring has more than
     ``MAX_POINTS`` parseable lines or exceeds ``MAX_BYTES``, compaction keeps the
     newest ``COMPACT_KEEP`` lines through a temp file in the same directory plus
     ``os.replace`` (temp file and directory both fsynced); an over-long line is

@@ -38,8 +38,11 @@ Worst case steady state: 240 points x ~400 B ≈ 96 KiB, hard-capped at 256 KiB,
 one append per minute. Compaction rewrites at most 200 lines and only when the
 ring exceeds `MAX_POINTS` or `MAX_BYTES` (~every 40 minutes's worth of growth
 per compaction at a 240-point ring: compaction keeps 200, so it triggers every
-40 new points). Writes are `O_APPEND` single writes; compaction is
-temp-file + `os.replace`, so a torn write can never corrupt the ring.
+40 new points). Writes are `O_APPEND` single writes under `flock` on the state
+directory; the ring is opened `O_RDWR | O_APPEND` so a tail left without its
+newline by a power cut is repaired with one `\n` before the new record, and
+compaction is temp-file + `os.replace` (fsynced). A torn write can therefore
+never corrupt the ring, nor glue the next record to a partial line.
 
 ## Record format (one compact JSON object per line, sorted keys)
 
