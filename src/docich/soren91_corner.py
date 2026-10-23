@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 import time
 import tomllib
@@ -39,6 +40,7 @@ from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .corner_boundary import CornerWaitExpired, program_slot
 from .game_switch import (
+    ERROR_READINESS_TIMEOUT,
     ERROR_RECOVERY_REQUIRED,
     GameSwitchCoordinator,
     GameSwitchStore,
@@ -208,6 +210,175 @@ class Soren91CornerManager(RetroCornerManager):
     # ``recovery_required`` latch and cannot see the released ledger, so this
     # widening is what lets the rotation retire the owner.
     _released_owner_adapters = frozenset({"meriken"})
+    _presenter_timeout_re = re.compile(
+        r"presenter_status=viewer_timeout,\s*"
+        r"viewer_wait_sec=(?P<wait>[0-9]+(?:\.[0-9]+)?),\s*"
+        r"elapsed_s=(?P<elapsed>[0-9]+(?:\.[0-9]+)?)"
+    )
+
+    @classmethod
+    def _presenter_timeout_proved(cls, detail: object) -> bool:
+        """Accept only the presenter's bounded viewer-timeout evidence (#2680)."""
+        if not isinstance(detail, str) or "presenter がviewer windowを提示できませんでした" not in detail:
+            return False
+        match = cls._presenter_timeout_re.search(detail)
+        if match is None:
+            return False
+        wait = float(match.group("wait"))
+        elapsed = float(match.group("elapsed"))
+        return elapsed >= wait
+
+    @classmethod
+    def _failed_state_is_recoverable(cls, state: dict[str, object]) -> bool:
+        if RetroCornerManager._failed_state_is_recoverable(state):
+            return True
+        return bool(
+            state.get("status") == "failed"
+            and state.get("last_error_code") == ERROR_READINESS_TIMEOUT
+            and cls._presenter_timeout_proved(state.get("last_error"))
+        )
+
+    @staticmethod
+    def _presenter_terminal_receipt_matches_inactive(
+        canonical: dict[str, object],
+        receipt: dict[str, object],
+        *,
+        request_id: str,
+        target: str,
+        previous: str | None,
+    ) -> bool:
+        """Prove the readiness timeout never made the target corner active."""
+        result = receipt.get("result")
+        active = canonical.get("active")
+        status = receipt.get("status")
+        operation = receipt.get("operation")
+        if (
+            canonical.get("phase") not in {"idle", "ready"}
+            or canonical.get("request_id") is not None
+            or canonical.get("candidate") is not None
+            or canonical.get("previous") is not None
+            or canonical.get("retiring")
+            or not isinstance(result, dict)
+            or status not in {"failed", "rolled_back"}
+            or operation not in {"start", "switch"}
+            or receipt.get("request_id") != request_id
+            or receipt.get("target") != target
+            or result.get("request_id") != request_id
+            or result.get("operation") != operation
+            or result.get("status") != status
+            or result.get("from_game") != previous
+            or result.get("to_game") != target
+            or result.get("error_code") != ERROR_READINESS_TIMEOUT
+            or type(result.get("generation")) is not int
+            or result.get("generation") != receipt.get("generation")
+            or (result.get("cleanup_pending") is not None
+                and result.get("cleanup_pending") is not False)
+        ):
+            return False
+        if previous is None:
+            if active is not None or operation != "start":
+                return False
+        elif (
+            not isinstance(active, dict)
+            or active.get("game") != previous
+            or operation != "switch"
+        ):
+            return False
+        if status == "failed":
+            return True
+        restored_generation = result.get("restored_generation")
+        return bool(
+            type(restored_generation) is int
+            and restored_generation >= 1
+            and isinstance(active, dict)
+            and type(active.get("generation")) is int
+            and active["generation"] >= restored_generation
+        )
+
+    def _terminalize_presenter_timeout_failure(
+        self, state: dict[str, object]
+    ) -> CornerResult | None:
+        if not (
+            state.get("status") == "failed"
+            and state.get("last_error_code") == ERROR_READINESS_TIMEOUT
+            and self._presenter_timeout_proved(state.get("last_error"))
+        ):
+            return None
+        request_id = state.get("switch_request_id")
+        target = state.get("game")
+        previous = state.get("previous_game")
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or not isinstance(target, str)
+            or not target
+            or (previous is not None and not isinstance(previous, str))
+        ):
+            return None
+        try:
+            with self.store.lock(exclusive=False):
+                canonical, missing = self.store.canonical.load()
+                receipt = self.store.receipts.load(request_id)
+                if (
+                    missing
+                    or not isinstance(receipt, dict)
+                    or not self._presenter_terminal_receipt_matches_inactive(
+                        canonical,
+                        receipt,
+                        request_id=request_id,
+                        target=target,
+                        previous=previous,
+                    )
+                ):
+                    return None
+                result = receipt.get("result")
+                if not isinstance(result, dict) or not self._presenter_timeout_proved(
+                    result.get("detail")
+                ):
+                    return None
+                state.pop("switch_status", None)
+                state.update(
+                    status="interrupted",
+                    completed_at=self._local_now().isoformat(),
+                    end_reason="switch-terminal-before-corner-active",
+                    last_error=None,
+                    last_error_code=None,
+                    next_retry_at=None,
+                )
+                self._write_state(state)
+        except (OSError, ValueError, TypeError):
+            return None
+        return CornerResult(
+            "succeeded",
+            game=target,
+            previous_game=previous,
+            detail="presenter viewer timeoutを終端証拠からinterruptedとして確定しました",
+        )
+
+    def recover_failed(self) -> CornerResult:
+        """Terminalize proven presenter timeout before any general retry (#2680)."""
+        with self._locked():
+            state = self._read_state()
+            presenter_timeout = bool(
+                state.get("status") == "failed"
+                and state.get("last_error_code") == ERROR_READINESS_TIMEOUT
+                and self._presenter_timeout_proved(state.get("last_error"))
+            )
+            if presenter_timeout:
+                terminalized = self._terminalize_presenter_timeout_failure(state)
+                if terminalized is not None:
+                    return terminalized
+                return CornerResult(
+                    "noop",
+                    game=state.get("game") if isinstance(state.get("game"), str) else None,
+                    previous_game=(
+                        state.get("previous_game")
+                        if isinstance(state.get("previous_game"), str)
+                        else None
+                    ),
+                    detail="presenter-timeout-terminal-proof-unproven",
+                )
+        return super().recover_failed()
 
     def __init__(
         self,
