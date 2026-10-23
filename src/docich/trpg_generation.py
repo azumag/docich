@@ -1,10 +1,10 @@
 """Bounded, auditable scenario generation for the participatory TRPG corner.
 
-Untrusted model output never becomes game state directly.  Every candidate is
+Untrusted model output never becomes game state directly. Every candidate is
 normalized by :func:`trpg_corner.validate_scenario` and then checked as a
-finite scene graph before it can be materialized into a GameSwitch runtime.
-A deterministic procedural scenario is used when the configured AI chain is
-unavailable or returns an invalid candidate.
+finite scene graph. Generation is staged by the corner manager *before* it
+asks GameSwitch to disturb the currently displayed runtime; materialization
+only consumes that immutable staged scenario.
 """
 from __future__ import annotations
 
@@ -14,14 +14,15 @@ import json
 import os
 from pathlib import Path
 import random
+import tempfile
 from typing import Any, Mapping
 
 from . import trpg_corner as core
 from .ai_generate import AiError, run_prompt
 
 GENERATION_LABEL = "RADIO:trpg-scenario"
-GENERATION_TIMEOUT_S = 20
-GENERATION_OVERALL_TIMEOUT_S = 35.0
+GENERATION_TIMEOUT_S = 15
+GENERATION_OVERALL_TIMEOUT_S = 20.0
 MAX_PATH_SCENES = 4
 SCENE_SECONDS = 3 + core.MAX_VOTE_WINDOW_DEFAULT + 3
 REVEAL_SECONDS = 10
@@ -29,6 +30,10 @@ RESTORE_RESERVE_SECONDS = 30
 HISTORY_FILE = "trpg_scenario_history.jsonl"
 HISTORY_LOCK = ".trpg_scenario_history.lock"
 HISTORY_LIMIT = 100
+STAGE_DIR = "staged_scenarios"
+MAX_STAGE_FILES = 32
+PROGRAM_STATE_FILENAME = "trpg_corner_state.json"
+MAX_STAGE_BYTES = core.MAX_BYTES
 
 
 def generation_agents(settings: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -45,9 +50,8 @@ def generation_agents(settings: Mapping[str, Any], env: Mapping[str, str] | None
             or env.get("AI_COMMON_AGENTS", "").strip())
 
 
-def _seed(spec) -> str:
-    raw = f"{spec.runtime_id}:{spec.generation}:{spec.lease_id}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+def _seed(request_id: str) -> str:
+    return hashlib.sha256(request_id.encode("utf-8")).hexdigest()
 
 
 def _canonical_bytes(story: Mapping[str, Any]) -> bytes:
@@ -117,7 +121,7 @@ def validate_generated_scenario(raw: Any, *, duration_minutes: int = 8) -> dict:
 
 
 def deterministic_scenario(seed: str, *, duration_minutes: int = 8) -> dict:
-    """Create a varied but fully deterministic fallback from the runtime seed."""
+    """Create a varied but fully deterministic fallback from a request seed."""
 
     rng = random.Random(int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16], 16))
     cases = [
@@ -182,32 +186,107 @@ def _prompt(seed: str, duration_minutes: int) -> str:
 """
 
 
+def _private_dir(g) -> Path:
+    path = Path(g.state_dir) / "trpg"
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _stage_dir(g) -> Path:
+    path = _private_dir(g) / STAGE_DIR
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _stage_path(g, request_id: str) -> Path:
+    if not isinstance(request_id, str) or not request_id or any(ch not in "0123456789abcdef-" for ch in request_id):
+        raise core.TrpgCornerError("trpg scenario request id is invalid")
+    return _stage_dir(g) / f"{request_id}.json"
+
+
+def _atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_STAGE_BYTES:
+        raise core.TrpgCornerError("staged trpg scenario is too large")
+    fd, tmp_name = tempfile.mkstemp(prefix=".scenario-", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _record_history(g, metadata: Mapping[str, Any], story: Mapping[str, Any]) -> None:
-    directory = Path(g.state_dir) / "trpg"
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = _private_dir(g)
     history = directory / HISTORY_FILE
     lock_path = directory / HISTORY_LOCK
     row = {**metadata, "scenario": story}
     encoded = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     try:
         with lock_path.open("a", encoding="utf-8") as lock:
+            os.chmod(lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             lines = []
             if history.exists():
                 lines = history.read_text(encoding="utf-8").splitlines()[-(HISTORY_LIMIT - 1):]
             lines.append(encoded)
-            temp = history.with_suffix(".tmp")
+            _atomic_private_json(history, {"rows": lines})
+            # Keep the public contract JSONL while using the same private atomic write.
+            temp = history.with_suffix(".jsonl.tmp")
             temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.chmod(temp, 0o600)
             os.replace(temp, history)
     except OSError as exc:
         raise core.TrpgCornerError("trpg scenario audit write failed") from exc
 
 
-def generate_scenario(g, spec, settings: Mapping[str, Any], *, duration_minutes: int = 8,
-                      generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
-    """Generate exactly one scenario for a newly materialized runtime."""
+def _gc_stages(g, *, keep_request_id: str) -> None:
+    files = sorted(_stage_dir(g).glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    kept = 0
+    for path in files:
+        if path.name == f"{keep_request_id}.json" or kept < MAX_STAGE_FILES - 1:
+            kept += 1
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
-    seed = _seed(spec)
+
+def _load_stage(g, request_id: str, *, duration_minutes: int) -> tuple[dict, dict]:
+    path = _stage_path(g, request_id)
+    if path.stat().st_size > MAX_STAGE_BYTES:
+        raise core.TrpgCornerError("staged trpg scenario is too large")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(raw, dict) or raw.get("schema") != 1
+            or raw.get("request_id") != request_id
+            or raw.get("duration_minutes") != duration_minutes
+            or not isinstance(raw.get("metadata"), dict)):
+        raise core.TrpgCornerError("staged trpg scenario metadata is invalid")
+    story = validate_generated_scenario(raw.get("scenario"), duration_minutes=duration_minutes)
+    metadata = dict(raw["metadata"])
+    if metadata.get("scenario_sha256") != scenario_hash(story):
+        raise core.TrpgCornerError("staged trpg scenario hash is invalid")
+    return story, metadata
+
+
+def generate_scenario(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int = 8,
+                      generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
+    """Generate one scenario without touching GameSwitch or a runtime."""
+
+    seed = _seed(request_id)
     agents = generation_agents(settings, env)
     story = None
     source = "procedural-fallback"
@@ -216,8 +295,6 @@ def generate_scenario(g, spec, settings: Mapping[str, Any], *, duration_minutes:
 
     if agents:
         effective_env = dict(os.environ if env is None else env)
-        # A non-empty configured generation chain is the explicit feature opt-in,
-        # matching the existing mystery/tsuitate narration call sites.
         effective_env["DOCICH_ALLOW_REAL_AI"] = "1"
         try:
             result = generator(
@@ -231,6 +308,8 @@ def generate_scenario(g, spec, settings: Mapping[str, Any], *, duration_minutes:
             )
             if not result.ok:
                 raise AiError(result.failure_kind or result.detail or "trpg scenario generation failed")
+            if not isinstance(result.output, str) or len(result.output.encode("utf-8")) > MAX_STAGE_BYTES:
+                raise core.TrpgCornerError("generated trpg scenario output is too large")
             candidate = json.loads(result.output)
             story = validate_generated_scenario(candidate, duration_minutes=duration_minutes)
             source = result.last_agent or "ai"
@@ -245,12 +324,51 @@ def generate_scenario(g, spec, settings: Mapping[str, Any], *, duration_minutes:
     metadata = {
         "schema": 1,
         "seed": seed,
+        "request_id": request_id,
         "source": source,
         "status": status,
         "failure": failure,
-        "runtime_id": spec.runtime_id,
-        "generation": spec.generation,
         "scenario_sha256": scenario_hash(story),
     }
-    _record_history(g, metadata, story)
     return story, metadata
+
+
+def ensure_staged_scenario(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int = 8,
+                           generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
+    """Idempotently stage a scenario before the GameSwitch request starts."""
+
+    try:
+        return _load_stage(g, request_id, duration_minutes=duration_minutes)
+    except FileNotFoundError:
+        pass
+    story, metadata = generate_scenario(
+        g, request_id, settings, duration_minutes=duration_minutes,
+        generator=generator, env=env,
+    )
+    # Audit first. A staged answer never exists without a durable audit record.
+    _record_history(g, metadata, story)
+    stage = {
+        "schema": 1,
+        "request_id": request_id,
+        "duration_minutes": duration_minutes,
+        "metadata": metadata,
+        "scenario": story,
+    }
+    _atomic_private_json(_stage_path(g, request_id), stage)
+    _gc_stages(g, keep_request_id=request_id)
+    return story, metadata
+
+
+def staged_scenario_for_current_request(g, *, duration_minutes: int = 8) -> tuple[dict, dict]:
+    """Load the manager-staged scenario for the currently starting request."""
+
+    state_path = Path(g.state_dir) / PROGRAM_STATE_FILENAME
+    if state_path.stat().st_size > MAX_STAGE_BYTES:
+        raise core.TrpgCornerError("trpg program state is too large")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    request_id = state.get("rotation_request_id") if isinstance(state, dict) else None
+    if (not isinstance(request_id, str)
+            or state.get("status") not in {"starting", "active", "restoring"}
+            or state.get("duration_minutes") != duration_minutes):
+        raise core.TrpgCornerError("trpg program has no staged scenario owner")
+    return _load_stage(g, request_id, duration_minutes=duration_minutes)
