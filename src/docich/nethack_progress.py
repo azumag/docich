@@ -24,8 +24,8 @@ from .nethack_exploration import (
 )
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
-    MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, PRAY_RECOVERY_STEPS, PolicyDecision,
-    SEVERE_RECOVERY_COMMAND, STEP_OUT_INTENTS, _has_any,
+    DESCEND_COMMAND, MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, PRAY_RECOVERY_STEPS,
+    PolicyDecision, SEVERE_RECOVERY_COMMAND, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
@@ -140,6 +140,7 @@ def assert_production_safe(
     attempted_doors: set[DoorKey] | frozenset[DoorKey] = frozenset(),
     pending_door: _DoorTarget | None = None,
     opened_doors: set[DoorKey] | frozenset[DoorKey] = frozenset(),
+    down_stairs: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
 ) -> None:
     """Check the observation as well as key shape at the final action boundary.
 
@@ -181,6 +182,16 @@ def assert_production_safe(
             and turn_ready(obs)
             and level is not None
             and level <= MAX_PRAY_DUNGEON_LEVEL
+        )
+    elif intent == "descend_stairs":
+        # The hero glyph hides the terrain, so the staircase is proven by the
+        # explorer's remembered tile for this depth (#2666). A prompt frame is
+        # never allowed to receive '>' because it could answer a question.
+        allowed = (
+            key == DESCEND_COMMAND
+            and turn_ready(obs)
+            and obs.player is not None
+            and obs.player in down_stairs
         )
     elif intent == "open_door_start":
         allowed = key == "o" and _next_unattempted_door(obs, attempted_doors) is not None
@@ -375,6 +386,7 @@ class NethackProgressResolver:
             attempted_doors=self._attempted_doors,
             pending_door=self._pending_door,
             opened_doors=getattr(explorer, "opened_doors", frozenset()),
+            down_stairs=explorer.memory.down_stairs_at(obs.vitals.dungeon_level),
         )
 
     def sent(self, decision: PolicyDecision, obs: NethackObservation) -> None:
