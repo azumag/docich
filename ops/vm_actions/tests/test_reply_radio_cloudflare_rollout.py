@@ -18,10 +18,11 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
     def test_rollout_shell_is_valid_and_retry_epoch(self):
         run = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2026-10-24-v2\n")
+        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2026-10-24-v3\n")
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("paths:\n      - 'ops/vm_actions/reply_radio_cloudflare_rollout_epoch'", workflow)
-        self.assertIn("2026-10-24-v2", workflow)
+        self.assertIn("2026-10-24-v3", workflow)
+        self.assertIn("verified-web-production-rollout-v3-${{ github.repository }}", workflow)
         self.assertIn("github.actor_id == 9018513", workflow)
         self.assertIn("github.triggering_actor == 'azumag'", workflow)
         self.assertIn("github.ref_protected == true", workflow)
