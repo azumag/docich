@@ -105,7 +105,10 @@ def _stream_profile_values(text: str):
 
 def _stream_profile_diagnostics(cfg, repo):
     """Project only three non-secret stream settings and their profile drift."""
-    destination = cfg["repos"][repo].get("projections", {}).get("games/soviet_now")
+    repos = cfg.get("repos") if isinstance(cfg, dict) else None
+    repo_cfg = repos.get(repo) if isinstance(repos, dict) else None
+    projections = repo_cfg.get("projections") if isinstance(repo_cfg, dict) else None
+    destination = projections.get("games/soviet_now") if isinstance(projections, dict) else None
     if not destination:
         return {
             "status": "unavailable",
@@ -156,6 +159,12 @@ def _stream_profile_diagnostics(cfg, repo):
 def _augment_stream_profile(result, cfg, repo, gateway):
     diagnostics = result.get("diagnostics")
     if not isinstance(diagnostics, dict):
+        return result
+    # Some callers/tests use a deliberately minimal legacy config projection.
+    # Preserve the existing diagnostics envelope when repository projection
+    # metadata is absent; production load_config always supplies it.
+    repos = cfg.get("repos") if isinstance(cfg, dict) else None
+    if not isinstance(repos, dict) or repo not in repos:
         return result
     stream = _stream_profile_diagnostics(cfg, repo)
     diagnostics["stream"] = stream
