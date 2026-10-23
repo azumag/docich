@@ -64,6 +64,7 @@ def test_hanjuku_resume_control_is_explicit_in_webui_resources():
     assert "通常の開始予約は新規開始のままです" in html
 
 
+# A fail-closed checkpoint decision is a domain conflict, not a WebUI crash.
 def test_hanjuku_resume_adapter_refusal_is_a_safe_conflict(tmp_path, monkeypatch):
     class RefusingManager:
         def __init__(self, config):
