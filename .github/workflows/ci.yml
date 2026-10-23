@@ -42,6 +42,17 @@ jobs:
                   raise SystemExit(f"{label}: expected 1 match, got {count}")
               return text.replace(old, new, 1)
 
+          def replace_in_method(text, method_sig, old, new, label):
+              start = text.find(method_sig)
+              if start < 0:
+                  raise SystemExit(f"{label}: method not found")
+              end = text.find('\n    def ', start + len(method_sig))
+              if end < 0:
+                  end = len(text)
+              chunk = text[start:end]
+              chunk = replace_once(chunk, old, new, label)
+              return text[:start] + chunk + text[end:]
+
           webui_path = Path('src/docich/webui.py')
           text = webui_path.read_text(encoding='utf-8')
           text = replace_once(
@@ -62,20 +73,17 @@ jobs:
               '        if action in ("schedule", "cancel-schedule"):\n            return self._handle_scheduled_corner_action(row, action, data)\n        if action == "resume-latest":\n            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:\n                self._send_error_json(400, "resume_latest_unsupported",\n                                      "最新セーブからの再開は半熟英雄だけに対応しています")\n                return 400\n            return self._handle_hanjuku_corner_start(row, resume_latest=True)\n        if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:\n',
               'webui resume route',
           )
-          text = replace_once(
-              text,
-              '    def _handle_hanjuku_corner_start(self, row) -> int:\n',
-              '    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:\n',
-              'hanjuku handler signature',
-          )
-          text = replace_once(
-              text,
+          old_sig = '    def _handle_hanjuku_corner_start(self, row) -> int:\n'
+          new_sig = '    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:\n'
+          text = replace_once(text, old_sig, new_sig, 'hanjuku handler signature')
+          text = replace_in_method(
+              text, new_sig,
               '            outcome = CornerRotationManager(self.g).queue_manual(row.game)\n',
-              '            outcome = (CornerRotationManager(self.g).queue_manual(row.game, resume_latest=True)\n                       if resume_latest else CornerRotationManager(self.g).queue_manual(row.game))\n',
+              '            manager = CornerRotationManager(self.g)\n            outcome = (manager.queue_manual(row.game, resume_latest=True)\n                       if resume_latest else manager.queue_manual(row.game))\n',
               'hanjuku queue call',
           )
-          text = replace_once(
-              text,
+          text = replace_in_method(
+              text, new_sig,
               '            "action": "start",\n            "status": status,\n',
               '            "action": "resume-latest" if resume_latest else "start",\n            "status": status,\n',
               'hanjuku response action',
@@ -120,6 +128,7 @@ jobs:
       - name: Restore CI workflow and push implementation commit
         shell: bash
         run: |
+          git fetch origin main --depth=1
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
