@@ -4912,6 +4912,8 @@ def _project_corner_state(data):
         and (error_code == "recovery_required" or legacy_recovery_error)
     )
     finish_reason = data.get("finish_reason")
+    unchanged_seconds = _finite_number(data.get("screen_unchanged_seconds"))
+    screen_readable = data.get("screen_readable")
     return {
         "status": _bounded_str(data.get("status"), 32),
         # Persisted producer reasons only; never infer a boundary from timing.
@@ -4959,7 +4961,9 @@ def _project_corner_state(data):
         "bot_actions_sent": _bounded_int(data.get("bot_actions_sent")),
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
-        "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
+        "screen_unchanged_seconds": (unchanged_seconds if unchanged_seconds is not None
+                                     and unchanged_seconds >= 0 else None),
+        "screen_readable": screen_readable if type(screen_readable) is bool else None,
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
             "hanjuku-script-v1", "hanjuku-chart-v2",
             "hanjuku-chart-v224-overwhelming-melee-egg-save",
