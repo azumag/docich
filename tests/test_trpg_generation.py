@@ -92,6 +92,42 @@ def test_generate_uses_ai_candidate_once_and_records_auditable_history(tmp_path)
     assert recorded["scenario"] == story
 
 
+def test_rotation_request_owns_private_stage_and_retry_never_regenerates(tmp_path):
+    g = SimpleNamespace(state_dir=tmp_path / "state")
+    request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    g.state_dir.mkdir(parents=True)
+    (g.state_dir / gen.PROGRAM_STATE_FILENAME).write_text(json.dumps({
+        "schema_version": 1,
+        "status": "starting",
+        "rotation_request_id": request_id,
+        "duration_minutes": 8,
+    }))
+    spec = SimpleNamespace(runtime_id="g10-feedface", generation=10,
+                           lease_id="44444444-4444-4444-8444-444444444444")
+    candidate = _story(next1="s2", next2="s3")
+    calls = []
+
+    def fake_generator(_g, **_kwargs):
+        calls.append(1)
+        return SimpleNamespace(ok=True, output=json.dumps(candidate, ensure_ascii=False),
+                               last_agent="codex:test", failure_kind="", detail="")
+
+    first, first_meta = gen.generate_scenario(
+        g, spec, {"generation_agents": "codex:test"}, generator=fake_generator, env={})
+    second, second_meta = gen.generate_scenario(
+        g, spec, {"generation_agents": "codex:test"}, generator=fake_generator, env={})
+
+    assert calls == [1]
+    assert second == first and second_meta == first_meta
+    assert first_meta["request_id"] == request_id
+    stage = g.state_dir / "trpg" / gen.STAGE_DIR / f"{request_id}.json"
+    history = g.state_dir / "trpg" / gen.HISTORY_FILE
+    assert stage.stat().st_mode & 0o777 == 0o600
+    assert history.stat().st_mode & 0o777 == 0o600
+    assert json.loads(stage.read_text())["metadata"]["scenario_sha256"] == gen.scenario_hash(first)
+    assert len(history.read_text().splitlines()) == 1
+
+
 def test_invalid_ai_output_fails_closed_to_seeded_fallback(tmp_path):
     g = SimpleNamespace(state_dir=tmp_path / "state")
     spec = SimpleNamespace(runtime_id="g8-deadbeef", generation=8,
