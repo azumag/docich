@@ -673,6 +673,10 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   bounded read で読み、v1 以外・壊れた行・symlink・通常ファイルでない path は捨てて
   固定 status（`absent` / `unreadable` / `invalid` / `stale` / `ok`）へ落とす。
   path・生の行・journal 本文は出さず、`unit_order` の固定 unit 名と数値 field だけを出す。
+  `runtime` は sampler unit 自身の健康（`is-active` / `is-enabled` / `show` の
+  固定 enum と、bounded な journal 末尾の固定分類）。deploy hook の失敗理由は
+  VM 側 private log にしか残らないため、sampler が止まっている・落ちている
+  場合の正規の読み戻し経路として使う。journal 本文・path は出さない。
   `spans_reboot` は保持点に複数 boot が含まれることの証明で、受入条件
   「再起動後に直近の指標が取得できる」をこの 1 field で確認できる。
   投影は最新 8 点に加えて**直前 boot の最終点を最大 2 点まで必ず含める**。

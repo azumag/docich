@@ -972,6 +972,162 @@ def _host_metrics_trim_samples(samples, limit,
     return [samples[index] for index in sorted(keep)]
 
 
+# Read-only health of the #2578 sampler units themselves. The first production
+# deploy of the ring failed inside the deploy hook with the VM-side output
+# withheld, and the ring stayed absent: without these fields a dead sampler is
+# invisible to the only sanctioned channel. Everything here is a fixed enum,
+# count or age; the journal text and any path never leave the collector.
+HOST_METRICS_SERVICE_UNIT = "docich-host-metrics.service"
+HOST_METRICS_TIMER_UNIT = "docich-host-metrics.timer"
+HOST_METRICS_JOURNAL_LINES = 40
+# Five probes run per collection; a hung user manager must not eat the
+# collector's 60 s gateway budget, so each probe gets a short leash.
+HOST_METRICS_PROBE_TIMEOUT_SEC = 2.0
+HOST_METRICS_UNIT_STATE_ENUMS = (
+    "active", "inactive", "failed", "activating", "deactivating", "reloading",
+)
+HOST_METRICS_RESULT_ENUMS = (
+    "success", "exit-code", "signal", "oom", "core-dump", "timeout",
+    "start-limit-hit",
+)
+# Fixed journal classification, worst-first. Only the enum leaves; a run that
+# finished normally therefore reads "finished" only when nothing worse matched.
+HOST_METRICS_JOURNAL_SIGNATURES = (
+    "oom", "timeout", "python_traceback", "exited", "finished", "starting",
+    "other",
+)
+
+
+def _host_metrics_runtime_state(name):
+    """``systemctl --user is-active`` for one fixed unit, as a fixed enum."""
+    proc = _systemctl_user(["is-active", name],
+                           timeout=HOST_METRICS_PROBE_TIMEOUT_SEC)
+    if proc is None:
+        return "unknown"
+    lines = (proc[1] or "").splitlines()
+    state = lines[0].strip().lower() if lines else ""
+    return state if state in HOST_METRICS_UNIT_STATE_ENUMS else "unknown"
+
+
+def _host_metrics_runtime_enabled(name):
+    """``systemctl --user is-enabled`` for one fixed unit, as a boolean."""
+    proc = _systemctl_user(["is-enabled", name],
+                            timeout=HOST_METRICS_PROBE_TIMEOUT_SEC)
+    if proc is None:
+        return None
+    lines = (proc[1] or "").splitlines()
+    value = lines[0].strip().lower() if lines else ""
+    if value in ("enabled", "enabled-runtime"):
+        return True
+    if value in ("disabled", "static", "masked"):
+        return False
+    return None
+
+
+def _host_metrics_runtime_properties():
+    """Exit classification of the last service run from ``systemctl --user show``."""
+    result = {
+        "service_result": None,
+        "service_exec_code": None,
+        "service_exec_status": None,
+        "service_n_restarts": None,
+    }
+    proc = _systemctl_user(
+        ["show", HOST_METRICS_SERVICE_UNIT,
+         "-p", "Result", "-p", "ExecMainCode", "-p", "ExecMainStatus",
+         "-p", "NRestarts", "--value"],
+        timeout=HOST_METRICS_PROBE_TIMEOUT_SEC,
+    )
+    if proc is None or proc[0] != 0:
+        return result
+    lines = [line.strip() for line in (proc[1] or "").splitlines()]
+    while len(lines) < 4:
+        lines.append("")
+    if lines[0].lower() in HOST_METRICS_RESULT_ENUMS:
+        result["service_result"] = lines[0].lower()
+    for key, raw in (("service_exec_code", lines[1]),
+                     ("service_exec_status", lines[2]),
+                     ("service_n_restarts", lines[3])):
+        if re.fullmatch(r"-?\d{1,10}", raw):
+            result[key] = int(raw)
+    return result
+
+
+def _host_metrics_runtime_journal(now):
+    """Classify the bounded unit journal into one fixed enum; no text leaves."""
+    out = {"readable": False, "lines": 0, "newest_age_sec": None,
+           "signature": None}
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    try:
+        proc = subprocess.run(
+            ["journalctl", "--user-unit", HOST_METRICS_SERVICE_UNIT,
+             "-n", str(HOST_METRICS_JOURNAL_LINES), "--no-pager",
+             "-o", "short-unix"],
+            capture_output=True, text=True,
+            timeout=HOST_METRICS_PROBE_TIMEOUT_SEC, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    if proc.returncode != 0:
+        return out
+    lines = [line for line in (proc.stdout or "").splitlines() if line]
+    out["readable"] = True
+    out["lines"] = len(lines)
+    newest = None
+    signatures = []
+    for line in lines:
+        fields = line.split(None, 1)
+        try:
+            stamp = float(fields[0])
+        except (IndexError, ValueError, TypeError, OverflowError):
+            stamp = None
+        # ``inf``/``nan``/``1e400`` are a hostile or corrupt journal line, not
+        # a timestamp; parsing them into an age would raise and take the whole
+        # diagnostics operation down -- the one channel that must survive.
+        if stamp is not None and math.isfinite(stamp):
+            newest = stamp
+        lower = line.lower()
+        if (re.search(r"\boom\b", lower) or "out of memory" in lower):
+            signature = "oom"
+        elif "timed out" in lower:
+            signature = "timeout"
+        elif "traceback (most recent call last)" in lower:
+            signature = "python_traceback"
+        elif "main process exited" in lower or "failed with" in lower:
+            signature = "exited"
+        elif "finished " in lower:
+            signature = "finished"
+        elif "starting " in lower:
+            signature = "starting"
+        else:
+            signature = "other"
+        signatures.append(signature)
+    if newest is not None:
+        try:
+            out["newest_age_sec"] = max(0, int(now - newest))
+        except (ValueError, TypeError, OverflowError):
+            pass
+    for signature in HOST_METRICS_JOURNAL_SIGNATURES:
+        if signature in signatures:
+            out["signature"] = signature
+            break
+    return out
+
+
+def _collect_host_metrics_runtime(now):
+    """Fixed-shape, read-only health of the #2578 sampler units (no raw text)."""
+    return {
+        "service_state": _host_metrics_runtime_state(HOST_METRICS_SERVICE_UNIT),
+        "service_enabled": _host_metrics_runtime_enabled(
+            HOST_METRICS_SERVICE_UNIT),
+        "timer_state": _host_metrics_runtime_state(HOST_METRICS_TIMER_UNIT),
+        "timer_enabled": _host_metrics_runtime_enabled(
+            HOST_METRICS_TIMER_UNIT),
+        **_host_metrics_runtime_properties(),
+        "journal": _host_metrics_runtime_journal(now),
+    }
+
+
 def _collect_host_metrics(home_root=None, now=None):
     """Project the fixed host metrics ring (#2578) without exposing its file.
 
@@ -1003,6 +1159,10 @@ def _collect_host_metrics(home_root=None, now=None):
         "boots": 0,
         "current_boot": None,
         "spans_reboot": False,
+        # Read-only health of the sampler units themselves: a stopped, failing
+        # or OOM-killed sampler must be visible through this same section
+        # instead of silently reading as an absent ring (#2578 deploy evidence).
+        "runtime": _collect_host_metrics_runtime(now),
         "samples": [],
     }
     path = home / HOST_METRICS_RING_RELPATH
