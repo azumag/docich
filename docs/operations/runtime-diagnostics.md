@@ -727,6 +727,27 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
+## NetHack manual runner の失敗理由の read-only 投影（#2666）
+
+`nethack_manual_log` は、`nethack-corner-operator --start` が起動した
+`docich-nethack-corner-manual` の private log の末尾を返す。
+operator は起動後1秒以内に child が終了すると generic error（exit code 2）に
+まとめ、production の exec 出力は gateway が返さないため、**なぜ manual run が
+start しなかったのか**が従来は読めなかった。
+
+- 収集元は `state_dir/logs/nethack-manual-<epoch>-<hex8>.log` の**最新1件のみ**。
+  名前は固定 regex で完全一致させ、それ以外（`agent.log` 等）は開かない。
+- `os.scandir` は最大256エントリ、`O_NOFOLLOW` + `fstat` で regular file のみ。
+  symlink・directory・8MiB超は候補から除外する。
+- 読むのは末尾 8KiB だけ。行は最大8行・1行300文字に丸め、
+  既存の `_redact_text`（token/password等の値レダクト）を通す。
+  生の path・行全文・file 名は返さない。
+- `tail_truncated` は末尾8KiBより前を読んでいないことを示す。
+  `present=false` は「manual run が一度も走っていない」ではなく
+  「該当名の log が無い」の意味であり、成否の証明には使わない。
+- 予算は他の optional detail と同じく soft/hard の縮退対象。hard ceiling では
+  `nethack_history` などと同じ最終段で落ちうる。
+
 ## NetHack 日次結果・終了履歴の読み取り投影
 
 `nethack_history` は既存owner-only `diagnostics` のJSON（VM operations Actionsログ）で取得する。
