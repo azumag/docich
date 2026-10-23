@@ -2,9 +2,9 @@
 
 Untrusted model output never becomes game state directly. Every candidate is
 normalized by :func:`trpg_corner.validate_scenario` and then checked as a
-finite scene graph. Generation is staged by the corner manager *before* it
-asks GameSwitch to disturb the currently displayed runtime; materialization
-only consumes that immutable staged scenario.
+finite scene graph. Generated scenarios are staged by the rotation request id,
+so retries and replacement runtimes reuse one immutable story instead of
+asking the model again.
 """
 from __future__ import annotations
 
@@ -286,10 +286,26 @@ def _load_stage(g, request_id: str, *, duration_minutes: int) -> tuple[dict, dic
     return story, metadata
 
 
-def generate_scenario(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int = 8,
-                      generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
-    """Generate one scenario without touching GameSwitch or a runtime."""
+def _current_request_id(g) -> str:
+    state_path = Path(g.state_dir) / PROGRAM_STATE_FILENAME
+    if state_path.stat().st_size > MAX_STAGE_BYTES:
+        raise core.TrpgCornerError("trpg program state is too large")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    request_id = state.get("rotation_request_id") if isinstance(state, dict) else None
+    if (not isinstance(request_id, str)
+            or state.get("status") not in {"starting", "active", "restoring"}):
+        raise core.TrpgCornerError("trpg program has no scenario owner")
+    return request_id
 
+
+def _resolve_request_id(g, owner) -> str:
+    if isinstance(owner, str):
+        return owner
+    return _current_request_id(g)
+
+
+def _generate_candidate(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int,
+                        generator, env: Mapping[str, str] | None) -> tuple[dict, dict]:
     seed = _seed(request_id)
     agents = generation_agents(settings, env)
     story = None
@@ -338,15 +354,21 @@ def generate_scenario(g, request_id: str, settings: Mapping[str, Any], *, durati
     return story, metadata
 
 
-def ensure_staged_scenario(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int = 8,
-                           generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
-    """Idempotently stage a scenario before the GameSwitch request starts."""
+def generate_scenario(g, owner, settings: Mapping[str, Any], *, duration_minutes: int = 8,
+                      generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
+    """Return the one staged scenario owned by this rotation request.
 
+    ``owner`` may be a request id (preferred for pre-switch staging) or a
+    RuntimeSpec. The latter resolves the durable manager request id, preserving
+    compatibility with materialization while keeping retries idempotent.
+    """
+
+    request_id = _resolve_request_id(g, owner)
     try:
         return _load_stage(g, request_id, duration_minutes=duration_minutes)
     except FileNotFoundError:
         pass
-    story, metadata = generate_scenario(
+    story, metadata = _generate_candidate(
         g, request_id, settings, duration_minutes=duration_minutes,
         generator=generator, env=env,
     )
@@ -363,16 +385,16 @@ def ensure_staged_scenario(g, request_id: str, settings: Mapping[str, Any], *, d
     return story, metadata
 
 
-def staged_scenario_for_current_request(g, *, duration_minutes: int = 8) -> tuple[dict, dict]:
-    """Load the manager-staged scenario for the currently starting request."""
+def ensure_staged_scenario(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int = 8,
+                           generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
+    """Explicit pre-switch entry point for the lifecycle owner."""
 
-    state_path = Path(g.state_dir) / PROGRAM_STATE_FILENAME
-    if state_path.stat().st_size > MAX_STAGE_BYTES:
-        raise core.TrpgCornerError("trpg program state is too large")
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    request_id = state.get("rotation_request_id") if isinstance(state, dict) else None
-    if (not isinstance(request_id, str)
-            or state.get("status") not in {"starting", "active", "restoring"}
-            or state.get("duration_minutes") != duration_minutes):
-        raise core.TrpgCornerError("trpg program has no staged scenario owner")
+    return generate_scenario(
+        g, request_id, settings, duration_minutes=duration_minutes,
+        generator=generator, env=env,
+    )
+
+
+def staged_scenario_for_current_request(g, *, duration_minutes: int = 8) -> tuple[dict, dict]:
+    request_id = _current_request_id(g)
     return _load_stage(g, request_id, duration_minutes=duration_minutes)
