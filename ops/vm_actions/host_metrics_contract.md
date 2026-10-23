@@ -71,12 +71,15 @@ temp-file + `os.replace`, so a torn write can never corrupt the ring.
   `SwapTotal`, `SwapFree`, `Dirty`, `Writeback`). Missing keys are `null`,
   never invented.
 - `psi`: `/proc/pressure/{cpu,io,memory}` `[some avg10, full avg10]`, rounded
-  to 2 decimals; `[null, null]` when the kernel has no PSI.
+  to 2 decimals; `[null, null]` when the kernel has no PSI. Both halves are
+  projected (`psi_*_some10` / `psi_*_full10`); `full` is the "everything is
+  stalled" signal for a guest-OS hang.
 - `disk_sectors`: `[sectors read, sectors written]` for the root block device
   from `/proc/diskstats` (cumulative, 512-byte sectors).
 - `disk_ms`: `[io ms, weighted io ms]` for the same device (cumulative).
 - `units`: 2 bits per entry of `UNIT_ORDER`, little-endian per unit:
-  `0b00` inactive/unknown, `0b01` active, `0b10` failed. Unit `i` occupies
+  `0b00` inactive, `0b01` active, `0b10` failed, `0b11` unknown
+  (activating/reloading/deactivating, a scope without the unit, probe failure). Unit `i` occupies
   bits `2*i` and `2*i+1`. `UNIT_ORDER` is fixed in code and published once by
   diagnostics; no unit name is ever read from configuration.
 
@@ -102,8 +105,8 @@ records, keeps the newest `SAMPLES_MAX = 8` for output **plus the last point of
 up to `HOST_METRICS_BOUNDARY_BOOTS = 2` older boots** (a post-reboot run must
 never hide the last point before the hang), and computes per-interval deltas only
 between consecutive records of the same boot (first record of a boot has `null`
-deltas). Output cap: `(SAMPLES_MAX + 2)` x ~250 B plus ~700 B metadata, kept
-under 6 KiB by a regression test.
+deltas). Output cap: `(SAMPLES_MAX + 2)` x ~600 B plus ~700 B metadata, kept
+under 8 KiB by a regression test.
 
 ```json
 "host_metrics": {
@@ -140,19 +143,24 @@ under 6 KiB by a regression test.
   therefore shows as `stale`, never as an invented healthy value.
 - `ring_bytes`: bytes actually read from the ring (0 when absent/refused,
   `<= max_bytes` otherwise), so the fixed on-disk size is observable.
-- `points` is the projected count (`<= SAMPLES_MAX`), `points_available` the
-  retained count (`<= MAX_POINTS`), `samples_omitted` the count dropped by the
-  soft budget.
+- `points` is the projected count (`<= SAMPLES_MAX + 2` because of the boot
+  boundary), `points_available` the retained count (`<= MAX_POINTS`),
+  `samples_omitted` the count dropped by the hard-ceiling trim.
 - `spans_reboot`: true when the newest `points_available` records contain more
   than one `boot` value — this is the acceptance check for "指標が再起動をまたいで
   読める".
-- `down_units`: fixed unit names from `UNIT_ORDER` for the newest sample
-  (state != active); names only, never paths.
+- `down_units`: fixed unit names from `UNIT_ORDER` for the newest sample whose
+  2-bit state is inactive (`00`) or failed (`10`). `unknown` (`11`:
+  activating/reloading/deactivating, a scope without the unit, or a failed
+  probe) is not "down"; names only, never paths.
 - `cpu_busy_pct`: `100 * (d_total - d_idle - d_iowait) / d_total`, clamped
   `0..100`, `null` for the first record of a boot.
 - Delta fields are `null` for the first record of a boot, otherwise cumulative
   deltas (may be 0).
-- The projection is dropped by the collector's hard-ceiling fallback only as the
-  last resort (see `_HARD_DROP_ORDER`); under the softer `MAX_JSON_BYTES`
-  budget the samples list is reduced to the newest 4 before any whole-section
-  drop.
+- Trimming happens only against `HARD_JSON_BYTES`, and only the oldest samples
+  are removed (the newest point and the previous-boot boundary always stay),
+  before any whole section is dropped. The softer `MAX_JSON_BYTES` target never
+  trims the ring: the production envelope already exceeds it, and trimming there
+  would trade the entire `corners` block for a few hundred bytes (#2533). Whole
+  sections are dropped only after the trim cannot make the envelope fit, and
+  `host_metrics` is last in `_HARD_DROP_ORDER`.

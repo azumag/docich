@@ -53,8 +53,9 @@
 - `psi`: `/proc/pressure/{cpu,io,memory}` の `[some avg10, full avg10]`。PSI 非対応では `null`。
 - `disk_sectors` / `disk_ms`: root device の `/proc/diskstats` 累積値
   `[read, write]` / `[io_ms, weighted_ms]`。解決できなければ `null`。
-- `units`: 固定 `UNIT_ORDER` の各 unit を 2 bit で表す（`00` inactive/unknown、
-  `01` active、`10` failed）。unit 名は diagnostics 側が `unit_order` として 1 回だけ出す。
+- `units`: 固定 `UNIT_ORDER` の各 unit を 2 bit で表す（`00` inactive、`01` active、
+  `10` failed、`11` unknown = activating/reloading/deactivating・未導入・probe 失敗）。
+  `11` を「停止」と混同しない。unit 名は diagnostics 側が `unit_order` として 1 回だけ出す。
 
 `UNIT_ORDER`（固定。設定から読まない）:
 
@@ -85,7 +86,9 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
      "mem_available_kb": 111, "mem_total_kb": 444,
      "swap_free_kb": 222, "swap_total_kb": 333,
      "dirty_kb": 1, "writeback_kb": 0,
-     "psi_cpu_some10": 1.0, "psi_io_some10": 3.0, "psi_mem_some10": 5.0,
+     "psi_cpu_some10": 1.0, "psi_cpu_full10": 0.0,
+     "psi_io_some10": 3.0, "psi_io_full10": 1.0,
+     "psi_mem_some10": 5.0, "psi_mem_full10": 2.0,
      "disk_read_sectors": 2048, "disk_write_sectors": 4096, "disk_io_ms": 30,
      "units": 63, "down_units": ["docich-paper-corner.timer"]}
   ]
@@ -98,8 +101,10 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   止まっている状態を「健全」と偽らない。
 - `ring_bytes`: 実際に読んだリングファイルのバイト数（`absent`/`unreadable`/`invalid`
   では 0）。保存サイズが上限内であることを本番でも 1 field で確認できる。
-- `points` は投影した点数（最大 8）、`points_available` は保持している点数（最大 240）、
-  `samples_omitted` は soft budget で落とした点数。
+- `points` は投影した点数（最大 8 + boot 境界で最大 10）、`points_available` は
+  保持している点数（最大 240）、`samples_omitted` は hard ceiling 対応で落とした点数。
+- `down_units` は**inactive または failed** の固定 unit 名だけ。`unknown`（起動直後の
+  activating・未導入・probe 失敗）は含めない。
 - `spans_reboot`: 保持点に複数の `boot` が含まれるとき true。受入条件
   「再起動後に直近の指標が取得できる」はこの field で確認する。
 - `uptime_s`: その点の起動からの秒。最新点の `t` / `uptime_s` から、無応答が始まった
@@ -109,11 +114,13 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   分母が 0 の interval は `null`、disk の逆転（カウンタリセット）は 0 に clamp する。
 - 出力は**最新 8 点 + 直前 boot の最終点（最大 2 boot 分）**。再起動後に sampler が
   窓を埋めると「最新 N 点」だけでは障害直前の点が消えるため、boot 境界の最終点を
-  必ず残す（合計 10 点まで、約 4 KiB）。collector の soft budget（`MAX_JSON_BYTES`）
-  超過時は最新 4 点 + boot 境界に縮め（`samples_omitted` に落とした数を出す）、
-  whole-section の削除より後（`_HARD_DROP_ORDER`
-  の最後）にだけ落とす。これは #2578 の事後調査証拠そのものなので、他の detail より
-  優先して残す。
+  必ず残す（合計 10 点まで、8 KiB 未満）。
+- 縮小は **hard ceiling（56 KiB）に触れた時だけ**、古い点から 1 点ずつ（最新点と
+  boot 境界は残す）。soft target（36 KiB）では縮めない。production の envelope は
+  もともと soft target を超えており（#2533 実測 50,280 B）、soft で縮めても目標に
+  届かないうえ、既存 section（`corners` は約 23 KB）を小さな超過で落としかねないため。
+  hard ceiling でも縮小で収まらない場合に限り `_HARD_DROP_ORDER` の最後に落とす
+  （#2578 の事後調査証拠を他の detail より優先して残す）。
 - 既存キーの形・意味は変えない。`host_metrics` は追加キーであり、payload に
   `host_metrics` が無いときの collector 出力は従来と同一（回帰テストで固定）。
 
@@ -123,8 +130,12 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
 2. `VM operations` の deploy が `ops/vm_actions/ensure_host_metrics_timer.sh` を
    deploy hook として実行し、`~/.config/systemd/user/` へ
    `docich-host-metrics.service` / `.timer` を配置して `enable --now` する。
-   hook は同じ deploy 内で 1 サンプルを実行し、リングファイルの存在と mode 0600 を
-   検証する（失敗したら deploy を失敗させる。黙って取れない状態を残さない）。
+   hook は同じ deploy 内で 1 サンプルを実行し、リングファイルの存在・mode 0600・
+   親 dir 0700 を検証する（失敗したら deploy を失敗させる。黙って取れない状態を残さない）。
+   unit の配置先が runtime user の home 配下であることも検証する。
+   workflow 側は hook を `bash -n` してから渡す。
+   hook が検証するのは「1 サンプルが書けること」であり、毎分の cadence ではない。
+   cadence は deploy 後の `diagnostics.host_metrics.newest_age_sec` の増加で確認する。
 3. 手動の `systemctl` 導入・SSH でのコピーは正規経路にしない。
 
 `systemd` の user unit を使うのは、既存の corner rotation / retention timer と同じ
@@ -137,7 +148,8 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
 `docs/operations/vm-guest-unresponsive-recovery.md` の再起動後チェックリストで、
 `diagnostics` の `host_metrics` を確認する。
 
-- 平常時: `status=ok`、`points` が 8、`newest_age_sec` が約 0〜60。
+- 平常時: `status=ok`、`points` が 8（boot 境界があれば 9〜10）、`samples_omitted=0`、
+  `newest_age_sec` が約 0〜60。`stale` は sampler 停止の信号で、`ok` と混同しない。
 - 再起動後: `spans_reboot=true`、`boots>=2`、`current_boot` が再起動後の boot。
   `newest_age_sec` が小さい = 再起動後も採取が再開している。
 - 障害時: 最新点の `t` / `age_sec` と `uptime_s` から「無応答が始まった時刻」を

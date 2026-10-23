@@ -677,6 +677,8 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   「再起動後に直近の指標が取得できる」をこの 1 field で確認できる。
   投影は最新 8 点に加えて**直前 boot の最終点を最大 2 点まで必ず含める**。
   再起動後に sampler が窓を埋めても、障害直前の点が隠れないようにするため。
+  `down_units` は inactive/failed の固定 unit 名だけで、`unknown`
+  （activating・未導入・probe 失敗）は含めない。
   契約・サイズ・導入手順は [host-metrics-ring.md](host-metrics-ring.md)。
 
 ## レトロ枠のスコアログ投影（#2392）
@@ -1163,9 +1165,12 @@ collector では障害直前のホスト状態を復元できない（#2278）�
   boot 境界点の数値 field。
   `cpu_busy_pct` と disk 差分は同一 boot の連続 2 点から計算し、boot をまたぐ先頭点は
   `null` にする（起動で累積値がリセットされるため）。
-- 出力は最新 8 点 + 直前 boot の最終点（最大 2 boot 分）で約 4 KiB。再起動後に窓が
-  埋まっても障害直前の点を隠さない。soft budget 超過時は最新 4 点 + boot 境界
-  （`samples_omitted` 付き）へ縮め、hard ceiling では `_HARD_DROP_ORDER` の**最後**に落とす。#2578 の事後調査証拠そのもの
+- 出力は最新 8 点 + 直前 boot の最終点（最大 2 boot 分）で 8 KiB 未満。再起動後に窓が
+  埋まっても障害直前の点を隠さない。縮小は hard ceiling に触れた時だけ古い点から
+  1 点ずつ（最新点と boot 境界を残す）。soft target（36 KiB）では縮めない
+  （production envelope はもともと soft target を超えており、soft で縮めても届かない
+  うえ既存 section を小さな超過で落とすため）。hard ceiling でも収まらない時だけ
+  `_HARD_DROP_ORDER` の**最後**に落とす。#2578 の事後調査証拠そのもの
   なので、他の optional detail より優先して残す。既存キーの形・意味は変えない。
 - 導入は deploy hook `ops/vm_actions/ensure_host_metrics_timer.sh` のみ
   （手動 `systemctl`・SSH コピーを正規経路にしない）。

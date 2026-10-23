@@ -159,6 +159,9 @@ class DeployHookContractTests(unittest.TestCase):
         self.assertIn('/home/ubuntu', self.script)
         self.assertNotIn('ring="$HOME', self.script)
         self.assertNotIn("$HOME/.local/state", self.script)
+        # The unit tree must be under the same passwd home; a scrubbed HOME
+        # fails closed instead of installing the timer somewhere else.
+        self.assertIn('[[ "$unit_dir" == "$home"/* ]] || exit 2', self.script)
 
     def test_hook_uses_the_documented_exit_codes(self):
         self.assertIn("set -euo pipefail", self.script)
@@ -213,6 +216,10 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("control/ops/vm_actions/ensure_host_metrics_timer.sh",
                       host)
         self.assertIn('"exec docich production $SHA"', host)
+        # The hook is parsed before it is handed to the gateway.
+        self.assertIn(
+            "bash -n control/ops/vm_actions/ensure_host_metrics_timer.sh",
+            host)
         self.assertEqual(
             [line.strip() for line in host.splitlines()
              if line.strip().startswith("ssh_args=")],

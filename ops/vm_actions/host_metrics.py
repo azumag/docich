@@ -35,6 +35,7 @@ The module is importable without side effects: nothing runs at import time, and
 ``main`` only acts when the script is executed.
 """
 
+import fcntl
 import json
 import math
 import os
@@ -66,6 +67,11 @@ UNIT_PROBE_TIMEOUT_SEC = 5.0
 UNIT_STATE_INACTIVE = 0b00
 UNIT_STATE_ACTIVE = 0b01
 UNIT_STATE_FAILED = 0b10
+# ``activating``/``reloading``/``deactivating``/``unknown`` and a missing unit
+# are all "not a running unit", but they are not the same as a unit that is
+# installed and stopped. Keeping them distinct stops every boot (and every
+# uninstalled scope) from looking like a failed unit to the reader.
+UNIT_STATE_UNKNOWN = 0b11
 
 # Fixed order; unit ``i`` occupies bits ``2*i`` and ``2*i+1`` of the ``units``
 # mask. Names and scopes are compiled in, never read from configuration.
@@ -99,6 +105,7 @@ _UNIT_STATE_LABELS = {
     UNIT_STATE_INACTIVE: "inactive",
     UNIT_STATE_ACTIVE: "active",
     UNIT_STATE_FAILED: "failed",
+    UNIT_STATE_UNKNOWN: "unknown",
 }
 _UNIT_STATE_CODES = {label: code for code, label in _UNIT_STATE_LABELS.items()}
 
@@ -408,7 +415,7 @@ def _probe_units(probe):
         except Exception:  # noqa: BLE001 - a failed probe must not lose the sample
             answer = ""
         label = (answer or "").strip().lower()
-        states.append(_UNIT_STATE_CODES.get(label, UNIT_STATE_INACTIVE))
+        states.append(_UNIT_STATE_CODES.get(label, UNIT_STATE_UNKNOWN))
     return encode_units(states)
 
 
@@ -489,10 +496,15 @@ def _open_state_dir(state_dir):
 
 
 def _open_ring(dir_fd):
-    """Open the ring for appending; a symlink or non-regular file is refused."""
+    """Open the ring for appending; a symlink or non-regular file is refused.
+
+    ``O_RDWR`` (not ``O_WRONLY``) so the torn-tail repair below can inspect the
+    last byte through the same descriptor; ``O_APPEND`` still makes the write
+    land at EOF.
+    """
     fd = os.open(
         RING_NAME,
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+        os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
         RING_MODE,
         dir_fd=dir_fd,
     )
@@ -623,16 +635,43 @@ def append_sample(state_dir, record,
         return 0
     dir_fd = _open_state_dir(state_dir)
     try:
-        fd = _open_ring(dir_fd)
+        # Serialize with any other sampler/compaction. A compaction replaces the
+        # inode, so an unserialized append could land in the unlinked old file
+        # and lose the newest point.
         try:
-            _write_all(fd, line)
-            # A frozen guest may never flush the page cache, so the newest point
-            # must reach the disk before this process exits.
-            os.fsync(fd)
+            fcntl.flock(dir_fd, fcntl.LOCK_EX)
+        except OSError:
+            pass
+        try:
+            existed = True
+            try:
+                os.stat(RING_NAME, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                existed = False
+            fd = _open_ring(dir_fd)
+            try:
+                # A power cut can leave the last line without its newline. The
+                # next append must start on a fresh line, or the new (first
+                # post-reboot) point would be glued to a torn record and lost.
+                size = os.fstat(fd).st_size
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    _write_all(fd, b"\n")
+                _write_all(fd, line)
+                # A frozen guest may never flush the page cache, so the newest
+                # point must reach the disk before this process exits.
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            if not existed:
+                # The very first sample also has to persist its directory entry.
+                _sync_directory(dir_fd)
+            _enforce_ring(dir_fd, max_points, max_bytes, compact_keep,
+                          max_line_bytes)
         finally:
-            os.close(fd)
-        _enforce_ring(dir_fd, max_points, max_bytes, compact_keep,
-                      max_line_bytes)
+            try:
+                fcntl.flock(dir_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
         os.close(dir_fd)
     return len(line)

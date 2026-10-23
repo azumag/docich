@@ -203,7 +203,11 @@ class SampleContractTests(unittest.TestCase):
         self.assertIsNone(record["disk_sectors"])
         self.assertIsNone(record["disk_ms"])
         self.assertEqual(set(record), EXPECTED_KEYS)
-        self.assertEqual(record["units"], 0)
+        # Unprobeable units are "unknown", not "inactive": with no systemd the
+        # reader must not report six stopped units as a host problem.
+        self.assertEqual(record["units"],
+                         sum(hm.UNIT_STATE_UNKNOWN << (2 * index)
+                             for index in range(len(hm.UNIT_ORDER))))
 
     def test_kernel_without_psi_yields_null_pairs(self):
         proc, _ = build_fixture(self.root / "nopsi", skip={"pressure"})
@@ -260,8 +264,20 @@ class SampleContractTests(unittest.TestCase):
             ["failed", "", "unknown", "activating", "active", "deactivating"])
         record = self.take_sample(probe=probe)
         self.assertEqual(hm.decode_units(record["units"]), [
-            "failed", "inactive", "inactive", "inactive", "active",
-            "inactive",
+            "failed", "unknown", "unknown", "unknown", "active",
+            "unknown",
+        ])
+
+    def test_unknown_unit_state_is_not_reported_as_inactive(self):
+        # ``activating``/``reloading``/``unknown`` and a scope without the unit
+        # are distinct from an installed-but-stopped unit; the reader only
+        # treats inactive/failed as "down".
+        probe = RecordingProbe(
+            ["activating", "reloading", "unknown", "inactive", "active",
+             "failed"])
+        record = self.take_sample(probe=probe)
+        self.assertEqual(hm.decode_units(record["units"]), [
+            "unknown", "unknown", "unknown", "inactive", "active", "failed",
         ])
 
     def test_units_codec_round_trips_and_rejects_misalignment(self):
@@ -435,7 +451,8 @@ class RingBoundsTests(unittest.TestCase):
         # the rewritten ring have to be fsynced explicitly.
         with mock.patch.object(hm.os, "fsync", wraps=os.fsync) as synced:
             hm.append_sample(self.state, make_record(1))
-        self.assertEqual(synced.call_count, 1)
+        # the first sample: ring content + the directory entry that creates it
+        self.assertEqual(synced.call_count, 2)
         compacted = self.root / "compacted"
         compacted.mkdir()
         prefilled = "".join(
@@ -448,6 +465,18 @@ class RingBoundsTests(unittest.TestCase):
             hm.append_sample(compacted, make_record(300))
         # append + temp file before os.replace + directory after it
         self.assertEqual(synced.call_count, 3)
+
+    def test_torn_tail_line_is_repaired_before_the_next_append(self):
+        # A power cut mid-append can leave the last line without a newline. The
+        # next sample (the first one after the reboot) must still land on its
+        # own line, or it would be glued to the torn record and lost.
+        self.state.mkdir()
+        self.record_path().write_bytes(b'{"v":1,"t":17')
+        self.assertGreater(hm.append_sample(self.state, make_record(120)), 0)
+        lines = self.record_path().read_bytes().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[1])["t"], 120)
+        self.assertEqual(hm._parse_record(lines[0]), None)
 
     def test_each_sample_takes_exactly_one_append_open(self):
         opens = []

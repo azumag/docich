@@ -15,6 +15,9 @@ timer="docich-host-metrics.timer"
 command -v getent >/dev/null 2>&1 || exit 2
 home="$(getent passwd "$(id -u)" | cut -d: -f6)" || exit 2
 [[ "$home" == "${DOCICH_PROD_HOME:-/home/ubuntu}" ]] || exit 2
+# The units must land in the same user's unit tree the ring belongs to; a
+# scrubbed HOME must fail closed instead of installing the timer elsewhere.
+[[ "$unit_dir" == "$home"/* ]] || exit 2
 state_dir="$home/.local/state/docich/host-metrics"
 ring="$state_dir/ring.jsonl"
 

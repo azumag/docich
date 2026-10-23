@@ -761,10 +761,6 @@ HOST_METRICS_RING_RELPATH = (
 # A ring that already broke its own MAX_BYTES bound is refused instead of
 # projecting a partial read as if it were the retained history.
 HOST_METRICS_MAX_READ_BYTES = MAX_BYTES + 4096
-# Soft-budget floor (see ``_host_metrics_budget``): the newest four intervals.
-HOST_METRICS_BUDGET_SAMPLES = 4
-
-
 def _host_metrics_count(value, maximum=2**63 - 1):
     if type(value) is not int or not 0 <= value <= maximum:
         return None
@@ -856,7 +852,10 @@ def _host_metrics_line(line, now):
                 return None
             mem_values[key] = parsed
 
-    psi_values = [None, None, None]
+    # Both PSI halves are kept: ``some`` shows contention, ``full`` shows
+    # everyone stalled -- the strongest pre-hang signal -- so neither may be
+    # sampled and then discarded. Null stays null per half.
+    psi_values = [(None, None), (None, None), (None, None)]
     psi = record.get("psi")
     if psi is not None:
         if not isinstance(psi, dict):
@@ -867,13 +866,16 @@ def _host_metrics_line(line, now):
                 continue
             if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                 return None
-            value = pair[0]
-            if value is None:
-                continue
-            parsed = _host_metrics_float(value)
-            if parsed is None:
-                return None
-            psi_values[index] = parsed
+            parsed = []
+            for item in pair:
+                if item is None:
+                    parsed.append(None)
+                    continue
+                value = _host_metrics_float(item)
+                if value is None:
+                    return None
+                parsed.append(value)
+            psi_values[index] = tuple(parsed)
 
     disk_sectors = record.get("disk_sectors")
     if disk_sectors is not None:
@@ -904,13 +906,24 @@ def _host_metrics_line(line, now):
     }
 
 
+#: 2-bit unit states. ``0b11`` is "unknown" (activating/reloading/deactivating,
+#: a scope without the unit, or a failed probe) and is deliberately NOT "down":
+#: at boot every unit is transiently activating, and a unit that does not exist
+#: in this scope must not look like a failed one.
+UNIT_STATE_INACTIVE = 0b00
+UNIT_STATE_ACTIVE = 0b01
+UNIT_STATE_FAILED = 0b10
+UNIT_STATE_UNKNOWN = 0b11
+
+
 def _host_metrics_down_units(units):
-    """Fixed names whose 2-bit state is not ``active`` (0b01); null is unknown."""
+    """Fixed names that are installed but stopped or failed; null is unknown."""
     if units is None:
         return []
     return [
         name for index, name in enumerate(UNIT_ORDER)
-        if ((units >> (2 * index)) & 0b11) != 1
+        if ((units >> (2 * index)) & 0b11) in (UNIT_STATE_INACTIVE,
+                                               UNIT_STATE_FAILED)
     ]
 
 
@@ -1072,9 +1085,12 @@ def _collect_host_metrics(home_root=None, now=None):
             "swap_total_kb": record["mem"]["swap_total"],
             "dirty_kb": record["mem"]["dirty"],
             "writeback_kb": record["mem"]["writeback"],
-            "psi_cpu_some10": _host_metrics_round(record["psi"][0]),
-            "psi_io_some10": _host_metrics_round(record["psi"][1]),
-            "psi_mem_some10": _host_metrics_round(record["psi"][2]),
+            "psi_cpu_some10": _host_metrics_round(record["psi"][0][0]),
+            "psi_cpu_full10": _host_metrics_round(record["psi"][0][1]),
+            "psi_io_some10": _host_metrics_round(record["psi"][1][0]),
+            "psi_io_full10": _host_metrics_round(record["psi"][1][1]),
+            "psi_mem_some10": _host_metrics_round(record["psi"][2][0]),
+            "psi_mem_full10": _host_metrics_round(record["psi"][2][1]),
             "disk_read_sectors": delta["disk_read_sectors"],
             "disk_write_sectors": delta["disk_write_sectors"],
             "disk_io_ms": delta["disk_io_ms"],
@@ -11849,32 +11865,46 @@ def _cpu_profile_detail_drop(payload):
     return payload
 
 
-def _host_metrics_budget(payload, text):
-    """Shed half of the #2578 ring sample list before any section is dropped.
+def _host_metrics_hard_trim(payload, text):
+    """Shed the oldest ring samples before any whole section is dropped.
 
     The ring is the only read-only evidence of the hour before a guest-OS hang
-    (#2278) and cannot be recreated after the reboot, so the section itself
-    survives every whole-section drop (``_HARD_DROP_ORDER``). Only its older
-    samples yield here, and only once the envelope exceeds the softer target:
-    the newest ``HOST_METRICS_BUDGET_SAMPLES`` intervals, the retention
-    constants and the derived metadata all stay, with the omitted count visible.
+    (#2278) and cannot be recreated after the reboot, but it must not evict an
+    existing section either: ``corners`` alone is ~23 KB, so a few hundred bytes
+    of overflow would otherwise trade the whole game evidence block for the last
+    minutes of host metrics. Trimming only under the hard ceiling -- never under
+    the softer ``MAX_JSON_BYTES`` target, which the production envelope already
+    exceeds on its own (#2533 measured 50,280 B) -- keeps both: drop the oldest
+    projected points one at a time, always keeping the newest point and the
+    previous-boot boundary, until the envelope fits or only those remain.
+    ``samples_omitted`` stays accurate.
     """
     section = payload.get("host_metrics")
-    if (len(text.encode("utf-8")) <= MAX_JSON_BYTES
-            or not isinstance(section, dict)
-            or not isinstance(section.get("samples"), list)
-            or len(section["samples"]) <= HOST_METRICS_BUDGET_SAMPLES):
+    if (not isinstance(section, dict)
+            or not isinstance(section.get("samples"), list)):
         return text
-    dropped = len(section["samples"]) - HOST_METRICS_BUDGET_SAMPLES
-    omitted = section.get("samples_omitted")
-    kept = _host_metrics_trim_samples(
-        section["samples"], HOST_METRICS_BUDGET_SAMPLES)
-    section["samples_omitted"] = (
-        (omitted if type(omitted) is int and omitted > 0 else 0)
-        + len(section["samples"]) - len(kept))
-    section["samples"] = kept
-    section["points"] = len(section["samples"])
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    samples = section["samples"]
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES and len(samples) > 1:
+        boundary = None
+        for index in range(len(samples) - 2, -1, -1):
+            if samples[index]["boot"] != samples[index + 1]["boot"]:
+                boundary = index
+                break
+        candidates = [
+            index for index in range(len(samples))
+            if index != len(samples) - 1 and index != boundary
+        ]
+        if not candidates:
+            if boundary is None or len(samples) == 1:
+                break
+            candidates = [boundary]
+        samples.pop(candidates[0])
+        omitted = section.get("samples_omitted")
+        section["samples_omitted"] = (
+            (omitted if type(omitted) is int and omitted > 0 else 0) + 1)
+        section["points"] = len(samples)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
 
 
 def _diagnostics_budget(payload):
@@ -11997,11 +12027,10 @@ def _diagnostics_budget(payload):
         payload = _nethack_xlog_drop(payload)
     text = _nethack_history_budget(payload)
     # #2578: the ring samples are the only evidence of the hour before a
-    # guest-OS hang and cannot be recreated after the reboot. Shed half the
-    # sample list (keeping the newest four intervals) once the envelope exceeds
-    # the softer target, so the whole section survives the hard-ceiling drop
-    # below as long as anything can survive there.
-    text = _host_metrics_budget(payload, text)
+    # guest-OS hang and cannot be recreated after the reboot. Trim only against
+    # the hard ceiling (and only the oldest samples) before any whole section is
+    # dropped, so this section can never evict `corners` for a small overflow.
+    text = _host_metrics_hard_trim(payload, text)
     # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
     # preserves the evidence its own incident review depends on, but none of them
     # is unconditional: a payload that was still over the ceiling after them was
@@ -12497,7 +12526,7 @@ def main(argv):
         # The ring path is fixed relative to the runtime user's home, so the
         # collector passes it explicitly instead of deriving a state_dir
         # (#2578: reboot-persistent evidence, not program state).
-        "host_metrics": _collect_host_metrics(soren.parent, now),
+        "host_metrics": _collect_host_metrics(PROD_ROOT.parent, now),
         "workers": workers,
         "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),

@@ -45,7 +45,8 @@ SAMPLE_KEYS = {
     "age_sec", "boot", "t", "uptime_s", "load1", "load5", "load15",
     "cpu_busy_pct", "mem_available_kb", "mem_total_kb", "swap_free_kb",
     "swap_total_kb", "dirty_kb", "writeback_kb", "psi_cpu_some10",
-    "psi_io_some10", "psi_mem_some10", "disk_read_sectors",
+    "psi_cpu_full10", "psi_io_some10", "psi_io_full10", "psi_mem_some10",
+    "psi_mem_full10", "disk_read_sectors",
     "disk_write_sectors", "disk_io_ms", "units", "down_units",
 }
 MEM_DEFAULT = {
@@ -191,14 +192,19 @@ class FreshRingProjectionTests(HostMetricsFixture):
         self.assertEqual(newest["dirty_kb"], 1)
         self.assertEqual(newest["writeback_kb"], 0)
         self.assertEqual(newest["psi_cpu_some10"], 1.0)
+        self.assertEqual(newest["psi_cpu_full10"], 2.0)
         self.assertEqual(newest["psi_io_some10"], 3.0)
+        self.assertEqual(newest["psi_io_full10"], 4.0)
         self.assertEqual(newest["psi_mem_some10"], 5.0)
+        self.assertEqual(newest["psi_mem_full10"], 6.0)
         self.assertEqual(newest["units"], ALL_ACTIVE)
         self.assertEqual(newest["down_units"], [])
         self.assertEqual(newest["cpu_busy_pct"], 30.0)
 
         encoded = json.dumps(output, sort_keys=True, ensure_ascii=False)
-        self.assertLess(len(encoded.encode("utf-8")), 4096)
+        # 8 samples with the PSI some/full pairs stay well under 6 KiB; the
+        # 10-sample (three-boot) worst case is bounded separately at 8 KiB.
+        self.assertLess(len(encoded.encode("utf-8")), 6144)
         self.assertNotIn(str(self.home), encoded)
         self.assertNotIn("ring.jsonl", encoded)
         self.assertNotIn("DO-NOT-PUBLISH", encoded)
@@ -486,6 +492,18 @@ class UnitMaskTests(HostMetricsFixture):
         self.assertEqual(first["down_units"], list(collector.UNIT_ORDER[1:]))
         self.assertEqual(last["down_units"], list(collector.UNIT_ORDER[:5]))
 
+    def test_unknown_mask_is_not_reported_as_down(self):
+        # Every unit unknown/activating (boot, or a scope without the unit) is
+        # not evidence that the host is degraded.
+        unknown = sum(collector.UNIT_STATE_UNKNOWN << (2 * index)
+                      for index in range(len(collector.UNIT_ORDER)))
+        self.assertEqual(collector._host_metrics_down_units(unknown), [])
+        mixed = ((ALL_ACTIVE & ~0b11 & ~(0b11 << 2))
+                 | collector.UNIT_STATE_UNKNOWN
+                 | collector.UNIT_STATE_FAILED << 2)
+        self.assertEqual(collector._host_metrics_down_units(mixed),
+                         [collector.UNIT_ORDER[1]])
+
     def test_null_units_is_unknown_not_down(self):
         sample = self.project(
             [sample_record(NOW - 30, units=None)])["samples"][0]
@@ -495,41 +513,94 @@ class UnitMaskTests(HostMetricsFixture):
 
 
 class HostMetricsBudgetTests(HostMetricsFixture):
+    """#2578 evidence must never evict an existing section for a small overflow."""
 
-    def projection(self):
-        return self.project(self.fresh_records())
+    CORNERS = {
+        "retro_corner": {"scene_narration": {"status": "ok"}},
+        "rotation_evidence": {"corners": [
+            {"corner": f"corner-{index}", "detail": "x" * 64}
+            for index in range(120)
+        ]},
+    }
 
-    def test_soft_budget_reduces_samples_before_dropping_the_section(self):
-        payload = base_payload(host_metrics=self.projection())
-        pad_section(payload, collector.MAX_JSON_BYTES + 2048)
+    def projection(self, records=None):
+        return self.project(records if records is not None else self.fresh_records())
+
+    def test_soft_target_never_trims_the_ring(self):
+        # The production envelope already sits above MAX_JSON_BYTES (#2533), so a
+        # soft-target trim would shed samples on every run without ever reaching
+        # the target. Only the hard ceiling may trim.
+        payload = base_payload(host_metrics=self.projection(), corners=self.CORNERS)
+        pad_section(payload, collector.MAX_JSON_BYTES + 4096)
         before = len(json.dumps(
             payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
         self.assertGreater(before, collector.MAX_JSON_BYTES)
+        self.assertLess(before, collector.HARD_JSON_BYTES)
+
+        collector._diagnostics_budget(payload)
+
+        section = payload["host_metrics"]
+        self.assertEqual(section["status"], "ok")
+        self.assertEqual(len(section["samples"]), collector.SAMPLES_MAX)
+        self.assertEqual(section["points"], collector.SAMPLES_MAX)
+        self.assertEqual(section["samples_omitted"], 0)
+        self.assertEqual(section["points_available"], collector.SAMPLES_MAX)
+        self.assertEqual(section["ring_bytes"], self.ring.stat().st_size)
+        self.assertEqual(section["samples"][-1]["t"], NOW - 18)
+        self.assertNotEqual(payload["corners"].get("status"), "output_omitted")
+
+    def test_hard_overflow_trims_the_ring_and_keeps_the_corners(self):
+        payload = base_payload(host_metrics=self.projection(), corners=self.CORNERS)
+        pad_section(payload, collector.HARD_JSON_BYTES + 200)
+        total = payload["host_metrics"]["points"]
+        self.assertGreater(
+            len(json.dumps(payload, sort_keys=True,
+                           ensure_ascii=False).encode("utf-8")),
+            collector.HARD_JSON_BYTES)
 
         text = collector._diagnostics_budget(payload)
 
+        self.assertLessEqual(len(text.encode("utf-8")), collector.HARD_JSON_BYTES)
+        # The whole point: no existing section is evicted for a small overflow.
+        self.assertNotEqual(payload["corners"].get("status"), "output_omitted")
         section = payload["host_metrics"]
-        self.assertNotEqual(section.get("status"), "output_omitted")
         self.assertEqual(section["status"], "ok")
-        self.assertEqual(len(section["samples"]),
-                         collector.HOST_METRICS_BUDGET_SAMPLES)
-        self.assertEqual(section["points"], collector.HOST_METRICS_BUDGET_SAMPLES)
-        self.assertEqual(section["samples_omitted"],
-                         collector.SAMPLES_MAX - collector.HOST_METRICS_BUDGET_SAMPLES)
-        self.assertEqual(section["points_available"], collector.SAMPLES_MAX)
-        self.assertEqual(section["retention"]["max_bytes"], 262144)
-        self.assertEqual(section["ring_bytes"], self.ring.stat().st_size)
-        # The newest intervals survive, not the oldest.
+        self.assertLess(section["points"], total)
+        self.assertGreaterEqual(section["points"], 1)
+        self.assertEqual(section["points"], len(section["samples"]))
+        self.assertEqual(section["samples_omitted"], total - section["points"])
+        # The newest interval always survives, trimmed oldest-first.
         self.assertEqual(section["samples"][-1]["t"], NOW - 18)
-        self.assertLessEqual(len(text.encode("utf-8")), before)
+
+    def test_a_fitting_payload_keeps_every_section_when_the_key_is_present(self):
+        # The M1 regression: without the new key this envelope fits the hard
+        # ceiling; with it, it does not. The key must yield, not `corners`.
+        without = base_payload(corners=self.CORNERS)
+        pad_section(without, collector.HARD_JSON_BYTES - 2048)
+        base = len(json.dumps(without, sort_keys=True,
+                              ensure_ascii=False).encode("utf-8"))
+        self.assertLess(base, collector.HARD_JSON_BYTES)
+        with_key = copy.deepcopy(without)
+        with_key["host_metrics"] = self.projection()
+        total = with_key["host_metrics"]["points"]
+        self.assertGreater(
+            len(json.dumps(with_key, sort_keys=True,
+                           ensure_ascii=False).encode("utf-8")),
+            collector.HARD_JSON_BYTES)
+
+        text = collector._diagnostics_budget(with_key)
+
+        self.assertLessEqual(len(text.encode("utf-8")), collector.HARD_JSON_BYTES)
+        self.assertNotEqual(with_key["corners"].get("status"), "output_omitted")
+        self.assertEqual(with_key["host_metrics"]["status"], "ok")
+        self.assertLess(with_key["host_metrics"]["points"], total)
+        self.assertEqual(with_key["host_metrics"]["samples_omitted"],
+                         total - with_key["host_metrics"]["points"])
 
     def test_hard_ceiling_drops_the_section_only_after_the_earlier_sections(self):
         self.assertEqual(collector._HARD_DROP_ORDER[-1], "host_metrics")
         payload = base_payload(host_metrics=self.projection())
-        pad_section(payload, collector.HARD_JSON_BYTES + 1024)
-        before = len(json.dumps(
-            payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
-        self.assertGreater(before, collector.HARD_JSON_BYTES)
+        pad_section(payload, collector.HARD_JSON_BYTES + 50 * 1024)
 
         text = collector._diagnostics_budget(payload)
 
@@ -539,40 +610,10 @@ class HostMetricsBudgetTests(HostMetricsFixture):
             self.assertEqual(payload[key],
                              {"status": "output_omitted",
                               "reason": "hard_ceiling"}, key)
-        # The filler forced the drops, and it is not in the reviewed order.
-        self.assertIn("entries", payload["webui"])
-
-    def test_hard_ceiling_keeps_the_ring_when_dropping_the_corners_is_enough(self):
-        payload = base_payload(
-            host_metrics=self.projection(),
-            corners={
-                "retro_corner": {"scene_narration": {"status": "ok"}},
-                "rotation_evidence": {"corners": [
-                    {"corner": f"corner-{index}", "detail": "x" * 64}
-                    for index in range(700)
-                ]},
-            },
-        )
-        before = len(json.dumps(
-            payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
-        self.assertGreater(before, collector.HARD_JSON_BYTES)
-
-        text = collector._diagnostics_budget(payload)
-
-        self.assertLessEqual(len(text.encode("utf-8")),
-                             collector.HARD_JSON_BYTES)
-        self.assertEqual(payload["corners"]["status"], "output_omitted")
-        section = payload["host_metrics"]
-        self.assertEqual(section["status"], "ok")
-        self.assertEqual(len(section["samples"]),
-                         collector.HOST_METRICS_BUDGET_SAMPLES)
-        self.assertEqual(section["samples_omitted"],
-                         collector.SAMPLES_MAX - collector.HOST_METRICS_BUDGET_SAMPLES)
-        # The rest of the reviewed cascade still ran before any of that.
-        self.assertIn("recent_events", payload["ai"])
-        self.assertEqual(payload["workers"], {"details": {}})
-        self.assertEqual(payload["soren91_drop_profile"]["profileStatus"],
-                         "unavailable")
+        # The filler forced every reviewed section out; the pathological
+        # fallback then keeps only ``meta`` (the envelope still identifies the
+        # deployed SHA) instead of returning a document the gateway rejects.
+        self.assertIn("meta", payload)
 
     def test_payloads_without_host_metrics_are_byte_identical_to_before(self):
         cases = [
@@ -594,12 +635,19 @@ class HostMetricsBudgetTests(HostMetricsFixture):
             # Disabling only the new helper must reproduce the pre-#2578
             # envelope byte for byte, proving the branch is inert without the
             # key and that no existing reduction order changed.
-            with mock.patch.object(collector, "_host_metrics_budget",
+            with mock.patch.object(collector, "_host_metrics_hard_trim",
                                    lambda payload, text: text):
                 disabled = collector._diagnostics_budget(copy.deepcopy(payload))
             enabled = collector._diagnostics_budget(copy.deepcopy(payload))
             self.assertEqual(enabled, disabled)
-            self.assertNotIn("host_metrics", json.loads(enabled))
+
+    def test_no_ring_content_is_a_no_op(self):
+        payload = pad_section(base_payload(), collector.HARD_JSON_BYTES + 1024)
+        with mock.patch.object(collector, "_host_metrics_hard_trim",
+                               wraps=collector._host_metrics_hard_trim) as trim:
+            collector._diagnostics_budget(payload)
+        self.assertEqual(trim.call_count, 1)
+        self.assertNotIn("host_metrics", payload)
 
 
 class RebootBoundaryTests(HostMetricsFixture):
@@ -639,37 +687,45 @@ class RebootBoundaryTests(HostMetricsFixture):
         self.assertEqual(output["samples"][1]["boot"], BOOT_B)
         self.assertEqual(output["samples"][-1]["t"], NOW)
 
-    def test_soft_budget_keeps_the_pre_hang_boundary(self):
+    def test_hard_ceiling_keeps_the_pre_hang_boundary(self):
         payload = base_payload(host_metrics=self.project(self.two_boot_records()))
         total = payload["host_metrics"]["points"]
-        pad_section(payload, collector.MAX_JSON_BYTES + 2048)
+        pad_section(payload, collector.HARD_JSON_BYTES + 200)
 
-        collector._diagnostics_budget(payload)
+        text = collector._diagnostics_budget(payload)
 
+        self.assertLessEqual(len(text.encode("utf-8")), collector.HARD_JSON_BYTES)
         section = payload["host_metrics"]
         self.assertNotEqual(section.get("status"), "output_omitted")
         self.assertEqual(section["samples"][0]["boot"], BOOT_A)
-        self.assertEqual(
-            len(section["samples"]),
-            collector.HOST_METRICS_BUDGET_SAMPLES + 1)
+        self.assertGreaterEqual(len(section["samples"]), 2)
+        self.assertEqual(section["samples"][1]["boot"], BOOT_B)
+        self.assertEqual(section["samples"][-1]["t"], NOW)
         self.assertEqual(section["points"], len(section["samples"]))
         self.assertEqual(section["samples_omitted"], total - len(section["samples"]))
-        self.assertEqual(section["samples"][-1]["t"], NOW)
 
-    def test_all_units_down_with_a_boundary_stays_bounded(self):
-        failed = sum(0b10 << (2 * index) for index in range(len(collector.UNIT_ORDER)))
+    def test_three_boots_with_all_units_down_stay_bounded(self):
+        failed = sum(collector.UNIT_STATE_FAILED << (2 * index)
+                     for index in range(len(collector.UNIT_ORDER)))
         records = [
-            sample_record(NOW - 60 * (12 - index), boot=BOOT_A, units=failed)
+            sample_record(NOW - 60 * (20 - index), boot=BOOT_A, units=failed)
             for index in range(3)
         ] + [
-            sample_record(NOW - 60 * (9 - index), boot=BOOT_B, units=failed)
-            for index in range(9)
+            sample_record(NOW - 60 * (17 - index), boot="c3d4e5f6a1b2",
+                          units=failed)
+            for index in range(3)
+        ] + [
+            sample_record(NOW - 60 * (14 - index), boot=BOOT_B, units=failed)
+            for index in range(14)
         ]
         output = self.project(records)
+        self.assertEqual(output["boots"], 3)
+        self.assertTrue(output["spans_reboot"])
+        self.assertEqual(output["points"], collector.SAMPLES_MAX + 2)
         self.assertEqual(len(output["samples"][-1]["down_units"]),
                          len(collector.UNIT_ORDER))
         encoded = json.dumps(output, sort_keys=True, ensure_ascii=False)
-        self.assertLess(len(encoded.encode("utf-8")), 6144)
+        self.assertLess(len(encoded.encode("utf-8")), 8192)
 
 
 class ConstantParityTests(unittest.TestCase):
@@ -693,6 +749,14 @@ class ConstantParityTests(unittest.TestCase):
                 getattr(collector, name), getattr(sampler, name),
                 f"{name} drifted from the sampler contract")
 
+    def test_collector_reads_the_path_the_sampler_writes(self):
+        sampler = load_module("host_metrics_sampler_path_tested", SAMPLER)
+        home = Path("/home/ubuntu")
+        self.assertEqual(
+            sampler.state_root(home) / sampler.RING_NAME,
+            home / collector.HOST_METRICS_RING_RELPATH,
+        )
+
     def test_diagnostics_only_constants_derive_from_the_shared_interval(self):
         # SAMPLES_MAX / STALE_SEC are projection-side bounds, so they are not
         # in the sampler; they must still derive from the one cadence constant.
@@ -702,10 +766,14 @@ class ConstantParityTests(unittest.TestCase):
 
 class WiringTests(unittest.TestCase):
 
-    def test_main_projects_the_ring_from_the_soren_parent(self):
+    def test_main_projects_the_ring_from_the_deployed_checkout(self):
         source = COLLECTOR.read_text(encoding="utf-8")
         self.assertIn(
-            '"host_metrics": _collect_host_metrics(soren.parent, now)', source)
+            '"host_metrics": _collect_host_metrics(PROD_ROOT.parent, now)',
+            source)
+        # The ring lives in the runtime user's home, which is the deployed
+        # checkout's parent (/home/ubuntu) -- not the projection target and not
+        # a config/state_dir value that could move between deploys.
 
 
 if __name__ == "__main__":
