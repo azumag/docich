@@ -14,7 +14,8 @@ from docich.hanjuku.orchestrator import decide, NO_INPUT_HOLD_MAX
 from docich.hanjuku.strategy import campaign
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse, castle_roofs
-from test_hanjuku_chart_bot import Canvas
+from test_hanjuku_chart_bot import Canvas, HAND, UNKNOWN
+from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 
 IDENTITY = {'game': 'hanjuku-hero', 'generation': 900,
             'runtime_id': 'g900-synthetic', 'lease_id': 'test-map-survey'}
@@ -548,3 +549,76 @@ def test_unproven_season_king_result_is_never_victory_or_ownership(changes):
     assert not mem.get('garrison')
     assert not any((r.get('resulting_event') or '').startswith(('captured:', 'lost:'))
                    for r in mem.get('_records', []))
+
+
+def adopted_interim_confirm_frame():
+    """The reviewer's #2545 P2 frame: a real adopted interim, real panels.
+
+    The sortie-confirm frame is built only from the adopted order's cards
+    and actor plus the measured hand block; no order is planted by hand.
+    """
+    state, active = caller_adopted_interim()
+    order = state['policy']['chart_adjust']['interim_order']
+    panel = actor_panel(measured_loaded_sortie(tuple(order['cards'])), order['general'])
+    canvas = Canvas()
+    for line in panel.lines:
+        for x, ch in line.cells:
+            if ch != UNKNOWN:
+                canvas.text(x, line.y, ch)
+    for y in range(105, 119):
+        for x in range(138, 157):
+            canvas.put(x, y, HAND[(x + y) % 3])
+    frame = canvas.frame()
+    assert parse(frame).kind == 'sortie_confirm'
+    return state, active, frame
+
+
+@pytest.mark.parametrize('identity', [None, {}, {**IDENTITY, 'game': 'other'},
+                                     {**IDENTITY, 'generation': 0}, {**IDENTITY, 'lease_id': ''}])
+def test_deploy_continuation_stops_unsent_order_when_identity_fails(identity):
+    """The #2545 P2 regression: no KeyError on a continuation screen.
+
+    An adopted interim order can outlive the run map receipt that verified
+    its endpoints. The deploy continuation (sortie confirm here) runs
+    without ``_ready``, so it must re-verify both endpoints itself: a
+    missing/invalid run identity stops the unsent order, returns no input
+    and rewrites no order status instead of approving or crashing.
+    """
+    state, active, frame = adopted_interim_confirm_frame()
+    actions, updated = decide(frame, state, run_identity=identity)
+    assert actions == []
+    assert updated['policy']['active'] is None
+    assert updated['policy']['orders'].get(active) in (None, 'pending')
+    assert not updated['policy'].get('sorties')
+    assert any(r['decision'] == 'order_precondition_lost' for r in updated['_records'])
+    with chart.map_context(updated['policy']):
+        assert not chart.castles(3)
+    # The next observation on the same screen backs out through the
+    # order-less path, so the hold cannot wedge the screen forever.
+    follow, followup = decide(frame, updated, run_identity=identity)
+    assert follow == [policy.pad('b')]
+    assert followup['policy']['active'] is None
+
+
+def test_deploy_continuation_confirms_with_valid_identity_control():
+    """The identity gate must not hold a fully verified continuation."""
+    state, active, frame = adopted_interim_confirm_frame()
+    actions, updated = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [policy.pad('a')]
+    assert updated['policy']['active'] == active
+
+
+@pytest.mark.parametrize('kind', ['castle_menu', 'general_list', 'card_select',
+                                  'sortie_confirm'])
+def test_deploy_screens_recheck_endpoints_per_observation(kind):
+    """Every non-map continuation entrance applies the same condition."""
+    state, active, frame = adopted_interim_confirm_frame()
+    mem = state['policy']
+    mem['_run_identity'] = None       # the key stays present: None must not opt out
+    screen = Screen(lines=[], hand=None, text='')
+    screen.kind = kind
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['active'] is None
+    assert mem['orders'].get(active) in (None, 'pending')
+    assert mem.get('_map_registration_hold') is True
+    assert any(r['decision'] == 'order_precondition_lost' for r in mem['_records'])
