@@ -1172,6 +1172,17 @@ class CornerRotationManager:
             return False
 
     def tick(self):
+        # The stream's title/category are announced by a game-switch commit,
+        # but nothing commits a runtime restored outside the plane (failed
+        # restore, manual ``failed -> idle`` repair, re-started background
+        # game, corner stop back to no seat).  Without this the displaced
+        # corner's metadata stays on air indefinitely (#2673).  Divergence-only
+        # and best-effort: it must never block a rotation tick.
+        try:
+            from .stream_category import reconcile_stream_metadata
+            reconcile_stream_metadata(self.g)
+        except Exception:
+            pass
         # The common timer owns only retry/reconciliation, never new predictions.
         from .hanjuku_predictions import tick as prediction_tick
         from .soren_predictions import tick as soren_prediction_tick
