@@ -142,7 +142,7 @@ def test_reply_route_selects_direct_batch_without_legacy_fallback(monkeypatch):
     result = reply_route._finish(
         rows,
         event,
-        env={web_batch.ENABLE_ENV: "1"},
+        env={**ENV, "DOCICH_REPLY_ROUTING_ENABLED": "1"},
         researcher=None,
     )
 
@@ -176,7 +176,7 @@ def test_reply_route_keeps_code_and_mixed_scopes_on_legacy_research(monkeypatch)
     result = reply_route._finish(
         rows,
         event,
-        env={web_batch.ENABLE_ENV: "1"},
+        env={**ENV, "DOCICH_REPLY_ROUTING_ENABLED": "1"},
         researcher=None,
     )
 
