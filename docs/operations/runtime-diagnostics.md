@@ -99,7 +99,11 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   "improvement": {"running": false, "stale": false,
                   "persist": {"present": true, "readable": true,
                               "result": "ok", "reason": "none", "rc": 0,
-                              "age_sec": 42, "branch": "runtime/eloop-improve",
+                              "origin_main": "<40-hex>",
+                              "last_success_at": 1792765266,
+                              "last_success_age_sec": 42,
+                              "age_sec": 42, "stale": false,
+                              "branch": "runtime/eloop-improve",
                               "commit": "<40-hex>", "last_failure": null},
                   ...},
   "corners": {"state_dir_found": true,
@@ -967,11 +971,17 @@ git 操作・修復・runtime 変更は行わない。
   `checkout_failed`, `reset_failed`, `copy_failed`, `add_failed`, `commit_failed`,
   `tree_failed`, `push_failed`, `pr_failed` のみ。未知値は `unknown`。
 - `rc` は persist の戻り値（0=候補作成/更新、3=変更なし、1=失敗）。
+- `origin_main` は最後に fetch した origin/main の sha、`last_success_at` は
+  最後に candidate 作成/更新へ成功した epoch。失敗 status でも引き継がれるため、
+  clone が main から取り残される停止（#2489 の HEAD 停止型）を機械的に検知できる。
+- status file の age が 7 日を超えると `stale=true` として warn に上げる
+  （persist が呼ばれ続けていれば no-change でも毎回更新されるため）。
 - 生の `message` / `error` は VM 外へ出さない。`branch` と `commit` は形式検証を
   通った場合だけ出す。
 - 失敗（`result=fail`）、status file の破損（`present` かつ `readable=false`）、
-  未解消の durable failure record は `status=warn` に上げる。次の成功/no-change で
-  status が上書きされ、durable record も消えるため warn は自然に解消する。
+  未解消の durable failure record、`stale=true` は `status=warn` に上げる。
+  次の成功/no-change で status が上書きされ、durable record も消えるため
+  fail 由来の warn は自然に解消する。
 - clone が無い production projection では `result=no-op` であり、失敗ではない。
 
 

@@ -40,10 +40,10 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def write_status(self, payload, raw=None):
+    def write_status(self, payload, raw=None, age_sec=120):
         path = self.clone_git / "persist-status.json"
         path.write_text(raw if raw is not None else json.dumps(payload), encoding="utf-8")
-        os.utime(path, (self.now - 120, self.now - 120))
+        os.utime(path, (self.now - age_sec, self.now - age_sec))
         return path
 
     def write_failure(self, payload):
@@ -77,6 +77,8 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
             "result": "ok",
             "reason": "none",
             "rc": 0,
+            "origin_main": "abcdef0123456789abcdef0123456789abcdef01",
+            "last_success_at": self.now - 100,
             "message": "eloop Improve after game #1",
             "branch": "runtime/eloop-improve",
             "commit": "0123456789abcdef0123456789abcdef01234567",
@@ -88,10 +90,24 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
         self.assertEqual(persist["result"], "ok")
         self.assertEqual(persist["reason"], "none")
         self.assertEqual(persist["rc"], 0)
+        self.assertEqual(persist["origin_main"], "abcdef0123456789abcdef0123456789abcdef01")
+        self.assertEqual(persist["last_success_at"], self.now - 100)
+        self.assertEqual(persist["last_success_age_sec"], 100)
         self.assertEqual(persist["age_sec"], 120)
+        self.assertFalse(persist["stale"])
         self.assertEqual(persist["branch"], "runtime/eloop-improve")
         self.assertEqual(persist["commit"], "0123456789abcdef0123456789abcdef01234567")
         self.assertEqual(self.severity(self.collect()), "ok")
+
+    def test_stale_status_is_warn(self):
+        self.write_status(
+            {"result": "no-change", "reason": "none", "rc": 3,
+             "last_success_at": self.now - 30 * 24 * 3600},
+            age_sec=8 * 24 * 3600,
+        )
+        persist = self.collect()["persist"]
+        self.assertTrue(persist["stale"])
+        self.assertEqual(self.severity(self.collect()), "warn")
 
     def test_failed_persist_is_warn_with_enum_reason(self):
         self.write_status({

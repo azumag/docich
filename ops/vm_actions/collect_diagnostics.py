@@ -2728,6 +2728,10 @@ PERSIST_REASONS = frozenset({
 PERSIST_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}")
 PERSIST_COMMIT = re.compile(r"[0-9a-f]{7,40}")
 PERSIST_LABEL = re.compile(r"[A-Za-z0-9_-]{1,32}")
+# A status file older than this while the improve loop runs means persist is
+# no longer being called; the 2026-09-17 stalled-clone incident looked exactly
+# like this before the file existed at all.
+PERSIST_STALE_SEC = 7 * 24 * 60 * 60
 
 
 def _collect_strategy_persist(soren, now):
@@ -2754,7 +2758,11 @@ def _collect_strategy_persist(soren, now):
         "result": "unknown",
         "reason": None,
         "rc": None,
+        "origin_main": None,
+        "last_success_at": None,
+        "last_success_age_sec": -1,
         "age_sec": -1,
+        "stale": False,
         "branch": None,
         "commit": None,
         "last_failure": None,
@@ -2764,6 +2772,7 @@ def _collect_strategy_persist(soren, now):
             entry["age_sec"] = int(now - status_path.stat().st_mtime)
         except OSError:
             entry["age_sec"] = -1
+        entry["stale"] = entry["age_sec"] > PERSIST_STALE_SEC
     if data:
         result = data.get("result")
         entry["result"] = result if result in PERSIST_RESULTS else "unknown"
@@ -2783,6 +2792,15 @@ def _collect_strategy_persist(soren, now):
         commit = data.get("commit")
         if isinstance(commit, str) and PERSIST_COMMIT.fullmatch(commit):
             entry["commit"] = commit
+        origin_main = data.get("origin_main")
+        if isinstance(origin_main, str) and PERSIST_COMMIT.fullmatch(origin_main):
+            entry["origin_main"] = origin_main
+        last_success = _parse_epoch(data.get("last_success_at"))
+        if last_success is not None:
+            entry["last_success_at"] = last_success
+            entry["last_success_age_sec"] = (
+                int(now - last_success) if last_success <= now else -1
+            )
 
     failure = _read_json(failure_path)
     if failure and failure.get("failure_code") == "strategy_persist_failed":
@@ -7889,6 +7907,7 @@ def _severity(workers, queues, ai, improvement, corners=None):
     persist = improvement.get("persist")
     if isinstance(persist, dict) and (
         persist.get("result") == "fail"
+        or persist.get("stale")
         or (persist.get("present") and not persist.get("readable"))
         or persist.get("last_failure") is not None
     ):
