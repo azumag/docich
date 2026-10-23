@@ -39,3 +39,26 @@ adoption or improved game performance. Strategy-feature metadata is still a
 separate extension.
 
 更新契機は既存のゲーム切替・コーナー復帰です。プレイ中の常時更新は行いません。
+
+## commit を伴わない復帰の再整合（#2673）
+
+タイトルとカテゴリはゲーム切替の **commit 後の hook** だけが更新する。そのため、
+commit を作らない経路では前のコーナーのメタデータが配信に残る。
+
+- 復帰失敗（`rollback_failed`）後の手動 `failed -> idle` 遷移
+- plane の外で再起動した背景 sorengame
+- コーナー終了で復帰先が無く `idle` へ戻る stop（`previous_game` なし）
+
+これを補うため、`corner_rotation.tick()` の先頭で
+`stream_category.reconcile_stream_metadata()` を best-effort で呼ぶ。
+
+- 意図するランタイム: `phase=ready` は commit 済みの `active.game`、`phase=idle` は
+  状態ファイルを更新し続けている背景 sorengame（`game_state.json` が 120 秒以内）。
+  それ以外の phase は遷移中なので何もしない。
+- 直近の announce 記録（`run-soren-live/stream_metadata_last.json`）と同じ
+  ランタイムなら再送しない。commit 経由の announce も同じ記録を更新する。
+- 送信失敗は記録して 300 秒 backoff。失敗が rotation の tick を止めない。
+- 記録・判定は状態 enum とゲーム名だけで、トークン・本文・応答bodyを残さない。
+
+これは「配信中の常時更新」ではない。画面とメタデータが食い違ったままになる経路を
+有界に自己修復するだけで、資格情報・エンコーダ・ゲーム入力・既存 lock の契約は変えない。

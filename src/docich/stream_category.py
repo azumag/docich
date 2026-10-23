@@ -10,9 +10,11 @@ switch that gets rolled back because Twitch was unreachable is a real one.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .config import GlobalConfig, load_game
@@ -29,6 +31,22 @@ LOG_NAME = "stream-game.log"
 TITLE_SYNC_SKIP_REASONS = frozenset({
     "category_not_configured", "updater_missing", "dispatch_failed",
 })
+
+# Reconciliation of metadata that no switch commit owns (#2673).  A game
+# switch announces post-commit, so a path that never commits -- a failed
+# restore, a manual ``failed -> idle`` repair, a re-started background game,
+# or a corner stop that returns to no active seat -- leaves the previous
+# corner's title and category on air.  The rotation tick re-announces only
+# when the runtime it can see differs from the last one it asked for.
+RECONCILE_STATE_NAME = "stream_metadata_last.json"
+RECONCILE_SCHEMA = 1
+# A background game counts as running only while its state file is being
+# rewritten; a parked loop stops updating it.
+BACKGROUND_STATE_FRESH_S = 120.0
+BACKGROUND_GAME = "sorengame"
+# A failed announce is retried only after this backoff, so an unreachable
+# platform cannot turn a one-minute tick into a request storm.
+RECONCILE_RETRY_BACKOFF_S = 300.0
 
 # ``paper-view`` is a synthetic program view, not a game in ``config/games``.
 # Use Twitch's technology category instead of leaving the category of the game
@@ -304,7 +322,147 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     except Exception:
         _record_title_sync_skip(g, "dispatch_failed")
         raise
+    _record_announced(g, game)
     return True
+
+
+def _announced_state_path(g: GlobalConfig) -> Path:
+    return Path(g.state_dir) / RECONCILE_STATE_NAME
+
+
+def _record_announced(g: GlobalConfig, game: str) -> None:
+    """Remember which runtime the stream metadata was last pointed at.
+
+    Best-effort: this record only dedupes reconciliation, so a failed write
+    must never disturb the announce that already happened.
+    """
+    _write_announce_record(g, game, "announced")
+
+
+def _record_dispatch_failure(g: GlobalConfig, game: str) -> None:
+    """Remember a failed attempt so reconciliation backs off instead of spamming."""
+    _write_announce_record(g, game, "failed")
+
+
+def _write_announce_record(g: GlobalConfig, game: str, status: str) -> None:
+    if not isinstance(game, str) or not game:
+        return
+    try:
+        from .game_switch import atomic_write_json
+
+        atomic_write_json(
+            _announced_state_path(g),
+            {"schema": RECONCILE_SCHEMA, "game": game, "status": status, "at": time.time()},
+        )
+    except Exception:
+        return
+
+
+def _announce_record(g: GlobalConfig) -> dict | None:
+    try:
+        data = json.loads(_announced_state_path(g).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != RECONCILE_SCHEMA:
+        return None
+    return data
+
+
+def last_announced_game(g: GlobalConfig) -> str | None:
+    """The last runtime announced to the platforms, or ``None`` when unknown."""
+    data = _announce_record(g)
+    if data is None:
+        return None
+    game = data.get("game")
+    return game if isinstance(game, str) and game else None
+
+
+def _plane_active_game(state: dict) -> str | None:
+    """The committed game/view of a ``ready`` canonical state."""
+    active = state.get("active")
+    if not isinstance(active, dict):
+        return None
+    game = active.get("game")
+    return game if isinstance(game, str) and game else None
+
+
+def _live_background_game(g: GlobalConfig) -> str | None:
+    """The Soren game that keeps writing its state file, if any.
+
+    Only consulted while the plane owns no seat: a running corner parks the
+    loop, so a fresh state file there would otherwise be misattributed.
+    """
+    try:
+        from .trading.soren_output import resolve_soren_root
+
+        root = resolve_soren_root(g)
+    except Exception:
+        return None
+    now = time.time()
+    for candidate in (root / "game_state.json", root / "tmp" / "state" / "game_state.json"):
+        try:
+            fresh = now - candidate.stat().st_mtime <= BACKGROUND_STATE_FRESH_S
+        except OSError:
+            continue
+        if fresh:
+            return BACKGROUND_GAME
+    return None
+
+
+def intended_stream_game(g: GlobalConfig) -> str | None:
+    """The runtime the stream should currently describe, or ``None``.
+
+    ``ready`` defers to the committed seat.  ``idle`` is the state a failed
+    restore or a corner stop leaves behind, and it is exactly where a live
+    background game has no announcement path (#2673).  Every other phase is a
+    transition in flight, so reconciliation stays out of the way.
+    """
+    try:
+        state = json.loads(
+            (Path(g.state_dir) / "game_switch.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    phase = state.get("phase")
+    if phase == "ready":
+        return _plane_active_game(state)
+    if phase == "idle":
+        return _live_background_game(g)
+    return None
+
+
+def reconcile_stream_metadata(g: GlobalConfig, *, spawn=None) -> bool:
+    """Re-announce metadata when the visible runtime diverged from the last one.
+
+    Runs from the corner-rotation tick.  Returns ``True`` only when a new
+    announce was dispatched.  Never raises: a cosmetic mismatch must not take
+    the rotation down.  A failed attempt is remembered so a broken updater is
+    retried after a backoff instead of once per tick.
+    """
+    try:
+        intended = intended_stream_game(g)
+        if intended is None:
+            return False
+        record = _announce_record(g)
+        if record is not None and record.get("game") == intended:
+            if record.get("status") != "failed":
+                return False
+            last = record.get("at")
+            if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                    and time.time() - float(last) < RECONCILE_RETRY_BACKOFF_S):
+                return False
+        if twitch_category(g, intended) is None:
+            return False
+        try:
+            announced = announce_stream_game(g, intended, spawn=spawn)
+        except Exception:
+            _record_dispatch_failure(g, intended)
+            return False
+        return announced
+    except Exception:
+        return False
 
 
 def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
@@ -367,12 +525,19 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     from .adapters.program import PAPER_VIEW_NAME
 
     if game == PAPER_VIEW_NAME:
-        return announce_stream_paper(g, spawn=spawn)
-    if game == MYSTERY_VIEW_NAME:
-        return announce_stream_mystery(g, spawn=spawn)
-    if game == SPECIAL_VIEW_NAME:
-        return announce_stream_special(g, spawn=spawn)
-    return announce_stream_game(g, game, spawn=spawn)
+        announced = announce_stream_paper(g, spawn=spawn)
+    elif game == MYSTERY_VIEW_NAME:
+        announced = announce_stream_mystery(g, spawn=spawn)
+    elif game == SPECIAL_VIEW_NAME:
+        announced = announce_stream_special(g, spawn=spawn)
+    else:
+        announced = announce_stream_game(g, game, spawn=spawn)
+    if announced:
+        # The reconciliation hook compares against this record, so every
+        # commit-driven announce must update it too (view paths record here;
+        # games already recorded inside ``announce_stream_game``).
+        _record_announced(g, game)
+    return announced
 
 
 def commit_hook(g: GlobalConfig, *, spawn=None):
