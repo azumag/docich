@@ -126,6 +126,9 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   sampler が止まっている・OOM している・例外で落ちている場合、
   ring が `absent` でもこの field で原因が分かる（deploy hook の失敗理由が
   VM 側 private log にしか残らないため、これが正規の読み戻し経路）。
+  **未実行の unit は systemd の既定で `service_result=success` /
+  `service_exec_status=0` を返す**ため、`service_state`・`journal.lines` と
+  組み合わせて読む（`journal.lines=0` なら 1 庒も起きていない）。
 - `cpu_busy_pct` と `disk_*` は、**同一 boot の連続 2 点**の差から求める。boot をまたぐ
   最初の点は `null`（起動直後の累積値はリセットされるため差分に意味がない）。
   分母が 0 の interval は `null`、disk の逆転（カウンタリセット）は 0 に clamp する。

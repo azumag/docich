@@ -938,6 +938,55 @@ class RuntimeHealthTests(unittest.TestCase):
                 journal = collector._host_metrics_runtime_journal(NOW)
             self.assertEqual(journal["signature"], expected, message)
 
+    def test_hostile_journal_lines_never_break_the_collection(self):
+        # ``inf``/``nan``/``1e400`` in the timestamp field are a corrupt or
+        # hostile line; classifying it must never raise into the collector and
+        # never invent an age (a raise here kills the whole diagnostics run).
+        for tail in ("inf\n", "nan\n", "-inf\n", "1e400\n",
+                     "garbage line\n", "1e400 then normal\n"):
+            completed = mock.Mock(returncode=0, stdout=tail)
+            with mock.patch.object(collector.subprocess, "run",
+                                   return_value=completed):
+                journal = collector._host_metrics_runtime_journal(NOW)
+            self.assertEqual(set(journal), JOURNAL_KEYS)
+            self.assertTrue(journal["readable"])
+            self.assertIsNone(journal["newest_age_sec"])
+
+    def test_oom_only_matches_explicit_oom_phrases(self):
+        base = f"{NOW - 30}.000000 host docich-host-metrics.service: "
+        # Words that merely contain "oom", or a plain SIGTERM, are not OOM.
+        for message, expected in (
+            ("ValueError: boom", "other"),
+            ("zoom level reset", "other"),
+            ("classroom mode enabled", "other"),
+            ("Main process exited, code=killed, status=15/TERM", "exited"),
+            ("Memory cgroup out of memory: Killed process 12 (python3)",
+             "oom"),
+            ("A process of this unit has been killed by the OOM killer.",
+             "oom"),
+        ):
+            completed = mock.Mock(returncode=0, stdout=base + message + "\n")
+            with mock.patch.object(collector.subprocess, "run",
+                                  return_value=completed):
+                journal = collector._host_metrics_runtime_journal(NOW)
+            self.assertEqual(journal["signature"], expected, message)
+
+    def test_runtime_key_set_is_asserted_on_the_real_function(self):
+        # The projection fixture injects the runtime block; assert the real
+        # function's shape here so a renamed key cannot pass CI silently.
+        answers = {}
+        with mock.patch.object(collector, "_systemctl_user",
+                               side_effect=self.systemctl_answers(answers)):
+            runtime = collector._collect_host_metrics_runtime(NOW)
+        self.assertEqual(set(runtime), RUNTIME_KEYS)
+        self.assertEqual(set(runtime["journal"]), JOURNAL_KEYS)
+        self.assertEqual(runtime["service_state"], "unknown")
+        self.assertIsNone(runtime["service_enabled"])
+        self.assertEqual(runtime["timer_state"], "unknown")
+        self.assertIsNone(runtime["timer_enabled"])
+        self.assertIsNone(runtime["service_result"])
+        self.assertEqual(runtime["journal"]["readable"], False)
+
     def test_unreadable_journal_is_fixed_shape_and_not_healthy(self):
         completed = mock.Mock(returncode=1, stdout="")
         with mock.patch.object(collector.subprocess, "run",

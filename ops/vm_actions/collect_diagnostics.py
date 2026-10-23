@@ -980,7 +980,9 @@ def _host_metrics_trim_samples(samples, limit,
 HOST_METRICS_SERVICE_UNIT = "docich-host-metrics.service"
 HOST_METRICS_TIMER_UNIT = "docich-host-metrics.timer"
 HOST_METRICS_JOURNAL_LINES = 40
-HOST_METRICS_PROBE_TIMEOUT_SEC = 5.0
+# Five probes run per collection; a hung user manager must not eat the
+# collector's 60 s gateway budget, so each probe gets a short leash.
+HOST_METRICS_PROBE_TIMEOUT_SEC = 2.0
 HOST_METRICS_UNIT_STATE_ENUMS = (
     "active", "inactive", "failed", "activating", "deactivating", "reloading",
 )
@@ -1076,11 +1078,16 @@ def _host_metrics_runtime_journal(now):
     for line in lines:
         fields = line.split(None, 1)
         try:
-            newest = float(fields[0])
-        except (IndexError, ValueError):
-            pass
+            stamp = float(fields[0])
+        except (IndexError, ValueError, TypeError, OverflowError):
+            stamp = None
+        # ``inf``/``nan``/``1e400`` are a hostile or corrupt journal line, not
+        # a timestamp; parsing them into an age would raise and take the whole
+        # diagnostics operation down -- the one channel that must survive.
+        if stamp is not None and math.isfinite(stamp):
+            newest = stamp
         lower = line.lower()
-        if "oom" in lower or "killed" in lower:
+        if (re.search(r"\boom\b", lower) or "out of memory" in lower):
             signature = "oom"
         elif "timed out" in lower:
             signature = "timeout"
@@ -1096,7 +1103,10 @@ def _host_metrics_runtime_journal(now):
             signature = "other"
         signatures.append(signature)
     if newest is not None:
-        out["newest_age_sec"] = max(0, int(now - newest))
+        try:
+            out["newest_age_sec"] = max(0, int(now - newest))
+        except (ValueError, TypeError, OverflowError):
+            pass
     for signature in HOST_METRICS_JOURNAL_SIGNATURES:
         if signature in signatures:
             out["signature"] = signature
