@@ -2,6 +2,23 @@
 
 Compares price-only vs news+price strategies under identical conditions.
 Exports read-only evidence with live_eligible=False.
+
+N00 fixed-contract divergence record (N08-R6)
+----------------------------------------------
+This module currently deviates from the N00-fixed schema tables
+(#775 v2 S2) by design of its standalone-first implementation. The
+deviations below are known and must be reconciled at N01/N05
+integration time (converter + validation adapter); until then this
+module is fixture-driven only and is not wired to any live pipeline:
+
+* Timestamps use epoch floats (``float``) here; N00 fixed TS as
+  RFC3339 UTC microsecond strings.
+* Money/quantity use unbounded ``Decimal``; N00 fixed bounded decimal
+  strings (DEC_P/DEC_N/DEC_S: 18 integer / 8 fractional digits).
+* ID/VER/HEX64/SRC patterns from N00 S2 are not validated here.
+* No unapproved numeric value is defaulted into the manifest:
+  ``min_coverage_fraction`` and ``cost_allocation_method`` default to
+  ``None`` (unset) and ``validate()`` treats unset as a violation.
 """
 from __future__ import annotations
 
@@ -51,11 +68,14 @@ class EvaluationManifest:
     # Holdout / significance
     holdout_start_ts: float = 0.0
     min_independent_events: int = 0
-    min_coverage_fraction: float = 0.8
+    # N08-R3: no unapproved default. None = unset (owner judgment-table value
+    # not adopted). validate() treats unset as a violation (fail-closed).
+    min_coverage_fraction: Optional[float] = None
     # Cost accounting
     llm_cost_per_call_usd: float = 0.0
     api_cost_per_call_usd: float = 0.0
-    cost_allocation_method: str = "pro_rata"  # or "fixed"
+    # N08-R3: no unapproved default. None = unset; validate() fails closed.
+    cost_allocation_method: Optional[str] = None
     # Random seed for reproducibility
     rng_seed: int = 0
 
@@ -80,8 +100,14 @@ class EvaluationManifest:
             violations.append("eval_end_ts must be > eval_start_ts")
         if self.min_independent_events < 0:
             violations.append("min_independent_events must be >= 0")
-        if not 0 <= self.min_coverage_fraction <= 1:
+        # N08-R3: unset means the owner judgment-table value has not been
+        # adopted; unset is a violation (fail-closed), not a default.
+        if self.min_coverage_fraction is None:
+            violations.append("min_coverage_fraction unset (owner judgment-table value not adopted)")
+        elif not 0 <= self.min_coverage_fraction <= 1:
             violations.append("min_coverage_fraction must be in [0, 1]")
+        if self.cost_allocation_method is None:
+            violations.append("cost_allocation_method unset (owner judgment-table value not adopted)")
         if self.llm_cost_per_call_usd < 0 or self.api_cost_per_call_usd < 0:
             violations.append("cost_per_call_usd must be >= 0")
         # Required version fields must be non-empty for primary evaluation
@@ -285,6 +311,10 @@ class ArmMetrics:
     # (unverifiable) or there are no positions. The "stale" threshold is an
     # owner judgment-table value and is intentionally NOT defaulted here.
     mark_age_seconds: Optional[float] = None
+    # Initial capital (N08-R1 completion): the FIRST equity point of the arm's
+    # series. This is a comparison CONDITION (unlike avg_equity_jpy, which is a
+    # result). None when the equity series is empty (unverifiable).
+    initial_capital_jpy: Optional[Decimal] = None
     # Reproducibility
     evaluation_digest: str = ""
 
@@ -296,6 +326,7 @@ class ArmMetrics:
         d["estimated_exit_cost_jpy"] = str(self.estimated_exit_cost_jpy) if self.estimated_exit_cost_jpy is not None else None
         d["max_drawdown_fraction"] = str(self.max_drawdown_fraction)
         d["avg_equity_jpy"] = str(self.avg_equity_jpy)
+        d["initial_capital_jpy"] = str(self.initial_capital_jpy) if self.initial_capital_jpy is not None else None
         # Convert nested objects
         d["cost_breakdown"] = self.cost_breakdown.to_dict()
         d["latency"] = self.latency.to_dict()
@@ -323,11 +354,19 @@ class ComparisonGate:
             violations.append("exit_commission_bps mismatch")
         if arm_a.cost_breakdown.exit_slippage_bps != arm_b.cost_breakdown.exit_slippage_bps:
             violations.append("exit_slippage_bps mismatch")
-        # Compare initial capital (first equity point)
-        # Note: avg_equity_jpy is a RESULT of strategy performance, not a condition.
-        # Arms with identical initial capital but different performance will have different
-        # avg_equity. Do NOT flag as mismatch. Initial capital comparison requires
-        # explicit initial_capital field (not currently in ArmMetrics).
+        # Compare initial capital (N08-R1 completion): the FIRST equity point is
+        # a comparison CONDITION (unlike avg_equity_jpy, which is a RESULT of
+        # strategy performance). Arms with identical initial capital but
+        # different performance must NOT be flagged here. Unverifiable
+        # (undeclared/empty series) is NOT treated as equal (fail-closed).
+        cap_a = arm_a.initial_capital_jpy
+        cap_b = arm_b.initial_capital_jpy
+        if cap_a is None or cap_b is None:
+            violations.append("initial capital unverifiable (not declared)")
+        else:
+            _max_cap = max(cap_a, cap_b)
+            if abs(cap_a - cap_b) > (_max_cap * D("0.001")):
+                violations.append("initial_capital_jpy mismatch")
         # Check manifest version binding (both arms share this manifest's declared
         # versions; empty declared versions make the comparison unattributable).
         conditions = {
@@ -351,6 +390,15 @@ class ComparisonGate:
                     "manifest version fields missing: " + ", ".join(missing)
                 )
             conditions.update(declared)
+            # Bind the declared allocation method to the arms' actual inputs:
+            # an arm breakdown that disagrees with the manifest declaration
+            # makes the comparison unattributable to the declared method.
+            if manifest.cost_allocation_method is not None:
+                if arm_a.cost_breakdown.cost_allocation_method != manifest.cost_allocation_method:
+                    violations.append("arm_a cost_allocation_method does not match manifest declaration")
+                if arm_b.cost_breakdown.cost_allocation_method != manifest.cost_allocation_method:
+                    violations.append("arm_b cost_allocation_method does not match manifest declaration")
+                conditions["manifest_cost_allocation_method"] = manifest.cost_allocation_method
         # Check synthetic/historical mixing
         if arm_a.policy_tracking.synthetic_historical_results or arm_b.policy_tracking.synthetic_historical_results:
             violations.append("synthetic_historical_results present in primary evaluation")
@@ -814,6 +862,9 @@ def build_arm_metrics(
         label=label,
         equity_jpy=equity_series[-1][1] if equity_series else D("0"),
         realized_pnl_jpy=sum(f.net_pnl_jpy for f in fills if f.kind == "close"),
+        # Initial capital: the first equity point (a comparison condition,
+        # N08-R1). Unverifiable (None) with an empty series.
+        initial_capital_jpy=equity_series[0][1] if equity_series else None,
         unrealized_pnl_jpy=unrealized_pnl,
         estimated_exit_cost_jpy=estimated_exit_cost,
         max_drawdown_fraction=max_dd,
@@ -1012,7 +1063,7 @@ def run_evaluation(
     # Check min_coverage_fraction - if we can't compute coverage, mark as unknown/remaining
     # Coverage requires actual observation window data; here we use data_gaps/observation_missing as proxy
     # If coverage fraction is required but we have gaps, it's a remaining item
-    if manifest.min_coverage_fraction > 0:
+    if manifest.min_coverage_fraction is not None and manifest.min_coverage_fraction > 0:
         # We can't compute actual coverage without full observation data
         # Mark as unknown/remaining unless we have explicit coverage data
         # Need actual observation data: unique_eligible_events > 0 AND data_gaps_seconds < window_duration

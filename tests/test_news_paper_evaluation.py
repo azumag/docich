@@ -212,9 +212,11 @@ class TestComparisonGate(unittest.TestCase):
     def test_gate_pass_same_conditions(self):
         cb = CostBreakdown(cost_allocation_method="pro_rata")
         arm_a = ArmMetrics(label="A", cost_breakdown=cb,
-                          news_util=NewsUtilization(cost_allocation_method="pro_rata"))
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
         arm_b = ArmMetrics(label="B", cost_breakdown=cb,
-                          news_util=NewsUtilization(cost_allocation_method="pro_rata"))
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
         gate = ComparisonGate().check(arm_a, arm_b)
         self.assertTrue(gate.cost_risk_fill_match)
         self.assertEqual(gate.violations, [])
@@ -223,9 +225,11 @@ class TestComparisonGate(unittest.TestCase):
         cb_a = CostBreakdown(cost_allocation_method="pro_rata")
         cb_b = CostBreakdown(cost_allocation_method="fixed")
         arm_a = ArmMetrics(label="A", cost_breakdown=cb_a,
-                          news_util=NewsUtilization(cost_allocation_method="pro_rata"))
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
         arm_b = ArmMetrics(label="B", cost_breakdown=cb_b,
-                          news_util=NewsUtilization(cost_allocation_method="fixed"))
+                          news_util=NewsUtilization(cost_allocation_method="fixed"),
+                          initial_capital_jpy=D("1000"))
         gate = ComparisonGate().check(arm_a, arm_b)
         self.assertFalse(gate.cost_risk_fill_match)
         self.assertIn("cost_allocation_method mismatch", gate.violations)
@@ -234,12 +238,55 @@ class TestComparisonGate(unittest.TestCase):
         cb = CostBreakdown(cost_allocation_method="pro_rata")
         arm_a = ArmMetrics(label="A", cost_breakdown=cb,
                           news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"),
                           policy_tracking=PolicyTracking(synthetic_historical_results=True))
         arm_b = ArmMetrics(label="B", cost_breakdown=cb,
-                          news_util=NewsUtilization(cost_allocation_method="pro_rata"))
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
         gate = ComparisonGate().check(arm_a, arm_b)
         self.assertFalse(gate.cost_risk_fill_match)
         self.assertTrue(gate.synthetic_mixed)
+
+    def test_gate_fail_initial_capital_mismatch(self):
+        cb = CostBreakdown(cost_allocation_method="pro_rata")
+        arm_a = ArmMetrics(label="A", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
+        arm_b = ArmMetrics(label="B", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("2000"))
+        gate = ComparisonGate().check(arm_a, arm_b)
+        self.assertFalse(gate.cost_risk_fill_match)
+        self.assertIn("initial_capital_jpy mismatch", gate.violations)
+        # Symmetric: swapping arms yields the same verdict.
+        gate_rev = ComparisonGate().check(arm_b, arm_a)
+        self.assertFalse(gate_rev.cost_risk_fill_match)
+        self.assertIn("initial_capital_jpy mismatch", gate_rev.violations)
+
+    def test_gate_same_conditions_different_performance_passes(self):
+        # avg_equity differs (a RESULT); initial capital (a CONDITION) matches.
+        cb = CostBreakdown(cost_allocation_method="pro_rata")
+        arm_a = ArmMetrics(label="A", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"), avg_equity_jpy=D("1045"))
+        arm_b = ArmMetrics(label="B", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"), avg_equity_jpy=D("1070"))
+        gate = ComparisonGate().check(arm_a, arm_b)
+        self.assertTrue(gate.cost_risk_fill_match)
+        self.assertEqual(gate.violations, [])
+
+    def test_gate_initial_capital_unverifiable_fails_closed(self):
+        cb = CostBreakdown(cost_allocation_method="pro_rata")
+        arm_a = ArmMetrics(label="A", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=None)
+        arm_b = ArmMetrics(label="B", cost_breakdown=cb,
+                          news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+                          initial_capital_jpy=D("1000"))
+        gate = ComparisonGate().check(arm_a, arm_b)
+        self.assertFalse(gate.cost_risk_fill_match)
+        self.assertIn("initial capital unverifiable (not declared)", gate.violations)
 
 
 class TestRunEvaluation(unittest.TestCase):
@@ -268,6 +315,8 @@ class TestRunEvaluation(unittest.TestCase):
             execution_version="exe1",
             policy_version="pol1",
             model_version="mdl1",
+            min_coverage_fraction=0.0,
+            cost_allocation_method="pro_rata",
         )
 
         fills_a = [
@@ -316,6 +365,8 @@ class TestRunEvaluation(unittest.TestCase):
             policy_version="pol1",
             model_version="mdl1",
             min_independent_events=5,
+            min_coverage_fraction=0.0,
+            cost_allocation_method="pro_rata",
         )
 
         result = run_evaluation(
@@ -351,7 +402,9 @@ class TestExportEvaluation(unittest.TestCase):
                 classification_version="cls1", price_version="prc1",
                 risk_version="risk1", cost_version="cst1",
                 execution_version="exe1", policy_version="pol1",
-                model_version="mdl1", min_independent_events=0
+                model_version="mdl1", min_independent_events=0,
+                min_coverage_fraction=0.0,
+                cost_allocation_method="pro_rata"
             )
             fills = [self.make_fill("open", "TEST", 1, 10, 100, 1, self.now)]
             equity = [(self.now, D("1000"))]
@@ -583,6 +636,7 @@ class TestReviewResiduals(unittest.TestCase):
         base = dict(
             eval_start_ts=self.now, eval_end_ts=self.now + 100,
             min_coverage_fraction=0.8,
+            cost_allocation_method="pro_rata",
             ledger_revision="rev1", evidence_digest="evi1",
             classification_version="cls1", price_version="prc1",
             risk_version="risk1", cost_version="cst1",
@@ -714,6 +768,7 @@ class TestVersionBindingAndMarkAge(unittest.TestCase):
             execution_version="e", policy_version="pol", model_version="m",
             eval_start_ts=0.0, eval_end_ts=3600.0, min_coverage_fraction=0.0,
             min_independent_events=0,
+            cost_allocation_method="pro_rata",
         )
 
     def _arm(self, cap="1000", fee="10"):
@@ -722,6 +777,7 @@ class TestVersionBindingAndMarkAge(unittest.TestCase):
             cost_breakdown=CostBreakdown(cost_allocation_method="pro_rata", exit_commission_bps=D(fee)),
             news_util=NewsUtilization(cost_allocation_method="pro_rata"),
             avg_equity_jpy=D(cap),
+            initial_capital_jpy=D("1000"),
         )
 
     def test_gate_records_declared_versions(self):
@@ -741,6 +797,51 @@ class TestVersionBindingAndMarkAge(unittest.TestCase):
         g = ComparisonGate().check(self._arm(), self._arm())
         self.assertTrue(g.cost_risk_fill_match)
         self.assertNotIn("manifest_risk_version", g.conditions)
+
+    def test_gate_binds_declared_allocation_method(self):
+        m = self._manifest()  # declares pro_rata
+        arm_ok = ArmMetrics(
+            label="A",
+            cost_breakdown=CostBreakdown(cost_allocation_method="pro_rata"),
+            news_util=NewsUtilization(cost_allocation_method="pro_rata"),
+            initial_capital_jpy=D("1000"),
+        )
+        g_ok = ComparisonGate().check(arm_ok, arm_ok, m)
+        self.assertTrue(g_ok.cost_risk_fill_match)
+        self.assertEqual(g_ok.conditions.get("manifest_cost_allocation_method"), "pro_rata")
+        arm_bad = ArmMetrics(
+            label="A",
+            cost_breakdown=CostBreakdown(cost_allocation_method="fixed"),
+            news_util=NewsUtilization(cost_allocation_method="fixed"),
+            initial_capital_jpy=D("1000"),
+        )
+        g_bad = ComparisonGate().check(arm_bad, arm_bad, m)
+        self.assertFalse(g_bad.cost_risk_fill_match)
+        self.assertTrue(any("does not match manifest declaration" in v for v in g_bad.violations))
+
+    def test_r3_unset_coverage_and_allocation_fail_closed(self):
+        m = EvaluationManifest(
+            ledger_revision="x", evidence_digest="y", classification_version="c",
+            price_version="p", risk_version="r", cost_version="co",
+            execution_version="e", policy_version="pol", model_version="m",
+            eval_start_ts=0.0, eval_end_ts=3600.0, min_independent_events=0,
+            # min_coverage_fraction and cost_allocation_method intentionally unset
+        )
+        violations = m.validate()
+        self.assertTrue(any("min_coverage_fraction unset" in v for v in violations))
+        self.assertTrue(any("cost_allocation_method unset" in v for v in violations))
+        # run_evaluation skips (not pass/fail) on the unset manifest
+        cb = CostBreakdown(cost_allocation_method="pro_rata")
+        pt = PolicyTracking(independent_events=1)
+        eq = [(0.0, D("1000")), (3600.0, D("1000"))]
+        news = [{"event_id": "e1", "eligible": True, "observation_gap_seconds": 0}]
+        r = run_evaluation(m, [], eq, {}, [], news, [], eq, {}, [], news, cb, cb, pt,
+                           D("1000"), D("1000"), "t")
+        self.assertEqual(r.pass_fail_skip, "skip")
+        self.assertTrue(any("unset" in v for v in r.limitations))
+        # the old 0.8 default must NOT silently operate
+        self.assertNotIn("coverage_fraction_unverifiable", " ".join(r.limitations))
+
 
     def test_mark_age_displayed(self):
         eq = [(0.0, D("1000")), (1000.0, D("1000"))]
