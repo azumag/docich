@@ -1,0 +1,139 @@
+name: VM diagnostics headroom monitor
+
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vm-diagnostics-headroom-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' && github.ref_protected == true &&
+          (github.event_name == 'schedule' ||
+           (github.actor_id == 9018513 && github.triggering_actor == 'azumag')) }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WARN_PERCENT: '80'
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure pinned SSH client
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Probe diagnostics and measure envelope
+        id: diagnostics
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          err="$RUNNER_TEMP/diagnostics-headroom.err"
+          if ! diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $sha" 2>"$err")"; then
+            {
+              echo 'available=0'
+              echo 'envelope_bytes=0'
+              echo 'cap_bytes=0'
+              echo 'usage_percent=0'
+              echo 'alert=1'
+            } >> "$GITHUB_OUTPUT"
+            echo '::warning::Production diagnostics probe is unavailable.'
+            exit 0
+          fi
+          printf '%s' "$diagnostics_json" > "$RUNNER_TEMP/diagnostics-headroom.json"
+          python3 - "$RUNNER_TEMP/diagnostics-headroom.json" "$WARN_PERCENT" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          from pathlib import Path
+          from ops.vm_actions import gateway
+
+          raw = Path(sys.argv[1]).read_bytes()
+          warn = int(sys.argv[2])
+          cap = int(gateway.DIAGNOSTICS_JSON_MAX)
+          used = len(raw)
+          percent = (used * 100) // cap if cap > 0 else 100
+          print('available=1')
+          print(f'envelope_bytes={used}')
+          print(f'cap_bytes={cap}')
+          print(f'usage_percent={percent}')
+          print(f'alert={int(percent >= warn)}')
+          PY
+
+      - name: Record diagnostics headroom trend
+        env:
+          AVAILABLE: ${{ steps.diagnostics.outputs.available }}
+          ENVELOPE_BYTES: ${{ steps.diagnostics.outputs.envelope_bytes }}
+          CAP_BYTES: ${{ steps.diagnostics.outputs.cap_bytes }}
+          USAGE_PERCENT: ${{ steps.diagnostics.outputs.usage_percent }}
+        run: |
+          set -euo pipefail
+          if [[ "$AVAILABLE" == '1' ]]; then
+            echo "::notice::diagnostics envelope=${ENVELOPE_BYTES}B cap=${CAP_BYTES}B usage=${USAGE_PERCENT}%"
+            printf '### VM diagnostics headroom\n\n- available: yes\n- envelope: %s B\n- cap: %s B\n- usage: %s%%\n' "$ENVELOPE_BYTES" "$CAP_BYTES" "$USAGE_PERCENT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning::diagnostics availability=0'
+            printf '### VM diagnostics headroom\n\n- available: no\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Update deduplicated diagnostics alert
+        env:
+          AVAILABLE: ${{ steps.diagnostics.outputs.available }}
+          ALERT: ${{ steps.diagnostics.outputs.alert }}
+          ENVELOPE_BYTES: ${{ steps.diagnostics.outputs.envelope_bytes }}
+          CAP_BYTES: ${{ steps.diagnostics.outputs.cap_bytes }}
+          USAGE_PERCENT: ${{ steps.diagnostics.outputs.usage_percent }}
+        run: |
+          set -euo pipefail
+          title='[VM diagnostics] availability/headroom alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM diagnostics] availability/headroom alert") | .number')
+          if [[ "$ALERT" != '1' ]]; then
+            for number in "${alerts[@]}"; do
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Diagnostics recovered with usage below ${WARN_PERCENT}% (current: ${USAGE_PERCENT}%)."
+            done
+            exit 0
+          fi
+          if [[ "$AVAILABLE" == '1' ]]; then
+            state="headroom_low"
+            detail="- envelope_bytes: ${ENVELOPE_BYTES}\n- cap_bytes: ${CAP_BYTES}\n- usage_percent: ${USAGE_PERCENT}"
+          else
+            state="unavailable"
+            detail="- envelope_bytes: unavailable\n- cap_bytes: unavailable\n- usage_percent: unavailable"
+          fi
+          body="$(printf 'Production diagnostics health needs attention.\n\n- state: %s\n%b\n- warning threshold: %s%%\n- Workflow: %s/%s/actions/runs/%s\n\nOnly fixed status and numeric headroom fields are published. Raw diagnostics, stderr, paths, credentials, and command output are never published. This monitor is read-only.\n' "$state" "$detail" "$WARN_PERCENT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          for number in "${alerts[@]}"; do
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
