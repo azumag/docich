@@ -2,8 +2,9 @@
 
 The planner uses only the normalized visible TTY map.  It never treats a
 monster, item, visible trap, closed door, or blank/unknown cell as passable.
-It issues at most one movement key per observation, preferring cardinal routes
-and considering diagonals when no cardinal step remains.
+It issues at most one movement key per observation, preferring a currently
+visible reachable down staircase before ordinary exploration frontiers, then
+cardinal routes and diagonals when no cardinal step remains.
 
 This is intentionally less ambitious than human play: getting stuck at a door
 is preferable to silently adding unreviewed door/item/combat semantics.
@@ -197,9 +198,29 @@ class NethackExplorer:
         if memory is None or obs.player is None or obs.prompt != "none":
             return None
 
+        # Progression beats generic coverage once a currently visible down
+        # staircase is reachable through the same reviewed safe cells. Try a
+        # cardinal-only route first, then the existing diagonal fallback. A
+        # remembered-but-no-longer-visible staircase is deliberately excluded:
+        # stale memory may justify one `>` only after the hero actually stands
+        # on that coordinate (#2672), but it must not attract exploration.
+        stair_step = self._plan_step(obs, memory, CARDINAL, stairs_only=True)
+        if stair_step is not None:
+            return stair_step
+        stair_step = self._plan_step(obs, memory, DIRECTIONS, stairs_only=True)
+        if stair_step is not None:
+            return stair_step
+
         return self._plan_step(obs, memory, CARDINAL) or self._plan_step(obs, memory, DIRECTIONS)
 
-    def _plan_step(self, obs: NethackObservation, memory: LevelMemory, directions) -> ExplorationStep | None:
+    def _plan_step(
+        self,
+        obs: NethackObservation,
+        memory: LevelMemory,
+        directions,
+        *,
+        stairs_only: bool = False,
+    ) -> ExplorationStep | None:
         start = obs.player
         assert start is not None
         queue = deque([start])
@@ -218,7 +239,17 @@ class NethackExplorer:
                 distance[nxt] = distance[pos] + 1
                 queue.append(nxt)
 
-        if candidates:
+        visible_stairs = [
+            pos
+            for pos in memory.down_stairs
+            if pos != start and pos in parent and _glyph(obs, pos) == ">"
+        ]
+        if visible_stairs:
+            target = min(visible_stairs, key=lambda p: (distance[p], p[1], p[0]))
+            reason = "reachable visible down-staircase"
+        elif stairs_only:
+            return None
+        elif candidates:
             # Prefer least-visited frontier, then shortest route, then stable
             # coordinate ordering for deterministic tests/replays.
             target = min(
