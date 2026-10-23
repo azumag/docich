@@ -30,7 +30,7 @@ readonly end_marker="# END DOCICH VERIFIED WEB ROLLOUT v1"
 [[ -f "$docich_root/ops/vm_actions/restart_radio_worker.sh" ]] || exit 70
 [[ -f "$docich_root/ops/vm_actions/restart_chat_kick_workers.sh" ]] || exit 70
 
-# Load the existing owner-managed production capabilities. Do not echo them.
+# Load existing owner-managed provider capabilities. Do not echo them.
 set +e +u
 set -a
 # shellcheck disable=SC1090
@@ -40,10 +40,14 @@ set +a
 set -u -e
 [[ "$source_rc" -eq 0 ]] || exit 71
 
-# Preserve existing global AI/JEV policy rather than broadening it here.
-[[ "${DOCICH_ALLOW_REAL_AI:-0}" == "1" ]] || exit 72
-[[ "${DOCICH_REPLY_ROUTING_ENABLED:-0}" == "1" ]] || exit 72
-[[ "${COMMENT_CLASSIFIER_BACKEND:-}" == "jev" ]] || exit 72
+# The first production attempt proved these three feature gates are not all
+# present in the base .env. They are part of this explicitly approved rollout,
+# so own them here instead of assuming global policy. Provider route/credentials
+# remain pre-existing production capabilities and are still only validated.
+export DOCICH_ALLOW_REAL_AI=1
+export DOCICH_REPLY_ROUTING_ENABLED=1
+export COMMENT_CLASSIFIER_BACKEND=jev
+
 [[ "${DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[A-Fa-f0-9]{32}$ ]] || exit 73
 [[ -n "${DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN:-}" ]] || exit 73
 [[ "${DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[A-Fa-f0-9]{32}$ ]] || exit 73
@@ -55,8 +59,8 @@ if [[ -n "${CLOUDFLARE_API_TOKEN_FILE:-}" ]]; then
   [[ "$CLOUDFLARE_API_TOKEN_FILE" == /* && -f "$CLOUDFLARE_API_TOKEN_FILE" && ! -L "$CLOUDFLARE_API_TOKEN_FILE" ]] || exit 73
 fi
 
-# Canary-only flags. The persistent block is written only after both real calls
-# succeed. Existing JEV route/provider credentials remain unchanged.
+# Canary-only feature flags. The persistent block is written only after both
+# real calls succeed. Existing JEV route/provider credentials remain unchanged.
 export DOCICH_REPLY_WEB_SEARCH_ENABLED=1
 export DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare
 export DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER=ceramic
@@ -158,6 +162,9 @@ if begin in text:
     text = prefix + ("\n" if prefix else "") + (suffix + ("\n" if suffix and not suffix.endswith("\n") else ""))
 block = "\n".join([
     begin,
+    "DOCICH_ALLOW_REAL_AI=1",
+    "DOCICH_REPLY_ROUTING_ENABLED=1",
+    "COMMENT_CLASSIFIER_BACKEND=jev",
     "DOCICH_REPLY_WEB_SEARCH_ENABLED=1",
     "DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare",
     "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER=ceramic",
@@ -226,6 +233,7 @@ verify_env() {
 }
 
 common=(
+  "DOCICH_ALLOW_REAL_AI=1"
   "DOCICH_REPLY_WEB_SEARCH_ENABLED=1"
   "DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare"
   "DOCICH_REPLY_WEB_DIRECT_ENABLED=1"

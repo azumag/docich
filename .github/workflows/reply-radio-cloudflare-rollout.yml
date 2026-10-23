@@ -37,7 +37,7 @@ jobs:
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$(git -C candidate rev-parse HEAD)" == "$SHA" ]]
-          [[ "$(cat candidate/ops/vm_actions/reply_radio_cloudflare_rollout_epoch)" == "2026-10-24-v1" ]]
+          [[ "$(cat candidate/ops/vm_actions/reply_radio_cloudflare_rollout_epoch)" == "2026-10-24-v2" ]]
           bash -n candidate/ops/vm_actions/reply_radio_cloudflare_rollout.sh
 
       - name: Configure pinned SSH client
