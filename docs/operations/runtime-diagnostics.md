@@ -769,7 +769,11 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 - `completed_runs`は予算縮退でrecordsが全て省略されても比較できるよう、
   scan中に観測した**全ての**有効terminal recordに対する集計`summary`
   （`terminal_status_counts` / `score_present_count` / `analysis_error_counts`）を
-  常に返す。recordsの省略はこのsummaryに影響しない。terminal recordごとの
+  常に返す。recordsの省略はこのsummaryに影響しない。さらに`recent_runs`として
+  終了日時の新しい最大5件の`ended_at` / `terminal_status` / `max_depth` / `turns` /
+  `progress_max_depth` / `progress_last_turn`だけを固定形で残す（#2666）。recordsが
+  予算で全滅しても「そのrunがDlvl 1を出たか」を診断から判定できるようにするための
+  投影で、run ID・死因・path・自由文は追加しない。terminal recordごとの
   `analysis_error`は、run producerの固定理由コード（`xlogfile-missing` /
   `xlogfile-truncated` / `no-new-player-xlog-record`）のみそのまま投影し、
   未知のproducer値は固定token `other` に集約して出力しない。型も検証し、

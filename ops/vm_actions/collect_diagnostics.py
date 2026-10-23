@@ -10231,6 +10231,11 @@ def _collect_nethack_panes(state_dir, now):
 NETHACK_HISTORY_SCAN_LIMIT = 128
 NETHACK_HISTORY_FILE_BYTES = 65536
 NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+# Compact per-run depth/turn digest that survives the record budget (#2666).
+# ``records`` is the first part of this projection the 36KiB envelope drops, so
+# "did the run ever leave Dlvl 1?" was unanswerable from diagnostics exactly
+# when the envelope was full. Five rows stay well under 1 KiB.
+NETHACK_RECENT_RUN_LIMIT = 5
 # Fixed producer codes from ``docich.nethack_run`` ``_terminal_records_since``;
 # duplicated here (see test_nethack_boundary_diag.py precedent) so the
 # diagnostics projection can aggregate them without importing game modules.
@@ -10351,6 +10356,26 @@ def _nethack_record(raw, daily):
     return result
 
 
+def _nethack_run_digest(record):
+    """Fixed-shape per-run depth/turn row for the budget-proof summary.
+
+    ``_nethack_history_budget`` trims ``records`` first, so on a full envelope
+    the only surviving depth evidence is this digest inside ``summary``
+    (#2666). Values are the same nullable projections ``records`` already
+    carries: no run id, death reason, path or free text is added.
+    """
+    progress = record.get('progress')
+    progress = progress if isinstance(progress, dict) else {}
+    return {
+        'ended_at': record.get('ended_at'),
+        'terminal_status': record.get('terminal_status'),
+        'max_depth': record.get('max_depth'),
+        'turns': record.get('turns'),
+        'progress_max_depth': progress.get('max_depth'),
+        'progress_last_turn': progress.get('last_turn'),
+    }
+
+
 def _nethack_history(state_dir, daily):
     """Open each directory relative to a pinned fd: no symlink traversal/races."""
     result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
@@ -10363,6 +10388,9 @@ def _nethack_history(state_dir, daily):
         'score_present_count': 0,
         'analysis_error_counts': {code: 0 for code in sorted(NETHACK_ANALYSIS_ERRORS)}
         | {'other': 0},
+        # Survives the record trimming below, so depth progress stays readable
+        # from a full envelope (#2666).
+        'recent_runs': [],
     })
     directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
     fd = None
@@ -10412,6 +10440,7 @@ def _nethack_history(state_dir, daily):
                         error = record.get('analysis_error')
                         if error is not None:
                             summary['analysis_error_counts'][error] += 1
+                        summary['recent_runs'].append(_nethack_run_digest(record))
                 except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
                     # A hostile run file must cost one invalid_records entry,
                     # never the whole read-only diagnostics scan (#2515 review).
@@ -10425,6 +10454,8 @@ def _nethack_history(state_dir, daily):
         result['omitted_records'] = max(0, len(records) - limit)
         result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
         if summary is not None:
+            summary['recent_runs'].sort(key=lambda item: item['ended_at'], reverse=True)
+            summary['recent_runs'] = summary['recent_runs'][:NETHACK_RECENT_RUN_LIMIT]
             result['summary'] = summary
     except FileNotFoundError:
         result['status'] = 'missing'
