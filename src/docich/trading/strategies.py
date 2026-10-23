@@ -26,6 +26,11 @@ D = Decimal
 MOMENTUM_MIN_THRESHOLD_BPS = D("100")
 MOMENTUM_VOLATILITY_MULTIPLIER = 2.0
 MOMENTUM_VOLATILITY_BARS = 12
+# Volume confirmation: a momentum breakout is more credible when recent volume
+# exceeds the prior window. The factor is capped so a single volume spike cannot
+# dominate the score; uniform volume yields 1.0 (no change, backward compat).
+MOMENTUM_VOLUME_LOOKBACK = 6
+MOMENTUM_VOLUME_MAX_BOOST = D("1.25")
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,39 @@ def _adaptive_momentum_threshold_bps(
     return min(ceiling, max(floor, adaptive))
 
 
+def _momentum_volume_factor(volumes: Sequence[Decimal], lookback: int) -> Decimal:
+    """Return a capped score multiplier reflecting recent volume confirmation.
+
+    Uniform/insufficient volume returns 1.0 so existing behaviour is unchanged.
+    A recent window whose average volume exceeds the prior window's average
+    yields up to MOMENTUM_VOLUME_MAX_BOOST; a contraction yields 1.0 (we never
+    penalise a signal purely for low volume here).
+    """
+    window = min(lookback, len(volumes) // 2)
+    if window < 2:
+        return D("1")
+    if len(volumes) < window * 2:
+        return D("1")
+    recent = [float(v) for v in volumes[-window:]]
+    prior = [float(v) for v in volumes[-window * 2:-window]]
+    if not recent or not prior:
+        return D("1")
+    recent_avg = sum(recent) / len(recent)
+    prior_avg = sum(prior) / len(prior)
+    if prior_avg <= 0 or not math.isfinite(recent_avg) or not math.isfinite(prior_avg):
+        return D("1")
+    ratio = recent_avg / prior_avg
+    if ratio <= 1.0:
+        return D("1")
+    # Scale [1.0 .. 2.0] ratio into [1.0 .. MAX_BOOST].
+    boost = D("1") + (D(str(min(ratio, 2.0))) - D("1")) * (MOMENTUM_VOLUME_MAX_BOOST - D("1"))
+    if boost > MOMENTUM_VOLUME_MAX_BOOST:
+        boost = MOMENTUM_VOLUME_MAX_BOOST
+    if boost < D("1"):
+        boost = D("1")
+    return boost
+
+
 def scan_opportunities(
     frames: Mapping[str, MarketFrame],
     *,
@@ -192,6 +230,7 @@ def scan_opportunities(
             start = closes[-(policy.momentum_lookback + 1)]
             momentum_bps = (closes[-1] / start - D("1")) * D("10000")
             momentum_threshold = _adaptive_momentum_threshold_bps(closes, policy)
+            volume_factor = _momentum_volume_factor(frame.volumes, MOMENTUM_VOLUME_LOOKBACK)
             if momentum_bps >= momentum_threshold:
                 strategy_id = "momentum-v1"
                 opportunities.append(
@@ -200,7 +239,7 @@ def scan_opportunities(
                         strategy_id=strategy_id,
                         symbol=symbol,
                         side="buy",
-                        score=_score(float(momentum_bps / (momentum_threshold * D("2")))),
+                        score=_score(float(momentum_bps / (momentum_threshold * D("2"))) * float(volume_factor)),
                         expected_edge_bps=momentum_bps / D("2"),
                         max_notional_fraction=policy.max_notional_fraction,
                         expires_at=expires_at,

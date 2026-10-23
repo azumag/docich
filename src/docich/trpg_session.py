@@ -20,6 +20,9 @@ MAX_LINES = 128
 HOLD_SECONDS = {"SCENE": 3, "RESOLVE": 3, "REVEAL": 10}
 TERMINAL = {"END", "FAILED", "TIMEOUT"}
 IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
+# The shared audio sink refuses a fence whose lifetime exceeds 120 seconds;
+# a queued line may only start while that window is open.
+FENCE_LIFETIME_S = 120
 
 
 def settings(g):
@@ -237,10 +240,17 @@ def announce(g, data, audio_enabled, path):
     messages = ([('intro', narration.intro_text())] if intro else [])
     if state["phase"] in texts:
         messages.append(texts[state["phase"]])
+    # Bind the line to this run so a stopped or superseded run is never
+    # spoken, and scope the same-text suppression to this run+phase so a
+    # legitimate repeat in a later scene or a later run is still spoken.
+    identity = {k: data.get(k) for k in IDENTITY_KEYS}
+    fence = {**identity, "expires_at": time.time() + FENCE_LIFETIME_S}
+    scope = f"trpg:{data['runtime_id']}:{data['generation']}:{state['phase']}:{data['phase_at']}"
     for kind, text in messages:
         narration.publish(g, kind=kind, title=narration.TITLE, overlay_body=text,
                           speech_text=text, request_id=f"{data['runtime_id']}:{data['phase_at']}",
-                          audio_enabled=audio_enabled)
+                          audio_enabled=audio_enabled, runtime_fence=fence,
+                          dedup_scope=scope)
 
 
 def tick(g, path, expected, *, audio_enabled=False, now=None, stop_reason=None, owner_request_id=None):

@@ -1276,7 +1276,7 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
             header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
     assert policy._chikujou_step(ask, mem, sub) == [policy.pad('a')]
     from test_hanjuku_multi_chikujou import line
-    confirm = S(lines=[line(24, 199, '5Gかかりますが')], hand=None, kind='yes_no',
+    confirm = S(lines=[line(32, 199, '5Gかかりますが')], hand=None, kind='yes_no',
                 text='アルマムーンじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!',
                 header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
     assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
@@ -1446,7 +1446,7 @@ def test_chikujou_refused_home_can_confirm_fresh_alternative(monkeypatch):
                 text='これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
     assert policy._chikujou_step(refused, mem, sub) == [policy.pad('a')]
     from test_hanjuku_multi_chikujou import line
-    confirm = S(lines=[line(24, 199, '5Gかかりますが')], hand=None, kind='yes_no', header={'gold': 96},
+    confirm = S(lines=[line(32, 199, '5Gかかりますが')], hand=None, kind='yes_no', header={'gold': 96},
                 text='ジョンリギじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!')
     assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
     assert sub['quoted_cost'] == 5

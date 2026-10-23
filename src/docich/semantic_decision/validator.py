@@ -96,8 +96,13 @@ def validate_response(data, request, profile: RouteProfile) -> dict:
             raise ValueError("invalid_response")
         if type(probabilities) is not dict or set(probabilities) != set(labels):
             raise ValueError("invalid_response")
+        # Providers may publish each probability rounded to 2 decimal places, so
+        # the reported sum can miss 1.0 by up to 0.005 per label (observed: 0.99
+        # on jev-1.13.0 with 14 labels, #1263). The cap keeps unnormalised sums
+        # (e.g. all-zero probabilities) rejected for any label count.
+        sum_tol = min(0.005 * len(probabilities), 0.05) + 1e-9
         if (not all(number(p) for p in probabilities.values())
-                or not math.isclose(sum(probabilities.values()), 1, abs_tol=1e-5)
+                or not math.isclose(sum(probabilities.values()), 1, abs_tol=sum_tol)
                 or probabilities[choice] + 1e-7 < max(probabilities.values())):
             raise ValueError("invalid_response")
         clean[key] = {"type": "choice", "choice": choice, "confidence": confidence,

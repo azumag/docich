@@ -588,6 +588,130 @@ def test_rollback_failed_start_stays_latched_while_the_plane_needs_recovery(tmp_
     assert json.loads(manager.path.read_text())["status"] == "failed"
 
 
+def test_settle_released_failure_retires_the_recorded_failed_owner(tmp_path):
+    # #1992: the rotation's released-skip path calls the settle with the
+    # state's own recorded request once its ledger proof passes.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+
+    assert manager.settle_released_failure(request_id) is True
+
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "released-failure-before-retry"
+    assert state["rotation_request_id"] == request_id
+    assert "settle_refused_reason" not in state
+    # The terminal receipt stays the evidence and is never rewritten.
+    assert manager.store.receipts.load(request_id)["status"] == "failed"
+
+
+def test_settle_released_failure_retires_when_the_receipt_was_pruned(tmp_path):
+    # The regression this fix exists for: the 2026-10-16 receipt is old enough
+    # for the bounded receipt store to prune, and delegating to
+    # reconcile_failed_start (which demands it) latched the owner forever.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    (manager.store.receipts.directory / f"{request_id}.json").unlink()
+    assert manager.store.receipts.load(request_id) is None
+
+    assert manager.settle_released_failure(request_id) is True
+
+    assert json.loads(manager.path.read_text())["status"] == "interrupted"
+
+
+def test_settle_released_failure_refuses_a_newer_requests_release(tmp_path):
+    # #2352 discipline: a release record for a newer request of this corner
+    # (the one run_rotation refused before any state write) is never
+    # permission to retire the older recorded owner.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    before = json.loads(manager.path.read_text())
+
+    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == before["status"] == "failed"
+    assert state["settle_refused_reason"] == "other-owner"
+
+
+def test_settle_released_failure_refuses_an_open_receipt(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    receipt = manager.store.receipts.load(request_id)
+    receipt["status"] = "queued"
+    receipt["result"] = None  # a non-terminal receipt carries no result
+    manager.store.receipts.save(receipt)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "receipt-open"
+
+
+def test_settle_released_failure_refuses_while_the_view_owns_the_canonical(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    canonical["active"] = {**canonical["active"], "game": VIEW_NAME}
+    manager.store.canonical.save(canonical)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "canonical-owns-view"
+
+
+def test_settle_released_failure_refuses_an_unstable_canonical(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    canonical.update(phase="failed", operation="switch", request_id=str(uuid.uuid4()),
+                     deadline_at=None)
+    manager.store.canonical.save(canonical)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] in {"canonical-unstable", "canonical-busy"}
+
+
+@pytest.mark.parametrize("active_key", ["started_at", "view_runtime_identity"])
+def test_settle_released_failure_ignores_a_state_that_became_active(tmp_path, active_key):
+    # Each activation guard is pinned on its own: the request still matches,
+    # so only the guard under test can produce the refusal.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    state = json.loads(manager.path.read_text())
+    if active_key == "started_at":
+        state["started_at"] = 1000.5
+    else:
+        state["view_runtime_identity"] = {"game": VIEW_NAME, "runtime_id": "g9-x",
+                                          "generation": 9, "lease_id": str(uuid.uuid4())}
+    manager._save(state)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "failed"
+    assert state["settle_refused_reason"] == "became-active"
+
+
+def test_settle_released_failure_ignores_a_terminal_state(tmp_path):
+    # The recorded request still matches, so the status guard is what refuses.
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    state = json.loads(manager.path.read_text())
+    state["status"] = "completed"
+    manager._save(state)
+
+    assert manager.settle_released_failure(request_id) is False
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "completed"
+    assert state["settle_refused_reason"] == "not-failed"
+
+
+def test_adapter_settle_released_failure_delegates_to_the_manager(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    assert adapter.state_path == manager.path
+
+    assert adapter.settle_released_failure(request_id) is True
+
+    assert json.loads(manager.path.read_text())["status"] == "interrupted"
+
+
 def _runtime(identity, names):
     return {
         **identity,

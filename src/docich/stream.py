@@ -137,10 +137,13 @@ def build_ffmpeg_cmd(
     if overlay_filter:
         filters.append(overlay_filter)
     if filters:
+        # フィルタ (docichcc / drawtext) は 1 スレッドで十分。過剰な並列を抑制 (#970)。
+        cmd += ["-filter_threads", "1"]
         cmd += ["-vf", ",".join(filters)]
 
     gop = s.framerate * s.gop_seconds
     cmd += [
+        "-threads", str(s.threads),
         "-c:v", "libx264", "-preset", s.preset, "-tune", "zerolatency",
         "-b:v", s.video_bitrate, "-maxrate", s.maxrate, "-bufsize", s.bufsize,
         "-pix_fmt", "yuv420p", "-g", str(gop),

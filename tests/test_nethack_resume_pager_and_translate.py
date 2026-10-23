@@ -33,6 +33,10 @@ def tty_frame(kind="top", *, page=0, player=False, status=True):
         lines[4] = "--More--"
     elif kind == "gameplay":
         lines[0] = "You hear a distant sound."
+    elif kind == "full_row":
+        # ``more()`` keeps the marker on the message row while the cursor is
+        # below CO-8, so a ~71-column statement plus the marker fills row 0.
+        lines[0] = "x" * 71 + "--More--"
     else:
         raise AssertionError(kind)
     lines[10] = " ---------"
@@ -98,6 +102,13 @@ def test_distinct_pagers_share_the_startup_action_budget():
 
 @pytest.mark.parametrize("limit", ["time", "observations", "actions"])
 def test_resume_pager_never_rearms_an_exhausted_budget(limit):
+    """#2271: post-exhaustion pagers delegate; they never renew the budget.
+
+    The gate keeps every counter and its ``exhausted`` state; only the
+    reviewed policy surface (one space per distinct page) takes over, so a
+    resumed run cannot be wedged by a pager the gate itself answered before
+    the budget ran out.
+    """
     clock = [0.0]
     startup = NethackStartup(enabled=True, clock=lambda: clock[0])
     assert startup.consider(normalize_tty("Loading")) == []
@@ -109,10 +120,13 @@ def test_resume_pager_never_rearms_an_exhausted_budget(limit):
         startup.actions = startup.MAX_ACTIONS
         question = normalize_tty("Shall I pick a character for you? [yn] (y)")
         assert startup.consider(question) == []
-    assert startup.consider(normalize_tty(tty_frame())) == []
+    if startup.state != "exhausted":
+        # The frame that crosses the time/observation budget is consumed by the
+        # budget check itself; the next observation is already post-exhaustion.
+        assert startup.consider(normalize_tty(tty_frame(status=False))) == []
     assert startup.state == "exhausted"
     before = dict(startup.__dict__)
-    assert startup.consider(normalize_tty(tty_frame(page=2))) == []
+    assert startup.consider(normalize_tty(tty_frame(page=2))) is None
     assert startup.__dict__ == before
 
 
@@ -269,3 +283,77 @@ def test_accepted_restore_allows_pager_but_revalidates_frame():
     assert brain.startup.actions == 2
     assert brain.decide(observation(tty_frame("gameplay", player=True)))
     assert brain.startup.state == "gameplay"
+
+
+def test_full_width_message_row_with_trailing_marker_is_a_pager():
+    """#2271: the wrap heuristic must not hide a same-row ``--More--``.
+
+    A 71-column statement plus the marker fills row 0, and the row under it is
+    the map, so the message looked wrapped: the frame classified ``unknown``
+    forever, no key was ever sent, and the run stalled until the corner's
+    stall guard fired. Only a trailing bare marker qualifies; questions keep
+    their precedence.
+    """
+    obs = normalize_tty(tty_frame("full_row"))
+    assert len(obs.message) == 79
+    assert obs.prompt == "more"
+    startup = NethackStartup(enabled=True, clock=lambda: 0.0)
+    assert [a.text for a in startup.consider(obs)] == [" "]
+    assert startup.actions == 1
+
+
+def test_wrapped_question_with_trailing_marker_is_still_not_a_pager():
+    lines = tty_frame("full_row").splitlines()
+    lines[0] = "Really attack the " + "very " * 12 + "kitten? [yn] (n)"
+    obs = normalize_tty("\n".join(lines))
+    assert len(obs.message) >= 79
+    assert obs.prompt == "unknown"
+
+
+def test_exhausted_gate_delegates_the_pager_through_the_brain():
+    """The end-to-end #2271 path: resume, budget spent, pager still advanced."""
+    brain = startup_brain()
+    # Spend the startup budget on an unrecognized screen, as the stuck runs did.
+    assert brain.decide(observation("Character creation help screen")) == []
+    brain.startup.state = "exhausted"
+    page = observation(tty_frame(page=7))
+    actions = brain.decide(page)
+    assert actions is not None and [a.text for a in actions] == [" "]
+    assert brain.last_progress_decision.intent == "advance_message"
+    # The gate itself still sends nothing and keeps its exhausted state.
+    assert brain.startup.state == "exhausted"
+    assert brain.startup.actions == 0
+    assert brain.validate_action(actions[0], page)
+    brain.action_sent(actions[0])
+    # The same unchanged page is not paged twice: the resolver holds instead.
+    assert brain.decide(page) == []
+    assert brain.last_progress_decision.intent == "progress_blocked"
+
+
+def test_unproven_pager_never_leaves_the_exhausted_gate(capsys):
+    brain = startup_brain()
+    brain.startup.state = "exhausted"
+    page = observation(tty_frame(status=False))
+    assert brain.decide(page) == []
+    assert brain.startup.state == "exhausted"
+
+
+def test_rejected_plan_reports_one_bounded_reason(capsys):
+    """A silently rejected plan produced the same 0-action line as a hold."""
+    brain = startup_brain()
+    actions = brain.decide(observation("Restoring save file...--More--"))
+    assert not brain.validate_action(actions[0], observation("Restore save? [yn]"))
+    err = capsys.readouterr().err
+    assert "[nethack-plan] rejected=frame_changed streak=1" in err
+    # The reason is an enum: no terminal text from either frame appears.
+    assert "Restore" not in err and "save" not in err
+    # The streak keeps the trace bounded; a second rejection is suppressed.
+    brain.discard_action_plan()
+    assert not brain.validate_action(actions[0], observation("Restore save? [yn]"))
+    assert capsys.readouterr().err == ""
+    assert brain._plan_reject_streak == 2
+    # Accepting a fresh plan clears the streak so the next rejection is loud.
+    restore = observation("Restoring save file...--More--")
+    action = brain.decide(restore)[0]
+    assert brain.validate_action(action, restore)
+    assert brain._plan_reject_streak == 0

@@ -36,6 +36,15 @@ TITLE_SYNC_SKIP_REASONS = frozenset({
 PAPER_CATEGORY_ID = "509670"
 PAPER_CATEGORY_NAME = "Science & Technology"
 
+# ``mystery-view`` (AI探偵ミステリー, #684) is likewise synthetic.  The corner is
+# a participatory talk show rather than a playable game, so it follows the
+# Just Chatting category for the 30 minutes it owns the stream (2026-10-21
+# owner request: the title/category must follow the corner).  Never leave the
+# displaced game's metadata on air while the case board is showing.
+MYSTERY_VIEW_NAME = "mystery-view"
+MYSTERY_CATEGORY_ID = "509658"
+MYSTERY_CATEGORY_NAME = "Just Chatting"
+
 # ``external-video-view`` (the OBS-sourced special corner) is likewise
 # synthetic.  Its title, suffix and category are operator settings
 # (``special_corner.json``, edited in the WebUI); the FLYHOME_* values are the
@@ -51,6 +60,7 @@ VIEWER_GAME_NAMES = {
     "ninvaders": "Space Invaders", "nsnake": "Snake",
     "pacman4console": "Pac-Man", "robots": "Robots",
     "paper-view": "ペーパートレード",
+    MYSTERY_VIEW_NAME: "AI探偵ミステリー",
     FLYHOME_VIEW_NAME: "Fly Me To The Home!",
 }
 
@@ -63,8 +73,8 @@ def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     """
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
-    suffix = {"paper-view": "AIの検証配信",
-              SPECIAL_VIEW_NAME: FLYHOME_TITLE_SUFFIX}.get(game, "AIプレイ配信")
+    from .stream_title_context import challenge_phrase
+    suffix = FLYHOME_TITLE_SUFFIX if game == SPECIAL_VIEW_NAME else challenge_phrase(game)
     if g is not None and game == SPECIAL_VIEW_NAME:
         settings = _special_settings(g)
         return ["--activity", settings["title"], "--strategy", settings["title_suffix"]]
@@ -307,6 +317,23 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
     )
 
 
+def announce_stream_mystery(g: GlobalConfig, *, spawn=None) -> bool:
+    """Move the stream to the AI探偵ミステリー title and Just Chatting category.
+
+    The case board is a participatory talk show, not a playable game, so it has
+    no ``config/games`` row to resolve.  The explicit-category path keeps the
+    displaced game's metadata from staying on air and the normal restore hook
+    announces the previous game again when the corner ends.
+    """
+    return _announce_explicit_category(
+        g,
+        category_id=MYSTERY_CATEGORY_ID,
+        category_name=MYSTERY_CATEGORY_NAME,
+        view=MYSTERY_VIEW_NAME,
+        spawn=spawn,
+    )
+
+
 def announce_stream_special(g: GlobalConfig, *, spawn=None, settings=None) -> bool:
     """Move the stream to the special corner's configured category and title.
 
@@ -341,6 +368,8 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
 
     if game == PAPER_VIEW_NAME:
         return announce_stream_paper(g, spawn=spawn)
+    if game == MYSTERY_VIEW_NAME:
+        return announce_stream_mystery(g, spawn=spawn)
     if game == SPECIAL_VIEW_NAME:
         return announce_stream_special(g, spawn=spawn)
     return announce_stream_game(g, game, spawn=spawn)

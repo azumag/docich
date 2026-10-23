@@ -21,11 +21,10 @@ from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _c
 from ..os_layer.world import NAME
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
-                                WAGE_RESERVE, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                WAGE_SPEND_HOLD, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
-                                _egg_estimate, _egg_measured_cost, _egg_recovery_targets, _egg_recovery_wage_floor,
-                                _hero_egg_wage_floor, _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
-                                _soldier_wage_hold,
+                                _egg_estimate, _egg_measured_cost, _egg_recovery_targets,
+                                _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
                                 _low_army_planned, _low_army_refill, _month_held_reserve, _month_key, _plan,
                                 _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
@@ -339,11 +338,11 @@ def month_step(screen: Screen, mem):
         if type(gold) is not int:
             return []
         shop['recruit_reserve'] = (0 if shop.get('recruit') == 'done' else
-                                   min(RECRUIT_COST, max(0, gold - _month_held_reserve(shop) - WAGE_RESERVE)))
+                                   min(RECRUIT_COST, max(0, gold - _month_held_reserve(shop))))
         if not shop.get('soldiers_done'):
             shop['soldiers'] = min(shop.get('soldiers', 0),
                                    max(0, gold - _month_held_reserve(shop)
-                                       - shop['recruit_reserve'] - WAGE_RESERVE))
+                                       - shop['recruit_reserve']))
             shop['soldiers_done'] = shop['soldiers'] == 0
         shop['recruit_measured_budget'] = True
     if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
@@ -439,16 +438,16 @@ def _refill_month_outcome(mem, shop, header):
         elif type(gold) is not int or repair is None:
             refill_outcome(mem, shop, 'unverified', reason='所持金または修理予約を読めないため補充しない')
         else:
-            held = {'wage_hold': _soldier_wage_hold(mem), 'repair': repair,
+            held = {'wage_hold': WAGE_SPEND_HOLD, 'repair': repair,
                     'egg_reserve': shop.get('reserve', 0), 'recruit_reserve': shop.get('recruit_reserve', 0),
                     'egg': shop.get('egg'), 'recruit': shop.get('recruit'),
                     'spendable': _soldier_spendable(mem, shop, header)}
-            if gold - held['wage_hold'] - repair <= 0:
+            if gold - repair <= 0:
                 refill_outcome(mem, shop, 'insufficient_funds', **held,
-                               reason='兵士が不足しているが、賃金予備と修理費を残すと補充に回せる資金がない')
+                               reason='兵士が不足しているが、修理費を残すと補充に回せる資金がない')
             else:
                 refill_outcome(mem, shop, 'not_attempted', **held,
-                               reason='兵士が不足し賃金予備・修理費の外に資金があったが、他の予約・優先順位で当月は補充しなかった')
+                               reason='兵士が不足し修理費の外に資金があったが、他の予約・優先順位で当月は補充しなかった')
     summary['outcome'] = shop.get('refill_outcome')
     return summary
 
@@ -490,18 +489,18 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         if sub == 'egg' and status == 'check':
             # After the soldiers: recover the eggs only from what is left.
             cost = _egg_estimate(shop)
-            floor = WAGE_RESERVE
+            floor = WAGE_SPEND_HOLD
             if NAME in _depleted_eggs(mem):
-                # Hero-only recovery (g604): 50G over this month's real payroll.
-                cost, floor = min(cost, EGG_RECOVER_COST), _hero_egg_wage_floor(mem)
+                # Hero-only recovery (g604): 50G plus repair reservations.
+                cost, floor = min(cost, EGG_RECOVER_COST), WAGE_SPEND_HOLD
             elif any(observed_uses((mem.get('egg_uses') or {}).get(n)) in (0, 1)
                      for n in _egg_recovery_targets(mem)):
-                cost, floor = min(cost, EGG_RECOVER_COST), _egg_recovery_wage_floor(mem)
+                cost, floor = min(cost, EGG_RECOVER_COST), WAGE_SPEND_HOLD
             if type(gold) is not int or gold < cost + floor + shop.get('hero_repair_reserve', 0):
                 shop[sub] = 'skipped'
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'cost': cost, 'gold': gold},
-                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                        reason='兵士補充の後の残金が卵の回復費と修理予約に足りないため見送る')
                 continue
         elif sub == 'recruit':
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
@@ -509,13 +508,13 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 _defer_recruit_cash(mem, shop, gold, evidence)
                 continue
             # Owner rule (2026-09-27): recruit only when the soldiers got
-            # their full 99 and the fee plus the wage reserve is still left.
+            # their full 99 and the fee plus necessary reservations is still left.
             floor = _recruit_cash_floor(shop)
             if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_ENOUGH
                     and not _soldiers_enough(mem, shop, screen.header))
                     or floor is None or gold < floor):
                 if (shop.get('recruit_priority') and type(gold) is int
-                        and gold >= RECRUIT_COST + WAGE_RESERVE + _house_repair_reserve(shop)
+                        and gold >= RECRUIT_COST + _house_repair_reserve(shop)
                         and shop.get('egg') in ('pending', 'check')):
                     # g498: estimate 150G, actual recovery only 50G; the
                     # early check must not permanently skip recruitment.
@@ -528,14 +527,12 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
+                        reason=('募集費と卵回復・修理の予約が足りないため資金を温存して次月へ待つ'
                                 if shop.get('recruit_priority') else
-                                '必要な兵士の補充と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
+                                '必要な兵士の補充と他の必要予約の後に募集費が残っていないため将軍を募集しない'))
                 continue
         elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
-              + (_egg_recovery_wage_floor(mem) if low_egg else
-                 WAGE_RESERVE if shop.get('hero_repair_reserve') or shop.get('egg_priority')
-                 or shop.get('egg_before_recruit') else 0)):
+              + 0):
             shop[sub] = 'skipped'
             _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                     reason='所持金が卵の回復費に足りないため見送る')
@@ -833,12 +830,17 @@ def _chikujou_step(screen, mem, sub):
         if sub.get('decline_sent'):
             return [pad('b')]
         # The aggregate joins readable glyphs: an occluded 16G becomes 6G
-        # or1G. The native price starts at x24/y199; preserve every raw cell
-        # and reject gaps/unknown digits instead of authorizing a false quote.
+        # or1G. The native price field is two cells wide from x24/y199 and
+        # right-aligned: 16G starts at x24, but 5G is a blank cell then 5 at
+        # x32 (g889 live frame). Preserve every raw cell, accept only that
+        # one-digit shape, and reject gaps/unknown digits instead of
+        # authorizing a false quote.
         rows = [r for r in screen.lines if r.y == 199]
-        quote = (re.fullmatch(r'([0-9０-９]+)Gかかりますが.*', rows[0].span(24, 176))
-                 if len(rows) == 1 and any(x == 24 and ch in '0123456789０１２３４５６７８９'
-                                           for x, ch in rows[0].cells) else None)
+        digits = '0123456789０１２３４５６７８９'
+        first = rows[0].cells[0] if len(rows) == 1 and rows[0].cells else None
+        quote = (re.fullmatch(r'([0-9０-９]' + ('' if first[0] == 32 else '+') + r')Gかかりますが.*',
+                              rows[0].span(24, 176))
+                 if first and first[0] in (24, 32) and first[1] in digits else None)
         gold = (screen.header or {}).get('gold')
         cost = int(quote[1].translate(str.maketrans('０１２３４５６７８９', '0123456789'))) if quote else None
         reserve = _chikujou_reserve(mem, mem.get('shop') or {})
@@ -1087,14 +1089,14 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # All paid recruits need the actual balance, not only broken heroes.
         previous_soldiers = shop.get('soldiers', 0)
         shop['soldiers'] = min(previous_soldiers, max(0, gold
-                               - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
+                               - _month_held_reserve(shop)
                                - shop.get('recruit_reserve', 0)))
         shop['soldiers_done'] = shop['soldiers'] == 0
         if paid and sub['kind'] == 'recruit':
             _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),
                     observed_metric={'gold_after': gold, 'soldiers_before': previous_soldiers,
-                                     'soldiers': shop['soldiers'], 'wage_reserve': _egg_recovery_wage_floor(mem)},
-                    reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
+                                     'soldiers': shop['soldiers'], 'wage_reserve': WAGE_SPEND_HOLD},
+                    reason='募集後の実残金から兵士予算を再計算し、予約済みの必要費を二重に使わない')
     if paid and sub['kind'] == 'egg':
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
                  else sub.get('individual_actor') if _individual_egg_selected(mem, sub) else None)
@@ -1120,7 +1122,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             mem.pop('egg_recheck', None)
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
-                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - _egg_recovery_wage_floor(mem) - shop.get('reserve', 0)
+                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - shop.get('reserve', 0)
                     - _house_repair_reserve(shop) - shop.get('recruit_reserve', 0)))
                 shop['soldiers_done'] = shop['soldiers'] == 0
     if sub['kind'] == 'chikujou':

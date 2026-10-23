@@ -202,6 +202,25 @@ class TestPublicTradingStatus(unittest.TestCase):
         self.assertNotIn("api_key", blob.lower())
         self.assertNotIn("must-not-leak", blob)
 
+    def test_freshness_summary_aggregates_per_market_quality(self):
+        payload = build_public_status(
+            worker_state="idle", last_cycle_at=123.0, eligible_symbols=["BTC/JPY", "ETH/JPY"],
+            capital_reference=D("100000"), deployed_reference=D("0"), open_positions={},
+            recent_fills=[], skipped_reason_codes=[],
+            market_freshness={
+                "BTC/JPY": {"quality": "fresh"},
+                "ETH/JPY": {"quality": "stale"},
+                "GONE/JPY": {"quality": "missing"},
+            },
+        )
+        summary = payload["freshness_summary"]
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["fresh"], 1)
+        self.assertEqual(summary["stale"], 1)
+        self.assertEqual(summary["missing"], 1)
+        self.assertEqual(summary["stale_symbols"], ["ETH/JPY"])
+        self.assertEqual(summary["unavailable_symbols"], ["GONE/JPY"])
+
     def test_status_file_is_atomic_private_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run" / "trading" / "status.json"

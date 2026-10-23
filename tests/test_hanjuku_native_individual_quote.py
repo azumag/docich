@@ -117,13 +117,13 @@ def test_saved_unbound_hero_flag_cannot_authorize_a_new_flat_fee():
     assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('b')]
 
 
-def test_flat_fee_still_preserves_a_known_full_payroll_above_30g():
+def test_flat_fee_ignores_the_known_full_payroll():
     m=selected();m['recruit_roster']={'chapter':1,'month':'3-12','tick':1200,'identity':dict(ID),
         'complete':True,'names':['ココット','リーキ','アルテミス','ゼウス'],
         'wages':{'ココット':15,'リーキ':15,'アルテミス':15,'ゼウス':15}}
     m['month_sub']['gold_before']=109;s=fee();s.header['gold']=109
-    assert p._egg_recovery_step(s,m,m['month_sub'])==[p.pad('b')]
-    assert not m['month_sub'].get('quoted_cost')
+    assert p._egg_recovery_step(s,m,m['month_sub'])==[p.pad('a')]
+    assert m['month_sub'].get('quoted_cost')==50
 
 
 def test_reselecting_an_unread_hero_row_drops_the_prior_flat_fee_binding():

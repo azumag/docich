@@ -10,6 +10,10 @@ The plan targets the `main` production branch and disables branch previews. It s
 
 ## Build and deploy commands
 
+Use Node.js 22.23.4 from this directory's `.node-version` and install the committed lockfile with `npm ci`. If the Cloudflare project has an explicit `NODE_VERSION` build variable, align it to 22.23.4 before the next build; changing `builds-plan.json` does not update Cloudflare settings.
+
+The pinned Cf beta.12 compatibility patches are retained. Overrides update only `sharp` under its older Miniflare 5.20260930.0-alpha and 5.20261001.0-alpha dependency trees to 0.35.5; they do not replace Cf or force a new Miniflare API into it. Recheck whether these overrides are still needed when upgrading Cf.
+
 With the project root as the working directory, the build command is:
 
 ```sh

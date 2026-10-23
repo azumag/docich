@@ -43,6 +43,23 @@ def decide(observation, *, inventory=()):
     return CanaryTacticalPolicy().decide(observation, inventory=inventory)
 
 
+def test_descends_from_a_remembered_down_staircase():
+    policy = CanaryTacticalPolicy()
+    first = policy.decide(obs("", ("....", ".@>.", "....")))
+    assert first.intent == "explore_step"
+    on_stairs = obs("", ("....", "..@.", "...."))
+    decision = policy.decide(on_stairs)
+    assert decision.intent == "descend_stairs"
+    assert tuple(a.text for a in decision.actions) == (">",)
+    policy.assert_safe(decision)
+
+
+def test_does_not_descend_without_the_remembered_stair_tile():
+    policy = CanaryTacticalPolicy()
+    decision = policy.decide(obs("", ("....", "..@.", "....")))
+    assert decision.intent != "descend_stairs"
+
+
 def test_attacks_adjacent_cardinal_monster():
     decision = decide(obs("", ("....", ".@k.", "....")))
     assert decision.intent == "attack_adjacent"

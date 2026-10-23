@@ -314,9 +314,10 @@ class NethackCornerManager(RetroCornerManager):
             if text is not None and text != last_text:
                 last_text = text
                 unchanged_since = now
+            unchanged_seconds = (now - unchanged_since).total_seconds()
             if text is not None and _is_terminal_screen(text):
                 reason = "terminal"
-            elif (now - unchanged_since).total_seconds() >= stall_s:
+            elif unchanged_seconds >= stall_s:
                 reason = "stalled"
             else:
                 continue
@@ -325,6 +326,11 @@ class NethackCornerManager(RetroCornerManager):
                 if latest.get("status") != "active":
                     return self._state_result(latest)
                 latest["finish_reason"] = reason
+                # Snapshot the same observation that chose this boundary.
+                # Failed captures also count toward the existing stall guard;
+                # keep their readability separate from the elapsed timer.
+                latest["screen_unchanged_seconds"] = max(0.0, unchanged_seconds)
+                latest["screen_readable"] = text is not None
                 return self._finish_locked(latest, now)
 
     def recover_failed_rotation(self) -> CornerResult:

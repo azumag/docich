@@ -54,7 +54,7 @@ def test_read_zero_cancels_inspection_then_replaces_adjusted_zero_with_affordabl
     assert p.month_step(s,mem)==[p.pad('b')]
     assert mem['army_count_check']['result']=='measured'
     assert not mem['shop'].get('soldier_receipt')
-    assert mem['shop']['soldiers']==42  # 72G minus full30G wage floor
+    assert mem['shop']['soldiers']==50  # 72G, no wage floor
     assert mem['shop']['recruit']=='deferred_army'
     assert mem['shop']['recruit_reserve']==0
     assert p.month_step(screen(),mem)==[p.pad('a')]
@@ -99,8 +99,8 @@ def test_no_runtime_identity_or_header_cannot_bind_a_count_inspection():
     assert monthly._month_army_count_check(s,memory(),{}) is None
 
 
-@pytest.mark.parametrize('gold,reserve,repair,wages,expected',[(45,15,0,30,15),(100,50,0,30,50),
-                                                           (100,50,50,30,20),(70,0,0,62,40),
+@pytest.mark.parametrize('gold,reserve,repair,wages,expected',[(45,15,0,30,45),(100,50,0,30,50),
+                                                           (100,50,50,30,50),(70,0,0,62,50),
                                                            (500,50,0,30,99)])
 def test_zero_refill_keeps_repair_and_the_shortfall_floor_ahead_of_the_egg(
         monkeypatch,gold,reserve,repair,wages,expected):
@@ -156,7 +156,7 @@ def test_measured_empty_army_gets_a_plan_even_before_a_future_chart_purchase(mon
     shop=economy._plan(mem,screen().header)
     assert shop is not None
     economy._low_army_refill(mem,shop,screen().header)
-    assert shop['soldiers']==42 and shop['soldiers_done'] is False
+    assert shop['soldiers']==50 and shop['soldiers_done'] is False
 
 
 def test_real_policy_snapshot_distinguishes_unread_stock_from_zero_purchase_plan():
@@ -377,7 +377,7 @@ def test_skipped_egg_priority_does_not_cancel_the_measured_zero_army_refill():
     p.month_step(s,mem)
     mem['shop'].update(egg_priority=True, egg='skipped', reserve=20)
     assert p.month_step(screen(),mem)==[p.pad('a')]
-    assert mem['shop']['soldiers']==42 and mem['shop']['soldiers_done'] is False
+    assert mem['shop']['soldiers']==50 and mem['shop']['soldiers_done'] is False
     assert not mem.get('month_exit')
     assert mem['shop']['reserve']==0
     assert mem['shop']['egg']=='skipped' and mem['soldiers_seen']==0

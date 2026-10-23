@@ -77,6 +77,58 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertEqual([a.text for a in decision.actions], ["n"])
         assert_p3b_safe(decision)
 
+    def test_descends_only_from_a_remembered_down_staircase(self) -> None:
+        # The '>' is seen one frame before the hero steps on it; the current
+        # frame only shows '@' because the hero glyph hides the terrain.
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        on_stairs = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = self.policy.decide(on_stairs)
+        self.assertEqual(decision.layer, "midlevel")
+        self.assertEqual(decision.intent, "descend_stairs")
+        self.assertFalse(decision.requires_llm)
+        self.assertEqual([action.text for action in decision.actions], [">"])
+        assert_p3b_safe(decision)
+        # The production resolver leaves the reviewed descend action intact.
+        from docich.nethack_progress import NethackProgressResolver
+        resolver = NethackProgressResolver()
+        resolved = resolver.resolve(decision, on_stairs, self.policy.explorer)
+        self.assertEqual(resolved.intent, "descend_stairs")
+        self.assertEqual([action.text for action in resolved.actions], [">"])
+
+    def test_does_not_descend_without_a_remembered_stair_tile(self) -> None:
+        on_floor = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = self.policy.decide(on_floor)
+        self.assertNotEqual(decision.intent, "descend_stairs")
+
+    def test_stair_memory_is_per_dungeon_level(self) -> None:
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        deeper = frame(map1="...@..").replace("Dlvl:2", "Dlvl:3")
+        decision = self.policy.decide(normalize_tty(deeper, cols=80, rows=5))
+        self.assertNotEqual(decision.intent, "descend_stairs")
+
+    def test_refused_descent_forgets_the_tile_and_is_not_retried(self) -> None:
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        refused = normalize_tty(frame("You can't go down here.", map1="...@.."),
+                                cols=80, rows=5)
+        self.assertNotEqual(self.policy.decide(refused).intent, "descend_stairs")
+        after = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        self.assertNotEqual(self.policy.decide(after).intent, "descend_stairs")
+
+    def test_production_safety_rejects_descend_off_the_stair_tile(self) -> None:
+        from docich.nethack_progress import assert_production_safe
+        on_stairs = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = PolicyDecision(
+            "midlevel", "descend_stairs", "remembered staircase",
+            (Action(type="text", text=">"),),
+        )
+        assert_production_safe(decision, on_stairs, down_stairs={on_stairs.player})
+        with self.assertRaises(RuntimeError):
+            assert_production_safe(decision, on_stairs, down_stairs={(99, 99)})
+        prompting = normalize_tty(frame("Really attack the goblin? [yn]", map1="...@.."),
+                                  cols=80, rows=5)
+        with self.assertRaises(RuntimeError):
+            assert_production_safe(decision, prompting, down_stairs={prompting.player})
+
     def test_real_frame_still_explores_after_the_save_prompt(self) -> None:
         # Full 3.6.7 frame, status not on the last two rows, save prompt gone.
         text = (

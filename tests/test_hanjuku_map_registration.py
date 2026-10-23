@@ -80,26 +80,32 @@ def test_field_house_scan_stays_closed_without_a_house_coordinate(chapter, monke
     assert not mem.get('house') and not mem.get('sorties')
 
 
-def test_native_month_survey_finishes_with_broken_egg_but_never_dispatches_a_trip():
+def test_native_month_survey_finishes_without_a_status_read_or_a_trip(monkeypatch):
+    """The monthly list read needs no house coordinate and dispatches nothing.
+
+    Main's list-only month scan (#2367) merges visible names and ends on a
+    short page. This keeps the #2545 boundary: chapters without a measured
+    house still finish a complete monthly roster, open no per-general status
+    panel, and never start a repair trip. Only the list counts as evidence.
+    """
+    monkeypatch.delitem(house.HOUSE_VIEW, 3, raising=False)
+    monkeypatch.setattr(house, 'general_status',
+                        lambda screen: pytest.fail('status panel read'))
     mem = monthly_memory(3)
     assert feed(mem, month_canvas(250, on='メインメニュー', month=7)) == [policy.pad('a')]
     assert feed(mem, _survey_main(7)) == [policy.pad('a')]
     names = ['どうし', 'ゼウス']
-    for i, name in enumerate(names):
-        frame = roster(names, i)
-        assert feed(mem, frame) == [policy.pad('a')]
-        egg = 'こわれている' if name == 'ゼウス' else 'エラベルエッグ4'
-        assert feed(mem, status(name, egg)) == [policy.pad('b')]
-        assert feed(mem, frame) == [policy.pad('down')]
-        assert feed(mem, roster(names, (i + 1) % 2)) == []
+    # A page shorter than the native eight rows proves the list end on screen.
     assert feed(mem, roster(names, 0)) == [policy.pad('b')]
     assert feed(mem, _survey_main(7)) == [policy.pad('b')]
     assert feed(mem, month_canvas(250, on='メインメニュー', month=7)) == []
     assert not mem.get('house')
-    assert receipts.fresh(mem)['complete'] is True
-    assert receipts.fresh(mem)['names'] == names
-    assert mem['house_eggs']['ゼウス']['broken'] is True
+    receipt = receipts.fresh(mem)
+    assert receipt['complete'] is True
+    assert receipt['names'] == names
+    assert not mem.get('house_eggs')
     assert not mem.get('sorties') and not mem.get('y_jump')
+    # No repair trip may start in a chapter whose house is not measured.
     assert not any(r['decision'] in {'house_departed', 'house_repair_verified'}
                    for r in mem['_records'])
 

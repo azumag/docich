@@ -53,6 +53,39 @@ def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter, monke
         chart.CASTLES.pop(chapter, None)
 
 
+def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypatch):
+    """Lock the chapter 3 gate independently of any real coordinate claim.
+
+    The planted cells are synthetic: this checks which orders the gate exposes
+    once home and the three initial targets exist, not that those coordinates
+    were measured. Until labeled native frames are recorded, chapter 3 must
+    stay empty and emit no orders.
+    """
+    chapter = 3
+    assert chart.castles(chapter) == {}
+    assert chart.orders(chapter) == ()
+
+    home = chart.home_castle(chapter)
+    # Home plus グリン alone unlocks only the first initial route.
+    monkeypatch.setitem(chart.CASTLES, chapter, {home: (100, 100), 'グリン': (108, 108)})
+    assert [o['step'] for o in chart.orders(chapter)] == ['3-Z1']
+
+    # Home plus the three initial targets unlocks exactly the first wave.
+    planted = {home: (100, 100), 'グリン': (108, 108),
+               'メガパタ': (116, 116), 'コラダイン': (124, 124)}
+    monkeypatch.setitem(chart.CASTLES, chapter, planted)
+    initial = chart.orders(chapter)
+    assert {o['step'] for o in initial} == {'3-Z1', '3-C1', '3-V1'}
+    assert all(o['source'] == home for o in initial)
+    assert {o['target'] for o in initial} == {'グリン', 'メガパタ', 'コラダイン'}
+
+    # Orders that need an unmeasured castle stay suppressed.
+    encoded = {o['step'] for o in chart.all_orders(chapter)}
+    for step in ('3-A1', '3-V2', '3-C2', '3-V3', '3-Z2', '3-B1'):
+        assert step in encoded
+        assert step not in {o['step'] for o in initial}
+
+
 def test_home_and_boss_labels_match_on_screen_names():
     assert chart.home_castle(8) == 'あるまむーん'
     assert chart.home_castle(2) == 'アルマムーン'

@@ -1237,3 +1237,54 @@ def test_canceled_response_keeps_its_settlement_time_when_predictors_are_present
     assert _settle(env, now=131)['mode'] == 'canceled'
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
     assert next(iter(ledger['rounds'].values()))['ended_at'] == '2026-10-17T06:00:00Z'
+
+
+def test_unreadable_ledger_counts_consecutive_invalid_state_ticks(env):
+    """#2216: the ledger cannot be rewritten, so the streak needs its own record."""
+    atomic_write_json(env.g.state_dir / p.FILE, {'schema': 2})
+    for now in (100, 101):
+        assert env.tick(now, None) == {'mode': 'error', 'error': 'invalid_state'}
+    health = read_record(env.g.state_dir / p.HEALTH_FILE)
+    assert health['schema'] == p.HEALTH_SCHEMA
+    assert health['consecutive_errors'] == 2
+    assert health['last_error'] == 'invalid_state'
+    assert health['last_error_at'] == 101
+    assert health['last_ok_at'] is None
+    # The rejected ledger is never rewritten or discarded by the health path.
+    assert read_record(env.g.state_dir / p.FILE) == {'schema': 2}
+
+    (env.g.state_dir / p.FILE).unlink()
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 1, 'round': None, 'mode': 'idle',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    outcome = env.tick(200, None)
+    assert (outcome['mode'], outcome['error']) == ('idle', None)
+    health = read_record(env.g.state_dir / p.HEALTH_FILE)
+    assert health['consecutive_errors'] == 0
+    assert health['last_error'] is None
+    assert health['last_ok_at'] == 200
+    assert health['last_error_at'] == 101
+
+
+def test_error_streak_is_capped_and_health_failure_never_changes_the_tick(env, monkeypatch):
+    atomic_write_json(env.g.state_dir / p.FILE, {'schema': 2})
+    atomic_write_json(env.g.state_dir / p.HEALTH_FILE, {
+        'schema': p.HEALTH_SCHEMA, 'consecutive_errors': p.MAX_ERROR_STREAK,
+        'last_error': 'invalid_state', 'last_error_at': 1, 'last_ok_at': None})
+    assert env.tick(100, None)['error'] == 'invalid_state'
+    assert read_record(env.g.state_dir / p.HEALTH_FILE)['consecutive_errors'] == p.MAX_ERROR_STREAK
+
+    original = p.atomic_write_json
+
+    def fail_health_only(path, value):
+        if str(path).endswith(p.HEALTH_FILE):
+            raise OSError('synthetic health write failure')
+        return original(path, value)
+
+    monkeypatch.setattr(p, 'atomic_write_json', fail_health_only)
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 1, 'round': None, 'mode': 'idle',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    outcome = env.tick(200, None)
+    assert (outcome['mode'], outcome['error']) == ('idle', None)
+    assert read_record(env.g.state_dir / p.HEALTH_FILE)['consecutive_errors'] == p.MAX_ERROR_STREAK

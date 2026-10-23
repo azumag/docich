@@ -8,7 +8,7 @@ The current text Bot remains in `workers/discord-chat`: Workers AI, canonical pe
 
 ## Run the offline contracts
 
-Node.js 22.18+; no installation required:
+Use Node.js 22.23.4 from `.node-version`; no dependency installation is required for these offline contracts:
 
 ```sh
 node --test runtimes/discord-voice/test/*.test.mjs
@@ -80,11 +80,11 @@ For the current temporary host, use a local Windows machine rather than the prod
 
 The live host deliberately starts **self-deafened**. Discord therefore does not provide inbound user audio to this slice. That keeps participant audio outside the process until the later STT/consent slice explicitly changes the receive policy. The existing text Bot can continue separately; this process requests only the `Guilds` and `GuildVoiceStates` Gateway intents and does not read messages.
 
-Install dependencies in the voice runtime directory:
+Install Node.js 22.23.4 on the live host before installing dependencies in the voice runtime directory. The repository pin does not update an already-running process; restart the voice process with the patched runtime during an agreed maintenance window.
 
 ```powershell
 cd runtimes/discord-voice
-npm install
+npm ci
 npm run check:live
 ```
 
@@ -253,7 +253,7 @@ No logger is provided. Public exceptions have fixed codes and no provider cause,
 
 ## Start the composed offline runtime
 
-Node.js 22.18+ (built-in SQLite); no dependency installation:
+Node.js 22.23.4 (built-in SQLite); no dependency installation:
 
 ```sh
 node runtimes/discord-voice/cli.mjs --offline --demo

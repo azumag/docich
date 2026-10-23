@@ -30,6 +30,24 @@ def row(pid="prediction-1", *, status="RESOLVED", winner="outcome-1", predictors
             "outcomes": outcomes}
 
 
+def canceled(pid="prediction-9", *, reason="no-contest", winner=None, predictors=True):
+    """A no-contest refund row as Soren's writer hands it over."""
+    if predictors:
+        outcomes = [
+            {"id": "outcome-0", "title": "建国なし", "top_predictors": [
+                {"user_id": "u9", "user_login": "carol", "user_name": "Carol",
+                 "channel_points_used": 100}]},
+            {"id": "outcome-1", "title": "ソ連建国"},
+        ]
+    else:
+        outcomes = row(pid, predictors=False)["outcomes"]
+    record = row(pid, status="CANCELED", winner=winner, predictors=False)
+    record["outcomes"] = outcomes
+    if reason is not None:
+        record["cancel_reason"] = reason
+    return record
+
+
 @pytest.fixture
 def env(tmp_path):
     state = tmp_path / "run"
@@ -107,6 +125,91 @@ def test_broken_ledger_keeps_the_handoff_retryable(env):
     assert len(lb.load(path)["rounds"]) == 1
 
 
+def test_a_no_contest_cancel_is_recorded_as_participation_only(env):
+    env.write(canceled())
+
+    assert sp.tick(env.g, clock=lambda: 7) == {"status": "recorded", "recorded": 1}
+
+    ledger = lb.load(env.state / lb.FILE)
+    round_ = ledger["rounds"]["prediction-9"]
+    assert round_["status"] == "CANCELED"
+    assert round_["cancel_reason"] == "no-contest"
+    assert round_["corner"] == "soren" and round_["recorded_at"] == 7
+    # 返金は元本返却。的中にも外れにも数えず、損益にも二重計上しない。
+    assert [(e["user_id"], e["hit"], e["used"], e["won"], e["refunded"])
+            for e in round_["predictors"]] == [("u9", None, 100, 0, 100)]
+    assert lb.stats(ledger) == {"rounds": 1, "viewers": 1, "canceled": 1}
+    assert lb.ranking(ledger, min_rounds=1) == []
+
+    # 同じバイトは再読しないので、再起動・再試行でも二重計上しない。
+    before = (env.state / lb.FILE).read_bytes()
+    assert sp.tick(env.g, clock=lambda: 7) == {"status": "unchanged"}
+    assert (env.state / lb.FILE).read_bytes() == before
+
+
+def test_resolved_and_canceled_rounds_share_one_handoff(env):
+    env.write(row(), canceled())
+
+    assert sp.tick(env.g, clock=lambda: 8) == {"status": "recorded", "recorded": 2}
+
+    ledger = lb.load(env.state / lb.FILE)
+    assert set(ledger["rounds"]) == {"prediction-1", "prediction-9"}
+    boards = lb.boards(ledger, min_rounds=1)
+    # 賭けたポイント・賭けた回数にはキャンセル分も入るが、的中率の分母には入らない。
+    staked = {e["user_id"]: e for e in boards["staked"]}
+    assert staked["u9"]["used"] == 100 and staked["u9"]["participations"] == 1
+    hit = {e["user_id"]: e for e in boards["hit_rate"]}
+    assert "u9" not in hit
+    assert {key: entry["rounds"] for key, entry in hit.items()} == {"u1": 1, "u2": 1}
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r.update(cancel_reason="refund"),
+    lambda r: r.update(cancel_reason=None),
+    lambda r: r.pop("cancel_reason"),
+    lambda r: r.update(status="LOCKED"),
+    lambda r: r.update(winning_outcome_id="outcome-1"),
+])
+def test_a_canceled_row_without_the_fixed_reason_is_refused_whole(env, mutate):
+    env.write(mutate(canceled()))
+
+    assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
+    assert not (env.state / lb.FILE).exists()
+    assert not sp.cursor_path(env.g).exists()
+
+
+def test_a_resolved_row_may_not_carry_a_refund_reason(env):
+    forged = row()
+    forged["cancel_reason"] = "no-contest"
+    env.write(forged)
+
+    assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
+    assert not (env.state / lb.FILE).exists()
+
+
+def test_a_canceled_row_without_predictors_is_still_evidence(env):
+    env.write(canceled(predictors=False))
+
+    assert sp.tick(env.g, clock=lambda: 9) == {"status": "recorded", "recorded": 1}
+
+    ledger = lb.load(env.state / lb.FILE)
+    assert ledger["rounds"]["prediction-9"]["predictors"] == []
+    assert lb.stats(ledger) == {"rounds": 1, "viewers": 0, "canceled": 1}
+
+
+def test_broken_ledger_keeps_the_canceled_handoff_retryable(env):
+    env.write(canceled())
+    path = env.state / lb.FILE
+    path.write_text("{broken", encoding="utf-8")
+
+    assert sp.tick(env.g) == {"status": "error", "reason": "leaderboard"}
+    assert path.read_text(encoding="utf-8") == "{broken"
+
+    path.write_text(json.dumps(lb.new_ledger()), encoding="utf-8")
+    assert sp.tick(env.g, clock=lambda: 10) == {"status": "recorded", "recorded": 1}
+    assert lb.stats(lb.load(path))["canceled"] == 1
+
+
 def test_tick_never_raises_on_an_unusable_soren_root(tmp_path):
     state = tmp_path / "run"
     state.mkdir()
@@ -149,7 +252,7 @@ def test_malformed_settled_row_refuses_whole_handoff_before_recording(env, monke
     def unexpected_record(*args, **kwargs):
         pytest.fail("a malformed handoff must be validated before any ledger work")
 
-    monkeypatch.setattr(sp, "record_resolved", unexpected_record)
+    monkeypatch.setattr(sp, "record_settled", unexpected_record)
     for _ in range(2):
         assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
         assert not (env.state / lb.FILE).exists()
@@ -168,7 +271,7 @@ def test_malformed_recorded_id_still_refuses_whole_handoff_without_changing_stat
     def unexpected_record(*args, **kwargs):
         pytest.fail("even an already-recorded id must be validated before ledger work")
 
-    monkeypatch.setattr(sp, "record_resolved", unexpected_record)
+    monkeypatch.setattr(sp, "record_settled", unexpected_record)
     for _ in range(2):
         assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
         assert (env.state / lb.FILE).read_bytes() == ledger_before

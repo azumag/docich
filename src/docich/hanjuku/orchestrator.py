@@ -34,9 +34,80 @@ from .version import BOT_VERSION
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
 
+# Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
+# command box the game draws the menu over several frames. The panel reads
+# 'unknown' while the coarse phase can still be 'event', so the generic
+# scene-confirm A fired on every one of those frames (UID16229 sent the default
+# A on a mid-draw panel). A press from that window can be accepted as soon as
+# the box starts taking input and confirm the top row (たまごをつかう) the bot
+# never chose, before any cursor evidence exists. Hold this draw window a
+# bounded number of observations instead: a box that finishes drawing reads as
+# battle_menu and its own owner takes over, and a frame that stays unreadable
+# still falls through to the phase default after the hold.
+BATTLE_DRAW_HOLD_MAX = 3
+# Kinds that prove the previous observation was inside an actual battle
+# foreground. A 'text' conversation or an unreadable frame never qualifies.
+BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
+                                'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
+                                'monster_menu'})
+# The concert's optional music picker is closed with B, but a stale gold-
+# cursor match can keep the picker test true on a screen B never changes. On
+# 2026-10-10 17:45 UTC exactly that sent B 128 times until the 300 s
+# screen-stalled terminal ended the corner (#1996). After this many unchanged
+# observations with the same concert input, press A instead so the policy
+# itself leaves the screen rather than waiting for the stall watchdog.
+CONCERT_PICKER_REPEAT_MAX = 8
+
 
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
+
+
+def _battle_draw_scope(mem):
+    """Identity of the live battle whose panel/menu transition is unreadable."""
+    cur = mem.get('battle') or {}
+    return [mem.get('chapter'), cur.get('ally'), cur.get('enemy'),
+            cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
+
+
+def battle_draw_hold_step(screen, mem, previous_kind, generic):
+    """Withhold a generic confirm on an unreadable battle draw, boundedly.
+
+    Only a phase default that would confirm (a single A) is replaced. A default
+    that already plans no input keeps its reviewed meaning untouched.
+    """
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    scope = _battle_draw_scope(mem)
+    cur = mem.get('battle')
+    held = mem.get('battle_draw_hold')
+    live = isinstance(held, dict) and held.get('scope') == scope
+    if not confirms or screen.kind != 'unknown':
+        mem.pop('battle_draw_hold', None)
+        return None
+    # A hold episode owns its own continuation: after the first held frame the
+    # previous observation is 'unknown', not the battle foreground that opened
+    # the window. The bounded counter, not that kind, ends the episode.
+    if (not isinstance(cur, dict) or not cur.get('ally') or not cur.get('enemy')
+            or (previous_kind not in BATTLE_OWNED_KINDS and not live)):
+        mem.pop('battle_draw_hold', None)
+        return None
+    if (live and type(held.get('held')) is int and held['held'] >= BATTLE_DRAW_HOLD_MAX):
+        # The window is over without a readable box. Hand the frame back to the
+        # ordinary phase default instead of holding a real scene forever.
+        mem.pop('battle_draw_hold', None)
+        return None
+    if (not live or type(held.get('held')) is not int
+            or not 0 <= held['held'] < BATTLE_DRAW_HOLD_MAX):
+        held = mem['battle_draw_hold'] = {'scope': scope, 'held': 0}
+    held['held'] += 1
+    decision_log._record(mem, 'battle_draw_hold', screen=screen.kind,
+                         observed_metric={'held': held['held'], 'limit': BATTLE_DRAW_HOLD_MAX,
+                                          'previous_screen': previous_kind,
+                                          'ally': cur.get('ally'), 'enemy': cur.get('enemy')},
+                         reason='戦闘パネルとメニューの描画途中を読めないため、未確認の最上段を確定しないよう既定Aを保留する')
+    return [{'type': 'wait', 'ms': 50}]
 
 
 def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
@@ -124,7 +195,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
+                        'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
                         'starter_party', 'map_registration', 'map_discovery', 'boss_victories'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
@@ -278,8 +349,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     bijin_guard_hold = False
     if actions is None:
         actions = prompts_flow.bijin_guard_step(screen, mem, phase=phase)
-        bijin_guard_hold = (phase == 'dialogue' and actions == []
-                            and (mem.get('bijin_guard') or {}).get('held') is True)
+        # The measured monthly-event scene is phase 'concert', so a held beauty
+        # request must suppress the no-input fallback there too; the guard only
+        # sets `held` on its own request frame.
+        bijin_guard_hold = (actions == [] and (
+            mem.get('bijin_gift_hold') is True or
+            (mem.get('bijin_guard') or {}).get('held') is True))
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -383,7 +458,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind=='map' and mem.get('chapter'):
         actions=map_flow.map_step(screen,mem,frame)
     elif kind=='discharge_menu':
-        actions=shop_flow.discharge_step(screen,mem)
+        actions=shop_flow.discharge_step(screen,mem,frame)
     elif kind=='gift_request':
         actions=prompts_flow.gift_step(screen,mem)
     elif kind=='summer_bonus':
@@ -405,6 +480,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=[pad('b')]
     if actions is None:
         actions=legacy_actions(frame,phase,updated)
+        draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
+        if draw_hold is not None:
+            actions = draw_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
@@ -412,6 +490,27 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    # A concert picker that B cannot close must not consume the whole stall
+    # window. Count unchanged observations that produced the same picker B;
+    # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
+    # picker changes the frame on B, so its count never reaches the bound.
+    digest=frame.digest()
+    picker_watch=mem.get('concert_picker_watch') or {}
+    if phase=='concert' and actions==[pad('b')]:
+        repeat=(int(picker_watch.get('repeat') or 0)+1
+                if picker_watch.get('digest')==digest else 1)
+    else:
+        repeat=0
+    if repeat>=CONCERT_PICKER_REPEAT_MAX:
+        decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
+                       observed_metric={'unchanged_repeats':repeat,'frame_sha256':digest},
+                       reason='曲選択の金色カーソル検出がBで変化しないまま繰り返すため、Aへ切り替える')
+        actions=[pad('a')]
+        repeat=0
+    if repeat:
+        mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
+    else:
+        mem.pop('concert_picker_watch',None)
     # 保留の廃止: a screen that froze while we planned no input must not stay
     # that way. The streak counts only observations whose frame digest is one of
     # the two most recent distinct images -- the same evidence
@@ -420,7 +519,6 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
-    digest=frame.digest()
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
@@ -429,7 +527,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
-            and not sortie_cancel_hold
+            and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
+            and not (sortie_cancel_hold or (kind == 'sortie_confirm'
+                     and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not mem.get('_map_registration_hold')
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))

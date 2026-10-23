@@ -22,6 +22,7 @@ on:
       - 'tests/test_audio_delivery.py'
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
+      - 'tests/test_trpg_audio_bridge_sink.py'
       - 'requirements-test.txt'
       - 'conftest.py'
   push:
@@ -46,6 +47,7 @@ on:
       - 'tests/test_audio_delivery.py'
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
+      - 'tests/test_trpg_audio_bridge_sink.py'
       - 'requirements-test.txt'
       - 'conftest.py'
 
@@ -96,6 +98,7 @@ jobs:
             --root-path 'tests/test_audio_delivery.py' \
             --root-path 'tests/test_hanjuku_end_chat_interop.py' \
             --root-path 'tests/test_trading_soren_output.py' \
+            --root-path 'tests/test_trpg_audio_bridge_sink.py' \
             --root-path 'requirements-test.txt' \
             --root-path 'conftest.py' \
             --soren-path 'overlay_notify.sh' \
@@ -120,4 +123,4 @@ jobs:
       - name: Install test dependencies in an isolated environment
         run: python3 -m venv .ci-overlay-venv && .ci-overlay-venv/bin/python -m pip install -r requirements-test.txt
       - name: Native and docich queue interoperability on macOS
-        run: .ci-overlay-venv/bin/python -m pytest -q tests/test_overlay_interop.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_trading_soren_output.py tests/test_hanjuku_end_chat_interop.py
+        run: .ci-overlay-venv/bin/python -m pytest -q tests/test_overlay_interop.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_trading_soren_output.py tests/test_hanjuku_end_chat_interop.py tests/test_trpg_audio_bridge_sink.py

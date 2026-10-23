@@ -4,10 +4,14 @@ The view serves the case board the corner manager already wrote on loopback.
 It never talks to Twitch, never mutates the case and never touches the stream
 encoder; the corner manager owns when this runtime exists.
 
-Unlike the weather and 予想王 information screens, this is a plain corner
-view: it uses the shared game-area viewport ``(x=0, y=90, 960x540)`` and keeps
-the status rails on air (AGENTS.md 配信ネイティブ情報画面の例外は天気予報と
-予想王のみ).
+Like the weather and 予想王 information screens, this is a broadcast-native
+information screen rather than a game: when ``display.width/height`` are
+known, the board owns the complete frame ``(0, 0, width, height)`` (1280x720
+in production) and falls back to the shared game-area viewport
+``(0, 90, 960x540)`` otherwise. The full-screen exception now covers 天気予報・
+予想王・AI探偵ミステリー (2026-10-21 owner request, on top of #2494). The corner
+manager still hides the OBS status rails for this corner only and shows them
+again on every exit (#2494, owner approval 2026-10-20).
 """
 from __future__ import annotations
 
@@ -72,23 +76,40 @@ class MysteryProgramViewAdapter(ProgramViewAdapter):
 
     def _viewer_command(self) -> list[str]:
         display = self.g.display
+        # The case board is a broadcast-native information screen like the
+        # weather and 予想王 views, not a game that needs the shared top/right/
+        # bottom status rails.  When the full X11 display dimensions are known,
+        # own the complete broadcast frame so the board is not squeezed next to
+        # those rails for the whole 30-minute corner (2026-10-21 owner request;
+        # the weather precedent is PR #1874, 予想王 is #2237).
+        full_width = int(getattr(display, "width", 0) or 0)
+        full_height = int(getattr(display, "height", 0) or 0)
+        if full_width > 0 and full_height > 0:
+            present_x, present_y = 0, 0
+            present_width, present_height = full_width, full_height
+        else:
+            present_x, present_y = display.viewport_x, display.viewport_y
+            present_width, present_height = display.viewport_width, display.viewport_height
+
+        browser_width = present_width if present_width > 0 else 960
+        browser_height = present_height if present_height > 0 else 540
         browser = broadcast_browser_command(
             f"http://127.0.0.1:{self.dashboard_port}/broadcast",
-            window_size=(960, 540),
+            window_size=(browser_width, browser_height),
             window_position=(0, 0),
             profile_dir=self.spec.runtime_dir / "mystery-browser-profile",
             label="mystery HTML view",
         )
-        if display.viewport_width > 0 and display.viewport_height > 0:
+        if present_width > 0 and present_height > 0:
             return [
                 sys.executable,
                 str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 "--display", display.name,
                 "--title", f"docich-present-{self.spec.runtime_id}",
-                "--x", str(display.viewport_x),
-                "--y", str(display.viewport_y),
-                "--width", str(display.viewport_width),
-                "--height", str(display.viewport_height),
+                "--x", str(present_x),
+                "--y", str(present_y),
+                "--width", str(present_width),
+                "--height", str(present_height),
                 "--", *browser,
             ]
         return browser

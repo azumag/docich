@@ -223,6 +223,26 @@ def test_failed_cloudflare_envelope_rejected(bad):
         validate_wire_response(wire, request, resolve_route("clef"))
 
 
+def test_documented_rest_envelope_with_messages_accepted_and_not_leaked():
+    # A live Workers AI REST response wraps the model payload as
+    # {"result": ..., "success": true, "errors": [], "messages": []}
+    # (developers.cloudflare.com/workers-ai/get-started/rest-api/), while the
+    # clef model's own schema-output.json describes only the inner "result"
+    # shape. Existing tests pin the envelope without "messages"; pin the
+    # documented real shape here so an envelope regression fails closed in
+    # this suite instead of as invalid_response after an owner-authorised
+    # switch (#2301). Envelope-only fields (messages, unknown future fields)
+    # must be accepted but never leak into the sanitized result.
+    request, answer = example("clef")
+    wire = {"result": deepcopy(answer), "success": True, "errors": [],
+            "messages": ["informational"], "unknown_future_field": {"echo": 1}}
+    clean = validate_wire_response(wire, request, resolve_route("clef"))
+    assert clean == answer
+    serialized = dumps(clean)
+    assert "messages" not in serialized and "unknown_future_field" not in serialized
+    assert "informational" not in serialized
+
+
 @pytest.mark.parametrize("mutation", ["model", "confidence", "probabilities", "usage"])
 def test_strict_answer_validation_is_not_weakened(mutation):
     request, answer = example("clef")

@@ -198,13 +198,18 @@ def enqueue_chat(
 
 def enqueue_audio_text(
     g: GlobalConfig, text: str, *, context: str = "soren91", speaker: str = "",
-    runtime_fence: dict | None = None,
+    runtime_fence: dict | None = None, dedup_scope: str = "",
 ) -> None:
     """Enqueue one TTS line into the Soren audio queue with an explicit speaker.
 
     Used so the Soren91 (Meriken) corner speaks in the Meriken voice rather
     than the default host speaker.  Same-VM only; paused/duplicate-suppressed
     enqueues are sink-side no-ops (rc=0).
+
+    ``runtime_fence`` binds the line to one live game-switch runtime so a
+    stopped or superseded run cannot still be heard.  ``dedup_scope`` narrows
+    the same-text suppression to one runtime occurrence, so a legitimate
+    repeat in a later scene or a later run is spoken instead of dropped.
     """
     import subprocess
 
@@ -218,6 +223,12 @@ def enqueue_audio_text(
     if runtime_fence is not None:
         command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3"'
         command.append(json.dumps(runtime_fence, separators=(",", ":")))
+    if dedup_scope:
+        if runtime_fence is None:
+            command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "" "$3"'
+        else:
+            command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3" "$4"'
+        command.append(str(dedup_scope))
     try:
         env = os.environ.copy()
         # Share the reader's resolved queue without sourcing the whole .env.

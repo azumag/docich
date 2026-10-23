@@ -159,6 +159,39 @@ def _skip_payloads(
     return result
 
 
+def freshness_summary_payload(
+    market_freshness: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, object]:
+    """Aggregate per-market freshness into a compact, allowlisted summary."""
+    counts = {"fresh": 0, "stale": 0, "missing": 0, "invalid": 0}
+    reason_counts: dict[str, int] = {}
+    stale_symbols: list[str] = []
+    missing_symbols: list[str] = []
+    for symbol, entry in (market_freshness or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        quality = str(entry.get("quality") or "").strip().lower()
+        if quality not in counts:
+            quality = "invalid"
+        counts[quality] += 1
+        reason = str(entry.get("reason_code") or "").strip()
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if quality == "stale":
+            stale_symbols.append(str(symbol))
+        elif quality in {"missing", "invalid"}:
+            missing_symbols.append(str(symbol))
+    total = sum(counts.values())
+    return {
+        "total": total,
+        "fresh": counts["fresh"],
+        "stale": counts["stale"],
+        "missing": counts["missing"],
+        "invalid": counts["invalid"],
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "stale_symbols": sorted(stale_symbols),
+        "unavailable_symbols": sorted(missing_symbols),
+    }
 def build_public_status(
     *,
     worker_state: str,
@@ -218,6 +251,7 @@ def build_public_status(
             for symbol, entry in sorted((market_freshness or {}).items())
             if isinstance(entry, Mapping)
         },
+        "freshness_summary": freshness_summary_payload(market_freshness),
         "coverage": dict(coverage or {}),
         "performance_summary": performance_summary_payload(performance_summary),
     }

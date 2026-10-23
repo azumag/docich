@@ -4,9 +4,12 @@
 同じ `update_stream_game.sh` 呼出しで更新する。Soren91の既存の直接同期経路も
 同じ `viewer_title_args` を使う。
 
-タイトルは `[dayN] ソ連ゲーム AIプレイ配信` のような視聴者向けの固定文面。
-半熟英雄、NetHackなどは現在ゲームの公開名を使い、paper-viewは
-`[dayN] ペーパートレード AIの検証配信` とする。投資成果や攻略成功を約束しない。
+タイトルは現在ゲームの公開名と、進行・記録・挑戦内容を組み合わせる。
+例: `[dayN] 半熟英雄 AIが城を攻略！ 将軍とエッグモンスターで物語の先へ`。
+半熟英雄では現在のready runtimeとgame/runtime_id/generation/lease_idが一致し、
+60秒以内のplaying観測がある場合だけ、その冒険の突破済み話数を使う。
+停止・終局候補・曖昧な観測では現在進行とせず、検証済み過去記録、ゲーム固有の
+挑戦文面の順にfallbackする。突破済みと次の目標を混同しない。
 日数・日付の計算と140文字上限は既存Soren updaterが所有する。
 
 `--activity` と `--strategy` は両方とも非空で明示し、運用見出し、PR番号、
@@ -20,7 +23,7 @@
 配布済みファイルと常駐プロセスへのロード、Twitch公開表示の反映は別々に確認する。
 反映のためにゲームを強制切替しない。次の自然な切替でタイトルとカテゴリを照合する。
 手動タイトルや日次タイトル更新を恒久的に禁止する変更ではなく、次のゲーム切替で
-上記の固定タイトルに更新される。
+上記の進行・挑戦タイトルに更新される。
 
 ## Record-aware title context
 
@@ -29,8 +32,10 @@ or Hanjuku's recorded cleared-chapter count. A cleared chapter and the next
 chapter goal are explicitly different. Current score, chapter-in-progress,
 unadopted strategy proposals, private handoff text and generated prose are not
 read as title claims. Missing, malformed, oversized or symlink evidence retains
-the neutral fallback. An identity-matched ready generation selects one of three
+the game-specific challenge fallback. An identity-matched ready generation selects one of three
 reviewed wordings, stable for retries within that generation. Other game state
 cannot select that wording. This is record-based variety, not proof of strategy
 adoption or improved game performance. Strategy-feature metadata is still a
 separate extension.
+
+更新契機は既存のゲーム切替・コーナー復帰です。プレイ中の常時更新は行いません。

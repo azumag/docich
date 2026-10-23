@@ -6,6 +6,9 @@ Resume pagers can hide the player before the first complete map. Advance a
 normalized ``more`` only with visible living-game vitals or a previously
 accepted exact restore banner, within the existing startup budgets. The
 legacy restore-banner and character-creation paths remain separate.
+After the budget is spent (#2271), a pager carrying that same resume evidence
+still delegates to the reviewed policy surface instead of latching a
+permanent hold; questions and unknown screens stay blocked.
 """
 from __future__ import annotations
 
@@ -50,6 +53,23 @@ class NethackStartup:
             # Fixed enum only: never log raw TTY/prompt text.
             print(f'[nethack-startup] state={state}', file=sys.stderr)
 
+    def _resume_pager_evidence(self, obs: NethackObservation) -> bool:
+        """The same resume evidence the gate requires before answering a pager.
+
+        Either the accepted restore banner was seen earlier in this session, or
+        the frame carries complete positive vitals (a resumed game's text can
+        cover '@' while the status block is live). Arbitrary pre-game
+        ``--More--`` screens without either stay blocked.
+        """
+        return bool(
+            self._restore_seen
+            or (
+                obs.vitals.dungeon_level is not None
+                and obs.vitals.hp is not None and obs.vitals.hp > 0
+                and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
+            )
+        )
+
     def consider(self, obs: NethackObservation) -> list[Action] | None:
         """None delegates to P3b; [] holds without falling through to policy."""
         if self.state in {"disabled", "gameplay"}:
@@ -73,6 +93,16 @@ class NethackStartup:
             self._state("gameplay")
             return None
         if self.state == "exhausted":
+            # #2271: after the budget is spent, a recognized resume pager must
+            # not latch [] forever. The budget bounds startup answers, not
+            # recognition of a pager the gate itself would have answered
+            # pre-exhaustion: delegate it to the reviewed policy surface
+            # (more -> space, one key per distinct frame via the progress
+            # resolver) with the SAME resume evidence required above. This
+            # mutates no gate state and rearms no budget. Questions, unknown
+            # screens and player-less frames remain blocked.
+            if obs.prompt == "more" and self._resume_pager_evidence(obs):
+                return None
             return []
         now = self.clock()
         if self.started_at is None:
@@ -113,14 +143,7 @@ class NethackStartup:
         restore_more = not has_gameplay and bool(_RESTORE_MORE_RE.search(text))
         if key is None and restore_more:
             key = " "
-        if key is None and obs.prompt == "more" and (
-            self._restore_seen
-            or (
-                obs.vitals.dungeon_level is not None
-                and obs.vitals.hp is not None and obs.vitals.hp > 0
-                and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
-            )
-        ):
+        if key is None and obs.prompt == "more" and self._resume_pager_evidence(obs):
             # A resumed game's text can cover '@' without character creation
             # in this session. Only recognized pagers with resume evidence
             # qualify; arbitrary pre-game '--More--' remains blocked. Common

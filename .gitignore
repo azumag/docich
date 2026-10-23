@@ -30,3 +30,7 @@ games/roms/*
 
 # bench/jev_bench.py run artifacts (raw logs + CSVs) stay out of Git.
 /bench/runs/
+.venv/
+
+# Installed JavaScript dependencies are rebuilt from package-lock.json.
+node_modules/

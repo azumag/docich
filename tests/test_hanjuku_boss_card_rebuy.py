@@ -69,7 +69,7 @@ def test_g825_short_boss_card_is_bought_first_and_returns_to_the_boss_kit():
     assert open_month(mem, 88) == [p.pad('a')]  # the merchant opens first
     shop = mem['shop']
     assert shop['items'] == [['クースカン', 1]]
-    assert shop['soldiers'] == 88 - 24 - economy.WAGE_RESERVE  # what the card leaves
+    assert shop['soldiers'] == 50  # target fifty from what the card leaves (no wage hold)
     plan = records(mem, 'boss_card_rebuy_plan')[0]
     assert plan['plan']['cards'] == [['クースカン', 1]]
     assert plan['observed_metric']['short'] == {'クースカン': 1}
@@ -150,9 +150,9 @@ def test_refill_that_leaves_no_card_money_buys_it_another_month():
                  soldiers_seen_key='1-8')
     mem['soldiers_seen_scope'] = deepcopy(economy._soldier_count_scope(mem, screen(60, month=8).header))
     open_month(mem, 60, month=8)
-    assert mem['shop']['soldiers'] == 30  # every coin above the wage floor
+    assert mem['shop']['soldiers'] == 36  # 60G - the 24G card; no wage hold
     open_month(mem, 60, month=8, on='へいしほじゅう')
-    p.quantity_step(editor(30, 60), mem, soldiers=True)
+    p.quantity_step(editor(36, 60), mem, soldiers=True)
     for _ in range(2):
         p.observe_events(screen(30, month=8), mem)
     assert p.month_step(screen(30, month=8), mem) == [p.pad('a')]
@@ -188,8 +188,8 @@ def test_recruit_fee_is_sized_after_the_boss_card():
     mem.update(card_stock={'クースカン': 0, 'ノリウツール': 1}, orders={'1-B1': 'pending'})
     shop = p._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     assert shop['items'][0] == ['クースカン', 1]
-    assert shop['recruit_priority'] and shop['recruit_reserve'] == 101 - 24 - economy.WAGE_RESERVE
-    assert shop['soldiers'] == 0
+    assert shop['recruit_priority'] and shop['recruit_reserve'] == 50
+    assert shop['soldiers'] == 27  # 101 - 24 card - 50 fee, no wage hold
 
 
 def test_adjusted_month_buys_the_boss_card_before_its_own_cards():

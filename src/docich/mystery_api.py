@@ -50,7 +50,9 @@ POLL_MIN_DURATION_S, POLL_MAX_DURATION_S = 15, 1800
 
 
 def _dotenv_value(root, key, current):
-    if current:
+    # Tokens are rotated in .env by docich.twitch_oauth, so an inherited copy
+    # may already be expired: for *_TOKEN keys the file's value wins.
+    if current and not key.endswith('_TOKEN'):
         return current
     path = root / '.env'
     try:
