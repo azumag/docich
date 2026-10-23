@@ -214,6 +214,19 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(persist["rc"])
         self.assertEqual(self.severity(self.collect()), "warn")
 
+    def test_clone_missing_record_is_only_actionable_while_running(self):
+        self.write_failure({
+            "failure_code": "strategy_persist_failed",
+            "reason": "clone_missing",
+            "rc": 0,
+            "label": "persist",
+            "failed_at": self.now,
+        })
+        persist = self.collect()["persist"]
+        self.assertEqual(persist["last_failure"]["reason"], "clone_missing")
+        self.assertEqual(self.severity(self.collect()), "ok")
+        self.assertEqual(self.severity(self.collect(), running=True), "warn")
+
     def test_unrelated_failure_code_is_ignored(self):
         self.write_failure({
             "failure_code": "apply_bundle_failed",

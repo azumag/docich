@@ -7920,11 +7920,17 @@ def _severity(workers, queues, ai, improvement, corners=None):
             or persist.get("last_success_at") is not None
         )
     )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure") if isinstance(persist, dict) else None
+    failure_actionable = isinstance(failure, dict) and (
+        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    )
     if isinstance(persist, dict) and (
         persist.get("result") == "fail"
         or persist.get("stale")
         or (persist.get("present") and not persist.get("readable"))
-        or persist.get("last_failure") is not None
+        or failure_actionable
         or clone_disappeared
     ):
         return "warn"
