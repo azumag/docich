@@ -6,17 +6,17 @@ set -euo pipefail
 # diagnostics without evidence.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 root="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"
-unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 service="docich-host-metrics.service"
 timer="docich-host-metrics.timer"
 
-# The gateway exec channel may scrub or replace HOME, so the ring path is
-# resolved from the passwd entry exactly like host_metrics.state_root().
+# The gateway exec channel may scrub or replace HOME, so both the unit tree
+# and the ring path are resolved from the passwd entry exactly like
+# host_metrics.state_root(). ``$HOME`` is never consulted.
 command -v getent >/dev/null 2>&1 || exit 2
 home="$(getent passwd "$(id -u)" | cut -d: -f6)" || exit 2
 [[ "$home" == "${DOCICH_PROD_HOME:-/home/ubuntu}" ]] || exit 2
-# The units must land in the same user's unit tree the ring belongs to; a
-# scrubbed HOME must fail closed instead of installing the timer elsewhere.
+unit_dir="${XDG_CONFIG_HOME:-$home/.config}/systemd/user"
+# The units must land in the same user's unit tree the ring belongs to.
 [[ "$unit_dir" == "$home"/* ]] || exit 2
 state_dir="$home/.local/state/docich/host-metrics"
 ring="$state_dir/ring.jsonl"

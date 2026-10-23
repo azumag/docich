@@ -159,7 +159,11 @@ under 8 KiB by a regression test.
   deltas (may be 0).
 - Trimming happens only against `HARD_JSON_BYTES`, and only the oldest samples
   are removed (the newest point and the previous-boot boundary always stay),
-  before any whole section is dropped. The softer `MAX_JSON_BYTES` target never
+  before any whole section is dropped. The floor is the newest point plus the
+  retained previous-boot boundary points (up to `HOST_METRICS_BOUNDARY_BOOTS`
+  of them, so three boots keep three points). When even the floor cannot fit
+  under the ceiling, the trim is skipped entirely: a section is dropped either
+  way, and the boundary must not be burned for nothing. The softer `MAX_JSON_BYTES` target never
   trims the ring: the production envelope already exceeds it, and trimming there
   would trade the entire `corners` block for a few hundred bytes (#2533). Whole
   sections are dropped only after the trim cannot make the envelope fit, and

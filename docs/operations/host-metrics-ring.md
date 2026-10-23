@@ -115,8 +115,10 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
 - 出力は**最新 8 点 + 直前 boot の最終点（最大 2 boot 分）**。再起動後に sampler が
   窓を埋めると「最新 N 点」だけでは障害直前の点が消えるため、boot 境界の最終点を
   必ず残す（合計 10 点まで、8 KiB 未満）。
-- 縮小は **hard ceiling（56 KiB）に触れた時だけ**、古い点から 1 点ずつ（最新点と
-  boot 境界は残す）。soft target（36 KiB）では縮めない。production の envelope は
+- 縮小は **hard ceiling（56 KiB）に触れた時だけ**、古い点から 1 点ずつ。最新点と
+  boot 境界点（最大 2 boot 分）は絶対に残す。床（最新点 + 境界点）自体が
+  ceiling に収まらない時は縮小を skip する（どうせ既存 section が 1 個落ちるため、
+  境界を焼いてまで縮めない）。soft target（36 KiB）では縮めない。production の envelope は
   もともと soft target を超えており（#2533 実測 50,280 B）、soft で縮めても目標に
   届かないうえ、既存 section（`corners` は約 23 KB）を小さな超過で落としかねないため。
   hard ceiling でも縮小で収まらない場合に限り `_HARD_DROP_ORDER` の最後に落とす

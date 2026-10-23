@@ -151,6 +151,18 @@ class HostMetricsFixture(unittest.TestCase):
             self.write_ring(records)
         return collector._collect_host_metrics(self.home, NOW)
 
+    def two_boot_records(self, before=3, after=9):
+        """``before`` points of BOOT_A, then ``after`` points of BOOT_B."""
+        records = [
+            sample_record(NOW - 60 * (before + after - 1 - index), boot=BOOT_A)
+            for index in range(before)
+        ]
+        records += [
+            sample_record(NOW - 60 * (after - 1 - index), boot=BOOT_B)
+            for index in range(after)
+        ]
+        return records
+
 
 class FreshRingProjectionTests(HostMetricsFixture):
 
@@ -641,6 +653,87 @@ class HostMetricsBudgetTests(HostMetricsFixture):
             enabled = collector._diagnostics_budget(copy.deepcopy(payload))
             self.assertEqual(enabled, disabled)
 
+    def test_when_the_floor_cannot_fit_the_trim_is_skipped(self):
+        # If even the floor (newest + boundary points) is over the hard ceiling,
+        # some section is dropped regardless; burning the boundary for a trim
+        # that cannot help would only destroy evidence.
+        payload = base_payload(
+            host_metrics=self.project(self.two_boot_records()),
+            corners=self.CORNERS,
+        )
+        # Deep enough that even the floor stays over the ceiling.
+        pad_section(payload, collector.HARD_JSON_BYTES + 6 * 1024)
+        total = payload["host_metrics"]["points"]
+
+        collector._diagnostics_budget(payload)
+
+        section = payload["host_metrics"]
+        self.assertEqual(section["status"], "ok")
+        self.assertEqual(section["points"], total)
+        self.assertEqual(section["samples_omitted"], 0)
+        self.assertEqual(section["samples"][0]["boot"], BOOT_A)
+        # The cascade then had to drop a whole section instead.
+        self.assertEqual(payload["corners"],
+                         {"status": "output_omitted", "reason": "hard_ceiling"})
+
+    def test_the_pre_hang_boundary_survives_a_trim_that_fits_the_floor(self):
+        # Between "one more sample fits" and "nothing fits", the trim must stop
+        # at the floor instead of sacrificing the boundary: a whole section is
+        # dropped either way in that band.
+        payload = base_payload(
+            host_metrics=self.project(self.two_boot_records()),
+            corners=self.CORNERS,
+        )
+        # Over the ceiling, but the floor (newest + boundary) still fits.
+        pad_section(payload, collector.HARD_JSON_BYTES + 2048)
+        total = payload["host_metrics"]["points"]
+        self.assertGreater(
+            len(json.dumps(payload, sort_keys=True,
+                           ensure_ascii=False).encode("utf-8")),
+            collector.HARD_JSON_BYTES)
+
+        text = collector._diagnostics_budget(payload)
+
+        self.assertLessEqual(len(text.encode("utf-8")),
+                             collector.HARD_JSON_BYTES)
+        section = payload["host_metrics"]
+        self.assertEqual(section["status"], "ok")
+        self.assertGreaterEqual(section["points"], 2)
+        self.assertEqual(section["samples"][0]["boot"], BOOT_A)
+        self.assertEqual(section["samples"][-1]["t"], NOW)
+        self.assertEqual(section["samples_omitted"], total - section["points"])
+
+    def test_same_boot_samples_are_dropped_and_both_boundaries_survive(self):
+        # Samples that share a boundary's boot must still yield; with three
+        # boots the floor is the newest point plus both boundary points.
+        records = [
+            sample_record(NOW - 60 * (25 - index), boot=BOOT_A)
+            for index in range(3)
+        ] + [
+            sample_record(NOW - 60 * (22 - index), boot="c3d4e5f6a1b2")
+            for index in range(3)
+        ] + [
+            sample_record(NOW - 60 * (19 - 1 - index), boot=BOOT_B)
+            for index in range(19)
+        ]
+        payload = base_payload(host_metrics=self.project(records),
+                               corners=self.CORNERS)
+        total = payload["host_metrics"]["points"]
+        pad_section(payload, collector.HARD_JSON_BYTES + 1024)
+
+        text = collector._diagnostics_budget(payload)
+
+        self.assertLessEqual(len(text.encode("utf-8")),
+                             collector.HARD_JSON_BYTES)
+        section = payload["host_metrics"]
+        self.assertEqual(section["status"], "ok")
+        self.assertLess(section["points"], total)
+        retained_boots = {sample["boot"] for sample in section["samples"]}
+        self.assertEqual(retained_boots, {BOOT_A, "c3d4e5f6a1b2", BOOT_B})
+        self.assertEqual(section["samples"][-1]["t"], NOW)
+        self.assertEqual(section["samples_omitted"], total - section["points"])
+        self.assertNotEqual(payload["corners"].get("status"), "output_omitted")
+
     def test_no_ring_content_is_a_no_op(self):
         payload = pad_section(base_payload(), collector.HARD_JSON_BYTES + 1024)
         with mock.patch.object(collector, "_host_metrics_hard_trim",
@@ -658,18 +751,6 @@ class RebootBoundaryTests(HostMetricsFixture):
     projection would hide the last point before the hang, which is the only
     evidence of the final hour.
     """
-
-    def two_boot_records(self, before=3, after=9):
-        records = [
-            sample_record(NOW - 60 * (before + after - index),
-                          boot=BOOT_A)
-            for index in range(before)
-        ]
-        records += [
-            sample_record(NOW - 60 * (after - 1 - index), boot=BOOT_B)
-            for index in range(after)
-        ]
-        return records
 
     def test_post_reboot_window_keeps_the_last_pre_hang_point(self):
         records = self.two_boot_records()
@@ -769,11 +850,13 @@ class WiringTests(unittest.TestCase):
     def test_main_projects_the_ring_from_the_deployed_checkout(self):
         source = COLLECTOR.read_text(encoding="utf-8")
         self.assertIn(
-            '"host_metrics": _collect_host_metrics(PROD_ROOT.parent, now)',
+            '"host_metrics": _collect_host_metrics(_host_metrics_home(), now)',
             source)
-        # The ring lives in the runtime user's home, which is the deployed
-        # checkout's parent (/home/ubuntu) -- not the projection target and not
-        # a config/state_dir value that could move between deploys.
+        # The ring lives in the runtime user's home, resolved with the same
+        # passwd rule the sampler uses -- not the projection target and not a
+        # config/state_dir value that could move between deploys.
+        self.assertIn("import pwd", source)
+        self.assertIn("pwd.getpwuid(os.getuid()).pw_dir", source)
 
 
 if __name__ == "__main__":

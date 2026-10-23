@@ -930,6 +930,22 @@ def _host_metrics_down_units(units):
 HOST_METRICS_BOUNDARY_BOOTS = 2
 
 
+def _host_metrics_home():
+    """Runtime user's home by the sampler's rule; PROD_ROOT.parent fallback.
+
+    The sampler writes ``pwd.getpwuid(...).pw_dir``-based paths, so the reader
+    must resolve the same directory or a moved checkout would silently read a
+    different (absent) ring. The production passwd entry is
+    ``/home/ubuntu`` -- identical to the deployed checkout's parent today; the
+    fallback only covers environments without ``pwd``.
+    """
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):
+        return PROD_ROOT.parent
+
+
 def _host_metrics_trim_samples(samples, limit,
                                max_previous_boots=HOST_METRICS_BOUNDARY_BOOTS):
     """Keep the newest ``limit`` points plus the last point of older boots.
@@ -11875,29 +11891,41 @@ def _host_metrics_hard_trim(payload, text):
     minutes of host metrics. Trimming only under the hard ceiling -- never under
     the softer ``MAX_JSON_BYTES`` target, which the production envelope already
     exceeds on its own (#2533 measured 50,280 B) -- keeps both: drop the oldest
-    projected points one at a time, always keeping the newest point and the
-    previous-boot boundary, until the envelope fits or only those remain.
-    ``samples_omitted`` stays accurate.
+    projected points one at a time, down to the floor of the newest point plus
+    the retained boot-boundary points (at most ``HOST_METRICS_BOUNDARY_BOOTS``
+    of them). The floor itself is never crossed: when even the floor cannot
+    fit, a whole section is dropped by the cascade regardless, so burning the
+    pre-hang boundary for a trim that cannot help would only destroy evidence
+    (#2578 review N1/N2). ``samples_omitted`` stays accurate either way.
     """
     section = payload.get("host_metrics")
     if (not isinstance(section, dict)
             or not isinstance(section.get("samples"), list)):
         return text
     samples = section["samples"]
-    while len(text.encode("utf-8")) > HARD_JSON_BYTES and len(samples) > 1:
-        boundary = None
-        for index in range(len(samples) - 2, -1, -1):
-            if samples[index]["boot"] != samples[index + 1]["boot"]:
-                boundary = index
-                break
+    floor = _host_metrics_trim_samples(samples, 1)
+    if len(samples) <= len(floor):
+        return text
+    original_samples = samples
+    section["samples"] = floor
+    floor_text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    section["samples"] = original_samples
+    if len(floor_text.encode("utf-8")) > HARD_JSON_BYTES:
+        # The floor does not fit: some section is dropped below whatever this
+        # one sheds, so keep the full evidence instead of burning the boundary.
+        return text
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES and len(samples) > len(floor):
+        # The floor members (the newest point plus each retained previous-boot
+        # boundary) are exactly the samples ``_host_metrics_trim_samples``
+        # keeps, so they are protected as a set and re-resolved every
+        # iteration: an older boundary must not be mistaken for droppable.
+        protected = {id(item) for item in _host_metrics_trim_samples(samples, 1)}
         candidates = [
-            index for index in range(len(samples))
-            if index != len(samples) - 1 and index != boundary
+            index for index, sample in enumerate(samples)
+            if id(sample) not in protected
         ]
         if not candidates:
-            if boundary is None or len(samples) == 1:
-                break
-            candidates = [boundary]
+            break
         samples.pop(candidates[0])
         omitted = section.get("samples_omitted")
         section["samples_omitted"] = (
@@ -12523,10 +12551,10 @@ def main(argv):
             soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
-        # The ring path is fixed relative to the runtime user's home, so the
-        # collector passes it explicitly instead of deriving a state_dir
-        # (#2578: reboot-persistent evidence, not program state).
-        "host_metrics": _collect_host_metrics(PROD_ROOT.parent, now),
+        # The ring lives in the runtime user's home. Resolve it with the same
+        # rule the sampler uses (the passwd entry), not the checkout location
+        # and not a config/state_dir value (#2578: reboot-persistent evidence).
+        "host_metrics": _collect_host_metrics(_host_metrics_home(), now),
         "workers": workers,
         "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
