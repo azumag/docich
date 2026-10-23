@@ -53,6 +53,8 @@ STALLED_OUTCOME_TITLE = '画面停滞で一時終了（同じ状態から再開�
 STALLED_REASON = 'screen_stalled'
 #: デプロイ前に作られた予想の選択肢数（受理だけ legacy として許す）。
 LEGACY_OUTCOME_COUNT = 3
+RESUME_PREDICTION_KIND = 'resume-chapter'
+RESUME_STALLED_OUTCOME_TITLE = '停滞で一時停止'
 
 
 def thresholds(best):
@@ -84,6 +86,12 @@ def accepted_outcome_titles(target, middle):
     return (titles[:LEGACY_OUTCOME_COUNT], titles)
 
 
+def resume_outcome_titles(target):
+    if type(target) is not int or not 1 <= target <= progress.MAX_CHAPTER:
+        raise ValueError('invalid resume prediction target')
+    return [f'{target}話突破', f'{target}話突破ならず', RESUME_STALLED_OUTCOME_TITLE]
+
+
 def resolve_index(row, result):
     """Outcome index for one terminal result, or ``None`` when it must be canceled.
 
@@ -93,6 +101,17 @@ def resolve_index(row, result):
     2026-10-15 / Issue #2238）。legacy 3択の row は作成時の選択肢を変えられない
     ため、停滞終了でも従来の判定のままにする。
     """
+    if row.get('kind') == RESUME_PREDICTION_KIND:
+        cleared = result.get('cleared')
+        if cleared is not None:
+            progress.count(cleared)
+            if cleared >= row['target']:
+                return 0
+        if result.get('reason') in {'screen_stalled', 'input_stalled'}:
+            return 2
+        if result.get('reason') == 'game_over' and cleared is not None:
+            return 1
+        return None
     titles = row.get('outcome_titles')
     if (isinstance(titles, list) and len(titles) > LEGACY_OUTCOME_COUNT
             and result.get('reason') == STALLED_REASON):
@@ -170,15 +189,25 @@ def _load(root, seed):
     row = state.get('round')
     if row is not None:
         progress.checked_identity(row)
-        winner(0, row.get('target'), row.get('middle'))
+        kind = row.get('kind')
+        if kind is None:
+            winner(0, row.get('target'), row.get('middle'))
+            expected_titles = accepted_outcome_titles(row['target'], row['middle'])
+            expected_title = _title(row.get('nonce'))
+        elif kind == RESUME_PREDICTION_KIND:
+            if row.get('middle') is not None:
+                raise ValueError('resume prediction cannot carry range middle')
+            expected_titles = (resume_outcome_titles(row.get('target')),)
+            expected_title = _resume_title(row['target'], row.get('nonce'))
+        else:
+            raise ValueError('invalid prediction kind')
         if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
                 or any(c not in '0123456789abcdef' for c in row['nonce'])
                 or type(row.get('attempted')) is not bool
                 or row.get('status') not in LIVE | DONE | {'INTENT'}
                 or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
-                or row.get('title') != _title(row['nonce'])
-                or row.get('outcome_titles')
-                   not in accepted_outcome_titles(row['target'], row['middle'])):
+                or row.get('title') != expected_title
+                or row.get('outcome_titles') not in expected_titles):
             raise ValueError('invalid prediction intent')
         if row.get('id') is not None:
             ids = row.get('outcome_ids')
@@ -222,15 +251,25 @@ def _load_recoverable(root, seed):
     row = state.get('round')
     if row is not None:
         progress.checked_identity(row)
-        winner(0, row.get('target'), row.get('middle'))
+        kind = row.get('kind')
+        if kind is None:
+            winner(0, row.get('target'), row.get('middle'))
+            expected_titles = accepted_outcome_titles(row['target'], row['middle'])
+            expected_title = _title(row.get('nonce'))
+        elif kind == RESUME_PREDICTION_KIND:
+            if row.get('middle') is not None:
+                raise ValueError('resume prediction cannot carry range middle')
+            expected_titles = (resume_outcome_titles(row.get('target')),)
+            expected_title = _resume_title(row['target'], row.get('nonce'))
+        else:
+            raise ValueError('invalid prediction kind')
         if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
                 or any(c not in '0123456789abcdef' for c in row['nonce'])
                 or type(row.get('attempted')) is not bool
                 or row.get('status') not in LIVE | DONE | {'INTENT'}
                 or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
-                or row.get('title') != _title(row['nonce'])
-                or row.get('outcome_titles')
-                   not in accepted_outcome_titles(row['target'], row['middle'])):
+                or row.get('title') != expected_title
+                or row.get('outcome_titles') not in expected_titles):
             raise ValueError('invalid prediction intent')
         if row.get('id') is not None:
             ids = row.get('outcome_ids')
@@ -249,6 +288,10 @@ def _title(nonce):
     return f'半熟英雄：どこまでゲーム到達できるか？ #{nonce}'
 
 
+def _resume_title(target, nonce):
+    return f'半熟英雄：{target}話を突破できる？ #{nonce}'
+
+
 @contextmanager
 def locked(root):
     path = root / 'locks' / 'hanjuku-predictions.lock'
@@ -264,6 +307,28 @@ def locked(root):
             yield True
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def _resume_prediction_context(root, identity):
+    receipt = read_record(runtime_directory(root, identity['runtime_id']) / 'hanjuku_resume.json')
+    if not receipt or receipt.get('explicit_resume') is not True or receipt.get('start_mode') != 'resume':
+        return None
+    if (receipt.get('status') != 'verified'
+            or receipt.get('gameplay_context') != 'verified_checkpoint_foreground'
+            or any(receipt.get(k) != identity[k] for k in progress.KEYS)):
+        raise ValueError('invalid verified Hanjuku resume receipt')
+    chapter = receipt.get('chapter')
+    if chapter is not None and (type(chapter) is not int or not 1 <= chapter <= progress.MAX_CHAPTER):
+        raise ValueError('invalid verified Hanjuku resume chapter')
+    return {'chapter': chapter}
+
+
+def _resume_target_reached(root, row):
+    if row.get('kind') != RESUME_PREDICTION_KIND:
+        return False
+    cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),
+                                       {k: row[k] for k in progress.KEYS})
+    return cleared is not None and cleared >= row['target']
 
 
 def _result(root, identity):
@@ -581,13 +646,15 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     for result in (completed, owned_completed):
         if result and result['cleared'] is not None:
             state['best_cleared'] = max(state['best_cleared'], result['cleared'])
-    new_terminal = bool(owned_completed and not row.get('result'))
+    resume_reached = bool(row and row['status'] not in DONE
+                          and _resume_target_reached(root, row))
+    new_settlement = bool(owned_completed and not row.get('result')) or resume_reached
     if owned_completed:
         row['result'] = owned_completed
     atomic_write_json(root / FILE, state)
     if now < state['last_poll_at']:
         raise APIError('clock_regressed')
-    if now < state['next_poll_at'] and not new_terminal:
+    if now < state['next_poll_at'] and not new_settlement:
         return
     state.update(last_poll_at=now, next_poll_at=now + POLL_SECONDS, error=None)
     if not enabled:
@@ -644,14 +711,14 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
             result = owned_completed
             # 4択の row では画面停滞/ループ終了を4択目で確定する。突破数の証拠が
             # 無い停滞終了（従来は CANCELED）も、この選択肢がある run は記帳する。
-            index = resolve_index(row, result) if result else None
+            index = 0 if resume_reached else resolve_index(row, result) if result else None
             cancel = bool(result) and index is None
             # An explicit ready different runtime is an interruption, not a loss.
             cancel = cancel or (ready and not same(row) and result is None)
             if not ready and result is None:
                 state['mode'] = 'pending'
                 return
-            if result or cancel:
+            if result or resume_reached or cancel:
                 state['mode'] = 'settling'
                 atomic_write_json(root / FILE, state)
                 cancel_reason = None
@@ -731,10 +798,19 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
         if paused:
             state['mode'] = 'paused'
             return
-        bounds = thresholds(state['best_cleared'])
-        if bounds is None:
-            state['mode'] = 'complete_record'
-            return
+        resume = _resume_prediction_context(root, identity)
+        if resume is not None:
+            target = resume['chapter']
+            if target is None:
+                # The game may continue, but do not invent the resumed chapter just to open a wager.
+                state['mode'] = 'pending'
+                return
+            bounds = {'target': target}
+        else:
+            bounds = thresholds(state['best_cleared'])
+            if bounds is None:
+                state['mode'] = 'complete_record'
+                return
         cleared = progress.completed_count(runtime_directory(root, identity['runtime_id']), identity)
         if cleared is not None and cleared >= bounds['target']:
             state['mode'] = 'known_result'
@@ -744,10 +820,17 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
             state['mode'] = 'blocked'
             return
         nonce = secrets.token_hex(6)
-        row = {**identity, **bounds, 'nonce': nonce, 'title': _title(nonce),
-               'outcome_titles': outcome_titles(**bounds),
-               'window': voting_window(bounds['target'], ending_window),
-               'attempted': False, 'status': 'INTENT'}
+        if resume is not None:
+            row = {**identity, **bounds, 'kind': RESUME_PREDICTION_KIND, 'nonce': nonce,
+                   'title': _resume_title(bounds['target'], nonce),
+                   'outcome_titles': resume_outcome_titles(bounds['target']),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
+        else:
+            row = {**identity, **bounds, 'nonce': nonce, 'title': _title(nonce),
+                   'outcome_titles': outcome_titles(**bounds),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
         state['round'] = row
     # A previous rejected POST may be retried much later. Recheck that the
     # result/owner has not changed while GET was in flight before accepting bets.
