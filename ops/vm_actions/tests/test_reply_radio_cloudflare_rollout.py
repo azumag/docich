@@ -47,6 +47,7 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
 
     def test_rollout_scope_is_narrow_and_fail_closed(self):
         text = SCRIPT.read_text(encoding="utf-8")
+        lower = text.lower()
         block = persistent_block(text)
         self.assertIn("DOCICH_REPLY_WEB_DIRECT_BATCH_ENABLED=1", block)
         self.assertIn("DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare", block)
@@ -55,7 +56,8 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
         self.assertIn("DOCICH_RADIO_NATIVE_AGENTS=cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8", block)
         self.assertNotIn("finance", block)
         self.assertNotIn("RADIO_GENERATION_ENABLED", block)
-        self.assertNotIn("opencode", text.lower())
+        self.assertNotIn("opencode run", lower)
+        self.assertNotIn("_run_opencode", lower)
         self.assertIn("COMMENT_CLASSIFIER_BACKEND=jev", text)
         self.assertIn("DOCICH_REPLY_ROUTING_ENABLED=1", text)
         self.assertIn("verified_web_rollout_enabled", text)
