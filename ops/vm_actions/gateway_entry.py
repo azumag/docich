@@ -6,11 +6,164 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 READ_ONLY_OPS = {"status", "diagnostics", "github_auth_diagnostics"}
+STREAM_PROFILE_KEYS = {
+    "SOREN_DIRECT_STREAM_SIZE": "size",
+    "SOREN_DIRECT_STREAM_FPS": "fps",
+    "SOREN_DIRECT_STREAM_VIDEO_KBPS": "video_kbps",
+}
+STREAM_PROFILE_MAX_BYTES = 256 * 1024
+_STREAM_SIZE_RE = re.compile(r"[1-9][0-9]{1,4}x[1-9][0-9]{1,4}\Z")
+_STREAM_INT_RE = re.compile(r"[0-9]{1,6}\Z")
+
+
+def _read_bounded_regular(path: Path):
+    """Read one fixed regular file without following a final symlink."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > STREAM_PROFILE_MAX_BYTES:
+            return None
+        raw = b""
+        while len(raw) <= STREAM_PROFILE_MAX_BYTES:
+            chunk = os.read(fd, min(65536, STREAM_PROFILE_MAX_BYTES + 1 - len(raw)))
+            if not chunk:
+                break
+            raw += chunk
+        if len(raw) > STREAM_PROFILE_MAX_BYTES:
+            return None
+        return raw.decode("utf-8", "strict")
+    except (OSError, UnicodeError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def _shell_scalar(raw: str):
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    if not value or any(ch in value for ch in "\r\n\x00"):
+        return None
+    return value
+
+
+def _stream_value(key: str, raw: str):
+    value = _shell_scalar(raw)
+    if value is None:
+        return None
+    if key == "SOREN_DIRECT_STREAM_SIZE":
+        return value if _STREAM_SIZE_RE.fullmatch(value) else None
+    if _STREAM_INT_RE.fullmatch(value) is None:
+        return None
+    number = int(value)
+    if key == "SOREN_DIRECT_STREAM_FPS":
+        return number if 1 <= number <= 240 else None
+    if key == "SOREN_DIRECT_STREAM_VIDEO_KBPS":
+        return number if 1 <= number <= 100000 else None
+    return None
+
+
+def _stream_env_values(text: str):
+    values = {}
+    for line in text.splitlines():
+        match = re.match(r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$", line)
+        if match is None or match.group(1) not in STREAM_PROFILE_KEYS:
+            continue
+        value = _stream_value(match.group(1), match.group(2))
+        if value is not None:
+            values[STREAM_PROFILE_KEYS[match.group(1)]] = value
+    return values
+
+
+def _stream_profile_values(text: str):
+    values = {}
+    for line in text.splitlines():
+        match = re.match(
+            r"^\s*set_env_value\s+"
+            r"(SOREN_DIRECT_STREAM_SIZE|SOREN_DIRECT_STREAM_FPS|SOREN_DIRECT_STREAM_VIDEO_KBPS)"
+            r"\s+(.+?)\s*$",
+            line,
+        )
+        if match is None:
+            continue
+        value = _stream_value(match.group(1), match.group(2))
+        if value is not None:
+            values[STREAM_PROFILE_KEYS[match.group(1)]] = value
+    return values
+
+
+def _stream_profile_diagnostics(cfg, repo):
+    """Project only three non-secret stream settings and their profile drift."""
+    destination = cfg["repos"][repo].get("projections", {}).get("games/soviet_now")
+    if not destination:
+        return {
+            "status": "unavailable",
+            "effective": {},
+            "profile_default": {},
+            "drift": None,
+            "drift_fields": [],
+            "warning": "stream_profile_comparison_unavailable",
+            "reason": "projection_missing",
+        }
+    root = Path(destination)
+    env_text = _read_bounded_regular(root / ".env")
+    profile_text = _read_bounded_regular(root / "configure_linux_stream_profile.sh")
+    effective = _stream_env_values(env_text) if env_text is not None else {}
+    defaults = _stream_profile_values(profile_text) if profile_text is not None else {}
+    fields = ("size", "fps", "video_kbps")
+    missing = [
+        f"{side}.{field}"
+        for side, values in (("effective", effective), ("profile_default", defaults))
+        for field in fields
+        if field not in values
+    ]
+    if missing:
+        return {
+            "status": "unavailable",
+            "effective": effective,
+            "profile_default": defaults,
+            "drift": None,
+            "drift_fields": [],
+            "warning": "stream_profile_comparison_unavailable",
+            "reason": "missing_values",
+            "missing": missing,
+        }
+    drift_fields = [field for field in fields if effective[field] != defaults[field]]
+    drift = bool(drift_fields)
+    result = {
+        "status": "warn" if drift else "ok",
+        "effective": effective,
+        "profile_default": defaults,
+        "drift": drift,
+        "drift_fields": drift_fields,
+    }
+    if drift:
+        result["warning"] = "stream_profile_drift"
+    return result
+
+
+def _augment_stream_profile(result, cfg, repo, gateway):
+    diagnostics = result.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return result
+    stream = _stream_profile_diagnostics(cfg, repo)
+    diagnostics["stream"] = stream
+    if stream["status"] != "ok" and diagnostics.get("status") == "ok":
+        diagnostics["status"] = "warn"
+    if len(json.dumps(diagnostics, separators=(",", ":")).encode()) > gateway.DIAGNOSTICS_JSON_MAX:
+        raise ValueError("diagnostics output too large")
+    return result
 
 
 def _read_only_main(gateway, config_path: str, command: str):
@@ -48,6 +201,7 @@ def _read_only_main(gateway, config_path: str, command: str):
                 gateway.die("VM operation rejected: gateway_busy")
             if op == "diagnostics":
                 result = gateway.diagnostics_result(cfg, repo, target, sha)
+                result = _augment_stream_profile(result, cfg, repo, gateway)
             elif op == "github_auth_diagnostics":
                 result = gateway.github_auth_diagnostics(cfg, repo, target, sha)
             else:
