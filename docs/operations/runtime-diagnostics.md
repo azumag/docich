@@ -983,8 +983,12 @@ git 操作・修復・runtime 変更は行わない。
   次の成功/no-change で status が上書きされ、durable record も消えるため
   fail 由来の warn は自然に解消する。
 - clone が無い production projection では `result=no-op` であり、失敗ではない。
+  ただし `improvement.running` が真、または過去の persist 成功 (`last_success_at`) がある状態で
+  clone が消えた場合は `clone_present=false` として warn に上げる（#2489 の clone 消失検知）。
 
 
+
+## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
 ファイル内容。lock owner の token、retry batch の中身は読まない・出さない。

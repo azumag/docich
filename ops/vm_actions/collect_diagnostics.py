@@ -2745,6 +2745,7 @@ def _collect_strategy_persist(soren, now):
     """
     soren = Path(soren)
     status_path = soren.parent / "soren-persist" / ".git" / "persist-status.json"
+    clone_git = soren.parent / "soren-persist" / ".git"
     failure_path = soren / "tmp" / "state" / "strategy_persist_last_failure.json"
     data = _read_json(status_path)
     present = False
@@ -2752,8 +2753,14 @@ def _collect_strategy_persist(soren, now):
         present = status_path.is_file()
     except OSError:
         present = False
+    clone_present = False
+    try:
+        clone_present = clone_git.is_dir()
+    except OSError:
+        clone_present = False
     entry = {
         "present": present,
+        "clone_present": clone_present,
         "readable": data is not None,
         "result": "unknown",
         "reason": None,
@@ -7905,11 +7912,20 @@ def _severity(workers, queues, ai, improvement, corners=None):
     # running. A later successful/no-change persist overwrites the status and
     # clears the durable failure record.
     persist = improvement.get("persist")
+    clone_disappeared = (
+        isinstance(persist, dict)
+        and persist.get("clone_present") is False
+        and (
+            bool(improvement.get("running"))
+            or persist.get("last_success_at") is not None
+        )
+    )
     if isinstance(persist, dict) and (
         persist.get("result") == "fail"
         or persist.get("stale")
         or (persist.get("present") and not persist.get("readable"))
         or persist.get("last_failure") is not None
+        or clone_disappeared
     ):
         return "warn"
     return "ok"
