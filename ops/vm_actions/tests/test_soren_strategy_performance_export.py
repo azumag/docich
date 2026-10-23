@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "soren_strategy_performance_export.py"
+ROOT = Path(__file__).resolve().parents[3]
+WORKFLOW_PATH = ROOT / ".github/workflows/soren-strategy-performance-audit.yml"
 SPEC = importlib.util.spec_from_file_location("soren_strategy_performance_export", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -98,6 +100,16 @@ class SorenStrategyPerformanceExportTests(unittest.TestCase):
         self._write({"hash": "../../secret", "scores": []}, {})
         with self.assertRaises(RuntimeError):
             MODULE.build_report(self.root)
+
+    def test_workflow_bounds_every_remote_ssh_command(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertEqual(workflow.count(" ssh \"${ssh_args[@]}\""), 4)
+        self.assertEqual(
+            workflow.count("timeout --signal=TERM --kill-after=10s 120s ssh \"${ssh_args[@]}\""),
+            4,
+        )
+        self.assertNotIn('status_json="$(ssh ', workflow)
+        self.assertIn("timeout-minutes: 10", workflow)
 
 
 if __name__ == "__main__":
