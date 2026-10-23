@@ -186,7 +186,7 @@ def _direct_agents(raw: str, env: Mapping[str, str]) -> str:
             raise ValueError("invalid_config")
         provider = spec.provider.removesuffix("-api")
         model = "@" + spec.model if provider == "cloudflare" else spec.model
-        if model not in DIRECT_CHAT_MODELS[provider]:
+        if provider not in DIRECT_CHAT_MODELS or model not in DIRECT_CHAT_MODELS[provider]:
             raise ValueError("invalid_config")
     return ",".join(spec.raw for spec in specs)
 
@@ -241,7 +241,7 @@ def _generated(raw: str) -> dict[str, object]:
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("invalid_output") from exc
-    if not isinstance(data, dict) or tuple(data.keys()) != GENERATED_KEYS:
+    if not isinstance(data, dict) or set(data) != set(GENERATED_KEYS):
         raise ValueError("invalid_output")
 
     result: dict[str, object] = {}
@@ -307,13 +307,20 @@ def generate_record(
             or not math.isfinite(timeout_sec) or not 0 < float(timeout_sec) <= 45):
         return DraftResult("invalid_config")
     deadline = clock() + float(timeout_sec)
+
     try:
         trusted = _metadata(metadata)
         verified = _verified_bundle(bundle, trusted["primarySources"])
-        chain = _direct_agents(agents, env)
-        prompt = _prompt(trusted, verified)
-    except (KeyError, LlmError, TypeError, UnicodeError, ValueError):
+    except (KeyError, TypeError, UnicodeError, ValueError):
         return DraftResult("invalid_input")
+    try:
+        chain = _direct_agents(agents, env)
+    except (LlmError, TypeError, UnicodeError, ValueError):
+        return DraftResult("invalid_config")
+    try:
+        prompt = _prompt(trusted, verified)
+    except (TypeError, UnicodeError, ValueError):
+        return DraftResult("input_limit")
 
     remaining = deadline - clock()
     if remaining <= 0:
