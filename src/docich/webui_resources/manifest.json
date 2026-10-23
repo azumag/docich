@@ -1,1 +1,7 @@
-{"schema":1,"files":{"index.html":"54342c0a7cf5912c4fd6dab74fdfd62c60c649b8aef969c5e62c8b45d2ffecb3","defaults.json":"f2c5d6b7a32568f66b1a77a0f6df028a3886bd2532a90af43d830ac4886c4a6e"}}
+{
+  "schema": 1,
+  "files": {
+    "index.html": "54342c0a7cf5912c4fd6dab74fdfd62c60c649b8aef969c5e62c8b45d2ffecb3",
+    "defaults.json": "f2c5d6b7a32568f66b1a77a0f6df028a3886bd2532a90af43d830ac4886c4a6e"
+  }
+}
