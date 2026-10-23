@@ -81,6 +81,13 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   "ring_bytes": 54800, "points_available": 137, "points": 8, "samples_omitted": 0,
   "oldest_age_sec": 420, "newest_age_sec": 18,
   "boots": 2, "current_boot": "a1b2c3d4e5f6", "spans_reboot": true,
+  "runtime": {"service_state": "failed", "service_enabled": false,
+              "timer_state": "active", "timer_enabled": true,
+              "service_result": "exit-code", "service_exec_code": 1,
+              "service_exec_status": 2, "service_n_restarts": 0,
+              "journal": {"readable": true, "lines": 4,
+                          "newest_age_sec": 30,
+                          "signature": "python_traceback"}},
   "samples": [
     {"age_sec": 18, "boot": "a1b2c3d4e5f6", "t": 1761000000, "uptime_s": 123456,
      "load1": 0.42, "load5": 0.5, "load15": 0.6, "cpu_busy_pct": 12.5,
@@ -110,6 +117,15 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   「再起動後に直近の指標が取得できる」はこの field で確認する。
 - `uptime_s`: その点の起動からの秒。最新点の `t` / `uptime_s` から、無応答が始まった
   時刻と「起床後どれだけ経ってから止まったか」を推定できる。
+- `runtime`: sampler unit 自身の健康。`service_state` / `timer_state`
+  （固定 enum）、`service_enabled` / `timer_enabled`、`service_result`
+  （`systemctl --user show` の `Result`。`oom` なら MemoryMax 起動）、
+  `service_exec_code` / `service_exec_status` / `service_n_restarts`、
+  そして `journal`（bounded な末尾を固定分類したもの: `readable` / `lines` /
+  `newest_age_sec` / `signature`）。**journal 本文・path は一切出さない。**
+  sampler が止まっている・OOM している・例外で落ちている場合、
+  ring が `absent` でもこの field で原因が分かる（deploy hook の失敗理由が
+  VM 側 private log にしか残らないため、これが正規の読み戻し経路）。
 - `cpu_busy_pct` と `disk_*` は、**同一 boot の連続 2 点**の差から求める。boot をまたぐ
   最初の点は `null`（起動直後の累積値はリセットされるため差分に意味がない）。
   分母が 0 の interval は `null`、disk の逆転（カウンタリセット）は 0 に clamp する。

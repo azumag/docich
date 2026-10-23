@@ -139,6 +139,13 @@ under 8 KiB by a regression test.
 }
 ```
 
+- `runtime`: fixed-shape read-only health of the sampler units themselves
+  (`systemctl --user is-active`/`is-enabled`/`show` enums plus a bounded
+  `journalctl --user-unit` tail classified to one fixed signature). This is the
+  sanctioned read-back for a deploy-hook failure whose VM-side output is
+  withheld: a stopped, failing, timed-out or OOM-killed sampler is visible
+  here even while the ring reads `absent`. Journal text and paths never leave
+  the collector.
 - `status`: `absent` (no file), `unreadable` (permission/IO/not a regular
   file/symlink), `invalid` (no parseable v1 record, or a file over `MAX_BYTES`
   because compaction did not run), `stale` (newest record older than

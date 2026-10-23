@@ -39,7 +39,21 @@ ALL_ACTIVE = sum(1 << (2 * index) for index in range(len(collector.UNIT_ORDER)))
 PROJECTION_KEYS = {
     "status", "retention", "unit_order", "ring_bytes", "points_available",
     "points", "samples_omitted", "oldest_age_sec", "newest_age_sec", "boots",
-    "current_boot", "spans_reboot", "samples",
+    "current_boot", "spans_reboot", "runtime", "samples",
+}
+RUNTIME_KEYS = {
+    "service_state", "service_enabled", "timer_state", "timer_enabled",
+    "service_result", "service_exec_code", "service_exec_status",
+    "service_n_restarts", "journal",
+}
+JOURNAL_KEYS = {"readable", "lines", "newest_age_sec", "signature"}
+FIXED_RUNTIME = {
+    "service_state": "failed", "service_enabled": False,
+    "timer_state": "active", "timer_enabled": True,
+    "service_result": "exit-code", "service_exec_code": 1,
+    "service_exec_status": 2, "service_n_restarts": 0,
+    "journal": {"readable": True, "lines": 4, "newest_age_sec": 30,
+                "signature": "python_traceback"},
 }
 SAMPLE_KEYS = {
     "age_sec", "boot", "t", "uptime_s", "load1", "load5", "load15",
@@ -120,6 +134,13 @@ class HostMetricsFixture(unittest.TestCase):
         self.home = Path(self._tmp.name) / "home"
         self.home.mkdir()
         self.ring = self.home / RING_RELPATH
+        # The runtime probes read the host's systemd/journal; the projection
+        # tests inject the fixed answer so they stay hermetic and fast.
+        patcher = mock.patch.object(
+            collector, "_collect_host_metrics_runtime",
+            return_value=json.loads(json.dumps(FIXED_RUNTIME)))
+        self.addCleanup(patcher.stop)
+        patcher.start()
 
     def write_ring(self, records, *, raw_lines=(), trailing=b""):
         self.ring.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +207,9 @@ class FreshRingProjectionTests(HostMetricsFixture):
         self.assertFalse(output["spans_reboot"])
         self.assertEqual(output["newest_age_sec"], 18)
         self.assertEqual(output["oldest_age_sec"], 18 + 7 * 60)
+        self.assertEqual(set(output["runtime"]), RUNTIME_KEYS)
+        self.assertEqual(set(output["runtime"]["journal"]), JOURNAL_KEYS)
+        self.assertEqual(output["samples_omitted"], 0)
         self.assertEqual(len(output["samples"]), collector.SAMPLES_MAX)
         for sample in output["samples"]:
             self.assertEqual(set(sample), SAMPLE_KEYS)
@@ -807,6 +831,125 @@ class RebootBoundaryTests(HostMetricsFixture):
                          len(collector.UNIT_ORDER))
         encoded = json.dumps(output, sort_keys=True, ensure_ascii=False)
         self.assertLess(len(encoded.encode("utf-8")), 8192)
+
+
+class RuntimeHealthTests(unittest.TestCase):
+    """The sampler units' own health, as fixed enums (a dead sampler is visible).
+
+    The first production deploy failed inside the deploy hook with the VM-side
+    output withheld; these fields are the only sanctioned read-back channel.
+    """
+
+    def systemctl_answers(self, answers):
+        def fake(args, timeout=5):
+            for key, value in answers.items():
+                if tuple(args[:2]) == key:
+                    return value
+            return None
+        return fake
+
+    def test_states_and_enabled_map_to_fixed_enums(self):
+        answers = {
+            ("is-active", collector.HOST_METRICS_SERVICE_UNIT): (3, "failed"),
+            ("is-active", collector.HOST_METRICS_TIMER_UNIT): (0, "active"),
+            ("is-enabled", collector.HOST_METRICS_SERVICE_UNIT): (1, "static"),
+            ("is-enabled", collector.HOST_METRICS_TIMER_UNIT): (0, "enabled"),
+        }
+        with mock.patch.object(collector, "_systemctl_user",
+                               side_effect=self.systemctl_answers(answers)):
+            runtime = collector._collect_host_metrics_runtime(NOW)
+        self.assertEqual(runtime["service_state"], "failed")
+        self.assertEqual(runtime["service_enabled"], False)
+        self.assertEqual(runtime["timer_state"], "active")
+        self.assertEqual(runtime["timer_enabled"], True)
+
+    def test_unknown_probe_results_stay_unknown_not_healthy(self):
+        answers = {
+            ("is-active", collector.HOST_METRICS_SERVICE_UNIT): (1, "garbage"),
+            ("is-active", collector.HOST_METRICS_TIMER_UNIT): (1, ""),
+            ("is-enabled", collector.HOST_METRICS_SERVICE_UNIT): (0, "indirect"),
+            ("is-enabled", collector.HOST_METRICS_TIMER_UNIT): (0, "bad"),
+        }
+        with mock.patch.object(collector, "_systemctl_user",
+                               side_effect=self.systemctl_answers(answers)):
+            runtime = collector._collect_host_metrics_runtime(NOW)
+        self.assertEqual(runtime["service_state"], "unknown")
+        self.assertIsNone(runtime["service_enabled"])
+        self.assertEqual(runtime["timer_state"], "unknown")
+        self.assertIsNone(runtime["timer_enabled"])
+
+    def test_show_properties_project_the_last_exit_classification(self):
+        show = ("exit-code\n1\n2\n0\n")
+        answers = {
+            ("show", collector.HOST_METRICS_SERVICE_UNIT): (0, show),
+        }
+        with mock.patch.object(collector, "_systemctl_user",
+                               side_effect=self.systemctl_answers(answers)):
+            runtime = collector._collect_host_metrics_runtime(NOW)
+        self.assertEqual(runtime["service_result"], "exit-code")
+        self.assertEqual(runtime["service_exec_code"], 1)
+        self.assertEqual(runtime["service_exec_status"], 2)
+        self.assertEqual(runtime["service_n_restarts"], 0)
+
+    def test_show_garbage_never_invents_a_result(self):
+        answers = {
+            ("show", collector.HOST_METRICS_SERVICE_UNIT): (0, "weird\nx\ny\nz\n"),
+        }
+        with mock.patch.object(collector, "_systemctl_user",
+                               side_effect=self.systemctl_answers(answers)):
+            runtime = collector._collect_host_metrics_runtime(NOW)
+        self.assertIsNone(runtime["service_result"])
+        self.assertIsNone(runtime["service_exec_code"])
+        self.assertIsNone(runtime["service_exec_status"])
+        self.assertIsNone(runtime["service_n_restarts"])
+
+    def test_journal_tail_is_classified_without_publishing_text(self):
+        lines = [
+            f"{NOW - 60}.000000 host docich-host-metrics.service: Starting...",
+            f"{NOW - 59}.000000 host docich-host-metrics.service: "
+            "Main process exited, code=exited, status=2/NOT-SECRET",
+            "secret-free: DO-NOT-PUBLISH",
+            f"{NOW - 30}.000000 host docich-host-metrics.service: Failed with result 'exit-code'.",
+        ]
+        completed = mock.Mock(returncode=0, stdout="\n".join(lines) + "\n")
+        with mock.patch.object(collector.subprocess, "run",
+                               return_value=completed) as run:
+            journal = collector._host_metrics_runtime_journal(NOW)
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:3], ["journalctl", "--user-unit",
+                                    collector.HOST_METRICS_SERVICE_UNIT])
+        self.assertTrue(journal["readable"])
+        self.assertEqual(journal["lines"], 4)
+        self.assertEqual(journal["newest_age_sec"], 30)
+        self.assertEqual(journal["signature"], "exited")
+
+    def test_journal_oom_and_traceback_outrank_a_plain_exit(self):
+        base = f"{NOW - 30}.000000 host docich-host-metrics.service: "
+        for message, expected in (
+            ("A process of this unit has been killed by the OOM killer.", "oom"),
+            ("Traceback (most recent call last):", "python_traceback"),
+            ("Somewhere: Timed out starting.", "timeout"),
+            ("Starting Bounded host metrics ring sampler...", "starting"),
+        ):
+            completed = mock.Mock(returncode=0, stdout=base + message + "\n")
+            with mock.patch.object(collector.subprocess, "run",
+                                  return_value=completed):
+                journal = collector._host_metrics_runtime_journal(NOW)
+            self.assertEqual(journal["signature"], expected, message)
+
+    def test_unreadable_journal_is_fixed_shape_and_not_healthy(self):
+        completed = mock.Mock(returncode=1, stdout="")
+        with mock.patch.object(collector.subprocess, "run",
+                              return_value=completed):
+            journal = collector._host_metrics_runtime_journal(NOW)
+        self.assertEqual(journal, {"readable": False, "lines": 0,
+                                   "newest_age_sec": None, "signature": None})
+        with mock.patch.object(collector.subprocess, "run",
+                               side_effect=OSError("no journalctl")):
+            journal = collector._host_metrics_runtime_journal(NOW)
+        self.assertEqual(journal, {"readable": False, "lines": 0,
+                                   "newest_age_sec": None, "signature": None})
 
 
 class ConstantParityTests(unittest.TestCase):
