@@ -53,6 +53,20 @@ def test_pdf_and_non_primary_hosts_are_rejected():
     ]
 
 
+def test_exact_or_www_primary_host_is_allowed_but_arbitrary_subdomain_is_not():
+    result = discover_candidates(
+        ["recent biology research"], env=ENV,
+        searcher=lambda query, timeout: [
+            "https://www.nature.com/articles/synthetic-www",
+            "https://attacker.nature.com/articles/synthetic-subdomain",
+        ],
+    )
+    assert result.ok
+    assert [candidate.url for candidate in result.candidates] == [
+        "https://www.nature.com/articles/synthetic-www"
+    ]
+
+
 def test_openreview_only_accepts_public_forum_landing_page():
     result = discover_candidates(
         ["recent machine learning research"], env=ENV,
