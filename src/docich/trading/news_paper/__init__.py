@@ -15,6 +15,9 @@ N03 implements the bounded rule classification, the NewsSignal builder and
 the A/B/C price-news composition in :mod:`docich.trading.news_paper.classification`,
 :mod:`docich.trading.news_paper.signals` and
 :mod:`docich.trading.news_paper.composition`.
+
+N08 implements the comparative evaluation (price-only vs news+price arms)
+in :mod:`docich.trading.news_paper.evaluation`.
 """
 from .execution import (
     EXECUTION_MODEL_VERSION,
@@ -45,6 +48,28 @@ from .execution import (
     select_observation,
     spread_bps,
 )
+from .evaluation import (
+    ArmMetrics,
+    ComparisonGate,
+    CostBreakdown,
+    D,
+    EvaluationManifest,
+    EvaluationResult,
+    FillRecord,
+    LatencyBreakdown,
+    NewsUtilization,
+    PolicyTracking,
+    PositionEpisode,
+    build_arm_metrics,
+    compute_drawdown,
+    compute_latency_breakdown,
+    compute_turnover,
+    compute_win_rate,
+    decimal,
+    export_evaluation,
+    run_evaluation,
+    verify_reproducibility,
+)
 from .ledger import (
     LEDGER_SCHEMA_VERSION,
     LedgerError,
@@ -60,28 +85,39 @@ from .manager import (
 from .risk import FIXTURE_RISK_POLICY_V1, RiskDecision, RiskPolicy
 
 __all__ = [
+    "ArmMetrics",
     "ClockQuality",
+    "ComparisonGate",
+    "CostBreakdown",
+    "D",
     "DecisionRequest",
     "DepthLevel",
     "EXECUTION_MODEL_VERSION",
+    "EvaluationManifest",
+    "EvaluationResult",
     "ExecutionError",
     "ExecutionOutcome",
     "FIXTURE_MANAGER_POLICY_V1",
     "FIXTURE_RISK_POLICY_V1",
     "Fill",
     "FillJournal",
+    "FillRecord",
     "Fence",
     "InMemoryFillJournal",
     "InstrumentConstraints",
     "LEDGER_SCHEMA_VERSION",
     "LIVE_ELIGIBLE",
+    "LatencyBreakdown",
     "LedgerError",
     "LiquidityTracker",
     "MODE",
     "MarketObservation",
     "NewsLedger",
+    "NewsUtilization",
     "PaperManager",
     "PendingOrder",
+    "PolicyTracking",
+    "PositionEpisode",
     "ReceiptState",
     "ReceiptView",
     "RiskDecision",
@@ -89,15 +125,24 @@ __all__ = [
     "RiskSnapshot",
     "TIME_IN_FORCE",
     "advance_partial",
+    "build_arm_metrics",
     "build_fills",
     "ceil_to_tick",
+    "compute_drawdown",
+    "compute_latency_breakdown",
+    "compute_turnover",
+    "compute_win_rate",
+    "decimal",
     "execute_pending_order",
     "execution_price",
+    "export_evaluation",
     "floor_to_tick",
     "recover_ledger",
     "round_lot_down",
+    "run_evaluation",
     "select_observation",
     "spread_bps",
+    "verify_reproducibility",
 ]
 
 from .classification import (
