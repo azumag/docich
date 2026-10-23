@@ -984,12 +984,14 @@ git 操作・修復・runtime 変更は行わない。
   次の成功/no-change で status が上書きされ、durable record も消えるため
   fail 由来の warn は自然に解消する。
 - clone が無いこと自体は production projection では正常で、producer は clone 不在時に
-  status を書かず 0 を返す。`result=no-op` は repo ディレクトリはあるが `.git` が無い
-  部分 clone 状態でのみ書かれる。
+  status を書かず 0 を返す（durable failure record には `reason=clone_missing`, `rc=0`
+  を残す）。`result=no-op` は repo ディレクトリはあるが `.git` が無い部分 clone 状態でのみ
+  書かれる。
 - `clone_present=false` かつ `improvement.running=true` は、loop が動いているのに
   persist clone が無い異常として `status=warn` に上げる（#2489 の clone 消失検知）。
-  status file は clone 内にあるため clone 消失時は `last_success_at` も同時に消えるが、
-  別経路で残っていれば追加の根拠として使う。
+  `last_failure.reason=clone_missing` も loop が動いている間だけ warn 対象にする
+  （idle な projection 配備では warn にしない）。status file は clone 内にあるため
+  clone 消失時は `last_success_at` も同時に消えるが、別経路で残っていれば追加の根拠に使う。
 
 
 
