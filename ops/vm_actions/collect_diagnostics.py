@@ -1621,7 +1621,20 @@ def _collect_opencode_session_attribution(
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|stream[_-]?key)\s*[:=]\s*\S+"),
+    # A key/value pair whose name ends in a secret word, with any prefix
+    # (SLACK_BOT_TOKEN=, api_key:) and in JSON form ("api_key": "…").
+    re.compile(r"(?i)[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd"
+               r"|stream[_-]?key|credential)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+"),
+    # CLI flag form: --bot-token <v> / --secret=<v>.
+    re.compile(r"(?i)--?[A-Za-z0-9-]*(?:token|secret|password|key)[= ]+[^\s\"']+"),
+    # Well-known token shapes, used bare in logs.
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    # Credentials embedded in a URL: scheme://user:pass@host
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@"),
 )
 
 # Fixed lifecycle records that can prove ownership of a supervisor pause

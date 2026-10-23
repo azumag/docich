@@ -78,6 +78,42 @@ class ManualLogTests(unittest.TestCase):
         for line in entry['lines']:
             self.assertLessEqual(len(line), diag.NETHACK_MANUAL_LOG_LINE_LIMIT)
 
+    def test_redacts_the_secret_shapes_that_really_appear_in_logs(self):
+        # Every case below leaked before this rule set: prefixed names,
+        # JSON values, CLI flags, bare token shapes and URL credentials.
+        leaks = [
+            'export SLACK_BOT_TOKEN=xoxb-1234-5678-abcdef',
+            'cline connect slack --bot-token xoxb-9999-secret-value',
+            '{"api_key": "sk-live-abcdef123456"}',
+            '{"password": "hunter2"}',
+            'posting with xoxb-431208728097-12318249777379-abcdefghij',
+            'using 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',
+            'key id AKIAIOSFODNN7EXAMPLE here',
+            'connect postgres://user:s3cr3t@host:5432/db',
+        ]
+        for case in leaks:
+            with self.subTest(case=case):
+                rendered = diag._redact_text(case, diag.NETHACK_MANUAL_LOG_LINE_LIMIT)
+                self.assertIn('[REDACTED]', rendered)
+                self.assertNotIn('s3cr3t', rendered)
+                self.assertNotIn('hunter2', rendered)
+                self.assertNotIn('abcdefghij', rendered)
+
+    def test_keeps_ordinary_runner_output_readable(self):
+        # Over-redaction would defeat the projection's purpose.
+        ordinary = [
+            'runner exited with code 2 during startup grace',
+            "FileNotFoundError: [Errno 2] No such file or directory: '/s/logs/x.log'",
+            'nethack: direction key timeout after 5s',
+            'DISPLAY=:99 XDG_RUNTIME_DIR=/run/user/1000',
+            'python3 -m docich.nethack_corner_runner --start',
+            'https://example.com/status returned 200',
+        ]
+        for case in ordinary:
+            with self.subTest(case=case):
+                rendered = diag._redact_text(case, diag.NETHACK_MANUAL_LOG_LINE_LIMIT)
+                self.assertNotIn('[REDACTED]', rendered)
+
     def test_tail_only_and_read_only(self):
         self.write(NAME, '\n'.join(f'line {index}' for index in range(4000)) + '\n')
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
