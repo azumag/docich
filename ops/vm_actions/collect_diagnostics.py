@@ -31,6 +31,13 @@ Observed sources (all read-only):
     plaintext/compressed format split: counts and bytes only, never
     filenames), Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
+  - the fixed host metrics ring (<home>/.local/state/docich/host-metrics/
+    ring.jsonl, docich#2578): host counters sampled once a minute onto the
+    persistent root disk so the hour before a guest-OS hang (#2278) survives
+    the reboot that follows it. Projected to fixed numeric fields, baked-in
+    retention constants, the fixed unit-state mask and derived down-unit names
+    only -- ring lines, paths and any other free text are never emitted, and
+    unit names are never read from configuration.
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
     yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
@@ -192,9 +199,13 @@ HARD_JSON_BYTES = 56 * 1024
 # Heaviest-first drop order for the hard ceiling. ``corners`` is the largest
 # remaining block (measured 23,374 B of a 50,280 B production envelope, #2533),
 # so it goes first; the later entries only matter for a payload that is still
-# over the ceiling once the corner projections are gone.
+# over the ceiling once the corner projections are gone. ``host_metrics`` is
+# deliberately last: it is the #2578 forensic evidence for the hour before a
+# guest-OS hang (#2278), it cannot be reconstructed after the reboot, and the
+# softer MAX_JSON_BYTES path already sheds half its sample list before any
+# whole-section drop, so it yields only after every other section is gone.
 _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
-                    "soren91_drop_profile")
+                    "soren91_drop_profile", "host_metrics")
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -720,6 +731,383 @@ def _collect_storage_breakdown(
         ),
     }
 
+
+# Fixed host metrics ring (docich#2578). The sampler writes
+# ``<home>/.local/state/docich/host-metrics/ring.jsonl`` once a minute on the
+# persistent root disk. That path is deliberately not the program ``state_dir``
+# and not ``soren/tmp``: both are cleaned, while this ring has to survive the
+# reboot that follows a guest-OS hang (#2278). The collector is installed and
+# run standalone, so it must not import the sampler -- the contract constants
+# are duplicated here and a regression test parses ``host_metrics.py`` with
+# importlib and fails when the two sets drift. The single source of truth is
+# ops/vm_actions/host_metrics_contract.md.
+INTERVAL_SEC = 60                 # systemd timer OnCalendar=*:*:00
+MAX_POINTS = 240                  # 4 hours of history
+MAX_BYTES = 256 * 1024
+SAMPLES_MAX = 8
+STALE_SEC = 3 * INTERVAL_SEC
+SCHEMA_VERSION = 1
+UNIT_ORDER = (
+    "docich-corner-rotation.timer",
+    "docich-corner-rotation.service",
+    "docich-webui.service",
+    "docich-paper-corner.timer",
+    "soren-runtime.service",
+    "docich-audio-priority.service",
+)
+HOST_METRICS_RING_RELPATH = (
+    Path(".local") / "state" / "docich" / "host-metrics" / "ring.jsonl"
+)
+# A ring that already broke its own MAX_BYTES bound is refused instead of
+# projecting a partial read as if it were the retained history.
+HOST_METRICS_MAX_READ_BYTES = MAX_BYTES + 4096
+# Soft-budget floor (see ``_host_metrics_budget``): the newest four intervals.
+HOST_METRICS_BUDGET_SAMPLES = 4
+
+
+def _host_metrics_count(value, maximum=2**63 - 1):
+    if type(value) is not int or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _host_metrics_float(value, maximum=10**12):
+    if type(value) not in (int, float):
+        return None
+    value = float(value)
+    if not math.isfinite(value) or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _host_metrics_round(value):
+    return None if value is None else round(float(value), 2)
+
+
+def _host_metrics_line(line, now):
+    """Parse one ring line into the contract's fixed values, or ``None``.
+
+    A v1 point is kept as long as ``v`` and ``t`` are valid; every other source
+    is optional and may legitimately be ``null`` (the sampler writes null when a
+    source was unreadable on that tick). A malformed value still makes the line
+    malformed -- an unknown shape is skipped, never guessed at -- but a degraded
+    record with a valid timestamp stays a real point. Nothing from the line is
+    carried through except these fixed values.
+    """
+    try:
+        record = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict) or type(record.get("v")) is not int:
+        return None
+    if record["v"] != SCHEMA_VERSION:
+        return None
+    t = record.get("t")
+    if type(t) is not int or not 0 <= t <= max(0, now) + 86400:
+        return None
+
+    boot = record.get("boot")
+    if boot is not None and (
+            not isinstance(boot, str)
+            or re.fullmatch(r"[0-9a-f]{12}", boot) is None):
+        return None
+    uptime_s = record.get("uptime_s")
+    if uptime_s is not None and (type(uptime_s) is not int or uptime_s < 0):
+        return None
+    units = record.get("units")
+    if units is not None and (type(units) is not int or units < 0):
+        return None
+
+    cpu = record.get("cpu")
+    if cpu is not None:
+        if (not isinstance(cpu, (list, tuple)) or len(cpu) != 3
+                or any(type(item) is not int or item < 0 for item in cpu)):
+            return None
+        cpu = tuple(cpu)
+
+    load = record.get("load")
+    if load is not None:
+        if not isinstance(load, (list, tuple)) or len(load) != 3:
+            return None
+        load_values = []
+        for item in load:
+            value = _host_metrics_float(item, maximum=10**6)
+            if value is None:
+                return None
+            load_values.append(value)
+        load = tuple(load_values)
+
+    # A missing or unknown ``mem_kb`` key is the same honest "not reported" as
+    # an explicit null; neither is ever turned into a guessed 0.
+    mem_values = {
+        "available": None, "dirty": None, "swap_free": None,
+        "swap_total": None, "total": None, "writeback": None,
+    }
+    mem = record.get("mem_kb")
+    if mem is not None:
+        if not isinstance(mem, dict):
+            return None
+        for key in mem_values:
+            value = mem.get(key)
+            if value is None:
+                continue
+            parsed = _host_metrics_count(value)
+            if parsed is None:
+                return None
+            mem_values[key] = parsed
+
+    psi_values = [None, None, None]
+    psi = record.get("psi")
+    if psi is not None:
+        if not isinstance(psi, dict):
+            return None
+        for index, key in enumerate(("cpu", "io", "mem")):
+            pair = psi.get(key)
+            if pair is None:
+                continue
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                return None
+            value = pair[0]
+            if value is None:
+                continue
+            parsed = _host_metrics_float(value)
+            if parsed is None:
+                return None
+            psi_values[index] = parsed
+
+    disk_sectors = record.get("disk_sectors")
+    if disk_sectors is not None:
+        if (not isinstance(disk_sectors, (list, tuple)) or len(disk_sectors) != 2
+                or any(type(item) is not int or item < 0
+                       for item in disk_sectors)):
+            return None
+        disk_sectors = tuple(disk_sectors)
+    disk_io_ms = None
+    disk_ms = record.get("disk_ms")
+    if disk_ms is not None:
+        if (not isinstance(disk_ms, (list, tuple)) or len(disk_ms) != 2
+                or any(type(item) is not int or item < 0 for item in disk_ms)):
+            return None
+        disk_io_ms = disk_ms[0]
+
+    return {
+        "boot": boot,
+        "t": t,
+        "uptime_s": uptime_s,
+        "cpu": cpu,
+        "load": load,
+        "mem": mem_values,
+        "psi": tuple(psi_values),
+        "disk_sectors": disk_sectors,
+        "disk_io_ms": disk_io_ms,
+        "units": units,
+    }
+
+
+def _host_metrics_down_units(units):
+    """Fixed names whose 2-bit state is not ``active`` (0b01); null is unknown."""
+    if units is None:
+        return []
+    return [
+        name for index, name in enumerate(UNIT_ORDER)
+        if ((units >> (2 * index)) & 0b11) != 1
+    ]
+
+
+HOST_METRICS_BOUNDARY_BOOTS = 2
+
+
+def _host_metrics_trim_samples(samples, limit,
+                               max_previous_boots=HOST_METRICS_BOUNDARY_BOOTS):
+    """Keep the newest ``limit`` points plus the last point of older boots.
+
+    "Newest N" alone is not enough for #2578: after the reboot that follows a
+    guest-OS hang, the sampler refills the window with post-boot points, and a
+    diagnostics run more than N intervals later would hide the last point before
+    the hang -- the only evidence of the final hour. The last point of up to
+    ``max_previous_boots`` older boots is therefore kept as a boundary, whatever
+    the newest window contains. ``boot`` may be null (unknown); equality is the
+    only test, because a null boot never proves a reboot either way.
+    """
+    if limit <= 0 or not samples:
+        return []
+    keep = set(range(max(0, len(samples) - limit), len(samples)))
+    added = 0
+    for index in range(len(samples) - 2, -1, -1):
+        if samples[index]["boot"] == samples[index + 1]["boot"]:
+            continue
+        keep.add(index)
+        added += 1
+        if added >= max_previous_boots:
+            break
+    return [samples[index] for index in sorted(keep)]
+
+
+def _collect_host_metrics(home_root=None, now=None):
+    """Project the fixed host metrics ring (#2578) without exposing its file.
+
+    The ring lives at ``<home>/.local/state/docich/host-metrics/ring.jsonl``.
+    ``main`` passes the runtime user's home explicitly (``soren.parent``); this
+    projection never resolves a path from config or the environment, because
+    the location is part of the sampler contract and the ring is reboot-
+    persistent evidence that must not follow a mutable state_dir. Only fixed
+    contract fields are emitted: never a path, a raw line or free text.
+    ``ring_bytes`` is the bounded byte count actually read (0 when absent or
+    refused), so the ring's on-disk size stays measurable.
+    """
+    now = int(time.time()) if now is None else int(now)
+    home = Path(home_root) if home_root is not None else PROD_ROOT.parent
+    result = {
+        "status": "absent",
+        "retention": {
+            "interval_sec": INTERVAL_SEC,
+            "max_points": MAX_POINTS,
+            "max_bytes": MAX_BYTES,
+        },
+        "unit_order": list(UNIT_ORDER),
+        "ring_bytes": 0,
+        "points_available": 0,
+        "points": 0,
+        "samples_omitted": 0,
+        "oldest_age_sec": None,
+        "newest_age_sec": None,
+        "boots": 0,
+        "current_boot": None,
+        "spans_reboot": False,
+        "samples": [],
+    }
+    path = home / HOST_METRICS_RING_RELPATH
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            # A directory/FIFO/device where the ring belongs is not evidence.
+            return {**result, "status": "unreadable"}
+        if info.st_size > MAX_BYTES:
+            # Compaction failed; a partial read of the newest lines would look
+            # authoritative while silently missing retained history.
+            return {**result, "status": "invalid"}
+        raw = os.read(fd, HOST_METRICS_MAX_READ_BYTES + 1)
+        if len(raw) > HOST_METRICS_MAX_READ_BYTES:
+            return {**result, "status": "invalid"}
+        # Bounded bytes actually read. It is a count, never a path, and it
+        # stays at 0 when nothing was read (absent/unreadable/refused).
+        result["ring_bytes"] = min(len(raw), MAX_BYTES)
+    except FileNotFoundError:
+        return result
+    except (OSError, ValueError):
+        # Permission/IO errors and the ``O_NOFOLLOW`` symlink refusal.
+        return {**result, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    records = []
+    for line in raw.splitlines():
+        parsed = _host_metrics_line(line, now)
+        if parsed is not None:
+            records.append(parsed)
+    if not records:
+        # Present but nothing parseable: empty file, torn lines, or a schema
+        # version this collector does not know (never guessed at).
+        return {**result, "status": "invalid"}
+    records = records[-MAX_POINTS:]
+
+    # Per-interval deltas only between consecutive records of the same boot.
+    # Both sides must also carry the source, and a null boot never matches:
+    # a degraded record is not evidence about the interval (docich#2578).
+    intervals = []
+    previous = None
+    for record in records:
+        delta = {
+            "cpu_busy_pct": None,
+            "disk_read_sectors": None,
+            "disk_write_sectors": None,
+            "disk_io_ms": None,
+        }
+        same_boot = (
+            previous is not None
+            and record["boot"] is not None
+            and previous["boot"] == record["boot"]
+        )
+        if same_boot:
+            if previous["cpu"] is not None and record["cpu"] is not None:
+                d_total = record["cpu"][0] - previous["cpu"][0]
+                d_idle = record["cpu"][1] - previous["cpu"][1]
+                d_iowait = record["cpu"][2] - previous["cpu"][2]
+                if d_total > 0:
+                    busy = 100.0 * (d_total - d_idle - d_iowait) / d_total
+                    delta["cpu_busy_pct"] = round(
+                        min(100.0, max(0.0, busy)), 2)
+            if (previous["disk_sectors"] is not None
+                    and record["disk_sectors"] is not None):
+                # A counter reset inside one boot is not negative I/O; clamp
+                # it to zero instead of projecting an impossible value.
+                delta["disk_read_sectors"] = max(
+                    0, record["disk_sectors"][0] - previous["disk_sectors"][0])
+                delta["disk_write_sectors"] = max(
+                    0, record["disk_sectors"][1] - previous["disk_sectors"][1])
+            if previous["disk_io_ms"] is not None and record["disk_io_ms"] is not None:
+                delta["disk_io_ms"] = max(
+                    0, record["disk_io_ms"] - previous["disk_io_ms"])
+        intervals.append(delta)
+        previous = record
+
+    samples = []
+    for record, delta in zip(records, intervals):
+        load = record["load"]
+        samples.append({
+            "age_sec": max(0, now - record["t"]),
+            "boot": record["boot"],
+            "t": record["t"],
+            "uptime_s": record["uptime_s"],
+            "load1": None if load is None else round(load[0], 2),
+            "load5": None if load is None else round(load[1], 2),
+            "load15": None if load is None else round(load[2], 2),
+            "cpu_busy_pct": delta["cpu_busy_pct"],
+            "mem_available_kb": record["mem"]["available"],
+            "mem_total_kb": record["mem"]["total"],
+            "swap_free_kb": record["mem"]["swap_free"],
+            "swap_total_kb": record["mem"]["swap_total"],
+            "dirty_kb": record["mem"]["dirty"],
+            "writeback_kb": record["mem"]["writeback"],
+            "psi_cpu_some10": _host_metrics_round(record["psi"][0]),
+            "psi_io_some10": _host_metrics_round(record["psi"][1]),
+            "psi_mem_some10": _host_metrics_round(record["psi"][2]),
+            "disk_read_sectors": delta["disk_read_sectors"],
+            "disk_write_sectors": delta["disk_write_sectors"],
+            "disk_io_ms": delta["disk_io_ms"],
+            "units": record["units"],
+            "down_units": _host_metrics_down_units(record["units"]),
+        })
+    samples = _host_metrics_trim_samples(samples, SAMPLES_MAX)
+
+    newest = records[-1]
+    oldest = records[0]
+    # A future timestamp (clock step) is clamped to age 0 rather than reported
+    # as negative age; it is not evidence of health either way.
+    newest_age_sec = max(0, now - newest["t"])
+    # Only non-null boot IDs identify a reboot; a null boot is unknown and must
+    # not collapse into a fake "same boot" or a fake second boot.
+    boots = {record["boot"] for record in records if record["boot"] is not None}
+    current_boot = next(
+        (record["boot"] for record in reversed(records)
+         if record["boot"] is not None),
+        None,
+    )
+    result.update({
+        "status": "stale" if newest_age_sec > STALE_SEC else "ok",
+        "points_available": len(records),
+        "points": len(samples),
+        "oldest_age_sec": max(0, now - oldest["t"]),
+        "newest_age_sec": newest_age_sec,
+        "boots": len(boots),
+        "current_boot": current_boot,
+        "spans_reboot": len(boots) > 1,
+        "samples": samples,
+    })
+    return result
 
 
 CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
@@ -11461,6 +11849,34 @@ def _cpu_profile_detail_drop(payload):
     return payload
 
 
+def _host_metrics_budget(payload, text):
+    """Shed half of the #2578 ring sample list before any section is dropped.
+
+    The ring is the only read-only evidence of the hour before a guest-OS hang
+    (#2278) and cannot be recreated after the reboot, so the section itself
+    survives every whole-section drop (``_HARD_DROP_ORDER``). Only its older
+    samples yield here, and only once the envelope exceeds the softer target:
+    the newest ``HOST_METRICS_BUDGET_SAMPLES`` intervals, the retention
+    constants and the derived metadata all stay, with the omitted count visible.
+    """
+    section = payload.get("host_metrics")
+    if (len(text.encode("utf-8")) <= MAX_JSON_BYTES
+            or not isinstance(section, dict)
+            or not isinstance(section.get("samples"), list)
+            or len(section["samples"]) <= HOST_METRICS_BUDGET_SAMPLES):
+        return text
+    dropped = len(section["samples"]) - HOST_METRICS_BUDGET_SAMPLES
+    omitted = section.get("samples_omitted")
+    kept = _host_metrics_trim_samples(
+        section["samples"], HOST_METRICS_BUDGET_SAMPLES)
+    section["samples_omitted"] = (
+        (omitted if type(omitted) is int and omitted > 0 else 0)
+        + len(section["samples"]) - len(kept))
+    section["samples"] = kept
+    section["points"] = len(section["samples"])
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -11580,6 +11996,12 @@ def _diagnostics_budget(payload):
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         payload = _nethack_xlog_drop(payload)
     text = _nethack_history_budget(payload)
+    # #2578: the ring samples are the only evidence of the hour before a
+    # guest-OS hang and cannot be recreated after the reboot. Shed half the
+    # sample list (keeping the newest four intervals) once the envelope exceeds
+    # the softer target, so the whole section survives the hard-ceiling drop
+    # below as long as anything can survive there.
+    text = _host_metrics_budget(payload, text)
     # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
     # preserves the evidence its own incident review depends on, but none of them
     # is unconditional: a payload that was still over the ceiling after them was
@@ -12072,6 +12494,10 @@ def main(argv):
             soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
+        # The ring path is fixed relative to the runtime user's home, so the
+        # collector passes it explicitly instead of deriving a state_dir
+        # (#2578: reboot-persistent evidence, not program state).
+        "host_metrics": _collect_host_metrics(soren.parent, now),
         "workers": workers,
         "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
