@@ -96,7 +96,16 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
          "fallbacks_15m": 0, "all_failed_15m": 0, "recent_events": [],
          "anomalous_components": {}},
-  "improvement": {"running": false, "stale": false, ...},
+  "improvement": {"running": false, "stale": false,
+                  "persist": {"present": true, "clone_present": true, "readable": true,
+                              "result": "ok", "reason": "none", "rc": 0,
+                              "origin_main": "<40-hex>",
+                              "last_success_at": 1792765266,
+                              "last_success_age_sec": 42,
+                              "age_sec": 42, "stale": false,
+                              "branch": "runtime/eloop-improve",
+                              "commit": "<40-hex>", "last_failure": null},
+                  ...},
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
@@ -947,6 +956,44 @@ client ID解決失敗文言の観測であり、token失効・ネットワーク
 あり `result_freshness=unknown`。当日のtickと結び付けない。unitの追加・enable・restart、
 updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
 既存journal契約は変更しない。未知・読取不能はunknownとして残す。
+
+## Strategy persist の read-only 投影（#2489）
+
+soviet_now の `strategy/persist.sh` は採用のたびに `soren-persist/.git/persist-status.json`
+へ固定 schema の結果を書く。diagnostics は `improvement.persist` として読むだけで、
+git 操作・修復・runtime 変更は行わない。
+
+- 収集元: `<soren>/../soren-persist/.git/persist-status.json` と
+  `<soren>/tmp/state/strategy_persist_last_failure.json`。パスは production の
+  既定配置に固定しており、`SOREN_PERSIST_REPO` を変更した環境は対象外。
+- `result` は `ok` / `no-change` / `no-op` / `fail` / `unknown` の固定 enum。
+  `reason` は `none`, `clone_missing`, `invalid_message`, `invalid_branch`,
+  `gh_missing`, `identity_setup_failed`, `fetch_failed`, `remote_head_failed`,
+  `checkout_failed`, `reset_failed`, `copy_failed`, `add_failed`, `commit_failed`,
+  `tree_failed`, `push_failed`, `pr_failed` のみ。未知値は `unknown`。
+- `rc` は persist の戻り値（0=候補作成/更新、3=変更なし、1=失敗）。
+- `origin_main` は最後に fetch した origin/main の sha、`last_success_at` は
+  最後に candidate 作成/更新へ成功した epoch。失敗 status でも引き継がれるため、
+  clone が main から取り残される停止（#2489 の HEAD 停止型）を機械的に検知できる。
+- status file の age が 7 日を超えると `stale=true` として warn に上げる
+  （persist が呼ばれ続けていれば no-change でも毎回更新されるため）。
+- 生の `message` / `error` は VM 外へ出さない。`branch` と `commit` は形式検証を
+  通った場合だけ出す。
+- 失敗（`result=fail`）、status file の破損（`present` かつ `readable=false`）、
+  未解消の durable failure record、`stale=true` は `status=warn` に上げる。
+  次の成功/no-change で status が上書きされ、durable record も消えるため
+  fail 由来の warn は自然に解消する。
+- clone が無いこと自体は production projection では正常で、producer は clone 不在時に
+  status を書かず 0 を返す（durable failure record には `reason=clone_missing`, `rc=0`
+  を残す）。`result=no-op` は repo ディレクトリはあるが `.git` が無い部分 clone 状態でのみ
+  書かれる。
+- `clone_present=false` かつ `improvement.running=true` は、loop が動いているのに
+  persist clone が無い異常として `status=warn` に上げる（#2489 の clone 消失検知）。
+  `last_failure.reason=clone_missing` も loop が動いている間だけ warn 対象にする
+  （idle な projection 配備では warn にしない）。status file は clone 内にあるため
+  clone 消失時は `last_success_at` も同時に消えるが、別経路で残っていれば追加の根拠に使う。
+
+
 
 ## 出さないもの
 

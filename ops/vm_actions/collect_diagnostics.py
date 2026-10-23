@@ -2716,6 +2716,116 @@ def _parse_epoch(value):
     return number if number > 0 else None
 
 
+# Fixed enums mirrored from soviet_now strategy/persist.sh. A new upstream
+# value is projected as "unknown", never as raw text.
+PERSIST_RESULTS = ("ok", "no-change", "no-op", "fail", "unknown")
+PERSIST_REASONS = frozenset({
+    "none", "clone_missing", "invalid_message", "invalid_branch", "gh_missing",
+    "identity_setup_failed", "fetch_failed", "remote_head_failed",
+    "checkout_failed", "reset_failed", "copy_failed", "add_failed",
+    "commit_failed", "tree_failed", "push_failed", "pr_failed", "unknown",
+})
+PERSIST_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}")
+PERSIST_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+PERSIST_LABEL = re.compile(r"[A-Za-z0-9_-]{1,32}")
+# A status file older than this while the improve loop runs means persist is
+# no longer being called; the 2026-09-17 stalled-clone incident looked exactly
+# like this before the file existed at all.
+PERSIST_STALE_SEC = 7 * 24 * 60 * 60
+
+
+def _collect_strategy_persist(soren, now):
+    """Project the runtime strategy persist attempt (docich#2489).
+
+    soviet_now's ``strategy/persist.sh`` writes a fixed-schema status document
+    after every adoption attempt. Only fixed enums are emitted: the raw status
+    message/error can name hosts or paths and never leaves the VM, and no file
+    content is executed or evaluated here. A missing clone is the normal
+    projection/no-op deployment and is not a failure.
+    """
+    soren = Path(soren)
+    status_path = soren.parent / "soren-persist" / ".git" / "persist-status.json"
+    clone_git = soren.parent / "soren-persist" / ".git"
+    failure_path = soren / "tmp" / "state" / "strategy_persist_last_failure.json"
+    data = _read_json(status_path)
+    present = False
+    try:
+        present = status_path.is_file()
+    except OSError:
+        present = False
+    clone_present = False
+    try:
+        clone_present = clone_git.is_dir()
+    except OSError:
+        clone_present = False
+    entry = {
+        "present": present,
+        "clone_present": clone_present,
+        "readable": data is not None,
+        "result": "unknown",
+        "reason": None,
+        "rc": None,
+        "origin_main": None,
+        "last_success_at": None,
+        "last_success_age_sec": -1,
+        "age_sec": -1,
+        "stale": False,
+        "branch": None,
+        "commit": None,
+        "last_failure": None,
+    }
+    if present:
+        try:
+            entry["age_sec"] = int(now - status_path.stat().st_mtime)
+        except OSError:
+            entry["age_sec"] = -1
+        entry["stale"] = entry["age_sec"] > PERSIST_STALE_SEC
+    if data:
+        result = data.get("result")
+        entry["result"] = result if result in PERSIST_RESULTS else "unknown"
+        reason = data.get("reason")
+        if isinstance(reason, str) and reason in PERSIST_REASONS:
+            entry["reason"] = reason
+        elif entry["result"] == "fail":
+            # Older status documents predate the reason field. Keep the
+            # failure visible without inventing a cause.
+            entry["reason"] = "unknown"
+        rc = data.get("rc")
+        if type(rc) is int and 0 <= rc <= 255:
+            entry["rc"] = rc
+        branch = data.get("branch")
+        if isinstance(branch, str) and PERSIST_BRANCH.fullmatch(branch):
+            entry["branch"] = branch
+        commit = data.get("commit")
+        if isinstance(commit, str) and PERSIST_COMMIT.fullmatch(commit):
+            entry["commit"] = commit
+        origin_main = data.get("origin_main")
+        if isinstance(origin_main, str) and PERSIST_COMMIT.fullmatch(origin_main):
+            entry["origin_main"] = origin_main
+        last_success = _parse_epoch(data.get("last_success_at"))
+        if last_success is not None:
+            entry["last_success_at"] = last_success
+            entry["last_success_age_sec"] = (
+                int(now - last_success) if last_success <= now else -1
+            )
+
+    failure = _read_json(failure_path)
+    if failure and failure.get("failure_code") == "strategy_persist_failed":
+        reason = failure.get("reason")
+        rc = failure.get("rc")
+        label = failure.get("label")
+        failed_at = _parse_epoch(failure.get("failed_at"))
+        entry["last_failure"] = {
+            "failure_code": "strategy_persist_failed",
+            "reason": reason if isinstance(reason, str) and reason in PERSIST_REASONS else "unknown",
+            "rc": rc if type(rc) is int and 0 <= rc <= 255 else None,
+            "label": label if isinstance(label, str) and PERSIST_LABEL.fullmatch(label) else "unknown",
+            "failed_at": failed_at,
+            "age_sec": int(now - failed_at) if failed_at is not None and failed_at <= now else -1,
+        }
+    return entry
+
+
 def _collect_improvement(soren, now):
     state_dir = soren / "tmp" / "state"
     state = _read_json(state_dir / "improve_state.json") or {}
@@ -2785,6 +2895,7 @@ def _collect_improvement(soren, now):
         "retry_age_sec": retry_age,
         "retry_bytes": retry_bytes,
         "blocked_by": blocked_by,
+        "persist": _collect_strategy_persist(soren, now),
         "monitor": {
             "checked_at": _parse_epoch(monitor.get("checked_at")),
             "status": _redact_text(str(monitor.get("status") or ""), 32),
@@ -7794,6 +7905,33 @@ def _severity(workers, queues, ai, improvement, corners=None):
         or ai["queue_giveups"] > 0
         or improvement["stale"]
         or improvement["retry_pending"]
+    ):
+        return "warn"
+    # An adopted strategy that never reached the reviewed lineage (docich#657,
+    # #2489) is an actionable regression even while the loop itself keeps
+    # running. A later successful/no-change persist overwrites the status and
+    # clears the durable failure record.
+    persist = improvement.get("persist")
+    clone_disappeared = (
+        isinstance(persist, dict)
+        and persist.get("clone_present") is False
+        and (
+            bool(improvement.get("running"))
+            or persist.get("last_success_at") is not None
+        )
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure") if isinstance(persist, dict) else None
+    failure_actionable = isinstance(failure, dict) and (
+        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    )
+    if isinstance(persist, dict) and (
+        persist.get("result") == "fail"
+        or persist.get("stale")
+        or (persist.get("present") and not persist.get("readable"))
+        or failure_actionable
+        or clone_disappeared
     ):
         return "warn"
     return "ok"
