@@ -105,7 +105,12 @@ def _source(url: str) -> tuple[str, int] | None:
     except ValueError:
         return None
     host = (parsed.hostname or "").lower()
-    value = PRIMARY_HOSTS.get(host)
+    source_host = host[4:] if host.startswith("www.") else host
+    # Permit exactly the reviewed base host or its common www alias. Arbitrary
+    # subdomains remain excluded because discovery is not an authority proof.
+    if host not in {source_host, "www." + source_host}:
+        return None
+    value = PRIMARY_HOSTS.get(source_host)
     if value is None:
         return None
     path = parsed.path.lower()
@@ -113,11 +118,11 @@ def _source(url: str) -> tuple[str, int] | None:
         return None
     # arXiv HTML abstract pages are suitable for later text fetch; PDF URLs are
     # not, and WebBroker's MIME boundary must not be widened for this corner.
-    if host == "arxiv.org" and not path.startswith("/abs/"):
+    if source_host == "arxiv.org" and not path.startswith("/abs/"):
         return None
     # OpenReview public paper landing pages use /forum?id=... . Avoid API URLs
     # or arbitrary profile/group pages at discovery time.
-    if host == "openreview.net" and not (path == "/forum" and parsed.query.startswith("id=")):
+    if source_host == "openreview.net" and not (path == "/forum" and parsed.query.startswith("id=")):
         return None
     return value
 
