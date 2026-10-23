@@ -97,7 +97,7 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
          "fallbacks_15m": 0, "all_failed_15m": 0, "recent_events": [],
          "anomalous_components": {}},
   "improvement": {"running": false, "stale": false,
-                  "persist": {"present": true, "readable": true,
+                  "persist": {"present": true, "clone_present": true, "readable": true,
                               "result": "ok", "reason": "none", "rc": 0,
                               "origin_main": "<40-hex>",
                               "last_success_at": 1792765266,
@@ -982,9 +982,13 @@ git 操作・修復・runtime 変更は行わない。
   未解消の durable failure record、`stale=true` は `status=warn` に上げる。
   次の成功/no-change で status が上書きされ、durable record も消えるため
   fail 由来の warn は自然に解消する。
-- clone が無い production projection では `result=no-op` であり、失敗ではない。
-  ただし `improvement.running` が真、または過去の persist 成功 (`last_success_at`) がある状態で
-  clone が消えた場合は `clone_present=false` として warn に上げる（#2489 の clone 消失検知）。
+- clone が無いこと自体は production projection では正常で、producer は clone 不在時に
+  status を書かず 0 を返す。`result=no-op` は repo ディレクトリはあるが `.git` が無い
+  部分 clone 状態でのみ書かれる。
+- `clone_present=false` かつ `improvement.running=true` は、loop が動いているのに
+  persist clone が無い異常として `status=warn` に上げる（#2489 の clone 消失検知）。
+  status file は clone 内にあるため clone 消失時は `last_success_at` も同時に消えるが、
+  別経路で残っていれば追加の根拠として使う。
 
 
 

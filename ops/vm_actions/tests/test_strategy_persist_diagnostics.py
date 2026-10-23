@@ -34,13 +34,13 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
         self.state = self.soren / "tmp" / "state"
         self.state.mkdir(parents=True)
         self.clone_git = base / "soren-persist" / ".git"
-        self.clone_git.mkdir(parents=True)
         self.now = int(time.time())
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def write_status(self, payload, raw=None, age_sec=120):
+        self.clone_git.mkdir(parents=True, exist_ok=True)
         path = self.clone_git / "persist-status.json"
         path.write_text(raw if raw is not None else json.dumps(payload), encoding="utf-8")
         os.utime(path, (self.now - age_sec, self.now - age_sec))
@@ -54,7 +54,9 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
     def collect(self):
         return self.collector._collect_improvement(self.soren, self.now)
 
-    def severity(self, improvement):
+    def severity(self, improvement, running=None):
+        if running is not None:
+            improvement = {**improvement, "running": running}
         workers = {
             "required_down": [], "required_stale": [], "duplicates": 0,
             "zombies": 0, "paused": [], "unregistered": [],
@@ -66,10 +68,16 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
     def test_missing_status_is_not_a_failure(self):
         persist = self.collect()["persist"]
         self.assertFalse(persist["present"])
+        self.assertFalse(persist["clone_present"])
         self.assertFalse(persist["readable"])
         self.assertEqual(persist["result"], "unknown")
         self.assertIsNone(persist["last_failure"])
         self.assertEqual(self.severity(self.collect()), "ok")
+
+    def test_missing_clone_while_loop_runs_is_warn(self):
+        persist = self.collect()["persist"]
+        self.assertFalse(persist["clone_present"])
+        self.assertEqual(self.severity(self.collect(), running=True), "warn")
 
     def test_successful_candidate_projects_fixed_fields(self):
         self.write_status({
@@ -86,6 +94,7 @@ class StrategyPersistDiagnosticsTests(unittest.TestCase):
         })
         persist = self.collect()["persist"]
         self.assertTrue(persist["present"])
+        self.assertTrue(persist["clone_present"])
         self.assertTrue(persist["readable"])
         self.assertEqual(persist["result"], "ok")
         self.assertEqual(persist["reason"], "none")
