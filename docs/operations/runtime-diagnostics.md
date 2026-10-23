@@ -1217,3 +1217,25 @@ PID一致だけで公開映像・音声・ユーザー休止維持を証明し�
 `failure_reason`（既存の安全検査拒否理由、missing/permission_denied/io_error/changed/oversized/invalid_json/not_running/invalid_pid/unknown）も返します。
 記録本文・path・例外本文は出さず、安全検査の条件も変更しません。再読取時の拒否は
 `failure_stage=source_recheck`を維持します。成功時はこれらのfailure欄を追加しません。
+
+## 固定カテゴリ別 storage breakdown（#866 / #868、#2583 で version 2）
+
+`storage_breakdown` は production の空き減少を固定カテゴリへ帰属させる read-only 集計です。
+カテゴリは設計上重複するため合算してはならない。scan は bounded（`max_entries_per_tree`）、
+symlink は追従せず、一部だけ取得できた場合は `scan_complete=false` を明示します。
+path・ファイル名・内容・権限情報は出力しません。
+
+- version 1（#868）: opencode の default/worker DB family と合計ツリー、`soren_logs`、`soren_tmp`、
+  `say_queue`、`browser_profile`、`strategy_archive`（plain/compressed 形式別）、`docich_git`、
+  `soren_live_git`、`soren_persist_git`、`voicevox_root`、`voicevox_archive`。
+- version 2（#2583）: version 1 では帰属できなかった減少分を固定 root で分解します。
+  `gateway_state`（gateway の state tree = bundles と preview release）、
+  `alt_checkout_tmp_sync`（/tmp/opencode/docich-sync）、`alt_checkout_soren_src`（~/soren-src）、
+  `system_journal`（/var/log/journal）、`system_log`（/var/log。journal を内包し重複を許容）、
+  `swapfile`、`sys_tmp`（/tmp）、`docich_git_objects` と `docich_git_objects_pack`
+  （production .git の repack churn と保持履歴を区別する subcategory）。
+- version 1 の payload（旧 collector）では version 2 の key を生成しないため、
+  deploy 過渡期に breakdown が不完全扱いになることはありません。未知の version は unavailable です。
+- `/var/lib/docker` は意図的に対象外です: collector の uid が traverse できず、恒久的に
+  unreadable な root は共通の incomplete フラグを永久に立てるため bytes の帰属になりません。
+  `/tmp` の一時 `.so` family は既存の tmp shared objects 投影が担当します。

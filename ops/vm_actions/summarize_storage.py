@@ -51,6 +51,26 @@ TREE_CATEGORIES = (
     "voicevox_archive",
 )
 
+# Version 2 fixed roots (azumag/docich#2583): the share of a decline window
+# that version 1 could not attribute. Same key shape as TREE_CATEGORIES, same
+# overlap rule (system_log contains system_journal, docich_git contains the
+# object subcategories). A version 1 payload (old collector) simply does not
+# carry them, so nothing is invented and the shared incomplete flag stays
+# untouched until the reviewed collector is deployed.
+V2_TREE_CATEGORIES = (
+    "gateway_state",
+    "alt_checkout_tmp_sync",
+    "alt_checkout_soren_src",
+    "system_journal",
+    "system_log",
+    "swapfile",
+    "sys_tmp",
+    "docich_git_objects",
+    "docich_git_objects_pack",
+)
+
+SUPPORTED_BREAKDOWN_VERSIONS = (1, 2)
+
 # Fixed on-disk formats of the strategy permanent archive. The split is what
 # makes "growth stays bounded" checkable without reading any strategy content.
 STRATEGY_ARCHIVE_FORMATS = ("plain", "compressed")
@@ -67,7 +87,7 @@ def render(data):
     if not isinstance(data, dict):
         return 0, 1, "storage_breakdown_unavailable=1"
     breakdown = data.get("storage_breakdown")
-    if not isinstance(breakdown, dict) or breakdown.get("version") != 1:
+    if not isinstance(breakdown, dict) or breakdown.get("version") not in SUPPORTED_BREAKDOWN_VERSIONS:
         return 0, 1, "storage_breakdown_unavailable=1"
 
     parts = ["overlap=1"]
@@ -96,6 +116,17 @@ def render(data):
         parts.append(f"{category}_complete={int(complete)}")
         parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
         parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    # Version 2 fixed roots (azumag/docich#2583). Version 1 payloads never
+    # reach this block, so an old collector cannot look incomplete here.
+    if breakdown.get("version") == 2:
+        for category in V2_TREE_CATEGORIES:
+            item = breakdown.get(category)
+            complete = isinstance(item, dict) and item.get("scan_complete") is True
+            incomplete = incomplete or not complete
+            parts.append(f"{category}_complete={int(complete)}")
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
 
     formats = breakdown.get("strategy_archive_formats")
     formats = formats if isinstance(formats, dict) else {}
