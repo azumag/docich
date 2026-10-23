@@ -39,6 +39,9 @@ from docich.stream_category import (  # noqa: E402
     twitch_category,
     viewer_title_args,
     VIEWER_GAME_NAMES,
+    intended_stream_game,
+    last_announced_game,
+    reconcile_stream_metadata,
 )
 
 
@@ -580,6 +583,131 @@ class StreamTitleSyncSkipObservationTests(StreamCategoryTestBase):
         run.reset_mock()
         _record_title_sync_skip(self.g, "PRIVATE-TITLE")
         run.assert_not_called()
+
+
+class TestReconcileStreamMetadata(StreamCategoryTestBase):
+    """Metadata that no switch commit owns still has to follow the screen (#2673)."""
+
+    def _write_plane(self, phase: str, *, game: str | None = None, generation: int = 1) -> None:
+        state = {"phase": phase}
+        state["active"] = (
+            {"game": game, "generation": generation, "runtime_id": f"g{generation}-aaaaaaaa",
+             "lease_id": "lease", "adapter": "cli"}
+            if game else None
+        )
+        path = Path(self.g.state_dir) / "game_switch.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    def _write_background_state(self, *, age_s: float = 0.0) -> Path:
+        path = self.soren / "game_state.json"
+        path.write_text('{"state": "MOVE"}', encoding="utf-8")
+        if age_s:
+            past = time.time() - age_s
+            os.utime(path, (past, past))
+        return path
+
+    def _write_sorengame(self) -> None:
+        (self.root / "config" / "games" / "sorengame.toml").write_text(
+            '[game]\nname = "sorengame"\ntitle = "sorengame"\nadapter = "soren"\n'
+            '[soren]\nroot = "%s"\n'
+            '[twitch]\ncategory_id = "1530787860"\ncategory_name = "Soren Game"\n'
+            'title_prefix = "[Soren]"\n' % self.soren,
+            encoding="utf-8",
+        )
+
+    def test_idle_plane_announces_the_live_background_game(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+
+        self.assertEqual(len(self.spawned), 1)
+        argv = self.spawned[0]["argv"]
+        self.assertEqual(argv[1:3], ["--game", "sorengame"])
+        self.assertEqual(last_announced_game(self.g), "sorengame")
+
+    def test_same_runtime_is_not_re_announced(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_ready_plane_follows_the_committed_seat(self) -> None:
+        self._install_script()
+        self._write_plane("ready", game="nethack")
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+
+        argv = self.spawned[0]["argv"]
+        self.assertEqual(argv[1:3], ["--game", "nethack"])
+
+    def test_transition_phases_are_left_alone(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("failed")
+        self._write_background_state()
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+        self.assertIsNone(intended_stream_game(self.g))
+
+    def test_stale_background_state_is_not_treated_as_running(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state(age_s=600)
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+
+    def test_missing_updater_is_non_fatal(self) -> None:
+        # No script installed: the announce raises, reconciliation swallows it.
+        self._write_sorengame()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+
+    def test_announce_records_the_runtime_it_asked_for(self) -> None:
+        self._install_script()
+
+        self.assertTrue(announce_stream_game(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(last_announced_game(self.g), "nethack")
+
+    def test_commit_hook_records_view_announces_too(self) -> None:
+        self._install_script()
+        hook = commit_hook(self.g, spawn=self._recorder)
+
+        hook("nethack")
+
+        self.assertEqual(last_announced_game(self.g), "nethack")
+
+    def test_failed_dispatch_backs_off_before_retrying(self) -> None:
+        self._write_sorengame()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        def boom(argv, *, cwd, log_path):
+            raise OSError("updater unavailable")
+
+        # No script installed: the first attempt fails and is remembered.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=boom))
+        # Immediately afterwards the same intended runtime is not retried.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=boom))
+
+        record = json.loads(
+            (Path(self.g.state_dir) / "stream_metadata_last.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["game"], "sorengame")
 
 
 if __name__ == "__main__":

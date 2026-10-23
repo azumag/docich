@@ -40,22 +40,30 @@ def game_pane(*, with_pager=False, with_vitals=True):
     return lines
 
 
+#: Distinguishes "this document predates the head capture" from "the head rows
+#: were captured and are empty".
+NO_GAME_HEAD = object()
+
+
 def doc(*, agent=None, game=None, active_game="nethack", generation=888,
-        head="128d5c6e09c8409a5b8ac5fa4ea40d4fe6171093"):
+        head="128d5c6e09c8409a5b8ac5fa4ea40d4fe6171093", game_head=NO_GAME_HEAD):
+    panes = {
+        "present": True,
+        "phase": "ready",
+        "active_game": active_game,
+        "windows": ["nethack", "agent-g888"],
+        "game": game if game is not None else game_pane(),
+        "agent": agent if agent is not None else [],
+    }
+    if game_head is not NO_GAME_HEAD:
+        panes["game_head"] = game_head
     return {
         "status": "diagnosed",
         "sha": head,
         "diagnostics": {
             "meta": {"docich_head": head},
             "game_switch": {"active_game": active_game, "active_generation": generation},
-            "nethack_panes": {
-                "present": True,
-                "phase": "ready",
-                "active_game": active_game,
-                "windows": ["nethack", "agent-g888"],
-                "game": game if game is not None else game_pane(),
-                "agent": agent if agent is not None else [],
-            },
+            "nethack_panes": panes,
         },
     }
 
@@ -126,6 +134,35 @@ def test_pager_text_is_reported_but_never_required():
                               game=game_pane(with_pager=True)))
     assert with_pager["status"] == STATUS_ACTING
     assert with_pager["pager_text_visible"] is True
+
+
+def test_message_row_head_capture_makes_the_pager_decidable():
+    """#2271: the top row is where ``--More--`` lives, so the head decides it."""
+    head = ["Restoring save file...--More--", "Welcome back to the dungeon."]
+    verdict = evaluate(doc(agent=[agent_line(0)] * 3, game_head=head))
+    assert verdict["status"] == STATUS_STALLED  # the capture still reports the stall
+    assert verdict["game_head_captured"] is True
+    assert verdict["game_head_lines"] == 2
+    assert verdict["pager_text_visible"] is True
+    assert verdict["pager_text_expected_visible"] is True
+    assert "message row captured: 2 head line(s)" in render(verdict)
+
+
+def test_legacy_document_without_a_head_capture_reports_unavailable():
+    verdict = evaluate(doc(agent=[agent_line(1)]))
+    assert verdict["game_head_captured"] is False
+    assert verdict["game_head_lines"] == 0
+    assert verdict["pager_text_visible"] is False
+    assert verdict["pager_text_expected_visible"] is False
+    assert "no message-row head capture" in render(verdict)
+
+
+def test_empty_head_capture_is_evidence_of_no_message_row():
+    verdict = evaluate(doc(agent=[agent_line(1)], game_head=["", ""]))
+    assert verdict["game_head_captured"] is True
+    assert verdict["game_head_lines"] == 2
+    assert verdict["pager_text_visible"] is False
+    assert verdict["pager_text_expected_visible"] is True
 
 
 def test_vitals_are_corroboration_only():

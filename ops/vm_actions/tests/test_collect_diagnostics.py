@@ -330,6 +330,71 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
     assert unknown['end_reason'] is None
 
 
+def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
+    # #1992: a released failed owner that the settle refused must be readable
+    # from diagnostics alone, so a settle that does not fire does not need
+    # another guess cycle. Only the fixed vocabulary is published.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed','game':'tsuitate-view','previous_game':'sorengame',
+        'last_error_code':'timeout','switch_request_id':'DO-NOT-PUBLISH',
+        'settle_refused_reason':'other-owner','completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['switch_error_code']=='timeout'
+    assert entry['settle_refused_reason']=='other-owner'
+    assert 'DO-NOT-PUBLISH' not in json.dumps(result,ensure_ascii=False)
+
+
+def test_tsuitate_settle_refusal_vocabulary_matches_the_corner():
+    # Drift guard: a reason the corner can emit but the collector does not
+    # allowlist would be silently projected as null, which is exactly the
+    # blindness this field exists to remove (#1992).
+    from docich import tsuitate_corner
+    module=load_collector()
+
+    assert set(tsuitate_corner.SETTLE_REFUSAL_REASONS) == set(module._TSUITATE_SETTLE_REFUSALS)
+
+
+def test_tsuitate_corner_hides_a_stale_refusal_after_convergence(tmp_path):
+    # The reason is only meaningful while the owner is still failed; after a
+    # settle the persisted value is stale and must not appear next to
+    # `interrupted`.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'interrupted','game':'tsuitate-view',
+        'end_reason':'released-failure-before-retry',
+        'settle_refused_reason':'other-owner'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['status']=='interrupted'
+    assert entry['settle_refused_reason'] is None
+
+
+def test_tsuitate_corner_refuses_an_unknown_settle_refusal(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'settle_refused_reason':'leak token=SUPERSECRET123'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['settle_refused_reason'] is None
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+
+
 def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
     # The corner is manual-only, so diagnostics is the only place an operator can
     # read why a match ended. Dropping the tsuitate vocabulary or the settled
@@ -413,7 +478,8 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2}
+    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2,
+                    'canceled':1,'soren_canceled':0}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
@@ -427,17 +493,33 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         encoding='utf-8')
     legacy=module._collect_programs(state_dir,soren,int(time.time()))
     assert legacy['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':1,'viewers':1}
+        'present':True,'readable':True,'rounds':1,'viewers':1,
+        'canceled':0,'soren_canceled':0}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0}
+        'present':True,'readable':False,'rounds':0,'viewers':0,
+        'canceled':0,'soren_canceled':0}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0}
+        'present':False,'readable':False,'rounds':0,'viewers':0,
+        'canceled':0,'soren_canceled':0}
+
+    # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p3':{'corner':'soren','status':'CANCELED','cancel_reason':'no-contest',
+                  'predictors':[]},
+            'p4':{'corner':'soren','status':'RESOLVED','predictors':[]},
+        }}),encoding='utf-8')
+    soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
+    assert soren_canceled['prediction_leaderboard']=={
+        'present':True,'readable':True,'rounds':2,'viewers':0,
+        'canceled':1,'soren_canceled':1}
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
@@ -1386,7 +1468,11 @@ class CollectorContractTests(CollectorFixture):
         self.assertGreater(size, 30 * jsonl_scan_window_bytes())
         proc = self.run_collector()
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertLessEqual(len(proc.stdout.encode()), 32768)
+        # The bound protects that this fixture's output does not grow with the
+        # ~300MB telemetry input. It is not the gateway cap itself (65,536 per
+        # #2537): the fixed attribution sections (storage breakdown version 2
+        # adds the #2583 roots) sit below it with a wide margin.
+        self.assertLessEqual(len(proc.stdout.encode()), 40960)
         data = json.loads(proc.stdout)
         self.assertLessEqual(len(data["ai"]["recent_events"]), 20)
         # The scanned tail is real telemetry, not the sparse hole.

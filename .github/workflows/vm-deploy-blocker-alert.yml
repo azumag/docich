@@ -1,0 +1,53 @@
+name: VM deploy blocker alert
+
+# The owner-only VM control plane reports a blocked production deploy only as a
+# red workflow run. docich#2482 sat in that state for five consecutive deploys
+# (~5 days) because nothing turned the failure into an incident. The storage
+# monitor's alerts describe VM state (tracked drift / baseline), not a blocked
+# deploy, so this detector runs on its own schedule with its own concurrency
+# group and reads the recent `vm-operations` push runs directly.
+#
+# It is quiet by design: while a main push deploy is blocked it keeps exactly
+# one deduplicated Issue open (created, then refreshed with the current run and
+# the gateway's fixed reason code), and closes it as soon as a newer main push
+# deploy succeeds. A query failure fails closed: the existing alert state is
+# left untouched instead of being closed on unknown data.
+
+on:
+  schedule:
+    # Offset from the storage monitor (:17 / :47) and its silence detector (:29).
+    - cron: '9,39 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: vm-deploy-blocker-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  blocker:
+    if: >-
+      github.ref == 'refs/heads/main' && github.ref_protected == true &&
+      (github.event_name == 'schedule' ||
+       (github.actor_id == 9018513 && github.triggering_actor == 'azumag'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the fixed detector
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Keep the deploy blocker alert consistent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          RECONCILE_ALERT_LOOKBACK_MINUTES: '90'
+        run: python3 ops/vm_actions/reconcile_refused_alert.py

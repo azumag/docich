@@ -28,16 +28,18 @@ class HistoryTests(unittest.TestCase):
         self.daily.mkdir()
 
     def run_record(self, index=0, **extra):
+        progress = dict(status='ok', sample_count=3,
+                        same_frame_sent_pairs=2, max_same_frame_sent_streak=3,
+                        same_frame_hold_pairs=4, max_same_frame_hold_streak=5,
+                        prompt_counts={'unknown': 6, 'SECRET': 99}, secret='SECRET')
+        progress.update(extra.pop('progress', {}))
         raw = dict(schema_version=1, status='dead', expedition=index,
                    started_at='2026-09-29T01:00:00+00:00', last_finished_at='2026-09-30T01:00:00+00:00',
                    score=5, turns=10, max_depth=2, death_reason='SECRET', run_id='SECRET',
                    dump_file='/SECRET', lessons=[{'text': 'SECRET'}],
                    retrospective=dict(schema_version=1, generated_at='2026-09-30T02:00:00+00:00',
                        source='p5a_retrospective', run_id='SECRET', terminal_status='dead',
-                       same_death_total_count=2, progress_evidence=dict(status='ok', sample_count=3,
-                       same_frame_sent_pairs=2, max_same_frame_sent_streak=3,
-                       same_frame_hold_pairs=4, max_same_frame_hold_streak=5,
-                       prompt_counts={'unknown': 6, 'SECRET': 99}, secret='SECRET')))
+                       same_death_total_count=2, progress_evidence=progress))
         raw['run_id'] = f'00000000-0000-0000-0000-{index:012x}'
         raw['retrospective']['run_id'] = raw['run_id']
         raw.update(extra)
@@ -122,6 +124,34 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(result['records']), 8)
         self.assertEqual(result['omitted_records'], 120)
         self.assertLess(len(json.dumps(self.collect()).encode()), 12000)
+
+    def test_recent_run_digest_survives_record_omission(self):
+        for index in range(7):
+            self.run_record(index, last_finished_at=f'2026-09-30T01:00:0{index}+00:00',
+                            progress={'max_depth': 1 + index, 'last_turn': 100 + index})
+        result = self.collect()['completed_runs']
+        summary = result['summary']
+        recent = summary['recent_runs']
+        self.assertEqual(len(recent), diag.NETHACK_RECENT_RUN_LIMIT)
+        self.assertEqual([row['ended_at'] for row in recent],
+                         sorted((row['ended_at'] for row in recent), reverse=True))
+        newest = recent[0]
+        self.assertEqual(newest['terminal_status'], 'dead')
+        self.assertEqual(newest['max_depth'], 2)
+        self.assertEqual(newest['turns'], 10)
+        self.assertEqual(newest['progress_max_depth'], 7)
+        self.assertEqual(newest['progress_last_turn'], 106)
+        self.assertNotIn('SECRET', json.dumps(summary))
+        # The digest is the depth evidence that outlives the record budget.
+        payload = {'nethack_history': {'schema_version': 1, 'collected_at': 1,
+                                       'daily': {'records': []}, 'completed_runs': result}}
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', 1):
+            diag._nethack_history_budget(payload)
+        runs = payload['nethack_history']['completed_runs']
+        self.assertEqual(runs['records'], [])
+        self.assertTrue(runs['output_omitted'])
+        self.assertEqual(len(runs['summary']['recent_runs']), diag.NETHACK_RECENT_RUN_LIMIT)
+        self.assertEqual(runs['summary']['recent_runs'][0]['progress_max_depth'], 7)
 
     def test_latest_order_and_nullable_progress(self):
         self.run_record(0, last_finished_at='2026-09-29T00:00:00+00:00')

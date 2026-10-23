@@ -64,6 +64,7 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "rest",
         "explore_step",
         "search_when_blocked",
+        "descend_stairs",
     }
     assert {spec.effect for spec in specs} <= set(REVIEWED_EFFECTS)
 

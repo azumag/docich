@@ -141,6 +141,12 @@ class NethackPolicyBrain:
     """
 
     _STALL_HOLD_REPEAT_THRESHOLD = 10
+    # A stall line prints once per unchanged-frame fingerprint, so a slow
+    # capture can scroll it out of the agent pane tail before any diagnostics
+    # capture (#2271: 14-28 zero-action lines, no stall line visible). Re-emit
+    # the same bounded line on a streak of zero-action decisions regardless of
+    # fingerprint changes, so a live tail keeps showing WHICH hold is stuck.
+    _STALL_HOLD_REEMIT_EVERY = 20
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
         if game.name != "nethack" or game.adapter != "cli":
@@ -170,6 +176,9 @@ class NethackPolicyBrain:
         self._stall_hold_fingerprint = None
         self._stall_hold_repeats = 0
         self._stall_hold_reported = False
+        self._hold_streak = 0
+        self._plan_reject_streak = 0
+        self._unusable_streak = 0
         self._action_validated = False
         self._startup_checkpoint = None
         self.last_decision = None
@@ -199,7 +208,21 @@ class NethackPolicyBrain:
     def decide(self, obs: Observation) -> list[Action]:
         self.discard_action_plan()
         if obs.adapter != "cli" or obs.text is None:
+            # An unusable observation produces the same "0 actions" line as a
+            # policy hold; emit a bounded reason so diagnostics can tell them
+            # apart without pane text. Rate-limited to avoid log spam.
+            self._plan_reject_streak = 0
+            self._unusable_streak += 1
+            if self._unusable_streak == 1 or self._unusable_streak % 20 == 0:
+                print(
+                    "[nethack-brain] hold=observation_unusable "
+                    f"streak={self._unusable_streak} "
+                    f"adapter_is_cli={obs.adapter == 'cli'} "
+                    f"text_present={obs.text is not None}",
+                    file=sys.stderr,
+                )
             return []
+        self._unusable_streak = 0
         from ..nethack_observation import normalize_tty
         from ..nethack_policy import assert_p3b_safe
 
@@ -296,6 +319,7 @@ class NethackPolicyBrain:
         self._stall_hold_fingerprint = None
         self._stall_hold_repeats = 0
         self._stall_hold_reported = False
+        self._hold_streak = 0
 
     def _observe_repeated_hold(
         self,
@@ -305,7 +329,13 @@ class NethackPolicyBrain:
         intent: str,
         resolved_intent: str,
     ) -> None:
-        """Report a stable no-input frame without ever inventing a recovery key."""
+        """Report a stable no-input frame without ever inventing a recovery key.
+
+        Emits once per unchanged-frame fingerprint at the repeat threshold, and
+        then re-emits on each multiple of the streak bound so a bounded pane
+        tail always carries a recent hold reason. All fields are fixed enums
+        plus a frame hash; raw terminal text is never logged.
+        """
         frame_hash = hashlib.sha256(obs.raw_text.encode("utf-8", "replace")).hexdigest()
         fingerprint = (
             stage,
@@ -319,9 +349,17 @@ class NethackPolicyBrain:
             self._stall_hold_fingerprint = fingerprint
             self._stall_hold_repeats = 1
             self._stall_hold_reported = False
-            return
-        self._stall_hold_repeats += 1
-        if (
+        else:
+            self._stall_hold_repeats += 1
+        # The streak counts consecutive no-input decisions across fingerprints,
+        # so a zero-action loop stays visible even when the frame keeps moving
+        # slightly (which would suppress the once-per-fingerprint line).
+        self._hold_streak += 1
+        streak_reemit = (
+            self._hold_streak >= self._STALL_HOLD_REEMIT_EVERY
+            and self._hold_streak % self._STALL_HOLD_REEMIT_EVERY == 0
+        )
+        if not streak_reemit and (
             self._stall_hold_reported
             or self._stall_hold_repeats < self._STALL_HOLD_REPEAT_THRESHOLD
         ):
@@ -331,6 +369,7 @@ class NethackPolicyBrain:
         print(
             "[nethack-stall] "
             f"repeated_hold={self._stall_hold_repeats} "
+            f"hold_streak={self._hold_streak} "
             f"stage={stage} prompt={obs.prompt} "
             f"intent={intent} resolved={resolved_intent} "
             f"frame={frame_hash[:12]}",
@@ -384,13 +423,13 @@ class NethackPolicyBrain:
 
         self._action_validated = False
         if self._action_plan is None or fresh.game != "nethack" or fresh.adapter != "cli" or fresh.text is None:
-            return False
+            return self._reject("no_plan")
         planned_obs, actions, decision = self._action_plan
         if len(actions) != 1 or action != actions[0]:
-            return False
+            return self._reject("plan_mismatch")
         current = normalize_tty(fresh.text, cols=self.cols, rows=self.rows)
         if current != planned_obs:
-            return False
+            return self._reject("frame_changed")
         if decision is not None and decision.intent == "decline_save":
             # During draining the coordinator owns S/confirmation/cancel. A
             # fresh save prompt alone is NOT permission for the agent to send
@@ -403,13 +442,32 @@ class NethackPolicyBrain:
                 or not isinstance(canonical.get("active"), dict)
                 or canonical["active"].get("game") != "nethack"
             ):
-                return False
+                return self._reject("canonical_gate")
         if decision is not None:
             self.progress.assert_action_safe(decision, current, self.policy.explorer)
         # Startup has its own reviewed answers; exact-frame equality applies
         # there too, without passing gameplay y/n semantics to the startup gate.
+        self._plan_reject_streak = 0
         self._action_validated = True
         return True
+
+    def _reject(self, reason: str) -> bool:
+        """Record one bounded, enum-only plan rejection and refuse the send.
+
+        A rejected plan returns no action to the loop, so a recurring rejection
+        produces exactly the same "0 件のアクション" lines as a policy hold and
+        was previously invisible (#2271). The reason is a fixed enum and the
+        trace is rate-limited per rejection streak, so a stuck loop still shows
+        up in a bounded pane tail without flooding it.
+        """
+        self._plan_reject_streak += 1
+        if self._plan_reject_streak == 1 or self._plan_reject_streak % 20 == 0:
+            print(
+                "[nethack-plan] rejected="
+                f"{reason} streak={self._plan_reject_streak}",
+                file=sys.stderr,
+            )
+        return False
 
     def action_sent(self, action: Action) -> None:
         """Transport acknowledgement, never proof that NetHack advanced."""

@@ -113,10 +113,9 @@ corners = [
   # の production 配線を実施。決定論セッションバンク（LLMなし・読み上げなし）を
   # lawsim_corner.DEFAULT_DURATION_MINUTES（3分。duration_minutes 未指定時）で1回転。
   # 初回実走（slot 290・自動抽選・duration 完了・Soren 復帰）は 2026-10-18 に実測済み。
-  # overlay の目視受入が完了するまでの間、manual_only=true で自動抽選から外す
-  # （2026-10-18 clarify タイムアウトのための技術判断 (b)。オーナーが (a) 手動予約即時 /
-  # (c) 抽選委ねる を選んだ場合はこの1行を変更する）。
-  { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true, manual_only = true },
+  # 2026-10-24 オーナー指示により manual_only を解除し、rolling rotation の
+  # 自動抽選対象へ戻す。WebUI からの手動予約も引き続き可能。
+  { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true },
 ]
 
 [nethack_corner]

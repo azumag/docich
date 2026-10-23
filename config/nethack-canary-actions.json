@@ -112,6 +112,17 @@
       "postconditions": ["screen_changed"]
     },
     {
+      "id": "descend_stairs",
+      "priority": 84,
+      "enabled": true,
+      "risk_class": "movement",
+      "effect": "keys",
+      "description": "Go down the stairs when the hero stands on a remembered down-staircase (docich#2666).",
+      "preconditions": ["prompt:none", "player_visible", "on_down_stairs"],
+      "key_pattern": [">"],
+      "postconditions": ["screen_changed"]
+    },
+    {
       "id": "explore_step",
       "priority": 85,
       "enabled": true,

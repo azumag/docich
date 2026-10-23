@@ -1,0 +1,39 @@
+[Unit]
+Description=docich News PAPER worker (default-off research lane; static N07 proposal)
+Documentation=https://github.com/azumag/docich/issues/784
+# NOTE: this unit definition is a proposal only. Installing, enabling or
+# restarting it requires a separate owner approval (parent #769 H). The worker
+# stays inert unless /etc/docich/news-paper.toml sets [worker] enabled = true.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Dedicated unprivileged subject. Provisioning the user/group and proving the
+# OS isolation (credential non-mount, read-only inputs, finite cgroup) is the
+# N09 review scope; this unit only defines the intended boundary.
+User=docich-news-paper
+Group=docich-news-paper
+WorkingDirectory=__DOCICH_ROOT__
+# Intentionally required (no leading '-'): a missing local env file must fail
+# before the worker starts. This unit never inherits the market-paper profile.
+EnvironmentFile=/etc/docich/news-paper-worker.env
+Environment=PATH=__DOCICH_ROOT__/.venv-trading/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__DOCICH_ROOT__/bin/docich-news-paper worker --config /etc/docich/news-paper.toml
+Restart=on-failure
+RestartSec=30
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/docich/news-paper
+# Static upper bounds for this proposal. They are deliberately modest and are
+# re-reviewed in N09; the worker itself refuses unapproved operational values.
+CPUQuota=50%
+MemoryMax=512M
+TasksMax=64
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

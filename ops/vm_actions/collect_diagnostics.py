@@ -641,22 +641,38 @@ def _collect_storage_breakdown(
     *,
     home_root=None,
     voicevox_root=Path("/opt/voicevox"),
+    sys_tmp=Path("/tmp"),
+    var_log=Path("/var/log"),
+    swap_file=Path("/swapfile"),
     max_entries=STORAGE_MAX_ENTRIES,
 ):
     """Fixed, bounded, identity-free storage attribution.
 
     Categories overlap by design and must not be summed. No file content is
     read, symlinks are never followed, and partial scans are marked incomplete.
+
+    Version 2 (azumag/docich#2583) adds the fixed roots version 1 could not
+    see, so the unattributed share of a decline window becomes attributable:
+    the gateway's own state tree (bundles and preview releases), the known
+    alternative checkouts, the system fixed areas (journal, /var/log, the
+    swapfile), /tmp, and fixed subcategories of the production .git that
+    separate repack churn from retained history. The container layers
+    (/var/lib/docker) stay out on purpose: the collector uid cannot traverse
+    them, and a permanently unreadable root would flip the shared incomplete
+    flag forever instead of attributing bytes.
     """
     soren = Path(soren)
     prod_root = Path(prod_root)
     home = Path(home_root) if home_root is not None else soren.parent
     voicevox_root = Path(voicevox_root)
+    sys_tmp = Path(sys_tmp)
+    var_log = Path(var_log)
+    swap_file = Path(swap_file)
     default_db = home / ".local" / "share" / "opencode" / "opencode.db"
     worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
 
     return {
-        "version": 1,
+        "version": 2,
         "categories_overlap": True,
         "max_entries_per_tree": int(max_entries),
         "opencode_default": _storage_db_family(default_db),
@@ -684,6 +700,24 @@ def _collect_storage_breakdown(
         ),
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
+        # ---- version 2 fixed roots (azumag/docich#2583) ----
+        "gateway_state": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops", max_entries=max_entries
+        ),
+        "alt_checkout_tmp_sync": _storage_tree_usage(
+            sys_tmp / "opencode" / "docich-sync", max_entries=max_entries
+        ),
+        "alt_checkout_soren_src": _storage_tree_usage(home / "soren-src", max_entries=max_entries),
+        "system_journal": _storage_tree_usage(var_log / "journal", max_entries=max_entries),
+        "system_log": _storage_tree_usage(var_log, max_entries=max_entries),
+        "swapfile": _storage_file_usage(swap_file),
+        "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
+        "docich_git_objects": _storage_tree_usage(
+            prod_root / ".git" / "objects", max_entries=max_entries
+        ),
+        "docich_git_objects_pack": _storage_tree_usage(
+            prod_root / ".git" / "objects" / "pack", max_entries=max_entries
+        ),
     }
 
 
@@ -1587,7 +1621,24 @@ def _collect_opencode_session_attribution(
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|stream[_-]?key)\s*[:=]\s*\S+"),
+    # A key/value pair whose name ends in a secret word, with any prefix
+    # (SLACK_BOT_TOKEN=, api_key:) and in JSON form ("api_key": "…").
+    re.compile(r"(?i)[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|token|secret|password|passwd"
+               r"|stream[_-]?key|credential)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+"),
+    # CLI flag form: --bot-token <v> / --secret=<v>.
+    re.compile(r"(?i)--?[A-Za-z0-9-]{0,32}(?:token|secret|password|key)[= ]+[^\s\"']+"),
+    # Well-known token shapes, used bare in logs.
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    # Credentials embedded in a URL: scheme://user:pass@host
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@"),
+)
+
+_VALUE_REDACT_HINT = re.compile(
+    r"[:=]|bearer|xox[baprs]-|github_pat_|gh[pousr]_|AKIA|sk-|://", re.IGNORECASE
 )
 
 # Fixed lifecycle records that can prove ownership of a supervisor pause
@@ -1660,8 +1711,12 @@ UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 def _redact_text(text, limit=MAX_ERROR_PREVIEW_LEN):
     if not isinstance(text, str):
         text = str(text)
-    for rx in VALUE_REDACT_RES:
-        text = rx.sub("[REDACTED]", text)
+    # Fast reject: the value rules are comparatively expensive and only a
+    # line that carries a separator or a known token prefix can hold a
+    # secret. Skipping them keeps huge telemetry bounded.
+    if _VALUE_REDACT_HINT.search(text):
+        for rx in VALUE_REDACT_RES:
+            text = rx.sub("[REDACTED]", text)
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
@@ -2661,6 +2716,116 @@ def _parse_epoch(value):
     return number if number > 0 else None
 
 
+# Fixed enums mirrored from soviet_now strategy/persist.sh. A new upstream
+# value is projected as "unknown", never as raw text.
+PERSIST_RESULTS = ("ok", "no-change", "no-op", "fail", "unknown")
+PERSIST_REASONS = frozenset({
+    "none", "clone_missing", "invalid_message", "invalid_branch", "gh_missing",
+    "identity_setup_failed", "fetch_failed", "remote_head_failed",
+    "checkout_failed", "reset_failed", "copy_failed", "add_failed",
+    "commit_failed", "tree_failed", "push_failed", "pr_failed", "unknown",
+})
+PERSIST_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}")
+PERSIST_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+PERSIST_LABEL = re.compile(r"[A-Za-z0-9_-]{1,32}")
+# A status file older than this while the improve loop runs means persist is
+# no longer being called; the 2026-09-17 stalled-clone incident looked exactly
+# like this before the file existed at all.
+PERSIST_STALE_SEC = 7 * 24 * 60 * 60
+
+
+def _collect_strategy_persist(soren, now):
+    """Project the runtime strategy persist attempt (docich#2489).
+
+    soviet_now's ``strategy/persist.sh`` writes a fixed-schema status document
+    after every adoption attempt. Only fixed enums are emitted: the raw status
+    message/error can name hosts or paths and never leaves the VM, and no file
+    content is executed or evaluated here. A missing clone is the normal
+    projection/no-op deployment and is not a failure.
+    """
+    soren = Path(soren)
+    status_path = soren.parent / "soren-persist" / ".git" / "persist-status.json"
+    clone_git = soren.parent / "soren-persist" / ".git"
+    failure_path = soren / "tmp" / "state" / "strategy_persist_last_failure.json"
+    data = _read_json(status_path)
+    present = False
+    try:
+        present = status_path.is_file()
+    except OSError:
+        present = False
+    clone_present = False
+    try:
+        clone_present = clone_git.is_dir()
+    except OSError:
+        clone_present = False
+    entry = {
+        "present": present,
+        "clone_present": clone_present,
+        "readable": data is not None,
+        "result": "unknown",
+        "reason": None,
+        "rc": None,
+        "origin_main": None,
+        "last_success_at": None,
+        "last_success_age_sec": -1,
+        "age_sec": -1,
+        "stale": False,
+        "branch": None,
+        "commit": None,
+        "last_failure": None,
+    }
+    if present:
+        try:
+            entry["age_sec"] = int(now - status_path.stat().st_mtime)
+        except OSError:
+            entry["age_sec"] = -1
+        entry["stale"] = entry["age_sec"] > PERSIST_STALE_SEC
+    if data:
+        result = data.get("result")
+        entry["result"] = result if result in PERSIST_RESULTS else "unknown"
+        reason = data.get("reason")
+        if isinstance(reason, str) and reason in PERSIST_REASONS:
+            entry["reason"] = reason
+        elif entry["result"] == "fail":
+            # Older status documents predate the reason field. Keep the
+            # failure visible without inventing a cause.
+            entry["reason"] = "unknown"
+        rc = data.get("rc")
+        if type(rc) is int and 0 <= rc <= 255:
+            entry["rc"] = rc
+        branch = data.get("branch")
+        if isinstance(branch, str) and PERSIST_BRANCH.fullmatch(branch):
+            entry["branch"] = branch
+        commit = data.get("commit")
+        if isinstance(commit, str) and PERSIST_COMMIT.fullmatch(commit):
+            entry["commit"] = commit
+        origin_main = data.get("origin_main")
+        if isinstance(origin_main, str) and PERSIST_COMMIT.fullmatch(origin_main):
+            entry["origin_main"] = origin_main
+        last_success = _parse_epoch(data.get("last_success_at"))
+        if last_success is not None:
+            entry["last_success_at"] = last_success
+            entry["last_success_age_sec"] = (
+                int(now - last_success) if last_success <= now else -1
+            )
+
+    failure = _read_json(failure_path)
+    if failure and failure.get("failure_code") == "strategy_persist_failed":
+        reason = failure.get("reason")
+        rc = failure.get("rc")
+        label = failure.get("label")
+        failed_at = _parse_epoch(failure.get("failed_at"))
+        entry["last_failure"] = {
+            "failure_code": "strategy_persist_failed",
+            "reason": reason if isinstance(reason, str) and reason in PERSIST_REASONS else "unknown",
+            "rc": rc if type(rc) is int and 0 <= rc <= 255 else None,
+            "label": label if isinstance(label, str) and PERSIST_LABEL.fullmatch(label) else "unknown",
+            "failed_at": failed_at,
+            "age_sec": int(now - failed_at) if failed_at is not None and failed_at <= now else -1,
+        }
+    return entry
+
+
 def _collect_improvement(soren, now):
     state_dir = soren / "tmp" / "state"
     state = _read_json(state_dir / "improve_state.json") or {}
@@ -2730,6 +2895,7 @@ def _collect_improvement(soren, now):
         "retry_age_sec": retry_age,
         "retry_bytes": retry_bytes,
         "blocked_by": blocked_by,
+        "persist": _collect_strategy_persist(soren, now),
         "monitor": {
             "checked_at": _parse_epoch(monitor.get("checked_at")),
             "status": _redact_text(str(monitor.get("status") or ""), 32),
@@ -4912,6 +5078,8 @@ def _project_corner_state(data):
         and (error_code == "recovery_required" or legacy_recovery_error)
     )
     finish_reason = data.get("finish_reason")
+    unchanged_seconds = _finite_number(data.get("screen_unchanged_seconds"))
+    screen_readable = data.get("screen_readable")
     return {
         "status": _bounded_str(data.get("status"), 32),
         # Persisted producer reasons only; never infer a boundary from timing.
@@ -4959,7 +5127,9 @@ def _project_corner_state(data):
         "bot_actions_sent": _bounded_int(data.get("bot_actions_sent")),
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
-        "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
+        "screen_unchanged_seconds": (unchanged_seconds if unchanged_seconds is not None
+                                     and unchanged_seconds >= 0 else None),
+        "screen_readable": screen_readable if type(screen_readable) is bool else None,
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
             "hanjuku-script-v1", "hanjuku-chart-v2",
             "hanjuku-chart-v224-overwhelming-melee-egg-save",
@@ -5064,6 +5234,14 @@ _TSUITATE_SWITCH_ERROR_CODES = frozenset({
 })
 
 
+_TSUITATE_SETTLE_REFUSALS = frozenset({
+    # Fixed vocabulary of the reason the released-owner settle refused once
+    # (docich#1992). Only these are published; an unknown string is null.
+    "not-failed", "other-owner", "became-active", "canonical-unstable",
+    "canonical-busy", "canonical-owns-view", "receipt-open",
+})
+
+
 def _project_tsuitate_corner(data):
     """Expose the persisted failure category, not a new recovery decision.
 
@@ -5072,11 +5250,25 @@ def _project_tsuitate_corner(data):
     producer codes observable under a separate field (docich#1992). The
     existing last_error preview remains redacted and length-capped; unknown
     codes are null rather than raw state content.
+
+    ``settle_refused_reason`` is the corner's own fixed reason for refusing to
+    retire a released failed owner. It exists so a settle that does not fire is
+    diagnosable from diagnostics alone instead of needing another guess cycle.
     """
     entry = _project_corner_state(data)
     code = data.get("last_error_code")
     entry["switch_error_code"] = (
         code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
+    )
+    refusal = data.get("settle_refused_reason")
+    # Only a still-failed owner has a meaningful refusal: after the settle (or
+    # any other terminal path) retires it, the persisted reason is stale and
+    # must not sit next to `interrupted` as if it still applied.
+    entry["settle_refused_reason"] = (
+        refusal if (entry.get("status") == "failed"
+                    and isinstance(refusal, str)
+                    and refusal in _TSUITATE_SETTLE_REFUSALS)
+        else None
     )
     return entry
 
@@ -6284,7 +6476,8 @@ def _collect_retro_program_queues(soren):
 def _collect_prediction_leaderboard(state_dir):
     """Counts only; the 予想王 ledger never exposes viewer names or titles."""
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0}
+    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
+             "canceled": 0, "soren_canceled": 0}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -6300,7 +6493,13 @@ def _collect_prediction_leaderboard(state_dir):
             or not isinstance(data.get("rounds"), dict)):
         return entry
     viewers = set()
+    canceled = soren_canceled = 0
     for round_ in data["rounds"].values():
+        if isinstance(round_, dict) and round_.get("status") == "CANCELED":
+            # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
+            canceled += 1
+            if round_.get("corner") == "soren":
+                soren_canceled += 1
         predictors = round_.get("predictors") if isinstance(round_, dict) else None
         if not isinstance(predictors, list):
             continue
@@ -6308,7 +6507,8 @@ def _collect_prediction_leaderboard(state_dir):
             if isinstance(item, dict) and isinstance(item.get("user_id"), str):
                 viewers.add(item["user_id"])
     entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
-                 viewers=min(len(viewers), 100000))
+                 viewers=min(len(viewers), 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
     return entry
 
 
@@ -7707,6 +7907,33 @@ def _severity(workers, queues, ai, improvement, corners=None):
         or improvement["retry_pending"]
     ):
         return "warn"
+    # An adopted strategy that never reached the reviewed lineage (docich#657,
+    # #2489) is an actionable regression even while the loop itself keeps
+    # running. A later successful/no-change persist overwrites the status and
+    # clears the durable failure record.
+    persist = improvement.get("persist")
+    clone_disappeared = (
+        isinstance(persist, dict)
+        and persist.get("clone_present") is False
+        and (
+            bool(improvement.get("running"))
+            or persist.get("last_success_at") is not None
+        )
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure") if isinstance(persist, dict) else None
+    failure_actionable = isinstance(failure, dict) and (
+        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    )
+    if isinstance(persist, dict) and (
+        persist.get("result") == "fail"
+        or persist.get("stale")
+        or (persist.get("present") and not persist.get("readable"))
+        or failure_actionable
+        or clone_disappeared
+    ):
+        return "warn"
     return "ok"
 
 
@@ -8109,7 +8336,100 @@ def _collect_nethack_agent_log(state_dir, now):
     return entry
 
 
+NETHACK_MANUAL_LOG_DIR = "logs"
+NETHACK_MANUAL_LOG_ENTRIES = 256
+NETHACK_MANUAL_LOG_TAIL_BYTES = 8192
+NETHACK_MANUAL_LOG_LINES = 8
+NETHACK_MANUAL_LOG_LINE_LIMIT = 300
+NETHACK_MANUAL_LOG_MAX_BYTES = 8 * 1024 * 1024
+# ``nethack_corner_operator.launch`` names its private log
+# ``nethack-manual-<epoch>-<uuid4 hex8>.log``. Only that exact shape is read;
+# any other file in ``logs/`` is ignored.
+_NETHACK_MANUAL_LOG_RE = re.compile(r"^nethack-manual-[0-9]{1,12}-[0-9a-f]{8}\.log$")
+
+
+def _collect_nethack_manual_log(state_dir, now):
+    """Bounded, redacted tail of the newest bounded-manual runner log (#2666).
+
+    ``nethack-corner-operator --start`` spawns ``docich-nethack-corner-manual``
+    detached and treats an exit inside the one-second startup grace as a
+    generic failure (operator exit code 2). The runner's own stderr is the only
+    evidence for that failure, and the gateway withholds production stdout, so
+    this projection is the read-only way to see why a manual run never started.
+
+    Only the newest file matching the fixed name shape directly under
+    ``logs/`` is read: symlinks and non-regular files are refused with
+    ``O_NOFOLLOW`` + ``fstat``, and only the tail bytes are decoded.
+    """
+    entry = {
+        "schema_version": 1,
+        "collected_at": now,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "lines": [],
+        "tail_truncated": None,
+    }
+    directory = Path(state_dir) / NETHACK_MANUAL_LOG_DIR
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= NETHACK_MANUAL_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _NETHACK_MANUAL_LOG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > NETHACK_MANUAL_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name, info.st_size)
+    except OSError:
+        return entry
+    if best is None:
+        return entry
+    entry["present"] = True
+    entry["mtime"] = int(best[0])
+    entry["bytes"] = int(best[2])
+    path = directory / best[1]
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return entry
+            size = int(info.st_size)
+            truncated = size > NETHACK_MANUAL_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - NETHACK_MANUAL_LOG_TAIL_BYTES)
+            raw = handle.read(NETHACK_MANUAL_LOG_TAIL_BYTES)
+    except OSError:
+        return entry
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    entry["lines"] = [
+        _redact_text(line, NETHACK_MANUAL_LOG_LINE_LIMIT)
+        for line in lines[-NETHACK_MANUAL_LOG_LINES:]
+    ]
+    return entry
+
+
 NETHACK_PANE_LINES = 14
+# NetHack draws its message row -- and therefore ``--More--`` -- on the TOP
+# screen row, which the tail-only capture structurally misses (#2271). The
+# head rows are captured separately and bounded to the message row plus the
+# row the marker is pushed onto: ``more()`` moves it there once the cursor
+# reaches ``CO - 8``. Two redacted lines add under a kilobyte.
+NETHACK_PANE_HEAD_LINES = 2
 NETHACK_PANE_LINE_LIMIT = 240
 _TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
 _RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
@@ -8145,6 +8465,35 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
     }
 )
 _BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
+
+
+def _capture_tmux_pane_head(target, *, head_lines=NETHACK_PANE_HEAD_LINES):
+    """Read the first visible rows of one pane read-only; never sends input.
+
+    The NetHack message/pager row is the top screen row, so a tail-only
+    capture cannot distinguish "a ``--More--`` the brain failed to answer"
+    from "a decision loop returning no action" (#2271). Return the leading
+    ``head_lines`` rows as-is: blank rows are preserved as empty strings so
+    row 0 stays row 0, which makes "no message row displayed" readable.
+    """
+    if not isinstance(target, str) or _TMUX_TARGET_RE.fullmatch(target) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [
+        _redact_text(line, NETHACK_PANE_LINE_LIMIT)
+        for line in proc.stdout.splitlines()[:head_lines]
+    ]
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -10105,6 +10454,11 @@ def _collect_nethack_panes(state_dir, now):
     this channel. The NetHack TTY lives in the runtime's birth/process window,
     not the presentation xterm window, so capture every window by name plus the
     resolved process and agent panes. Never sends tmux input.
+
+    ``game_head`` carries the leading rows of the same game pane so the
+    message/pager row -- structurally outside the 14-line tail -- is visible
+    enough to tell an unanswered ``--More--`` from a zero-action decision loop
+    (#2271).
     """
     result = {
         "present": False,
@@ -10112,6 +10466,7 @@ def _collect_nethack_panes(state_dir, now):
         "active_game": None,
         "windows": [],
         "game": [],
+        "game_head": [],
         "agent": [],
     }
     try:
@@ -10147,6 +10502,7 @@ def _collect_nethack_panes(state_dir, now):
     candidates = [name for name in names if name not in {game_window, agent_window}]
     if len(candidates) == 1:
         result["game"] = _capture_tmux_pane(f"{session}:{candidates[0]}")
+        result["game_head"] = _capture_tmux_pane_head(f"{session}:{candidates[0]}")
     result["agent"] = _capture_tmux_pane(f"{session}:{agent_window}")
     return result
 
@@ -10155,6 +10511,11 @@ def _collect_nethack_panes(state_dir, now):
 NETHACK_HISTORY_SCAN_LIMIT = 128
 NETHACK_HISTORY_FILE_BYTES = 65536
 NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+# Compact per-run depth/turn digest that survives the record budget (#2666).
+# ``records`` is the first part of this projection the 36KiB envelope drops, so
+# "did the run ever leave Dlvl 1?" was unanswerable from diagnostics exactly
+# when the envelope was full. Five rows stay well under 1 KiB.
+NETHACK_RECENT_RUN_LIMIT = 5
 # Fixed producer codes from ``docich.nethack_run`` ``_terminal_records_since``;
 # duplicated here (see test_nethack_boundary_diag.py precedent) so the
 # diagnostics projection can aggregate them without importing game modules.
@@ -10275,6 +10636,26 @@ def _nethack_record(raw, daily):
     return result
 
 
+def _nethack_run_digest(record):
+    """Fixed-shape per-run depth/turn row for the budget-proof summary.
+
+    ``_nethack_history_budget`` trims ``records`` first, so on a full envelope
+    the only surviving depth evidence is this digest inside ``summary``
+    (#2666). Values are the same nullable projections ``records`` already
+    carries: no run id, death reason, path or free text is added.
+    """
+    progress = record.get('progress')
+    progress = progress if isinstance(progress, dict) else {}
+    return {
+        'ended_at': record.get('ended_at'),
+        'terminal_status': record.get('terminal_status'),
+        'max_depth': record.get('max_depth'),
+        'turns': record.get('turns'),
+        'progress_max_depth': progress.get('max_depth'),
+        'progress_last_turn': progress.get('last_turn'),
+    }
+
+
 def _nethack_history(state_dir, daily):
     """Open each directory relative to a pinned fd: no symlink traversal/races."""
     result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
@@ -10287,6 +10668,9 @@ def _nethack_history(state_dir, daily):
         'score_present_count': 0,
         'analysis_error_counts': {code: 0 for code in sorted(NETHACK_ANALYSIS_ERRORS)}
         | {'other': 0},
+        # Survives the record trimming below, so depth progress stays readable
+        # from a full envelope (#2666).
+        'recent_runs': [],
     })
     directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
     fd = None
@@ -10336,6 +10720,7 @@ def _nethack_history(state_dir, daily):
                         error = record.get('analysis_error')
                         if error is not None:
                             summary['analysis_error_counts'][error] += 1
+                        summary['recent_runs'].append(_nethack_run_digest(record))
                 except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
                     # A hostile run file must cost one invalid_records entry,
                     # never the whole read-only diagnostics scan (#2515 review).
@@ -10349,6 +10734,8 @@ def _nethack_history(state_dir, daily):
         result['omitted_records'] = max(0, len(records) - limit)
         result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
         if summary is not None:
+            summary['recent_runs'].sort(key=lambda item: item['ended_at'], reverse=True)
+            summary['recent_runs'] = summary['recent_runs'][:NETHACK_RECENT_RUN_LIMIT]
             result['summary'] = summary
     except FileNotFoundError:
         result['status'] = 'missing'
@@ -11713,6 +12100,7 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "nethack_manual_log": _collect_nethack_manual_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
         "program_admission_evidence": _collect_program_admission_evidence(

@@ -96,7 +96,16 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
          "fallbacks_15m": 0, "all_failed_15m": 0, "recent_events": [],
          "anomalous_components": {}},
-  "improvement": {"running": false, "stale": false, ...},
+  "improvement": {"running": false, "stale": false,
+                  "persist": {"present": true, "clone_present": true, "readable": true,
+                              "result": "ok", "reason": "none", "rc": 0,
+                              "origin_main": "<40-hex>",
+                              "last_success_at": 1792765266,
+                              "last_success_age_sec": 42,
+                              "age_sec": 42, "stale": false,
+                              "branch": "runtime/eloop-improve",
+                              "commit": "<40-hex>", "last_failure": null},
+                  ...},
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
@@ -171,6 +180,21 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `corners.nethack_corner` / `corners.nethack_corner_manual` の `finish_reason` は
+  保存済みの `terminal` / `stalled` / `recover` / `force_recover` だけを投影する（#2579）。
+  `completed` やコーナーの所要時間から理由を補わない。
+  NetHack の画面監視が `terminal` / `stalled` を判定した時点で、同じ state に
+  `screen_unchanged_seconds` と `screen_readable` を記録する。
+  秒数は最後に異なる画面を取得してからの stall guard 経過時間で、まだ一度も取得できて
+  いなければ監視開始から計測する。取得失敗中も時間は進むため、同じ画面を継続して
+  視認できた時間や、ゲーム入力が無かった時間を証明する値ではない。
+  `screen_readable=true` は判定時の画面取得が成功したこと（空文字も含む）、`false` は
+  その取得が `None` だったことを示す。state ファイル自体の読取可否 `readable` とは別。
+  terminal 画面への変化を検出した場合は通常 `0.0` / `true` になる。
+  新規実行では前回値を引き継がず、同じ終了境界の復帰待ち・再試行では観測値を保つ。
+  時間指定の終了、画面を観測していない停止、旧バージョンの state は値を補わず `null`。
+  秒数は有限・非負の数値だけ、取得可否は boolean だけを許可し、欠落・型違いは `null`。
+  画面本文は保存・投影せず、監視中の定期書込や追加の画面取得も行わない。
 - `runtime_presentation` は **canonical が active とする runtime** の投影状態
   （`<state_dir>/runtimes/<runtime_id>/presentation.json`）だけを bounded に投影する。
   `reason` は `present=false` / `readable=false` の理由を固定enumで示す
@@ -712,6 +736,27 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
+## NetHack manual runner の失敗理由の read-only 投影（#2666）
+
+`nethack_manual_log` は、`nethack-corner-operator --start` が起動した
+`docich-nethack-corner-manual` の private log の末尾を返す。
+operator は起動後1秒以内に child が終了すると generic error（exit code 2）に
+まとめ、production の exec 出力は gateway が返さないため、**なぜ manual run が
+start しなかったのか**が従来は読めなかった。
+
+- 収集元は `state_dir/logs/nethack-manual-<epoch>-<hex8>.log` の**最新1件のみ**。
+  名前は固定 regex で完全一致させ、それ以外（`agent.log` 等）は開かない。
+- `os.scandir` は最大256エントリ、`O_NOFOLLOW` + `fstat` で regular file のみ。
+  symlink・directory・8MiB超は候補から除外する。
+- 読むのは末尾 8KiB だけ。行は最大8行・1行300文字に丸め、
+  既存の `_redact_text`（token/password等の値レダクト）を通す。
+  生の path・行全文・file 名は返さない。
+- `tail_truncated` は末尾8KiBより前を読んでいないことを示す。
+  `present=false` は「manual run が一度も走っていない」ではなく
+  「該当名の log が無い」の意味であり、成否の証明には使わない。
+- 予算は他の optional detail と同じく soft/hard の縮退対象。hard ceiling では
+  `nethack_history` などと同じ最終段で落ちうる。
+
 ## NetHack 日次結果・終了履歴の読み取り投影
 
 `nethack_history` は既存owner-only `diagnostics` のJSON（VM operations Actionsログ）で取得する。
@@ -754,7 +799,11 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 - `completed_runs`は予算縮退でrecordsが全て省略されても比較できるよう、
   scan中に観測した**全ての**有効terminal recordに対する集計`summary`
   （`terminal_status_counts` / `score_present_count` / `analysis_error_counts`）を
-  常に返す。recordsの省略はこのsummaryに影響しない。terminal recordごとの
+  常に返す。recordsの省略はこのsummaryに影響しない。さらに`recent_runs`として
+  終了日時の新しい最大5件の`ended_at` / `terminal_status` / `max_depth` / `turns` /
+  `progress_max_depth` / `progress_last_turn`だけを固定形で残す（#2666）。recordsが
+  予算で全滅しても「そのrunがDlvl 1を出たか」を診断から判定できるようにするための
+  投影で、run ID・死因・path・自由文は追加しない。terminal recordごとの
   `analysis_error`は、run producerの固定理由コード（`xlogfile-missing` /
   `xlogfile-truncated` / `no-new-player-xlog-record`）のみそのまま投影し、
   未知のproducer値は固定token `other` に集約して出力しない。型も検証し、
@@ -908,6 +957,44 @@ client ID解決失敗文言の観測であり、token失効・ネットワーク
 updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
 既存journal契約は変更しない。未知・読取不能はunknownとして残す。
 
+## Strategy persist の read-only 投影（#2489）
+
+soviet_now の `strategy/persist.sh` は採用のたびに `soren-persist/.git/persist-status.json`
+へ固定 schema の結果を書く。diagnostics は `improvement.persist` として読むだけで、
+git 操作・修復・runtime 変更は行わない。
+
+- 収集元: `<soren>/../soren-persist/.git/persist-status.json` と
+  `<soren>/tmp/state/strategy_persist_last_failure.json`。パスは production の
+  既定配置に固定しており、`SOREN_PERSIST_REPO` を変更した環境は対象外。
+- `result` は `ok` / `no-change` / `no-op` / `fail` / `unknown` の固定 enum。
+  `reason` は `none`, `clone_missing`, `invalid_message`, `invalid_branch`,
+  `gh_missing`, `identity_setup_failed`, `fetch_failed`, `remote_head_failed`,
+  `checkout_failed`, `reset_failed`, `copy_failed`, `add_failed`, `commit_failed`,
+  `tree_failed`, `push_failed`, `pr_failed` のみ。未知値は `unknown`。
+- `rc` は persist の戻り値（0=候補作成/更新、3=変更なし、1=失敗）。
+- `origin_main` は最後に fetch した origin/main の sha、`last_success_at` は
+  最後に candidate 作成/更新へ成功した epoch。失敗 status でも引き継がれるため、
+  clone が main から取り残される停止（#2489 の HEAD 停止型）を機械的に検知できる。
+- status file の age が 7 日を超えると `stale=true` として warn に上げる
+  （persist が呼ばれ続けていれば no-change でも毎回更新されるため）。
+- 生の `message` / `error` は VM 外へ出さない。`branch` と `commit` は形式検証を
+  通った場合だけ出す。
+- 失敗（`result=fail`）、status file の破損（`present` かつ `readable=false`）、
+  未解消の durable failure record、`stale=true` は `status=warn` に上げる。
+  次の成功/no-change で status が上書きされ、durable record も消えるため
+  fail 由来の warn は自然に解消する。
+- clone が無いこと自体は production projection では正常で、producer は clone 不在時に
+  status を書かず 0 を返す（durable failure record には `reason=clone_missing`, `rc=0`
+  を残す）。`result=no-op` は repo ディレクトリはあるが `.git` が無い部分 clone 状態でのみ
+  書かれる。
+- `clone_present=false` かつ `improvement.running=true` は、loop が動いているのに
+  persist clone が無い異常として `status=warn` に上げる（#2489 の clone 消失検知）。
+  `last_failure.reason=clone_missing` も loop が動いている間だけ warn 対象にする
+  （idle な projection 配備では warn にしない）。status file は clone 内にあるため
+  clone 消失時は `last_success_at` も同時に消えるが、別経路で残っていれば追加の根拠に使う。
+
+
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
@@ -1051,6 +1138,18 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
 
+### News PAPER worker（N07）
+
+docich-local の研究worker（`src/docich/trading/news_paper/worker.py`）は
+`ops/vm_actions/runtime_registry.py`（soviet_now側のworker/queue lane/pid規約）へは登録しない。
+health/status/queue の契約は `docs/operations/news-paper-worker.md` を正本とする。
+
+- statusは専用 `paper.sqlite3` を **`mode=ro`** で読むallowlist投影で、DB/ディレクトリを作成・変更しない。
+- heartbeatは `health.json` の durable な `heartbeat_at` から age を計算し、mtimeを鮮度に使わない。
+- 診断へ出すのは固定codeと投影値のみ。raw記事・prompt・モデル出力・URL・秘密を出さない。
+- VM配備時のhealth/queue/diagnostics統合とOS隔離の実測は N09 で審査する（未統合をruntime readyと
+  呼ばない）。
+
 ## Twitch OAuth status observation
 
 `twitch_oauth` は固定の `state_dir/twitch_oauth/status.json` だけを最大4096 bytesで読み、
@@ -1186,3 +1285,25 @@ PID一致だけで公開映像・音声・ユーザー休止維持を証明し�
 `failure_reason`（既存の安全検査拒否理由、missing/permission_denied/io_error/changed/oversized/invalid_json/not_running/invalid_pid/unknown）も返します。
 記録本文・path・例外本文は出さず、安全検査の条件も変更しません。再読取時の拒否は
 `failure_stage=source_recheck`を維持します。成功時はこれらのfailure欄を追加しません。
+
+## 固定カテゴリ別 storage breakdown（#866 / #868、#2583 で version 2）
+
+`storage_breakdown` は production の空き減少を固定カテゴリへ帰属させる read-only 集計です。
+カテゴリは設計上重複するため合算してはならない。scan は bounded（`max_entries_per_tree`）、
+symlink は追従せず、一部だけ取得できた場合は `scan_complete=false` を明示します。
+path・ファイル名・内容・権限情報は出力しません。
+
+- version 1（#868）: opencode の default/worker DB family と合計ツリー、`soren_logs`、`soren_tmp`、
+  `say_queue`、`browser_profile`、`strategy_archive`（plain/compressed 形式別）、`docich_git`、
+  `soren_live_git`、`soren_persist_git`、`voicevox_root`、`voicevox_archive`。
+- version 2（#2583）: version 1 では帰属できなかった減少分を固定 root で分解します。
+  `gateway_state`（gateway の state tree = bundles と preview release）、
+  `alt_checkout_tmp_sync`（/tmp/opencode/docich-sync）、`alt_checkout_soren_src`（~/soren-src）、
+  `system_journal`（/var/log/journal）、`system_log`（/var/log。journal を内包し重複を許容）、
+  `swapfile`、`sys_tmp`（/tmp）、`docich_git_objects` と `docich_git_objects_pack`
+  （production .git の repack churn と保持履歴を区別する subcategory）。
+- version 1 の payload（旧 collector）では version 2 の key を生成しないため、
+  deploy 過渡期に breakdown が不完全扱いになることはありません。未知の version は unavailable です。
+- `/var/lib/docker` は意図的に対象外です: collector の uid が traverse できず、恒久的に
+  unreadable な root は共通の incomplete フラグを永久に立てるため bytes の帰属になりません。
+  `/tmp` の一時 `.so` family は既存の tmp shared objects 投影が担当します。

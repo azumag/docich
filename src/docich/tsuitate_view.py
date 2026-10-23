@@ -35,6 +35,19 @@ h1{font-size:38px;line-height:1.05;margin:0 0 7px}.sub{color:#aeb7c2;font-size:1
 .result .rd{font-size:15px;color:#c5cbd3;margin-top:4px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 22px;font-size:20px}.result+.grid{margin-top:0}.wide{grid-column:1/-1}.k{color:#98a3af;font-size:14px}.v{font-weight:650;line-height:1.35}
 .panel{border-top:1px solid #2a3038;padding-top:16px;margin-top:20px}.note{margin-top:18px;color:#98a3af;font-size:14px;line-height:1.55}
+.kifu{display:none}
+body.reviewing main{display:block;padding:20px 24px}
+body.reviewing main>section{display:none}
+body.reviewing .kifu{height:500px;display:grid;grid-template-columns:414px minmax(0,1fr);grid-template-rows:50px 414px;gap:16px 24px}
+.kifu .head{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:20px;border-bottom:1px solid #343c46;padding-bottom:10px}
+.kifu .head b{font-size:28px}.kifu .head span{color:#aeb7c2;font-size:15px;text-align:right}
+.board{grid-column:1;grid-row:2;width:414px;height:414px;box-sizing:border-box;display:grid;grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(9,1fr);border:2px solid #64583f;background:#d8bb82}
+.sq{box-sizing:border-box;border-right:1px solid #8b744d;border-bottom:1px solid #8b744d;display:flex;align-items:center;justify-content:center;background:#dfc38b;color:#2c2418;font-size:23px;font-weight:800;line-height:1}
+.sq.gote{transform:rotate(180deg)}
+.side{grid-column:2;grid-row:2;min-width:0;height:414px;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:14px}
+.moves{min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:center;gap:3px;font-size:16px}
+.mv{padding:3px 8px;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mv.cur{background:rgba(216,187,130,.18);font-weight:800}
+.cmt{min-height:82px;max-height:128px;overflow:hidden;box-sizing:border-box;border:1px solid #343c46;border-radius:10px;padding:12px 14px;background:rgba(255,255,255,.035);font-size:17px;line-height:1.45}
 </style>
 <main>
 <section><h1>AI衝立将棋</h1><div class="sub">公開配信向け spectator view</div><div class="fog">対局中の駒配置・持ち駒は<br>公平性のため配信しません</div></section>
@@ -52,7 +65,7 @@ h1{font-size:38px;line-height:1.05;margin:0 0 7px}.sub{color:#aeb7c2;font-size:1
 <div class="wide"><span class="k">時計（取得時点）</span><br><span id="clocks" class="v">-</span></div>
 </div>
 <div class="panel"><span class="k">対局状態</span><br><span id="game" class="v">-</span></div>
-<div class="note">owner側ではBot自身のPlayerViewを検証済みHMAC statusとして保持できますが、このbroadcast viewには駒配置・持ち駒・raw checkpoint・公開棋譜由来の盤面を渡しません。</div>
+<div class="note">対局中の駒配置・持ち駒は公開しません。終局後の感想戦では、検証済みの公開棋譜から対象局面の盤面だけを表示します。</div>
 </section>
 <div id="kifu" class="kifu"></div>
 </main>

@@ -57,6 +57,7 @@ class StreamConfig:
     maxrate: str = "5000k"
     bufsize: str = "9000k"
     preset: str = "veryfast"
+    threads: int = 2  # libx264 のエンコードスレッド数 (#970: 過剰な並列を抑制)
     audio_bitrate: str = "160k"
     gop_seconds: int = 2
     # --- C3 overlay: drawtext フック (空なら無効) ---

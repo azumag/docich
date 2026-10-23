@@ -255,6 +255,7 @@ VM の docich HEAD は diagnostics の `sha` で確認する。Actions の candi
 - Issue #2278: 本 runbook の根拠となる障害事例。
 - `docs/operations/runtime-diagnostics.md`: 通常時の read-only 診断契約。
 - `docs/operations/vm-monitor-silence-alert.md`: monitor 沈黙の独立検知。
+- `docs/operations/vm-deploy-blocker-alert.md`: main push deploy 失敗（reconcile_refused 等）の独立検知（docich#2487）。
 - `docs/corner-rotation.md`: 中断した予約の正規復旧（§6）。
 - `docs/operations/vm-storage-issues.md` / `vm-storage-reclaim-runbook.md`: storage 系。
 - `ops/vm_actions/README.md`: 標準の VM operations 経路（SSH gateway 前提）。
