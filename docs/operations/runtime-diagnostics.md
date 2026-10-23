@@ -82,6 +82,17 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
                     "owned_submodule_tracked_dirty": 0,
                     "owned_submodule_missing_or_invalid": 0,
                     "scan_complete": 1, "unknown": 0, "drift_detected": 0},
+  "host_metrics": {"status": "ok", "points": 8, "points_available": 137,
+                   "oldest_age_sec": 420, "newest_age_sec": 18,
+                   "boots": 2, "current_boot": "<12-hex>", "spans_reboot": true,
+                   "unit_order": ["<fixed unit name>", "..."],
+                   "retention": {"interval_sec": 60, "max_points": 240,
+                                 "max_bytes": 262144},
+                   "samples": [{"age_sec": 18, "t": 0, "load1": 0.42,
+                                "mem_available_kb": 0, "swap_free_kb": 0,
+                                "cpu_busy_pct": 12.5, "psi_io_some10": 0.0,
+                                "disk_write_sectors": 0, "units": 0,
+                                "down_units": []}]},
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
               "unregistered": [], "required_down": [], "required_stale": [], "details": {},
@@ -654,6 +665,21 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   **severity には加算しない**（webui は任意コンポーネント）。deploy 済みなのに
   別プロセスがポートを掴んで旧 UI を出し続ける case を `served_matches_deployed=false` +
   `listener_is_unit=false` で検出する（`restart_webui` operation の終了コード14と同じ状態）。
+- `host_metrics`: 再起動をまたいで残る固定サイズのホスト指標リング
+  （`~/.local/state/docich/host-metrics/ring.jsonl`、毎分 1 点・最大 240 点・
+  256 KiB 上限）の**直近 8 点 + 直前 boot の最終点の固定 field 投影**（#2578）。
+  読むだけであり、
+  collector 自身は 1 バイトも書かない。ファイル全体（256 KiB 上限）を 1 回の
+  bounded read で読み、v1 以外・壊れた行・symlink・通常ファイルでない path は捨てて
+  固定 status（`absent` / `unreadable` / `invalid` / `stale` / `ok`）へ落とす。
+  path・生の行・journal 本文は出さず、`unit_order` の固定 unit 名と数値 field だけを出す。
+  `spans_reboot` は保持点に複数 boot が含まれることの証明で、受入条件
+  「再起動後に直近の指標が取得できる」をこの 1 field で確認できる。
+  投影は最新 8 点に加えて**直前 boot の最終点を最大 2 点まで必ず含める**。
+  再起動後に sampler が窓を埋めても、障害直前の点が隠れないようにするため。
+  `down_units` は inactive/failed の固定 unit 名だけで、`unknown`
+  （activating・未導入・probe 失敗）は含めない。
+  契約・サイズ・導入手順は [host-metrics-ring.md](host-metrics-ring.md)。
 
 ## レトロ枠のスコアログ投影（#2392）
 
@@ -1116,6 +1142,39 @@ owner-only `cpu_profile / production / main` workflow dispatch は固定条件�
 NetHack tiles の `nethack_tiles.json` はruntime固有のprivate ownership manifestである。
 diagnostics は active runtime と manifest のgeneration/ownership一致、固定status/mode/reason、
 更新からの経過秒、cleanup完了だけを投影する。PID、argv、profile path、例外本文は公開しない。
+
+## ホスト指標リング（#2578）
+
+ゲスト OS が無応答になると diagnostics（SSH 依存）は使えず、実行時点の値しか持たない
+collector では障害直前のホスト状態を復元できない（#2278）。そこで
+`ops/vm_actions/host_metrics.py` が **root disk 上に固定サイズのリング**を書き、
+通常の `diagnostics` はその直近 8 点を読むだけにした。
+
+- 採取: `docich-host-metrics.timer`（user unit、毎分 `*:*:00`）→ oneshot service →
+  `host_metrics.py` が 1 サンプル追記。保存先は
+  `~/.local/state/docich/host-metrics/ring.jsonl`（0600・dir 0700）で、runtime の
+  `state_dir` や tmpfs には置かない。
+- 上限: 最大 240 点 / 256 KiB / 1 行 4096 B。超過時は最新 200 行へ temp+`os.replace` で
+  圧縮する。書き込みは 1 サンプル 1 回の `O_APPEND`。
+- 記録するのは load / meminfo 6 項目 / PSI some・full avg10 / root device の
+  diskstats 累積 / uptime / boot_id 先頭 / 固定 6 unit の状態ビットだけ。
+  secret・環境変数・argv・path・ログ本文は記録しない。
+- 投影は `status`（`ok` / `absent` / `unreadable` / `invalid` / `stale`）、
+  `spans_reboot`、`boots`、`current_boot`、`unit_order`、`points` /
+  `points_available`、`oldest_age_sec` / `newest_age_sec`、直近 8 点と
+  boot 境界点の数値 field。
+  `cpu_busy_pct` と disk 差分は同一 boot の連続 2 点から計算し、boot をまたぐ先頭点は
+  `null` にする（起動で累積値がリセットされるため）。
+- 出力は最新 8 点 + 直前 boot の最終点（最大 2 boot 分）で 8 KiB 未満。再起動後に窓が
+  埋まっても障害直前の点を隠さない。縮小は hard ceiling に触れた時だけ古い点から
+  1 点ずつ（最新点と boot 境界を残す）。soft target（36 KiB）では縮めない
+  （production envelope はもともと soft target を超えており、soft で縮めても届かない
+  うえ既存 section を小さな超過で落とすため）。hard ceiling でも収まらない時だけ
+  `_HARD_DROP_ORDER` の**最後**に落とす。#2578 の事後調査証拠そのもの
+  なので、他の optional detail より優先して残す。既存キーの形・意味は変えない。
+- 導入は deploy hook `ops/vm_actions/ensure_host_metrics_timer.sh` のみ
+  （手動 `systemctl`・SSH コピーを正規経路にしない）。
+- 詳細・受入の確認手順・戻し方は [host-metrics-ring.md](host-metrics-ring.md)。
 
 ## Runtime 変更 checklist
 
