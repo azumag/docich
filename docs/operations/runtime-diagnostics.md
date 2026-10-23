@@ -96,7 +96,12 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
          "fallbacks_15m": 0, "all_failed_15m": 0, "recent_events": [],
          "anomalous_components": {}},
-  "improvement": {"running": false, "stale": false, ...},
+  "improvement": {"running": false, "stale": false,
+                  "persist": {"present": true, "readable": true,
+                              "result": "ok", "reason": "none", "rc": 0,
+                              "age_sec": 42, "branch": "runtime/eloop-improve",
+                              "commit": "<40-hex>", "last_failure": null},
+                  ...},
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
@@ -948,7 +953,28 @@ client ID解決失敗文言の観測であり、token失効・ネットワーク
 updater/API実行、credential読取、gateway/installer変更は含まない。overall severityと
 既存journal契約は変更しない。未知・読取不能はunknownとして残す。
 
-## 出さないもの
+## Strategy persist の read-only 投影（#2489）
+
+soviet_now の `strategy/persist.sh` は採用のたびに `soren-persist/.git/persist-status.json`
+へ固定 schema の結果を書く。diagnostics は `improvement.persist` として読むだけで、
+git 操作・修復・runtime 変更は行わない。
+
+- 収集元: `<soren>/../soren-persist/.git/persist-status.json` と
+  `<soren>/tmp/state/strategy_persist_last_failure.json`。
+- `result` は `ok` / `no-change` / `no-op` / `fail` / `unknown` の固定 enum。
+  `reason` は `none`, `clone_missing`, `invalid_message`, `invalid_branch`,
+  `gh_missing`, `identity_setup_failed`, `fetch_failed`, `remote_head_failed`,
+  `checkout_failed`, `reset_failed`, `copy_failed`, `add_failed`, `commit_failed`,
+  `tree_failed`, `push_failed`, `pr_failed` のみ。未知値は `unknown`。
+- `rc` は persist の戻り値（0=候補作成/更新、3=変更なし、1=失敗）。
+- 生の `message` / `error` は VM 外へ出さない。`branch` と `commit` は形式検証を
+  通った場合だけ出す。
+- 失敗（`result=fail`）、status file の破損（`present` かつ `readable=false`）、
+  未解消の durable failure record は `status=warn` に上げる。次の成功/no-change で
+  status が上書きされ、durable record も消えるため warn は自然に解消する。
+- clone が無い production projection では `result=no-op` であり、失敗ではない。
+
+
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
 ファイル内容。lock owner の token、retry batch の中身は読まない・出さない。
