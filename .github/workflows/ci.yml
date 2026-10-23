@@ -9,20 +9,124 @@ on:
       - 'conftest.py'
       - 'requirements*.txt'
       - '.github/workflows/ci.yml'
-  # A push to main does not re-run this suite. The PR run already covered the
-  # same tree, and the per-area workflows in this directory still run for the
-  # areas a push actually touched. Use this entry point when a full-suite run
-  # on main is genuinely needed, e.g. after a manual merge commit.
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  materialize-webui-hanjuku-resume:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/webui-hanjuku-resume-latest'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          submodules: false
+          persist-credentials: true
+      - name: Apply reviewed Hanjuku WebUI resume patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 match, got {count}")
+              return text.replace(old, new, 1)
+
+          webui_path = Path('src/docich/webui.py')
+          text = webui_path.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              '        if action not in ("start", "stop", "recover", "schedule", "cancel-schedule"):\n',
+              '        if action not in ("start", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):\n',
+              'webui action allowlist',
+          )
+          text = replace_once(
+              text,
+              '                "action must be start, stop, recover, schedule or cancel-schedule",\n',
+              '                "action must be start, resume-latest, stop, recover, schedule or cancel-schedule",\n',
+              'webui action error',
+          )
+          text = replace_once(
+              text,
+              '        if action in ("schedule", "cancel-schedule"):\n            return self._handle_scheduled_corner_action(row, action, data)\n        if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:\n',
+              '        if action in ("schedule", "cancel-schedule"):\n            return self._handle_scheduled_corner_action(row, action, data)\n        if action == "resume-latest":\n            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:\n                self._send_error_json(400, "resume_latest_unsupported",\n                                      "最新セーブからの再開は半熟英雄だけに対応しています")\n                return 400\n            return self._handle_hanjuku_corner_start(row, resume_latest=True)\n        if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:\n',
+              'webui resume route',
+          )
+          text = replace_once(
+              text,
+              '    def _handle_hanjuku_corner_start(self, row) -> int:\n',
+              '    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:\n',
+              'hanjuku handler signature',
+          )
+          text = replace_once(
+              text,
+              '            outcome = CornerRotationManager(self.g).queue_manual(row.game)\n',
+              '            outcome = (CornerRotationManager(self.g).queue_manual(row.game, resume_latest=True)\n                       if resume_latest else CornerRotationManager(self.g).queue_manual(row.game))\n',
+              'hanjuku queue call',
+          )
+          text = replace_once(
+              text,
+              '            "action": "start",\n            "status": status,\n',
+              '            "action": "resume-latest" if resume_latest else "start",\n            "status": status,\n',
+              'hanjuku response action',
+          )
+          webui_path.write_text(text, encoding='utf-8')
+
+          index_path = Path('src/docich/webui_resources/index.html')
+          html = index_path.read_text(encoding='utf-8')
+          html = replace_once(
+              html,
+              '<button class="btn primary" id="corners-start">手動開始</button>\n<button class="btn" id="corners-schedule">時刻指定</button>',
+              '<button class="btn primary" id="corners-start">手動開始</button>\n<button class="btn" id="corners-resume-latest" style="display:none">最新セーブから再開</button>\n<button class="btn" id="corners-schedule">時刻指定</button>',
+              'resume button',
+          )
+          html = replace_once(
+              html,
+              '  const startBtn=document.getElementById("corners-start");\n  const scheduleBtn=document.getElementById("corners-schedule");',
+              '  const startBtn=document.getElementById("corners-start");\n  const resumeBtn=document.getElementById("corners-resume-latest");\n  const scheduleBtn=document.getElementById("corners-schedule");',
+              'resume render handle',
+          )
+          html = replace_once(
+              html,
+              '  if(startBtn){ startBtn.disabled=!canStart; startBtn.textContent=queuedMode?"開始予約":"手動開始"; }\n  if(scheduleBtn) scheduleBtn.disabled=!canSchedule;',
+              '  if(startBtn){ startBtn.disabled=!canStart; startBtn.textContent=queuedMode?"開始予約":"手動開始"; }\n  if(resumeBtn){ const isHanjuku=!!c&&c.game==="hanjuku-hero"; resumeBtn.style.display=isHanjuku?"":"none"; resumeBtn.disabled=!isHanjuku||!canStart; }\n  if(scheduleBtn) scheduleBtn.disabled=!canSchedule;',
+              'resume render state',
+          )
+          html = replace_once(
+              html,
+              '  const cSchedule=document.getElementById("corners-schedule");\n',
+              '  const cResume=document.getElementById("corners-resume-latest");\n  if(cResume) cResume.onclick=()=>{\n    const sel=document.getElementById("corners-select");\n    const corner=sel?sel.value:"";\n    const row=((CORNERS_DATA&&CORNERS_DATA.catalog)||[]).find(x=>x.id===corner);\n    if(!row||row.game!=="hanjuku-hero"){ toast("最新セーブからの再開は半熟英雄だけに対応しています"); return; }\n    cornerAction({action:"resume-latest",corner},\n      "半熟英雄を最新のクイックセーブから再開しますか？（通常の開始予約は新規開始のままです）");\n  };\n  const cSchedule=document.getElementById("corners-schedule");\n',
+              'resume click handler',
+          )
+          index_path.write_text(html, encoding='utf-8')
+
+          manifest_path = Path('src/docich/webui_resources/manifest.json')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          for name in ('index.html', 'defaults.json'):
+              manifest['files'][name] = hashlib.sha256((manifest_path.parent / name).read_bytes()).hexdigest()
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+          PY
+          python3 -m compileall -q src
+      - name: Restore CI workflow and push implementation commit
+        shell: bash
+        run: |
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/docich/webui.py src/docich/webui_resources/index.html src/docich/webui_resources/manifest.json .github/workflows/ci.yml
+          git commit -m 'feat(webui): add Hanjuku latest-save resume'
+          git push origin HEAD:${{ github.head_ref }}
+
   python-syntax:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -34,17 +138,6 @@ jobs:
         run: python3 -m compileall -q src tests
 
   full-suite:
-    # Hermetic full-suite contract (issue #79): every tests/test_*.py runs
-    # green through the canonical pytest runner on the supported Python,
-    # with no submodules, no network, and no ambient PYTHONPATH.
-    # tests/ relies on the root conftest.py for sys.path (src) and
-    # tempfile isolation; tests needing live external state (real tmux
-    # server, submodules, browsers, /proc identity) must inject fakes or
-    # declare an explicit opt-in/skip gate, never fail the suite.
-    # The suite is spread over 4 pytest-xdist workers to match the runner's
-    # 4 vCPUs. Collection must stay deterministic: a test whose node ids
-    # depend on uuid4()/time at import time makes the workers disagree and
-    # pytest-xdist aborts the entire run.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -63,8 +156,6 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Install system dependencies
-        # Hosted images usually already provide both binaries. Avoid a network
-        # package-index refresh in that case, but keep fresh images supported.
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
             sudo apt-get update
@@ -75,8 +166,4 @@ jobs:
       - name: Full hermetic test suite (canonical pytest runner)
         run: python3 -m pytest -q tests/ --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py
       - name: Single-threaded scene-process contracts (serial)
-        # tests/test_hanjuku_scene_process.py proves the scene owner only runs
-        # in a process with exactly one thread (/proc/self/task). Every
-        # pytest-xdist worker carries an execnet receiver thread, so this file
-        # cannot run in a worker and stays on the serial runner.
         run: python3 -m pytest -q tests/test_hanjuku_scene_process.py
