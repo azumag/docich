@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -44,7 +43,8 @@ def test_deterministic_fallback_is_reproducible_and_bounded():
 
 
 def test_generated_graph_rejects_cycles_and_unreachable_scenes():
-    cycle = _story(next1="s2", next2="s1")
+    cycle = _story(next1="s2")
+    cycle["scenes"][1]["next"] = {"1": "s1", "2": None}
     with pytest.raises(TrpgCornerError, match="cycle"):
         gen.validate_generated_scenario(cycle)
 
