@@ -1621,7 +1621,24 @@ def _collect_opencode_session_attribution(
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|stream[_-]?key)\s*[:=]\s*\S+"),
+    # A key/value pair whose name ends in a secret word, with any prefix
+    # (SLACK_BOT_TOKEN=, api_key:) and in JSON form ("api_key": "…").
+    re.compile(r"(?i)[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|token|secret|password|passwd"
+               r"|stream[_-]?key|credential)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+"),
+    # CLI flag form: --bot-token <v> / --secret=<v>.
+    re.compile(r"(?i)--?[A-Za-z0-9-]{0,32}(?:token|secret|password|key)[= ]+[^\s\"']+"),
+    # Well-known token shapes, used bare in logs.
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    # Credentials embedded in a URL: scheme://user:pass@host
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@"),
+)
+
+_VALUE_REDACT_HINT = re.compile(
+    r"[:=]|bearer|xox[baprs]-|github_pat_|gh[pousr]_|AKIA|sk-|://", re.IGNORECASE
 )
 
 # Fixed lifecycle records that can prove ownership of a supervisor pause
@@ -1694,8 +1711,12 @@ UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 def _redact_text(text, limit=MAX_ERROR_PREVIEW_LEN):
     if not isinstance(text, str):
         text = str(text)
-    for rx in VALUE_REDACT_RES:
-        text = rx.sub("[REDACTED]", text)
+    # Fast reject: the value rules are comparatively expensive and only a
+    # line that carries a separator or a known token prefix can hold a
+    # secret. Skipping them keeps huge telemetry bounded.
+    if _VALUE_REDACT_HINT.search(text):
+        for rx in VALUE_REDACT_RES:
+            text = rx.sub("[REDACTED]", text)
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
@@ -8177,6 +8198,93 @@ def _collect_nethack_agent_log(state_dir, now):
     return entry
 
 
+NETHACK_MANUAL_LOG_DIR = "logs"
+NETHACK_MANUAL_LOG_ENTRIES = 256
+NETHACK_MANUAL_LOG_TAIL_BYTES = 8192
+NETHACK_MANUAL_LOG_LINES = 8
+NETHACK_MANUAL_LOG_LINE_LIMIT = 300
+NETHACK_MANUAL_LOG_MAX_BYTES = 8 * 1024 * 1024
+# ``nethack_corner_operator.launch`` names its private log
+# ``nethack-manual-<epoch>-<uuid4 hex8>.log``. Only that exact shape is read;
+# any other file in ``logs/`` is ignored.
+_NETHACK_MANUAL_LOG_RE = re.compile(r"^nethack-manual-[0-9]{1,12}-[0-9a-f]{8}\.log$")
+
+
+def _collect_nethack_manual_log(state_dir, now):
+    """Bounded, redacted tail of the newest bounded-manual runner log (#2666).
+
+    ``nethack-corner-operator --start`` spawns ``docich-nethack-corner-manual``
+    detached and treats an exit inside the one-second startup grace as a
+    generic failure (operator exit code 2). The runner's own stderr is the only
+    evidence for that failure, and the gateway withholds production stdout, so
+    this projection is the read-only way to see why a manual run never started.
+
+    Only the newest file matching the fixed name shape directly under
+    ``logs/`` is read: symlinks and non-regular files are refused with
+    ``O_NOFOLLOW`` + ``fstat``, and only the tail bytes are decoded.
+    """
+    entry = {
+        "schema_version": 1,
+        "collected_at": now,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "lines": [],
+        "tail_truncated": None,
+    }
+    directory = Path(state_dir) / NETHACK_MANUAL_LOG_DIR
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= NETHACK_MANUAL_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _NETHACK_MANUAL_LOG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > NETHACK_MANUAL_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name, info.st_size)
+    except OSError:
+        return entry
+    if best is None:
+        return entry
+    entry["present"] = True
+    entry["mtime"] = int(best[0])
+    entry["bytes"] = int(best[2])
+    path = directory / best[1]
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return entry
+            size = int(info.st_size)
+            truncated = size > NETHACK_MANUAL_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - NETHACK_MANUAL_LOG_TAIL_BYTES)
+            raw = handle.read(NETHACK_MANUAL_LOG_TAIL_BYTES)
+    except OSError:
+        return entry
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    entry["lines"] = [
+        _redact_text(line, NETHACK_MANUAL_LOG_LINE_LIMIT)
+        for line in lines[-NETHACK_MANUAL_LOG_LINES:]
+    ]
+    return entry
+
+
 NETHACK_PANE_LINES = 14
 # NetHack draws its message row -- and therefore ``--More--`` -- on the TOP
 # screen row, which the tail-only capture structurally misses (#2271). The
@@ -11854,6 +11962,7 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "nethack_manual_log": _collect_nethack_manual_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
         "program_admission_evidence": _collect_program_admission_evidence(
