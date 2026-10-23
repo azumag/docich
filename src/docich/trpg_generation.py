@@ -301,7 +301,15 @@ def _current_request_id(g) -> str:
 def _resolve_request_id(g, owner) -> str:
     if isinstance(owner, str):
         return owner
-    return _current_request_id(g)
+    try:
+        return _current_request_id(g)
+    except FileNotFoundError:
+        # Direct adapter/unit fixtures do not have a rotation owner. The lease
+        # is still a validated UUID-like runtime identity and isolates staging.
+        lease = getattr(owner, "lease_id", None)
+        if not isinstance(lease, str) or not lease:
+            raise core.TrpgCornerError("trpg scenario owner is unavailable") from None
+        return lease
 
 
 def _generate_candidate(g, request_id: str, settings: Mapping[str, Any], *, duration_minutes: int,
@@ -356,12 +364,7 @@ def _generate_candidate(g, request_id: str, settings: Mapping[str, Any], *, dura
 
 def generate_scenario(g, owner, settings: Mapping[str, Any], *, duration_minutes: int = 8,
                       generator=run_prompt, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
-    """Return the one staged scenario owned by this rotation request.
-
-    ``owner`` may be a request id (preferred for pre-switch staging) or a
-    RuntimeSpec. The latter resolves the durable manager request id, preserving
-    compatibility with materialization while keeping retries idempotent.
-    """
+    """Return the one staged scenario owned by this rotation request."""
 
     request_id = _resolve_request_id(g, owner)
     try:
