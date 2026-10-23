@@ -1623,10 +1623,10 @@ VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
     # A key/value pair whose name ends in a secret word, with any prefix
     # (SLACK_BOT_TOKEN=, api_key:) and in JSON form ("api_key": "…").
-    re.compile(r"(?i)[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd"
+    re.compile(r"(?i)[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|token|secret|password|passwd"
                r"|stream[_-]?key|credential)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+"),
     # CLI flag form: --bot-token <v> / --secret=<v>.
-    re.compile(r"(?i)--?[A-Za-z0-9-]*(?:token|secret|password|key)[= ]+[^\s\"']+"),
+    re.compile(r"(?i)--?[A-Za-z0-9-]{0,32}(?:token|secret|password|key)[= ]+[^\s\"']+"),
     # Well-known token shapes, used bare in logs.
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
@@ -1635,6 +1635,10 @@ VALUE_REDACT_RES = (
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
     # Credentials embedded in a URL: scheme://user:pass@host
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@"),
+)
+
+_VALUE_REDACT_HINT = re.compile(
+    r"[:=]|bearer|xox[baprs]-|github_pat_|gh[pousr]_|AKIA|sk-|://", re.IGNORECASE
 )
 
 # Fixed lifecycle records that can prove ownership of a supervisor pause
@@ -1707,8 +1711,12 @@ UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 def _redact_text(text, limit=MAX_ERROR_PREVIEW_LEN):
     if not isinstance(text, str):
         text = str(text)
-    for rx in VALUE_REDACT_RES:
-        text = rx.sub("[REDACTED]", text)
+    # Fast reject: the value rules are comparatively expensive and only a
+    # line that carries a separator or a known token prefix can hold a
+    # secret. Skipping them keeps huge telemetry bounded.
+    if _VALUE_REDACT_HINT.search(text):
+        for rx in VALUE_REDACT_RES:
+            text = rx.sub("[REDACTED]", text)
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
