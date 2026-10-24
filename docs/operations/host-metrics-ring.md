@@ -16,12 +16,23 @@
 | 保持点数 | 最大 240 点（4 時間） |
 | ファイル上限 | 256 KiB（`MAX_BYTES`）。超過時は最新 200 行へ圧縮 |
 | 1 行の上限 | 4096 B（超過行は捨てる。切り詰めて書かない） |
-| 保存先 | `/home/ubuntu/.local/state/docich/host-metrics/ring.jsonl`（mode 0600・dir 0700） |
+| 保存先 | 候補順に最初に書けた場所（`~/.local/state/docich/host-metrics` →
+  `~/.local/share/docich/host-metrics` → `~/docich-host-metrics`。
+  本番 VM は `~/.local/state` 配下が root 起因の `install -d` で root 所有になって
+  おり ubuntu が作れないため、実運用は `share` に落ちる）。file 0600・dir 0700 |
 | 書き込み | 1 サンプル = 1 回の `O_APPEND` 書き込み（`flock` 直列化・fsync 付き）。
 電源断で末尾改行が無いときは `\n` を 1 つ補修してから追記する。上限超過時だけ temp+`os.replace` で圧縮 |
 
 - **tmpfs に置かない。** runtime の `state_dir`（`run-soren-live/`）とも分離する。
   どちらも再起動や掃除で消え得るため、事後調査の証拠にはならない。
+- 候補順の理由: 本番 VM では gateway/canary の root 実行 `install -d` が
+  `~/.local/state`（とその `docich`）を root:root 0755 で作ってしまった。
+  ubuntu 権限の sampler はそこ配下に何も作れない（初回 deploy で毎分
+  「cannot create state dir」で exit 2 し続けた実測）。`~/.local/share` は
+  opencode worker が ubuntu で書いている実績のある tree なので第2候補、
+  home 直下を最後の候補とする。writer は ring が既にある候補に固定
+  （履歴の分裂防止）、reader は同じ順で最初に見つかった ring を読み、
+  `ring_path_kind`（`state`/`share`/`home`）でどれかを報告する（path は出さない）。
 - 最悪時の常駐サイズは約 96 KiB（240 点 × 約 400 B）、ハード上限 256 KiB、
   書き込みは毎分 1 回。storage 監視の alert 閾値（used_percent の WARN/CRITICAL）に
   影響する規模ではない。`storage_breakdown` の固定カテゴリにも追加しない
@@ -84,6 +95,7 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   "status": "ok",
   "retention": {"interval_sec": 60, "max_points": 240, "max_bytes": 262144},
   "unit_order": ["docich-corner-rotation.timer", "..."],
+  "ring_path_kind": "share",
   "ring_bytes": 54800, "points_available": 137, "points": 8, "samples_omitted": 0,
   "oldest_age_sec": 420, "newest_age_sec": 18,
   "boots": 2, "current_boot": "a1b2c3d4e5f6", "spans_reboot": true,
@@ -115,6 +127,8 @@ owner-only `diagnostics` に固定 field の投影を追加する。生ログ・
   止まっている状態を「健全」と偽らない。
 - `ring_bytes`: 実際に読んだリングファイルのバイト数（`absent`/`unreadable`/`invalid`
   では 0）。保存サイズが上限内であることを本番でも 1 field で確認できる。
+- `ring_path_kind`: 読んだ ring がどの候補か（`state` / `share` / `home`）。
+  path そのものは出さない。
 - `points` は投影した点数（最大 8 + boot 境界で最大 10）、`points_available` は
   保持している点数（最大 240）、`samples_omitted` は hard ceiling 対応で落とした点数。
 - `down_units` は**inactive または failed** の固定 unit 名だけ。`unknown`（起動直後の

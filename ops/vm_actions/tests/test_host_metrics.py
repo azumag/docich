@@ -385,6 +385,31 @@ class ImplausibleCounterTests(unittest.TestCase):
         self.assertIsNotNone(record["uptime_s"])
 
 
+class NoWritableCandidateTests(unittest.TestCase):
+
+    def test_main_reports_the_refusal_without_a_traceback(self):
+        # When no candidate is writable, the sampler must take the bounded
+        # exit-2 path (fixed message, no traceback, no paths) -- an uncaught
+        # HostMetricsError would exit 1, which is the documented "record too
+        # long" code, and would print absolute paths into the journal.
+        temporary = tempfile.TemporaryDirectory(prefix="host-metrics-dead-")
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / "home"
+        home.mkdir()
+        os.chmod(home, 0o555)
+        stderr = io.StringIO()
+        try:
+            with mock.patch.object(hm, "_runtime_home", return_value=home), \
+                    mock.patch.object(hm, "sample", return_value=make_record(1)), \
+                    mock.patch.object(hm.sys, "stderr", stderr):
+                code = hm.main([])
+        finally:
+            os.chmod(home, 0o755)
+        self.assertEqual(code, 2)
+        self.assertEqual(stderr.getvalue(), hm._CANNOT_WRITE)
+        self.assertNotIn(temporary.name, stderr.getvalue())
+
+
 class RefusalMessageTests(unittest.TestCase):
 
     def test_the_over_long_refusal_reports_the_record_size(self):
@@ -405,6 +430,11 @@ class RefusalMessageTests(unittest.TestCase):
 
 class ConstantContractTests(unittest.TestCase):
 
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="host-metrics-const-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
     def test_bounds_match_the_published_contract(self):
         self.assertEqual(hm.SCHEMA_VERSION, 1)
         self.assertEqual(hm.INTERVAL_SEC, 60)
@@ -418,27 +448,68 @@ class ConstantContractTests(unittest.TestCase):
         sample_bytes = len(hm._encode_record(make_record(0)))
         self.assertLess(sample_bytes * hm.MAX_POINTS, hm.MAX_BYTES // 2)
 
-    def test_state_root_is_the_persistent_home_path(self):
+    def test_state_candidates_are_the_reviewed_fixed_order(self):
+        self.assertEqual(hm.state_candidates(home="/home/ubuntu"), [
+            ("state", Path("/home/ubuntu/.local/state/docich/host-metrics")),
+            ("share", Path("/home/ubuntu/.local/share/docich/host-metrics")),
+            ("home", Path("/home/ubuntu/docich-host-metrics")),
+        ])
+
+    def test_default_candidates_ignore_a_scrubbed_home_environment(self):
+        with mock.patch.dict(os.environ, {"HOME": "/scrubbed"}, clear=True), \
+                mock.patch.object(hm.pwd, "getpwuid",
+                                  return_value=mock.Mock(pw_dir="/home/ubuntu")):
+            expected = hm.state_candidates()
         self.assertEqual(
-            hm.state_root(home="/home/ubuntu"),
-            Path("/home/ubuntu/.local/state/docich/host-metrics"))
+            expected,
+            hm.state_candidates(home="/home/ubuntu"))
+        self.assertTrue(all(str(path).startswith("/home/ubuntu/")
+                            for _kind, path in expected))
 
-    def test_default_state_root_ignores_a_scrubbed_home_environment(self):
-        # Production exec may replace HOME; the ring path must stay the passwd
-        # home that the deploy hook resolves with getent.
-        expected = (Path(hm.pwd.getpwuid(os.getuid()).pw_dir)
-                    / ".local" / "state" / "docich" / "host-metrics")
-        with mock.patch.dict(os.environ,
-                             {"HOME": "/nonexistent-scrubbed-home"}):
-            self.assertEqual(hm.state_root(), expected)
+    def test_candidates_fall_back_only_when_the_user_entry_is_missing(self):
+        with mock.patch.dict(os.environ, {"HOME": "/fallback-home"}, clear=True), \
+                mock.patch.object(hm.pwd, "getpwuid",
+                                  side_effect=KeyError("no such user")):
+            expected = hm.state_candidates()
+        self.assertEqual(
+            expected,
+            hm.state_candidates(home="/fallback-home"))
 
-    def test_state_root_falls_back_only_when_the_user_entry_is_missing(self):
-        with mock.patch.object(hm.pwd, "getpwuid", side_effect=KeyError("uid")), \
-                mock.patch.object(hm.Path, "home",
-                                  return_value=Path("/fallback-home")):
+    def test_choose_state_dir_prefers_an_existing_ring(self):
+        home = self.root / "choose-home"
+        share = home / ".local" / "share" / "docich" / "host-metrics"
+        share.mkdir(parents=True)
+        hm.append_sample(share, make_record(1))
+        # The state candidate is writable here but must not split the history.
+        self.assertEqual(hm.choose_state_dir(home), share)
+
+    def test_choose_state_dir_skips_an_unwritable_candidate(self):
+        # Reproduce the production incident: ~/.local/state/docich is
+        # root-owned, so the first candidate cannot be created.
+        home = self.root / "blocked-home"
+        state_parent = home / ".local" / "state" / "docich"
+        state_parent.mkdir(parents=True)
+        os.chmod(state_parent, 0o555)
+        try:
+            chosen = hm.choose_state_dir(home)
             self.assertEqual(
-                hm.state_root(),
-                Path("/fallback-home/.local/state/docich/host-metrics"))
+                chosen, home / ".local" / "share" / "docich" / "host-metrics")
+            self.assertFalse((home / ".local" / "state" / "docich" /
+                              "host-metrics").exists())
+        finally:
+            os.chmod(state_parent, 0o755)
+
+    def test_choose_state_dir_fails_closed_when_no_candidate_is_writable(self):
+        home = self.root / "dead-home"
+        home.mkdir()
+        os.chmod(home, 0o555)
+        try:
+            with self.assertRaises(hm.HostMetricsError):
+                hm.choose_state_dir(home)
+        finally:
+            os.chmod(home, 0o755)
+
+
 
 
 class RingBoundsTests(unittest.TestCase):
