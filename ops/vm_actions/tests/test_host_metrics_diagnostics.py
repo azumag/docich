@@ -812,6 +812,52 @@ class RingCandidateTests(HostMetricsFixture):
         self.assertEqual(output["ring_path_kind"], "home")
         self.assertEqual(output["points"], collector.SAMPLES_MAX)
 
+    def test_a_dead_first_candidate_does_not_hide_a_live_ring(self):
+        # The writer skips candidates it cannot use; the reader must too, or
+        # an unreadable first candidate would report "no evidence" while the
+        # live ring exists further down the list.
+        self.write_ring_at("share", self.fresh_records())
+        blocked = self.home / ring_relpath("state")
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_bytes(b"old ring that cannot be read")
+        os.chmod(blocked, 0o000)
+        self.addCleanup(os.chmod, blocked, 0o600)
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "share")
+        self.assertEqual(output["points"], collector.SAMPLES_MAX)
+
+    def test_a_non_regular_first_candidate_does_not_hide_a_live_ring(self):
+        self.write_ring_at("share", self.fresh_records())
+        impostor = self.home / ring_relpath("state")
+        impostor.parent.mkdir(parents=True, exist_ok=True)
+        impostor.mkdir()
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "share")
+
+    def test_refusals_everywhere_are_reported_as_unreadable(self):
+        blocked = self.home / ring_relpath("state")
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_bytes(b"")
+        os.chmod(blocked, 0o000)
+        self.addCleanup(os.chmod, blocked, 0o600)
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "unreadable")
+        self.assertIsNone(output["ring_path_kind"])
+
+    def test_an_invalid_ring_still_names_its_candidate(self):
+        records = self.fresh_records()
+        body = "".join(json.dumps(record, sort_keys=True) + "\n"
+                      for record in records)
+        self.ring.parent.mkdir(parents=True, exist_ok=True)
+        # Bigger than the sampler's own bound: compaction has failed.
+        self.ring.write_text("x" * (collector.MAX_BYTES + 1) + body,
+                             encoding="utf-8")
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "invalid")
+        self.assertEqual(output["ring_path_kind"], "state")
+
     def test_no_ring_anywhere_is_absent_with_no_kind(self):
         output = collector._collect_host_metrics(self.home, NOW)
         self.assertEqual(output["status"], "absent")

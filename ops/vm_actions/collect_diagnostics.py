@@ -1194,7 +1194,14 @@ def _collect_host_metrics(home_root=None, now=None):
     }
     fd = None
     kind = None
+    refused = None
+    info = None
     try:
+        # The writer skips candidates it cannot use; the reader must too, or a
+        # dead first candidate (unreadable, or a symlink/directory where the
+        # ring belongs) hides a live ring further down the list. The first
+        # refusal is remembered and reported only when no candidate yielded
+        # evidence -- absence is never reported while a ring exists.
         for name, relpath in HOST_METRICS_RING_CANDIDATES:
             path = home / relpath / "ring.jsonl"
             try:
@@ -1202,24 +1209,30 @@ def _collect_host_metrics(home_root=None, now=None):
             except FileNotFoundError:
                 continue
             except OSError:
-                # A candidate that exists but cannot be read is reported as a
-                # refusal, not skipped: it may hold the only evidence.
-                return {**result, "status": "unreadable"}
+                if refused is None:
+                    refused = name
+                continue
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                if refused is None:
+                    refused = name
+                os.close(fd)
+                fd = None
+                continue
             kind = name
             break
-        if fd is None:
+        if fd is None or info is None:
+            if refused is not None:
+                return {**result, "status": "unreadable"}
             return result
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            # A directory/FIFO/device where the ring belongs is not evidence.
-            return {**result, "status": "unreadable"}
         if info.st_size > MAX_BYTES:
             # Compaction failed; a partial read of the newest lines would look
             # authoritative while silently missing retained history.
-            return {**result, "status": "invalid"}
+            return {**result, "status": "invalid",
+                    "ring_path_kind": kind}
         raw = os.read(fd, HOST_METRICS_MAX_READ_BYTES + 1)
         if len(raw) > HOST_METRICS_MAX_READ_BYTES:
-            return {**result, "status": "invalid"}
+            return {**result, "status": "invalid", "ring_path_kind": kind}
         # Bounded bytes actually read. It is a count, never a path, and it
         # stays at 0 when nothing was read (absent/unreadable/refused).
         result["ring_bytes"] = min(len(raw), MAX_BYTES)

@@ -182,10 +182,13 @@ def choose_state_dir(home=None):
     candidates = state_candidates(home)
     for _kind, path in candidates:
         try:
-            if (path / RING_NAME).exists():
-                return path
+            info = os.stat(path / RING_NAME, follow_symlinks=False)
         except OSError:
-            pass
+            continue
+        # Pin only on a real ring: a symlink or a directory where the ring
+        # belongs can never hold history and must not pin the writer.
+        if stat.S_ISREG(info.st_mode):
+            return path
     for _kind, path in candidates:
         # Probe with the real open (create + chmod 0700 + open): a directory
         # that merely exists but is owned by someone else must fail here and
@@ -794,8 +797,8 @@ def main(argv=None):
     if emit:
         sys.stdout.write(_encode_record(record).decode("utf-8"))
         sys.stdout.flush()
-    target = choose_state_dir() if state_dir is None else state_dir
     try:
+        target = choose_state_dir() if state_dir is None else state_dir
         written = append_sample(target, record)
     except (HostMetricsError, OSError):
         sys.stderr.write(_CANNOT_WRITE)

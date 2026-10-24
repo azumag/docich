@@ -385,6 +385,31 @@ class ImplausibleCounterTests(unittest.TestCase):
         self.assertIsNotNone(record["uptime_s"])
 
 
+class NoWritableCandidateTests(unittest.TestCase):
+
+    def test_main_reports_the_refusal_without_a_traceback(self):
+        # When no candidate is writable, the sampler must take the bounded
+        # exit-2 path (fixed message, no traceback, no paths) -- an uncaught
+        # HostMetricsError would exit 1, which is the documented "record too
+        # long" code, and would print absolute paths into the journal.
+        temporary = tempfile.TemporaryDirectory(prefix="host-metrics-dead-")
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / "home"
+        home.mkdir()
+        os.chmod(home, 0o555)
+        stderr = io.StringIO()
+        try:
+            with mock.patch.object(hm, "_runtime_home", return_value=home), \
+                    mock.patch.object(hm, "sample", return_value=make_record(1)), \
+                    mock.patch.object(hm.sys, "stderr", stderr):
+                code = hm.main([])
+        finally:
+            os.chmod(home, 0o755)
+        self.assertEqual(code, 2)
+        self.assertEqual(stderr.getvalue(), hm._CANNOT_WRITE)
+        self.assertNotIn(temporary.name, stderr.getvalue())
+
+
 class RefusalMessageTests(unittest.TestCase):
 
     def test_the_over_long_refusal_reports_the_record_size(self):
