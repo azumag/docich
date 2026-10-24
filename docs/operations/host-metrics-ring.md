@@ -47,6 +47,12 @@
 - 1 点として有効なのは `v == 1` かつ `t` が整数（`0..now+86400`）のときだけ。
   それ以外の field はすべて nullable で、読めない source は `null` として記録し、
   点自体は証拠として残す（degraded な VM で「健全」と偽らない）。
+- 数値には上限がある（counter 1e18・uptime 1e10 秒・load/PSI 1e6）。
+  健全な kernel が出さない token は `null` になり、巨大な値で record が
+  行上限を超えることはない（初回本番 deploy で実際に起きた故障経路）。
+  万が一 refusal が起きた場合は exit 1 で journal に
+  `record_bytes=N` を残し、diagnostics は `journal.signature=sampler_refused` と
+  `journal.refused_record_bytes` に投影する。
 - `t`: 採取時刻（epoch 秒）。`boot`: boot_id の先頭 12 hex。`uptime_s`: 起動からの秒。
 - `cpu`: 累積 jiffies `[total, idle, iowait]`。連続 2 点の差で interval の使用率になる。
 - `mem_kb`: `/proc/meminfo` の `MemTotal` / `MemAvailable` / `SwapTotal` / `SwapFree` /

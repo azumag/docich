@@ -294,6 +294,115 @@ class SampleContractTests(unittest.TestCase):
             hm.decode_units("63")
 
 
+class ImplausibleCounterTests(unittest.TestCase):
+    """A /proc token no healthy kernel produces must read as null, not poison.
+
+    The first production deploy of #2578 failed on every tick with the
+    sampler's only clean exit 1: the encoded record did not fit the ring's
+    4096-byte line. That is only possible when a numeric token became a huge
+    integer, so every numeric parse now has a ceiling and an implausible
+    source reads as "not reported" (null), exactly like a missing one.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="host-metrics-cap-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.proc, self.sysfs = build_fixture(self.root)
+        self.probe = RecordingProbe()
+
+    def take_sample(self):
+        return hm.sample(now=1761000000, proc_root=self.proc,
+                         sys_root=self.sysfs, unit_probe=self.probe)
+
+    def rewrite(self, name, text):
+        path = {"meminfo": self.proc / "meminfo",
+                "stat": self.proc / "stat",
+                "uptime": self.proc / "uptime",
+                "diskstats": self.proc / "diskstats",
+                "loadavg": self.proc / "loadavg",
+                "io": self.proc / "pressure" / "io"}[name]
+        path.write_text(text, encoding="utf-8")
+
+    def test_a_gigantic_meminfo_token_reads_as_null(self):
+        self.rewrite("meminfo", "MemTotal: " + "9" * 4000 + " kB\n")
+        record = self.take_sample()
+        self.assertIsNone(record["mem_kb"]["total"])
+
+    def test_a_gigantic_stat_token_reads_as_null(self):
+        self.rewrite("stat", "cpu " + " ".join(["7" * 4000] * 4) +
+                     " 100 100 100\n")
+        self.assertIsNone(record_cpu := self.take_sample()["cpu"])
+
+    def test_a_gigantic_diskstats_token_reads_as_null(self):
+        self.rewrite("diskstats", "  8:1 sda1 " + " ".join(["3" * 4000] * 11)
+                     + "\n")
+        record = self.take_sample()
+        self.assertIsNone(record["disk_sectors"])
+        self.assertIsNone(record["disk_ms"])
+
+    def test_an_absurd_uptime_reads_as_null(self):
+        self.rewrite("uptime", "1e300 1e300\n")
+        record = self.take_sample()
+        self.assertIsNone(record["uptime_s"])
+
+    def test_an_absurd_load_reads_as_null(self):
+        self.rewrite("loadavg", "1e300 1e300 1e300 1/1 1\n")
+        record = self.take_sample()
+        self.assertIsNone(record["load"])
+
+    def test_an_absurd_psi_value_reads_as_null(self):
+        self.rewrite("io", "some avg10=1e300 avg60=0.00 avg300=0.00 total=0\n"
+                     "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+        record = self.take_sample()
+        self.assertEqual(record["psi"]["io"], [None, 0.0])
+
+    def test_a_record_at_every_ceiling_still_fits_the_line_bound(self):
+        # The caps are the guarantee that the refusal path can never trigger
+        # from real (or hostile) /proc content: with every counter at its own
+        # ceiling the encoded line still fits MAX_LINE_BYTES.
+        capped = {
+            "v": hm.SCHEMA_VERSION, "t": 1761000000,
+            "boot": "a1b2c3d4e5f6", "uptime_s": hm.MAX_UPTIME_SEC,
+            "load": [hm.MAX_LOAD, hm.MAX_LOAD, hm.MAX_LOAD],
+            "cpu": [hm.MAX_COUNTER] * 3,
+            "mem_kb": {name: hm.MAX_COUNTER for name in
+                       ("available", "dirty", "swap_free", "swap_total",
+                        "total", "writeback")},
+            "psi": {key: [hm.MAX_LOAD, hm.MAX_LOAD]
+                    for key in ("cpu", "io", "mem")},
+            "disk_sectors": [hm.MAX_COUNTER, hm.MAX_COUNTER],
+            "disk_ms": [hm.MAX_COUNTER, hm.MAX_COUNTER],
+            "units": 4095,
+        }
+        self.assertLessEqual(len(hm._encode_record(capped)), hm.MAX_LINE_BYTES)
+
+    def test_realistic_counters_are_unaffected_by_the_caps(self):
+        record = self.take_sample()
+        self.assertEqual(record["mem_kb"]["total"], 444)
+        self.assertIsNotNone(record["cpu"])
+        self.assertIsNotNone(record["disk_sectors"])
+        self.assertIsNotNone(record["uptime_s"])
+
+
+class RefusalMessageTests(unittest.TestCase):
+
+    def test_the_over_long_refusal_reports_the_record_size(self):
+        temporary = tempfile.TemporaryDirectory(prefix="host-metrics-refuse-")
+        self.addCleanup(temporary.cleanup)
+        state = Path(temporary.name) / "host-metrics"
+        oversized = hm.sample(now=1761000000, unit_probe=RecordingProbe())
+        oversized["junk"] = "x" * (hm.MAX_LINE_BYTES + 1)
+        stderr = io.StringIO()
+        with mock.patch.object(hm, "sample", return_value=oversized), \
+                mock.patch.object(hm.sys, "stderr", stderr):
+            code = hm.main(["--state-dir", str(state)])
+        self.assertEqual(code, 1)
+        self.assertIn("record_bytes=", stderr.getvalue())
+        self.assertIn("cannot write host metrics ring", stderr.getvalue())
+        self.assertFalse(state.exists())
+
+
 class ConstantContractTests(unittest.TestCase):
 
     def test_bounds_match_the_published_contract(self):
