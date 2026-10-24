@@ -9851,6 +9851,8 @@ _HANJUKU_REFILL_ENUMS = {
     'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
     'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
     'planned': frozenset({'zero', 'positive', 'unknown'}),
+    # Release condition of the hero repair reserve (#2601); wounded/moving are the only writer codes.
+    'hero_deferred': frozenset({'none', 'wounded', 'moving', 'unknown'}),
     'roster': frozenset({'unavailable', 'partial', 'complete_no_pending',
                           'complete_all_seen', 'complete_missing', 'unknown'}),
     'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
@@ -9858,16 +9860,20 @@ _HANJUKU_REFILL_ENUMS = {
                          'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
 }
 _HANJUKU_REFILL_BOOLS = ('payroll_pending', 'low_priority', 'done', 'egg_hold', 'recruit_hold')
+# Bounded gold amounts of the repair reserves (#2601); bools are excluded.
+_HANJUKU_REFILL_INTS = ('hero_reserve', 'general_reserve')
 
 
 def _compact_hanjuku_refill(value):
-    """Only fixed enums/bools survive: never a writer's reason or names."""
+    """Only fixed enums/bools/bounded ints survive: never a writer's reason or names."""
     if not isinstance(value, dict) or value.get('scope') != 'current':
         return {'scope': 'unknown'}
     out = {key: value[key] if isinstance(value.get(key), str) and value[key] in allowed
            else 'unknown' for key, allowed in _HANJUKU_REFILL_ENUMS.items()}
     out.update({key: value.get(key) if type(value.get(key)) is bool else None
                 for key in _HANJUKU_REFILL_BOOLS})
+    out.update({key: value.get(key) if type(value.get(key)) is int and 0 <= value[key] <= 1_000_000
+                else None for key in _HANJUKU_REFILL_INTS})
     return out
 
 
@@ -9992,6 +9998,9 @@ def _project_hanjuku_refill(mem, active):
                        if isinstance(receipt, dict) and receipt.get('key') == month else 'unknown'),
            'repair': ('unknown' if not repair_valid else 'both' if hero and general else
                       'hero' if hero else 'general' if general else 'none'),
+           'hero_reserve': hero if repair_valid else None,
+           'general_reserve': general if repair_valid else None,
+           'hero_deferred': 'none' if shop.get('hero_repair_deferred') is None else shop['hero_repair_deferred'],
            'planned': ('unknown' if type(planned) is not int or not 0 <= planned <= 99 else
                        'positive' if planned else 'zero'),
            'recruit': 'none' if shop.get('recruit') is None else shop['recruit'],
