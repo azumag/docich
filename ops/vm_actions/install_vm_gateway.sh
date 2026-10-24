@@ -47,7 +47,7 @@ install -o root -g "$group_name" -m 0750 /usr/bin/bwrap /usr/local/bin/bwrap
 apparmor_profile=/etc/apparmor.d/usr.local.bin.bwrap
 cat > "$apparmor_profile" <<'PROFILE'
 abi <abi/4.0>,
-include <tunables/global>,
+include <tunables/global>
 
 /usr/local/bin/bwrap flags=(unconfined) {
   userns,
