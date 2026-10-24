@@ -2,21 +2,14 @@
 set -euo pipefail
 
 # Reviewed, bounded storage reclaim helper for the production VM.
-# Safety: dry-run by default (changes only with APPLY=1 from the owner-only
-# control plane). Fixed allowlists only; live paths (browser profile, state,
-# debug, streaming encoder) are never removed. Stale targets are age-gated;
-# clones additionally need origin match + clean tree + zero process refs
-# (any doubt = skip, fail-closed). Docker: dangling images / build cache
-# older than 7d only — never tagged images, containers or volumes.
-# Network input never reaches a path; external inputs are APPLY,
-# VOICEVOX_ARCHIVE, AIVIS_ENGINE.
-# SIZE MATTERS: gateway exec caps stdin at 16384 bytes including the 3-line
-# preamble — keep this file well under it (guarded by a wiring test).
-#
+# Dry-run by default. Fixed allowlists only; stale targets are age-gated and
+# live paths stay protected. Clone/one-off targets also require zero process
+# references. Docker reclaim never touches tagged images, containers/volumes.
+# Gateway exec caps stdin at 16384 bytes including its 3-line preamble.
 # Test-only flags: --root, --min-age-days, --voicevox-root,
-#   --include-voicevox-archive, --skip-system, --snap-cache-root,
-#   --stale-clone "PATH|ORIGIN", --home-root, --sys-tmp, --aivis-root,
-#   --include-aivis-engine
+# --include-voicevox-archive, --skip-system, --snap-cache-root,
+# --stale-clone "PATH|ORIGIN", --home-root, --sys-tmp, --aivis-root,
+# --include-aivis-engine
 
 apply="${APPLY:-0}"
 root="/home/ubuntu/soren"
@@ -24,28 +17,16 @@ min_age_days=21
 voicevox_root="/opt/voicevox"
 include_voicevox="${VOICEVOX_ARCHIVE:-0}"
 skip_system=0
-# snapd download cache: fixed system path (root 0700 on production), part of
-# the privileged system section unless a test provides --snap-cache-root.
 snap_cache_root="/var/lib/snapd/cache"
 snap_cache_explicit=0
-# Fixed allowlist "path|expected-origin"; --stale-clone (tests only, never
-# passed by the control plane) replaces this list wholesale.
 stale_clones=(
   "/tmp/opencode/docich-sync|github.com/azumag/docich"
   "/home/ubuntu/soren-src|github.com/azumag/soviet_now"
 )
-# Fixed one-off leftovers in HOME and the system /tmp: absolute-path
-# allowlist (no globs, no network input), 7-day gate + reference check.
-# --home-root / --sys-tmp are test-only so CI/dev never evaluates real /tmp.
-# NOTE: /home/ubuntu/build is deliberately ABSENT — it holds the live
-# streaming encoder (ffmpeg x11grab) despite its old mtime.
 home_root="/home/ubuntu"
 sys_tmp="/tmp"
 aivis_root="/home/ubuntu/.local/share/AivisSpeech-Engine"
-# AIVIS_ENGINE arrives via the control-plane stdin preamble (same as APPLY /
-# VOICEVOX_ARCHIVE); --include-aivis-engine overrides it for tests.
 include_aivis="${AIVIS_ENGINE:-0}"
-# stale_paths entries are built AFTER option parsing so --home-root/--sys-tmp win.
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,14 +51,8 @@ done
 [[ "$min_age_days" =~ ^[0-9]+$ ]] || { echo "invalid min-age-days" >&2; exit 2; }
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
-# Unused second TTS engine: opt-in like VOICEVOX, guarded on the ACTIVE
-# TTS (VOICEVOX engine) being intact (checked at the use site).
-
-# Fixed one-off leftovers (absolute allowlist, 7-day gate + reference check;
-# built after parsing so --home-root/--sys-tmp win). /home/ubuntu/build is
-# deliberately ABSENT: it holds the live streaming encoder (ffmpeg x11grab)
-# despite its old mtime. /home/ubuntu/soren-persist is absent: referenced by
-# strategy/persist.sh.
+# Fixed one-off leftovers. /home/ubuntu/build is deliberately absent: it
+# holds the live streaming encoder. soren-persist is also live and absent.
 stale_paths=(
   "$home_root/2026-08-11 05-35-22.mkv"
   "$home_root/soren91-r97"
@@ -93,14 +68,13 @@ stale_paths=(
   "$sys_tmp/issue303_final3_recv.ts"
   "$sys_tmp/issue303_early_recv.ts"
   "$sys_tmp/issue303_audio_recv.ts"
+  "$sys_tmp/soviet-2489-fix"
+  "$sys_tmp/persist-recon"
+  "$sys_tmp/wt1029"
 )
 stale_min_age_days=7
 
-# Directories under $root/tmp that are safe to reclaim when older than min_age_days.
-# manual_challenge* also matches dated sibling backups (e.g.
-# manual_challenge_20260824_meriken); the age gate still decides per entry.
 stale_patterns=(direct_av_sync direct_stream_benchmark "manual_challenge*" game-lifecycle-e2e "soviet-iso-verify-*" deploy radio_quarantine)
-# Explicitly live / protected paths that must never be reclaimed.
 protected=(soviet_local_chromium_profile state debug)
 
 now=$(date +%s)
@@ -109,8 +83,6 @@ total=0
 say() { printf '%s\n' "$*"; }
 
 bytes_of() {
-  # 1K-block size, works with both GNU and BSD du. Root-owned targets (snapd
-  # cache) fall back to passwordless sudo so size reporting never claims 0.
   local kb
   kb="$(du -skx "$1" 2>/dev/null | awk 'NR==1{print $1}')"
   if ! [[ "$kb" =~ ^[0-9]+$ ]]; then
@@ -121,8 +93,6 @@ bytes_of() {
 }
 
 mtime_of() {
-  # GNU stat first, then BSD/macOS, then passwordless sudo for root-owned
-  # paths (snapd cache is 0700 root on production).
   local m
   if m="$(stat -c %Y "$1" 2>/dev/null)" && [[ "$m" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$m"
@@ -140,7 +110,6 @@ mtime_of() {
 }
 
 is_older_than() {
-  # is_older_than PATH DAYS — true when PATH's mtime is more than DAYS old.
   local path="$1" days="$2" mtime
   mtime="$(mtime_of "$path")" || return 1
   (( now - mtime > days * 86400 ))
@@ -152,8 +121,6 @@ is_old() {
 
 remove_path() {
   local path="$1" bytes parent
-  # Local existence first, then passwordless sudo for root-owned trees where
-  # the ubuntu user cannot even stat the entry. Missing target = skip.
   [[ -e "$path" ]] || sudo -n test -e "$path" 2>/dev/null || return 0
   bytes="$(bytes_of "$path")"; bytes="${bytes:-0}"
   printf 'DEL  %12s B  %s\n' "$bytes" "$path"
@@ -163,8 +130,6 @@ remove_path() {
     if [[ -w "$parent" ]]; then
       rm -rf -- "$path"
     else
-      # Root-owned target (e.g. snapd cache): escalate explicitly. If sudo is
-      # unavailable the script fails loudly instead of silently skipping.
       sudo -n rm -rf -- "$path"
     fi
   fi
@@ -179,7 +144,6 @@ run_cmd() {
 
 say "=== storage_reclaim mode=$([[ "$apply" == 1 ]] && echo apply || echo dry-run) root=$root min_age_days=$min_age_days ==="
 
-# 1. Stale verification artifacts under soren/tmp (allowlist + age gate).
 tmp="$root/tmp"
 for pat in "${stale_patterns[@]}"; do
   for path in "$tmp"/$pat; do
@@ -196,7 +160,6 @@ for pat in "${stale_patterns[@]}"; do
   done
 done
 
-# 2. Per-deploy backups: remove only entries older than the age gate, keep the dir.
 deploy_backups="$tmp/deploy-backups"
 if [[ -d "$deploy_backups" ]]; then
   for path in "$deploy_backups"/*; do
@@ -206,16 +169,8 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 3. Stale one-off clones (form "path|origin"): age gate + identity +
-#    reference checks, dry-run only prints. Freshness runs BEFORE any git
-#    subcommand: `git status` creates .git/index.lock and bumps .git's dir
-#    mtime, which would make a later probe see "touched now" (self-defeating).
-#    Every failure mode falls through to KEEP/SKIP (fail-safe).
 tmp_clone_min_age_days=7
 stale_clone_refs() {
-  # Count running processes whose args/cwd reference PATH; excludes this
-  # script (storage_reclaim). Non-zero return = scan failed, so the caller
-  # skips instead of trusting an unverified scan (fail-closed).
   local path="$1" ps_out line cwd found=0
   if ! ps_out="$(ps -eo args= 2>/dev/null)"; then
     return 1
@@ -224,8 +179,6 @@ stale_clone_refs() {
     [[ "$line" == *storage_reclaim* ]] && continue
     if [[ "$line" == *"$path"* ]]; then found=$(( found + 1 )); fi
   done <<< "$ps_out"
-  # [[ ]] does not glob: probe the /proc mount point (Linux/production) and
-  # expand the per-pid cwd globs in the for list instead.
   if [[ -d /proc ]]; then
     for cwd in /proc/[0-9]*/cwd; do
       [[ -e "$cwd" ]] || continue
@@ -249,8 +202,6 @@ for clone_spec in "${stale_clones[@]}"; do
     say "SKIP $clone (not a git working tree)"
     continue
   fi
-  # Freshness BEFORE any git subcommand (index.lock would bump .git mtime
-  # and defeat this gate): dir/.git/.git/objects mtimes, then files inside.
   clone_fresh=0
   for probe in "$clone" "$clone/.git" "$clone/.git/objects"; do
     [[ -e "$probe" ]] || continue
@@ -275,8 +226,6 @@ for clone_spec in "${stale_clones[@]}"; do
     *"$expected_origin"*) ;;
     *) say "SKIP $clone (origin does not match $expected_origin)"; continue ;;
   esac
-  # Dirty tree = somebody is still using it. --no-optional-locks keeps status
-  # from rewriting .git/index.
   if [[ -n "$(git --no-optional-locks -C "$clone" status --porcelain 2>/dev/null || true)" ]]; then
     say "KEEP $clone (uncommitted changes present)"
     continue
@@ -292,8 +241,6 @@ for clone_spec in "${stale_clones[@]}"; do
   remove_path "$clone"
 done
 
-# 3b. Fixed one-off leftovers (HOME + system /tmp): absolute allowlist only,
-#     7-day gate, and the same fail-closed reference check as the clones.
 for path in "${stale_paths[@]}"; do
   [[ -e "$path" ]] || { say "SKIP $path (absent)"; continue; }
   if ! is_older_than "$path" "$stale_min_age_days"; then
@@ -311,14 +258,10 @@ for path in "${stale_paths[@]}"; do
   remove_path "$path"
 done
 
-# 4. snapd download cache: age-gated blobs only, never the snaps themselves.
-#    Root 0700 on production: list/stat/rm fall back to passwordless sudo;
-#    --snap-cache-root (tests) points at a temp dir needing no escalation.
 snap_cache_min_age_days=7
 if [[ "$skip_system" == 0 || "$snap_cache_explicit" == 1 ]]; then
   if [[ -d "$snap_cache_root" ]]; then
     if [[ -r "$snap_cache_root" && -x "$snap_cache_root" ]]; then
-      # Portable maxdepth-1 listing (BSD find has no -maxdepth).
       snap_list=""
       for blob in "$snap_cache_root"/* "$snap_cache_root"/.[!.]* "$snap_cache_root"/..?*; do
         [[ -e "$blob" ]] || continue
@@ -341,7 +284,6 @@ if [[ "$skip_system" == 0 || "$snap_cache_explicit" == 1 ]]; then
   fi
 fi
 
-# 5. VOICEVOX installer archive: opt-in, and only when the extracted engine exists.
 if [[ "$include_voicevox" == 1 ]]; then
   archive="$voicevox_root/voicevox.7z.001"
   if [[ -f "$archive" && -x "$voicevox_root/current/run" ]]; then
@@ -351,8 +293,6 @@ if [[ "$include_voicevox" == 1 ]]; then
   fi
 fi
 
-# 5b. AivisSpeech-Engine (unused second TTS): opt-in only, and only while the
-#     ACTIVE TTS (VOICEVOX engine) is intact — never remove the last engine.
 if [[ "$include_aivis" == 1 ]]; then
   if [[ -d "$aivis_root" && -x "$voicevox_root/current/run" ]]; then
     remove_path "$aivis_root"
@@ -361,7 +301,6 @@ if [[ "$include_aivis" == 1 ]]; then
   fi
 fi
 
-# 6. Fixed system maintenance commands (bounded, standard) + docker reclaim.
 if [[ "$skip_system" == 0 ]]; then
   run_cmd sudo -n apt-get clean
   run_cmd sudo -n journalctl --vacuum-size=200M
@@ -375,8 +314,6 @@ if [[ "$skip_system" == 0 ]]; then
     done < <(snap list --all 2>/dev/null | tail -n +2 || true)
   fi
 
-  # Docker: dangling images / build cache older than 168h only. Tagged
-  # images, containers, volumes are never candidates.
   docker_image_max_age="168h"
   docker_builder_max_age="168h"
   if command -v docker >/dev/null 2>&1; then
@@ -390,9 +327,7 @@ if [[ "$skip_system" == 0 ]]; then
     say "SKIP docker reclaim (docker not installed)"
   fi
 
-  # Rotate only soren application logs (never truncate live file; copytruncate).
-  # opencode.log lives outside soren/logs: own stanza, size 50M x3.
-  # tool-output stays out: opencode reads it live, no age-gate delete (#389).
+  # tool-output stays excluded because opencode reads it live.
   logrotate_conf='/etc/logrotate.d/soren'
   read -r -d '' conf <<'CONF' || true
 /home/ubuntu/soren/logs/*.log {
