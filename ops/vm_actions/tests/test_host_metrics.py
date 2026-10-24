@@ -29,6 +29,7 @@ MEM_KEYS = {"available", "dirty", "swap_free", "swap_total", "total",
 UNIT_STATES = ("active", "active", "failed", "inactive", "active", "inactive")
 
 BOOT_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890\n"
+PARTITIONS = "major minor  #blocks  name\n\n   8        1    1048576 sda1\n"
 LOADAVG = "0.42 0.50 0.60 1/234 5678\n"
 STAT = (
     "cpu  100 0 50 200 10 0 0 0 0 0\n"
@@ -114,7 +115,10 @@ def build_fixture(root, skip=()):
         "uptime": (proc / "uptime", UPTIME),
         "diskstats": (proc / "diskstats", DISKSTATS),
         "mountinfo": (proc / "self" / "mountinfo", MOUNTINFO),
-        "boot_id": (sysfs / "kernel" / "random" / "boot_id", BOOT_ID),
+        "boot_id_proc": (proc / "sys" / "kernel" / "random" / "boot_id",
+                         BOOT_ID),
+        "partitions": (proc / "partitions", PARTITIONS),
+        "boot_id_sys": (sysfs / "kernel" / "random" / "boot_id", BOOT_ID),
     }
     for name, (path, text) in files.items():
         if name in skip:
@@ -185,11 +189,40 @@ class SampleContractTests(unittest.TestCase):
         self.assertNotIn(self.root.name, text)
         self.assertRegex(json.loads(text)["boot"], re.compile(r"^[0-9a-f]{12}$"))
 
+    def test_boot_id_prefers_the_proc_path_the_collector_proves_readable(self):
+        # On the production VM /sys reads fail in this user-unit context while
+        # /proc works (the collector's own boot_id read goes through
+        # /proc/sys). The proc path must therefore be tried first.
+        proc, sysfs = build_fixture(self.root / "procfirst",
+                                    skip={"boot_id_sys", "device_link"})
+        record = self.take_sample(proc=proc, sysfs=sysfs)
+        self.assertEqual(record["boot"], "a1b2c3d4e5f6")
+        self.assertIsNotNone(record["disk_sectors"])
+
+    def test_boot_id_falls_back_to_sysfs(self):
+        proc, sysfs = build_fixture(self.root / "sysfallback",
+                                    skip={"boot_id_proc"})
+        record = self.take_sample(proc=proc, sysfs=sysfs)
+        self.assertEqual(record["boot"], "a1b2c3d4e5f6")
+
+    def test_the_device_name_comes_from_proc_partitions_first(self):
+        proc, sysfs = build_fixture(self.root / "partfirst",
+                                    skip={"device_link"})
+        # mountinfo says 8:1; /proc/partitions names it sda1, which must match
+        # the /proc/diskstats row without any /sys access.
+        self.assertEqual(
+            hm._root_block_device(proc, sysfs), "sda1")
+        proc2, sysfs2 = build_fixture(self.root / "partgone",
+                                       skip={"partitions"})
+        self.assertEqual(
+            hm._root_block_device(proc2, sysfs2), "sda1")
+
     def test_missing_sources_become_null_instead_of_failing(self):
         proc, sysfs = build_fixture(
             self.root / "empty",
             skip={"loadavg", "stat", "meminfo", "uptime", "diskstats",
-                  "mountinfo", "pressure", "boot_id", "device_link"},
+                  "mountinfo", "pressure", "boot_id_proc", "boot_id_sys",
+                  "partitions", "device_link"},
         )
         record = self.take_sample(proc=proc, sysfs=sysfs,
                                   probe=RecordingProbe(["", "", "", "", "", ""]))

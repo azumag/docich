@@ -30,7 +30,9 @@ Contract (``ops/vm_actions/host_metrics_contract.md`` is authoritative):
     ``os.replace`` (temp file and directory both fsynced); an over-long line is
     skipped, never truncated.
   - Only fixed counters are read: ``/proc/{loadavg,stat,meminfo,uptime,
-    diskstats,pressure/*,self/mountinfo}``, ``/sys/kernel/random/boot_id`` and
+    diskstats,pressure/*,self/mountinfo,sys/kernel/random/boot_id,
+    partitions}`` (with ``/sys/kernel/random/boot_id`` and
+    ``/sys/dev/block`` readlink as fallbacks), and
     ``systemctl is-active`` for the six units in ``UNIT_ORDER`` (fixed argv,
     short timeout). No file content, environment, argv, path, log body or free
     text is ever recorded, and nothing outside the resolved state directory is
@@ -394,15 +396,25 @@ def _read_uptime(proc_root):
     return None if value is None else int(value)
 
 
-def _read_boot_id(sys_root):
-    """First 12 hex characters of /sys/kernel/random/boot_id, never a path."""
-    text = _read_text(sys_root / "kernel" / "random" / "boot_id", 128)
-    if not text:
-        return None
-    compact = text.strip().lower().replace("-", "")
-    if not _BOOT_ID_RE.fullmatch(compact):
-        return None
-    return compact[:12]
+def _read_boot_id(proc_root, sys_root):
+    """First 12 hex characters of the kernel boot id, never a path.
+
+    The same id is exposed at ``/proc/sys/kernel/random/boot_id`` and
+    ``/sys/kernel/random/boot_id``. The proc path is tried first: on the
+    production VM the read-only collector has proven it readable in this
+    user-unit context, while the sysfs path returned nothing (the same
+    /sys-only failure also broke root-device resolution there).
+    """
+    for path in (proc_root / "sys" / "kernel" / "random" / "boot_id",
+                 sys_root / "kernel" / "random" / "boot_id"):
+        text = _read_text(path, 128)
+        if not text:
+            continue
+        compact = text.strip().lower().replace("-", "")
+        if not _BOOT_ID_RE.fullmatch(compact):
+            continue
+        return compact[:12]
+    return None
 
 
 def _root_device_numbers(proc_root):
@@ -430,11 +442,39 @@ def _root_device_numbers(proc_root):
     return os.major(info.st_dev), os.minor(info.st_dev)
 
 
+def _device_name_from_partitions(proc_root, major, minor):
+    """Resolve ``major:minor`` to a device name via /proc/partitions."""
+    text = _read_text(proc_root / "partitions", _READ_LIMIT)
+    if not text:
+        return None
+    wanted = "%d:%d" % (major, minor)
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        if "%s:%s" % (fields[0], fields[1]) != wanted:
+            continue
+        name = fields[3]
+        if _DEVICE_NAME_RE.fullmatch(name):
+            return name
+        return None
+    return None
+
+
 def _root_block_device(proc_root, sys_root):
-    """Resolve the root device name via /sys/dev/block (None if unresolvable)."""
+    """Resolve the root device name (None if unresolvable).
+
+    /proc/partitions is tried first: on the production VM /sys reads fail in
+    this user-unit context (the /sys/dev/block readlink returned nothing
+    there), while every /proc source works. The sysfs readlink stays as the
+    standard fallback for environments without /proc/partitions rows.
+    """
     numbers = _root_device_numbers(proc_root)
     if numbers is None:
         return None
+    name = _device_name_from_partitions(proc_root, *numbers)
+    if name is not None:
+        return name
     link = sys_root / "dev" / "block" / ("%d:%d" % numbers)
     try:
         target = os.readlink(link)
@@ -517,7 +557,7 @@ def sample(now=None, proc_root=Path("/proc"), sys_root=Path("/sys"),
     return {
         "v": SCHEMA_VERSION,
         "t": int(time.time() if now is None else now),
-        "boot": _read_boot_id(sysfs),
+        "boot": _read_boot_id(proc, sysfs),
         "uptime_s": _read_uptime(proc),
         "load": _read_load(proc),
         "cpu": _read_cpu(proc),

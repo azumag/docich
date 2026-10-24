@@ -78,8 +78,12 @@ never corrupt the ring, nor glue the next record to a partial line.
 - `v`: schema version, currently `1`. Unknown versions are ignored by the
   reader (never guessed at).
 - `t`: epoch seconds at sample time (integer).
-- `boot`: first 12 hex chars of `/sys/kernel/random/boot_id`; only a fixed
-  hash prefix, never a path.
+- `boot`: first 12 hex chars of the kernel boot id, read from
+  `/proc/sys/kernel/random/boot_id` first and `/sys/kernel/random/boot_id`
+  as the fallback; only a fixed hash prefix, never a path. The proc path is
+  first because on the production VM /sys reads fail in the sampler's
+  user-unit context while every /proc source works (proven by the collector's
+  own boot_id read in the same diagnostics run).
 - `uptime_s`: `/proc/uptime` seconds (integer).
 - `load`: `[load1, load5, load15]` rounded to 2 decimals.
 - `cpu`: cumulative `/proc/stat` `cpu` jiffies `[total, idle, iowait]`.
@@ -93,7 +97,9 @@ never corrupt the ring, nor glue the next record to a partial line.
   projected (`psi_*_some10` / `psi_*_full10`); `full` is the "everything is
   stalled" signal for a guest-OS hang.
 - `disk_sectors`: `[sectors read, sectors written]` for the root block device
-  from `/proc/diskstats` (cumulative, 512-byte sectors).
+  from `/proc/diskstats` (cumulative, 512-byte sectors). The root device's
+  name is resolved from `/proc/partitions` first (same /proc-first rationale)
+  and the `/sys/dev/block` readlink second.
 - `disk_ms`: `[io ms, weighted io ms]` for the same device (cumulative).
 - `units`: 2 bits per entry of `UNIT_ORDER`, little-endian per unit:
   `0b00` inactive, `0b01` active, `0b10` failed, `0b11` unknown
@@ -113,8 +119,10 @@ never corrupt the ring, nor glue the next record to a partial line.
 ```
 
 No file content, no environment, no argv, no paths and no free text are ever
-recorded. The sampler reads only `/proc`, `/sys/kernel/random/boot_id` and
-`systemctl is-active` output for those six fixed units.
+recorded. The sampler reads only `/proc` (including `sys/kernel/random/boot_id`
+and `partitions`), the `/sys` fallbacks (`kernel/random/boot_id` and the
+`dev/block` readlink), and `systemctl is-active` output for those six fixed
+units.
 
 ## Diagnostics projection (`host_metrics` key)
 
