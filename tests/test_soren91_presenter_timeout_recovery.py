@@ -142,6 +142,21 @@ enabled = false
             "detail": detail,
         }
         self.mgr.store.finish_request(request_id, "rolled_back", result)
+        # accept_request() above moves canonical into the validating phase;
+        # a rolled-back switch restores the previous game, so put canonical
+        # back into the ready state the terminal proof expects (#2680).
+        restored = self.mgr.store.initialize()
+        restored.update(
+            phase="ready",
+            next_generation=restored.get("next_generation", 2),
+            operation=None,
+            request_id=None,
+            active=self._runtime("sorengame", 1),
+            candidate=None,
+            previous=None,
+            retiring=[],
+        )
+        self.mgr.store.canonical.save(restored)
         return self.mgr.store.receipts.load(request_id)
 
     def test_recover_failed_terminalizes_proven_presenter_timeout_without_retry(self):
