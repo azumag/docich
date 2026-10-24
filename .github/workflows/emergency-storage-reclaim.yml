@@ -78,8 +78,8 @@ jobs:
           python3 - "$status_json" <<'PY'
           import json, sys
           data=json.loads(sys.argv[1])
-          fs=data.get('filesystem') or {}
-          print('storage_before='+json.dumps(fs,sort_keys=True,separators=(',',':')))
+          storage=data.get('storage') or {}
+          print('storage_before='+json.dumps(storage,sort_keys=True,separators=(',',':')))
           PY
 
       - name: Reclaim identified stale tmp worktrees
@@ -137,12 +137,12 @@ jobs:
           fi
           python3 - "$status_json" "$RUNNER_TEMP/storage-before.json" <<'PY'
           import json, pathlib, sys
-          after=json.loads(sys.argv[1]).get('filesystem') or {}
+          after=json.loads(sys.argv[1]).get('storage') or {}
           before={}
           path=pathlib.Path(sys.argv[2])
           if path.exists():
               try:
-                  before=json.loads(path.read_text()).get('filesystem') or {}
+                  before=json.loads(path.read_text()).get('storage') or {}
               except (TypeError, ValueError):
                   pass
           print('storage_after='+json.dumps(after,sort_keys=True,separators=(',',':')))

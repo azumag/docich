@@ -30,8 +30,15 @@ class EmergencyStorageReclaimWorkflowTests(unittest.TestCase):
         self.assertIn("storage_before=", text)
         self.assertIn("storage_after=", text)
 
-    def test_epoch_two_triggers_second_guarded_run(self):
-        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2\n")
+    def test_snapshot_reads_same_storage_object_as_vm_monitor(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("data.get('storage') or {}", text)
+        self.assertIn("json.loads(sys.argv[1]).get('storage') or {}", text)
+        self.assertIn("json.loads(path.read_text()).get('storage') or {}", text)
+        self.assertNotIn("get('filesystem')", text)
+
+    def test_epoch_three_triggers_metrics_verified_run(self):
+        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "3\n")
 
 
 if __name__ == "__main__":
