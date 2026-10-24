@@ -38,8 +38,12 @@
   影響する規模ではない。`storage_breakdown` の固定カテゴリにも追加しない
   （カテゴリを増やすと監視側の契約変更が必要になるため。サイズの上限はこの表と
   回帰テストで固定する）。
-- サンプラーは `/proc`、`/sys/kernel/random/boot_id`、固定 6 unit の
-  `systemctl is-active` だけを読む。ファイル内容・環境変数・argv・path・自由文は
+- サンプラーは `/proc`（loadavg / stat / meminfo / uptime / diskstats /
+  pressure / mountinfo / `sys/kernel/random/boot_id` / partitions）、
+  `/sys`（boot_id と `dev/block` readlink の fallback）、固定 6 unit の
+  `systemctl is-active` だけを読む。boot_id と device 名は **/proc 側を先**に
+  読む（本番 VM の user unit 環境では /sys の読み取りが通らず /proc は全て通る
+  実測があるため）。ファイル内容・環境変数・argv・path・自由文は
   記録しない。secret / prompt / 環境変数は保存しない。
 - 圧縮は temp ファイル + `os.replace`、追記は単一 `write`。途中で落ちてもリングが
   壊れた状態を「正常」と読まない（読めない行は捨て、`status` で示す）。
