@@ -124,26 +124,29 @@ class DoushiProgramViewAdapter(ProgramViewAdapter):
         return broadcast_view_session_env()
 
     def _viewer_command(self) -> list[str]:
-        # 翻訳UI抑止・日本語UIの固定は共通の broadcast_browser_command に一本化する
-        # （docs/broadcast-html-view-standard.md）。
+        # 同志カード大賞はゲーム用 960x540 viewport ではなく配信面全体を所有する。
+        # HTML 側は 960x540 stage を利用可能領域へ等比拡大するため、ここでは
+        # browser/presenter の双方を display 全体へ広げる。
+        display = self.g.display
+        fullscreen = display.width > 0 and display.height > 0
+        window_size = (display.width, display.height) if fullscreen else (960, 540)
         command = broadcast_browser_command(
             f"http://127.0.0.1:{self.dashboard_port}/broadcast",
-            window_size=(960, 540),
+            window_size=window_size,
             window_position=(0, 0),
             profile_dir=self.spec.runtime_dir / "doushi-browser-profile",
             label="doushi HTML view",
         )
-        display = self.g.display
-        if display.viewport_width > 0 and display.viewport_height > 0:
+        if fullscreen:
             return [
                 sys.executable,
                 str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 "--display", display.name,
                 "--title", f"docich-present-{self.spec.runtime_id}",
-                "--x", str(display.viewport_x),
-                "--y", str(display.viewport_y),
-                "--width", str(display.viewport_width),
-                "--height", str(display.viewport_height),
+                "--x", "0",
+                "--y", "0",
+                "--width", str(display.width),
+                "--height", str(display.height),
                 "--", *command,
             ]
         return command
