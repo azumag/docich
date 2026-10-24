@@ -1,8 +1,8 @@
 """Strategic decision schema for the NetHack layered policy (P3c/P3d).
 
 The schema carries public-information proposals, not arbitrary action lists.
-The reviewed executor gate accepts only explicit ``rest`` and fixes it to one
-literal ``.`` key; every other state-changing proposal remains advisory.
+The executor gate maps only reviewed kinds to keys (``rest``, ``pray``,
+``answer_prompt``) and re-checks each one against the fresh frame.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ class StrategicProposal:
 _BASE_CONSTRAINTS = (
     "Use only information present in this request; do not assume hidden NetHack state.",
     "Do not reinterpret an unidentified item as its hidden true identity.",
-    "A proposal is advisory only and will not be executed directly.",
+    "A proposal is executed only if it still matches the fresh visible state; otherwise it is discarded.",
     "Prefer survival over progress when the visible state is ambiguous.",
     "When a reviewed safe wait is the right choice, propose rest; rest means exactly one '.' key, never no input.",
 )
