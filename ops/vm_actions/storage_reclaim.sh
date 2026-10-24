@@ -93,6 +93,9 @@ stale_paths=(
   "$sys_tmp/issue303_final3_recv.ts"
   "$sys_tmp/issue303_early_recv.ts"
   "$sys_tmp/issue303_audio_recv.ts"
+  "$sys_tmp/soviet-2489-fix"
+  "$sys_tmp/persist-recon"
+  "$sys_tmp/wt1029"
 )
 stale_min_age_days=7
 
