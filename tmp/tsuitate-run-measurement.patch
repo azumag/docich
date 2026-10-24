@@ -1,0 +1,238 @@
+diff --git a/workers/tsuitate-bot/src/arena/beta-session.js b/workers/tsuitate-bot/src/arena/beta-session.js
+index 67a4f640..80a01087 100644
+--- a/workers/tsuitate-bot/src/arena/beta-session.js
++++ b/workers/tsuitate-bot/src/arena/beta-session.js
+@@ -355,8 +355,13 @@ export class BetaSession {
+     if (!accepted) { this.sync(generation); return; }
+     if (intent && prior && this.pendingIndex !== null) {
+       const decision = this.record.decisions[this.pendingIndex];
+-      if (view.moveNumber > intent.moveNumber && view.fouls.you === prior.fouls.you) decision.feedback = "accepted";
+-      else if (view.moveNumber === intent.moveNumber && view.fouls.you > prior.fouls.you) decision.feedback = "foul";
++      if (view.moveNumber > intent.moveNumber && view.fouls.you === prior.fouls.you) {
++        decision.feedback = "accepted";
++        delete decision.rejectionReason;
++      } else if (view.moveNumber === intent.moveNumber && view.fouls.you > prior.fouls.you) {
++        decision.feedback = "foul";
++        decision.rejectionReason = "foul";
++      }
+     }
+     if (view.status === "ended") {
+       this.terminalSeen = true;
+@@ -434,6 +439,7 @@ export class BetaSession {
+     }
+     if (!this.gate.canMove) return;
+     const epoch = this.socketEpoch;
++    const decisionStartedAt = Date.now();
+     const observation = toBrainObservation(this.gate.view, this.captureEvidence(this.gate.view));
+     if (!observation) {
+       this.gate.needsSync = true;
+@@ -463,8 +469,11 @@ export class BetaSession {
+     const intent = this.gate.prepareMove(choice.usi);
+     this.pendingIndex = this.record.decisions.length;
+     const decisionIndex = this.pendingIndex;
++    const viewClocks = this.gate.view?.clocks ? { ...this.gate.view.clocks } : null;
++    const decisionLatencyMs = Math.max(0, Date.now() - decisionStartedAt);
+     this.record.decisions.push({ moveNumber: observation.moveNumber, observation, usi: choice.usi,
+-      features: choice.features, score: choice.score, feedback: "unknown" });
++      features: choice.features, score: choice.score, feedback: "unknown",
++      clocks: viewClocks, decisionLatencyMs, candidateCount: Number.isSafeInteger(choice.candidateCount) ? choice.candidateCount : null });
+     // Persist before crossing the network boundary. A process crash cannot
+     // erase the evidence that this exact move might already have been sent.
+     await this.persist();
+@@ -472,13 +481,28 @@ export class BetaSession {
+       if (error) {
+         this.gate.timeout(intent);
+         this.log({ event: "move_ack_unknown" });
++        const decision = this.record.decisions[decisionIndex];
++        if (decision && decision.feedback === "unknown") {
++          decision.rejectionReason = "ack_error";
++        }
+       } else {
+         let valid = true;
+         try { valid = this.gate.acknowledge(intent, ack); }
+         catch { valid = false; this.gate.timeout(intent); this.log({ event: "invalid_move_ack" }); }
+-        if (valid && ack?.ok === true) this.record.decisions[decisionIndex].feedback = "accepted";
+-        else if (valid && ack?.ok === false && ack.reason === "foul" && Number.isInteger(ack.foulCount)
+-            && ack.foulCount > 0 && ack.foulCount <= 10) this.record.decisions[decisionIndex].feedback = "foul";
++        if (valid && ack?.ok === true) {
++          this.record.decisions[decisionIndex].feedback = "accepted";
++          delete this.record.decisions[decisionIndex].rejectionReason;
++        } else if (valid && ack?.ok === false && ack.reason === "foul" && Number.isInteger(ack.foulCount)
++            && ack.foulCount > 0 && ack.foulCount <= 10) {
++          this.record.decisions[decisionIndex].feedback = "foul";
++          this.record.decisions[decisionIndex].rejectionReason = "foul";
++        } else if (valid && ack?.ok === false) {
++          this.record.decisions[decisionIndex].feedback = "unknown";
++          const reason = ack?.reason === "foul" ? "foul"
++            : ack?.reason === "error" ? "error"
++            : (typeof ack?.reason === "string" ? "error" : null);
++          if (reason) this.record.decisions[decisionIndex].rejectionReason = reason;
++        }
+       }
+       await this.persist();
+       this.sync();
+diff --git a/workers/tsuitate-bot/src/training/index.js b/workers/tsuitate-bot/src/training/index.js
+index fddecbaa..d78e45c1 100644
+--- a/workers/tsuitate-bot/src/training/index.js
++++ b/workers/tsuitate-bot/src/training/index.js
+@@ -84,14 +84,36 @@ export function normalizeGameRecord(raw) {
+     const features = featuresForMove(observation, decision.usi, recentAccepted);
+     if (!features || !FEATURE_KEYS.every((key) => Number.isFinite(features[key]) && Math.abs(features[key]) <= 1)) return null;
+     if (!Number.isFinite(decision.score) || Math.abs(decision.score) > 1000000) return null;
+-    decisions.push({
++    const entry = {
+       moveNumber: observation.moveNumber,
+       observation,
+       usi: decision.usi,
+       features: Object.fromEntries(FEATURE_KEYS.map((key) => [key, features[key]])),
+       score: decision.score,
+       feedback: decision.feedback,
+-    });
++    };
++    if (decision.clocks !== undefined && decision.clocks !== null && object(decision.clocks)) {
++      const clocks = decision.clocks;
++      const running = clocks.running;
++      if ((running === null || running === "sente" || running === "gote")
++          && Number.isFinite(clocks.senteMs) && clocks.senteMs >= 0 && clocks.senteMs <= Number.MAX_SAFE_INTEGER
++          && Number.isFinite(clocks.goteMs) && clocks.goteMs >= 0 && clocks.goteMs <= Number.MAX_SAFE_INTEGER
++          && (clocks.serverTime === null || (Number.isFinite(clocks.serverTime) && clocks.serverTime >= 0 && clocks.serverTime <= Number.MAX_SAFE_INTEGER))) {
++        entry.clocks = { senteMs: clocks.senteMs, goteMs: clocks.goteMs,
++          running, serverTime: clocks.serverTime ?? null };
++      }
++    }
++    if (typeof decision.rejectionReason === "string"
++        && ["foul", "error", "ack_error"].includes(decision.rejectionReason)) {
++      entry.rejectionReason = decision.rejectionReason;
++    }
++    if (Number.isSafeInteger(decision.decisionLatencyMs) && decision.decisionLatencyMs >= 0) {
++      entry.decisionLatencyMs = decision.decisionLatencyMs;
++    }
++    if (Number.isSafeInteger(decision.candidateCount) && decision.candidateCount >= 0) {
++      entry.candidateCount = decision.candidateCount;
++    }
++    decisions.push(entry);
+     if (decision.feedback === "accepted") {
+       recentAccepted.push(decision.usi);
+       if (recentAccepted.length > 64) recentAccepted.shift();
+diff --git a/workers/tsuitate-bot/test/arena.test.js b/workers/tsuitate-bot/test/arena.test.js
+index 25142b63..db5a6d84 100644
+--- a/workers/tsuitate-bot/test/arena.test.js
++++ b/workers/tsuitate-bot/test/arena.test.js
+@@ -247,16 +247,46 @@ test("late foul ACK cannot overwrite acceptance proved by an advanced view", asy
+   assert.equal(context.socket.packets("game:move").length, 2);
+ });
+ 
+-test("duplicate ACK cannot overwrite confirmed foul feedback", async (t) => {
++test("measurement fields: success ACK leaves no rejection reason", async (t) => {
+   const context = setup(t);
+   await begin(context);
+-  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
+-  await flush(context.session);
+   context.socket.ack("game:move", { ok: true });
+   await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "accepted");
++  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
++  assert.ok(Number.isSafeInteger(context.session.record.decisions[0].decisionLatencyMs));
++  assert.ok(context.session.record.decisions[0].clocks);
++});
++
++test("measurement fields: error ACK stores fixed code, not raw text", async (t) => {
++  const context = setup(t);
++  await begin(context);
++  context.socket.ack("game:move", { ok: false, reason: "error", error: "fixture error" });
++  await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "unknown");
++  assert.equal(context.session.record.decisions[0].rejectionReason, "error");
++});
++
++test("measurement fields: timeout then accepted clears ack_error", async (t) => {
++  const context = setup(t);
++  await begin(context);
++  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
++  await flush(context.session);
++  context.socket.ack("game:sync", { state: view({ moveNumber: 3 }) });
++  await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "accepted");
++  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
++});
++
++test("measurement fields: timeout then foul sets foul reason", async (t) => {
++  const context = setup(t);
++  await begin(context);
++  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
++  await flush(context.session);
++  context.socket.ack("game:sync", { state: view({ fouls: { you: 1, opponent: 0 } }) });
++  await flush(context.session);
+   assert.equal(context.session.record.decisions[0].feedback, "foul");
+-  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "foul");
+-  assert.equal(context.socket.packets("game:move").length, 1);
++  assert.equal(context.session.record.decisions[0].rejectionReason, "foul");
+ });
+ 
+ test("a timed-out move remains unresolved after same-view sync, reconnect and process restore", async (t) => {
+@@ -822,3 +852,26 @@ test("later verified result upgrades only an unknown game and preserves its evid
+   assert.equal(await store.refreshUnknownResults(async () => parsePublicResult(replay(), "test-game", "w")), 0);
+   await assert.rejects(store.finish({ ...dataset, outcome: "loss" }), /conflicting_game_record/);
+ });
++
++test("measurement fields: late timeout after accepted does not overwrite", async (t) => {
++  const context = setup(t);
++  await begin(context);
++  context.socket.server("game:state", advancedView(context.socket));
++  await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "accepted");
++  context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
++  await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "accepted");
++  assert.equal(context.session.record.decisions[0].rejectionReason, undefined);
++});
++test("duplicate ACK cannot overwrite confirmed foul feedback", async (t) => {
++  const context = setup(t);
++  await begin(context);
++  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
++  await flush(context.session);
++  context.socket.ack("game:move", { ok: true });
++  await flush(context.session);
++  assert.equal(context.session.record.decisions[0].feedback, "foul");
++  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "foul");
++  assert.equal(context.socket.packets("game:move").length, 1);
++});
+diff --git a/workers/tsuitate-bot/test/training.test.js b/workers/tsuitate-bot/test/training.test.js
+index c92cdbd0..6283fdcc 100644
+--- a/workers/tsuitate-bot/test/training.test.js
++++ b/workers/tsuitate-bot/test/training.test.js
+@@ -74,6 +74,34 @@ test("malformed records fail closed without leaking raw values", () => {
+   assert.throws(() => parseDataset("SENSITIVE_FIXTURE"), { message: "invalid_dataset_json" });
+ });
+ 
++test("measurement fields: disallowed values are dropped, not stored", () => {
++  const raw = game("sanitized-measurement");
++  raw.decisions[0].clocks = { senteMs: 300000, goteMs: 300000, running: "evil", serverTime: -1 };
++  raw.decisions[0].rejectionReason = "raw SENSITIVE_FIXTURE error";
++  raw.decisions[0].decisionLatencyMs = -5;
++  raw.decisions[0].candidateCount = 1.5;
++  const normalized = normalizeGameRecord(raw);
++  assert.ok(normalized);
++  assert.equal(normalized.decisions[0].clocks, undefined);
++  assert.equal(normalized.decisions[0].rejectionReason, undefined);
++  assert.equal(normalized.decisions[0].decisionLatencyMs, undefined);
++  assert.equal(normalized.decisions[0].candidateCount, undefined);
++  assert.equal(JSON.stringify(normalized).includes("SENSITIVE_FIXTURE"), false);
++});
++
++test("measurement fields: valid values are retained", () => {
++  const raw = game("measurement-valid");
++  raw.decisions[0].clocks = { senteMs: 300000, goteMs: 290000, running: "sente", serverTime: 100 };
++  raw.decisions[0].rejectionReason = "ack_error";
++  raw.decisions[0].decisionLatencyMs = 42;
++  raw.decisions[0].candidateCount = 7;
++  const normalized = normalizeGameRecord(raw);
++  assert.ok(normalized);
++  assert.deepEqual(normalized.decisions[0].clocks, { senteMs: 300000, goteMs: 290000, running: "sente", serverTime: 100 });
++  assert.equal(normalized.decisions[0].rejectionReason, "ack_error");
++  assert.equal(normalized.decisions[0].decisionLatencyMs, 42);
++  assert.equal(normalized.decisions[0].candidateCount, 7);
++});
+ test("unknown termination reasons remain unknown even with a known outcome", () => {
+   const records = ["win", "loss", "draw"].map((outcome) => game(`unknown-${outcome}`, { outcome, reason: "unknown" }));
+   const summary = report(records);
