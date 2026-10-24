@@ -5881,10 +5881,18 @@ def _project_soren91_corner(data, state_dir=None, presentation_failure=None):
         pf = data.get("presentation_failure")
     if pf is None and state_dir is not None:
         state_dir = Path(state_dir)
-        for candidate in (
-            state_dir.parent.parent / "presentation_failure.json",
-            state_dir / "presentation_failure.json",
-        ):
+        # Real writer layout: <state_dir>/runtimes/<runtime_id>/presentation_failure.json
+        # (naming.runtime_directory). Search the runtimes subtree only; never
+        # follow symlinks and cap the candidate count.
+        candidates = []
+        runtimes_dir = state_dir / "runtimes"
+        if runtimes_dir.is_dir() and not runtimes_dir.is_symlink():
+            for candidate in runtimes_dir.glob("*/presentation_failure.json"):
+                if candidate.is_symlink():
+                    continue
+                candidates.append(candidate)
+        candidates.sort(key=lambda p: p.stat().st_mtime if p.is_file() else 0.0, reverse=True)
+        for candidate in candidates[:32]:
             pf = _read_presentation_failure(candidate)
             if pf is not None:
                 break
