@@ -280,7 +280,47 @@ def _filesystem_status(path:Path):
     available=info.f_bavail*block_size
     denominator=used+available
     used_percent=0 if denominator<=0 else (used*100+denominator-1)//denominator
-    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
+    # Inode counts answer whether an ENOSPC-like failure is really inode exhaustion (#2666).
+    # Some filesystems report f_files=0; that is unknown, not zero inodes.
+    files_total=info.f_files or None
+    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent,
+            'files_total':files_total,'files_available':(info.f_favail if files_total else None)}
+
+PROJECTION_GUARD_EVENT_MAX_BYTES=4096
+PROJECTION_GUARD_EVENTS=('would_refuse','refused','gate_degraded')
+PROJECTION_GUARD_POLICIES=('dry_run','enforce_reviewed','off')
+
+def _projection_guard_event(soren_root):
+    """Whitelisted last live-apply gate event for the observation gate (#2487).
+
+    Reads only ``tmp/state/projection_guard_last_event.json`` under the soren
+    checkout. Symlinks and non-regular files are refused (O_NOFOLLOW + fstat).
+    ``reason`` and ``quarantine_dir`` are withheld: they can carry paths.
+    The ``policy`` field is the policy the worker actually applied, so it is an
+    observed value rather than the file default.
+    """
+    entry={'present':False,'readable':False,'event':None,'policy':None,'recorded_at':None}
+    if not isinstance(soren_root,str) or not soren_root: return entry
+    path=Path(soren_root)/'tmp'/'state'/'projection_guard_last_event.json'
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except FileNotFoundError: return entry
+    except OSError:
+        entry['present']=True
+        return entry
+    entry['present']=True
+    with os.fdopen(fd,'rb') as handle:
+        info=os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size>PROJECTION_GUARD_EVENT_MAX_BYTES: return entry
+        try: data=json.loads(handle.read(PROJECTION_GUARD_EVENT_MAX_BYTES+1).decode('utf-8'))
+        except (ValueError,UnicodeDecodeError): return entry
+    if not isinstance(data,dict) or data.get('schema_version')!=1: return entry
+    event=data.get('event'); policy=data.get('policy'); recorded=data.get('recorded_at')
+    entry.update(readable=True,
+                 event=event if event in PROJECTION_GUARD_EVENTS else None,
+                 policy=policy if policy in PROJECTION_GUARD_POLICIES else None,
+                 recorded_at=recorded if type(recorded) is int else None)
+    return entry
 
 
 def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
@@ -1657,8 +1697,10 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
+    soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
     return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
+            'projection_guard_last_event':_projection_guard_event(soren_root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():
