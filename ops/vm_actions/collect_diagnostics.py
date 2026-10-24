@@ -31,8 +31,8 @@ Observed sources (all read-only):
     plaintext/compressed format split: counts and bytes only, never
     filenames), Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
-  - the fixed host metrics ring (<home>/.local/state/docich/host-metrics/
-    ring.jsonl, docich#2578): host counters sampled once a minute onto the
+  - the fixed host metrics ring (the first of the reviewed candidate
+    locations under <home>, docich#2578): host counters sampled once a minute onto the
     persistent root disk so the hour before a guest-OS hang (#2278) survives
     the reboot that follows it. Projected to fixed numeric fields, baked-in
     retention constants, the fixed unit-state mask and derived down-unit names
@@ -755,8 +755,17 @@ UNIT_ORDER = (
     "soren-runtime.service",
     "docich-audio-priority.service",
 )
-HOST_METRICS_RING_RELPATH = (
-    Path(".local") / "state" / "docich" / "host-metrics" / "ring.jsonl"
+# The ring's fixed candidate locations, in the sampler's reviewed order. The
+# XDG state home is first, but on the production VM ``~/.local/state`` and its
+# ``docich`` child are root-owned (created by a root-time ``install -d`` in the
+# gateway/canary installers), so the unprivileged sampler cannot create
+# anything below it and falls back to the ubuntu-owned ``~/.local/share`` tree,
+# then to a plain home directory. The reader checks them in the same order and
+# reports which one it read as ``ring_path_kind`` -- never the path itself.
+HOST_METRICS_RING_CANDIDATES = (
+    ("state", Path(".local") / "state" / "docich" / "host-metrics"),
+    ("share", Path(".local") / "share" / "docich" / "host-metrics"),
+    ("home", Path("docich-host-metrics")),
 )
 # A ring that already broke its own MAX_BYTES bound is refused instead of
 # projecting a partial read as if it were the retained history.
@@ -1038,21 +1047,28 @@ def _host_metrics_runtime_properties():
     proc = _systemctl_user(
         ["show", HOST_METRICS_SERVICE_UNIT,
          "-p", "Result", "-p", "ExecMainCode", "-p", "ExecMainStatus",
-         "-p", "NRestarts", "--value"],
+         "-p", "NRestarts"],
         timeout=HOST_METRICS_PROBE_TIMEOUT_SEC,
     )
     if proc is None or proc[0] != 0:
         return result
-    lines = [line.strip() for line in (proc[1] or "").splitlines()]
-    while len(lines) < 4:
-        lines.append("")
-    if lines[0].lower() in HOST_METRICS_RESULT_ENUMS:
-        result["service_result"] = lines[0].lower()
-    for key, raw in (("service_exec_code", lines[1]),
-                     ("service_exec_status", lines[2]),
-                     ("service_n_restarts", lines[3])):
-        if re.fullmatch(r"-?\d{1,10}", raw):
-            result[key] = int(raw)
+    # Parse ``Key=Value`` lines instead of ``--value``: the value-only form
+    # prints the properties in systemd's own order, not the ``-p`` order, and
+    # the positional read mislabeled the real exit status (the incident was
+    # exit 2, read as 1, for two deploy cycles #2578).
+    values = {}
+    for line in (proc[1] or "").splitlines():
+        key, separator, raw = line.partition("=")
+        if separator:
+            values[key.strip()] = raw.strip()
+    outcome = values.get("Result", "").lower()
+    if outcome in HOST_METRICS_RESULT_ENUMS:
+        result["service_result"] = outcome
+    for key, prop in (("service_exec_code", "ExecMainCode"),
+                      ("service_exec_status", "ExecMainStatus"),
+                      ("service_n_restarts", "NRestarts")):
+        if re.fullmatch(r"-?\d{1,10}", values.get(prop, "")):
+            result[key] = int(values[prop])
     return result
 
 
@@ -1139,7 +1155,9 @@ def _collect_host_metrics_runtime(now):
 def _collect_host_metrics(home_root=None, now=None):
     """Project the fixed host metrics ring (#2578) without exposing its file.
 
-    The ring lives at ``<home>/.local/state/docich/host-metrics/ring.jsonl``.
+    The ring lives at the first of the reviewed candidate directories under
+    the runtime user's home (``~/.local/state/docich/host-metrics``, then
+    ``~/.local/share/docich/host-metrics``, then ``~/docich-host-metrics``).
     ``main`` passes the runtime user's home explicitly (``soren.parent``); this
     projection never resolves a path from config or the environment, because
     the location is part of the sampler contract and the ring is reboot-
@@ -1164,6 +1182,7 @@ def _collect_host_metrics(home_root=None, now=None):
         "samples_omitted": 0,
         "oldest_age_sec": None,
         "newest_age_sec": None,
+        "ring_path_kind": None,
         "boots": 0,
         "current_boot": None,
         "spans_reboot": False,
@@ -1173,10 +1192,23 @@ def _collect_host_metrics(home_root=None, now=None):
         "runtime": _collect_host_metrics_runtime(now),
         "samples": [],
     }
-    path = home / HOST_METRICS_RING_RELPATH
     fd = None
+    kind = None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        for name, relpath in HOST_METRICS_RING_CANDIDATES:
+            path = home / relpath / "ring.jsonl"
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # A candidate that exists but cannot be read is reported as a
+                # refusal, not skipped: it may hold the only evidence.
+                return {**result, "status": "unreadable"}
+            kind = name
+            break
+        if fd is None:
+            return result
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             # A directory/FIFO/device where the ring belongs is not evidence.
@@ -1191,8 +1223,8 @@ def _collect_host_metrics(home_root=None, now=None):
         # Bounded bytes actually read. It is a count, never a path, and it
         # stays at 0 when nothing was read (absent/unreadable/refused).
         result["ring_bytes"] = min(len(raw), MAX_BYTES)
-    except FileNotFoundError:
-        return result
+        # Which fixed candidate was read: an enum, never the path itself.
+        result["ring_path_kind"] = kind
     except (OSError, ValueError):
         # Permission/IO errors and the ``O_NOFOLLOW`` symlink refusal.
         return {**result, "status": "unreadable"}

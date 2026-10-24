@@ -140,13 +140,63 @@ def _runtime_home():
         return Path.home()
 
 
-def state_root(home=None):
-    """Return the ring state root for ``home`` (default: the runtime home).
+#: Ring location: an ordered list of fixed candidates under the runtime user's
+#: home. The first is the XDG state home, but on the production VM its parent
+#: (``~/.local/state/docich``, and ``~/.local/state`` itself) was created
+#: root-owned by a root-time ``install -d`` in the gateway/canary installers,
+#: so an unprivileged sampler cannot create anything below it (the incident:
+#: every tick exited with "cannot create state dir"). ``~/.local/share`` is the
+#: ubuntu-owned tree on that VM, and a plain home directory is the last
+#: resort. The writer picks the candidate that already holds the ring, else
+#: the first one it can create; the reader checks them in the same order.
+STATE_CANDIDATES = (
+    ("state", (".local", "state", "docich", "host-metrics")),
+    ("share", (".local", "share", "docich", "host-metrics")),
+    ("home", ("docich-host-metrics",)),
+)
+
+
+def state_candidates(home=None):
+    """The fixed ``(kind, path)`` ring candidates, in the reviewed order."""
+    base = Path(home) if home is not None else _runtime_home()
+    return [(kind, base.joinpath(*parts)) for kind, parts in STATE_CANDIDATES]
+
+
+def state_root(home=None, kind="state"):
+    """Return one ring state root for ``home`` (default: the first candidate).
 
     The default does not read ``$HOME``: see ``_runtime_home``.
     """
-    base = Path(home) if home is not None else _runtime_home()
-    return base / ".local" / "state" / "docich" / "host-metrics"
+    for name, path in state_candidates(home):
+        if kind is None or name == kind:
+            return path
+    raise ValueError("unknown state candidate")
+
+
+def choose_state_dir(home=None):
+    """The candidate that already holds the ring, else the first writable one.
+
+    Sticky on an existing ring so a candidate that becomes writable later can
+    never split the history across two files.
+    """
+    candidates = state_candidates(home)
+    for _kind, path in candidates:
+        try:
+            if (path / RING_NAME).exists():
+                return path
+        except OSError:
+            pass
+    for _kind, path in candidates:
+        # Probe with the real open (create + chmod 0700 + open): a directory
+        # that merely exists but is owned by someone else must fail here and
+        # move on, not pass an ``exist_ok`` makedirs and die at write time.
+        try:
+            fd = _open_state_dir(path)
+        except (HostMetricsError, OSError):
+            continue
+        os.close(fd)
+        return path
+    raise HostMetricsError("no writable state dir candidate")
 
 
 def encode_units(states):
@@ -519,6 +569,12 @@ def _open_state_dir(state_dir):
     if not stat.S_ISDIR(info.st_mode):
         raise HostMetricsError("state dir must be a directory")
     try:
+        # The ring directory is owned by this sampler; keep its mode at the
+        # contract value even if a foreign creator left it wider.
+        os.chmod(path, STATE_DIR_MODE)
+    except OSError as exc:
+        raise HostMetricsError("cannot create state dir") from exc
+    try:
         return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:
         raise HostMetricsError("cannot open state dir") from exc
@@ -738,7 +794,7 @@ def main(argv=None):
     if emit:
         sys.stdout.write(_encode_record(record).decode("utf-8"))
         sys.stdout.flush()
-    target = state_root() if state_dir is None else state_dir
+    target = choose_state_dir() if state_dir is None else state_dir
     try:
         written = append_sample(target, record)
     except (HostMetricsError, OSError):
