@@ -366,7 +366,7 @@ def _hero_castle(mem):
 # ---------------------------------------------------------------- house (あたしの家)
 # Measured field view position of the house per chapter (moved from the
 # house flow so the economy strategy can read it without importing a flow).
-HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
+HOUSE_VIEW = chart.HOUSE_VIEW
 
 
 def _repair_hp_ready(info):

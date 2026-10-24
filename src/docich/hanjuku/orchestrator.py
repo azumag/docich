@@ -146,6 +146,20 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, run_identity: dict | None = None,
            chart_edition: str | None = None) -> tuple[list[dict], dict]:
+    """Decide with only this observation's run-scoped verified map exposed."""
+    from .. import hanjuku_chart
+    hanjuku_chart.migrate_legacy_labels(state)
+    memory = dict(state.get('policy') or {})
+    with hanjuku_chart.map_context(memory):
+        return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
+                            experience=experience, recall_inputs=recall_inputs,
+                            run_identity=run_identity, chart_edition=chart_edition,
+                            _memory=memory)
+
+
+def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
+                 experience=None, recall_inputs=None, run_identity=None,
+                 chart_edition=None, _memory):
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -163,32 +177,34 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from .os_layer import roster as hanjuku_roster
     from .. import hanjuku_chart
     from .os_layer.screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
-    # State written before the castle-label rename still names chapter 1's home
-    # castle ほんじょう. Rename it here, before anything reads or writes it, so
-    # garrison keys, order sources and free-text notes all match the chart.
-    hanjuku_chart.migrate_legacy_labels(state)
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
-    mem=dict(state.get('policy') or {})
+    mem=_memory
+    mem.pop('_map_registration_hold', None)
     if phase != 'dialogue':
         mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
     mem['_run_identity'] = identity
+    reset_native_map_scope = False
     if identity is not None and mem.get('survey_run_identity') != identity:
         previous_identity = (hanjuku_roster.run_identity(mem.get('survey_run_identity'))
                              or hanjuku_roster.run_identity(state.get('decision_trace')))
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
+            reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
-                        'starter_party'):
+                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
         mem['survey_run_identity'] = identity
     mem['_records']=[]
+    if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
+        campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
+                                reason='ランIDが変わったため旧ランの実測地図と出撃状態を破棄')
     mem['_adjusted']=adjusted
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
@@ -362,6 +378,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # resumes on its own screen. This covers return and outbound flows alike.
     concert_house_event = (
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None:
+        from .flows import map_registration
+        actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
@@ -376,7 +395,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             # game's orders, captures or cursor into it.
             stats=mem.get('stats')
             kept_experience=mem.get('_experience')
-            mem={'_records':mem['_records'],'previous_stats':stats,'_experience':kept_experience}
+            records = mem['_records']
+            mem.clear()
+            mem.update(_records=records, previous_stats=stats, _experience=kept_experience)
             decision_log._record(mem,'new_game_detected',chart_step='name',
                            reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=name_flow.name_step(screen,mem)
@@ -509,6 +530,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
+            and not mem.get('_map_registration_hold')
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)

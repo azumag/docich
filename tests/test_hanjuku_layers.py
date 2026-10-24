@@ -23,7 +23,7 @@ PACKAGE = ROOT / 'src' / 'docich' / 'hanjuku'
 # Rank of every layer inside docich.hanjuku. Equal ranks in different layers
 # (flows vs reporting) may not import each other either.
 LAYER_RANK = {
-    '_compat': 0, 'decision_log': 0, 'version': 0,
+    '_compat': 0, 'decision_log': 0, 'version': 0, 'identity': 0,
     'os_layer': 1,
     'strategy': 2,
     'judgment': 3,
@@ -36,6 +36,7 @@ LAYER_RANK = {
 LEGACY_LAYER = {
     'hanjuku_chart': 'data', 'hanjuku_reference': 'data', 'hanjuku_egg_reference': 'data',
     'hanjuku_egg_stock': 'data',
+    'hanjuku_map_sources': 'data',
     'hanjuku_chart_adjust': 'strategy', 'hanjuku_experience': 'strategy',
 }
 LEGACY_RANK = {'data': 0, 'os_layer': 1, 'strategy': 2, 'flows': 4}
@@ -166,6 +167,18 @@ def test_layers_import_only_lower_layers():
 def test_known_debt_is_still_real():
     fixed = set(KNOWN_DEBT) - _violations()
     assert not fixed, f'remove fixed entries from KNOWN_DEBT: {sorted(fixed)}'
+
+
+def test_data_modules_do_not_import_screen_readers_or_procedures_even_lazily():
+    for name, layer in LEGACY_LAYER.items():
+        if layer != 'data':
+            continue
+        path = ROOT/'src'/'docich'/f'{name}.py'
+        for target in _imports('', path, False):
+            if target.startswith('hanjuku_'):
+                assert LEGACY_LAYER.get(target) == 'data', (name, target)
+            else:
+                assert LAYER_RANK.get(_layer(target)) == 0, (name, target)
 
 
 @pytest.mark.parametrize('layer', PURE_LAYERS)

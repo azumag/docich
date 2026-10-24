@@ -7,13 +7,34 @@ castle's roof anchor; they are chart facts, not live RAM reads. The hero is
 the name the bot enters (``HERO``).
 
 Chapter 1 and 2 coordinates are measured. Chapters 3–12 ship with empty
-``CASTLES`` until ``hanjuku_measure`` records them from labeled frames:
-``orders()`` returns nothing for an unmeasured chapter (``chart_unavailable``),
-so navigation never guesses coordinates. Orders, tactics and purchases for
-those chapters are encoded and activate only when their source/target castles
-are present in ``CASTLES``.
+static ``CASTLES``. A scoped policy call may add named native observations
+from that run's ``map_registration``; public source pixels remain search
+hints. Orders activate only when both endpoints have confirmed coordinates.
+See ``docs/hanjuku_map_registration.md`` for the evidence and remaining gates.
 """
 from __future__ import annotations
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+import re
+
+from . import hanjuku_map_sources as map_sources
+from .hanjuku.identity import run_identity
+
+MAP_SCHEMA = 1
+_MAP_DIGEST = re.compile(r'[0-9a-f]{64}\Z')
+
+_MAP_MEMORY = ContextVar('hanjuku_map_memory', default=None)
+
+
+@contextmanager
+def map_context(memory):
+    """Expose one run's measured map only for this policy call/thread."""
+    token = _MAP_MEMORY.set(memory)
+    try:
+        yield
+    finally:
+        _MAP_MEMORY.reset(token)
 
 HERO = 'どうし'
 
@@ -55,6 +76,15 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
 }
 
+# Independent native-view calibrations. Castle cells are field-cursor top-left
+# coordinates; flags and the Y selection cursor use different pixel anchors.
+# Keep these values separate when registering a chapter from a source map.
+WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0)}
+Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
+# Heart centres on the native Y view. HOUSE_TARGET separately selects the
+# integer cell; a roster read from the monthly menu needs neither coordinate.
+HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
+
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
 # order encoding. Chapter 1's home castle is アルマムーン on screen too
@@ -73,7 +103,7 @@ CASTLE_NAMES: dict[int, tuple[str, ...]] = {
         'バスカビル', 'プトレマイス', 'ボス'),
     6: ('アルマムーン', 'アルブラーカ', 'イカリア', 'カバルッサ', 'オケアナ',
         'バビラリー', 'ダーラント', 'セレーネ', 'グルーポフ', 'ユージア',
-        'アブダレ', 'ボス'),
+        'アブダレ', 'トウトウ', 'ボス'),
     7: ('アルマムーン', 'ベンゴディ', 'レオナール', 'ロキュータ',
         'リデンブロック', 'マンシー', 'プルートー', 'ハシオクラム',
         'フィロメラ', 'ボス'),
@@ -87,7 +117,8 @@ CASTLE_NAMES: dict[int, tuple[str, ...]] = {
          'マランマ', 'タタール', 'クラボニア', 'トリフェ', 'アエンタール',
          'ネペンテ', 'ボス'),
     12: ('アルマムーン', 'ワフェルダ', 'ブラックランド', 'バラタリア', 'ラグナグ',
-         'ユーフォニア', 'アファニア', 'ヘリオポリス', 'ディランダ', 'ボス'),
+         'ユーフォニア', 'アトランテ', 'アファニア', 'ヘリオポリス', 'ファンゴル',
+         'ディランダ', 'ボス'),
 }
 
 HOME_CASTLES: dict[int, str] = {
@@ -852,11 +883,23 @@ def orders(chapter: int):
     navigation can use unmeasured coordinates. Fully measured chapters
     return all their chart orders.
     """
-    castles = CASTLES.get(chapter) or {}
-    if not castles:
+    cells = castles(chapter)
+    if not cells:
         return ()
     return tuple(o for o in _ORDERS.get(chapter, ())
-                 if o['source'] in castles and o['target'] in castles)
+                 if o['source'] in cells and o['target'] in cells)
+
+
+def boss_sites(chapter: int) -> tuple[str, ...]:
+    """Location identities, independently of chapter 4's random occupants."""
+    if chapter == 4:
+        from .hanjuku_map_sources import SOURCE_BOSS_SITES
+        return SOURCE_BOSS_SITES[4]
+    return (boss_castle(chapter),)
+
+
+def is_boss_castle(name) -> bool:
+    return name in BOSS_CASTLES.values() or name in boss_sites(4)
 
 
 def all_orders(chapter: int):
@@ -868,8 +911,48 @@ def tactics(chapter: int):
     return _TACTICS.get(chapter, ())
 
 
+def _map_point(value):
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(v) is int and abs(v) <= 4096 for v in value))
+
+
+def verified_castles(mem, chapter):
+    """Read a bounded run-scoped receipt; never import an observer or flow."""
+    identity = run_identity(mem.get('_run_identity'))
+    data = mem.get('map_registration') or {}
+    if (identity is None or not isinstance(data, dict) or data.get('schema') != MAP_SCHEMA
+            or data.get('identity') != identity or data.get('chapter') != chapter
+            or chapter != mem.get('chapter') or not _MAP_DIGEST.fullmatch(str(data.get('origin_frame', '')))):
+        return {}
+    records = data.get('castles')
+    if not isinstance(records, dict) or len(records) > 32:
+        return {}
+    out = {}
+    for name, proof in records.items():
+        if (name not in map_sources.SOURCE_CASTLES.get(chapter, {}) or not isinstance(proof, dict)
+                or proof.get('name') != name or proof.get('evidence') != 'native_castle_status'
+                or not _map_point(proof.get('position')) or proof.get('readings') != 2
+                or not all(_MAP_DIGEST.fullmatch(str(proof.get(k, '')))
+                           for k in ('field_frame', 'status_frame'))):
+            return {}
+        position = tuple(proof['position'])
+        if any(sum(abs(a-b) for a,b in zip(position, old)) < 24 for old in out.values()):
+            return {}
+        out[name] = position
+    return out
+
+
 def castles(chapter: int) -> dict:
-    return CASTLES.get(chapter, {})
+    static = CASTLES.get(chapter, {})
+    if chapter in (4, 9):
+        # A generic chapter-4 point cannot identify four separate sites.
+        # Chapter 9's moving boss has no reusable static coordinate.
+        static = {n: p for n, p in static.items() if n != boss_castle(chapter)}
+    memory = _MAP_MEMORY.get()
+    if memory is None:
+        return static
+    measured = verified_castles(memory, chapter)
+    return {**measured, **static} if measured else static
 
 
 def purchases(chapter: int):

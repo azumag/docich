@@ -873,6 +873,35 @@ def deploy_step(screen: Screen, mem):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
+    if ('_run_identity' in mem
+            and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+        # The deploy continuation (castle menu, general list, card select,
+        # sortie confirm) runs without ``_ready``: an adopted interim order
+        # can outlive the run map receipt that verified its endpoints, so a
+        # later call with a missing/invalid run identity must not steer or
+        # confirm it. Stop the unsent order before any confirmation side
+        # effect, exactly like the map layer's precondition gate; the next
+        # observation backs out of the menu through the order-less path.
+        # ``decide()`` always supplies the identity key and None must not
+        # opt out of the check (see ``_ready``). A launched sortie keeps its
+        # reconciliation: the departure already happened, so the
+        # verification path below still owns the screen.
+        cells = chart.castles(mem.get('chapter') or 0)
+        source = _source(order, mem)
+        if source not in cells or order.get('target') not in cells:
+            from ..os_layer.roster import run_identity
+            # Keep this a hold: the generic no-input fallback must not turn a
+            # map-unverifiable confirmation screen into a blind input.
+            mem['_map_registration_hold'] = True
+            _record(mem, 'order_precondition_lost', chart_step=order['step'],
+                    source=source, target=order.get('target'),
+                    observed_metric={'identity': run_identity(mem.get('_run_identity')),
+                                     'chapter': mem.get('chapter'),
+                                     'registered': sorted(cells)},
+                    reason='このランの地図に出撃元・目標城の登録座標がそろわないため、未送信の出撃を取り消して指示を選び直す')
+            mem['active'] = None
+            mem['picked'] = []
+            return []
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
@@ -1233,7 +1262,15 @@ def deploy_step(screen: Screen, mem):
             mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
                 **({'confirmation_tick': departure['departure_binding']['confirm_tick']}
                    if departure is not None else {})}
-            mem['cursor'] = list(chart.castles(mem['chapter'])[source])
+            cell = chart.castles(mem['chapter']).get(source)
+            if cell is None:
+                # Unreachable while the entrance precondition holds; kept so a
+                # future in-call mutation can still never raise here.
+                mem['_map_registration_hold'] = True
+                return _hold_deploy(screen, mem, order,
+                                    '出撃元の登録座標が参照直前に確認できないため出撃を承認せず保留',
+                                    carried=carried)
+            mem['cursor'] = list(cell)
             mem['uncertain'] = False      # the target marker starts on the source castle
             mem.pop('nav_search', None)
             mem.pop('nav_search_leg', None)
