@@ -10,6 +10,11 @@ Contract (``ops/vm_actions/host_metrics_contract.md`` is authoritative):
   - ``INTERVAL_SEC = 60`` (timer ``OnCalendar=*:*:00``, ``AccuracySec=1s``),
     ``MAX_POINTS = 240`` (4 hours of history), ``MAX_BYTES = 256 KiB``,
     ``COMPACT_KEEP = 200``, ``MAX_LINE_BYTES = 4096``.
+  - Every numeric source has a ceiling (``MAX_COUNTER = 1e18`` and at most
+    24 ASCII digits, uptime ``1e10`` s, load/PSI ``1e6``): a token no healthy
+    kernel produces reads as ``null`` instead of a poisoned integer, because
+    a giant value would build a record that cannot fit ``MAX_LINE_BYTES``
+    (the failure mode of the first production deploy).
   - Ring file ``<home>/.local/state/docich/host-metrics/ring.jsonl``, file mode
     ``0600``, directory mode ``0700``; ``<home>`` is the runtime user's passwd
     entry, never ``$HOME`` (the gateway exec channel may scrub it). One compact,
@@ -268,7 +273,12 @@ def _read_cpu(proc_root):
         values = [_parse_count(field) for field in fields[1:]]
         if any(value is None for value in values) or len(values) < 5:
             return None
-        return [sum(values), values[3], values[4]]
+        total = sum(values)
+        # The sum inherits the same ceiling as its parts so a contrived
+        # /proc/stat cannot push the aggregate past what the reader accepts.
+        if total > MAX_COUNTER:
+            return None
+        return [total, values[3], values[4]]
     return None
 
 

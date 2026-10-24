@@ -1098,7 +1098,7 @@ def _host_metrics_runtime_journal(now):
             signature = "python_traceback"
         elif "cannot write host metrics ring" in lower:
             signature = "sampler_refused"
-            match = re.search(r"record_bytes=(\d{1,10})", line)
+            match = re.search(r"record_bytes=(\d{1,20})", line)
             if match is not None:
                 out["refused_record_bytes"] = int(match.group(1))
         elif "main process exited" in lower or "failed with" in lower:
