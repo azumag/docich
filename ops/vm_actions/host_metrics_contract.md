@@ -119,8 +119,10 @@ never corrupt the ring, nor glue the next record to a partial line.
 ```
 
 No file content, no environment, no argv, no paths and no free text are ever
-recorded. The sampler reads only `/proc`, `/sys/kernel/random/boot_id` and
-`systemctl is-active` output for those six fixed units.
+recorded. The sampler reads only `/proc` (including `sys/kernel/random/boot_id`
+and `partitions`), the `/sys` fallbacks (`kernel/random/boot_id` and the
+`dev/block` readlink), and `systemctl is-active` output for those six fixed
+units.
 
 ## Diagnostics projection (`host_metrics` key)
 
