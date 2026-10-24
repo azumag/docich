@@ -112,7 +112,9 @@ class HostMetricsUnitTests(unittest.TestCase):
         readme = (SYSTEMD_DIR / "README.md").read_text(encoding="utf-8")
         self.assertIn("`%s`" % SERVICE, readme)
         self.assertIn("`%s`" % TIMER, readme)
-        self.assertIn("~/.local/state/docich/host-metrics/ring.jsonl", readme)
+        self.assertIn("~/.local/state/docich/host-metrics", readme)
+        self.assertIn("~/.local/share/docich/host-metrics", readme)
+        self.assertIn("~/docich-host-metrics", readme)
 
 
 class DeployHookContractTests(unittest.TestCase):
@@ -124,8 +126,13 @@ class DeployHookContractTests(unittest.TestCase):
         for required in (
             'service="%s"' % SERVICE,
             'timer="%s"' % TIMER,
-            'state_dir="$home/.local/state/docich/host-metrics"',
-            'ring="$state_dir/ring.jsonl"',
+            # The ring is verified in whichever fixed candidate holds it
+            # (mirroring host_metrics.choose_state_dir), never one hard-wired
+            # path that the production VM cannot create.
+            'state_dir="$candidate"',
+            'ring="$candidate/ring.jsonl"',
+            'for candidate in',
+            "[[ -f \"$candidate/ring.jsonl\" ]]",
             'root="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"',
             'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
             'sed "s#__DOCICH_ROOT__#$root#g"',
@@ -148,6 +155,14 @@ class DeployHookContractTests(unittest.TestCase):
                           "docich-opencode", "soren-runtime",
                           "--state-dir", "--print"):
             self.assertNotIn(forbidden, self.script)
+
+    def test_hook_resolves_the_ring_after_starting_the_service(self):
+        # On the very first install no ring exists anywhere, so resolving the
+        # candidate before the start would verify an empty path and fail the
+        # deploy even though the sample was written.
+        start = self.script.index('systemctl --user start "$service"')
+        resolve = self.script.index("for candidate in")
+        self.assertLess(start, resolve)
 
     def test_hook_resolves_the_home_from_passwd_not_HOME(self):
         # The gateway exec channel scrubs HOME; the hook and the sampler must

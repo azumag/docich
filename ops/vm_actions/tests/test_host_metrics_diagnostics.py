@@ -19,7 +19,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
 SAMPLER = ROOT / "ops" / "vm_actions" / "host_metrics.py"
-RING_RELPATH = Path(".local") / "state" / "docich" / "host-metrics" / "ring.jsonl"
 
 
 def load_module(name, path):
@@ -37,9 +36,10 @@ BOOT_B = "0f1e2d3c4b5a"
 ALL_ACTIVE = sum(1 << (2 * index) for index in range(len(collector.UNIT_ORDER)))
 
 PROJECTION_KEYS = {
-    "status", "retention", "unit_order", "ring_bytes", "points_available",
-    "points", "samples_omitted", "oldest_age_sec", "newest_age_sec", "boots",
-    "current_boot", "spans_reboot", "runtime", "samples",
+    "status", "retention", "unit_order", "ring_bytes", "ring_path_kind",
+    "points_available", "points", "samples_omitted", "oldest_age_sec",
+    "newest_age_sec", "boots", "current_boot", "spans_reboot", "runtime",
+    "samples",
 }
 RUNTIME_KEYS = {
     "service_state", "service_enabled", "timer_state", "timer_enabled",
@@ -127,6 +127,13 @@ def pad_section(payload, target_bytes, *, key="webui", section="entries",
     return payload
 
 
+def ring_relpath(kind="state"):
+    for name, relpath in collector.HOST_METRICS_RING_CANDIDATES:
+        if name == kind:
+            return relpath / "ring.jsonl"
+    raise ValueError(kind)
+
+
 class HostMetricsFixture(unittest.TestCase):
 
     def setUp(self):
@@ -134,7 +141,7 @@ class HostMetricsFixture(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.home = Path(self._tmp.name) / "home"
         self.home.mkdir()
-        self.ring = self.home / RING_RELPATH
+        self.ring = self.home / ring_relpath()
         # The runtime probes read the host's systemd/journal; the projection
         # tests inject the fixed answer so they stay hermetic and fast.
         patcher = mock.patch.object(
@@ -768,6 +775,96 @@ class HostMetricsBudgetTests(HostMetricsFixture):
         self.assertNotIn("host_metrics", payload)
 
 
+class RingCandidateTests(HostMetricsFixture):
+    """The ring lives at the first writable candidate, not one fixed path.
+
+    On the production VM ``~/.local/state/docich`` is root-owned, so the
+    sampler cannot create the first candidate and falls back; the reader must
+    find it wherever it landed and say which one (``ring_path_kind``).
+    """
+
+    def test_the_first_candidate_reports_its_kind(self):
+        output = self.project(self.fresh_records())
+        self.assertEqual(output["ring_path_kind"], "state")
+
+    def write_ring_at(self, kind, records):
+        path = self.home / ring_relpath(kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "".join(json.dumps(record, sort_keys=True) + "\n"
+                       for record in records)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_the_reader_finds_a_ring_in_the_share_candidate(self):
+        # Simulate the production layout: the state candidate was never
+        # created (its parent is root-owned) and the sampler fell back.
+        self.write_ring_at("share", self.fresh_records())
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "share")
+        self.assertEqual(output["points"], collector.SAMPLES_MAX)
+        self.assertFalse((self.home / ring_relpath("state")).exists())
+
+    def test_the_reader_finds_a_ring_in_the_home_candidate(self):
+        self.write_ring_at("home", self.fresh_records())
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "home")
+        self.assertEqual(output["points"], collector.SAMPLES_MAX)
+
+    def test_a_dead_first_candidate_does_not_hide_a_live_ring(self):
+        # The writer skips candidates it cannot use; the reader must too, or
+        # an unreadable first candidate would report "no evidence" while the
+        # live ring exists further down the list.
+        self.write_ring_at("share", self.fresh_records())
+        blocked = self.home / ring_relpath("state")
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_bytes(b"old ring that cannot be read")
+        os.chmod(blocked, 0o000)
+        self.addCleanup(os.chmod, blocked, 0o600)
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "share")
+        self.assertEqual(output["points"], collector.SAMPLES_MAX)
+
+    def test_a_non_regular_first_candidate_does_not_hide_a_live_ring(self):
+        self.write_ring_at("share", self.fresh_records())
+        impostor = self.home / ring_relpath("state")
+        impostor.parent.mkdir(parents=True, exist_ok=True)
+        impostor.mkdir()
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "ok")
+        self.assertEqual(output["ring_path_kind"], "share")
+
+    def test_refusals_everywhere_are_reported_as_unreadable(self):
+        blocked = self.home / ring_relpath("state")
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_bytes(b"")
+        os.chmod(blocked, 0o000)
+        self.addCleanup(os.chmod, blocked, 0o600)
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "unreadable")
+        self.assertIsNone(output["ring_path_kind"])
+
+    def test_an_invalid_ring_still_names_its_candidate(self):
+        records = self.fresh_records()
+        body = "".join(json.dumps(record, sort_keys=True) + "\n"
+                      for record in records)
+        self.ring.parent.mkdir(parents=True, exist_ok=True)
+        # Bigger than the sampler's own bound: compaction has failed.
+        self.ring.write_text("x" * (collector.MAX_BYTES + 1) + body,
+                             encoding="utf-8")
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "invalid")
+        self.assertEqual(output["ring_path_kind"], "state")
+
+    def test_no_ring_anywhere_is_absent_with_no_kind(self):
+        output = collector._collect_host_metrics(self.home, NOW)
+        self.assertEqual(output["status"], "absent")
+        self.assertIsNone(output["ring_path_kind"])
+        self.assertEqual(output["ring_bytes"], 0)
+
+
 class RebootBoundaryTests(HostMetricsFixture):
     """The pre-hang point must survive a long-delayed post-reboot diagnostics.
 
@@ -880,7 +977,10 @@ class RuntimeHealthTests(unittest.TestCase):
         self.assertIsNone(runtime["timer_enabled"])
 
     def test_show_properties_project_the_last_exit_classification(self):
-        show = ("exit-code\n1\n2\n0\n")
+        # Deliberately in systemd's own order, not the -p order: the value-only
+        # form mislabeled the exit status for two deploy cycles (#2578).
+        show = ("Result=exit-code\nNRestarts=0\nExecMainCode=1\n"
+                "ExecMainStatus=2\n")
         answers = {
             ("show", collector.HOST_METRICS_SERVICE_UNIT): (0, show),
         }
@@ -894,7 +994,7 @@ class RuntimeHealthTests(unittest.TestCase):
 
     def test_show_garbage_never_invents_a_result(self):
         answers = {
-            ("show", collector.HOST_METRICS_SERVICE_UNIT): (0, "weird\nx\ny\nz\n"),
+            ("show", collector.HOST_METRICS_SERVICE_UNIT): (0, "weird=1\nx=2\n"),
         }
         with mock.patch.object(collector, "_systemctl_user",
                                side_effect=self.systemctl_answers(answers)):
@@ -1058,12 +1158,17 @@ class ConstantParityTests(unittest.TestCase):
                 getattr(collector, name), getattr(sampler, name),
                 f"{name} drifted from the sampler contract")
 
-    def test_collector_reads_the_path_the_sampler_writes(self):
+    def test_collector_reads_the_candidates_the_sampler_writes(self):
         sampler = load_module("host_metrics_sampler_path_tested", SAMPLER)
         home = Path("/home/ubuntu")
         self.assertEqual(
-            sampler.state_root(home) / sampler.RING_NAME,
-            home / collector.HOST_METRICS_RING_RELPATH,
+            collector.HOST_METRICS_RING_CANDIDATES,
+            tuple((kind, path.relative_to(home))
+                  for kind, path in sampler.state_candidates(home)),
+        )
+        self.assertEqual(
+            tuple(kind for kind, _ in collector.HOST_METRICS_RING_CANDIDATES),
+            tuple(kind for kind, _path in sampler.STATE_CANDIDATES),
         )
 
     def test_diagnostics_only_constants_derive_from_the_shared_interval(self):

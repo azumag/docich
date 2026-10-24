@@ -18,8 +18,16 @@ permissions, no root cause claim for 2026-10-15.
 
 ## Paths
 
-- State root: `home/.local/state/docich/host-metrics/` where `home` is the
-  runtime user's home directory (`/home/ubuntu` in production).
+- Ring candidates, in the reviewed order: `home/.local/state/docich/host-metrics/`,
+  `home/.local/share/docich/host-metrics/`, then `home/docich-host-metrics/`,
+  where `home` is the runtime user's home directory (`/home/ubuntu` in
+  production). The writer uses the candidate that already holds the ring, else
+  the first one it can create; the reader checks them in the same order and
+  reports which one it read as `ring_path_kind` (`state`/`share`/`home`).
+  Why: on the production VM, `~/.local/state` and its `docich` child are
+  root-owned (created by a root-time `install -d` in the gateway/canary
+  installers), so the unprivileged sampler cannot create anything below the
+  first candidate and falls back to the ubuntu-owned `~/.local/share` tree.
 - Ring file: `<state root>/ring.jsonl`, mode `0600`, directory mode `0700`.
 - Never under the program `state_dir`, never on tmpfs, never under
   `soren/tmp` (both are cleaned and are not reboot-persistent evidence).
@@ -158,6 +166,8 @@ under 8 KiB by a regression test.
   because compaction did not run), `stale` (newest record older than
   `STALE_SEC = 3 * INTERVAL_SEC`), else `ok`. A transient sampler failure
   therefore shows as `stale`, never as an invented healthy value.
+- `ring_path_kind`: which fixed candidate was read (`state`/`share`/`home`,
+  null when no ring exists anywhere); the path itself is never published.
 - `ring_bytes`: bytes actually read from the ring (0 when absent/refused,
   `<= max_bytes` otherwise), so the fixed on-disk size is observable.
 - `points` is the projected count (`<= SAMPLES_MAX + 2` because of the boot
