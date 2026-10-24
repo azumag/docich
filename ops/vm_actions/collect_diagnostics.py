@@ -5830,7 +5830,26 @@ def _project_corner_state(data):
     }
 
 
-def _project_soren91_corner(data):
+_PRESENTATION_FAILURE_STATUSES = frozenset({"viewer_timeout", "viewer_exited"})
+
+
+def _read_presentation_failure(path):
+    """Read and validate a presentation_failure.json file (read-only)."""
+    try:
+        if path is None or not path.is_file() or path.is_symlink():
+            return None
+        if path.stat().st_size > 4096:
+            return None
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _project_soren91_corner(data, state_dir=None, presentation_failure=None):
     """Meriken/soren91 corner lifecycle plus why its last switch ended.
 
     The corner keeps the propagated switch error in its own state file. That
@@ -5839,13 +5858,69 @@ def _project_soren91_corner(data):
     "failed" and has to reproduce the failure to learn the cause (docich#1221).
     ``switch_status`` stays a fixed enum; the recorded switch error code is a
     bounded token and the detail is redacted and length-capped.
+
+    When the corner is in the interrupted-before-active path (docich#2658) the
+    corner state carries no switch error, so the last switch failure is also
+    projected from ``presentation_failure.json`` (runtime dir) and/or an
+    embedded ``presentation_failure`` dict. Only fixed keys are emitted; unknown
+    values become null. Free text, paths and request ids are never exposed.
     """
     entry = _project_corner_state(data)
-    status = data.get("switch_status")
+    status = data.get("switch_status") if isinstance(data, dict) else None
     entry["switch_status"] = (
         status if isinstance(status, str) and status in SWITCH_STATUSES else None
     )
-    entry["switch_error_code"] = _bounded_str(data.get("last_error_code"), 64)
+    entry["switch_error_code"] = _bounded_str(
+        data.get("last_error_code") if isinstance(data, dict) else None, 64
+    )
+
+    # Resolve presentation_failure data from (in order): explicit arg, embedded
+    # in data, or the runtime/state directory on disk.
+    pf = presentation_failure
+    if pf is None and isinstance(data, dict):
+        pf = data.get("presentation_failure")
+    if pf is None and state_dir is not None:
+        state_dir = Path(state_dir)
+        for candidate in (
+            state_dir.parent.parent / "presentation_failure.json",
+            state_dir / "presentation_failure.json",
+        ):
+            pf = _read_presentation_failure(candidate)
+            if pf is not None:
+                break
+
+    if not isinstance(pf, dict):
+        pf = {}
+
+    pf_status = pf.get("status")
+    entry["presentation_failure"] = {
+        "status": (
+            pf_status if isinstance(pf_status, str)
+            and pf_status in _PRESENTATION_FAILURE_STATUSES else None
+        ),
+        "reason": (
+            _bounded_str(pf.get("reason"), 200)
+            if isinstance(pf.get("reason"), str) else None
+        ),
+        "viewer_wait_sec": (
+            pf.get("viewer_wait_sec")
+            if (isinstance(pf.get("viewer_wait_sec"), int)
+                and not isinstance(pf.get("viewer_wait_sec"), bool)
+                and pf.get("viewer_wait_sec") > 0) else None
+        ),
+        "elapsed_s": _finite_number(pf.get("elapsed_s")),
+        "viewer_exit_code": (
+            pf.get("viewer_exit_code")
+            if (isinstance(pf.get("viewer_exit_code"), int)
+                and not isinstance(pf.get("viewer_exit_code"), bool)) else None
+        ),
+    }
+    # Flat aliases for callers that expect top-level keys.
+    entry["presentation_failure_status"] = entry["presentation_failure"]["status"]
+    entry["presentation_failure_reason"] = entry["presentation_failure"]["reason"]
+    entry["presentation_failure_viewer_wait_sec"] = entry["presentation_failure"]["viewer_wait_sec"]
+    entry["presentation_failure_elapsed_s"] = entry["presentation_failure"]["elapsed_s"]
+    entry["presentation_failure_viewer_exit_code"] = entry["presentation_failure"]["viewer_exit_code"]
     return entry
 
 
@@ -6673,7 +6748,7 @@ def _collect_corner_files(state_dir, payload, now):
         entry = {"present": present, "readable": readable}
         if readable:
             if name == "soren91_corner":
-                entry.update(_project_soren91_corner(data))
+                entry.update(_project_soren91_corner(data, state_dir=state_dir))
             elif name == "tsuitate_corner":
                 entry.update(_project_tsuitate_corner(data))
             else:
