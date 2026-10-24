@@ -172,8 +172,17 @@ def _same_state_file(left, right):
     """Return True only when both paths name the same existing state file."""
     try:
         return os.path.samefile(left, right)
-    except (OSError, TypeError, ValueError):
-        return False
+    except OSError:
+        # A released corner's own state file may already be gone (the corner
+        # never wrote it, or cleanup removed it). Fall back to a normalized
+        # path comparison so a stale registry row that names that same path
+        # can still be retired instead of livelocking the shared slot.
+        try:
+            return str(Path(left).expanduser().resolve()) == str(
+                Path(right).expanduser().resolve()
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
 
 
 def release_program_owner(g, owner_state):
