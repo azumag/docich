@@ -46,14 +46,15 @@ RUNTIME_KEYS = {
     "service_result", "service_exec_code", "service_exec_status",
     "service_n_restarts", "journal",
 }
-JOURNAL_KEYS = {"readable", "lines", "newest_age_sec", "signature"}
+JOURNAL_KEYS = {"readable", "lines", "newest_age_sec", "signature",
+                "refused_record_bytes"}
 FIXED_RUNTIME = {
     "service_state": "failed", "service_enabled": False,
     "timer_state": "active", "timer_enabled": True,
     "service_result": "exit-code", "service_exec_code": 1,
     "service_exec_status": 2, "service_n_restarts": 0,
     "journal": {"readable": True, "lines": 4, "newest_age_sec": 30,
-                "signature": "python_traceback"},
+                "signature": "python_traceback", "refused_record_bytes": None},
 }
 SAMPLE_KEYS = {
     "age_sec", "boot", "t", "uptime_s", "load1", "load5", "load15",
@@ -992,18 +993,48 @@ class RuntimeHealthTests(unittest.TestCase):
         # the probe must be injected too or the test is not hermetic.
         self.assertEqual(runtime["journal"]["readable"], False)
 
+    def test_sampler_refusal_is_classified_with_its_byte_count(self):
+        lines = [
+            f"{NOW - 62}.000000 host docich-host-metrics.service: "
+            "host_metrics: cannot write host metrics ring (record_bytes=531991)",
+            f"{NOW - 60}.000000 host systemd[1]: "
+            "docich-host-metrics.service: Main process exited, code=exited, status=1/FAILURE",
+        ]
+        completed = mock.Mock(returncode=0, stdout="\n".join(lines) + "\n")
+        with mock.patch.object(collector.subprocess, "run",
+                               return_value=completed):
+            journal = collector._host_metrics_runtime_journal(NOW)
+        # The refusal outranks the plain exit; the byte count is the only part
+        # of the journal line that leaves the collector.
+        self.assertEqual(journal["signature"], "sampler_refused")
+        self.assertEqual(journal["refused_record_bytes"], 531991)
+
+    def test_a_plain_exit_has_no_refused_byte_count(self):
+        lines = [
+            f"{NOW - 60}.000000 host systemd[1]: "
+            "docich-host-metrics.service: Main process exited, code=exited, status=1/FAILURE",
+        ]
+        completed = mock.Mock(returncode=0, stdout="\n".join(lines) + "\n")
+        with mock.patch.object(collector.subprocess, "run",
+                               return_value=completed):
+            journal = collector._host_metrics_runtime_journal(NOW)
+        self.assertEqual(journal["signature"], "exited")
+        self.assertIsNone(journal["refused_record_bytes"])
+
     def test_unreadable_journal_is_fixed_shape_and_not_healthy(self):
         completed = mock.Mock(returncode=1, stdout="")
         with mock.patch.object(collector.subprocess, "run",
                               return_value=completed):
             journal = collector._host_metrics_runtime_journal(NOW)
         self.assertEqual(journal, {"readable": False, "lines": 0,
-                                   "newest_age_sec": None, "signature": None})
+                                   "newest_age_sec": None, "signature": None,
+                                   "refused_record_bytes": None})
         with mock.patch.object(collector.subprocess, "run",
                                side_effect=OSError("no journalctl")):
             journal = collector._host_metrics_runtime_journal(NOW)
         self.assertEqual(journal, {"readable": False, "lines": 0,
-                                   "newest_age_sec": None, "signature": None})
+                                   "newest_age_sec": None, "signature": None,
+                                   "refused_record_bytes": None})
 
 
 class ConstantParityTests(unittest.TestCase):

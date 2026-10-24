@@ -992,9 +992,12 @@ HOST_METRICS_RESULT_ENUMS = (
 )
 # Fixed journal classification, worst-first. Only the enum leaves; a run that
 # finished normally therefore reads "finished" only when nothing worse matched.
+# ``sampler_refused`` is the sampler's own bounded refusal line (its record
+# could not fit the ring's line bound); the byte count it carries is parsed
+# into ``refused_record_bytes`` and the journal text itself never leaves.
 HOST_METRICS_JOURNAL_SIGNATURES = (
-    "oom", "timeout", "python_traceback", "exited", "finished", "starting",
-    "other",
+    "oom", "timeout", "python_traceback", "sampler_refused", "exited",
+    "finished", "starting", "other",
 )
 
 
@@ -1056,7 +1059,7 @@ def _host_metrics_runtime_properties():
 def _host_metrics_runtime_journal(now):
     """Classify the bounded unit journal into one fixed enum; no text leaves."""
     out = {"readable": False, "lines": 0, "newest_age_sec": None,
-           "signature": None}
+           "signature": None, "refused_record_bytes": None}
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
     try:
         proc = subprocess.run(
@@ -1093,6 +1096,11 @@ def _host_metrics_runtime_journal(now):
             signature = "timeout"
         elif "traceback (most recent call last)" in lower:
             signature = "python_traceback"
+        elif "cannot write host metrics ring" in lower:
+            signature = "sampler_refused"
+            match = re.search(r"record_bytes=(\d{1,20})", line)
+            if match is not None:
+                out["refused_record_bytes"] = int(match.group(1))
         elif "main process exited" in lower or "failed with" in lower:
             signature = "exited"
         elif "finished " in lower:

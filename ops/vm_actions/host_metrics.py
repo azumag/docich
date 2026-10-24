@@ -10,6 +10,11 @@ Contract (``ops/vm_actions/host_metrics_contract.md`` is authoritative):
   - ``INTERVAL_SEC = 60`` (timer ``OnCalendar=*:*:00``, ``AccuracySec=1s``),
     ``MAX_POINTS = 240`` (4 hours of history), ``MAX_BYTES = 256 KiB``,
     ``COMPACT_KEEP = 200``, ``MAX_LINE_BYTES = 4096``.
+  - Every numeric source has a ceiling (``MAX_COUNTER = 1e18`` and at most
+    24 ASCII digits, uptime ``1e10`` s, load/PSI ``1e6``): a token no healthy
+    kernel produces reads as ``null`` instead of a poisoned integer, because
+    a giant value would build a record that cannot fit ``MAX_LINE_BYTES``
+    (the failure mode of the first production deploy).
   - Ring file ``<home>/.local/state/docich/host-metrics/ring.jsonl``, file mode
     ``0600``, directory mode ``0700``; ``<home>`` is the runtime user's passwd
     entry, never ``$HOME`` (the gateway exec channel may scrub it). One compact,
@@ -204,13 +209,37 @@ def _read_text(path, limit):
         return None
 
 
-def _parse_float(text):
-    """Parse a finite float, or return None (no NaN/inf reaches the ring)."""
+#: Realistic ceilings for the counters this sampler reads. A token beyond them
+#: is not a counter any healthy kernel produces (a 25+ digit run in
+#: /proc/meminfo, /proc/stat or /proc/diskstats), and projecting it would build
+#: a record that cannot fit the ring's bounded line -- the exact failure the
+#: first production deploy hit (#2578). Such a source reads as null, never as
+#: a poisoned number.
+MAX_COUNTER_DIGITS = 24
+MAX_COUNTER = 10 ** 18
+MAX_UPTIME_SEC = 10 ** 10
+MAX_LOAD = 10 ** 6
+
+
+def _parse_count(text):
+    """Parse a non-negative counter, or None when it is implausibly large."""
+    if not isinstance(text, str) or not text.isascii() or not text.isdigit():
+        return None
+    if len(text) > MAX_COUNTER_DIGITS:
+        return None
+    value = int(text)
+    return value if value <= MAX_COUNTER else None
+
+
+def _parse_float(text, maximum=MAX_LOAD):
+    """Parse a finite float within a realistic ceiling, or return None."""
     try:
         value = float(text)
     except (TypeError, ValueError):
         return None
-    return value if math.isfinite(value) else None
+    if not math.isfinite(value) or not -maximum <= value <= maximum:
+        return None
+    return value
 
 
 def _round2(text):
@@ -241,13 +270,15 @@ def _read_cpu(proc_root):
         fields = line.split()
         if not fields or fields[0] != "cpu":
             continue
-        try:
-            values = [int(field) for field in fields[1:]]
-        except ValueError:
+        values = [_parse_count(field) for field in fields[1:]]
+        if any(value is None for value in values) or len(values) < 5:
             return None
-        if len(values) < 5:
+        total = sum(values)
+        # The sum inherits the same ceiling as its parts so a contrived
+        # /proc/stat cannot push the aggregate past what the reader accepts.
+        if total > MAX_COUNTER:
             return None
-        return [sum(values), values[3], values[4]]
+        return [total, values[3], values[4]]
     return None
 
 
@@ -267,10 +298,7 @@ def _read_meminfo(proc_root):
             continue
         fields = rest.split()
         if fields:
-            try:
-                result[name] = int(fields[0])
-            except ValueError:
-                result[name] = None
+            result[name] = _parse_count(fields[0])
     return result
 
 
@@ -309,7 +337,7 @@ def _read_uptime(proc_root):
     fields = text.split()
     if not fields:
         return None
-    value = _parse_float(fields[0])
+    value = _parse_float(fields[0], maximum=MAX_UPTIME_SEC)
     return None if value is None else int(value)
 
 
@@ -379,11 +407,8 @@ def _read_disk(proc_root, device):
         fields = line.split()
         if len(fields) < 5 or fields[2] != device:
             continue
-        try:
-            values = [int(field) for field in fields[3:]]
-        except ValueError:
-            return None, None
-        if len(values) < 11:
+        values = [_parse_count(field) for field in fields[3:]]
+        if any(value is None for value in values) or len(values) < 11:
             return None, None
         return [values[2], values[6]], [values[9], values[10]]
     return None, None
@@ -685,6 +710,8 @@ def append_sample(state_dir, record,
 
 _UNSUPPORTED_ARGUMENT = "host_metrics: unsupported argument\n"
 _CANNOT_WRITE = "host_metrics: cannot write host metrics ring\n"
+_CANNOT_WRITE_TOO_LONG = (
+    "host_metrics: cannot write host metrics ring (record_bytes=%d)\n")
 
 
 def main(argv=None):
@@ -718,7 +745,7 @@ def main(argv=None):
         sys.stderr.write(_CANNOT_WRITE)
         return 2
     if written == 0:
-        sys.stderr.write(_CANNOT_WRITE)
+        sys.stderr.write(_CANNOT_WRITE_TOO_LONG % len(_encode_record(record)))
         return 1
     return 0
 

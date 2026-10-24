@@ -60,6 +60,13 @@ never corrupt the ring, nor glue the next record to a partial line.
   `0 .. now+86400`. Every other field is nullable: a missing/unreadable source
   is recorded as `null` and the point is still evidence (degraded VM). The
   reader projects null and never guesses 0/healthy.
+- Numeric sources have ceilings (`MAX_COUNTER` = 1e18, uptime 1e10 s,
+  load/PSI 1e6): a token no healthy kernel produces reads as `null` instead of
+  a poisoned integer, because a giant value would build a record that cannot
+  fit the bounded line -- the failure mode of the first production deploy. On
+  such a refusal the sampler exits 1 and writes
+  `cannot write host metrics ring (record_bytes=N)` to the journal; the
+  collector projects the parsed `N` as `journal.refused_record_bytes`.
 - `v`: schema version, currently `1`. Unknown versions are ignored by the
   reader (never guessed at).
 - `t`: epoch seconds at sample time (integer).
