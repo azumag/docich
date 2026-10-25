@@ -111,6 +111,14 @@ predicate は `nethack_canary_tactics` と同じ判定関数を使うため、po
 
 現行 proposer は新規 id の汎用 `keys` effect を拒否します。この例は **PR でレビューする catalog 追加**であり、任意 literal key の自動生成を許可する変更ではありません。レビュー済み search を disabled にした baseline から、proposer が enabled に戻す data-only 候補を生成し、policy → trace 検証 → 昇格判定へ渡せます。ローカルテストの合成 frame・outcome による経路確認と、実ゲームでの効果測定は別です。
 
+## 標準コマンドの追加（#2745, 段階1）
+
+`pick_up_item`（priority 55、`effect=keys`、`key_pattern=[","]`）は、message が `You see here` の単一 object を示し、`prompt:none` のときだけ `,` を送ります。複数 object の pile（`There are several objects here.`）や blocking prompt では成立せず、従来どおり base policy へ委譲します。
+
+残りの標準コマンド（pray / 階段の上り / 装備・読む・杖・投げる・蹴る 等）は、item letter・方向・複数キー・足元の証拠のいずれかを要するため、新しい reviewed effect と predicate が必要です。これは後続の reviewed change として扱います。
+
+prompt の既定応答（yes_no→`n`、direction/selection/text/unknown→`ESC`）は catalog では扱いません。strategist 側の fallback（`default_prompt_answer`、#2746）が担い、catalog の policy は blocking prompt に対して LLM 委譲（`requires_llm`）を維持します。
+
 ## 単一 frame の検証境界
 
 **player の足元 glyph は `@` に隠れるため、「階段の上に立っている」という precondition は単一 frame から検証できません。** そこで `descend_stairs`（priority 84、`effect=keys`、`key_pattern=[">"]`）は、`explorer.memory` が同じ階で目視した `>` タイルに hero がいる場合だけ成立する `on_down_stairs` を precondition にします（#2666）。近傍に `>` が見えることと player がその上にいることは同じではありません。

@@ -68,6 +68,17 @@
       "postconditions": ["screen_changed"]
     },
     {
+      "id": "pick_up_item",
+      "priority": 55,
+      "enabled": true,
+      "risk_class": "item",
+      "effect": "keys",
+      "description": "Pick up the single visible object under the hero (',') when the message names exactly one object.",
+      "preconditions": ["prompt:none", "player_visible", "message_contains:you see here"],
+      "key_pattern": [","],
+      "postconditions": ["message_changed"]
+    },
+    {
       "id": "rest_impaired",
       "priority": 60,
       "enabled": true,

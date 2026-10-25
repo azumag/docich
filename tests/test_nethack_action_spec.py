@@ -59,6 +59,7 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "attack_adjacent",
         "open_door",
         "eat_food",
+        "pick_up_item",
         "rest_impaired",
         "rest_low_hp",
         "rest",
@@ -249,6 +250,25 @@ def test_keys_match_handles_placeholders():
     assert not keys_match(("{direction}",), ("x",))
     assert not keys_match(("o", "{direction}"), ("o", "5"))
     assert not keys_match((" ",), ("x",))
+
+
+def test_verify_pick_up_item():
+    before = frame("You see here a dagger.", ("....", ".@..", "...."))
+    after = frame("q - a dagger (weapon in hand).", ("....", ".@..", "...."))
+    spec = spec_by_id(load_action_catalog(CATALOG), "pick_up_item")
+    assert verify_action_spec(spec, before=before, after=after, keys=(",",)).status == STATUS_VERIFIED
+    # Wrong key.
+    assert verify_action_spec(spec, before=before, after=after, keys=("g",)).status == STATUS_KEYS
+    # Message did not change: nothing was picked up.
+    assert (
+        verify_action_spec(spec, before=before, after=before, keys=(",",)).status
+        == STATUS_POSTCONDITION
+    )
+    # No visible single object under the hero.
+    assert (
+        verify_action_spec(spec, before=after, after=after, keys=(",",)).status
+        == STATUS_PRECONDITION
+    )
 
 
 def test_verify_advance_message():
