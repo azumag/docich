@@ -720,6 +720,51 @@ class GatewayTests(unittest.TestCase):
         self.assertNotEqual(p.returncode,0)
         self.assertIn('rebaseline_not_ancestor',p.stderr.decode())
 
+    # docich#2681: a clean checkout whose HEAD moved out-of-band is
+    # auto-rebaselined inside the deploy when the HEAD is an ancestor of the
+    # requested reviewed commit (rebaseline_git's reviewed conditions).
+    def test_deploy_auto_rebaselines_clean_ancestor_head(self):
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','out-of-band'],check=True)
+        drift=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        cand=self.base/'auto-rebase-cand'
+        subprocess.run(['git','clone','-q',self.doc,cand],check=True)
+        subprocess.run(['git','-C',cand,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',cand,'config','user.name','T'],check=True)
+        (Path(cand)/'app.py').write_text('v3\n')
+        subprocess.run(['git','-C',cand,'add','app.py'],check=True)
+        subprocess.run(['git','-C',cand,'commit','-qm','reviewed'],check=True)
+        sha=subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+        bundle_path=self.base/'auto-rebase.bundle'
+        subprocess.run(['git','-C',cand,'bundle','create',bundle_path,'HEAD'],check=True)
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle_path.read_bytes()).returncode,0)
+        self._write_baseline(base)
+        p=self.call(f'deploy docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual(json.loads(p.stdout),{'status':'deployed','sha':sha,'rebaselined_from':base})
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],sha)
+        self.assertEqual(state['rebaseline_history'][-1],
+                         {'from':base,'to':drift,'target':sha,'auto':True})
+        self.assertEqual((self.doc/'app.py').read_text(),'v3\n')
+
+    # The 2026-10-23 incident shape: a local commit that never reached main is
+    # not an ancestor of the reviewed deploy target and must still fail closed,
+    # with the out-of-band HEAD preserved for diagnosis.
+    def test_deploy_auto_rebaseline_refuses_out_of_band_commit_not_on_main(self):
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','local gitlink bump'],check=True)
+        drift=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self._write_baseline(base)
+        p=self.call(f'deploy docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: tracked_vm_drift',p.stderr.decode())
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],base)
+        self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),drift)
+
 
     def test_preview_deploy_and_exec(self):
         sha,bundle=self.make_docich_bundle()

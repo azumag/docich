@@ -853,12 +853,20 @@ def deploy_git(cfg,repo,sha):
     if state.get('deployment_intent'): raise ValueError('deployment recovery required')
     _verify_managed_projections(cfg,repo,state)
     old=state.get('sha')
-    if not SHA_RE.fullmatch(old or '') or git(root,'rev-parse','HEAD')!=old or not git_clean(root):
+    # #2681: a checkout that is not tracked-clean is unknown drift and stays
+    # fail-closed. A clean checkout whose HEAD moved away from the recorded
+    # baseline is resolved inside the transaction below: the deploy
+    # auto-rebaselines when that HEAD is an ancestor of the requested reviewed
+    # commit (rebaseline_git's reviewed conditions) and refuses otherwise.
+    if not SHA_RE.fullmatch(old or '') or not git_clean(root):
         raise ValueError('tracked VM drift detected')
+    head=git(root,'rev-parse','HEAD')
+    if not SHA_RE.fullmatch(head): raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
     projection_plans=[]
     applied=[]
     intent_written=False
+    rebaselined_from=None
     try:
         # The parent fetch must succeed and must not recurse. git's default
         # on-demand recursion resolves every gitlink reachable in the incoming
@@ -875,6 +883,23 @@ def deploy_git(cfg,repo,sha):
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
+        if head!=old:
+            # Safe auto-rebaseline (#2681): the baseline advanced out-of-band
+            # (#377 class) but the checkout is tracked-clean and its HEAD is an
+            # ancestor of the requested reviewed commit, i.e. exactly the
+            # conditions of the reviewed manual rebaseline_git recovery. An
+            # out-of-band commit that never reached main (the 2026-10-23
+            # docich#2681 incident) is not an ancestor and still fails closed.
+            _verify_ops_brief(cfg,repo,head)
+            ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
+                                    stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if ancestor.returncode!=0: raise ValueError('tracked VM drift detected')
+            history=(state.get('rebaseline_history') or [])[-9:]
+            history.append({'from':old,'to':head,'target':sha,'auto':True})
+            state={**state,'sha':head,'previous_head':old,'rebaseline_history':history}
+            write_json(state_path,state)
+            rebaselined_from=old
+            old=head
         write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
         intent_written=True
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
@@ -921,7 +946,11 @@ def deploy_git(cfg,repo,sha):
             try: _rollback_projection(changes)
             except Exception as error: rollback_errors.append(error)
         try:
-            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
+            # #2681: roll back to the pre-deploy production HEAD, not the
+            # recorded baseline. When the deploy refused an out-of-band HEAD,
+            # ``old`` may differ from ``head`` and resetting to ``old`` would
+            # overwrite unknown drift instead of preserving it for diagnosis.
+            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',head],
                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
             sync_owned_submodules(root)
         except Exception as error: rollback_errors.append(error)
@@ -933,7 +962,9 @@ def deploy_git(cfg,repo,sha):
         raise
     finally:
         _close_projection_plans(projection_plans)
-    return {'status':'deployed','sha':sha}
+    result={'status':'deployed','sha':sha}
+    if rebaselined_from is not None: result['rebaselined_from']=rebaselined_from
+    return result
 
 def deploy_prod(cfg,repo,sha):
     return deploy_git(cfg,repo,sha)
