@@ -141,7 +141,7 @@ predicate は `nethack_canary_tactics` と同じ判定関数を使うため、po
 
 段階2では、reviewed effect と predicate を追加して残りの標準コマンドを catalog に載せました。
 
-- 有効: `wield_weapon`（56）/ `wear_armor`（57）/ `quaff_potion`（58、HP 50% 以下）/ `ascend_stairs`（83）/ `kick_door`（81、`o` 失敗後 1 回）/ `severe_status_recovery` 以外の既存 action。
+- 有効: `wield_weapon`（56）/ `wear_armor`（57）/ `quaff_potion`（58、HP 50% 以下）/ `ascend_stairs`（83）/ `kick_door`（81、`o` 失敗後 1 回）。
 - 無効（reviewed だが既定では選ばれない）: `read_scroll`（64）/ `zap_wand`（66）/ `apply_tool`（67）/ `takeoff_armor`（68）/ `throw_item`（69）/ `close_door`（82）/ `severe_status_recovery`（5、pray）。
 - 無効理由: 未識別 scroll の効果、wand / tool の後続 direction、throw の item 損失、door close の目的不在、prayer timeout の不可視性。proposer が有効化する場合も catalog 差分としてレビューし、trace で効果を確認します。
 
