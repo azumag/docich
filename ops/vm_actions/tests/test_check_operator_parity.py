@@ -116,6 +116,9 @@ class ParityGateTests(unittest.TestCase):
         side = self.base / "side"
         side.mkdir()
         subprocess.run(["git", "clone", "-q", str(self.src), str(side)], check=True)
+        # CI runners do not provide a global git identity; set it explicitly.
+        git(side, "config", "user.email", "t@example.com")
+        git(side, "config", "user.name", "T")
         git(side, "checkout", "-q", "-b", "side", self.shas[0])
         (side / "f.txt").write_text("side\n")
         git(side, "add", "f.txt")
