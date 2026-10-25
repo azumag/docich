@@ -765,6 +765,58 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(state['sha'],base)
         self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),drift)
 
+    # docich#2681 review: a deploy that fails after the auto-rebaseline must
+    # roll production back to the out-of-band HEAD and keep the rebaselined
+    # baseline, so state.json and the checkout stay consistent for the next
+    # deploy attempt (baseline == HEAD, no deployment_intent).
+    def test_deploy_failure_after_auto_rebaseline_keeps_rebaselined_baseline(self):
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        (self.doc/'app.py').write_text('out-of-band\n')
+        subprocess.run(['git','-C',self.doc,'add','app.py'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','out-of-band'],check=True)
+        head=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        cand=self.base/'rollback-cand'
+        subprocess.run(['git','clone','-q',self.doc,cand],check=True)
+        subprocess.run(['git','-C',cand,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',cand,'config','user.name','T'],check=True)
+        (Path(cand)/'app.py').write_text('reviewed\n')
+        subprocess.run(['git','-C',cand,'add','app.py'],check=True)
+        subprocess.run(['git','-C',cand,'commit','-qm','reviewed'],check=True)
+        sha=subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+        bundle_path=self.base/'rollback.bundle'
+        subprocess.run(['git','-C',cand,'bundle','create',bundle_path,'HEAD'],check=True)
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle_path.read_bytes()).returncode,0)
+        self._write_baseline(base)
+        module=self._load_gateway()
+        def _induce(*args, **kwargs):
+            raise RuntimeError('induced projection failure')
+        module._plan_projections=_induce
+        import io
+        from contextlib import redirect_stderr
+        env=dict(os.environ)
+        env['SSH_ORIGINAL_COMMAND']=f'deploy docich production {sha}'
+        env['VMOPS_TESTING']='1'
+        old_argv, old_environ = sys.argv, dict(os.environ)
+        os.environ.clear(); os.environ.update(env)
+        sys.argv=['gateway.py',str(self.config)]
+        buf=io.StringIO(); code=None
+        try:
+            with redirect_stderr(buf):
+                module.main()
+        except SystemExit as exc:
+            code=exc.code
+        finally:
+            sys.argv=old_argv; os.environ.clear(); os.environ.update(old_environ)
+        self.assertEqual(code,1)
+        self.assertEqual(buf.getvalue(),'VM operation rejected: operation_rejected\n')
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],head)
+        self.assertNotIn('deployment_intent',state)
+        self.assertEqual(state['rebaseline_history'][-1],
+                         {'from':base,'to':head,'target':sha,'auto':True})
+        self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),head)
+        self.assertEqual((self.doc/'app.py').read_text(),'out-of-band\n')
+
 
     def test_preview_deploy_and_exec(self):
         sha,bundle=self.make_docich_bundle()
