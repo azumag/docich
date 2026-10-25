@@ -86,3 +86,34 @@ def food_item(
         if "tin" not in item.description.lower():
             return item
     return foods[0] if foods else None
+
+
+def category_item(
+    inventory: tuple[VisibleInventoryItem, ...],
+    category: str,
+    *,
+    equipped: bool | None = None,
+    unpaid_free: bool = True,
+) -> VisibleInventoryItem | None:
+    """Return the first visible, usable item of one coarse category.
+
+    The category hint is derived from visible words only, so this never
+    resolves an unidentified item's true identity.  ``equipped=None`` ignores
+    the equipped annotation; ``unpaid_free`` excludes shop goods the canary
+    must not use without paying.
+    """
+    for item in inventory:
+        if item.category_hint != category:
+            continue
+        if unpaid_free and item.unpaid:
+            continue
+        if equipped is not None and item.equipped is not equipped:
+            continue
+        return item
+    return None
+
+
+def equipped_item(
+    inventory: tuple[VisibleInventoryItem, ...], category: str
+) -> VisibleInventoryItem | None:
+    return category_item(inventory, category, equipped=True, unpaid_free=False)

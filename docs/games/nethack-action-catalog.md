@@ -22,7 +22,9 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 - `key_pattern`: 1文字キー、または `{direction}`（vi 8方向）/ `{item_letter}`（inventory letter）の placeholder。`effect` と整合すること（下表）。
 - `preconditions` / `postconditions`: 下記 predicate 名（`name` または `name:arg`）。
 
-`validate_action_catalog()` が schema と safety invariant（未知 predicate・未知 placeholder・未知 effect・effect/key_pattern 不整合・未レビュー risk_class・id 重複）を検査します。
+`validate_action_catalog()` が schema と safety invariant（未知 predicate・未知 placeholder・未知 effect・effect/key_pattern 不整合・未レビュー risk_class・id 重複・production denylist）を検査します。
+
+production denylist（`nethack_policy.PRODUCTION_DENIED_COMMANDS`、#2744）は catalog でも同じ正本を使います。`Q` / `S` / `!` / `F` / `X` の literal key と、`#quit` / `#save` / `#!` / `#wiz*` を文字単位で綴った extended command は `validate_action_catalog()` が拒否します。catalog は data なので、denylist を迂回する新しい key capability を追加できません。
 
 ## effect 語彙（P6g）
 
@@ -34,6 +36,19 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 | `eat_item` | `("e", inventory の unpaid-free food の letter)` を送出 | `["e", "{item_letter}"]` |
 | `explore_step` | `{direction}` を `explorer.plan_step` の方向に解決 | `["{direction}"]` |
 | `directional_travel` | `explore_step` と同じだが direction prompt 中でも許容 | `["{direction}"]` |
+| `apply_item` | 可視 unpaid-free tool の letter で `("a", letter)` | `["a", "{item_letter}"]` |
+| `read_item` | 可視 unpaid-free scroll の letter で `("r", letter)` | `["r", "{item_letter}"]` |
+| `quaff_item` | 可視 unpaid-free potion の letter で `("q", letter)` | `["q", "{item_letter}"]` |
+| `zap_wand` | 可視 unpaid-free wand の letter で `("z", letter)` | `["z", "{item_letter}"]` |
+| `throw_item` | 予備 weapon を隣接する攻撃可能 monster 方向へ `("t", letter, direction)` | `["t", "{item_letter}", "{direction}"]` |
+| `wear_item` | 可視 unpaid-free armor の letter で `("W", letter)` | `["W", "{item_letter}"]` |
+| `wield_item` | 可視 unpaid-free weapon の letter で `("w", letter)` | `["w", "{item_letter}"]` |
+| `takeoff_item` | 装備中の armor の letter で `("T", letter)` | `["T", "{item_letter}"]` |
+| `close_door` | `explorer.memory` が閉扉として目視した隣接 tile が開いている時だけ `("c", direction)` | `["c", "{direction}"]` |
+| `kick_door` | `o` が失敗した閉扉を一度だけ `("^D", direction)`（`failed_kicks` で再試行しない） | `["\u0004", "{direction}"]` |
+| `pray` | `("#", "p", "r", "a", "y", CR)`。CR で extended command prompt を閉じる | `["#", "p", "r", "a", "y", "\r"]` |
+
+`pray` の CR はゲームが開いた extended command prompt を自分で閉じるためのキーであり、未知の game prompt への回答ではありません。
 
 `keys` は任意の1文字 literal を表せるため、これを proposer の新 action id に許すと、reviewed effect という境界を越えて任意キー capability を生成できてしまいます。そのため **新しい literal-key action（例: `>` で階段を降りる）を追加する場合は、reviewed catalog/code change として明示的にレビュー**します。自動 proposer が追加できるのは、`attack_direction` など固定された `key_pattern` 契約を持つ effect の再利用だけです。
 
@@ -67,10 +82,19 @@ hp_ratio_at_most:<float>
 player_visible / player_absent
 adjacent_attackable / no_adjacent_attackable
 adjacent_closed_door
+adjacent_kickable_door
+adjacent_open_door
 inventory_food
+inventory_tool / inventory_readable / inventory_potion / inventory_wand
+inventory_wieldable / inventory_throwable / inventory_wearable / inventory_worn
+no_equipped_weapon / no_equipped_armor
 safe_step / no_safe_step
-on_down_stairs
+on_down_stairs / on_up_stairs
 ```
+
+`adjacent_kickable_door` は「`o` を試して失敗した閉扉（`failed_doors`）で、まだ kick していない（`failed_kicks`）」場合だけ True です。`adjacent_open_door` は `explorer.memory` が過去に `+` として目視した tile が現在開いている場合だけ True で、壁と共有する `-` / `|` glyph を扉と誤認しません。
+
+inventory 系 predicate は可視 description の coarse category（`tool` / `scroll` / `potion` / `wand` / `weapon` / `armor`）だけを使い、未識別 item の正体を解決しません。`unpaid` の item は使用対象外です（装備解除だけは装備中の item を対象にします）。
 
 `no_safe_step` は `explorer.plan_step(replace(obs, prompt="none")) is None` のとき True です。`safe_step` と対称で、direction prompt は評価時だけ `none` に置き換えます。policy と trace verifier は同じ `precondition()` を呼び、既存 explorer の判定を再利用します。player や dungeon level が不明な場合も planner は None を返すため、search は別途 `player_visible` と `prompt:none` を要求します。
 
@@ -111,11 +135,17 @@ predicate は `nethack_canary_tactics` と同じ判定関数を使うため、po
 
 現行 proposer は新規 id の汎用 `keys` effect を拒否します。この例は **PR でレビューする catalog 追加**であり、任意 literal key の自動生成を許可する変更ではありません。レビュー済み search を disabled にした baseline から、proposer が enabled に戻す data-only 候補を生成し、policy → trace 検証 → 昇格判定へ渡せます。ローカルテストの合成 frame・outcome による経路確認と、実ゲームでの効果測定は別です。
 
-## 標準コマンドの追加（#2745, 段階1）
+## 標準コマンドの追加（#2745）
 
-`pick_up_item`（priority 55、`effect=keys`、`key_pattern=[","]`）は、message が `You see here` の単一 object を示し、`prompt:none` のときだけ `,` を送ります。複数 object の pile（`There are several objects here.`）や blocking prompt では成立せず、従来どおり base policy へ委譲します。
+段階1（#2784）で `pick_up_item`（priority 55、`effect=keys`、`key_pattern=[","]`）を追加しました。message が `You see here` の単一 object を示し、`prompt:none` のときだけ `,` を送ります。複数 object の pile や blocking prompt では成立しません。
 
-残りの標準コマンド（pray / 階段の上り / 装備・読む・杖・投げる・蹴る 等）は、item letter・方向・複数キー・足元の証拠のいずれかを要するため、新しい reviewed effect と predicate が必要です。これは後続の reviewed change として扱います。
+段階2では、reviewed effect と predicate を追加して残りの標準コマンドを catalog に載せました。
+
+- 有効: `wield_weapon`（56）/ `wear_armor`（57）/ `quaff_potion`（58、HP 50% 以下）/ `ascend_stairs`（83）/ `kick_door`（81、`o` 失敗後 1 回）。
+- 無効（reviewed だが既定では選ばれない）: `read_scroll`（64）/ `zap_wand`（66）/ `apply_tool`（67）/ `takeoff_armor`（68）/ `throw_item`（69）/ `close_door`（82）/ `severe_status_recovery`（5、pray）。
+- 無効理由: 未識別 scroll の効果、wand / tool の後続 direction、throw の item 損失、door close の目的不在、prayer timeout の不可視性。proposer が有効化する場合も catalog 差分としてレビューし、trace で効果を確認します。
+
+`kick_door` は `^D`（`"\u0004"`）+ 方向です。`o` が失敗した扉だけを対象にし、kick 後も `failed_kicks` に記録して再試行しません（lock ループ防止）。`ascend_stairs` は `descend_stairs` と同じく、`explorer.memory` が目視した `<` の上に hero がいる場合だけ成立します。
 
 prompt の既定応答（yes_no→`n`、direction/selection/text/unknown→`ESC`）は catalog では扱いません。strategist 側の fallback（`default_prompt_answer`、#2746）が担い、catalog の policy は blocking prompt に対して LLM 委譲（`requires_llm`）を維持します。
 
@@ -150,7 +180,7 @@ canary worker に `DOCICH_CANARY_ACTION_TRACE=1` を渡すと、適用した各 
 {"intent": "attack_adjacent", "keys": ["l"], "before": "<frame>", "after": "<frame>"}
 ```
 
-`eat_food` の行には probe した `inventory` も含みます。tracing は best-effort で、失敗しても episode は継続します。
+`inventory` を probe した行には、その時点の可視 inventory も含みます。item letter を使う action（`eat_item` など）の trace は、記録された inventory に letter が無いと `precondition_not_met` になります（letter を捏造できない）。tracing は best-effort で、失敗しても episode は継続します。
 
 環境変数は `run_container_worker(..., extra_env={"DOCICH_CANARY_ACTION_TRACE": "1"})` でコンテナへ渡します。`_extra_env_args()` が名前・値・予約 env（`HOME`/`TERM`/`PYTHONDONTWRITEBYTECODE`/`PATH`）を検証します。
 

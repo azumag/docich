@@ -162,3 +162,98 @@ def test_rejected_proposal_never_reaches_canary_keys():
     plan = canary_execution_plan(request(), evaluation, current_observation=observation())
     assert plan.allowed is False
     assert plan.keys == ()
+
+
+def test_scroll_and_jewellery_use_their_visible_commands():
+    obs = observation()
+    scroll = item("a", "scroll")
+    ring = item("b", "ring")
+
+    read = canary_execution_plan(
+        request(inventory=(scroll,)),
+        approved("use", letter="a"),
+        current_observation=obs,
+        current_inventory=(scroll,),
+    )
+    assert values(read) == [("literal", "r"), ("literal", "a")]
+
+    put_on = canary_execution_plan(
+        request(inventory=(ring,)),
+        approved("equip", letter="b"),
+        current_observation=obs,
+        current_inventory=(ring,),
+    )
+    assert values(put_on) == [("literal", "P"), ("literal", "b")]
+
+
+def test_pray_needs_a_visible_severe_status_and_a_clean_frame():
+    sick = normalize_tty(
+        "You feel very sick.\n..@.....\n..#.....\n"
+        "Dlvl:3 HP:2(10) Pw:7(10) AC:2 Exp:4 Sick\nT:123\n",
+        cols=80,
+        rows=5,
+    )
+    plan = canary_execution_plan(request(intent="status_emergency"), approved("pray"), current_observation=sick)
+    assert plan.allowed is True
+    assert values(plan) == [
+        ("literal", "#"),
+        ("literal", "p"),
+        ("literal", "r"),
+        ("literal", "a"),
+        ("literal", "y"),
+        ("special", "Enter"),
+    ]
+
+    healthy = observation()
+    refused = canary_execution_plan(
+        request(intent="status_emergency"), approved("pray"), current_observation=healthy
+    )
+    assert refused.allowed is False
+    assert refused.keys == ()
+
+
+def test_stairs_use_remembered_tiles_only():
+    from docich.nethack_exploration import NethackExplorer
+
+    obs = observation()
+    assert obs.player is not None
+    pos = obs.player
+
+    down = NethackExplorer()
+    down.memory.level(3).down_stairs.add(pos)
+    plan = canary_execution_plan(
+        request(intent="stairs_decision"),
+        approved("descend"),
+        current_observation=obs,
+        explorer=down,
+    )
+    assert values(plan) == [("literal", ">")]
+
+    up = NethackExplorer()
+    up.memory.level(3).up_stairs.add(pos)
+    plan = canary_execution_plan(
+        request(intent="stairs_decision"),
+        approved("ascend"),
+        current_observation=obs,
+        explorer=up,
+    )
+    assert values(plan) == [("literal", "<")]
+
+    # Remembered on another level: the fresh frame is not on the staircase.
+    elsewhere = NethackExplorer()
+    elsewhere.memory.level(1).up_stairs.add(pos)
+    refused = canary_execution_plan(
+        request(intent="stairs_decision"),
+        approved("ascend"),
+        current_observation=obs,
+        explorer=elsewhere,
+    )
+    assert refused.allowed is False
+
+    move = canary_execution_plan(
+        request(intent="stairs_decision"),
+        approved("move_to_stairs"),
+        current_observation=obs,
+        explorer=up,
+    )
+    assert move.allowed is False

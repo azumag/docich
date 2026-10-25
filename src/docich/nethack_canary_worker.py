@@ -21,6 +21,7 @@ from .nethack_canary_rules import HUNGER_CONDITIONS
 from .nethack_inventory import VisibleInventoryItem, parse_visible_inventory
 from .nethack_observation import NethackObservation, normalize_tty
 from .nethack_canary_tactics import CanaryTacticalPolicy
+from .nethack_exploration import NethackExplorer
 from .nethack_policy import NethackLayeredPolicy, PolicyDecision, assert_p3b_safe
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
 from .nethack_strategist import ProposalEvaluation, evaluate_proposal
@@ -406,6 +407,7 @@ def _candidate_keys(
     raw_text: str,
     observation: NethackObservation,
     decision: PolicyDecision,
+    explorer: NethackExplorer | None = None,
 ) -> tuple[CanaryKey, ...]:
     inventory: tuple[VisibleInventoryItem, ...] = ()
     if observation.prompt == "none":
@@ -427,6 +429,7 @@ def _candidate_keys(
         evaluation,
         current_observation=observation,
         current_inventory=inventory,
+        explorer=explorer,
     )
     return plan.keys if plan.allowed else ()
 
@@ -502,14 +505,17 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     last_message=last_message,
                 )
             inventory: tuple[VisibleInventoryItem, ...] = ()
-            if (
-                baseline
-                and observation.prompt == "none"
-                and any(condition in HUNGER_CONDITIONS for condition in observation.conditions)
+            needs_food = (
+                any(condition in HUNGER_CONDITIONS for condition in observation.conditions)
                 and _eat_allowed(observation.vitals.turn, last_eat_turn)
-            ):
-                # Hunger is visible, so probe the inventory before deciding; the
-                # catalog's eat_food precondition then sees the food item.
+            )
+            hp_ratio = observation.vitals.hp_ratio
+            needs_potion = hp_ratio is not None and hp_ratio <= 0.5
+            if baseline and observation.prompt == "none" and (needs_food or needs_potion):
+                # Hunger and low HP are visible, so probe the inventory before
+                # deciding; the catalog's eat_food / quaff_potion preconditions
+                # then see the item.  Probing is a free inventory screen, not a
+                # game turn.
                 inventory = _probe_inventory(game)
                 raw_text = game.capture()
                 observation = normalize_tty(raw_text, cols=80, rows=24)
@@ -536,7 +542,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                         "before": trace_before,
                         "after": game.capture(),
                     }
-                    if decision.intent == "eat_food":
+                    if inventory:
                         trace_record["inventory"] = [item.public_dict() for item in inventory]
                     _append_trace(trace_path, trace_record)
             elif request["arm"] == "candidate" and decision.requires_llm and broker is not None:
@@ -548,7 +554,14 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     observation.message,
                 )
                 if fingerprint != last_candidate_fingerprint:
-                    keys = _candidate_keys(game, broker, raw_text, observation, decision)
+                    keys = _candidate_keys(
+                        game,
+                        broker,
+                        raw_text,
+                        observation,
+                        decision,
+                        getattr(policy, "explorer", None),
+                    )
                     last_candidate_fingerprint = fingerprint
                     for key in keys:
                         game.apply_key(key)
