@@ -177,7 +177,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
             layer="tactical",
             intent="attack",
             reason="bad regression",
-            actions=(Action(type="text", text="h"),),
+            actions=(Action(type="text", text="Q"),),
         )
         with self.assertRaises(RuntimeError):
             assert_p3b_safe(decision)

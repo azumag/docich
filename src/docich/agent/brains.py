@@ -224,8 +224,6 @@ class NethackPolicyBrain:
             return []
         self._unusable_streak = 0
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import assert_p3b_safe
-
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
         startup_before = dict(self.startup.__dict__)
         startup_actions = self.startup.consider(normalized)
@@ -244,8 +242,9 @@ class NethackPolicyBrain:
             return startup_actions
         self.progress.observe(normalized, self.policy.explorer)
         decision = self.policy.decide(normalized)
-        assert_p3b_safe(decision)
         self.last_decision = decision
+        from ..nethack_policy import assert_p3b_safe
+        assert_p3b_safe(decision)
         resolved = self.progress.resolve(decision, normalized, self.policy.explorer)
         if self.last_progress_decision is None or resolved.intent != self.last_progress_decision.intent:
             # Fixed policy enums only; this is a plan, not proof of actuation
