@@ -276,7 +276,7 @@ def test_view_handler_rejects_unsafe_runtime_ids_and_page_seconds():
             handler_for(make_payload(), "g4-view", page_seconds=bad)
 
 
-def test_doushi_program_view_is_registered_and_respects_the_game_viewport(tmp_path, monkeypatch):
+def test_doushi_program_view_is_registered_and_owns_the_fullscreen_display(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
     # 翻訳抑止と日本語UIの固定は共通の broadcast_browser_command が組み立てるため、
@@ -300,11 +300,14 @@ def test_doushi_program_view_is_registered_and_respects_the_game_viewport(tmp_pa
     viewer = adapter._viewer_command()
     assert viewer[0] == sys.executable
     assert ("--x", "0") == (viewer[viewer.index("--x")], viewer[viewer.index("--x") + 1])
-    assert ("--y", "90") == (viewer[viewer.index("--y")], viewer[viewer.index("--y") + 1])
-    assert ("--width", "960") == (viewer[viewer.index("--width")], viewer[viewer.index("--width") + 1])
-    assert ("--height", "540") == (viewer[viewer.index("--height")], viewer[viewer.index("--height") + 1])
+    assert ("--y", "0") == (viewer[viewer.index("--y")], viewer[viewer.index("--y") + 1])
+    assert ("--width", "1280") == (viewer[viewer.index("--width")], viewer[viewer.index("--width") + 1])
+    assert ("--height", "720") == (viewer[viewer.index("--height")], viewer[viewer.index("--height") + 1])
     assert f"--app=http://127.0.0.1:{DEFAULT_PORT}/broadcast" in viewer
-    assert "--window-size=960,540" in viewer
+    assert "--window-size=1280,720" in viewer
+    assert "--lang=ja-JP" in viewer
+    assert "--disable-translate" in viewer
+    assert "--disable-features=Translate,TranslateUI,BackForwardCache" in viewer
 
 
 def test_doushi_preflight_fetches_once_and_stores_the_transient_payload(tmp_path, monkeypatch):
