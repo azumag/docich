@@ -291,10 +291,34 @@ class TestAdvisoryController(unittest.TestCase):
         ctl = self.controller(strategist, max_calls=1, cooldown=100.0)
         ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
         self.clock[0] += 1.0
-        cooled = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        # A new visible frame is a new prompt, so the answer is not suppressed.
+        next_msg = "Call a scroll: "
+        cooled = ctl.consider(visible_screen(message=next_msg), normalized(message=next_msg), prompt)
         self.assertEqual(cooled.status, "budget_exhausted")
         self.assertEqual([(a.type, a.key) for a in cooled.actions], [("special", "Escape")])
         self.assertEqual(len(strategist.calls), 1)
+
+    def test_same_visible_prompt_frame_is_answered_only_once(self) -> None:
+        msg = "Call a potion: "
+        prompt = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        strategist = FakeStrategist(
+            StrategistDispatchResult(status="error", error="down", error_kind="timeout")
+        )
+        ctl = self.controller(strategist, cooldown=0.0)
+        first = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.key) for a in first.actions], [("special", "Escape")])
+        # The frozen frame is not answered again: no key, no strategist call.
+        for _ in range(3):
+            self.clock[0] += 1.0
+            frozen = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+            self.assertEqual(frozen.status, "suppressed")
+            self.assertEqual(frozen.actions, ())
+        self.assertEqual(len(strategist.calls), 1)
+        # A non-prompt frame clears the mark, so the same prompt text is answered again later.
+        ctl.consider(visible_screen(message="You see here a dagger."), normalized(message="You see here a dagger."), PolicyDecision(layer="tactical", intent="explore", reason="x"))
+        again = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.key) for a in again.actions], [("special", "Escape")])
+        self.assertEqual(len(strategist.calls), 2)
 
     def test_proposed_prayer_is_logged_but_never_sent_by_the_brain_path(self) -> None:
         sick = normalize_tty(

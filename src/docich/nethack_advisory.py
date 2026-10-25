@@ -47,6 +47,7 @@ AdvisoryStatus = Literal[
     "budget_exhausted",
     "error",
     "proposed",
+    "suppressed",
 ]
 
 
@@ -179,6 +180,9 @@ class NethackAdvisoryController:
         self._last_narration_intent: str | None = None
         self._previous_intent: str | None = None
         self._last_prompt_log_fingerprint: str | None = None
+        # Visible frame whose blocking prompt was last answered. The same frame
+        # is answered at most once: a frozen screen must not get key after key.
+        self._answered_prompt_fingerprint: str | None = None
 
         if strategist is not None:
             self.strategist = strategist
@@ -315,6 +319,38 @@ class NethackAdvisoryController:
         )
 
     def consider(
+        self,
+        raw_text: str,
+        obs: NethackObservation,
+        decision: PolicyDecision,
+    ) -> AdvisoryOutcome:
+        if decision.intent != "prompt_decision":
+            self._answered_prompt_fingerprint = None
+            return self._consider(raw_text, obs, decision)
+        fingerprint = self._fingerprint(obs, decision)
+        if fingerprint == self._answered_prompt_fingerprint:
+            self._previous_intent = decision.intent
+            if fingerprint != self._last_prompt_log_fingerprint:
+                self._last_prompt_log_fingerprint = fingerprint
+                self._append_log(
+                    {
+                        "schema_version": 1,
+                        "ts": self._wall_time(),
+                        "status": "suppressed",
+                        "intent": decision.intent,
+                        "reason": decision.reason,
+                        "fingerprint": fingerprint,
+                        "prompt": obs.prompt,
+                        "execution": "suppressed_same_frame",
+                    }
+                )
+            return AdvisoryOutcome(status="suppressed")
+        outcome = self._consider(raw_text, obs, decision)
+        if outcome.actions:
+            self._answered_prompt_fingerprint = fingerprint
+        return outcome
+
+    def _consider(
         self,
         raw_text: str,
         obs: NethackObservation,
