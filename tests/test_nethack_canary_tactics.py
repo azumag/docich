@@ -113,6 +113,23 @@ def test_declines_unreviewed_yes_no_prompt():
     assert tuple(a.text for a in decision.actions) == ("n",)
 
 
+def test_picks_up_single_visible_object():
+    decision = decide(obs("You see here a dagger.", ("....", ".@..", "....")))
+    assert decision.intent == "pick_up_item"
+    assert tuple(a.text for a in decision.actions) == (",",)
+
+
+def test_does_not_pick_up_a_pile_of_objects():
+    decision = decide(obs("There are several objects here.", ("....", ".@..", "....")))
+    assert decision.intent != "pick_up_item"
+
+
+def test_pick_up_never_answers_a_blocking_prompt():
+    decision = decide(obs("You see here a dagger. Pick it up? [ynq]", ("....", ".@..", "....")))
+    assert decision.intent == "decline_prompt"
+    assert tuple(a.text for a in decision.actions) == ("n",)
+
+
 def test_eats_visible_food_when_hungry():
     decision = decide(obs("", ("....", ".@..", "...."), status=HUNGRY_STATUS), inventory=(food_item(),))
     assert decision.intent == "eat_food"
