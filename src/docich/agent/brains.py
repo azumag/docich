@@ -243,6 +243,8 @@ class NethackPolicyBrain:
         self.progress.observe(normalized, self.policy.explorer)
         decision = self.policy.decide(normalized)
         self.last_decision = decision
+        from ..nethack_policy import assert_p3b_safe
+        assert_p3b_safe(decision)
         resolved = self.progress.resolve(decision, normalized, self.policy.explorer)
         if self.last_progress_decision is None or resolved.intent != self.last_progress_decision.intent:
             # Fixed policy enums only; this is a plan, not proof of actuation
