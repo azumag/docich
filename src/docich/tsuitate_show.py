@@ -90,8 +90,24 @@ def chunk_facts(moves, start: int, end: int, *, cards=None) -> str:
             + json.dumps(cards, ensure_ascii=False))
 
 
-def build_show(moves, *, color: str, opponent=None, result=None, request_id=None,
-               runtime_id=None, generation=None) -> dict:
+#: Bounded verified-fact strip the review screen shows beside the kifu (the
+#: values come from :func:`tsuitate_narration.status_facts`, never from the
+#: model), keyed like the view's status labels.
+STATUS_KEYS = ("rating", "clock", "fouls", "shapes")
+STATUS_VALUE_LIMIT = 60
+
+
+def validated_status(status) -> dict | None:
+    """Only short known-key strings survive into the bounded show payload."""
+    if not isinstance(status, dict):
+        return None
+    out = {key: status[key] for key in STATUS_KEYS
+           if isinstance(status.get(key), str) and 0 < len(status[key]) <= STATUS_VALUE_LIMIT}
+    return out or None
+
+
+def build_show(moves, *, color: str, opponent=None, result=None, status=None,
+               request_id=None, runtime_id=None, generation=None) -> dict:
     """The bounded payload the view renders and the corner steps through."""
     if not isinstance(moves, list) or not 1 <= len(moves) <= MAX_SHOW_MOVES:
         raise ShowError("invalid kifu")
@@ -118,6 +134,7 @@ def build_show(moves, *, color: str, opponent=None, result=None, request_id=None
         "color": color,
         "opponent": opponent if isinstance(opponent, str) else None,
         "result": result if isinstance(result, dict) else None,
+        "status": validated_status(status),
         "move_count": len(compact),
         "index": 0,
         "done": False,
@@ -205,6 +222,7 @@ def show_view(payload) -> dict | None:
         "color": payload.get("color") if payload.get("color") in {"sente", "gote"} else None,
         "opponent": payload.get("opponent") if isinstance(payload.get("opponent"), str) else None,
         "result": payload.get("result") if isinstance(payload.get("result"), dict) else None,
+        "status": validated_status(payload.get("status")),
         "commentary": payload.get("commentary") if isinstance(payload.get("commentary"), dict) else {},
     }
 

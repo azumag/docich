@@ -44,7 +44,10 @@ body.reviewing .kifu{height:500px;display:grid;grid-template-columns:414px minma
 .board{grid-column:1;grid-row:2;width:414px;height:414px;box-sizing:border-box;display:grid;grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(9,1fr);border:2px solid #64583f;background:#d8bb82}
 .sq{box-sizing:border-box;border-right:1px solid #8b744d;border-bottom:1px solid #8b744d;display:flex;align-items:center;justify-content:center;background:#dfc38b;color:#2c2418;font-size:23px;font-weight:800;line-height:1}
 .sq.gote{transform:rotate(180deg)}
-.side{grid-column:2;grid-row:2;min-width:0;height:414px;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:14px}
+.side{grid-column:2;grid-row:2;min-width:0;height:414px;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:10px 14px}
+.stat{display:flex;flex-wrap:wrap;gap:2px 16px;min-width:0;font-size:14px;color:#aeb7c2;line-height:1.5}
+.stat span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat i{font-style:normal;color:#98a3af;margin-right:4px;font-size:12px}
 .moves{min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:center;gap:3px;font-size:16px}
 .mv{padding:3px 8px;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mv.cur{background:rgba(216,187,130,.18);font-weight:800}
 .cmt{min-height:82px;max-height:128px;overflow:hidden;box-sizing:border-box;border:1px solid #343c46;border-radius:10px;padding:12px 14px;background:rgba(255,255,255,.035);font-size:17px;line-height:1.45}
@@ -95,6 +98,8 @@ function apply(d){
 }
 const PIECE={P:"歩",L:"香",N:"桂",S:"銀",G:"金",B:"角",R:"飛",K:"玉"};
 const PROM={P:"と",L:"成香",N:"成桂",S:"成銀",B:"馬",R:"龍",K:"玉"};
+// 感想戦のステータス strip: 公開済みの検証済み事実だけを表示する。
+const statLabel={rating:"レート",clock:"考慮時間",fouls:"反則",shapes:"成打"};
 const WINDOW=12;
 let kifu=null,kifuLease=null;
 function square(code){
@@ -122,9 +127,13 @@ function renderKifu(show){
   (show.opponent?("相手 "+show.opponent+" / "):"")+
   (outcomeLabel[r.outcome]||"結果未確定")+" / "+(reasonLabel[r.reason]||"理由未確定")+" / "+
   (r.moveNumber||0)+'手</span></div>';
+ const st=show.status||null;
+ const stat=st?Object.keys(statLabel).filter(k=>st[k])
+  .map(k=>'<span><i>'+statLabel[k]+'</i>'+st[k]+'</span>').join(""):"";
  document.getElementById("kifu").innerHTML=head+
   (cells?'<div class="board">'+cells+'</div>':'<div class="board"></div>')+
-  '<div class="side"><div class="moves">'+list+'</div>'+
+  '<div class="side">'+(stat?'<div class="stat">'+stat+'</div>':'')+
+  '<div class="moves">'+list+'</div>'+
   '<div class="cmt">'+currentComment(index)+'</div></div>';
 }
 async function loadKifu(){

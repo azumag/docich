@@ -40,6 +40,7 @@ from pathlib import Path
 from .comment_queue import comment_queue_dir, is_quiet
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
 from .trading.soren_output import enqueue_audio_text, resolve_soren_root
+from .tsuitate_prose import dedupe_text
 
 TITLE = "AI衝立将棋"
 INTRO_TITLE = "AI衝立将棋 コーナー紹介"
@@ -163,10 +164,16 @@ def build_prompt(summary, terminal) -> str:
 
 
 def sanitize(text) -> str | None:
-    """One spoken paragraph, or ``None`` when the model output is unusable."""
+    """One spoken paragraph, or ``None`` when the model output is unusable.
+
+    Repeated sentences are dropped before the bounds are checked (#2737): a
+    model that restates the same idea twice is kept only in its non-repeating
+    form, and output that is *only* repetition falls back to the fixed text.
+    """
     if not isinstance(text, str):
         return None
     value = " ".join(text.replace("　", " ").split()).strip("「」『』\"' ")
+    value = dedupe_text(value)
     if not MIN_REVIEW_CHARS <= len(value) <= MAX_SPEECH or _UNSAFE.search(value):
         return None
     if len(_KANA_KANJI.findall(value)) < len(value) * 0.5:
@@ -198,6 +205,37 @@ def fallback_text(summary, terminal) -> str:
         parts.append(f"対戦相手は{summary['opponentName']}でした。")
     parts.append("見えない駒と戦う難しさが出た一局でした。次もお付き合いください。")
     return "".join(parts)[:MAX_SPEECH]
+
+
+def status_facts(summary) -> dict | None:
+    """The verified public facts the 感想戦画面 shows as its status strip.
+
+    The live view carries a status panel while the match runs; the kifu show
+    replaced it with prose alone.  This projection keeps the same kind of
+    at-a-glance status on screen during the review (#2737), built only from
+    the already-published values :func:`facts_text` uses.  ``None`` means the
+    replay summary is unavailable and the header's result line stands alone.
+    """
+    if not isinstance(summary, dict):
+        return None
+    own = summary.get("own") if isinstance(summary.get("own"), dict) else {}
+    opponent = summary.get("opponent") if isinstance(summary.get("opponent"), dict) else {}
+    facts: dict[str, str] = {}
+    if (type(summary.get("ratingBefore")) is int
+            and type(summary.get("ratingAfter")) is int):
+        facts["rating"] = f"{summary['ratingBefore']}→{summary['ratingAfter']}"
+    facts["clock"] = (f"AI計{_seconds(own.get('totalMs'))}秒"
+                      f" / 相手計{_seconds(opponent.get('totalMs'))}秒")
+    if type(summary.get("fouls")) is int or type(summary.get("opponentFouls")) is int:
+        fouls = summary.get("fouls") if type(summary.get("fouls")) is int else 0
+        opponent_fouls = (summary.get("opponentFouls")
+                          if type(summary.get("opponentFouls")) is int else 0)
+        facts["fouls"] = f"AI{fouls}回 / 相手{opponent_fouls}回"
+    if type(summary.get("promotions")) is int or type(summary.get("drops")) is int:
+        promotions = summary.get("promotions") if type(summary.get("promotions")) is int else 0
+        drops = summary.get("drops") if type(summary.get("drops")) is int else 0
+        facts["shapes"] = f"成り{promotions}回 / 打ち{drops}回"
+    return facts or None
 
 
 #: Fixed vocabulary for why the model prose was not used.  Only the shared
