@@ -87,6 +87,12 @@ reviewed な追加 action は次のとおりで、`assert_canary_safe` が allow
 - `open_door`: 隣接する閉じた door (`+`) を `o` + 方向で開ける。開かなかった door は記録し再試行しない（lock ループ防止）。
 - `directional_travel`: `In what direction?` prompt に可視 frontier 方向を返す。
 - `eat_food`: `Hungry` 等で可視 inventory に food があれば `e` + letter で食べる（`EAT_COOLDOWN_TURNS` で連食を抑制、unpaid は対象外、tin は他に food が無い時のみ）。
+- `wield_weapon` / `wear_armor`: 武器を手にしていない / 何も着ていない時に、可視 unpaid-free の weapon / armor を `w` / `W` + letter で装備する（armor は隣接 monster がいない時のみ）。
+- `quaff_potion`: 可視 HP が 50% 以下の時、可視 unpaid-free potion を `q` + letter で飲む。
+- `pick_up_item`: 足元の単一 object を `,` で拾う。
+- `kick_door`: `o` が失敗した閉扉を `^D` + 方向で一度だけ蹴る。
+- `ascend_stairs` / `descend_stairs`: 記憶した `<` / `>` の上に立っている時だけ階段を昇降する。
+- `read_scroll` / `zap_wand` / `apply_tool` / `takeoff_armor` / `throw_item` / `close_door` / `severe_status_recovery` は reviewed だが既定 `enabled=false`（未識別効果・後続 direction・item 損失・prayer timeout のため）。
 - `rest_low_hp`: 可視 HP が低い時、隣接 monster がいれば attack、いなければ `.` で回復。
 - `rest`: movement 阻害（Blind/Conf/Stun/Hallu）や探索不能時に `.` で待つ。
 - hunger priority (`seek_food`/`food_emergency`) は food が無い・eat cooldown 中でも dead-end にせず、通常の tactical 判断へフォールバックする。

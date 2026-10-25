@@ -6,10 +6,10 @@
       "priority": 5,
       "enabled": false,
       "risk_class": "prompt",
-      "effect": "keys",
-      "description": "Reviewed prayer recovery for a visible severe status (disabled until canary evidence promotes it).",
+      "effect": "pray",
+      "description": "Reviewed prayer recovery for a visible severe status (disabled until canary evidence promotes it). The trailing CR closes the extended-command prompt; nothing else in the catalog answers a prompt.",
       "preconditions": ["prompt:none", "condition_any:Sick|FoodPois|Ill|Slime|Strngl|Stone|TermIll"],
-      "key_pattern": ["#"],
+      "key_pattern": ["#", "p", "r", "a", "y", "\r"],
       "postconditions": ["always"]
     },
     {
@@ -79,6 +79,39 @@
       "postconditions": ["message_changed"]
     },
     {
+      "id": "wield_weapon",
+      "priority": 56,
+      "enabled": true,
+      "risk_class": "item",
+      "effect": "wield_item",
+      "description": "Wield a visible unpaid-free weapon when no weapon is in hand.",
+      "preconditions": ["prompt:none", "player_visible", "no_equipped_weapon", "inventory_wieldable"],
+      "key_pattern": ["w", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "wear_armor",
+      "priority": 57,
+      "enabled": true,
+      "risk_class": "item",
+      "effect": "wear_item",
+      "description": "Wear a visible unpaid-free armor piece when nothing is being worn.",
+      "preconditions": ["prompt:none", "player_visible", "no_equipped_armor", "inventory_wearable", "no_adjacent_attackable"],
+      "key_pattern": ["W", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "quaff_potion",
+      "priority": 58,
+      "enabled": true,
+      "risk_class": "item",
+      "effect": "quaff_item",
+      "description": "Quaff a visible unpaid-free potion at low HP (identity stays unknown; only the visible category is used).",
+      "preconditions": ["prompt:none", "player_visible", "hp_ratio_at_most:0.5", "inventory_potion"],
+      "key_pattern": ["q", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
       "id": "rest_impaired",
       "priority": 60,
       "enabled": true,
@@ -88,6 +121,61 @@
       "preconditions": ["prompt:none", "condition_any:Blind|Conf|Stun|Hallu"],
       "key_pattern": ["."],
       "postconditions": ["always"]
+    },
+    {
+      "id": "read_scroll",
+      "priority": 64,
+      "enabled": false,
+      "risk_class": "item",
+      "effect": "read_item",
+      "description": "Read a visible unpaid-free scroll (disabled: an unidentified scroll may teleport, summon, or destroy).",
+      "preconditions": ["prompt:none", "player_visible", "inventory_readable"],
+      "key_pattern": ["r", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "zap_wand",
+      "priority": 66,
+      "enabled": false,
+      "risk_class": "item",
+      "effect": "zap_wand",
+      "description": "Zap a visible unpaid-free wand (disabled: most wands then ask for a direction the catalog must not guess).",
+      "preconditions": ["prompt:none", "player_visible", "inventory_wand"],
+      "key_pattern": ["z", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "apply_tool",
+      "priority": 67,
+      "enabled": false,
+      "risk_class": "item",
+      "effect": "apply_item",
+      "description": "Apply a visible unpaid-free tool (disabled: several tools then ask for a direction or target).",
+      "preconditions": ["prompt:none", "player_visible", "inventory_tool"],
+      "key_pattern": ["a", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "takeoff_armor",
+      "priority": 68,
+      "enabled": false,
+      "risk_class": "item",
+      "effect": "takeoff_item",
+      "description": "Take off worn armor away from creatures (disabled: remaining naked is not a reviewed goal).",
+      "preconditions": ["prompt:none", "player_visible", "inventory_worn", "no_adjacent_attackable"],
+      "key_pattern": ["T", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "throw_item",
+      "priority": 69,
+      "enabled": false,
+      "risk_class": "combat",
+      "effect": "throw_item",
+      "description": "Throw a spare visible weapon at an adjacent creature (disabled: a miss loses the item).",
+      "preconditions": ["prompt:none", "player_visible", "adjacent_attackable", "inventory_throwable"],
+      "key_pattern": ["t", "{item_letter}", "{direction}"],
+      "postconditions": ["screen_changed"]
     },
     {
       "id": "attack_adjacent",
@@ -120,6 +208,39 @@
       "description": "Open an adjacent closed door with o + direction.",
       "preconditions": ["prompt:none", "player_visible", "adjacent_closed_door"],
       "key_pattern": ["o", "{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "kick_door",
+      "priority": 81,
+      "enabled": true,
+      "risk_class": "door",
+      "effect": "kick_door",
+      "description": "Kick a closed door whose reviewed open attempt just failed (locked door), once per door.",
+      "preconditions": ["prompt:none", "player_visible", "adjacent_kickable_door"],
+      "key_pattern": ["\u0004", "{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "close_door",
+      "priority": 82,
+      "enabled": false,
+      "risk_class": "door",
+      "effect": "close_door",
+      "description": "Close an adjacent remembered doorway the hero opened (disabled: closing a door has no reviewed goal).",
+      "preconditions": ["prompt:none", "player_visible", "adjacent_open_door"],
+      "key_pattern": ["c", "{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "ascend_stairs",
+      "priority": 83,
+      "enabled": true,
+      "risk_class": "movement",
+      "effect": "keys",
+      "description": "Go up the stairs when the hero stands on a remembered up-staircase.",
+      "preconditions": ["prompt:none", "player_visible", "on_up_stairs"],
+      "key_pattern": ["<"],
       "postconditions": ["screen_changed"]
     },
     {

@@ -104,11 +104,11 @@ def test_proposer_rejects_new_id_with_generic_literal_keys_effect():
     raw = catalog_to_dict(specs)
     raw["actions"].append(
         {
-            "id": "quit_game",
+            "id": "mystery_step",
             "effect": "keys",
             "risk_class": "movement",
             "preconditions": ["prompt:none", "player_visible"],
-            "key_pattern": ["Q"],
+            "key_pattern": ["y"],
             "postconditions": ["always"],
         }
     )
@@ -123,7 +123,7 @@ def test_proposer_rejects_a_new_id_with_an_unreviewed_effect():
     raw["actions"].append(
         {
             "id": "teleport",
-            "effect": "zap_wand",
+            "effect": "bogus_effect",
             "risk_class": "movement",
             "preconditions": ["player_visible"],
             "key_pattern": ["{direction}"],
@@ -147,7 +147,8 @@ def test_proposer_rejects_an_incomplete_action_set():
 def test_proposer_rejects_key_pattern_changes():
     specs = load_action_catalog(CATALOG)
     raw = catalog_to_dict(specs)
-    raw["actions"][0]["key_pattern"] = ["z"]
+    rest = next(action for action in raw["actions"] if action["id"] == "rest")
+    rest["key_pattern"] = ["x"]
     payload = json.dumps(raw).encode("utf-8")
     with pytest.raises(CatalogProposalError, match="fixed key_pattern"):
         proposer_returning(payload).propose(proposal_request(), **propose_kwargs())
