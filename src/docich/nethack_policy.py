@@ -328,51 +328,67 @@ class NethackLayeredPolicy:
         )
 
 
+# Production denylist: commands that must never be generated automatically by
+# the production policy, each with a human-readable reason.  Everything else
+# (standard NetHack commands) is allowed; safety is enforced post-hoc via
+# action trace + retrospective (#2743 requirement 3).
+PRODUCTION_DENIED_COMMANDS: dict[str, str] = {
+    "Q": "quit would terminate the run",
+    "S": "save would suspend the run",
+    "!": "shell escape is not a game command",
+    "F": "force-fight bypasses peaceful/pet protection",
+    "X": "explore mode bypasses normal play",
+    "#quit": "extended quit would terminate the run",
+    "#save": "extended save would suspend the run",
+    "#!": "extended shell escape is not a game command",
+}
+
+
+def _production_deny_reason(text: object) -> str | None:
+    # Backwards/alternative names that callers or tests may use for the same
+    # denylist.
+    # (aliases defined below after the dict is complete)
+    if not isinstance(text, str):
+        return None
+    if text in PRODUCTION_DENIED_COMMANDS:
+        return PRODUCTION_DENIED_COMMANDS[text]
+    lowered = text.lower()
+    if lowered.startswith("#wiz"):
+        return "wizard-mode command is not a production action"
+    return None
+
+
 def assert_p3b_safe(decision: PolicyDecision) -> None:
-    """Allow only reviewed safe surface: More-space, decline-save, or one step."""
+    """Denylist gate: reject only commands with a recorded reason.
+
+    The P3b whitelist (More-space / decline-save / one reviewed step) is
+    abolished per #2743.  Standard commands are allowed; only entries in
+    ``PRODUCTION_DENIED_COMMANDS`` (and wizard-mode extended commands) raise.
+    """
     if not decision.actions:
         return
-    if (
-        decision.layer == "tactical"
-        and decision.intent == "advance_message"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == " "
-    ):
-        return
-    if (
-        decision.layer == "tactical"
-        and decision.intent == "decline_save"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == "n"
-    ):
-        return
-    if (
-        decision.layer == "midlevel"
-        and decision.intent == "explore_step"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text in MOVE_KEYS
-    ):
-        return
-    if (
-        decision.layer == "midlevel"
-        and decision.intent == "descend_stairs"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == DESCEND_COMMAND
-    ):
-        return
-    if (
-        decision.layer == "strategic"
-        and decision.intent == "status_recovery"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == SEVERE_RECOVERY_COMMAND
-    ):
-        return
-    raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
+    for action in decision.actions:
+        if getattr(action, "type", None) != "text":
+            raise RuntimeError(
+                "production policy attempted a non-text action outside the reviewed surface"
+            )
+        text = getattr(action, "text", None)
+        reason = _production_deny_reason(text)
+        if reason is not None:
+            raise RuntimeError(
+                f"production policy attempted a denied command {text!r}: {reason}"
+            )
+
+
+def assert_p3a_safe(decision: PolicyDecision) -> None:
+    """Compatibility entrypoint (P3a). Now delegates to the denylist gate."""
+    assert_p3b_safe(decision)
+
+
+# Backwards/alternative names that callers or tests may use for the same
+# denylist.
+DENIED_COMMANDS = PRODUCTION_DENIED_COMMANDS
+DENYLIST = PRODUCTION_DENIED_COMMANDS
 
 
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
@@ -471,10 +487,3 @@ def assert_rest_safe(actions: list[Action] | tuple[Action, ...]) -> None:
         raise RuntimeError("rest fallback attempted an action outside the reviewed safe surface")
 
 
-def assert_p3a_safe(decision: PolicyDecision) -> None:
-    """Compatibility entrypoint used by the brain; current branch is P3b.
-
-    The function name remains so the stacked P3a tests and brain wiring do not
-    churn.  On P3b it delegates to the expanded reviewed safe surface.
-    """
-    assert_p3b_safe(decision)
