@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -95,3 +96,35 @@ def test_a_stale_runtime_record_is_never_reported_as_the_active_one(tmp_path):
 
     assert output["present"] is False, "only the active runtime's record is read"
     assert output["active_runtime"] is True
+
+
+
+
+
+
+
+
+def test_symlinked_runtime_directory_is_never_descended(tmp_path):
+    # A runtime_id entry that is itself a symlink must not be followed: the
+    # glob this replaced reached outside the runtimes tree through it, so a
+    # planted file fed the projected `reason` field (#2768).
+    module = load_collector()
+    state_dir = _state_dir(tmp_path, runtime_id="g9-aaaa1111")
+    runtime_dir = state_dir / "runtimes" / "g9-aaaa1111"
+    shutil.rmtree(runtime_dir)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "presentation_failure.json").write_text(json.dumps({
+        "status": "viewer_timeout",
+        "reason": "OUTSIDE-PLANTED-REASON-0123456789",
+        "viewer_wait_sec": 7,
+    }))
+    runtime_dir.symlink_to(outside, target_is_directory=True)
+
+    output = module._project_soren91_corner({}, state_dir=state_dir)
+
+    dumped = json.dumps(output)
+    assert "OUTSIDE-PLANTED-REASON-0123456789" not in dumped
+    failure = output.get("presentation_failure") or {}
+    assert failure.get("status") != "viewer_timeout"
+    assert failure.get("reason") is None
