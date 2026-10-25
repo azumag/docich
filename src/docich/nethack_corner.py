@@ -300,6 +300,11 @@ class NethackCornerManager(RetroCornerManager):
         stall_s = int(self.config.stall_timeout_minutes) * 60
         last_text: str | None = None
         unchanged_since = self._local_now()
+        # A terminal marker only counts when the run has actually produced a
+        # non-terminal screen first.  A pane that is already terminal at the
+        # very first capture is stale residue from a previous run, not a fresh
+        # death/ascension, so it must not end the run early.
+        saw_non_terminal = False
         while True:
             stopped = self._rotation_stop_result()
             if stopped is not None:
@@ -315,12 +320,19 @@ class NethackCornerManager(RetroCornerManager):
                 last_text = text
                 unchanged_since = now
             unchanged_seconds = (now - unchanged_since).total_seconds()
-            if text is not None and _is_terminal_screen(text):
+            ends_at = self._parse_ends_at(latest)
+            if ends_at is not None and now >= ends_at:
+                reason = "time_limit"
+            elif text is not None and _is_terminal_screen(text) and saw_non_terminal:
                 reason = "terminal"
             elif unchanged_seconds >= stall_s:
                 reason = "stalled"
             else:
+                if text is not None and not _is_terminal_screen(text):
+                    saw_non_terminal = True
                 continue
+            if text is not None and not _is_terminal_screen(text):
+                saw_non_terminal = True
             with self._locked():
                 latest = self._read_state()
                 if latest.get("status") != "active":

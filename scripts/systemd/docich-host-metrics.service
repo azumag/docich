@@ -1,0 +1,14 @@
+[Unit]
+Description=Bounded host metrics ring sampler (docich#2578)
+
+[Service]
+Type=oneshot
+Environment=XDG_RUNTIME_DIR=%t
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=/usr/bin/python3 __DOCICH_ROOT__/ops/vm_actions/host_metrics.py
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=32M
+TimeoutStartSec=45

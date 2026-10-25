@@ -33,6 +33,8 @@ from .nethack_policy import (
 
 DoorKey = tuple[int, int, int]
 MAX_UNCHANGED_DOOR_CAPTURES = 3
+# Acked answers (More / decline) re-sent while the same prompt frame persists.
+MAX_ANSWERED_PROMPT_RESENDS = 3
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,7 @@ class NethackProgressResolver:
         self._pending: tuple[NethackObservation, str, str] | None = None
         self._failed: dict[str, int] = {}
         self._answered_prompt: str | None = None
+        self._answered_prompt_resends = 0
         self._attempted_doors: set[DoorKey] = set()
         self._pending_door: _DoorTarget | None = None
         self._pending_door_raw_text: str | None = None
@@ -272,6 +275,7 @@ class NethackProgressResolver:
             self._pray_spent = False
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
+            self._answered_prompt_resends = 0
         if self._pending_door is not None and obs.prompt == "none":
             target = self._pending_door
             if self._pending_door_capture_unchanged(obs):
@@ -431,6 +435,11 @@ class NethackProgressResolver:
                             self._pray_step = None
                 return
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
+                # Count only acknowledged re-sends of the same unchanged frame.
+                if self._answered_prompt == obs.raw_text:
+                    self._answered_prompt_resends += 1
+                else:
+                    self._answered_prompt_resends = 0
                 self._answered_prompt = obs.raw_text
             elif key in MOVE_KEYS:
                 self._pending = (obs, key, decision.intent)
@@ -474,7 +483,15 @@ class NethackProgressResolver:
             decision.intent in {"decline_save", "decline_attack", "advance_message"}
             and self._answered_prompt == obs.raw_text
         ):
-            return self._hold("prompt already answered; waiting for a new frame")
+            # The game may drop one acked key without changing the frame.
+            # Re-send the same reviewed answer a bounded number of times; the
+            # stall guard remains the final backstop once the budget is spent.
+            if self._answered_prompt_resends < MAX_ANSWERED_PROMPT_RESENDS:
+                return decision
+            return self._hold(
+                f"prompt already answered; re-sent {self._answered_prompt_resends} times, "
+                "waiting for a new frame"
+            )
         if decision.intent == "status_recovery" and self._pray_spent:
             return self._hold("prayer recovery already spent for this severe episode")
         if self._pending_door is not None:

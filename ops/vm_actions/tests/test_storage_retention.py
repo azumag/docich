@@ -76,13 +76,15 @@ class PreviewReleaseGcTests(unittest.TestCase):
 
 class FilesystemStatusTests(unittest.TestCase):
     def test_reports_df_style_usage_without_paths_or_names(self):
-        fake = SimpleNamespace(f_blocks=100, f_bfree=30, f_bavail=20, f_frsize=4096)
+        fake = SimpleNamespace(f_blocks=100, f_bfree=30, f_bavail=20, f_frsize=4096, f_files=1000, f_favail=250)
         with mock.patch.object(gw.os, "statvfs", return_value=fake):
             data = gw._filesystem_status(Path("/private/production"))
         self.assertEqual(data["total_bytes"], 409600)
         self.assertEqual(data["available_bytes"], 81920)
         self.assertEqual(data["used_percent"], 78)
-        self.assertEqual(set(data), {"total_bytes", "available_bytes", "used_percent"})
+        self.assertEqual(data["files_total"], 1000)
+        self.assertEqual(data["files_available"], 250)
+        self.assertEqual(set(data), {"total_bytes", "available_bytes", "used_percent", "files_total", "files_available"})
 
 
 class StorageMonitorWorkflowTests(unittest.TestCase):
@@ -146,7 +148,8 @@ class ProductionStatusIntegrationTests(unittest.TestCase):
         gw.write_json(gw.current_file(cfg, "docich"), {"mode": "git", "sha": sha, "pending_repairs": []})
         result = gw.status_result(cfg, "docich", "production", sha)
         self.assertEqual(result["status"], "configured")
-        self.assertEqual(set(result["storage"]), {"total_bytes", "available_bytes", "used_percent"})
+        self.assertEqual(set(result["storage"]), {"total_bytes", "available_bytes", "used_percent", "files_total", "files_available"})
+        self.assertEqual(result["projection_guard_last_event"]["present"], False)
 
 
 if __name__ == "__main__":

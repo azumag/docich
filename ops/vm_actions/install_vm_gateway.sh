@@ -89,7 +89,11 @@ fi
 chown root:root /etc/azumag-vm-ops.json
 chmod 0644 /etc/azumag-vm-ops.json
 
-install -d -o "$ssh_user" -g "$group_name" -m 0700 /home/ubuntu/.local/state/github-vm-ops
+# install -d only applies ownership to its final operand. Create each XDG state
+# parent explicitly so root-run installs cannot leave user state parents root-owned.
+install -d -o "$ssh_user" -g "$group_name" -m 0755 "$home_dir/.local"
+install -d -o "$ssh_user" -g "$group_name" -m 0755 "$home_dir/.local/state"
+install -d -o "$ssh_user" -g "$group_name" -m 0700 "$home_dir/.local/state/github-vm-ops"
 install -d -o "$ssh_user" -g "$group_name" -m 0700 "$home_dir/.ssh"
 authorized="$home_dir/.ssh/authorized_keys"
 touch "$authorized"

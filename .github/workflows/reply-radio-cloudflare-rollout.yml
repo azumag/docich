@@ -10,7 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: verified-web-production-rollout-${{ github.repository }}
+  # v2 is safely waiting for an exact SHA whose standard deploy was cancelled by
+  # the VM operations concurrency queue. A distinct one-shot group lets v3 use
+  # the next protected-main push without ever sharing state with that inert wait.
+  group: verified-web-production-rollout-v3-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -37,7 +40,7 @@ jobs:
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$(git -C candidate rev-parse HEAD)" == "$SHA" ]]
-          [[ "$(cat candidate/ops/vm_actions/reply_radio_cloudflare_rollout_epoch)" == "2026-10-24-v2" ]]
+          [[ "$(cat candidate/ops/vm_actions/reply_radio_cloudflare_rollout_epoch)" == "2026-10-24-v3" ]]
           bash -n candidate/ops/vm_actions/reply_radio_cloudflare_rollout.sh
 
       - name: Configure pinned SSH client

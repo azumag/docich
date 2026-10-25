@@ -370,3 +370,76 @@ jobs:
           else
             echo "::warning::VM runtime health is degraded (${SUMMARY})."
           fi
+
+      - name: Assess Twitch OAuth
+        id: twitch_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('twitch_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Twitch OAuth alert
+        env:
+          TWITCH_OAUTH_ALERT: ${{ steps.twitch_oauth.outputs.alert }}
+          TWITCH_OAUTH_STATUS: ${{ steps.twitch_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Twitch OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Twitch OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$TWITCH_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Twitch OAuth recovered (status=${TWITCH_OAUTH_STATUS})."
+            done
+            echo "Twitch OAuth: ${TWITCH_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Twitch broadcaster token refresh requires owner action.
+
+          - status: ${TWITCH_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/twitch-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Twitch OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Twitch OAuth requires reauth (status=${TWITCH_OAUTH_STATUS})."

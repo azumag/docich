@@ -325,7 +325,14 @@ def test_exhausted_gate_delegates_the_pager_through_the_brain():
     assert brain.startup.actions == 0
     assert brain.validate_action(actions[0], page)
     brain.action_sent(actions[0])
-    # The same unchanged page is not paged twice: the resolver holds instead.
+    # The same unchanged page is re-sent a bounded number of times, then the
+    # resolver holds instead of paging forever.
+    for _ in range(3):
+        actions = brain.decide(page)
+        assert [a.text for a in actions] == [" "]
+        assert brain.last_progress_decision.intent == "advance_message"
+        assert brain.validate_action(actions[0], page)
+        brain.action_sent(actions[0])
     assert brain.decide(page) == []
     assert brain.last_progress_decision.intent == "progress_blocked"
 
