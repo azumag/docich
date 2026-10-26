@@ -16,6 +16,7 @@ class StagedWorkflowTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('grep -E', text)
         self.assertIn('GITHUB_STEP_SUMMARY', text)
+        self.assertIn('reason=(none|sudo_denied|command_failed|not_present|skipped)', text)
 
 
 if __name__ == "__main__":

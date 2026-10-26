@@ -47,5 +47,12 @@ class StagedTests(unittest.TestCase):
         self.assertTrue(new.exists())
 
 
+    def test_payload_size(self):
+        preamble = b"APPLY=0\n"
+        payload = preamble + HELPER.read_bytes()
+        self.assertLessEqual(len(payload), 16384)
+        self.assertLessEqual(len(payload), 16000)
+
+
 if __name__ == '__main__':
     unittest.main()
