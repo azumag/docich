@@ -694,14 +694,13 @@ def test_automatic_recovery_accepts_pinned_release_after_audit_rollover(recovery
     assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='recovery-queued'
 
 
-@pytest.mark.parametrize('change', ['no-audit','other-audit','other-pending','owner-active',
-    'gameplay','checkpoint','not-rolled-back','explicit-mismatch','fresh','paused'])
+@pytest.mark.parametrize('change', ['other-pending','owner-active',
+    'gameplay','checkpoint','not-rolled-back','explicit-mismatch','fresh','paused',
+    'newer-run','newer-save','newer-receipt','newer-result','runtime-symlink'])
 def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
     s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
     base=Path(s.g.state_dir);ledger=s.manager.load(1000000.0)
-    if change=='no-audit':ledger['failed_corners']=[]
-    elif change=='other-audit':ledger['failed_corners'][0]['request_id']=str(uuid.uuid4())
-    elif change=='other-pending':ledger['pending']=dict(s.queue,corner='weather',source='automatic',phase='dispatched')
+    if change=='other-pending':ledger['pending']=dict(s.queue,corner='weather',source='automatic',phase='dispatched')
     elif change=='owner-active':atomic_write_json(base/'retro_corner.json',{'status':'active','game':'bastet'})
     elif change=='gameplay':(s.spec.runtime_dir/'hanjuku_run.json').touch()
     elif change=='checkpoint':(base/'hanjuku-resume'/(s.claim['request_id']+'.state')).write_bytes(state_bytes(b'changed'))
@@ -714,10 +713,34 @@ def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
         atomic_write_json(s.spec.runtime_dir/resume.RECEIPT_FILE,s.claim)
     elif change=='paused':
         p=base/'corners/hanjuku-hero.paused';p.parent.mkdir();p.touch()
+    elif change in {'newer-run','newer-save'}:
+        runtime=base/'runtimes/g701-cafe1234';runtime.mkdir()
+        if change=='newer-run':(runtime/'hanjuku_run.json').touch()
+        else:
+            (runtime/'states').mkdir();(runtime/'states/hanjuku-hero.state').touch()
+    elif change in {'newer-receipt','newer-result'}:
+        target='sorengame' if change=='newer-result' else 'hanjuku-hero'
+        row=dict(s.store.accept_request(str(uuid.uuid4()),'switch',target).receipt)
+        row.update(status='succeeded',result={'status':'succeeded','to_game':'hanjuku-hero'})
+        s.store.receipts.save(row)
+    elif change=='runtime-symlink':
+        (base/'runtimes/g701-cafe1234').symlink_to(s.spec.runtime_dir)
     s.manager.save(ledger)
     before=snapshot_recovery(s)
     with pytest.raises(s.op.CancelRefused):recover_startup(s,apply=True,expected=s.fingerprint)
     assert snapshot_recovery(s)==before
+
+
+def test_automatic_recovery_works_after_original_audit_is_evicted(recovery_setup):
+    s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
+    ledger=s.manager.load(1000000.0)
+    ledger['failed_corners']=[]
+    ledger['released_requests']={'hanjuku-hero':{'request_id':str(uuid.uuid4()),'at':1000000.0}}
+    s.manager.save(ledger)
+    outcome=s.op.queue_failed_start(s.g,tmux=s.tmux,now=lambda:1000000.0)
+    assert outcome['status']=='queued' and outcome['corner']=='hanjuku-hero'
+    assert outcome['request_id']==s.manager.load(1000000.0)['queued_manual']['request_id']
+    assert s.op.queue_failed_start(s.g,tmux=s.tmux,now=lambda:1000000.0)==outcome
 
 
 @pytest.mark.parametrize('failed_write', ['owner','ledger'])
