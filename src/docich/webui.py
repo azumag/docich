@@ -5071,10 +5071,11 @@ class _Handler(BaseHTTPRequestHandler):
         """
         from .corner_rotation import CornerRotationManager, RotationError
         from .adapters.base import AdapterError
+        from .hanjuku_resume_recovery import CancelRefused, queue_failed_start
 
         try:
             manager = CornerRotationManager(self.g)
-            outcome = (manager.queue_manual(row.game, resume_latest=True)
+            outcome = ((queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True))
                        if resume_latest else manager.queue_manual(row.game))
             status = outcome.get("status") if isinstance(outcome, dict) else None
         except RotationError as exc:
@@ -5093,7 +5094,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(409, "hanjuku_manual_unavailable",
                                   "半熟英雄の開始要求を保存できませんでした")
             return 409
-        except AdapterError:
+        except (AdapterError, CancelRefused):
             if resume_latest:
                 self._send_error_json(409, "hanjuku_resume_unavailable",
                                       "最新セーブから再開できる検証済み状態を確認できませんでした")

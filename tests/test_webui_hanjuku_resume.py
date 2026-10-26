@@ -5,6 +5,7 @@ import pytest
 
 from docich import corner_rotation, webui
 from docich.adapters.base import AdapterError
+from test_hanjuku_resume import setup, recovery_setup, automatic_recovery
 
 
 def _handler(tmp_path):
@@ -90,3 +91,37 @@ def test_hanjuku_resume_adapter_refusal_is_a_safe_conflict(tmp_path, monkeypatch
         "message": "最新セーブから再開できる検証済み状態を確認できませんでした",
     }
     assert "private checkpoint" not in error["message"]
+
+
+def test_webui_resume_requeues_interrupted_automatic_checkpoint(recovery_setup,monkeypatch):
+    from docich import hanjuku_resume_recovery as op
+    s=recovery_setup
+    automatic_recovery(s,released=True,reused_owner=True)
+    ledger=s.manager.load(1000000.0)
+    ledger['failed_corners']=[]
+    s.manager.save(ledger)
+    queue=op.queue_failed_start
+    monkeypatch.setattr(op,'queue_failed_start',lambda g:queue(g,tmux=s.tmux,now=lambda:1000000.0))
+    handler,sent=_handler(s.g.state_dir);handler.g=s.g
+    row=SimpleNamespace(id='hanjuku-hero',game='hanjuku-hero',adapter='game')
+    assert handler._handle_hanjuku_corner_start(row,resume_latest=True)==200
+    assert sent['payload']['action']=='resume-latest'
+    request=json.loads((s.g.state_dir/'hanjuku-resume/hanjuku_resume.json').read_text())
+    assert request['startup_recovery']['original']==s.claim
+    assert request['sha256']==s.claim['sha256']
+    assert s.manager.load(1000000.0)['queued_manual']['resume_request_id']==s.claim['request_id']
+    assert handler._handle_hanjuku_corner_start(row,resume_latest=True)==200
+
+
+def test_webui_resume_returns_safe_conflict_for_failed_recovery(recovery_setup,monkeypatch):
+    from docich import hanjuku_resume_recovery as op
+    s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
+    (s.spec.runtime_dir/'hanjuku_run.json').touch()
+    queue=op.queue_failed_start
+    monkeypatch.setattr(op,'queue_failed_start',lambda g:queue(g,tmux=s.tmux,now=lambda:1000000.0))
+    handler,_=_handler(s.g.state_dir);handler.g=s.g;error={}
+    handler._send_error_json=lambda status,code,message:error.update(status=status,code=code,message=message)
+    row=SimpleNamespace(id='hanjuku-hero',game='hanjuku-hero',adapter='game')
+    assert handler._handle_hanjuku_corner_start(row,resume_latest=True)==409
+    assert error['code']=='hanjuku_resume_unavailable'
+    assert 'gameplay_started' not in error['message']
