@@ -25,7 +25,8 @@ from .nethack_observation import NethackObservation, normalize_tty
 from .nethack_canary_tactics import CanaryTacticalPolicy
 from .nethack_exploration import NethackExplorer
 from .nethack_policy import (
-    SEVERE_RECOVERY_COMMAND, NethackLayeredPolicy, PolicyDecision, assert_p3b_safe, turn_ready,
+    SEVERE_CONDITIONS, SEVERE_RECOVERY_COMMAND, NethackLayeredPolicy, PolicyDecision,
+    assert_p3b_safe, turn_ready,
 )
 from .nethack_progress import NethackProgressResolver
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
@@ -65,11 +66,10 @@ class CanaryWorkerError(RuntimeError):
 # acceptance request is rejected (fail-closed).
 ACCEPTANCE_SETUP_FRAME_BUDGET = 60
 ACCEPTANCE_SCENARIOS: dict[str, tuple[tuple[CanaryKey, Callable[[NethackObservation], bool]], ...]] = {}
-SEVERE_STATUS = NethackLayeredPolicy._SEVERE_CONDITIONS
 
 
 def _has_severe_status(observation: NethackObservation) -> bool:
-    return any(condition in SEVERE_STATUS for condition in observation.conditions)
+    return any(condition in SEVERE_CONDITIONS for condition in observation.conditions)
 
 
 @dataclass
@@ -106,10 +106,14 @@ class _SevereRecoveryTally:
             outcome = "not_observed"
         elif self.recovery_resolved:
             outcome = "resolved"
+        elif self.recovery_started:
+            # A prayer was sent but no complete severe-free frame followed
+            # before exit (stall, hold, or wall timeout).
+            outcome = "recovery_unresolved"
         else:
-            # Unresolved at exit: the episode never reached a complete
-            # severe-free frame (fail-closed hold, stall, or wall timeout).
-            outcome = "fail_closed"
+            # The severe status was seen but the reviewed prayer was never
+            # attempted (for example a fail-closed hold or a Gehennom level).
+            outcome = "observed_unattempted"
         acceptance = request.get("acceptance")
         scenario = acceptance.get("scenario") if isinstance(acceptance, dict) else None
         return {
