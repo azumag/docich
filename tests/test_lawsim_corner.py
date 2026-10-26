@@ -139,8 +139,11 @@ def test_lawsim_catalog_row_requires_the_reviewed_identity_and_bounds(tmp_path):
             load(bad)
     with pytest.raises(CornerCatalogError, match="fetch_on_start"):
         load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",fetch_on_start=true}')
+    # audio_enabled is now a boolean opt-in (lawsim_narration, #2812): a reviewed
+    # True value is accepted, only non-boolean values are rejected.
+    assert load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled=true}')[0].audio_enabled is True
     with pytest.raises(CornerCatalogError, match="audio_enabled"):
-        load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled=true}')
+        load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled="yes"}')
     for duration in ("0", "15", "true", "1.5"):
         with pytest.raises(CornerCatalogError, match="1-14"):
             load(f'{{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",duration_minutes={duration}}}')
@@ -170,8 +173,11 @@ def test_lawsim_adapter_rejects_an_unreviewed_identity_and_uses_the_catalog_dura
         LawSimCornerAdapter(g, Corner("communist-law-simulator", "lawsim", "other-view"))
     with pytest.raises(CornerExecutionError, match="identity"):
         LawSimCornerAdapter(g, _corner(live_eligible=True))
+    # audio_enabled is now a boolean opt-in (lawsim_narration, #2812): True is
+    # accepted and stored; only non-boolean values are rejected.
+    assert LawSimCornerAdapter(g, _corner(audio_enabled=True)).audio_enabled is True
     with pytest.raises(CornerExecutionError, match="audio"):
-        LawSimCornerAdapter(g, _corner(audio_enabled=True))
+        LawSimCornerAdapter(g, _corner(audio_enabled=1))
     with pytest.raises(LawSimCornerError, match="duration"):
         LawSimCornerManager(g, duration_minutes=MAX_DURATION_MINUTES + 1)
 
@@ -475,3 +481,41 @@ def test_program_adapter_rejects_a_generation_outside_the_engine(tmp_path, monke
     )
     with pytest.raises(AdapterError, match="不正"):
         adapter.build_session_payload()
+
+
+
+# --- #2812 revamp: display + audio contract tests ---------------------------
+
+
+def test_lawsim_view_uses_fullscreen_cover_fit():
+    assert "Math.max(innerWidth/960,innerHeight/540)" in HTML
+
+
+def test_lawsim_view_has_throttled_canvas_scene():
+    assert '<canvas id="scene">' in HTML
+    assert "visibilitychange" in HTML
+    assert "setInterval(sceneTick,250)" in HTML
+
+
+def test_lawsim_narration_is_bounded_and_covers_session():
+    from docich.lawsim_narration import narration_text, MAX_SPEECH
+
+    text = narration_text({
+        "title": "t", "republic": "r", "finalStatusText": "done",
+        "frames": [{"text": "open"}],
+        "turns": [{"lawName": "L", "deltas": {"production": 5},
+                   "events": [{"text": "warn"}]}],
+    })
+    assert 0 < len(text) <= MAX_SPEECH
+    assert "L" in text
+
+
+def test_lawsim_corner_audio_enabled_stored(tmp_path):
+    (tmp_path / "docich.toml").write_text("", encoding="utf-8")
+    from types import SimpleNamespace
+
+    g = SimpleNamespace(state_dir=tmp_path / "run")
+    adapter = LawSimCornerAdapter(g, _corner(audio_enabled=True))
+    assert adapter.audio_enabled is True
+    assert adapter.manager.audio_enabled is True
+
