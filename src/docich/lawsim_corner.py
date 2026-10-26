@@ -94,16 +94,18 @@ def _stable(canonical):
 class LawSimCornerManager:
     """Run one bounded 法律シミュレーター会期 under the shared GameSwitch slot."""
 
-    def __init__(self, g, *, duration_minutes=DEFAULT_DURATION_MINUTES, coordinator=None,
-                 clock=time.time, sleep=time.sleep, poll_s=1.0):
-        if (type(duration_minutes) is not int
-                or not 1 <= duration_minutes <= MAX_DURATION_MINUTES):
+    def __init__(self, g, *, duration_minutes=DEFAULT_DURATION_MINUTES, audio_enabled=False,
+                 coordinator=None, clock=time.time, sleep=time.sleep, poll_s=1.0):
+        if type(duration_minutes) is not int or not 1 <= duration_minutes <= MAX_DURATION_MINUTES:
             raise LawSimCornerError(
                 f"lawsim duration must be an integer from 1 to {MAX_DURATION_MINUTES} minutes")
+        if type(audio_enabled) is not bool:
+            raise LawSimCornerError("lawsim audio_enabled must be a boolean")
         if type(poll_s) not in (int, float) or poll_s <= 0:
             raise LawSimCornerError("lawsim poll interval must be positive")
         self.g = g
         self.duration_minutes = duration_minutes
+        self.audio_enabled = audio_enabled
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -312,6 +314,7 @@ class LawSimCornerManager:
             ends_at=started + self.duration_minutes * 60,
         )
         self._save(state)
+        self._announce_once(state)
         return "queued" if canonical.get("phase") == "draining" else None
 
     @staticmethod
@@ -323,6 +326,34 @@ class LawSimCornerManager:
         except LawSimCornerError:
             return False
         return actual == identity
+
+    def _announce_once(self, state):
+        """Publish a bounded narration once per corner request (best-effort)."""
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or state.get("announce_request_id") == request_id:
+            return
+        state["announce_request_id"] = request_id
+        self._save(state)
+        try:
+            from .lawsim_narration import announcement
+            result = announcement(self.g, request_id=request_id,
+                                  audio_enabled=self.audio_enabled)
+        except Exception:
+            result = {"overlay": "failed", "speech": "failed"}
+        overlay = result.get("overlay") if isinstance(result, dict) else None
+        speech = result.get("speech") if isinstance(result, dict) else None
+        state["overlay_announcements"] = {
+            "sent": 1 if overlay == "sent" else 0,
+            "failed": 1 if overlay == "failed" else 0,
+            "skipped": 1 if overlay == "skipped" else 0,
+        }
+        if self.audio_enabled:
+            state["narration"] = {
+                "enqueued": 1 if speech == "sent" else 0,
+                "delivery_failed": 1 if speech == "failed" else 0,
+                "skipped": 1 if speech == "skipped" else 0,
+            }
+        self._save(state)
 
     def _wait_and_restore(self, state):
         identity = state.get("lawsim_runtime_identity")
