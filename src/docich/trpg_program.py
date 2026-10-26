@@ -626,6 +626,30 @@ class TrpgProgramManager:
         self._clear_stop_request()
         return "completed"
 
+    def _ensure_scenario_staged(self, request_id, state):
+        from .trpg_session import settings
+
+        try:
+            config = settings(self.g)
+        except Exception as exc:
+            raise TrpgProgramError("trpg scenario settings are invalid") from exc
+        if "scenario_file" in config:
+            return
+        try:
+            from .trpg_generation import ensure_staged_scenario
+
+            ensure_staged_scenario(
+                self.g, request_id, config, duration_minutes=self.duration_minutes
+            )
+        except Exception as exc:
+            state.update(
+                status="failed",
+                completed_at=self.clock(),
+                last_error_code="scenario_generation_failed",
+            )
+            self._save(state)
+            raise TrpgProgramError("trpg scenario generation failed before dispatch") from exc
+
     def run_rotation(self, request_id):
         request_id = self._request_id(request_id)
         state = self._read_state()
@@ -649,6 +673,7 @@ class TrpgProgramManager:
                         return self._mark_interrupted(state, "operator-stopped-before-start")
                     # Accepted/queued/succeeded receipts are durable owners:
                     # replay the same request id instead of starting a new one.
+                self._ensure_scenario_staged(request_id, state)
                 result = self._dispatch_start(state)
                 if result is not None:
                     return result
@@ -666,6 +691,7 @@ class TrpgProgramManager:
                 return "queued"
             if self._stop_requested():
                 return self._mark_interrupted(state, "operator-stopped-before-start")
+            self._ensure_scenario_staged(request_id, state)
             self._save(state)
             result = self._dispatch_start(state)
             if result is not None:
