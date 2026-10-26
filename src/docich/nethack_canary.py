@@ -74,7 +74,7 @@ def _exact_keys(raw: dict[str, object], allowed: set[str], where: str) -> None:
         raise NethackCanaryError(f"{where} contains unknown fields: {unknown}")
 
 
-_SEVERE_RECOVERY_OUTCOMES = {"not_observed", "resolved", "fail_closed"}
+_SEVERE_RECOVERY_OUTCOMES = {"not_observed", "observed_unattempted", "recovery_unresolved", "resolved"}
 
 
 def _check_severe_recovery(value: object) -> None:

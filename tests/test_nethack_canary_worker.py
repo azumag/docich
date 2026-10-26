@@ -8,6 +8,8 @@ import pytest
 
 import docich.nethack_canary_worker as worker
 from docich.nethack_canary_executor import CanaryKey
+from docich.actions import Action
+from docich.nethack_policy import PolicyDecision
 from docich.nethack_canary_worker import (
     ARENA,
     CanaryWorkerError,
@@ -355,7 +357,7 @@ def test_candidate_arm_fails_closed_without_a_second_prayer_when_status_persists
     assert game.keys[: len(PRAYER_KEYS)] == PRAYER_KEYS
     assert game.keys.count("#") == 1
     assert result["exit_reason"] == "policy_stall:progress_blocked"
-    assert result["severe_recovery"]["outcome"] == "fail_closed"
+    assert result["severe_recovery"]["outcome"] == "recovery_unresolved"
     assert result["severe_recovery"]["recovery_started"] == 1
     assert result["severe_recovery"]["recovery_resolved"] == 0
 
@@ -371,7 +373,10 @@ def test_severe_recovery_tally_counts_episodes_and_resolution_on_complete_frames
     assert tally.severe_episodes == 1
     tally.observe_frame(partial)
     assert tally.severe_episodes == 1
-    assert tally.summary(candidate_request())["outcome"] == "fail_closed"
+    assert tally.summary(candidate_request())["outcome"] == "observed_unattempted"
+    tally.recovery_sent(PolicyDecision("strategic", "status_recovery", "test", (Action(type="text", text="#"),)))
+    assert tally.summary(candidate_request())["outcome"] == "recovery_unresolved"
+    tally.recovery_open = False
     tally.recovery_open = True
     tally.observe_frame(partial)
     assert tally.recovery_resolved == 0

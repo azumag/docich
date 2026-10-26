@@ -179,10 +179,14 @@ def severe_status_recovery_action(obs: NethackObservation) -> Action | None:
         return None
     return Action(type="text", text=SEVERE_RECOVERY_COMMAND)
 
+# Status conditions that dominate movement and trigger the reviewed prayer (#759).
+SEVERE_CONDITIONS = frozenset({"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"})
+
+
 class NethackLayeredPolicy:
     """Fail-closed layered policy over normalized public observation."""
 
-    _SEVERE_CONDITIONS = {"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"}
+    _SEVERE_CONDITIONS = SEVERE_CONDITIONS
     _FOOD_EMERGENCY = {"Weak", "Fainting", "Fainted", "Starved"}
     _MOVEMENT_IMPAIRING = {"Blind", "Conf", "Stun", "Hallu"}
 
