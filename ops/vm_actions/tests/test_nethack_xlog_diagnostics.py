@@ -593,9 +593,10 @@ class XlogBudgetTests(unittest.TestCase):
     def test_drop_collapses_to_findings_stub(self):
         payload = {'nethack_xlog': self.section()}
         diag._nethack_xlog_drop(payload)
-        self.assertEqual(payload['nethack_xlog'], {
-            'schema_version': 1, 'collected_at': 1790000000,
-            'status': 'output_omitted'})
+        self.assertEqual(payload['nethack_xlog']['schema_version'], 1)
+        self.assertEqual(payload['nethack_xlog']['collected_at'], 1790000000)
+        self.assertEqual(payload['nethack_xlog']['status'], 'output_omitted')
+        self.assertIsNotNone(payload['nethack_xlog']['xlog'].get('record_span'))
 
     def test_budget_ignores_missing_section(self):
         payload = {}
