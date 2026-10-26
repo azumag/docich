@@ -2,6 +2,8 @@ import os
 import socket
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -280,6 +282,46 @@ class TestNativeCaptions(StreamTestBase):
                 ready, detail = stream.caption_socket_ready(str(path))
             self.assertTrue(ready)
             self.assertEqual(detail, "caption socket ready")
+
+    def test_wait_for_caption_socket_reports_missing_socket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+            ready, detail = stream.wait_for_caption_socket(
+                str(path), timeout_s=0.05, interval_s=0.01
+            )
+        self.assertFalse(ready)
+        self.assertIn("未準備", detail)
+
+    def test_wait_for_caption_socket_returns_when_filter_creates_socket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+
+            def create_later():
+                time.sleep(0.1)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                    listener.bind(str(path))
+                    path.chmod(0o600)
+                    time.sleep(0.5)
+
+            thread = threading.Thread(target=create_later)
+            thread.start()
+            try:
+                ready, detail = stream.wait_for_caption_socket(
+                    str(path), timeout_s=3.0, interval_s=0.01
+                )
+            finally:
+                thread.join()
+        self.assertTrue(ready)
+        self.assertEqual(detail, "caption socket ready")
+
+    def test_wait_for_caption_socket_stops_when_ffmpeg_exits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+            ready, detail = stream.wait_for_caption_socket(
+                str(path), timeout_s=3.0, interval_s=0.01, is_running=lambda: False
+            )
+        self.assertFalse(ready)
+        self.assertIn("終了しました", detail)
 
 
 if __name__ == "__main__":

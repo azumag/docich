@@ -34,6 +34,7 @@
 #include "libavutil/avstring.h"
 #include "libavutil/base64.h"
 #include "libavutil/opt.h"
+#include "libavutil/rational.h"
 #include "libavutil/time.h"
 
 #include "avfilter.h"
@@ -46,6 +47,10 @@
 #define DOCICHCC_MAX_TEXT 65
 #define DOCICHCC_MAX_TRIPLETS 128
 #define DOCICHCC_MAX_EXECUTION_ID 128
+/* CTA-708 allows at most 31 three-byte constructs per picture.  The 30 fps row
+ * of libavfilter's ccfifo table carries 20 (2 CEA-608 + 18 padding); keep that
+ * packet shape for frame rates the table does not know. */
+#define DOCICHCC_CC_COUNT_PER_FRAME 20
 
 typedef enum DocichCCFinalize {
     FINALIZE_NONE,
@@ -688,10 +693,30 @@ static int config_input(AVFilterLink *link)
         return ret;
     s->cc_fifo_ready = 1;
     if (s->cc_fifo.passthrough) {
-        av_log(ctx, AV_LOG_WARNING,
-               "docichcc disabled: frame rate %d/%d is unsupported\n",
-               frame_rate.num, frame_rate.den);
-        return 0;
+        /* libavfilter's ccfifo only knows the 15/24/30/60 rows of CTA-708
+         * Table 3 (plus their 1001/1000 NTSC variants).  Every other rate -
+         * 20 fps is the production operator value - used to leave the FIFO in
+         * passthrough, so this filter logged one WARNING and skipped
+         * setup_listener(): no socket, no captions, for the whole stream
+         * (#2792).  Keep the 60 CEA-608 triplets/second budget the 30 fps row
+         * uses and derive a per-frame count instead of disabling captions. */
+        double fps = av_q2d(frame_rate);
+        int per_frame;
+
+        if (fps <= 0.0)
+            return AVERROR(EINVAL);
+        per_frame = (int)(60.0 / fps + 0.999);
+        if (per_frame < 1)
+            per_frame = 1;
+        if (per_frame > DOCICHCC_CC_COUNT_PER_FRAME)
+            per_frame = DOCICHCC_CC_COUNT_PER_FRAME;
+        s->cc_fifo.passthrough = 0;
+        s->cc_fifo.expected_608 = per_frame;
+        s->cc_fifo.expected_cc_count = DOCICHCC_CC_COUNT_PER_FRAME;
+        av_log(ctx, AV_LOG_INFO,
+               "docichcc: frame rate %d/%d is outside the ccfifo table; "
+               "injecting %d CEA-608 triplets per frame\n",
+               frame_rate.num, frame_rate.den, per_frame);
     }
     return setup_listener(ctx);
 }
