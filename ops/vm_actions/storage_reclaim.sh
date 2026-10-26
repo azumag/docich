@@ -180,6 +180,23 @@ run_cmd() {
   fi
 }
 
+run_stage() {
+  local name="$1"; shift
+  local rc=0
+  printf 'STAGE %s start\n' "$name"
+  if [[ "$apply" == 1 ]]; then
+    "$@" || rc=$?
+  else
+    rc=0
+  fi
+  if [[ "$rc" == 0 ]]; then
+    printf 'STAGE %s ok rc=0\n' "$name"
+  else
+    printf 'STAGE %s failed rc=%s\n' "$name" "$rc"
+  fi
+  return 0
+}
+
 say "=== storage_reclaim mode=$([[ "$apply" == 1 ]] && echo apply || echo dry-run) root=$root min_age_days=$min_age_days ==="
 
 # 1. Stale verification artifacts under soren/tmp (allowlist + age gate).
@@ -365,37 +382,38 @@ if [[ "$include_aivis" == 1 ]]; then
 fi
 
 # 6. Fixed system maintenance commands (bounded, standard) + docker reclaim.
+# Each stage runs independently: a failure in one must not abort the others.
+# Results are emitted as STAGE <name> <ok|skip|failed> rc=<n> for audit.
 if [[ "$skip_system" == 0 ]]; then
-  run_cmd sudo -n apt-get clean
-  run_cmd sudo -n journalctl --vacuum-size=200M
+  run_stage apt_clean sudo -n apt-get clean
+  run_stage journal_vacuum sudo -n journalctl --vacuum-size=200M
   if command -v snap >/dev/null 2>&1; then
     while IFS= read -r line; do
       [[ "$line" == *disabled* ]] || continue
       name="$(awk '{print $1}' <<<"$line")"
       rev="$(awk '{print $3}' <<<"$line")"
       [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ && "$rev" =~ ^[0-9]+$ ]] || continue
-      run_cmd sudo -n snap remove "$name" --revision="$rev"
+      run_stage "snap_remove_${name}_${rev}" sudo -n snap remove "$name" --revision="$rev"
     done < <(snap list --all 2>/dev/null | tail -n +2 || true)
+  else
+    printf 'STAGE snap_reclaim skip rc=0\n'
   fi
 
-  # Docker: dangling images / build cache older than 168h only. Tagged
-  # images, containers, volumes are never candidates.
+  # Docker: dangling images / build cache older than 168h only.
   docker_image_max_age="168h"
   docker_builder_max_age="168h"
   if command -v docker >/dev/null 2>&1; then
     if sudo -n docker info >/dev/null 2>&1; then
-      run_cmd sudo -n docker image prune -f --filter "until=${docker_image_max_age}"
-      run_cmd sudo -n docker builder prune -f --filter "until=${docker_builder_max_age}"
+      run_stage docker_image_prune sudo -n docker image prune -f --filter "until=${docker_image_max_age}"
+      run_stage docker_builder_prune sudo -n docker builder prune -f --filter "until=${docker_builder_max_age}"
     else
-      say "SKIP docker reclaim (docker/sudo unavailable)"
+      printf 'STAGE docker_reclaim skip rc=0\n'
     fi
   else
-    say "SKIP docker reclaim (docker not installed)"
+    printf 'STAGE docker_reclaim skip rc=0\n'
   fi
 
-  # Rotate only soren application logs (never truncate live file; copytruncate).
-  # opencode.log lives outside soren/logs: own stanza, size 50M x3.
-  # tool-output stays out: opencode reads it live, no age-gate delete (#389).
+  # Logrotate config install + run (single stage; failure recorded, not fatal).
   logrotate_conf='/etc/logrotate.d/soren'
   read -r -d '' conf <<'CONF' || true
 /home/ubuntu/soren/logs/*.log {
@@ -421,8 +439,8 @@ if [[ "$skip_system" == 0 ]]; then
 CONF
   printf 'CONF would install %s\n' "$logrotate_conf"
   if [[ "$apply" == 1 ]]; then
-    printf '%s\n' "$conf" | sudo -n tee "$logrotate_conf" >/dev/null
-    sudo -n logrotate -f "$logrotate_conf"
+    run_stage logrotate_install sh -c "printf '%s\n' \"$conf\" | sudo -n tee \"$logrotate_conf\" >/dev/null"
+    run_stage logrotate_run sudo -n logrotate -f "$logrotate_conf"
   fi
 fi
 
