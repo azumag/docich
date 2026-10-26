@@ -27,6 +27,16 @@ done
 
 [[ "$apply" == 0 || "$apply" == 1 ]] || { echo "invalid APPLY" >&2; exit 2; }
 
+# Fail-closed snap cache root boundary (docich#2769 DSH review): in APPLY mode the
+# helper may only delete under the reviewed production snapd cache path unless an
+# explicit test-only gate permits a temp root.
+if [[ "$apply" == 1 && "$snap_cache_root" != "/var/lib/snapd/cache" ]]; then
+  if [[ "${STORAGE_RECLAIM_TEST_ALLOW_CUSTOM_SNAP_CACHE_ROOT:-0}" != "1" ]]; then
+    echo "refusing non-default snap cache root in APPLY mode: $snap_cache_root" >&2
+    exit 2
+  fi
+fi
+
 case "$stage_filter" in
   all|journal_vacuum|apt_clean|snap_disabled|snapd_cache|docker_prune|logrotate_install|logrotate_run) ;;
   *) echo "invalid stage: $stage_filter" >&2; exit 2 ;;
