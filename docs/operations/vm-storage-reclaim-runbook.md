@@ -172,7 +172,7 @@ Phase 1 後に承認済み read-only SSH（補助経路）で root fs 37GB を `
 
 ## Staged general maintenance diagnostics (#2769)
 
-`emergency-storage-reclaim.yml` は既存の general maintenance step（`storage_reclaim.sh`）を不変のまま残し、直後に別 step で `storage_reclaim_maintenance_staged.sh` を gateway exec します。各 stage は独立実行され、失敗しても後続 stage は継続します。
+`emergency-storage-reclaim.yml` は既存の general maintenance step（`storage_reclaim.sh`）を不変のまま残し、直後に別 step で `storage_reclaim_staged.sh` を gateway exec します。各 stage は独立実行され、失敗しても後続 stage は継続します。
 
 出力は固定 enum のみです：
 
