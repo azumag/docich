@@ -39,6 +39,7 @@ def _payload(tmp_path, *, revealed=False):
         "poll": {"question": "次に調べる場所は？", "status": "solo", "choices": [
             {"label": "書斎", "value": "study", "votes": 3, "winner": True}]},
         "prediction": {"status": "resolved", "resolved": True, "hit": True},
+        "reveal_step": 2,
         "updated_at": 12345,
     }
 
@@ -167,3 +168,29 @@ def test_handler_identity_arguments_are_validated(tmp_path):
 def test_default_port_is_the_reserved_mystery_port():
     # 8803-8806 are taken by weather/tsuitate/yoso/doushi.
     assert DEFAULT_PORT == 8807
+
+
+def test_board_has_the_deduction_and_reveal_panels():
+    """#2757: the board grew a cross-reference panel and an explained reveal."""
+    html = mystery_view.HTML
+    for marker in ('id="matrix"', 'id="revealboard"', 'id="mrooms"', 'id="msusp"',
+                   'id="rv-verdict"', 'id="rv-story"', 'id="rv-motive"',
+                   'id="rv-reason"', "reveal_step", "時刻つきの手がかり"):
+        assert marker in html
+    # The view still speaks only Japanese-localised, non-translating markup.
+    assert 'lang="ja"' in html and 'translate="no"' in html
+
+
+def test_revealed_payload_carries_the_explanation_sections(tmp_path):
+    path = payload_path(tmp_path)
+    payload = _payload(tmp_path, revealed=True)
+    write_payload(path, payload)
+    data = read_payload(path)
+    assert data is not None
+    published = data["case"]["reveal"]
+    for key in ("timeline", "method_how", "method_evidence", "motive_reason",
+                "motive_evidence", "motive_room", "contradiction", "exclusions"):
+        assert published.get(key)
+    assert len(published["exclusions"]) == len(data["case"]["suspects"]) - 1
+    # The pre-reveal board is unchanged: no reveal block before the end.
+    assert "reveal" not in _payload(tmp_path)["case"]
