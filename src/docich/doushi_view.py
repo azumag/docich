@@ -78,7 +78,7 @@ const PAGES=[
  {key:'popular_cards',title:'人気カード TOP10',sub:'期間内に引かれたカード',nameTh:'カード名',valueTh:'枚数',
   note:'期間内に引かれた枚数と人数',row:r=>[`${r.card_name}`,`${r.actual_count} 枚（${r.drawer_count}人が獲得）`]}
 ];
-function fit(){const el=document.getElementById('stage');const s=Math.min(innerWidth/960,innerHeight/540);el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
+function fit(){const el=document.getElementById('stage');const s=Math.max(innerWidth/960,innerHeight/540);el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
 addEventListener('resize',fit);fit();
 function showUnavailable(on){document.getElementById('unavailable').hidden=!on;}
 function pageNote(data,page){return `${data.note} ／ ${page.note}`;}

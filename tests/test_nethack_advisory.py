@@ -119,7 +119,7 @@ class TestAdvisoryController(unittest.TestCase):
             wall_time=lambda: 1234.5,
         )
 
-    def test_proposal_is_logged_and_narrated_but_never_becomes_action(self) -> None:
+    def test_approved_rest_proposal_is_logged_narrated_and_returned_as_action(self) -> None:
         spoken = []
         strategist = FakeStrategist(
             StrategistDispatchResult(
@@ -141,12 +141,12 @@ class TestAdvisoryController(unittest.TestCase):
         self.assertEqual(outcome.evaluation_status, "approved")
         self.assertTrue(outcome.narrated)
         self.assertEqual(spoken, ["ここは . で1ターン待機します。"])
-        self.assertFalse(hasattr(outcome, "actions"))
+        self.assertEqual([(a.type, a.text) for a in outcome.actions], [("text", ".")])
         self.assertEqual(len(strategist.calls), 1)
 
         log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
         event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
-        self.assertEqual(event["execution"], "advisory_only")
+        self.assertEqual(event["execution"], "strategist_action")
         self.assertEqual(event["proposal"]["kind"], "rest")
         self.assertEqual(event["evaluation"]["status"], "approved")
 
@@ -244,6 +244,106 @@ class TestAdvisoryController(unittest.TestCase):
         again = ctl.consider(visible_screen(hp="10(10)"), normalized(hp="10(10)"), contact)
         self.assertFalse(again.narrated)
 
+    def test_blocking_prompt_is_answered_with_default_when_strategist_is_disabled(self) -> None:
+        strategist = FakeStrategist(
+            StrategistDispatchResult(status="proposed", proposal=StrategicProposal(schema_version=1, kind="rest", rationale="x"))
+        )
+        ctl = self.controller(strategist)
+        ctl.config = NethackAdvisoryConfig(enabled=False, command="")
+        prompt = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        outcome = ctl.consider(visible_screen(message="Really attack? [yn]"), normalized(message="Really attack? [yn]"), prompt)
+        self.assertEqual(outcome.status, "disabled")
+        self.assertEqual([(a.type, a.text) for a in outcome.actions], [("text", "n")])
+        self.assertEqual(strategist.calls, [])
+
+    def test_blocking_prompt_uses_approved_answer_then_default_on_rejection(self) -> None:
+        msg = "What direction? "
+        prompt = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        answered = FakeStrategist(
+            StrategistDispatchResult(
+                status="proposed",
+                proposal=StrategicProposal(schema_version=1, kind="answer_prompt", rationale="go west", prompt_answer="h"),
+            )
+        )
+        ctl = self.controller(answered)
+        outcome = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.text) for a in outcome.actions], [("text", "h")])
+
+        rejected = FakeStrategist(
+            StrategistDispatchResult(
+                status="proposed",
+                proposal=StrategicProposal(schema_version=1, kind="answer_prompt", rationale="bad", prompt_answer="q"),
+            )
+        )
+        ctl2 = self.controller(rejected)
+        outcome2 = ctl2.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.key) for a in outcome2.actions], [("special", "Escape")])
+        log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
+        event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(event["execution"], "default_prompt_answer")
+
+    def test_blocking_prompt_is_still_answered_when_budget_or_cooldown_is_exhausted(self) -> None:
+        msg = "Call a potion: "
+        prompt = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        strategist = FakeStrategist(
+            StrategistDispatchResult(status="error", error="down", error_kind="timeout")
+        )
+        ctl = self.controller(strategist, max_calls=1, cooldown=100.0)
+        ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.clock[0] += 1.0
+        # A new visible frame is a new prompt, so the answer is not suppressed.
+        next_msg = "Call a scroll: "
+        cooled = ctl.consider(visible_screen(message=next_msg), normalized(message=next_msg), prompt)
+        self.assertEqual(cooled.status, "budget_exhausted")
+        self.assertEqual([(a.type, a.key) for a in cooled.actions], [("special", "Escape")])
+        self.assertEqual(len(strategist.calls), 1)
+
+    def test_same_visible_prompt_frame_is_answered_only_once(self) -> None:
+        msg = "Call a potion: "
+        prompt = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        strategist = FakeStrategist(
+            StrategistDispatchResult(status="error", error="down", error_kind="timeout")
+        )
+        ctl = self.controller(strategist, cooldown=0.0)
+        first = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.key) for a in first.actions], [("special", "Escape")])
+        # The frozen frame is not answered again: no key, no strategist call.
+        for _ in range(3):
+            self.clock[0] += 1.0
+            frozen = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+            self.assertEqual(frozen.status, "suppressed")
+            self.assertEqual(frozen.actions, ())
+        self.assertEqual(len(strategist.calls), 1)
+        # A non-prompt frame clears the mark, so the same prompt text is answered again later.
+        ctl.consider(visible_screen(message="You see here a dagger."), normalized(message="You see here a dagger."), PolicyDecision(layer="tactical", intent="explore", reason="x"))
+        again = ctl.consider(visible_screen(message=msg), normalized(message=msg), prompt)
+        self.assertEqual([(a.type, a.key) for a in again.actions], [("special", "Escape")])
+        self.assertEqual(len(strategist.calls), 2)
+
+    def test_proposed_prayer_is_logged_but_never_sent_by_the_brain_path(self) -> None:
+        sick = normalize_tty(
+            "msg\n..@.....\n..#.....\nDlvl:3 HP:10(10) Pw:7(10) AC:2 Exp:4 Sick\nT:123\n", cols=80, rows=5
+        )
+        decision = PolicyDecision(
+            layer="strategic",
+            intent="status_emergency",
+            reason="visible severe status",
+            requires_llm=True,
+        )
+        strategist = FakeStrategist(
+            StrategistDispatchResult(
+                status="proposed",
+                proposal=StrategicProposal(schema_version=1, kind="pray", rationale="severe status"),
+            )
+        )
+        ctl = self.controller(strategist)
+        outcome = ctl.consider("msg\n..@.....\n..#.....\nDlvl:3 HP:10(10) Pw:7(10) AC:2 Exp:4 Sick\nT:123\n", sick, decision)
+        self.assertEqual(outcome.evaluation_status, "approved")
+        self.assertEqual(outcome.actions, ())
+        log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
+        event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(event["execution"], "advisory_only")
+
     def test_non_strategic_exploration_never_calls_model(self) -> None:
         strategist = FakeStrategist(
             StrategistDispatchResult(
@@ -260,6 +360,59 @@ class TestAdvisoryController(unittest.TestCase):
         outcome = ctl.consider(visible_screen(hp="10(10)"), normalized(hp="10(10)"), decision)
         self.assertEqual(outcome.status, "not_needed")
         self.assertEqual(strategist.calls, [])
+
+
+class TestBrainPromptAnswers(unittest.TestCase):
+    """A held prompt's advisory answer is sent only after a fresh-frame check."""
+
+    # A text prompt is not handled by the production resolver, so it reaches the advisory default.
+    MESSAGE = "Call a potion: "
+
+    def setUp(self) -> None:
+        from docich.adapters.base import Observation
+        from docich.agent.brains import NethackPolicyBrain
+
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        g = SimpleNamespace(state_dir=root, repo_root=root)
+        game = SimpleNamespace(
+            name="nethack",
+            adapter="cli",
+            raw={"cli": {"cols": 80, "rows": 5}},
+            agent=SimpleNamespace(brain="nethack", command=""),
+        )
+        self.brain = NethackPolicyBrain(g, game)
+        self.Observation = Observation
+        self.ready = {"phase": "ready", "operation": None, "request_id": None, "active": {"game": "nethack"}}
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def observation(self, message: str):
+        return self.Observation(
+            game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=visible_screen(message=message)
+        )
+
+    def test_held_text_prompt_is_cancelled_and_validated_against_exact_frame(self) -> None:
+        obs = self.observation(self.MESSAGE)
+        actions = self.brain.decide(obs)
+        self.assertEqual([(a.type, a.key) for a in actions], [("special", "Escape")])
+        self.assertTrue(self.brain.validate_action(actions[0], obs, canonical=self.ready))
+        self.brain.action_sent(actions[0])
+
+    def test_advisory_answer_is_rejected_when_frame_changed_or_canonical_is_not_ready(self) -> None:
+        obs = self.observation(self.MESSAGE)
+        actions = self.brain.decide(obs)
+        self.assertFalse(self.brain.validate_action(actions[0], obs, canonical=None))
+        self.brain.decide(obs)
+        self.assertFalse(
+            self.brain.validate_action(actions[0], self.observation("changed --More--"), canonical=self.ready)
+        )
+        self.brain.decide(obs)
+        self.assertFalse(
+            self.brain.validate_action(actions[0], obs, canonical=dict(self.ready, phase="draining"))
+        )
+        self.brain.discard_action_plan()
 
 
 if __name__ == "__main__":

@@ -1402,3 +1402,67 @@ def test_review_show_publishes_and_speaks_analysis_without_a_model(tmp_path):
     assert spoken == [payload["commentary"]["1"]]
     assert "交換の代償" in spoken[0] and "比較候補" in spoken[0]
     assert "最善手は判定していません" in spoken[0]
+
+
+def _long_kifu(move_count=12):
+    """A legal alternating pawn-push kifu long enough for two stretches."""
+    from docich import shogi_board as sb
+
+    moves = [{"usi": "7g7f", "by": "sente", "ms": 300},
+             {"usi": "3c3d", "by": "gote", "ms": 300},
+             {"usi": "6g6f", "by": "sente", "ms": 300},
+             {"usi": "4c4d", "by": "gote", "ms": 300},
+             {"usi": "5g5f", "by": "sente", "ms": 300},
+             {"usi": "2c2d", "by": "gote", "ms": 300},
+             {"usi": "4g4f", "by": "sente", "ms": 300},
+             {"usi": "9c9d", "by": "gote", "ms": 300},
+             {"usi": "3g3f", "by": "sente", "ms": 300},
+             {"usi": "1c1d", "by": "gote", "ms": 300},
+             {"usi": "2g2f", "by": "sente", "ms": 300},
+             {"usi": "8c8d", "by": "gote", "ms": 300}][:move_count]
+    annotated = sb.annotate(moves)
+    assert len(annotated) == len(moves)
+    return annotated
+
+
+def test_review_show_aggregates_stretch_text_into_one_flow(tmp_path):
+    from docich import tsuitate_show as show
+
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    state.update(beta_result=_settled_result(), beta_game_id="fixtureGame01",
+                 beta_color="sente", beta_active_since=1000.0,
+                 view_runtime_identity={"game": VIEW_NAME, "runtime_id": "g4-a1b2c3d4",
+                                        "generation": 4, "lease_id": "lease"})
+    spoken = []
+    summary = {"color": "sente", "own": {"totalMs": 9169}, "opponent": {"totalMs": 65641},
+               "fouls": 10, "opponentFouls": 0, "promotions": 8, "drops": 13,
+               "ratingBefore": 1005, "ratingAfter": 1003, "opponentName": "kakuren_bot"}
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(), audio_enabled=True,
+        sleep=lambda *_: None, clock=lambda: 1000.0,
+        read_review=lambda game_id, terminal, *, color: summary,
+        read_kifu=lambda game_id, terminal, *, color: {"kifu": {"moves": _long_kifu()},
+                                                       "color": "sente"},
+        chunk_text=lambda g, moves, start, end: (f"{start}手目から{end}手目の解説です。"
+                                                 "公開後の盤面での比較で、当時の見え方や最善手は判定していません。",
+                                                 "fallback"),
+        speak_chunk=lambda g, text, request_id: spoken.append(text),
+        wait_boundary=lambda g: "quiet",
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(manager._read_state())
+
+    payload = show.read_show(g.state_dir, runtime_id=identity["runtime_id"],
+                             generation=identity["generation"])
+    # Both stretches speak, but the repeated disclaimer and template sentence
+    # are said once, so the show reads as the game's flow instead of a loop.
+    assert payload["commentary"]["1"] == ("1手目から6手目の解説です。"
+                                          "公開後の盤面での比較で、当時の見え方や最善手は判定していません。")
+    assert payload["commentary"]["7"] == "7手目から12手目の解説です。"
+    assert spoken == [payload["commentary"]["1"], payload["commentary"]["7"]]
+    # The verified public facts ride along as the review screen's status strip.
+    assert payload["status"] == {"rating": "1005→1003", "clock": "AI計9秒 / 相手計66秒",
+                                 "fouls": "AI10回 / 相手0回", "shapes": "成り8回 / 打ち13回"}

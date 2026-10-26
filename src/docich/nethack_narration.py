@@ -35,6 +35,30 @@ _TEXT = {
     "exploration_blocked": "安全に進める道が見えないので、. で1ターン進めて様子を見ます。",
 }
 
+# #2742: game text messages get a fixed per-kind explanation. The raw message is
+# never read aloud (unknown text is not spoken), and this only changes narration.
+_MESSAGE_TEXT = {
+    "engraving": "床に文字が刻まれています。内容を画面で確認しながら進みます。",
+    "rumor": "噂話のメッセージが表示されています。内容を確認しながら進みます。",
+    "pager": "メッセージの続きがあるため、画面の内容を確認しながら次へ進みます。",
+}
+_MESSAGE_KIND_RE = (
+    ("engraving", re.compile(r"written (?:here|in the dust)|\bengrav\w*|\bin the dust\b", re.I)),
+    ("rumor", re.compile(r"\brumou?rs?\b|\bfortune\b|scrap of paper", re.I)),
+)
+# Intents whose narration is a neutral explanation; safety emergencies keep their own text.
+_MESSAGE_NARRATABLE = {"advance_message", "prompt_decision", "explore_step", "inspect_screen", "exploration_blocked"}
+
+
+def message_kind(obs: NethackObservation) -> str | None:
+    """Fixed kind for a visible game message, or None when unrecognized."""
+    for kind, pattern in _MESSAGE_KIND_RE:
+        if pattern.search(obs.message):
+            return kind
+    if obs.prompt == "more":
+        return "pager"
+    return None
+
 
 def runtime_table(game, name: str) -> dict:
     raw = game.raw.get("nethack", {})
@@ -95,6 +119,8 @@ class NethackNarrator:
         # Report visible facts, never infer death from a temporarily absent @.
         if re.search(r"(?:^|\s)You (?:die|have died)\.", obs.message):
             key, text = "death", "死亡の表示を確認したので、今回の冒険の結果を記録から確認します。"
+        elif key in _MESSAGE_NARRATABLE and (kind := message_kind(obs)) is not None:
+            key, text = f"message:{kind}", _MESSAGE_TEXT[kind]
         elif (
             level is not None and level != self._last_level
             and key in {"explore_step", "advance_message", "inspect_screen"}

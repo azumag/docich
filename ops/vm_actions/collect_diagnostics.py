@@ -646,6 +646,76 @@ def _storage_db_family(db_path):
     }
 
 
+def _classify_sys_tmp_top_level(path, *, max_entries=STORAGE_MAX_ENTRIES):
+    """Identity-free top-level classification of a /tmp-style directory.
+
+    Returns counts and bytes per class so a runaway can be coarsely attributed
+    without SSH: (1) git worktree/clone (directory containing a ``.git``
+    marker), (2) files grouped by extension, (3) everything else. No names or
+    content are reported. Partial scans set ``scan_complete=False``.
+    """
+    path = Path(path)
+    result = {"git_worktree": {"count": 0, "allocated_bytes": 0},
+              "by_extension": {},
+              "other": {"count": 0, "allocated_bytes": 0},
+              "scan_complete": True}
+    try:
+        root_st = os.lstat(path)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["scan_complete"] = False
+        return result
+    if not stat.S_ISDIR(root_st.st_mode):
+        result["scan_complete"] = False
+        return result
+
+    seen = 0
+    try:
+        entries = os.scandir(path)
+    except OSError:
+        result["scan_complete"] = False
+        return result
+    with entries:
+        for entry in entries:
+            if seen >= max_entries:
+                result["scan_complete"] = False
+                break
+            seen += 1
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except (FileNotFoundError, OSError):
+                result["scan_complete"] = False
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                result["other"]["count"] += 1
+                result["other"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    has_git = (Path(entry.path) / ".git").exists()
+                except OSError:
+                    has_git = False
+                    result["scan_complete"] = False
+                if has_git:
+                    result["git_worktree"]["count"] += 1
+                    result["git_worktree"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                else:
+                    result["other"]["count"] += 1
+                    result["other"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                continue
+            # file
+            name = entry.name
+            ext = ""
+            if "." in name and not name.startswith("."):
+                ext = name.rsplit(".", 1)[-1].lower()[:16]
+            if not ext:
+                ext = "(none)"
+            bucket = result["by_extension"].setdefault(ext, {"count": 0, "allocated_bytes": 0})
+            bucket["count"] += 1
+            bucket["allocated_bytes"] += _storage_allocated_bytes(st)
+    return result
+
 def _collect_storage_breakdown(
     soren,
     prod_root,
@@ -723,6 +793,7 @@ def _collect_storage_breakdown(
         "system_log": _storage_tree_usage(var_log, max_entries=max_entries),
         "swapfile": _storage_file_usage(swap_file),
         "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
+        "sys_tmp_top_level": _classify_sys_tmp_top_level(sys_tmp, max_entries=max_entries),
         "docich_git_objects": _storage_tree_usage(
             prod_root / ".git" / "objects", max_entries=max_entries
         ),
@@ -12104,14 +12175,31 @@ def _nethack_xlog_budget(payload):
 
 
 def _nethack_xlog_drop(payload):
-    """Collapse the whole xlog projection to its findings as the last resort."""
+    """Collapse the xlog projection to its first-order evidence as the last resort.
+
+    Preserve the stat-level lock/permission evidence (``paths``/``dirs``), the
+    ``findings`` summary and the ``xlog.record_span`` timeline even at the hard
+    ceiling, so #753 recurrence monitoring stays visible. Everything else is
+    dropped and marked ``output_omitted``.
+    """
     section = payload.get("nethack_xlog")
-    if isinstance(section, dict):
-        payload["nethack_xlog"] = {
-            "schema_version": section.get("schema_version"),
-            "collected_at": section.get("collected_at"),
-            "status": "output_omitted",
-        }
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    record_span = xlog.get("record_span") if isinstance(xlog, dict) else None
+    dropped = {
+        "schema_version": section.get("schema_version"),
+        "collected_at": section.get("collected_at"),
+        "status": "output_omitted",
+    }
+    for key in ("paths", "dirs", "findings"):
+        value = section.get(key)
+        if value is not None:
+            dropped[key] = value
+    if record_span is not None:
+        dropped["xlog"] = {"record_span": record_span,
+                           "record_span_omitted": False}
+    payload["nethack_xlog"] = dropped
     return payload
 
 

@@ -7,7 +7,7 @@ import pytest
 from docich.adapters.base import Observation
 from docich.agent.brains import build_brain
 from docich.agent.loop import _run_iteration
-from docich.nethack_narration import NethackNarrator
+from docich.nethack_narration import NethackNarrator, message_kind
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import NethackLayeredPolicy, PolicyDecision
 from docich.nethack_startup import NethackStartup
@@ -433,3 +433,45 @@ def test_a_feline_blocking_the_only_exit_gets_one_ordinary_bump():
     cleared = "msg\n-.@-\n----\n" + _status()
     assert [a.text for a in brain.decide(observation(cleared))] == ["h"]
     assert brain.last_decision.intent == "explore_step"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ('Something is written here in the dust. You read: "?d acra ??m".', "床に文字が刻まれています。内容を画面で確認しながら進みます。"),
+    ("This cookie has a scrap of paper inside. It reads: rumor has it.", "噂話のメッセージが表示されています。内容を確認しながら進みます。"),
+])
+def test_message_kind_narration_uses_fixed_text(audio, message, expected):
+    g = SimpleNamespace()
+    narrator = NethackNarrator(g, game(narration={"enabled": True}))
+    obs = normalized(frame(message))
+    narrator.consider(obs, NethackLayeredPolicy().decide(obs))
+    assert audio.call_args.args[1] == expected
+    assert "Is this" not in audio.call_args.args[1] and "dust" not in audio.call_args.args[1]
+
+
+def test_quoted_question_in_a_statement_is_not_an_engraving():
+    obs = normalized(frame("You read: \"Is this a question?\" -- and shrug."))
+    assert message_kind(obs) is None
+
+
+def test_pager_more_without_known_kind_is_explained(audio):
+    narrator = NethackNarrator(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = normalized(frame("You see a long passage. --More--"))
+    narrator.consider(obs, NethackLayeredPolicy().decide(obs))
+    assert audio.call_args.args[1] == "メッセージの続きがあるため、画面の内容を確認しながら次へ進みます。"
+
+
+def test_message_kind_does_not_override_safety_or_change_actions(audio):
+    narrator = NethackNarrator(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = normalized(frame('Something is written here in the dust. --More--', hp="2(16)"))
+    decision = NethackLayeredPolicy().decide(obs)
+    narrator.consider(obs, decision)
+    assert decision.intent in {"survival_emergency", "advance_message"}
+    if decision.intent == "survival_emergency":
+        assert audio.call_args.args[1] == "体力が危険な水準です。安全な画面では . で1ターン待機します。"
+
+
+def test_message_narration_keeps_policy_actions(audio):
+    brain = build_brain(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = observation(frame('Something is written here in the dust. You read: "?d"'))
+    actions = brain.decide(obs)
+    assert audio.call_count == 1

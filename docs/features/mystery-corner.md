@@ -16,17 +16,55 @@
 - LLM の出力はゲーム状態・答えに**一切ならない**（#380 が確立した信頼側エンジン哲学と同じ）。
   ナレーションは検証済みの事実の再話のみ。
 
+### 1.1 推理可能性（#2757、2026-10-26）
+
+オーナー指摘「推理できる材料が少なすぎる／開示で全容と推理が明かされない」への
+構造的な対応。エンジン `VERSION = 2`。
+
+- 事件は「時刻つきの手がかり」と「アリバイ」の突き合わせだけで解ける形に生成する。
+  犯人のアリバイ（別室で一人）を否定する手がかりは**必ず別の部屋**に置き、
+  無実の容疑者の居場所は証言か時刻つきの手がかりで裏づける（§2 の成立条件）。
+- 手がかりは部屋ごとに1件。役割は `contradiction`（犯人を事件時刻の別室に置く）/
+  `corroboration`（無実グループの居場所を裏づける）/ `motive`（時刻を持たない動機の証拠）/
+  `flavour`。役割と対象容疑者はエンジン内部の真実で、公開ボードには出さない。
+- 開示（reveal）は `timeline` / `method_how` / `method_evidence` / `motive_reason` /
+  `motive_evidence` / `motive_room` / `contradiction` / `exclusions` を返し、
+  `verify_reveal` はこれら全項目を照合する。文面はすべて確定事実から決定論的に組み立てる。
+  LLM には渡さない（`_speak(..., allow_llm=False)`）。
 ## 2. 進行（1 slot = 1事件、既定30分）
 
 | フェーズ | 内容 | 参加手段 |
 |---|---|---|
-| intro | 事件ボード表示・コミットメント表示・紹介読み上げ | — |
-| investigate | 「次に調べる場所は？」を Twitch アンケートで投票（既定120秒） | アンケート |
-| interrogate | 「次に尋問するのは？」をアンケートで投票 | アンケート |
-| deduction | 推理タイム | — |
+| intro | 事件ボード表示・コミットメント表示・紹介読み上げ（30秒） | — |
+| investigate ×2 | 「次に調べる場所は？」を Twitch アンケートで投票（120秒＋表示20秒）。2巡目は調査済みの部屋を除いた選択肢 | アンケート |
+| interrogate ×2 | 「次に尋問するのは？」をアンケートで投票。2巡目は尋問済みを除く | アンケート |
+| deduction | 残りの部屋・容疑者の資料を一括公開し（`_complete_dossier`）、全手がかりと全アリバイを照合表で提示する推理タイム（90秒） | — |
 | prediction | 「AI探偵ミステリー：犯人は誰？」をチャンネルポイント予想で受付（既定300秒） | 予想 |
-| reveal | 犯人・手法・動機の開示＋ seed / commit 開示。予想を精算または返金 | 予想の精算 |
+| reveal | 4部構成の開示（判定／全容／動機／推理、計200秒）＋ seed / commit 開示。予想を精算または返金 | 予想の精算 |
 
+- **予想開始時点で全資料が公開済み**（#2757 A）。アンケートで扱えるのは各2件までだが、
+  deduction 冒頭の `_complete_dossier` が残りの全部屋の手がかりと全容疑者のアリバイを
+  ボードに載せる。したがって参加0件の展示モードでも、予想を出す時点で材料は揃っている。
+- **推理の成立条件（エンジンが構造的に保証）**:
+  - 各部屋に手がかりが1件、各容疑者にアリバイが1件。時刻つきの手がかりは
+    「その人物が事件時刻にいた部屋」を意味する。
+  - 犯人は「別室で一人だった」と証言するが、**別の部屋**の手がかりが事件時刻の
+    痕跡（手法の証拠＋犯人固有の痕跡）を残している。これが事件で唯一の矛盾。
+  - 無実の容疑者は全員、事件時刻の居場所を「互いの証言」または「時刻つきの手がかり」で
+    裏づけられており、申告した部屋と食い違わない。一人だけのアリバイの無実もいるため、
+    「一人でいた者＝犯人」という近道は成立しない。
+  - `mystery_case.contradicted_suspects` / `solve` が公開情報だけからこの導出を行い、
+    seed sweep（`tests/test_mystery_case.py`）で一意性を検証する。
+- 手法・動機も独立抽選の飾りではない。手法は現場に残る証拠（`method_evidence`）、
+  動機は犯人の部屋から出る証拠（`motive_evidence`）と結びつき、どちらも key clue /
+  motive clue として公開される。
+- **表示時間の配分根拠**: 30分枠 = intro 30 + 調査 2×140 + 尋問 2×140 + deduction 90 +
+  予想 300 + 開示 200 = 1,140秒（19分）。残り約11分は待ち合わせ・復帰の余裕で、
+  セッションは `ends_at` から `SESSION_RESERVE_S`（300秒 = 開示200＋復帰）を引いた
+  予算内でのみ動く。開示は4部（判定45／全容60／動機40／推理55）に分け、
+  960×540の全幅パネル（①判定・②全容・③動機・④推理）を読み切れる速さにする。
+  15分未満の短い枠では開示（200秒）と復帰を優先し、アンケートは solo、予想は skip に
+  縮退する（表示自体は完走し、開示まで必ず到達する）。
 - 予想の精算は半熟英雄予想と同じ 2026-10-15 オーナー方針（#933）を踏襲する:
   投票の入った選択肢が1つ以下なら **CANCELED（全額返金）**、成立していれば犯人の
   選択肢を winning outcome にして RESOLVED する。勝敗の読み上げは実際の票
@@ -38,8 +76,11 @@
   通信失敗・投票0件）は **seeded なAI探偵が代わりに進行する展示モード**。視聴者0人でも
   1事件は完走し、開示まで必ず到達する。
 - `ends_at`（catalog の `duration_minutes`、1-45分）が唯一のハード上限。各フェーズは
-  残り時間から reveal/復帰の reserve（150秒）を引いた予算内で実行し、足りなければ
+  残り時間から reveal/復帰の reserve（300秒）を引いた予算内で実行し、足りなければ
   短縮（アンケートは最短15秒）または skip する。
+- エンジン `VERSION` は 2（#2757 で事件の生成規則が変わった）。セッションは開始時の
+  version を保持し、配備をまたいだ再開で version が変わっていた場合は、公開済み
+  commitment と食い違う答えを作らないために開示せず case-error で終了する。
 
 ## 3. 構成
 
@@ -103,11 +144,20 @@ PYTHONPATH=src python3 -m pytest -q tests/test_mystery_case.py \
 ```
 
 - エンジン: seed 再現・bounds（Helix 2-5選択肢/25字）・公開ボードから答えが漏れない・
-  reveal 照合（fail-closed）。
+  reveal 照合（fail-closed）。#2757 として:
+  - `test_every_seed_is_uniquely_deducible_from_the_published_material`:
+    seed sweep（400件）で「公開情報だけで犯人が一意」を検証。
+  - `test_full_pre_reveal_dossier_still_hides_the_solution`: 全公開後も手法・動機・
+    理由文がボードに漏れないことを検証。
+  - `test_reveal_explains_the_whole_case` / `test_reveal_parts_explain_the_whole_case…`:
+    時系列・方法の実行と証拠・動機の関係・矛盾・除外理由が reveal と読み上げの両方に
+    含まれることを検証。
 - API: gate（`TWITCH_POLLS_ENABLED` / EXPLORE_MODE / 未設定）・envelope 厳密検査・
   vote 集計の決定性。
-- corner: 単独完走→開示→復帰 / アンケート票で分岐 / 0票で solo / 予想の精算と返金 /
-  manual stop でも開示 / オペレーター移動で interrupted（`operator-moved-during-mystery`）。
+- corner: 単独完走→開示→復帰 / アンケート票で分岐（2巡） / 0票で solo / 予想の精算と返金 /
+  manual stop でも開示 / オペレーター移動で interrupted（`operator-moved-during-mystery`）/
+  `test_prediction_opens_on_a_complete_and_uniquely_deducible_dossier`（予想開始時の
+  ボードだけから犯人が導けることを実配信経路で検証）。
 
 ## 6. 運用メモと既知の限界
 

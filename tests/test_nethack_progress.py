@@ -53,8 +53,14 @@ def act(agent, text, *, canonical=None):
     actions = [call.args[0] for call in adapter.act.call_args_list]
     assert count == len(actions)
     assert len(actions) <= 1
-    assert all(action.type == "text" and len(action.text) == 1 for action in actions)
-    return [action.text for action in actions]
+    # A held blocking prompt may get one safe answer: a single literal key, or
+    # Escape (the cancel default for unknown/text prompts). Never a movement key.
+    assert all(
+        (action.type == "text" and len(action.text) == 1)
+        or (action.type == "special" and action.key == "Escape")
+        for action in actions
+    )
+    return [action.text if action.type == "text" else action.key for action in actions]
 
 
 def test_reported_generation_252_diagonal_only_escape():
@@ -222,7 +228,8 @@ def test_wrapped_prompt_never_sends_diagonal_or_confirmation_n(message, wrap):
     # is tested with an eligible canonical state, not masked by its owner gate.
     text = frame({"n": "#", "k": "d"}, message=message, hp="4(16)")
     assert normalize_tty(text).prompt == "unknown"
-    assert act(brain(), text, canonical=READY) == []
+    # The unknown prompt is cancelled with Escape; neither diagonal nor 'n' is sent.
+    assert act(brain(), text, canonical=READY) == ["Escape"]
 
 
 def test_full_width_attack_with_continuation_never_authorizes_decline():
@@ -230,7 +237,7 @@ def test_full_width_attack_with_continuation_never_authorizes_decline():
     assert len(message) == 79
     text = frame({"n": "#"}, message=message + "\ny")
     assert normalize_tty(text).prompt == "unknown"
-    assert act(brain(), text, canonical=READY) == []
+    assert act(brain(), text, canonical=READY) == ["Escape"]
 
 
 def test_map_yes_no_glyphs_do_not_block_diagonal_progress():
@@ -255,12 +262,12 @@ def test_long_normal_message_and_next_map_row_keep_progress(length, map_row):
 
 @pytest.mark.parametrize("message", ["Really", "Really save", "Really attack the kitten", "Would you like to inspect"])
 def test_incomplete_question_stem_never_sends_map_or_decline_key(message):
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
 
 
 def test_hard_wrapped_unknown_stem_never_sends_map_key():
     message = "An unusual object " + "x" * 62 + "\ncontinue?"
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
 
 
 @pytest.mark.parametrize("message,intent", [
@@ -268,12 +275,15 @@ def test_hard_wrapped_unknown_stem_never_sends_map_key():
     ("Really attack the kitten? [yn] (n)", "decline_attack"),
     ("Really save? [yn] (n)", "decline_save"),
 ])
-def test_reviewed_confirmation_is_declined_once_per_visible_frame(message, intent):
+def test_reviewed_confirmation_is_declined_a_bounded_number_of_times_per_visible_frame(message, intent):
     agent = brain()
     text = frame({"n": "#"}, message=message)
     state = READY if intent == "decline_save" else None
     assert act(agent, text, canonical=state) == ["n"]
     assert agent.last_progress_decision.intent == intent
+    for _ in range(3):
+        assert act(agent, text, canonical=state) == ["n"]
+        assert agent.last_progress_decision.intent == intent
     assert act(agent, text, canonical=state) == []
     assert agent.last_progress_decision.intent == "progress_blocked"
     # n on the subsequent map is now southeast, context checked independently.
@@ -383,7 +393,7 @@ def test_stale_closed_capture_after_direction_waits_for_fresh_door_result():
     assert door not in agent.policy.explorer.failed_doors
 
 
-def test_more_after_open_door_direction_is_advanced_once_while_result_pending():
+def test_more_after_open_door_direction_is_resent_a_bounded_number_of_times_while_result_pending():
     agent = brain()
     closed = frame({"l": "+"})
     door = (1, 41, 14)
@@ -395,6 +405,9 @@ def test_more_after_open_door_direction_is_advanced_once_while_result_pending():
     assert normalize_tty(more).prompt == "more"
     assert act(agent, more) == [" "]
     assert agent.progress._door_result_pending is not None
+    for _ in range(3):
+        assert act(agent, more) == [" "]
+        assert agent.progress._door_result_pending is not None
     assert act(agent, more) == []
     assert agent.progress._door_result_pending is not None
 
@@ -404,11 +417,13 @@ def test_more_after_open_door_direction_is_advanced_once_while_result_pending():
     assert door not in agent.policy.explorer.failed_doors
 
 
-def test_pending_door_more_prompt_is_advanced_only_once():
+def test_pending_door_more_prompt_is_resent_a_bounded_number_of_times():
     agent = brain()
     assert act(agent, frame({"l": "+"})) == ["o"]
     more = frame({"l": "+"}, message="A message appears. --More--")
     assert act(agent, more) == [" "]
+    for _ in range(3):
+        assert act(agent, more) == [" "]
     assert act(agent, more) == []
     assert agent.last_progress_decision.intent == "progress_blocked"
 
@@ -534,9 +549,9 @@ def test_agent_loop_sends_resolved_diagonal_then_declines_observed_attack():
     ]
     adapter.observe.side_effect = [Observation(
         game="nethack", title="NetHack", adapter="cli", ts=float(i), kind="text", text=text,
-    ) for i, text in enumerate([frames[0], frames[0], frames[1], frames[1], frames[2]])]
-    assert [_run_iteration(adapter, agent, 1500) for _ in frames] == [1, 1, 0]
-    assert [call.args[0].text for call in adapter.act.call_args_list] == ["n", "n"]
+    ) for i, text in enumerate([frames[0], frames[0], frames[1], frames[1], frames[2], frames[2]])]
+    assert [_run_iteration(adapter, agent, 1500) for _ in frames] == [1, 1, 1]
+    assert [call.args[0].text for call in adapter.act.call_args_list] == ["n", "n", "n"]
 
 
 def test_candidate_sidecar_cannot_replace_resolved_actions():
@@ -580,11 +595,13 @@ def test_hungry_at_any_hp_uses_terrain_then_bump_then_wait(hp):
         assert_production_safe(rest, normalize_tty(frame({"n": "#"}, message="Really quit? [yn]")))
 
 
-def test_same_more_frame_is_sent_once_until_frame_changes():
+def test_same_more_frame_is_resent_a_bounded_number_of_times_until_frame_changes():
     agent = brain()
     text = frame(message="You hit the newt. --More--", turn=None)
     assert act(agent, text) == [" "]
-    for _ in range(6):
+    for _ in range(3):
+        assert act(agent, text) == [" "]
+    for _ in range(3):
         assert act(agent, text) == []
         assert agent.last_progress_decision.intent == "progress_blocked"
     assert act(agent, frame(message="Another page --More--", turn=None)) == [" "]
@@ -1127,3 +1144,40 @@ def test_a_real_prompt_still_never_becomes_gameplay_after_the_prose_fix(message)
     assert agent.last_progress_decision.intent not in {
         "explore_step", "retreat_step", "rest_turn", "bump_creature",
     }
+
+
+@pytest.mark.parametrize("text", [
+    frame(message="A message --More--"),
+    frame({"h": "f"}, message="Really attack the cat? [yn] (n)"),
+])
+def test_unchanged_answered_prompt_is_resent_a_bounded_number_of_times(text):
+    from unittest.mock import Mock
+    from docich.agent.loop import _run_iteration
+    agent = brain()
+    adapter = Mock()
+    adapter.observe.return_value = observation(text)
+    sent_counts = [_run_iteration(adapter, agent, 1500) for _ in range(6)]
+    # One original answer plus MAX_ANSWERED_PROMPT_RESENDS identical re-sends,
+    # then the resolver holds and the stall guard becomes the backstop.
+    assert sent_counts == [1] * (1 + 3) + [0] * 2
+    keys = [call.args[0].text for call in adapter.act.call_args_list]
+    assert keys == [keys[0]] * 4
+    assert keys[0] in {" ", "n"}
+    assert agent.last_progress_decision.intent == "progress_blocked"
+    assert "re-sent 3 times" in agent.last_progress_decision.reason
+
+
+def test_changed_frame_resets_answered_prompt_resend_budget():
+    from unittest.mock import Mock
+    from docich.agent.loop import _run_iteration
+    agent = brain()
+    more = frame(message="A message --More--")
+    adapter = Mock()
+    adapter.observe.return_value = observation(more)
+    for _ in range(4):
+        assert _run_iteration(adapter, agent, 1500) == 1
+    assert _run_iteration(adapter, agent, 1500) == 0
+    # A genuinely new frame re-arms the answer; the game is not stuck on it.
+    adapter.observe.return_value = observation(frame(message="Another message --More--"))
+    assert _run_iteration(adapter, agent, 1500) == 1
+    assert agent.progress._answered_prompt_resends == 0

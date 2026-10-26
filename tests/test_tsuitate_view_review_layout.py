@@ -31,6 +31,20 @@ def test_review_mode_replaces_live_view_with_visible_board_layout():
     assert '<div id="kifu" class="kifu"></div>' in html
 
 
+def test_review_screen_shows_a_status_strip_of_verified_facts():
+    html = view.HTML
+
+    # The live view's status panel disappears in review mode; the kifu show
+    # keeps an at-a-glance status instead (docich#2737): a bounded strip of
+    # the already-published facts beside the move list, before the commentary.
+    assert ".stat{display:flex;flex-wrap:wrap" in html
+    assert ".stat i{font-style:normal" in html
+    assert "statLabel={rating:\"レート\",clock:\"考慮時間\",fouls:\"反則\",shapes:\"成打\"}" in html
+    assert "'<div class=\"side\">'+(stat?'<div class=\"stat\">'+stat+'</div>':'')+" in html
+    # Only the payload's own values are rendered, never invented ones.
+    assert "show.status||null" in html and "st[k]" in html
+
+
 def test_live_view_explains_that_only_postgame_public_kifu_is_shown():
     html = view.HTML
 

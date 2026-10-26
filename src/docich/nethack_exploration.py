@@ -34,10 +34,15 @@ OPEN_DOOR_GLYPHS = frozenset({"-", "|", "−"})
 class LevelMemory:
     visits: dict[tuple[int, int], int] = field(default_factory=dict)
     seen: dict[tuple[int, int], str] = field(default_factory=dict)
-    # Down-staircase tiles seen on this level. The player glyph replaces the
+    # Staircase tiles seen on this level. The player glyph replaces the
     # terrain under the hero, so the tile must be remembered before it is
     # stepped on; ``seen`` alone would show '@' exactly when it matters.
     down_stairs: set[tuple[int, int]] = field(default_factory=set)
+    up_stairs: set[tuple[int, int]] = field(default_factory=set)
+    # Tiles that have been visibly a closed door at least once. Used by the
+    # canary catalog to close only a doorway the hero actually opened, never a
+    # wall tile that happens to share the '-', '|' glyphs of an open door.
+    doors: set[tuple[int, int]] = field(default_factory=set)
 
 
 class NethackExplorationMemory:
@@ -60,6 +65,25 @@ class NethackExplorationMemory:
         if obs.player is None:
             return False
         return obs.player in self.down_stairs_at(obs.vitals.dungeon_level)
+
+    def up_stairs_at(self, dungeon_level: int | None) -> frozenset[tuple[int, int]]:
+        """Read-only view of the remembered up-staircase tiles."""
+        if dungeon_level is None:
+            return frozenset()
+        memory = self.levels.get(dungeon_level)
+        return frozenset(memory.up_stairs) if memory is not None else frozenset()
+
+    def standing_on_up_stairs(self, obs: NethackObservation) -> bool:
+        if obs.player is None:
+            return False
+        return obs.player in self.up_stairs_at(obs.vitals.dungeon_level)
+
+    def doors_at(self, dungeon_level: int | None) -> frozenset[tuple[int, int]]:
+        """Read-only view of tiles seen as a closed door on this level."""
+        if dungeon_level is None:
+            return frozenset()
+        memory = self.levels.get(dungeon_level)
+        return frozenset(memory.doors) if memory is not None else frozenset()
 
     def forget_down_stairs(self, obs: NethackObservation) -> None:
         """Drop the hero's tile after the game refused to descend there.
@@ -86,6 +110,10 @@ class NethackExplorationMemory:
                     memory.seen[(x, y)] = glyph
                     if glyph == ">":
                         memory.down_stairs.add((x, y))
+                    elif glyph == "<":
+                        memory.up_stairs.add((x, y))
+                    elif glyph == "+":
+                        memory.doors.add((x, y))
         if obs.player is not None:
             memory.visits[obs.player] = memory.visits.get(obs.player, 0) + 1
         return memory
