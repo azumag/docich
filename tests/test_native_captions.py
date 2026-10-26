@@ -20,16 +20,18 @@ class NativeCaptionSourceTests(unittest.TestCase):
         # operator value) used to disable the whole filter. The filter must
         # derive a per-frame triplet budget and still create the socket.
         source = (REPO_ROOT / "native/ffmpeg/vf_docichcc.c").read_text(encoding="utf-8")
-        self.assertNotIn("frame rate %d/%d is unsupported", source)
-        self.assertIn("DOCICHCC_CC_COUNT_PER_FRAME", source)
+        self.assertIn("per_frame = (int)(60.0 / fps);", source)
+        self.assertIn("cc_count = (int)(600.0 / fps + 0.999);", source)
         self.assertIn("s->cc_fifo.expected_608 = per_frame;", source)
+        self.assertIn("s->cc_fifo.expected_cc_count = cc_count;", source)
         self.assertIn("s->cc_fifo.passthrough = 0;", source)
+        # A non-positive frame rate stays fail-open (no filter-graph failure).
+        self.assertIn("docichcc disabled: frame rate", source)
         # The listener must not be gated on the frame-rate table.
         config_input = source.split("static int config_input(", 1)[1].split(
             "static av_cold int init(", 1
         )[0]
         self.assertIn("return setup_listener(ctx);", config_input)
-        self.assertNotIn("docichcc disabled: frame rate", config_input)
 
     def test_socket_is_private_nonblocking_and_identity_guarded(self) -> None:
         source = (REPO_ROOT / "native/ffmpeg/vf_docichcc.c").read_text(encoding="utf-8")

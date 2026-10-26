@@ -12,6 +12,12 @@ returns an empty/whitespace-only value is recorded with a ``[COMMENT_TRANSLATION
 marker (timestamp + failure kind) on stderr and via the module logger, matching
 the legacy comment path's diagnostic marker. The Japanese reply is still
 adopted, so translation remains a best-effort side channel.
+
+Scope note: this module is the native comment base. The production comment path
+currently runs through legacy soviet_now (chat_worker.sh dociai -> broadcast/
+comment.sh); wiring the same marker into that path is tracked as a separate
+follow-up (soviet_now PR + submodule bump). Until then, this native stage is
+the reference implementation and test surface for the marker contract.
 """
 
 from __future__ import annotations
@@ -32,6 +38,8 @@ def _comment_translation_timestamp() -> str:
 
 def _log_comment_translation_failure(kind: str, detail: str = "", *, log=None) -> None:
     """Record one translation failure (never raises)."""
+    # ``detail`` may include provider error text returned by the translator.
+    # It is diagnostic only and must not be treated as trusted content.
     message = f"[COMMENT_TRANSLATION] {_comment_translation_timestamp()} failed: {kind}"
     if detail:
         message = f"{message}: {detail}"
