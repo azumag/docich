@@ -54,3 +54,57 @@ def test_diagnostics_never_read_state_bytes(tmp_path,monkeypatch):
     monkeypatch.setattr(Path,'read_bytes',forbid)
     result=load_collector()._collect_hanjuku_resume(tmp_path)
     assert result['status']=='verified_receipt' and result['core_roundtrip_record'] is True
+
+
+def test_detached_claim_is_visible_without_claiming_recovery_eligibility(tmp_path,monkeypatch):
+    from docich.hanjuku_resume_recovery import fingerprint
+    data,_=setup(tmp_path,'claimed')
+    (tmp_path/'game_switch.json').write_text(json.dumps({'phase':'ready','active':{'game':'sorengame'}}))
+    before={p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    def forbid(*a,**kw):raise AssertionError('binary state reader forbidden')
+    with monkeypatch.context() as patch:
+        patch.setattr(Path,'read_bytes',forbid)
+        result=load_collector()._collect_hanjuku_resume(tmp_path)
+    assert result=={'status':'detached_claim','basis':'resume_receipt',
+                    'reservation_fingerprint':fingerprint(data)}
+    assert 'PRIVATE' not in json.dumps(result)
+    assert {p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==before
+
+
+@pytest.mark.parametrize('change',['local-mismatch','missing','symlink','active','candidate','retiring','traversal','malformed-active'])
+def test_detached_claim_requires_stable_plane_and_matching_metadata(tmp_path,change):
+    data,runtime=setup(tmp_path,'claimed')
+    canonical={'phase':'ready','active':{'game':'sorengame'}}
+    if change=='local-mismatch':
+        (runtime/'hanjuku_resume.json').write_text(json.dumps(dict(data,request_id='other')))
+    elif change=='missing':(runtime/'hanjuku_resume.json').unlink()
+    elif change=='symlink':
+        (runtime/'hanjuku_resume.json').unlink()
+        (runtime/'hanjuku_resume.json').symlink_to(tmp_path/'hanjuku-resume/hanjuku_resume.json')
+    elif change=='active':canonical['active']={'game':'hanjuku-hero'}
+    elif change=='candidate':canonical['candidate']={'game':'other'}
+    elif change=='retiring':canonical['retiring']=[{'game':'hanjuku-hero'}]
+    elif change=='malformed-active':canonical['active']=['PRIVATE']
+    elif change=='traversal':
+        (tmp_path/'hanjuku-resume/hanjuku_resume.json').write_text(json.dumps(dict(data,runtime_id='../PRIVATE')))
+    (tmp_path/'game_switch.json').write_text(json.dumps(canonical))
+    result=load_collector()._collect_hanjuku_resume(tmp_path)
+    assert result['status'] in {'unavailable','unverified'}
+    assert 'reservation_fingerprint' not in result and 'PRIVATE' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('changed',['game_switch.json','hanjuku-resume/hanjuku_resume.json'])
+def test_detached_claim_does_not_publish_fingerprint_across_a_change(tmp_path,monkeypatch,changed):
+    setup(tmp_path,'claimed')
+    (tmp_path/'game_switch.json').write_text(json.dumps({'phase':'idle'}))
+    collector=load_collector();read=collector._read_hanjuku_record;reads=0
+    def changing(path):
+        nonlocal reads
+        value,mtime=read(path)
+        if Path(path)==tmp_path/changed:
+            reads+=1
+            if reads==2:value={**value,'concurrent_change':True}
+        return value,mtime
+    monkeypatch.setattr(collector,'_read_hanjuku_record',changing)
+    assert collector._collect_hanjuku_resume(tmp_path)=={
+        'status':'identity_changed','basis':'resume_receipt'}

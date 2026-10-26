@@ -21,7 +21,7 @@ from .game_switch import GameSwitchStore, atomic_write_json, validate_request_id
 from .hanjuku_manual_cancel import (
     CancelRefused, DIGEST, _existing_lock, _object, _released_runtime, _ProbeTmux,
 )
-from .hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, core_digest
+from .hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, START_POLICY, core_digest
 from .naming import runtime_directory, runtime_id_generation
 from .retroarch_boundary import checkpoint_digest
 from .trading.soren_output import resolve_soren_root
@@ -61,6 +61,10 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                 or type(original.get('generation')) is not int):
             raise CancelRefused('reservation_not_in_scope')
         logical = validate_request_id(original.get('request_id'))
+        automatic = (original.get('start_policy') == START_POLICY
+                     and original.get('start_mode') == 'resume'
+                     and original.get('dispatch_source') == 'automatic'
+                     and original.get('explicit_resume') is False)
         validate_request_id(original.get('lease_id'))
         if runtime_id_generation(original.get('runtime_id')) != original['generation']:
             raise CancelRefused('invalid_evidence')
@@ -133,19 +137,34 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         original_pending = (state.get('status') == 'recovery_required'
                             and pending.get('request_id') == logical
                             and pending.get('corner') == 'hanjuku-hero'
-                            and pending.get('source') == 'manual'
+                            and pending.get('source') == ('automatic' if automatic else 'manual')
                             and pending.get('phase') == 'dispatched'
-                            and pending.get('resume_latest') is True and not queued)
+                            and (pending.get('resume_latest') is True) == (not automatic)
+                            and not queued)
+        # Rotation may have released this failed slot and already reused the
+        # shared owner file. Only an audited release of THIS logical request
+        # admits that case; never clear another pending reservation or owner.
+        released = (state.get('released_requests') or {}).get('hanjuku-hero') or {}
+        audited_release = released.get('request_id') == logical or any(
+            isinstance(row, dict) and row.get('corner') == 'hanjuku-hero'
+            and row.get('request_id') == logical
+            and row.get('resolution') == 'released-unverified'
+            for row in (state.get('failed_corners') or []))
+        detached = (automatic and audited_release and not pending and not queued
+                    and state.get('status') in {'ready', 'waiting'})
         recovered_pending = (recovery is not None and not pending
                              and queued.get('request_id') == attempt
                              and queued.get('resume_request_id') == logical
                              and state.get('status') == 'waiting')
-        if not original_pending and not recovered_pending:
+        if not original_pending and not detached and not recovered_pending:
             raise CancelRefused('reservation_not_in_scope')
-        if (owner.get('rotation_request_id') != logical or owner.get('game') != 'hanjuku-hero'
-                or owner.get('status') not in {'failed', 'interrupted'}
-                or (owner.get('status') == 'interrupted'
-                    and owner.get('startup_resume_recovery') != attempt)):
+        owns_failure = (owner.get('rotation_request_id') == logical
+                        and owner.get('game') == 'hanjuku-hero')
+        terminal_owner = owner.get('status') in {'idle', 'completed', 'interrupted', 'expired'}
+        if not ((owns_failure and (owner.get('status') == 'failed'
+                                  or (owner.get('status') == 'interrupted'
+                                      and owner.get('startup_resume_recovery') == attempt)))
+                or (automatic and audited_release and terminal_owner)):
             raise CancelRefused('owner_not_terminal')
         if not apply:
             return {'status': 'recovery-eligible', 'fingerprint': digest}
@@ -154,8 +173,12 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
             request = {k: v for k, v in original.items()
                        if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
             request.update(status='queued', startup_recovery=recovery)
+            if automatic:
+                # This is now an explicit operator retry of the SAME sealed
+                # transfer, not a fresh selection or an automatic replay loop.
+                request.update(dispatch_source='manual', explicit_resume=True)
             atomic_write_json(root / REQUEST_FILE, request)
-        if owner['status'] == 'failed':
+        if owns_failure and owner['status'] == 'failed':
             atomic_write_json(owner_path, dict(owner, status='interrupted',
                                                startup_resume_recovery=attempt))
         if not recovered_pending:
