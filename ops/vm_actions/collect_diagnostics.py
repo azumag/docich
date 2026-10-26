@@ -12163,14 +12163,28 @@ def _nethack_xlog_budget(payload):
 
 
 def _nethack_xlog_drop(payload):
-    """Collapse the whole xlog projection to its findings as the last resort."""
+    """Collapse the xlog projection to its first-order evidence as the last resort.
+
+    Preserve the stat-level lock/permission evidence (``paths``/``dirs``), the
+    ``findings`` summary and the ``xlog.record_span`` timeline even at the hard
+    ceiling, so #753 recurrence monitoring stays visible. Everything else is
+    dropped and marked ``output_omitted``.
+    """
     section = payload.get("nethack_xlog")
-    if isinstance(section, dict):
-        payload["nethack_xlog"] = {
-            "schema_version": section.get("schema_version"),
-            "collected_at": section.get("collected_at"),
-            "status": "output_omitted",
-        }
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    record_span = xlog.get("record_span") if isinstance(xlog, dict) else None
+    payload["nethack_xlog"] = {
+        "schema_version": section.get("schema_version"),
+        "collected_at": section.get("collected_at"),
+        "status": "output_omitted",
+        "paths": section.get("paths"),
+        "dirs": section.get("dirs"),
+        "findings": section.get("findings"),
+        "xlog": {"record_span": record_span, "record_span_omitted": False}
+        if record_span is not None else {"record_span": None},
+    }
     return payload
 
 
