@@ -23,13 +23,59 @@ from .hanjuku_manual_cancel import (
 )
 from .hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, START_POLICY, core_digest
 from .naming import runtime_directory, runtime_id_generation
-from .retroarch_boundary import checkpoint_digest
+from .retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest
 from .trading.soren_output import resolve_soren_root
 
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
                                      allow_nan=False).encode()).hexdigest()
+
+
+def _no_newer_hanjuku_progress(base, store, generation):
+    """Do not replay a sealed checkpoint over any newer Hanjuku execution."""
+    for receipt in store.receipts.receipts():
+        if (receipt.get('target') == 'hanjuku-hero'
+                and receipt.get('generation', 0) > generation
+                and receipt.get('status') not in {'failed', 'rolled_back'}):
+            return False
+    runtimes = base / 'runtimes'
+    if runtimes.is_symlink() or not runtimes.is_dir():
+        return False
+    for runtime in runtimes.glob('g*'):
+        if runtime.is_symlink():
+            return False
+        if not runtime.is_dir():
+            continue
+        relevant = any((runtime / n).exists() or (runtime / n).is_symlink()
+                       for n in ('hanjuku_run.json', RECEIPT_FILE, MANUAL_SAVE_FILE, BOUNDARY_FILE))
+        states = runtime / 'states'
+        if states.is_symlink():
+            return False
+        relevant = relevant or any(states.glob('hanjuku-hero.state*'))
+        if relevant and runtime_id_generation(runtime.name) > generation:
+            return False
+    return True
+
+
+def queue_failed_start(g, *, tmux=None, now=time.time):
+    """Handle an explicit WebUI resume of an interrupted transfer, if present."""
+    request = _object(Path(g.state_dir) / 'hanjuku-resume' / REQUEST_FILE, optional=True)
+    if not request:
+        return None
+    recovery = request.get('startup_recovery')
+    if request.get('status') != 'claimed' and not (
+            isinstance(recovery, dict) and request.get('status') == 'queued'):
+        return None
+    original = recovery.get('original') if isinstance(recovery, dict) else request
+    if not isinstance(original, dict):
+        raise CancelRefused('invalid_evidence')
+    logical = validate_request_id(original.get('request_id'))
+    result = recover(g, expected=fingerprint(original), apply=True, tmux=tmux, now=now)
+    if result.get('status') not in {'recovery-queued', 'already-dispatched'}:
+        raise CancelRefused('reservation_not_in_scope')
+    attempt = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-1'))
+    return {'status': 'queued', 'corner': 'hanjuku-hero', 'request_id': attempt}
 
 
 def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
@@ -112,6 +158,8 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                 or canonical.get('request_id') is not None
                 or (canonical.get('active') or {}).get('game') == 'hanjuku-hero'):
             raise CancelRefused('switch_not_stable')
+        if automatic and not _no_newer_hanjuku_progress(base, store, original['generation']):
+            raise CancelRefused('newer_progress_unverified')
         if not rotation_enabled(g) or 'hanjuku-hero' not in manager._eligible(include_manual_only=True)[0]:
             raise CancelRefused('target_paused_or_unavailable')
         from .adapters.retroarch import resolve_rom, resolve_core
@@ -141,16 +189,18 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                             and pending.get('phase') == 'dispatched'
                             and (pending.get('resume_latest') is True) == (not automatic)
                             and not queued)
-        # Rotation may have released this failed slot and already reused the
-        # shared owner file. Only an audited release of THIS logical request
-        # admits that case; never clear another pending reservation or owner.
+        # The bounded rotation audit may have evicted the original release.
+        # A matching rolled-back receipt plus stopped runtime and absence of
+        # any newer Hanjuku progress also proves this particular transfer safe
+        # to retry; all those checks run under the same writer locks.
         released = (state.get('released_requests') or {}).get('hanjuku-hero') or {}
         audited_release = released.get('request_id') == logical or any(
             isinstance(row, dict) and row.get('corner') == 'hanjuku-hero'
             and row.get('request_id') == logical
             and row.get('resolution') == 'released-unverified'
             for row in (state.get('failed_corners') or []))
-        detached = (automatic and audited_release and not pending and not queued
+        released_proven = audited_release or automatic
+        detached = (automatic and released_proven and not pending and not queued
                     and state.get('status') in {'ready', 'waiting'})
         recovered_pending = (recovery is not None and not pending
                              and queued.get('request_id') == attempt
@@ -164,7 +214,7 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         if not ((owns_failure and (owner.get('status') == 'failed'
                                   or (owner.get('status') == 'interrupted'
                                       and owner.get('startup_resume_recovery') == attempt)))
-                or (automatic and audited_release and terminal_owner)):
+                or (automatic and released_proven and terminal_owner)):
             raise CancelRefused('owner_not_terminal')
         if not apply:
             return {'status': 'recovery-eligible', 'fingerprint': digest}

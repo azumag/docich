@@ -41,17 +41,20 @@
 
 自動slotで保存をclaimした後にswitchがrollbackすると、`claimed` が残り、
 以後の開始は `another checkpoint request is pending` で拒否される。
-この状態は保存を削除して解消せず、既存の `check-recover-hanjuku-resume` →
-`recover-hanjuku-resume` operatorで同じ封印保存を一度だけ再試行する。
-通常のtimerに無条件の再試行や要求の取消は追加しない。
+WebUIの「最新セーブから再開」はこの状態を検出し、既存の復旧検証を通過した場合に
+同じ封印保存を一度だけ再試行する。既存の `check-recover-hanjuku-resume` →
+`recover-hanjuku-resume` operatorも使用できる。保存を削除したり、通常timerに
+無条件の再試行や要求の取消を追加したりしない。
 
 対象は `terminal-boundary-v1 / resume / automatic / explicit_resume=false` のclaim。
 同一requestの `rolled_back` receipt、runtime側claimの完全一致、AI開始記録の不在、
 presenterの停止とtmux資源解放、安定したcanonical、保存・ROM・coreのdigest一致を
 既存writer lockの下で再検証する。ユーザーの休止設定と競合予約も引き続き拒否条件とする。
-元のpendingが残っている場合に加え、slot解放済みの場合は同じrequestの
-`failed_corners` または `released_requests` の解放記録と空の予約枠を要求する。
-履歴が失われた場合や別ownerが稼働中の場合は拒否し、推測で回収しない。
+元のpendingが残っている場合に加え、slot解放済みの場合は空の予約枠と、
+元requestのrollback receipt・停止済みpresentation・tmux資源不在を要求する。
+保持数に上限のある `failed_corners` / `released_requests` の記録が消えていても、
+lock下で新しい半熟の成功・未完了receipt、実行記録、保存がないことを確認する。
+新しい進行、判定不能な状態、別ownerが稼働中の場合は拒否する。
 
 再試行はoperatorによる手動予約となるが、元requestの完全な記録を
 `startup_recovery.original` に保存し、logical UUID・保存・source boundaryを保つ。
