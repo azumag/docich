@@ -13,7 +13,9 @@ import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .actions import Action
 from .nethack_canary_executor import CanaryKey, canary_execution_plan
@@ -22,7 +24,10 @@ from .nethack_inventory import VisibleInventoryItem, parse_visible_inventory
 from .nethack_observation import NethackObservation, normalize_tty
 from .nethack_canary_tactics import CanaryTacticalPolicy
 from .nethack_exploration import NethackExplorer
-from .nethack_policy import NethackLayeredPolicy, PolicyDecision, assert_p3b_safe
+from .nethack_policy import (
+    SEVERE_RECOVERY_COMMAND, NethackLayeredPolicy, PolicyDecision, assert_p3b_safe, turn_ready,
+)
+from .nethack_progress import NethackProgressResolver
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
 from .nethack_strategist import ProposalEvaluation, evaluate_proposal
 from .nethack_strategy import StrategicProposal, build_strategic_request, parse_strategic_proposal
@@ -52,6 +57,70 @@ class CanaryWorkerError(RuntimeError):
     pass
 
 
+# Acceptance episodes (#2650 Plan 2): a reviewed, repository-owned setup key
+# table that drives the normal game to a frame where a severe status can be
+# observed.  Only the candidate arm may request one, the request must name a
+# scenario from this table, and the wizard/explore requirements above are still
+# enforced unchanged.  The table is empty until a scenario is reviewed, so every
+# acceptance request is rejected (fail-closed).
+ACCEPTANCE_SETUP_FRAME_BUDGET = 60
+ACCEPTANCE_SCENARIOS: dict[str, tuple[tuple[CanaryKey, Callable[[NethackObservation], bool]], ...]] = {}
+SEVERE_STATUS = NethackLayeredPolicy._SEVERE_CONDITIONS
+
+
+def _has_severe_status(observation: NethackObservation) -> bool:
+    return any(condition in SEVERE_STATUS for condition in observation.conditions)
+
+
+@dataclass
+class _SevereRecoveryTally:
+    """Canary-side evidence for #759 AC4, reported apart from the terminal outcome.
+
+    An episode is one rising edge of a severe status.  A recovery counts as
+    resolved only on a complete severe-free frame after a prayer was started,
+    the same reviewed evidence the #2526 budget re-arms on.
+    """
+
+    severe_episodes: int = 0
+    recovery_started: int = 0
+    recovery_resolved: int = 0
+    severe_now: bool = False
+    recovery_open: bool = False
+
+    def observe_frame(self, observation: NethackObservation) -> None:
+        severe = _has_severe_status(observation)
+        if severe and not self.severe_now:
+            self.severe_episodes += 1
+        self.severe_now = severe
+        if self.recovery_open and not severe and turn_ready(observation):
+            self.recovery_resolved += 1
+            self.recovery_open = False
+
+    def recovery_sent(self, decision: PolicyDecision) -> None:
+        if decision.intent == "status_recovery" and decision.actions[0].text == SEVERE_RECOVERY_COMMAND:
+            self.recovery_started += 1
+            self.recovery_open = True
+
+    def summary(self, request: dict[str, object]) -> dict[str, object]:
+        if self.severe_episodes == 0:
+            outcome = "not_observed"
+        elif self.recovery_resolved:
+            outcome = "resolved"
+        else:
+            # Unresolved at exit: the episode never reached a complete
+            # severe-free frame (fail-closed hold, stall, or wall timeout).
+            outcome = "fail_closed"
+        acceptance = request.get("acceptance")
+        scenario = acceptance.get("scenario") if isinstance(acceptance, dict) else None
+        return {
+            "acceptance_scenario": scenario,
+            "severe_episodes": self.severe_episodes,
+            "recovery_started": self.recovery_started,
+            "recovery_resolved": self.recovery_resolved,
+            "outcome": outcome,
+        }
+
+
 def _read_request(text: str) -> dict[str, object]:
     if len(text.encode("utf-8")) > MAX_REQUEST_BYTES:
         raise CanaryWorkerError("worker request exceeds size limit")
@@ -63,7 +132,7 @@ def _read_request(text: str) -> dict[str, object]:
         raise CanaryWorkerError("worker request must be object")
     allowed = {
         "schema_version", "experiment_id", "episode_id", "arm", "arena", "player_name",
-        "max_turns", "wall_timeout_s", "seed", "controller", "requirements",
+        "max_turns", "wall_timeout_s", "seed", "controller", "requirements", "acceptance",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -99,6 +168,14 @@ def _read_request(text: str) -> dict[str, object]:
         or requirements.get("explore_mode") is not False
     ):
         raise CanaryWorkerError("worker isolation requirements invalid")
+    acceptance = raw.get("acceptance")
+    if acceptance is not None and (
+        raw.get("arm") != "candidate"
+        or not isinstance(acceptance, dict)
+        or set(acceptance) != {"scenario"}
+        or acceptance.get("scenario") not in ACCEPTANCE_SCENARIOS
+    ):
+        raise CanaryWorkerError("acceptance episode request invalid")
     controller = raw.get("controller")
     if not isinstance(controller, dict):
         raise CanaryWorkerError("worker controller invalid")
@@ -258,7 +335,13 @@ def _int(record: dict[str, str], key: str) -> int | None:
         return None
 
 
-def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit_reason: str) -> dict[str, object]:
+def _terminal_result(
+    request: dict[str, object],
+    record: dict[str, str],
+    *,
+    exit_reason: str,
+    severe_recovery: _SevereRecoveryTally | None = None,
+) -> dict[str, object]:
     bits = _int(record, "achieve")
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -280,6 +363,7 @@ def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit
         "exit_reason": exit_reason,
         "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist_broker",
         "production_state_touched": False,
+        "severe_recovery": (severe_recovery or _SevereRecoveryTally()).summary(request),
     }
 
 
@@ -290,6 +374,7 @@ def _timeout_result(
     turns: int | None = None,
     max_depth: int | None = None,
     last_message: str | None = None,
+    severe_recovery: _SevereRecoveryTally | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -312,6 +397,7 @@ def _timeout_result(
         "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist_broker",
         "production_state_touched": False,
         "last_message": last_message[:120] if isinstance(last_message, str) else None,
+        "severe_recovery": (severe_recovery or _SevereRecoveryTally()).summary(request),
     }
 
 
@@ -348,6 +434,26 @@ def _probe_inventory(game: _TmuxGame) -> tuple[VisibleInventoryItem, ...]:
     inventory = parse_visible_inventory(text)
     game.special("Escape")
     return inventory
+
+
+def _run_acceptance_setup(
+    game: _TmuxGame,
+    steps: tuple[tuple[CanaryKey, Callable[[NethackObservation], bool]], ...],
+    *,
+    deadline: float,
+) -> None:
+    """Send each reviewed setup key only once its exact complete frame is shown."""
+    for key, predicate in steps:
+        for _ in range(ACCEPTANCE_SETUP_FRAME_BUDGET):
+            if time.monotonic() >= deadline:
+                raise CanaryWorkerError("acceptance setup timed out")
+            observation = normalize_tty(game.capture(), cols=80, rows=24)
+            if predicate(observation):
+                game.apply_key(key)
+                break
+            time.sleep(0.10)
+        else:
+            raise CanaryWorkerError("acceptance setup step did not reach its reviewed frame")
 
 
 def _candidate_broker(request: dict[str, object]) -> tuple[str, float] | None:
@@ -463,6 +569,11 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
     # The isolated canary baseline uses the reviewed tactical surface; the
     # candidate arm keeps the production P3b policy and broker dispatch.
     policy = CanaryTacticalPolicy() if baseline else NethackLayeredPolicy()
+    # Candidate arm: the production brain path (resolver for prayer continuation,
+    # waits, door prompts).  Baseline arm never constructs or consults it.
+    progress = None if baseline else NethackProgressResolver()
+    tally = _SevereRecoveryTally()
+    acceptance = request.get("acceptance")
     broker = _candidate_broker(request)
     last_candidate_fingerprint: tuple[object, ...] | None = None
     idle_cycles = 0
@@ -475,24 +586,28 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
         trace_path = Path(ARENA["episode_root"]) / "action-trace.jsonl"
     try:
         _start_game(game, deadline=deadline)
+        if acceptance is not None:
+            _run_acceptance_setup(game, ACCEPTANCE_SCENARIOS[acceptance["scenario"]], deadline=deadline)
         while time.monotonic() < deadline:
             record = _terminal_record(player)
             if record is not None:
-                return _terminal_result(request, record, exit_reason="terminal_xlog")
+                return _terminal_result(request, record, exit_reason="terminal_xlog", severe_recovery=tally)
             if not game.alive():
                 record = _terminal_record(player)
                 if record is not None:
-                    return _terminal_result(request, record, exit_reason="process_exit_xlog")
+                    return _terminal_result(request, record, exit_reason="process_exit_xlog", severe_recovery=tally)
                 return _timeout_result(
                     request,
                     reason="process_exited_without_terminal_xlog",
                     turns=last_turns,
                     max_depth=last_depth,
                     last_message=last_message,
+                    severe_recovery=tally,
                 )
 
             raw_text = game.capture()
             observation = normalize_tty(raw_text, cols=80, rows=24)
+            tally.observe_frame(observation)
             last_turns = observation.vitals.turn
             last_depth = observation.vitals.dungeon_level
             last_message = observation.message
@@ -503,6 +618,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     turns=last_turns,
                     max_depth=last_depth,
                     last_message=last_message,
+                    severe_recovery=tally,
                 )
             inventory: tuple[VisibleInventoryItem, ...] = ()
             needs_food = (
@@ -522,10 +638,14 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 last_turns = observation.vitals.turn
                 last_depth = observation.vitals.dungeon_level
                 last_message = observation.message
-            decision = policy.decide(observation, inventory=inventory)
             if baseline:
+                decision = policy.decide(observation, inventory=inventory)
                 policy.assert_safe(decision)
             else:
+                progress.observe(observation, policy.explorer)
+                decision = policy.decide(observation)
+                assert_p3b_safe(decision)
+                decision = progress.resolve(decision, observation, policy.explorer)
                 assert_p3b_safe(decision)
             acted = False
             if decision.actions:
@@ -533,6 +653,9 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 for action in decision.actions:
                     game.apply_action(action)
                 acted = True
+                if progress is not None:
+                    progress.sent(decision, observation)
+                tally.recovery_sent(decision)
                 if decision.intent == "eat_food":
                     last_eat_turn = observation.vitals.turn
                 if trace_path is not None:
@@ -545,7 +668,12 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     if inventory:
                         trace_record["inventory"] = [item.public_dict() for item in inventory]
                     _append_trace(trace_path, trace_record)
-            elif request["arm"] == "candidate" and decision.requires_llm and broker is not None:
+            elif (
+                request["arm"] == "candidate"
+                and decision.requires_llm
+                and decision.intent != "progress_blocked"
+                and broker is not None
+            ):
                 fingerprint = (
                     decision.intent,
                     observation.vitals.turn,
@@ -579,6 +707,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                         turns=last_turns,
                         max_depth=last_depth,
                         last_message=last_message,
+                        severe_recovery=tally,
                     )
                 time.sleep(0.10)
         return _timeout_result(
@@ -587,6 +716,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
             turns=last_turns,
             max_depth=last_depth,
             last_message=last_message,
+            severe_recovery=tally,
         )
     finally:
         game.stop()

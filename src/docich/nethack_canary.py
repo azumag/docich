@@ -74,6 +74,25 @@ def _exact_keys(raw: dict[str, object], allowed: set[str], where: str) -> None:
         raise NethackCanaryError(f"{where} contains unknown fields: {unknown}")
 
 
+_SEVERE_RECOVERY_OUTCOMES = {"not_observed", "resolved", "fail_closed"}
+
+
+def _check_severe_recovery(value: object) -> None:
+    """Shape-check the #2650 severe-recovery evidence before it is recorded."""
+    if not isinstance(value, dict) or set(value) != {
+        "acceptance_scenario", "severe_episodes", "recovery_started", "recovery_resolved", "outcome",
+    }:
+        raise NethackCanaryError("canary severe_recovery evidence invalid")
+    counts = ("severe_episodes", "recovery_started", "recovery_resolved")
+    if any(type(value[name]) is not int or value[name] < 0 for name in counts):
+        raise NethackCanaryError("canary severe_recovery counts invalid")
+    if value["outcome"] not in _SEVERE_RECOVERY_OUTCOMES:
+        raise NethackCanaryError("canary severe_recovery outcome invalid")
+    scenario = value["acceptance_scenario"]
+    if scenario is not None and not isinstance(scenario, str):
+        raise NethackCanaryError("canary severe_recovery scenario invalid")
+
+
 def _bounded_int(value: object, *, default: int, minimum: int, maximum: int, name: str) -> int:
     if value is None:
         return default
@@ -417,9 +436,10 @@ def _validate_worker_result(
         "schema_version", "worker_status", "episode_id", "arm", "isolation_mode", "arena",
         "player_name", "seed", "seed_applied", "controller_kind", "terminal_status", "score",
         "turns", "max_depth", "death_reason", "got_amulet", "exit_reason",
-        "candidate_action_source", "production_state_touched",
+        "candidate_action_source", "production_state_touched", "severe_recovery",
     }
     _exact_keys(raw, allowed, "canary worker result")
+    _check_severe_recovery(raw.get("severe_recovery"))
     if raw.get("schema_version") != WORKER_RESULT_SCHEMA_VERSION or worker_status != "completed":
         raise NethackCanaryError("canary worker result schema/status invalid")
     if raw.get("episode_id") != request.get("episode_id") or raw.get("arm") != request.get("arm"):
