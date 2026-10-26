@@ -1084,3 +1084,44 @@ def test_reveal_board_and_speech_explain_the_case(tmp_path, quiet_narration):
     assert "種" in speech_blob
     for line in published["exclusions"]:
         assert line in overlay_blob
+
+
+def test_reveal_resumes_only_the_missing_parts(tmp_path, quiet_narration):
+    """#2757 B: the four reveal parts are individually at-most-once.
+
+    A crash between parts must not repeat what already played, and a re-entry
+    must still speak the rest (the reason ``_phase_reveal`` is resumable).
+    """
+    g, now, _factory, _store, switch = _setup(tmp_path, duration=30)
+    manager = _adapter(g, _corner(duration=30), switch, now,
+                       lambda seconds: now.__setitem__(0, now[0] + seconds)).manager
+    case = mystery_case.generate(4321)
+    state = {
+        "rotation_request_id": str(uuid.uuid4()),
+        "ends_at": now[0] + 1800,
+        "mystery_runtime_identity": {"game": VIEW_NAME, "runtime_id": "r1",
+                                     "generation": 1, "lease_id": "l1"},
+    }
+
+    def fresh_session(announced=None, done=False):
+        return {"seed": case.seed, "case_version": mystery_case.VERSION,
+                "phase": "prediction", "announced": dict(announced or {}),
+                "revealed_rooms": [], "revealed_suspects": [],
+                "revealed": True, "reveal_done": done}
+
+    session = fresh_session()
+    manager._phase_reveal(state, case, session)
+    assert session["reveal_done"] is True
+    assert [item["kind"] for item in quiet_narration] == ["reveal"] * len(REVEAL_PARTS)
+
+    # Re-entering a finished reveal speaks nothing again.
+    before = len(quiet_narration)
+    manager._phase_reveal(state, case, session)
+    assert len(quiet_narration) == before
+
+    # A run that died after the first two parts speaks exactly the rest.
+    resumed = fresh_session({"reveal:verdict": True, "reveal:story": True})
+    before = len(quiet_narration)
+    manager._phase_reveal(state, case, resumed)
+    assert len(quiet_narration) - before == len(REVEAL_PARTS) - 2
+    assert resumed["reveal_done"] is True

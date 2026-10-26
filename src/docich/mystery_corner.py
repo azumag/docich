@@ -947,11 +947,14 @@ class MysteryCornerManager:
             # and without touching the radio flag the new owner may hold.
             if not session.get("revealed"):
                 session["revealed"] = True
+                session["reveal_done"] = True
                 self._write_view(state, case, session, phase="reveal", refresh_flag=False)
                 self._save(state)
             self._record_run_ledger(state, case, session, end_reason="operator-moved-during-mystery")
             return self._mark_interrupted(state, "operator-moved-during-mystery")
-        if not session.get("revealed"):
+        if not session.get("reveal_done"):
+            # Resumable: every part records its own narration marker, so a
+            # re-entry after a mid-reveal failure speaks only what is missing.
             try:
                 self._phase_reveal(state, case, session)
             except Exception:
@@ -1491,6 +1494,8 @@ class MysteryCornerManager:
             self._speak(state, session, kind="reveal", fallback=fallback,
                         overlay=overlay, marker=f"reveal:{name}", allow_llm=False)
             self._grace_display(state, seconds)
+        session["reveal_done"] = True
+        self._save(state)
 
     # --- Restore (yoso shape) -------------------------------------------------
 
