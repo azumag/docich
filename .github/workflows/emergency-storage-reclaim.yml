@@ -109,6 +109,21 @@ jobs:
           { printf 'APPLY=1\nVOICEVOX_ARCHIVE=0\nAIVIS_ENGINE=0\n'; cat control/ops/vm_actions/storage_reclaim.sh; } |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Run staged general storage maintenance diagnostics
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/storage_reclaim_staged.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=1\n'; cat control/ops/vm_actions/storage_reclaim_staged.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" | tee "$RUNNER_TEMP/staged.out"
+          grep -E '^stage=(journal_vacuum|apt_clean|snap_disabled|snapd_cache|docker_prune|logrotate_install|logrotate_run) result=(ok|failed) reason=(none|sudo_denied|command_failed|not_present|skipped)$' "$RUNNER_TEMP/staged.out" >> "$GITHUB_STEP_SUMMARY" || true
+
       - name: Record filesystem state after reclaim
         if: ${{ always() }}
         shell: bash
