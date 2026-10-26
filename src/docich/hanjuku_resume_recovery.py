@@ -35,7 +35,9 @@ def fingerprint(value):
 def _no_newer_hanjuku_progress(base, store, generation):
     """Do not replay a sealed checkpoint over any newer Hanjuku execution."""
     for receipt in store.receipts.receipts():
-        if (receipt.get('target') == 'hanjuku-hero'
+        result = receipt.get('result') or {}
+        if ((receipt.get('target') == 'hanjuku-hero'
+             or (isinstance(result, dict) and result.get('to_game') == 'hanjuku-hero'))
                 and receipt.get('generation', 0) > generation
                 and receipt.get('status') not in {'failed', 'rolled_back'}):
             return False

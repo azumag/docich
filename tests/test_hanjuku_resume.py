@@ -696,7 +696,7 @@ def test_automatic_recovery_accepts_pinned_release_after_audit_rollover(recovery
 
 @pytest.mark.parametrize('change', ['other-pending','owner-active',
     'gameplay','checkpoint','not-rolled-back','explicit-mismatch','fresh','paused',
-    'newer-run','newer-save','newer-receipt','runtime-symlink'])
+    'newer-run','newer-save','newer-receipt','newer-result','runtime-symlink'])
 def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
     s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
     base=Path(s.g.state_dir);ledger=s.manager.load(1000000.0)
@@ -718,9 +718,10 @@ def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
         if change=='newer-run':(runtime/'hanjuku_run.json').touch()
         else:
             (runtime/'states').mkdir();(runtime/'states/hanjuku-hero.state').touch()
-    elif change=='newer-receipt':
-        row=dict(s.store.accept_request(str(uuid.uuid4()),'switch','hanjuku-hero').receipt)
-        row.update(status='succeeded',result={'status':'succeeded'})
+    elif change in {'newer-receipt','newer-result'}:
+        target='sorengame' if change=='newer-result' else 'hanjuku-hero'
+        row=dict(s.store.accept_request(str(uuid.uuid4()),'switch',target).receipt)
+        row.update(status='succeeded',result={'status':'succeeded','to_game':'hanjuku-hero'})
         s.store.receipts.save(row)
     elif change=='runtime-symlink':
         (base/'runtimes/g701-cafe1234').symlink_to(s.spec.runtime_dir)
