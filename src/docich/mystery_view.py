@@ -97,6 +97,7 @@ h1{font-size:26px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
 #case-line{margin:6px 0 4px;font-size:15px;line-height:1.4;color:#efe9ff}
 #case-line b{color:#ffd67a}
 #board{display:flex;gap:10px;height:330px}
+#board[hidden],#matrix[hidden],#revealboard[hidden]{display:none}
 .column{flex:1;border:1px solid #332748;border-radius:10px;background:linear-gradient(150deg,#1a132999,#120d1bcc);padding:8px;overflow:hidden;display:flex;flex-direction:column}
 .column h2{font-size:11px;letter-spacing:.12em;color:#a08cc9;margin:0 0 6px;font-weight:700}
 .card{border:1px solid #2c2242;border-radius:8px;background:#171126;padding:6px 8px;margin-bottom:6px;font-size:13px;line-height:1.35}
@@ -106,10 +107,24 @@ h1{font-size:26px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
 .poll{font-size:13px;line-height:1.5;color:#dcd4f2;white-space:pre-wrap}
 .poll .q{font-weight:800;color:#ffd67a}
 .predict{font-size:13px;line-height:1.5;color:#dcd4f2}
-.reveal{border:2px solid #c9a7ff;border-radius:12px;background:#1d1236;padding:12px;margin-top:8px}
-.reveal .who{font-size:24px;font-weight:800;color:#ffd67a}
-.reveal .what{font-size:14px;color:#efe9ff;margin-top:4px;line-height:1.5}
-.commit{font-size:11px;color:#8f84ad;margin-top:8px;word-break:break-all}
+#matrix{display:flex;gap:10px;height:330px}
+#matrix .mrooms{flex:0 0 38%}#matrix .msusp{flex:1}
+.mrow{border:1px solid #2c2242;border-radius:8px;background:#171126;padding:5px 7px;margin-bottom:5px;font-size:11.5px;line-height:1.35}
+.mrow .who{font-weight:800;color:#e8e2ff}.mrow .role{color:#9d8fc0;font-size:10px;margin-left:5px}
+.mrow .line{color:#cdc4e4;margin-top:1px}.mrow .say{color:#a8ffd0}.mrow .trace{color:#ffe6a8}
+.mrow .cl{font-size:11px;color:#ffe6a8;margin-top:2px}
+#revealboard{display:flex;gap:9px;height:330px}
+#revealboard .rcol{flex:1;border:1px solid #4a3768;border-radius:10px;background:linear-gradient(160deg,#221736cc,#140f21cc);padding:7px 9px;overflow:hidden}
+#revealboard .rcol:nth-child(1){flex:.8}#revealboard .rcol:nth-child(2){flex:1.3}#revealboard .rcol:nth-child(3){flex:1.1}
+#revealboard h3{font-size:10px;letter-spacing:.14em;color:#c9a7ff;margin:0 0 5px;font-weight:800}
+.blk{transition:opacity .4s}.blk.pending{opacity:.22}
+.who-big{font-size:21px;font-weight:800;color:#ffd67a;line-height:1.2}
+.kv{font-size:11.5px;color:#efe9ff;margin-top:3px;line-height:1.4}.kv b{color:#c9a7ff;font-weight:700}
+.li{font-size:11px;line-height:1.4;color:#e4dcf6;margin:0 0 3px;padding-left:9px;text-indent:-9px}
+.li:before{content:"・";color:#8f7bd9}
+.hint{font-size:10px;color:#9d8fc0;margin:-2px 0 5px}
+.hit-line{font-size:12px;color:#a8ffd0;margin-top:4px}
+.commit{font-size:10px;color:#8f84ad;margin-top:5px;word-break:break-all}
 #footer{position:absolute;left:22px;right:22px;bottom:4px;color:#6d6488;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #unavailable{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:#0d0b12ee;color:#e8d9ad;font-size:20px}
 #unavailable[hidden]{display:none}
@@ -126,6 +141,26 @@ h1{font-size:26px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
  <div class="column" id="suspects-col"><h2>容疑者（アンケートで尋問）</h2><div id="suspects"></div></div>
  <div class="column" id="action-col"><h2>参加状況</h2><div id="action"></div></div>
 </section>
+<section id="matrix" hidden>
+ <div class="column mrooms"><h2>手がかり（全室）</h2><div id="mrooms"></div></div>
+ <div class="column msusp"><h2>容疑者とアリバイ（照合）</h2><div class="hint">時刻つきの手がかりの部屋と、証言の部屋をくらべてください</div><div id="msusp"></div></div>
+</section>
+<section id="revealboard" hidden>
+ <div class="rcol">
+  <h3>① 判定</h3>
+  <div class="blk" data-step="1" id="rv-verdict"></div>
+ </div>
+ <div class="rcol">
+  <h3>② 事件の全容</h3>
+  <div class="blk" data-step="2" id="rv-story"></div>
+  <h3 style="margin-top:6px">③ 動機</h3>
+  <div class="blk" data-step="3" id="rv-motive"></div>
+ </div>
+ <div class="rcol">
+  <h3>④ 推理</h3>
+  <div class="blk" data-step="4" id="rv-reason"></div>
+ </div>
+</section>
 <div id="footer">事件の答えは開始時にハッシュで確定済みです。終了後にシードを開示し、誰でも公開コードで検証できます。</div>
 </div>
 <div id="unavailable" hidden>事件の配信を準備しています</div>
@@ -133,65 +168,110 @@ h1{font-size:26px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
 'use strict';
 function fit(){const el=document.getElementById('stage');const s=Math.min(innerWidth/960,innerHeight/540);el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
 addEventListener('resize',fit);fit();
-const PHASE_LABELS={intro:'事件発生',investigate:'現場調査（アンケート投票中）',interrogate:'容疑者尋問（アンケート投票中）',deduction:'推理タイム',prediction:'犯人予想（チャンネルポイント）',reveal:'答えの開示',done:'おしまい'};
+const PHASE_LABELS={intro:'事件発生',investigate:'現場調査（アンケート投票中）',interrogate:'容疑者尋問（アンケート投票中）',deduction:'推理タイム・資料公開',prediction:'犯人予想（チャンネルポイント）',reveal:'答えの開示',done:'おしまい'};
 function el(id){return document.getElementById(id);}
-function render(data){
- el('phase-tag').textContent=PHASE_LABELS[data.phase]||data.phase;
- el('state').textContent='事件ボードを表示中';
- const c=data.case||{};
- el('case-line').innerHTML='';
- const line=document.createElement('div');
- const b=document.createElement('b');b.textContent=c.headline||'';
- line.append(b);line.append(document.createTextNode(`（${c.time||''}）`));
- el('case-line').append(line);
- // Rooms
+function div(cls,text){const d=document.createElement('div');if(cls)d.className=cls;if(text!=null)d.textContent=text;return d;}
+function allSearched(c){const rooms=c.rooms||[];return rooms.length>0&&rooms.every(r=>r.searched);}
+function allAlibis(c){const s=c.suspects||[];return s.length>0&&s.every(x=>x.alibi);}
+function traceRooms(c,name){const out=[];for(const r of (c.rooms||[])){if(r.clue&&r.clue.indexOf(name)>=0)out.push(r.name);}return out;}
+function renderBoard(c,data){
  const rooms=el('rooms');rooms.replaceChildren();
  for(const room of (c.rooms||[])){
-  const d=document.createElement('div');d.className='card'+(room.searched?'':' dim');
-  const n=document.createElement('div');const s=document.createElement('span');s.className='name';s.textContent=room.name;n.append(s);
-  d.append(n);
-  if(room.searched){const cl=document.createElement('div');cl.className='clue';cl.textContent=room.clue?room.clue:'手がかりなし';d.append(cl);}
+  const d=div('card'+(room.searched?'':' dim'));
+  d.append(div('name',room.name));
+  if(room.searched)d.append(div('clue',room.clue?room.clue:'手がかりなし'));
   rooms.append(d);
  }
- // Suspects
  const suspects=el('suspects');suspects.replaceChildren();
  for(const s of (c.suspects||[])){
-  const d=document.createElement('div');d.className='card'+(s.alibi?'':' dim');
-  const n=document.createElement('div');const nm=document.createElement('span');nm.className='name';nm.textContent=s.name;
-  const ro=document.createElement('span');ro.className='role';ro.textContent=s.role;n.append(nm);n.append(ro);
-  d.append(n);
-  if(s.alibi){const a=document.createElement('div');a.className='alibi';a.textContent=s.alibi;d.append(a);}
+  const d=div('card'+(s.alibi?'':' dim'));
+  const n=document.createElement('div');
+  const nm=document.createElement('span');nm.className='name';nm.textContent=s.name;
+  const ro=document.createElement('span');ro.className='role';ro.textContent=s.role;
+  n.append(nm);n.append(ro);d.append(n);
+  if(s.alibi)d.append(div('alibi',s.alibi));
   suspects.append(d);
  }
- // Participation
  const action=el('action');action.replaceChildren();
- if(c.intro&&c.intro.length){for(const t of c.intro){const p=document.createElement('div');p.className='poll';p.textContent='・'+t;action.append(p);}}
+ if(c.intro&&c.intro.length){for(const t of c.intro){action.append(div('poll','・'+t));}}
  if(data.poll){
-  const p=document.createElement('div');p.className='poll';
-  const q=document.createElement('div');q.className='q';q.textContent='🗳 '+data.poll.question;p.append(q);
+  const p=div('poll');
+  p.append(div('q','🗳 '+data.poll.question));
   for(const ch of (data.poll.choices||[])){
-   const line=document.createElement('div');
-   const mark=ch.winner?' ✅':(ch.active?' ▸':'');
-   line.textContent=ch.label+mark+(ch.votes!=null?`（${ch.votes}票）`:'');
+   const line=div(null,ch.label+(ch.winner?' ✅':(ch.active?' ▸':''))+(ch.votes!=null?`（${ch.votes}票）`:''));
    if(ch.winner)line.style.color='#a8ffd0';
    p.append(line);
   }
   action.append(p);
  }
  if(data.prediction){
-  const p=document.createElement('div');p.className='predict';
   const label={active:'投票受付中',locked:'投票締切',resolved:'精算済み',canceled:'不成立・返金',skipped:'予想なし'}[data.prediction.status]||data.prediction.status;
-  p.textContent=`💰 犯人予想：${label}`;
-  action.append(p);
+  action.append(div('predict',`💰 犯人予想：${label}`));
  }
- if(c.reveal){
-  const r=c.reveal;const box=document.createElement('div');box.className='reveal';
-  const who=document.createElement('div');who.className='who';who.textContent=`犯人は ${r.culprit?r.culprit.name:''}（${r.culprit?r.culprit.role:''}）`;
-  const what=document.createElement('div');what.className='what';what.textContent=`手法：${r.method}／動機：${r.motive}`;
-  const cm=document.createElement('div');cm.className='commit';cm.textContent=`commit ${String(r.commitment||'').slice(0,16)}… seed ${r.seed}`;
-  box.append(who);box.append(what);box.append(cm);
-  action.append(box);
+}
+function renderMatrix(c){
+ const mr=el('mrooms');mr.replaceChildren();
+ for(const room of (c.rooms||[])){
+  const d=div('mrow');
+  d.append(div('who',room.name));
+  d.append(div('cl',room.clue?room.clue:'手がかりなし'));
+  mr.append(d);
  }
+ const ms=el('msusp');ms.replaceChildren();
+ for(const s of (c.suspects||[])){
+  const d=div('mrow');
+  const n=document.createElement('div');
+  const nm=document.createElement('span');nm.className='who';nm.textContent=s.name;
+  const ro=document.createElement('span');ro.className='role';ro.textContent=s.role;
+  n.append(nm);n.append(ro);d.append(n);
+  d.append(div('line say','証言：'+(s.alibi||'未聴取')));
+  const traces=traceRooms(c,s.name);
+  d.append(div('line trace','時刻つきの手がかり：'+(traces.length?traces.join('・'):'なし')));
+  ms.append(d);
+ }
+}
+function renderReveal(c,data){
+ const r=c.reveal,v=el('rv-verdict');v.replaceChildren();
+ v.append(div('who-big','犯人は '+(r.culprit?r.culprit.name:'')+'（'+(r.culprit?r.culprit.role:'')+'）'));
+ const kv=document.createElement('div');kv.className='kv';
+ const mk=(k,val)=>{const d=document.createElement('div');const b=document.createElement('b');b.textContent=k;d.append(b);d.append(document.createTextNode(val));return d;};
+ kv.append(mk('手法：',r.method||''));
+ kv.append(mk('動機：',r.motive||''));
+ v.append(kv);
+ const st=el('rv-story');st.replaceChildren();
+ for(const line of (r.timeline||[]))st.append(div('li',line));
+ st.append(div('kv','事件を起こした手口：'+(r.method_how||'')));
+ st.append(div('kv','現場に残った証拠：'+(r.method_evidence||'')));
+ const mo=el('rv-motive');mo.replaceChildren();
+ mo.append(div('kv',(r.motive_reason||'')+'。'));
+ mo.append(div('kv','証拠：'+(r.motive_room||'')+'の「'+(r.motive_evidence||'')+'」（'+(r.culprit?r.culprit.name:'')+'の名あり）'));
+ const rs=el('rv-reason');rs.replaceChildren();
+ rs.append(div('kv','決定打：'+(r.contradiction||'')));
+ for(const line of (r.exclusions||[]))rs.append(div('li',line));
+ rs.append(div('commit',`commit ${String(r.commitment||'').slice(0,16)}… seed ${r.seed}`));
+ const step=data.reveal_step||99;
+ for(const blk of document.querySelectorAll('#revealboard .blk')){
+  const need=parseInt(blk.getAttribute('data-step'),10)||0;
+  blk.className='blk'+(need>step?' pending':'');
+ }
+}
+function render(data){
+ el('phase-tag').textContent=PHASE_LABELS[data.phase]||data.phase;
+ el('state').textContent='事件ボードを表示中';
+ const c=data.case||{};
+ el('case-line').replaceChildren();
+ const line=document.createElement('div');
+ const b=document.createElement('b');b.textContent=c.headline||'';
+ line.append(b);line.append(document.createTextNode(`（${c.time||''}）`));
+ el('case-line').append(line);
+ const revealing=!!c.reveal;
+ const matrix=!revealing&&allSearched(c)&&allAlibis(c);
+ el('board').hidden=revealing||matrix;
+ el('matrix').hidden=!matrix;
+ el('revealboard').hidden=!revealing;
+ if(revealing)renderReveal(c,data);
+ else if(matrix)renderMatrix(c);
+ else renderBoard(c,data);
  el('unavailable').hidden=true;
 }
 async function poll(){

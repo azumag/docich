@@ -14,17 +14,26 @@ LLM output ever becomes game state. Polls (action votes) and the final
 channel-point prediction are display and participation only.
 
 Session phases (all inside one blocking ``run_rotation``, the same
-synchronous model every other corner uses): intro → investigate poll →
-interrogate poll → deduction → culprit prediction → reveal → restore. A phase
+synchronous model every other corner uses): intro → investigate poll ×2 →
+interrogate poll ×2 → deduction (the remaining rooms/suspects are published
+as one dossier, then the whole evidence set is reviewed) → culprit
+prediction → reveal (verdict / story / motive / reasoning) → restore. A phase
 that cannot run (no poll/prediction configuration, transport failure, or a
 time budget too small) degrades to the seeded solo detective or is skipped,
 but **once a prediction exists it is always settled or refunded** — the
 commitment shown on air must never strand a bet.
 
+The dossier completion in the deduction phase is what makes the case fair
+(#2757 A): polls can only cover two rooms and two suspects inside the slot,
+so the board must not depend on which ones won. The prediction therefore
+always opens on the complete clue/alibi set, from which exactly one suspect's
+alibi fails.
+
 Time bounds: ``ends_at`` (catalog duration) stays the hard cap; every wait is
-clamped to the remaining budget minus the reveal/restore reserve. The reveal
-always runs before the restore so the audience sees the answer the commitment
-covered.
+clamped to the remaining budget minus the reveal/restore reserve
+(``SESSION_RESERVE_S`` = the four reveal parts plus the restore handshake).
+The reveal always runs before the restore so the audience sees the answer the
+commitment covered.
 """
 from __future__ import annotations
 
@@ -51,7 +60,15 @@ from .game_switch import (
     atomic_write_json,
 )
 from .mystery_case import CaseError, ai_detective_choice, generate, new_seed
-from .mystery_case import poll_actions, poll_question, public_board, reveal, verify_reveal
+from .mystery_case import VERSION as CASE_VERSION
+from .mystery_case import (
+    clue_for_room,
+    poll_actions,
+    poll_question,
+    public_board,
+    reveal,
+    verify_reveal,
+)
 from .mystery_view import PAYLOAD_FILENAME, VIEW_NAME, write_payload
 
 STATE_FILENAME = "mystery_corner.json"
@@ -70,20 +87,38 @@ ROLLBACK_ERROR_CODES = frozenset({
     ERROR_TIMEOUT,
 })
 
+#: The reveal runs as four narrated parts, each with its own board dwell time.
+#: 45 + 60 + 40 + 55 = 200s: enough to read a full-width explanation panel at
+#: a comfortable pace inside the 30-minute slot (see the module docstring).
+REVEAL_PARTS = (
+    ("verdict", 45),
+    ("story", 60),
+    ("motive", 40),
+    ("reasoning", 55),
+)
+#: Total reveal dwell; the session reserve below is this plus the restore.
+REVEAL_SECONDS = sum(seconds for _name, seconds in REVEAL_PARTS)
+
 #: Time kept aside for the reveal display + the restore switch.
-SESSION_RESERVE_S = 150.0
+#: #2757 allocates the reveal as four explained parts (200s) plus the restore
+#: handshake, so the reserve covers both and every earlier wait is clamped.
+SESSION_RESERVE_S = REVEAL_SECONDS + 100.0
 INTRO_SECONDS = 30
 #: Twitch poll bounds are 15..1800s; the corner stays well inside them.
 POLL_DURATION_S = 120
 POLL_MIN_DURATION_S = 15
 POLL_WAIT_POLL_S = 5.0
 POLL_DISPLAY_SECONDS = 20
-DEDUCTION_SECONDS = 45
+#: Two rounds per phase: the first two rooms/suspects are chosen live by the
+#: poll, and the deduction phase then publishes the rest in one dossier so the
+#: whole evidence set is on the board before the prediction opens (#2757 A).
+INVESTIGATE_ROUNDS = 2
+INTERROGATE_ROUNDS = 2
+DEDUCTION_SECONDS = 90
 PREDICTION_WINDOW_S = 300
 PREDICTION_MIN_WINDOW_S = 30
 PREDICTION_WAIT_POLL_S = 10.0
 PREDICTION_SETTLE_ATTEMPTS = 5
-REVEAL_GRACE_S = 60
 
 #: Fixed end reasons this corner may record (diagnostics vocabulary).
 END_REASONS = frozenset({
@@ -702,6 +737,7 @@ class MysteryCornerManager:
         if session is None:
             session = {
                 "seed": new_seed(),
+                "case_version": CASE_VERSION,
                 "phase": "intro",
                 "announced": {},
                 "revealed_rooms": [],
@@ -713,6 +749,11 @@ class MysteryCornerManager:
         return session
 
     def _case(self, session):
+        # A session started under another engine version must not be re-read
+        # under new rules: the published commitment covers (version, seed), so
+        # silently regenerating would change the answer behind that hash.
+        if session.get("case_version") != CASE_VERSION:
+            raise MysteryCornerError("mystery case engine version changed mid-session")
         try:
             return generate(session["seed"])
         except CaseError as exc:
@@ -725,11 +766,13 @@ class MysteryCornerManager:
         return ends_at - self.clock()
 
     def _write_view(self, state, case, session, *, phase, poll=None, prediction=None,
-                    refresh_flag=True):
+                    refresh_flag=True, reveal_step=None):
         """Best-effort bounded broadcast payload write (never raises).
 
         ``refresh_flag=False`` is for the slot-lost reveal: the board may still
         be written, but the next owner's radio flag must not be overwritten.
+        ``reveal_step`` (1..len(REVEAL_PARTS)) lets the board highlight the
+        explanation section being read at that moment.
         """
         # Keep the radio suppressed for as long as the board is being updated;
         # the flag is refreshed before the write so a view failure cannot let
@@ -753,15 +796,18 @@ class MysteryCornerManager:
                 "case": board,
                 "poll": poll,
                 "prediction": prediction,
+                "reveal_step": (reveal_step if type(reveal_step) is int
+                                and 1 <= reveal_step <= len(REVEAL_PARTS) else None),
                 "updated_at": self.clock(),
             }
             write_payload(Path(self.g.state_dir) / PAYLOAD_FILENAME, payload)
         except Exception:
             state["last_error_code"] = "view-write-failed"
 
-    def _speak(self, state, session, *, kind, fallback, overlay, facts=None):
+    def _speak(self, state, session, *, kind, fallback, overlay, facts=None,
+               marker=None, allow_llm=True):
         """At-most-once narration for one phase marker; never raises."""
-        marker = f"{kind}"
+        marker = marker or f"{kind}"
         if session["announced"].get(marker):
             return
         # Record the attempt before the side effect so a crash cannot repeat it.
@@ -776,7 +822,7 @@ class MysteryCornerManager:
             except Exception:
                 agents = ""
         spoken, spoken_kind = fallback, "fallback"
-        if agents and kind != "reveal" and facts:
+        if allow_llm and agents and facts:
             try:
                 from .mystery_narration import generate_text
 
@@ -792,11 +838,13 @@ class MysteryCornerManager:
                 audio_enabled=self.audio_enabled) or {}
         except Exception:
             result = {}
-        session[f"{kind}_narration"] = {
-            "overlay": _sink_counts(result.get("overlay"), 1),
-            "speech": _sink_counts(result.get("speech"), 1),
-            "kind": spoken_kind,
-        }
+        narration = session.setdefault("narration", {})
+        if isinstance(narration, dict):
+            narration[marker] = {
+                "overlay": _sink_counts(result.get("overlay"), 1),
+                "speech": _sink_counts(result.get("speech"), 1),
+                "kind": spoken_kind,
+            }
 
     def _poll_client(self, state):
         try:
@@ -861,13 +909,25 @@ class MysteryCornerManager:
         try:
             self._phase_intro(state, case, session)
             interrupted = slot_interrupted()
-            if interrupted is None and not self._stop_requested():
-                self._phase_poll(state, case, session, "investigate")
+            for round_index in range(INVESTIGATE_ROUNDS):
+                if interrupted is not None or self._stop_requested():
+                    break
+                if len(session["revealed_rooms"]) >= len(case.rooms):
+                    break
+                self._phase_poll(state, case, session, "investigate", round_index)
+                interrupted = slot_interrupted()
+            for round_index in range(INTERROGATE_ROUNDS):
+                if interrupted is not None or self._stop_requested():
+                    break
+                if len(session["revealed_suspects"]) >= len(case.suspects):
+                    break
+                self._phase_poll(state, case, session, "interrogate", round_index)
                 interrupted = slot_interrupted()
             if interrupted is None and not self._stop_requested():
-                self._phase_poll(state, case, session, "interrogate")
-                interrupted = slot_interrupted()
-            if interrupted is None and not self._stop_requested():
+                # #2757 A: the whole dossier (every room, every alibi) is on
+                # the board before the prediction opens, whatever the polls
+                # managed to cover.
+                self._complete_dossier(state, case, session)
                 self._phase_deduction(state, case, session)
                 self._phase_prediction(state, case, session)
         except MysteryCornerError:
@@ -962,35 +1022,70 @@ class MysteryCornerManager:
                     overlay=overlay, facts=facts)
         self._grace_display(state, INTRO_SECONDS)
 
+    def _complete_dossier(self, state, case, session):
+        """Publish every remaining room clue and alibi before the prediction.
+
+        The poll rounds can only cover a couple of rooms/suspects inside the
+        slot, so the deduction phase opens with the AI detective publishing
+        the rest: after this point the board holds the complete evidence set
+        and the culprit is uniquely derivable from it (#2757 A).
+        """
+        for room in case.rooms:
+            if room.id not in session["revealed_rooms"]:
+                session["revealed_rooms"].append(room.id)
+        for index in range(len(case.suspects)):
+            if index not in session["revealed_suspects"]:
+                session["revealed_suspects"].append(index)
+        session["dossier_complete"] = True
+        self._save(state)
+        self._write_view(state, case, session, phase="deduction")
+
     def _phase_deduction(self, state, case, session):
         session["phase"] = "deduction"
         self._write_view(state, case, session, phase="deduction")
-        from .mystery_narration import deduction_text
+        from .mystery_narration import deduction_summary_text
 
-        self._speak(state, session, kind="deduction", fallback=deduction_text(),
-                    overlay="推理タイム：手がかりを整理して、最後の予想に備えてください")
+        overlay = (
+            f"推理タイム：手がかり{len(case.rooms)}件／アリバイ{len(case.suspects)}人分\n"
+            "時刻つきの手がかりの場所と、各人の証言の場所を突き合わせてください"
+        )
+        facts_lines = [f"事件: {case.headline()}（{case.time_label}）"]
+        for room in case.rooms:
+            clue = clue_for_room(case, room.id)
+            facts_lines.append(f"手がかり（{room.name}）: {clue.text if clue else 'なし'}")
+        for index, suspect in enumerate(case.suspects):
+            facts_lines.append(f"アリバイ（{suspect.name}）: {case.alibi_of(index)}")
+        self._speak(state, session, kind="deduction",
+                    fallback=deduction_summary_text(case),
+                    overlay=overlay, facts="\n".join(facts_lines),
+                    marker="deduction")
         self._grace_display(state, DEDUCTION_SECONDS)
 
-    def _phase_poll(self, state, case, session, phase):
+    def _phase_poll(self, state, case, session, phase, round_index=0):
         """One participatory vote; degrades to the seeded solo detective."""
-        actions = poll_actions(case, phase)
+        covered = (session["revealed_rooms"] if phase == "investigate"
+                   else [str(index) for index in session["revealed_suspects"]])
+        actions = poll_actions(case, phase, exclude=covered)
+        if not actions:
+            return
         question = poll_question(case, phase)
-        marker = f"{phase}:result"
+        marker = f"{phase}:{round_index}:result"
         if session["announced"].get(marker):
             return
         client = self._poll_client(state)
         winner_value = None
         poll_view = None
-        if client is not None and self._budget_left(state, minimum=30.0):
+        if client is not None and len(actions) >= 2 and self._budget_left(state, minimum=30.0):
             winner_value, poll_view = self._run_poll(state, case, session, phase,
-                                                     question, actions, client)
+                                                     question, actions, client,
+                                                     round_index)
         if winner_value is None:
             # Solo mode: the seeded AI detective investigates so the case still
             # advances with zero participation (and the reveal stays verifiable).
-            rng = random.Random(f"{session['seed']}:{phase}:solo")
-            winner_value = ai_detective_choice(case, phase, rng)
+            rng = random.Random(f"{session['seed']}:{phase}:{round_index}:solo")
+            winner_value = ai_detective_choice(case, phase, rng, exclude=covered)
         if phase == "investigate":
-            from .mystery_case import clue_for_room, room_by_id
+            from .mystery_case import room_by_id
             from .mystery_narration import investigate_text
 
             room = room_by_id(case, winner_value)
@@ -1022,7 +1117,7 @@ class MysteryCornerManager:
         poll_view = poll_view or {"question": question, "status": "solo"}
         self._write_view(state, case, session, phase=phase, poll=poll_view)
         self._speak(state, session, kind=phase, fallback=fallback, overlay=overlay,
-                    facts=facts)
+                    facts=facts, marker=marker)
         session["announced"][marker] = True
         self._save(state)
         self._grace_display(state, POLL_DISPLAY_SECONDS)
@@ -1031,7 +1126,8 @@ class MysteryCornerManager:
         remaining = self._remaining(state) - SESSION_RESERVE_S
         return remaining >= minimum
 
-    def _run_poll(self, state, case, session, phase, question, actions, client):
+    def _run_poll(self, state, case, session, phase, question, actions, client,
+                  round_index=0):
         """Create one poll, wait it out, return ``(winner_value, view)``.
 
         Any transport problem degrades to solo mode (``None`` winner): a
@@ -1039,7 +1135,8 @@ class MysteryCornerManager:
         """
         labels = [label for _value, label in actions]
         values = [value for value, _label in actions]
-        poll_id = session.get(f"{phase}_poll_id")
+        poll_key = f"{phase}_{round_index}_poll_id"
+        poll_id = session.get(poll_key)
         row = None
         if isinstance(poll_id, str) and poll_id:
             try:
@@ -1059,7 +1156,7 @@ class MysteryCornerManager:
                 return None, None
             if isinstance(row, dict) and isinstance(row.get("id"), str):
                 poll_id = row["id"]
-                session[f"{phase}_poll_id"] = poll_id
+                session[poll_key] = poll_id
                 self._save(state)
         if not isinstance(row, dict):
             return None, None
@@ -1331,14 +1428,27 @@ class MysteryCornerManager:
     # --- Reveal ---------------------------------------------------------------
 
     def _phase_reveal(self, state, case, session):
-        """Publish the answer and the verification facts. Fixed text only."""
+        """Publish the answer and the full, deterministic explanation.
+
+        #2757 B: the reveal is not a one-line noun dump. Four narrated parts
+        walk through the verdict, the timeline/method, the motive, and the
+        reasoning (the contradiction that breaks the culprit's alibi plus why
+        every other suspect is cleared). The board carries the same facts in
+        structured form; the text is built from engine-owned facts only, so no
+        model can invent a detail (all four parts are fixed text).
+        """
         session["phase"] = "reveal"
         revealed = reveal(case)
         if not verify_reveal(revealed, case):
             raise MysteryCornerError("mystery reveal does not match the case")
         session["revealed"] = True
-        self._write_view(state, case, session, phase="reveal")
-        from .mystery_narration import reveal_text
+        self._write_view(state, case, session, phase="reveal", reveal_step=1)
+        from .mystery_narration import (
+            reveal_motive_text,
+            reveal_reasoning_text,
+            reveal_story_text,
+            reveal_text,
+        )
 
         prediction = session.get("prediction") if isinstance(session.get("prediction"), dict) else {}
         hit = prediction.get("hit")
@@ -1350,15 +1460,37 @@ class MysteryCornerManager:
             result_line = "みなさんの指名は外れました"
         else:
             result_line = "予想の精算結果は未確定です"
-        overlay = (
-            f"犯人は {case.culprit.name}（{case.culprit.role}）\n"
+
+        culprit_label = f"{case.culprit.name}（{case.culprit.role}）"
+        verdict_overlay = (
+            f"犯人は {culprit_label}\n"
             f"手法：{case.method}／動機：{case.motive}\n"
             f"commit {case.commitment[:16]}… seed {case.seed}\n{result_line}"
         )
-        self._speak(state, session, kind="reveal",
-                    fallback=reveal_text(case.culprit.name, case.method, case.motive),
-                    overlay=overlay)
-        self._grace_display(state, REVEAL_GRACE_S)
+        story_overlay = ("事件の全容\n" + "\n".join(revealed["timeline"])
+                         + f"\n手法：{case.method_how}／証拠：{case.method_evidence}")
+        motive_overlay = (
+            f"動機：{case.motive}\n{case.motive_reason}。\n"
+            f"証拠：{case.motive_room}で見つかった「{case.motive_evidence}」"
+            f"（{case.culprit.name}の名あり）"
+        )
+        reasoning_overlay = (
+            "推理\n決定打：" + revealed["contradiction"] + "\n\n"
+            + "\n".join(f"・{line}" for line in revealed["exclusions"])
+        )
+        parts = {
+            "verdict": (reveal_text(case.culprit.name, case.method, case.motive),
+                        verdict_overlay),
+            "story": (reveal_story_text(case), story_overlay),
+            "motive": (reveal_motive_text(case), motive_overlay),
+            "reasoning": (reveal_reasoning_text(case), reasoning_overlay),
+        }
+        for step, (name, seconds) in enumerate(REVEAL_PARTS, start=1):
+            self._write_view(state, case, session, phase="reveal", reveal_step=step)
+            fallback, overlay = parts[name]
+            self._speak(state, session, kind="reveal", fallback=fallback,
+                        overlay=overlay, marker=f"reveal:{name}", allow_llm=False)
+            self._grace_display(state, seconds)
 
     # --- Restore (yoso shape) -------------------------------------------------
 

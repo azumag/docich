@@ -804,12 +804,15 @@ game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = tr
 seed から確定し、コミットメント（SHA-256）を配信ボードへ常時表示する。終了時に seed を
 開示し、誰でも公開コードで再計算・照合できる。LLM 出力はゲーム状態・答えにならない。
 
-進行は intro → 調査アンケート（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問アンケート →
-推理タイム → 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
-`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示 の順。アンケート・予想が
+進行は intro → 調査アンケート×2（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問
+アンケート×2 → 推理タイム（残りの部屋・容疑者の資料を一括公開し、全手がかりと全アリバイを
+照合表で提示する）→ 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
+`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示（判定・全容・動機・
+推理の4部構成）の順。予想を出す時点で全室の手がかりと全容疑者のアリバイが公開済みで、
+そこから犯人が一意に導ける（#2757）。アンケート・予想が
 使えない場合や票が0件の場合は seeded なAI探偵が進行する展示モードで、視聴者0人でも完走する。
 予想は作成後必ず精算または返金する（不成立は #933 の 2026-10-15 オーナー方針どおり
-CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
+CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（300秒）を
 差し引いた予算内にクランプする。
 
 表示は読み取り専用 view（loopback 8807）で、天気予報・予想王と同じ配信ネイティブ
