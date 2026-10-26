@@ -918,9 +918,7 @@ class MysteryCornerAdapter:
 class LawSimCornerAdapter:
     """Bounded 共産主義法律シミュレーター display through the shared slot.
 
-    Same shape as doushi minus speech: the narration/TTS chain is not wired for
-    this corner, so the adapter fails closed on ``audio_enabled`` (follow-up
-    card in docs/features/communist-law-simulator.md).
+    Same shape as doushi: speech is an opt-in via audio_enabled (lawsim_narration).
     """
 
     def __init__(self, g, corner):
@@ -929,14 +927,16 @@ class LawSimCornerAdapter:
 
         if corner.game != VIEW_NAME or corner.live_eligible is not False:
             raise CornerExecutionError("LawSim identity/safety contract mismatch")
-        if corner.audio_enabled is not False:
-            raise CornerExecutionError("LawSim corner does not support audio_enabled yet")
+        if type(corner.audio_enabled) is not bool:
+            raise CornerExecutionError("LawSim corner requires a boolean audio_enabled")
+        self.audio_enabled = corner.audio_enabled
         self.g, self.corner = g, corner
         self.manager = LawSimCornerManager(
             g,
             duration_minutes=(corner.duration_minutes
                               if corner.duration_minutes is not None
                               else DEFAULT_DURATION_MINUTES),
+            audio_enabled=self.audio_enabled,
         )
         self.state_path = self.manager.state_path
 
