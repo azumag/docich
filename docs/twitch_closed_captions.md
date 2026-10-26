@@ -129,6 +129,28 @@ Extra translations are truncated to the speech chunk count, while an empty
 array remains an error. There is no substring extraction fallback. This is the
 trust boundary that prevents thinking or tool traces from becoming captions.
 
+## Frame rate independence (2026-10-27, #2792)
+
+`docichcc` does not depend on the operator's `stream.framerate`. libavfilter's
+`ccfifo` only knows the 15/24/30/60 fps rows of CTA-708 Table 3 (plus their
+NTSC variants); any other rate used to leave the FIFO in passthrough, which made
+the filter log `docichcc disabled: frame rate 20/1 is unsupported`, skip
+`setup_listener()`, and drop captions for the whole stream. Production ran at
+20 fps (`SOREN_DIRECT_STREAM_FPS=20`, a CPU-saturation mitigation) and therefore
+had no caption socket from at least 2026-10-15.
+
+The filter now keeps the 60 CEA-608 triplets/second budget the 30 fps row uses
+and derives a per-frame count (`ceil(60 / fps)`, capped at 20) for every other
+rate, then creates the socket as usual. 20 fps carries 3 triplets per frame in
+the same 20-construct A/53 packet shape used at 30 fps. No stream framerate
+change is required, so the CPU-saturation setting stays untouched.
+
+Requesting captions is still not proof that they are active. At stream launch
+docich waits up to 5 seconds for the filter to create the socket; a missing
+socket prints a `字幕を要求しましたがFFmpegが字幕socketを作成しませんでした` warning
+with the reason, and `status` keeps reporting `captions.active` from the live
+socket rather than from the binary capability probe.
+
 ## FFmpeg socket operations
 
 ```bash

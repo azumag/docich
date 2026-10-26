@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +102,41 @@ def caption_socket_ready(socket_path: str) -> tuple[bool, str]:
     if stat.S_IMODE(metadata.st_mode) != 0o600:
         return False, "caption socketはowner専用(0600)ではありません"
     return True, "caption socket ready"
+
+
+CAPTION_SOCKET_WAIT_S = 5.0
+CAPTION_SOCKET_POLL_S = 0.2
+
+
+def wait_for_caption_socket(
+    socket_path: str,
+    *,
+    timeout_s: float = CAPTION_SOCKET_WAIT_S,
+    interval_s: float = CAPTION_SOCKET_POLL_S,
+    is_running: Callable[[], bool] | None = None,
+) -> tuple[bool, str]:
+    """Wait for the FFmpeg ``docichcc`` listener to create its socket.
+
+    Requesting captions is not the same as captions being active: the filter can
+    still refuse to create the socket (bad path, foreign or live socket, older
+    binary).  Until #2792 that refusal was only an FFmpeg WARNING inside the
+    stream log, so a captionless stream looked identical to a working one.
+    Returns the last :func:`caption_socket_ready` detail so callers can record
+    why the socket never appeared.
+    """
+    if timeout_s < 0:
+        raise ValueError("caption socket wait timeout must not be negative")
+    deadline = time.monotonic() + timeout_s
+    detail = "caption socketは未準備です"
+    while True:
+        if is_running is not None and not is_running():
+            return False, f"FFmpegが字幕socketを作る前に終了しました ({detail})"
+        ready, detail = caption_socket_ready(socket_path)
+        if ready:
+            return True, detail
+        if time.monotonic() >= deadline:
+            return False, detail
+        time.sleep(interval_s)
 
 
 def build_ffmpeg_cmd(

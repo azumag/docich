@@ -15,6 +15,22 @@ class NativeCaptionSourceTests(unittest.TestCase):
         self.assertIn("ff_ccfifo_inject", source)
         self.assertIn("sei_from_caption_frame", source)
 
+    def test_unsupported_frame_rate_keeps_captions_instead_of_disabling(self) -> None:
+        # #2792: ccfifo only knows 15/24/30/60 fps. 20 fps (the production
+        # operator value) used to disable the whole filter. The filter must
+        # derive a per-frame triplet budget and still create the socket.
+        source = (REPO_ROOT / "native/ffmpeg/vf_docichcc.c").read_text(encoding="utf-8")
+        self.assertNotIn("frame rate %d/%d is unsupported", source)
+        self.assertIn("DOCICHCC_CC_COUNT_PER_FRAME", source)
+        self.assertIn("s->cc_fifo.expected_608 = per_frame;", source)
+        self.assertIn("s->cc_fifo.passthrough = 0;", source)
+        # The listener must not be gated on the frame-rate table.
+        config_input = source.split("static int config_input(", 1)[1].split(
+            "static av_cold int init(", 1
+        )[0]
+        self.assertIn("return setup_listener(ctx);", config_input)
+        self.assertNotIn("docichcc disabled: frame rate", config_input)
+
     def test_socket_is_private_nonblocking_and_identity_guarded(self) -> None:
         source = (REPO_ROOT / "native/ffmpeg/vf_docichcc.c").read_text(encoding="utf-8")
         self.assertIn("chmod(s->socket_path, 0600)", source)
