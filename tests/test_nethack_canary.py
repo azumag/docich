@@ -157,6 +157,13 @@ class TestNethackControlledCanary(unittest.TestCase):
             "exit_reason": "terminal",
             "candidate_action_source": "baseline_p3b" if arm == "baseline" else "candidate_strategist",
             "production_state_touched": False,
+            "severe_recovery": {
+                "acceptance_scenario": None,
+                "severe_episodes": 0,
+                "recovery_started": 0,
+                "recovery_resolved": 0,
+                "outcome": "not_observed",
+            },
         }
 
     def test_paired_baseline_candidate_results_are_descriptive_only(self) -> None:

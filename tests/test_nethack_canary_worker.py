@@ -6,16 +6,22 @@ from pathlib import Path
 
 import pytest
 
+import docich.nethack_canary_worker as worker
+from docich.nethack_canary_executor import CanaryKey
 from docich.nethack_canary_worker import (
     ARENA,
     CanaryWorkerError,
     _candidate_broker,
     _eat_allowed,
     _read_request,
+    _run_acceptance_setup,
+    _SevereRecoveryTally,
     _start_game,
     _terminal_result,
     _timeout_result,
+    run_episode,
 )
+from docich.nethack_observation import normalize_tty
 
 
 BROKER_SOCKET = "/canary/episode/.candidate-ipc/candidate.sock"
@@ -246,3 +252,179 @@ def test_start_game_fails_closed_when_creation_never_completes():
     game = _FakeTmuxGame([stuck])
     with pytest.raises(CanaryWorkerError, match="character creation"):
         _start_game(game, deadline=time.monotonic() - 1)
+
+
+def _screen(message="", *, condition="", turn=12, depth=1):
+    grid = [""] * 21
+    grid[10] = " " * 40 + "@"
+    return "\n".join([
+        message, *grid,
+        f"Dlvl:{depth} HP:16(16) Pw:2(2) AC:6 Xp:1",
+        f"T:{turn} {condition}".rstrip(),
+    ])
+
+
+class _PrayingGame:
+    """Scripted tmux stand-in: a FoodPois frame, the reviewed prayer, then the result."""
+
+    def __init__(self, *, prayer_cures: bool) -> None:
+        self.prayer_cures = prayer_cures
+        self.keys: list[str] = []
+        self.mode = "play"
+        self.typed = ""
+        self.turn = 12
+        self.severe = True
+
+    def start(self) -> None:
+        return None
+
+    def alive(self) -> bool:
+        return True
+
+    def stop(self) -> None:
+        return None
+
+    def capture(self) -> str:
+        if self.mode == "ext":
+            return _screen("#" + self.typed, condition="FoodPois" if self.severe else "", turn=self.turn)
+        if self.mode == "confirm":
+            return _screen("Are you sure you want to pray? [yn] (n)", condition="FoodPois", turn=self.turn)
+        return _screen("", condition="FoodPois" if self.severe else "", turn=self.turn)
+
+    def literal(self, value: str) -> None:
+        self.keys.append(value)
+        if self.mode == "play" and value == "#":
+            self.mode = "ext"
+            self.typed = ""
+        elif self.mode == "play" and value == ".":
+            self.turn += 1
+        elif self.mode == "ext" and value == "\n":
+            self.mode = "confirm"
+        elif self.mode == "ext":
+            self.typed += value
+        elif self.mode == "confirm" and value == "y":
+            self.mode = "play"
+            self.turn += 3
+            if self.prayer_cures:
+                self.severe = False
+
+    def special(self, value: str) -> None:  # pragma: no cover - not used by the reviewed path
+        self.keys.append(value)
+
+    def apply_action(self, action) -> None:
+        self.literal(action.text)
+
+    def apply_key(self, key: CanaryKey) -> None:
+        self.literal(key.value)
+
+
+def _run_candidate(monkeypatch, game, *, max_turns=100):
+    monkeypatch.setattr(worker, "_TmuxGame", lambda player: game)
+    monkeypatch.setattr(worker, "_prepare_runtime", lambda seed=None: None)
+    monkeypatch.setattr(worker, "_terminal_record", lambda player: None)
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: None)
+    request = candidate_request()
+    request["max_turns"] = max_turns
+    request["wall_timeout_s"] = 6
+    return run_episode(request)
+
+
+PRAYER_KEYS = ["#", "p", "r", "a", "y", "\n", "y"]
+
+
+def test_candidate_arm_drives_reviewed_prayer_through_resolver_until_resolved(monkeypatch):
+    game = _PrayingGame(prayer_cures=True)
+    result = _run_candidate(monkeypatch, game)
+    assert game.keys[: len(PRAYER_KEYS)] == PRAYER_KEYS
+    assert game.keys.count("#") == 1
+    assert result["terminal_status"] == "timeout"
+    assert result["exit_reason"] == "max_turns"
+    assert result["severe_recovery"] == {
+        "acceptance_scenario": None,
+        "severe_episodes": 1,
+        "recovery_started": 1,
+        "recovery_resolved": 1,
+        "outcome": "resolved",
+    }
+
+
+def test_candidate_arm_fails_closed_without_a_second_prayer_when_status_persists(monkeypatch):
+    game = _PrayingGame(prayer_cures=False)
+    result = _run_candidate(monkeypatch, game)
+    # The one-prayer budget holds: no second '#' while the status is still severe.
+    assert game.keys[: len(PRAYER_KEYS)] == PRAYER_KEYS
+    assert game.keys.count("#") == 1
+    assert result["exit_reason"] == "policy_stall:progress_blocked"
+    assert result["severe_recovery"]["outcome"] == "fail_closed"
+    assert result["severe_recovery"]["recovery_started"] == 1
+    assert result["severe_recovery"]["recovery_resolved"] == 0
+
+
+def test_severe_recovery_tally_counts_episodes_and_resolution_on_complete_frames():
+    tally = _SevereRecoveryTally()
+    assert tally.summary(candidate_request())["outcome"] == "not_observed"
+    severe = normalize_tty(_screen(condition="FoodPois"), cols=80, rows=24)
+    clear = normalize_tty(_screen(), cols=80, rows=24)
+    partial = normalize_tty("", cols=80, rows=24)
+    tally.observe_frame(severe)
+    tally.observe_frame(severe)
+    assert tally.severe_episodes == 1
+    tally.observe_frame(partial)
+    assert tally.severe_episodes == 1
+    assert tally.summary(candidate_request())["outcome"] == "fail_closed"
+    tally.recovery_open = True
+    tally.observe_frame(partial)
+    assert tally.recovery_resolved == 0
+    tally.observe_frame(clear)
+    assert tally.recovery_resolved == 1
+    assert tally.summary(candidate_request())["outcome"] == "resolved"
+
+
+def test_acceptance_requests_are_fail_closed_by_default_and_candidate_only(monkeypatch):
+    raw = candidate_request()
+    raw["acceptance"] = {"scenario": "severe_prayer"}
+    with pytest.raises(CanaryWorkerError, match="acceptance episode request invalid"):
+        _read_request(json.dumps(raw))
+    monkeypatch.setitem(
+        worker.ACCEPTANCE_SCENARIOS,
+        "severe_prayer",
+        ((CanaryKey(kind="literal", value="x"), lambda obs: True),),
+    )
+    assert _read_request(json.dumps(raw))["acceptance"] == {"scenario": "severe_prayer"}
+    baseline = baseline_request()
+    baseline["acceptance"] = {"scenario": "severe_prayer"}
+    with pytest.raises(CanaryWorkerError, match="acceptance episode request invalid"):
+        _read_request(json.dumps(baseline))
+    raw["acceptance"] = {"scenario": "unreviewed"}
+    with pytest.raises(CanaryWorkerError, match="acceptance episode request invalid"):
+        _read_request(json.dumps(raw))
+
+
+def test_acceptance_setup_sends_each_reviewed_key_only_on_its_frame():
+    class _Setup:
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.keys = []
+
+        def capture(self):
+            return self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+
+        def apply_key(self, key):
+            self.keys.append(key.value)
+
+    wanted = _screen("What do you want to eat?")
+    game = _Setup([_screen(""), wanted])
+    steps = ((CanaryKey(kind="literal", value="e"), lambda obs: obs.prompt == "none" or "eat" in obs.message),)
+    _run_acceptance_setup(game, steps, deadline=time.monotonic() + 30)
+    assert game.keys == ["e"]
+    never = ((CanaryKey(kind="literal", value="e"), lambda obs: False),)
+    with pytest.raises(CanaryWorkerError, match="reviewed frame"):
+        _run_acceptance_setup(_Setup([_screen("")]), never, deadline=time.monotonic() + 30)
+
+
+def test_production_nethack_brain_does_not_import_the_canary_worker():
+    root = Path(__file__).resolve().parents[1] / "src/docich"
+    for name in ("agent/brains.py", "nethack_progress.py", "nethack_policy.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        assert "nethack_canary" not in source, name
+        assert "ACCEPTANCE" not in source, name
