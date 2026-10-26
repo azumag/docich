@@ -9887,6 +9887,32 @@ def _collect_hanjuku_resume(state_dir):
             return {**unavailable, 'status': 'prepared' if status == 'prepared' else 'unverified'}
         owner = canonical.get('candidate') if status == 'claimed' else canonical.get('active')
         keys = ('game', 'runtime_id', 'generation', 'lease_id', 'request_id')
+        active = canonical.get('active')
+        if active is not None and not isinstance(active, dict):
+            return unavailable
+        if (status == 'claimed' and request.get('game') == 'hanjuku-hero'
+                and request.get('corner') == 'hanjuku-hero'
+                and isinstance(request.get('runtime_id'), str)
+                and re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', request['runtime_id'])
+                and canonical.get('phase') in {'ready', 'idle'}
+                and not any(canonical.get(k) for k in ('candidate', 'previous', 'retiring',
+                                                       'operation', 'request_id'))
+                and (active or {}).get('game') != 'hanjuku-hero'):
+            receipt, _ = _read_hanjuku_record(
+                root / 'runtimes' / request['runtime_id'] / 'hanjuku_resume.json')
+            request_again, _ = _read_hanjuku_record(root / 'hanjuku-resume/hanjuku_resume.json')
+            again, _ = _read_hanjuku_record(root / 'game_switch.json')
+            if again != canonical or request_again != request:
+                return {**unavailable, 'status': 'identity_changed'}
+            if receipt != request:
+                return {**unavailable, 'status': 'unverified'}
+            # Metadata only: this is NOT proof that recovery is safe. The
+            # operator rechecks rollback, gameplay, resources and sealed bytes
+            # under writer locks before accepting this reservation fingerprint.
+            digest = hashlib.sha256(json.dumps(request, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+            return {**unavailable, 'status': 'detached_claim',
+                    'reservation_fingerprint': digest}
         if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
                 or not isinstance(owner.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])
