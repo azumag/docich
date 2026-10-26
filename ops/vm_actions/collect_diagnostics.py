@@ -12175,16 +12175,19 @@ def _nethack_xlog_drop(payload):
         return payload
     xlog = section.get("xlog")
     record_span = xlog.get("record_span") if isinstance(xlog, dict) else None
-    payload["nethack_xlog"] = {
+    dropped = {
         "schema_version": section.get("schema_version"),
         "collected_at": section.get("collected_at"),
         "status": "output_omitted",
-        "paths": section.get("paths"),
-        "dirs": section.get("dirs"),
-        "findings": section.get("findings"),
-        "xlog": {"record_span": record_span, "record_span_omitted": False}
-        if record_span is not None else {"record_span": None},
     }
+    for key in ("paths", "dirs", "findings"):
+        value = section.get(key)
+        if value is not None:
+            dropped[key] = value
+    if record_span is not None:
+        dropped["xlog"] = {"record_span": record_span,
+                           "record_span_omitted": False}
+    payload["nethack_xlog"] = dropped
     return payload
 
 
