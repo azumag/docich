@@ -169,3 +169,13 @@ Phase 1 後に承認済み read-only SSH（補助経路）で root fs 37GB を `
 - 実行順: merge 後に `reclaim / apply=false` で DEL/CMD 一覧を VM private log で確認 → `apply=true` → 前後の `status`（使用率・空き）と read-only `du` で削減を実測して本表へ追記。
 - **実施済み（2026-09-23）**: PR #1000 merge → dry-run → apply を実行し、削減と保護パス生存を §5 承認記録へ実測追記した（84% → 80%、+1.49GB）。`until=168h` gate の効き目で docker の 5〜6日前 dangling は保護され次回以降に対象化するため、以後の定期 reclaim で漸減する。
 - スコープ外（参照未検証のため次回以降）: `/tmp/s91test` 181MB、`soren/tmp/deploy` 75MB、`radio_quarantine` 10MB、home 直下の mkv 75.3MB・`build/` 38MB・`soren91-r97/` 22MB。opencode.db(#389) / strategy archive(#392) / Git 履歴重複 / bundle retention(#365,#394) は設計 Issue のまま。
+
+## Staged general maintenance diagnostics (#2769)
+
+`emergency-storage-reclaim.yml` は既存の general maintenance step（`storage_reclaim.sh`）を不変のまま残し、直後に別 step で `storage_reclaim_maintenance_staged.sh` を gateway exec します。各 stage は独立実行され、失敗しても後続 stage は継続します。
+
+出力は固定 enum のみです：
+
+`stage=journal_vacuum|apt_clean|snap_disabled|snapd_cache|docker_prune|logrotate_install|logrotate_run result=ok|failed reason=sudo_denied|command_failed|not_present|skipped`
+
+旧 helper の exit 1 の中断 stage は、この staged enum 行から特定します（raw output / path は公開しません）。

@@ -139,6 +139,8 @@ jobs:
           ops/vm_actions/realign_hanjuku_presentation.sh
           ops/vm_actions/start_weather_corner.sh
           ops/vm_actions/storage_reclaim.sh
+          ops/vm_actions/storage_reclaim_maintenance_staged.sh
+          ops/vm_actions/storage_reclaim_staged.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh
           ops/vm_actions/ensure_twitch_oauth_refresh_timer.sh
