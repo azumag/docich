@@ -698,21 +698,34 @@ static int config_input(AVFilterLink *link)
          * 20 fps is the production operator value - used to leave the FIFO in
          * passthrough, so this filter logged one WARNING and skipped
          * setup_listener(): no socket, no captions, for the whole stream
-         * (#2792).  Keep the 60 CEA-608 triplets/second budget the 30 fps row
-         * uses and derive a per-frame count instead of disabling captions. */
+         * (#2792).  Derive a per-frame triplet budget from the 60 tuples/sec
+         * and per-picture construct budget the 30 fps row uses instead of
+         * disabling captions.  Keep fail-open when the frame rate is not usable
+         * (fps <= 0) so a malformed link cannot take the whole filter graph
+         * down. */
         double fps = av_q2d(frame_rate);
         int per_frame;
+        int cc_count;
 
-        if (fps <= 0.0)
-            return AVERROR(EINVAL);
-        per_frame = (int)(60.0 / fps + 0.999);
+        if (fps <= 0.0) {
+            av_log(ctx, AV_LOG_WARNING,
+                   "docichcc disabled: frame rate %d/%d is unsupported\n",
+                   frame_rate.num, frame_rate.den);
+            return 0;
+        }
+        per_frame = (int)(60.0 / fps);
         if (per_frame < 1)
             per_frame = 1;
-        if (per_frame > DOCICHCC_CC_COUNT_PER_FRAME)
-            per_frame = DOCICHCC_CC_COUNT_PER_FRAME;
+        if (per_frame > 31)
+            per_frame = 31;
+        cc_count = (int)(600.0 / fps + 0.999);
+        if (cc_count < 1)
+            cc_count = 1;
+        if (cc_count > 31)
+            cc_count = 31;
         s->cc_fifo.passthrough = 0;
         s->cc_fifo.expected_608 = per_frame;
-        s->cc_fifo.expected_cc_count = DOCICHCC_CC_COUNT_PER_FRAME;
+        s->cc_fifo.expected_cc_count = cc_count;
         av_log(ctx, AV_LOG_INFO,
                "docichcc: frame rate %d/%d is outside the ccfifo table; "
                "injecting %d CEA-608 triplets per frame\n",
