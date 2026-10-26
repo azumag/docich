@@ -37,6 +37,37 @@
 既存の claim 済み予約に対する `hanjuku_resume_recovery` は維持する。
 復旧の派生 attempt は元の logical request と封印保存を引き継ぎ、共通開始口でも選び直さない。
 
+### AI開始前に失敗した自動再開の復旧（#2760 / #2807）
+
+自動slotで保存をclaimした後にswitchがrollbackすると、`claimed` が残り、
+以後の開始は `another checkpoint request is pending` で拒否される。
+この状態は保存を削除して解消せず、既存の `check-recover-hanjuku-resume` →
+`recover-hanjuku-resume` operatorで同じ封印保存を一度だけ再試行する。
+通常のtimerに無条件の再試行や要求の取消は追加しない。
+
+対象は `terminal-boundary-v1 / resume / automatic / explicit_resume=false` のclaim。
+同一requestの `rolled_back` receipt、runtime側claimの完全一致、AI開始記録の不在、
+presenterの停止とtmux資源解放、安定したcanonical、保存・ROM・coreのdigest一致を
+既存writer lockの下で再検証する。ユーザーの休止設定と競合予約も引き続き拒否条件とする。
+元のpendingが残っている場合に加え、slot解放済みの場合は同じrequestの
+`failed_corners` または `released_requests` の解放記録と空の予約枠を要求する。
+履歴が失われた場合や別ownerが稼働中の場合は拒否し、推測で回収しない。
+
+再試行はoperatorによる手動予約となるが、元requestの完全な記録を
+`startup_recovery.original` に保存し、logical UUID・保存・source boundaryを保つ。
+別コーナーが再利用した終了済みownerファイルは変更しない。途中の書込みが失敗しても
+同一fingerprint・派生attemptで再実行でき、claim後の再実行は新しい試行を作らない。
+
+read-only diagnostics の `hanjuku_resume.status=detached_claim` は、安定したcanonicalから
+外れたclaimとruntime側記録の一致を示す。`reservation_fingerprint` を既存operatorの
+`expected_reservation` に渡す。これは復旧可能性や資源解放の証明ではなく、
+check操作で上記条件を再検証するための識別子である。公開するのは固定statusとdigestだけで、
+保存bytes・パス・request/lease IDを返さない。
+
+レビュー・CI・protected main・正規配備後に、最新診断、check、recover、
+同じ保存のロード後core照合、AI開始、継続・終了とslot解放を別々に検証する。
+再試行経路の修正だけでは、元の起動失敗原因が解消したことや本番復旧を意味しない。
+
 追加の自動復元は停滞だけを対象とし、確認可能な正常手動停止後の通常開始は従来の新規開始を保つ。
 
 オーナー承認（2026-10-17）により、g478 に検証済み保存が残り、後続 g514 が保存タイムアウトの
