@@ -1,23 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Reviewed, bounded storage reclaim helper for the production VM.
-# Safety: dry-run by default (changes only with APPLY=1 from the owner-only
-# control plane). Fixed allowlists only; live paths (browser profile, state,
-# debug, streaming encoder) are never removed. Stale targets are age-gated;
-# clones additionally need origin match + clean tree + zero process refs
-# (any doubt = skip, fail-closed). Docker: dangling images / build cache
-# older than 7d only — never tagged images, containers or volumes.
-# Network input never reaches a path; external inputs are APPLY,
-# VOICEVOX_ARCHIVE, AIVIS_ENGINE.
-# SIZE MATTERS: gateway exec caps stdin at 16384 bytes including the 3-line
-# preamble — keep this file well under it (guarded by a wiring test).
-#
-# Test-only flags: --root, --min-age-days, --voicevox-root,
-#   --include-voicevox-archive, --skip-system, --snap-cache-root,
-#   --stale-clone "PATH|ORIGIN", --home-root, --sys-tmp, --aivis-root,
-#   --include-aivis-engine
-
 apply="${APPLY:-0}"
 root="/home/ubuntu/soren"
 min_age_days=21
@@ -382,8 +363,6 @@ if [[ "$include_aivis" == 1 ]]; then
 fi
 
 # 6. Fixed system maintenance commands (bounded, standard) + docker reclaim.
-# Each stage runs independently: a failure in one must not abort the others.
-# Results are emitted as STAGE <name> <ok|skip|failed> rc=<n> for audit.
 if [[ "$skip_system" == 0 ]]; then
   run_stage apt_clean sudo -n apt-get clean
   run_stage journal_vacuum sudo -n journalctl --vacuum-size=200M
@@ -399,8 +378,7 @@ if [[ "$skip_system" == 0 ]]; then
     printf 'STAGE snap_reclaim skip rc=0\n'
   fi
 
-  # Docker: dangling images / build cache older than 168h only.
-  docker_image_max_age="168h"
+    docker_image_max_age="168h"
   docker_builder_max_age="168h"
   if command -v docker >/dev/null 2>&1; then
     if sudo -n docker info >/dev/null 2>&1; then
@@ -413,8 +391,7 @@ if [[ "$skip_system" == 0 ]]; then
     printf 'STAGE docker_reclaim skip rc=0\n'
   fi
 
-  # Logrotate config install + run (single stage; failure recorded, not fatal).
-  logrotate_conf='/etc/logrotate.d/soren'
+    logrotate_conf='/etc/logrotate.d/soren'
   read -r -d '' conf <<'CONF' || true
 /home/ubuntu/soren/logs/*.log {
   su root root
