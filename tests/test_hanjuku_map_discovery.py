@@ -668,3 +668,18 @@ def test_deploy_screens_recheck_endpoints_per_observation(kind):
     assert mem['orders'].get(active) in (None, 'pending')
     assert mem.get('_map_registration_hold') is True
     assert any(r['decision'] == 'order_precondition_lost' for r in mem['_records'])
+
+
+def test_candidate_mismatch_on_a_known_castle_reanchors_instead_of_rejecting():
+    mem = home_receipt()
+    frame = field()
+    mem['map_discovery']['candidate'] = 'グリン'
+    mem['map_discovery']['probe'] = {
+        'position': list(HOME), 'field_frame': frame.digest(), 'age': 0,
+        'roof_kind': 'own', 'screen_cursor': list(HOME),
+        'screen_roofs': [[60, 28], [204, 188]], 'expected': 'グリン'}
+    # The cursor is at the known home while the source hint named グリン.
+    assert feed(mem, status('アルマムーン')) == []
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert any(r['decision'] == 'map_search_candidate_mismatch' for r in mem['_records'])
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
