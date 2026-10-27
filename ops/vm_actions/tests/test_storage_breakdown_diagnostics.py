@@ -1,7 +1,9 @@
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -827,6 +829,240 @@ class StorageSummaryTests(unittest.TestCase):
         )
         self.assertEqual((available, incomplete), (0, 1))
         self.assertEqual(context, "storage_breakdown_unavailable=1")
+
+
+class SysTmpReclaimCandidateTests(unittest.TestCase):
+    """Case A of azumag/docich#2735: identity-free dry-run candidate count.
+
+    Every gate must pass for an entry to count. Git and /proc are faked so the
+    tests stay deterministic; the fixture paths and names must never leak.
+    """
+
+    NOW = 1_800_000_000
+    IDLE = 24 * 3600
+    MIN_BYTES = 32 * 1024
+    BIG = 128 * 1024
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.sys_tmp = self.base / "tmp"
+        self.proc = self.base / "proc"
+        self.sys_tmp.mkdir()
+        self.proc.mkdir()
+        self.git_dirty = set()
+        self.git_error = None
+        self.git_calls = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fake_run(self, args, **kwargs):
+        self.git_calls.append(args)
+        if self.git_error is not None:
+            raise self.git_error
+        repo = args[args.index("-C") + 1]
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=b"true\n", stderr=b"")
+        out = b" M file.txt\n" if repo in self.git_dirty else b""
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
+
+    def sweep(self, **overrides):
+        kwargs = dict(
+            now=self.NOW,
+            proc_root=self.proc,
+            min_bytes=self.MIN_BYTES,
+            idle_sec=self.IDLE,
+        )
+        kwargs.update(overrides)
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            return collector._sweep_sys_tmp_reclaim_candidates(self.sys_tmp, **kwargs)
+
+    def make_repo(self, name, *, git_file=False, size=None, age=2 * 24 * 3600):
+        repo = self.sys_tmp / name
+        if git_file:
+            repo.mkdir(parents=True)
+            (repo / ".git").write_text("gitdir: /nowhere\n")
+        else:
+            (repo / ".git" / "objects").mkdir(parents=True)
+        (repo / "data.bin").write_bytes(b"x" * (self.BIG if size is None else size))
+        self.age_tree(repo, self.NOW - age)
+        return repo
+
+    def age_tree(self, path, mtime):
+        for root, dirs, files in os.walk(path):
+            for name in dirs + files:
+                os.utime(os.path.join(root, name), (mtime, mtime), follow_symlinks=False)
+        os.utime(path, (mtime, mtime))
+
+    def make_proc(self, pid, *, cmdline=b"/usr/bin/sleep\0infinity\0", cwd=None, fd=None):
+        base = self.proc / str(pid)
+        (base / "fd").mkdir(parents=True)
+        (base / "cmdline").write_bytes(cmdline)
+        if cwd is not None:
+            os.symlink(cwd, base / "cwd")
+        if fd is not None:
+            os.symlink(fd, base / "fd" / "3")
+
+    def test_clean_idle_repo_with_git_dir_is_counted_without_identity(self):
+        repo = self.make_repo("clone-a")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+        self.assertGreaterEqual(result["allocated_bytes"], self.BIG)
+        self.assertNotIn("clone-a", json.dumps(result))
+        self.assertNotIn(str(repo), json.dumps(result))
+
+    def test_linked_worktree_with_git_file_is_counted(self):
+        self.make_repo("wt-b", git_file=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+
+    def test_directory_without_git_marker_is_excluded(self):
+        plain = self.sys_tmp / "plain"
+        plain.mkdir()
+        (plain / "data.bin").write_bytes(b"x" * self.BIG)
+        self.age_tree(plain, self.NOW - 2 * 24 * 3600)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_top_level_symlink_is_never_followed(self):
+        outside = self.base / "outside-repo"
+        (outside / ".git").mkdir(parents=True)
+        (outside / "data.bin").write_bytes(b"x" * self.BIG)
+        self.age_tree(outside, self.NOW - 2 * 24 * 3600)
+        os.symlink(outside, self.sys_tmp / "link")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+
+    def test_small_repo_below_size_gate_is_excluded(self):
+        self.make_repo("small", size=1024)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_recent_file_keeps_repo(self):
+        repo = self.make_repo("recent")
+        os.utime(repo / "data.bin", (self.NOW - 60, self.NOW - 60))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+
+    def test_recent_git_dir_keeps_repo_before_git_runs(self):
+        repo = self.make_repo("recent-objects")
+        os.utime(repo / ".git", (self.NOW - 60, self.NOW - 60))
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._sweep_sys_tmp_reclaim_candidates(
+                self.sys_tmp, now=self.NOW, proc_root=self.proc,
+                min_bytes=self.MIN_BYTES, idle_sec=self.IDLE,
+            )
+
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(self.git_calls, [])
+
+    def test_dirty_tree_is_excluded(self):
+        repo = self.make_repo("dirty")
+        self.git_dirty.add(str(repo))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_git_timeout_or_missing_git_fails_closed(self):
+        self.make_repo("slow")
+        for error in (subprocess.TimeoutExpired(cmd="git", timeout=5), OSError("no git")):
+            with self.subTest(error=type(error).__name__):
+                self.git_error = error
+                result = self.sweep()
+                self.assertEqual(result["count"], 0)
+
+    def test_process_cmdline_cwd_and_fd_references_keep_repo(self):
+        repo = self.make_repo("referenced")
+        cases = {
+            "cmdline": {"cmdline": f"tool\0{repo}\0".encode()},
+            "cwd": {"cwd": str(repo / "sub")},
+            "fd": {"fd": str(repo / "data.bin")},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(reference=label):
+                self.make_proc(910001, **kwargs)
+                result = self.sweep()
+                self.assertEqual(result["count"], 0)
+                self.assertTrue(result["scan_complete"])
+                for child in self.proc.iterdir():
+                    shutil.rmtree(child)
+
+    def test_unrelated_process_does_not_keep_repo(self):
+        self.make_repo("unrelated")
+        self.make_proc(910002, cwd="/", fd="/dev/null")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+
+    def test_missing_proc_root_is_incomplete_and_counts_nothing(self):
+        self.make_repo("no-proc")
+
+        result = self.sweep(proc_root=self.base / "absent-proc")
+
+        self.assertEqual(result["count"], 0)
+        self.assertFalse(result["scan_complete"])
+
+    def test_entry_bound_marks_scan_incomplete(self):
+        self.make_repo("bound-a")
+        self.make_repo("bound-b")
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._sweep_sys_tmp_reclaim_candidates(
+                self.sys_tmp, max_entries=1, now=self.NOW, proc_root=self.proc,
+                min_bytes=self.MIN_BYTES, idle_sec=self.IDLE,
+            )
+
+        self.assertFalse(result["scan_complete"])
+
+    def test_unexpected_error_is_contained_and_reported_incomplete(self):
+        self.make_repo("boom")
+
+        with patch.object(collector, "_storage_tree_usage", side_effect=RuntimeError("boom")):
+            result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertFalse(result["scan_complete"])
+
+    def test_breakdown_carries_the_new_key_and_stays_identity_free(self):
+        self.make_repo("in-breakdown")
+        soren = self.base / "home" / "soren"
+        prod = self.base / "home" / "docich"
+        soren.mkdir(parents=True)
+        prod.mkdir(parents=True)
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._collect_storage_breakdown(
+                soren, prod, home_root=self.base / "home",
+                voicevox_root=self.base / "voicevox",
+                sys_tmp=self.sys_tmp, var_log=self.base / "varlog",
+                swap_file=self.base / "swapfile",
+            )
+
+        self.assertIn("sys_tmp_reclaim_candidates", result)
+        self.assertEqual(set(result["sys_tmp_reclaim_candidates"]),
+                         {"count", "allocated_bytes", "scan_complete"})
+        self.assertNotIn("in-breakdown", json.dumps(result))
 
 
 if __name__ == "__main__":
