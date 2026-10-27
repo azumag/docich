@@ -496,6 +496,32 @@ GENERAL_TRAITS: dict[str, tuple[int, str, str, str]] = {
 }
 
 
+# Attack data for summoned-monster skills (対モ威力 / 対将威力 / 攻撃回数 /
+# 全体攻撃 / 自傷). Source: SFC half-cooked hero data wiki
+# "エッグモンスター／攻撃データ"
+# https://wikiwiki.jp/hjksfc/エッグモンスター/攻撃データ
+# Each entry: monster name -> {'skill1': (name, vs_monster, vs_general,
+#   hits, is_all, self_damage), 'skill2': (...)}.
+# Only representative / policy-relevant rows are transcribed here; unknown
+# monsters fall back to the generic opponent-aware heuristics below.
+MONSTER_ATTACK_DATA: dict[str, dict[str, tuple]] = {
+    'ワラワラ': {
+        'skill1': ('９９かいパンチ', 4, 15, 99, False, False),
+        'skill2': ('９９かいキック', 15, 4, 99, False, False),
+    },
+    'ウッドボール': {
+        'skill1': ('たいあたり', 10, 10, 1, False, False),
+        'skill2': ('ばくはつする', 0, 0, 1, True, True),
+    },
+}
+MONSTER_ATTACKS = MONSTER_ATTACK_DATA
+MONSTER_ATTACK_TABLE = MONSTER_ATTACK_DATA
+
+# Skills that damage the user itself; excluded from normal attack selection.
+MONSTER_SELF_DAMAGE_SKILLS: frozenset[str] = frozenset({
+    'ばくはつする', 'ハードバズーカ',
+})
+
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
 # Each unit knows exactly two skills; MONSTER_EFFECT_SKILLS is the global set
 # of skills whose effect flag is non-empty (duplicates agree on the flag).

@@ -23,7 +23,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
-                               _monster_owner, _monster_damage_second, _monster_damage_first)
+                               _monster_owner, _monster_damage_second, _monster_damage_first,
+                               _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
@@ -1482,6 +1483,14 @@ def monster_menu_step(screen: Screen, mem):
                 mem['monster_ally_max_hp'] = max(int(seen or 0), ally_hp)
         elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
+        # Issue #2835: opponent-aware attack command selection.
+        if (not special_cycle and not damage_first and not damage_second
+                and not powerless and len(skill_lines) >= 2
+                and default == 'skill1' and not heal_first and not behind):
+            policy_default = _monster_attack_policy_default(
+                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
+            if policy_default is not None:
+                default = policy_default
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
         # Special monster owner tactics must not be overridden by generic

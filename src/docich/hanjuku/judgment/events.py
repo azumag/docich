@@ -107,3 +107,89 @@ def _monster_damage_first(owner, ally, enemy, skills) -> bool:
             and len(skills) == 2
             and [_fold_skill(s) for s in skills]
             == [_fold_skill(s) for s in reference.MONSTER_SKILLS['なると']])
+def _monster_display_name(name):
+    return _MONSTER_DISPLAY_ALIASES.get(name, name)
+
+
+def _is_monster_opponent(enemy):
+    if enemy is None:
+        return False
+    return _monster_display_name(enemy.name) in _MONSTER_SKILLS
+
+
+def _is_self_damage_skill(skill):
+    if not skill:
+        return False
+    if _fold_skill(skill) in {s for s in reference.MONSTER_SELF_DAMAGE_SKILLS}:
+        return True
+    text = skill
+    return ('ばくはつ' in text or 'じばく' in text or '自爆' in text
+            or '自滅' in text or '自己ダメージ' in text)
+
+
+def _score_monster_attack(entry, opponent_kind, multiple):
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return 0
+    _name, vs_monster, vs_general, hits = entry[0], entry[1], entry[2], entry[3]
+    is_all = entry[4] if len(entry) > 4 else False
+    self_damage = entry[5] if len(entry) > 5 else False
+    if self_damage:
+        return -1
+    base = vs_monster if opponent_kind == 'monster' else vs_general
+    if opponent_kind == 'general' and not multiple:
+        return base
+    score = base * (hits if isinstance(hits, int) and hits > 0 else 1)
+    if opponent_kind == 'general' and multiple and is_all:
+        score += 100000
+    return score
+
+
+def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, second,
+                                    ally_hp, enemy_hp, mem):
+    """Opponent-aware default skill choice for issue #2835.
+
+    Returns 'skill1'/'skill2' when a policy applies, else None (caller keeps
+    its existing default).
+    """
+    if (owner != 'ally' or ally is None or enemy is None or not second
+            or not (type(ally_hp) is int and ally_hp > 0
+                    and type(enemy_hp) is int and enemy_hp > 0)):
+        return None
+    if type(enemy_hp) is int and 0 < enemy_hp <= 10:
+        if _is_self_damage_skill(first):
+            return 'skill2'
+        return 'skill1'
+    opponent_kind = 'monster' if _is_monster_opponent(enemy) else 'general'
+    multiple = False
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    if isinstance(battle, dict):
+        es = battle.get('enemy_soldiers')
+        if type(es) is int and es > 0:
+            multiple = True
+    data = None
+    attack_data = getattr(reference, 'MONSTER_ATTACK_DATA', None)
+    if isinstance(attack_data, dict):
+        data = attack_data.get(ally.name)
+        if data is None:
+            data = attack_data.get(_monster_display_name(ally.name))
+    if isinstance(data, dict) and 'skill1' in data and 'skill2' in data:
+        s1 = _score_monster_attack(data['skill1'], opponent_kind, multiple)
+        s2 = _score_monster_attack(data['skill2'], opponent_kind, multiple)
+        if s1 < 0 and s2 >= 0:
+            return 'skill2'
+        if s2 < 0 and s1 >= 0:
+            return 'skill1'
+        if s1 != s2:
+            return 'skill1' if s1 > s2 else 'skill2'
+    self1 = _is_self_damage_skill(first)
+    self2 = _is_self_damage_skill(second)
+    if self1 and not self2:
+        return 'skill2'
+    if self2 and not self1:
+        return 'skill1'
+    if opponent_kind == 'monster':
+        return 'skill2'
+    if multiple:
+        return 'skill2'
+    return 'skill1'
+
