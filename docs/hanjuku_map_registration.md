@@ -85,6 +85,10 @@
   - 全通常城を取った後はボス注文がなくなるため、ボス攻略には実測（下記）が必要。
 - `CASTLES_APPROX` はデータであり、`CASTLES` / `WORLD_MAP_OFFSET` / `Y_JUMP_OFFSET` /
   `HOUSE_VIEW` を書き換えない。近似を止めれば従来の `chart_unavailable` に戻る。
+- 近似セルで屋根に再アンカーできない観測が4回続いた場合は、そのラン・章で
+  `approx_fallback` を立てて近似を隠し、`map_registration` の実測探索へ戻す。
+  近似の誤差で注文が動かない場合の有界な退避であり、実測が成立すればその章の
+  出撃は再開する。`approx_map` の設定自体は変更しない。
 
 ### 近似を実測へ置き換える手順（C）
 

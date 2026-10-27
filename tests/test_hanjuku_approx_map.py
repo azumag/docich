@@ -65,3 +65,25 @@ def test_approx_seed_localizes_a_matching_two_roof_frame():
     assert policy.get('cursor') == [712, 160]
     assert actions and actions[-1]['buttons'] == ['a']
     assert not policy.get('nav_search')
+
+
+def test_approx_fallback_hides_seed_and_returns_to_native_survey():
+    assert chart.castles(3) == {}
+    with chart.map_context({'approx_fallback': True}, approx=True):
+        assert chart.castles(3) == {}
+
+    state = {'policy': {'chapter': 3, 'tick': 0, '_run_identity': dict(IDENTITY),
+                        'orders': {}, 'captured': [], '_records': []}}
+    # A cursor with no roof cannot anchor the source frame.
+    for _ in range(4):
+        _, state = decide(field(roofs=()), state, run_identity=IDENTITY, approx_map=True)
+    assert state['policy'].get('approx_fallback') is True
+    assert state['policy'].get('active') is None
+    assert any(r.get('decision') == 'approx_map_fallback'
+               for r in state.get('_records', []))
+
+    # The next map frame is handled by native registration, not approx orders.
+    _, state = decide(field(), state, run_identity=IDENTITY, approx_map=True)
+    assert any(r.get('decision') in {'map_search_candidate', 'map_bootstrap_started',
+                                     'map_bootstrap_exhausted'}
+               for r in state.get('_records', []))
