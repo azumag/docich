@@ -517,8 +517,28 @@ class TestLifecycle(Soren91AdapterTestBase):
         with self._bound_listener(True), self._http():
             self.http_plan = [(200, {"ok": True, "running": True})]
             adapter.materialize_runtime(time.monotonic() + 30, None)
-            self.http_plan = [(200, {"ok": True, "running": True})]
+            # One probe before the viewer wait, one polling status.
+            self.http_plan = [
+                (200, {"ok": True, "running": True}),
+                (200, {"ok": True, "running": True}),
+            ]
             adapter.readiness(time.monotonic() + 30, None)
+
+    def test_readiness_fails_fast_when_renderer_host_unreachable(self):
+        # #2260: an unreachable renderer host must fail before the presenter's
+        # 240s viewer wait, not after it.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.http_plan = [urllib.error.URLError("no route")]
+            with mock.patch(
+                "docich.adapters.cli_game.CliCoordinatorAdapter.readiness"
+            ) as viewer_wait:
+                with self.assertRaises(ReadinessTimeoutError) as ctx:
+                    adapter.readiness(time.monotonic() + 30, None)
+        viewer_wait.assert_not_called()
+        self.assertIn("viewer 待ち前に失敗", str(ctx.exception))
 
     def test_readiness_fails_closed_when_renderer_not_running(self):
         adapter = self._adapter()
@@ -548,7 +568,8 @@ class TestLifecycle(Soren91AdapterTestBase):
             encoding="utf-8",
         )
         self.tmux.windows.pop("docich-game-g3:game-g3")
-        with self.assertRaises(ReadinessTimeoutError) as ctx:
+        with self.assertRaises(ReadinessTimeoutError) as ctx, self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
             adapter.readiness(time.monotonic() + 30, None)
         self.assertIn("viewer_timeout", str(ctx.exception))
         self.assertIn("viewer_wait_sec=240", str(ctx.exception))

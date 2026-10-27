@@ -770,10 +770,30 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             self._wait_cdp_proxy(deadline, cancel)
             self._check_active(deadline, cancel)
 
+    def _check_renderer_responsive(self, deadline: float, cancel) -> None:
+        """Fail now if the chosen renderer host stopped answering.
+
+        Runs before the presenter's viewer wait (up to viewer_wait_sec). Only
+        unreachable/unopened endpoints fail here; a host that answers but is
+        not running yet keeps the polling loop in readiness().
+        """
+        host = self._host_for_call()
+        try:
+            self._agent_running(deadline, cancel)
+            if self.agent_enabled and not self._cdp_proxy_ready():
+                raise AdapterError(f"{self._label(host)} CDP proxy が応答しません")
+        except AdapterError as exc:
+            raise ReadinessTimeoutError(
+                f"{exc} (viewer 待ち前に失敗: renderer host {host})"
+            ) from exc
+
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
         # must report running, and our listener port must accept — all three
         # before the coordinator may commit. Anything else fails closed.
+        # Probe the renderer first: otherwise an absent host is only visible
+        # after the presenter's full viewer wait.
+        self._check_renderer_responsive(deadline, cancel)
         super().readiness(deadline, cancel)
         while True:
             try:
