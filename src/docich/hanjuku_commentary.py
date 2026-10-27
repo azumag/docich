@@ -202,7 +202,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
             'retake': (f"奪われた{rec['target']}を白兵で奪い", '返します', '返す'),
             'move': (f"{rec.get('source')}から空の{rec['target']}へ", '移ります', '移る'),
         }.get(rec.get('purpose'), (f"{rec['target']}を白兵で", '攻めます', '攻める'))
-        if rec.get('strategy_variant') == 'chart_interim_fallback':
+        if rec.get('strategy_variant') in ('chart_interim_fallback', 'chart_interim_mechanical'):
             return (f"jev_interim:{rec.get('target')}",
                     f"調整チャートを待つ間、{rec['general']}が{stem}{polite}。")
         return (f"jev_interim:{rec.get('target')}",
