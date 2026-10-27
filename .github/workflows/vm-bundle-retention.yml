@@ -149,8 +149,9 @@ jobs:
             err_file="$RUNNER_TEMP/post-retention-status.err"
             if status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $sha" 2>"$err_file")"; then
               break
+            else
+              rc=$?
             fi
-            rc=$?
             if ! grep -Fxq 'VM operation rejected: gateway_busy' "$err_file" || (( attempt == 4 )); then
               printf 'post-retention production status failed (exit=%d)\n' "$rc" >&2
               exit "$rc"
