@@ -954,7 +954,8 @@ def test_a_chapter_2_memory_without_evidence_returns_to_chapter_1_once():
     assert mem['chapter'] == 2
 
 
-def test_an_unmeasured_chapter_never_walks_another_chapters_cells():
+def test_an_unmeasured_chapter_never_walks_another_chapters_cells(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 3, {})
     mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'name': {'done': True}}
     policy.observe_chapter_castle(mem, 'グリン')             # only chapter 3 has グリン
     assert mem['chapter'] == 3 and mem['variant'] == 'chart_unavailable'

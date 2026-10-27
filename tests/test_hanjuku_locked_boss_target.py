@@ -30,7 +30,9 @@ def test_adjusted_boss_target_cannot_bypass_unlock_with_an_unconditional_order(c
         mem['captured'] = [order['source']]
     assert not p._ready(order, mem)
     mem['captured'] = list(set(chart.CASTLE_NAMES[chapter]) - {order['target']})
-    assert p._ready(order, json.loads(json.dumps(mem)))
+    # Four distinct chapter-4 sites and a moving chapter-9 boss cannot be
+    # unlocked as the legacy single static point, even after ordinary castles.
+    assert p._ready(order, json.loads(json.dumps(mem))) is (chapter not in (4, 9))
 
 
 def test_unsent_hotloaded_boss_marker_cannot_confirm_a_locked_castle(monkeypatch):

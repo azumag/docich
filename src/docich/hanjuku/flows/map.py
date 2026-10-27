@@ -208,6 +208,18 @@ def _hold_off_castle(screen, mem, order) -> bool:
     return True
 
 
+def _measured_goal(mem, order, castle):
+    """Last coordinate boundary, including already-issued reconciliation."""
+    goal = chart.castles(mem.get('chapter') or 0).get(castle)
+    if goal is None:
+        mem['active'] = None
+        mem['picked'] = []
+        mem['_map_registration_hold'] = True
+        _record(mem, 'map_coordinates_unavailable', chart_step=order['step'], castle=castle,
+                reason='現在のランで有効な座標がないため入力せず、既存注文の実行を停止')
+    return goal
+
+
 def map_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -321,7 +333,9 @@ def map_step(screen: Screen, mem, frame):
                 cards=list(order['cards']),
                 reason=order['note'])
     source = _source(order, mem)
-    goal = chart.castles(mem['chapter'])[source]
+    goal = _measured_goal(mem, order, source)
+    if goal is None:
+        return []
     if screen.cursor and not screen.marker and _near_goal(mem, order, source, 'map'):
         aligned = _align_on_roof(screen, mem, frame, ('own',), f"{order['step']}:map")
         if aligned == 'on':
@@ -404,7 +418,9 @@ def target_step(screen: Screen, mem, frame):
                 or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
-    goal = chart.castles(mem['chapter'])[order['target']]
+    goal = _measured_goal(mem, order, order['target'])
+    if goal is None:
+        return []
     result = None
     if screen.marker and _near_goal(mem, order, order['target'], 'target'):
         if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
