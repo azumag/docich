@@ -10940,7 +10940,7 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
-def _compact_hanjuku_policy(mem):
+def _compact_hanjuku_policy(mem, state=None):
     """Small map/route summary that survives the tactical detail drop.
 
     The full tactical section is dropped when the diagnostics envelope is
@@ -10963,8 +10963,14 @@ def _compact_hanjuku_policy(mem):
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
     cursor = mem.get('cursor')
     tick = mem.get('tick')
+    state = state if isinstance(state, dict) else {}
     return {
         'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'screen_kind': text(state.get('screen_kind'), 32),
+        'phase': text(state.get('phase'), 32),
+        'step': state.get('step') if type(state.get('step')) is int else None,
+        'no_input_streak': (state.get('no_input_streak')
+                            if type(state.get('no_input_streak')) is int else None),
         'variant': text(mem.get('variant'), 32),
         'active': text(mem.get('active'), 32),
         'tick': tick if type(tick) is int and tick >= 0 else None,
@@ -11047,7 +11053,7 @@ def _collect_hanjuku_tactical(state_dir, now):
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'policy': _compact_hanjuku_policy(mem),
+                    'age_sec': int(age), 'policy': _compact_hanjuku_policy(mem, bot),
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
@@ -11081,7 +11087,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
-                   policy=_compact_hanjuku_policy(mem),
+                   policy=_compact_hanjuku_policy(mem, bot),
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)

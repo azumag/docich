@@ -265,6 +265,7 @@ def test_unsupported_chapter_keeps_a_bounded_policy_summary(tmp_path):
                          captured=['グリン'], garrison={'アルマムーン': ['どうし']},
                          cursor=[712, 160], approx_fallback=False,
                          approx_localize_miss=2)
+    bot.update(screen_kind='map', phase='field', step=7, no_input_streak=0)
     file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
     out = d._collect_hanjuku_tactical(tmp_path, 110)
     assert out['status'] == 'unsupported_chapter' and out['chapter'] == 3
@@ -275,6 +276,8 @@ def test_unsupported_chapter_keeps_a_bounded_policy_summary(tmp_path):
     assert policy['garrison'] == {'アルマムーン': 1}
     assert policy['cursor'] == [712, 160]
     assert policy['approx_localize_miss'] == 2
+    assert policy['screen_kind'] == 'map' and policy['phase'] == 'field'
+    assert policy['step'] == 7 and policy['no_input_streak'] == 0
     # No free text, identities or hashes leak through the compact summary.
     text = json.dumps(out, ensure_ascii=False)
     for secret in ('private-lease', 'DO NOT EMIT', 'private-general'):
