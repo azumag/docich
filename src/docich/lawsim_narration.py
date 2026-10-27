@@ -19,13 +19,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
-from .trading.soren_output import enqueue_audio_text, resolve_soren_root
+from .overlay_queue import OVERLAY_BODY_LIMIT, append_event
+from .trading.soren_output import enqueue_audio_text
 
 TITLE = "共産主義法律シミュレーター"
 CONTEXT = "lawsim:session"
 MAX_SPEECH = 280
-NARRATION_LABEL = "RADIO:lawsim-narration"
 
 
 def _session_text(data):
@@ -77,8 +76,16 @@ def narration_text(data, *, limit=MAX_SPEECH):
 
 
 def speech(g, text, *, context=CONTEXT, speaker=None, audio_enabled=True):
+    if not audio_enabled or not text:
+        return "skipped"
     try:
-        enqueue_audio_text(g, text, context=context, label=NARRATION_LABEL)
+        enqueue_audio_text(
+            g,
+            text,
+            context=context,
+            speaker=speaker or "",
+            dedup_scope=CONTEXT,
+        )
         return "sent"
     except Exception:
         return "failed"
@@ -95,11 +102,7 @@ def announce(g, payload, *, request_id=None, audio_enabled=False, overlay=None, 
         except Exception:
             result["overlay"] = "failed"
     if audio_enabled and text:
-        try:
-            speech(g, text, context=CONTEXT)
-            result["speech"] = "sent"
-        except Exception:
-            result["speech"] = "failed"
+        result["speech"] = speech(g, text, context=CONTEXT, audio_enabled=True)
     return result
 
 
