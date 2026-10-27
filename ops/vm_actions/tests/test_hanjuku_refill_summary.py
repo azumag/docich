@@ -66,6 +66,28 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(result))
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.json')})
 
+    def test_hero_repair_reserve_projects_bounded_amounts_and_release_code(self):
+        refill = self.collect()['refill']
+        self.assertEqual(refill['hero_reserve'], 50)
+        self.assertEqual(refill['general_reserve'], 0)
+        self.assertEqual(refill['hero_deferred'], 'none')
+        self.policy['shop']['hero_repair_deferred'] = 'moving'
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['hero_deferred'], 'moving')
+        self.policy['shop']['hero_repair_deferred'] = 'PRIVATE-reason'
+        self.write_records()
+        refill = self.collect()['refill']
+        self.assertEqual(refill['hero_deferred'], 'unknown')
+        self.assertNotIn('PRIVATE', json.dumps(refill))
+
+    def test_hero_repair_reserve_bool_or_malformed_is_withheld(self):
+        self.policy['shop']['hero_repair_reserve'] = True
+        self.write_records()
+        refill = self.collect()['refill']
+        self.assertIsNone(refill['hero_reserve'])
+        self.assertIsNone(refill['general_reserve'])
+        self.assertEqual(refill['repair'], 'unknown')
+
     def test_current_refill_survives_existing_soft_and_hard_budget_pressure(self):
         refill = self.collect()['refill']
         payload = production_scale_payload(hanjuku_tactical={

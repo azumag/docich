@@ -59,12 +59,24 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "attack_adjacent",
         "open_door",
         "eat_food",
+        "pick_up_item",
         "rest_impaired",
         "rest_low_hp",
         "rest",
         "explore_step",
         "search_when_blocked",
         "descend_stairs",
+        "wield_weapon",
+        "wear_armor",
+        "quaff_potion",
+        "read_scroll",
+        "zap_wand",
+        "apply_tool",
+        "takeoff_armor",
+        "throw_item",
+        "kick_door",
+        "close_door",
+        "ascend_stairs",
     }
     assert {spec.effect for spec in specs} <= set(REVIEWED_EFFECTS)
 
@@ -176,7 +188,7 @@ def test_validate_rejects_unknown_effect_and_effect_pattern_mismatch():
                     ("prompt:none",),
                     (">",),
                     ("screen_changed",),
-                    effect="zap_wand",
+                    effect="bogus_effect",
                 ),
             )
         )
@@ -249,6 +261,25 @@ def test_keys_match_handles_placeholders():
     assert not keys_match(("{direction}",), ("x",))
     assert not keys_match(("o", "{direction}"), ("o", "5"))
     assert not keys_match((" ",), ("x",))
+
+
+def test_verify_pick_up_item():
+    before = frame("You see here a dagger.", ("....", ".@..", "...."))
+    after = frame("q - a dagger (weapon in hand).", ("....", ".@..", "...."))
+    spec = spec_by_id(load_action_catalog(CATALOG), "pick_up_item")
+    assert verify_action_spec(spec, before=before, after=after, keys=(",",)).status == STATUS_VERIFIED
+    # Wrong key.
+    assert verify_action_spec(spec, before=before, after=after, keys=("g",)).status == STATUS_KEYS
+    # Message did not change: nothing was picked up.
+    assert (
+        verify_action_spec(spec, before=before, after=before, keys=(",",)).status
+        == STATUS_POSTCONDITION
+    )
+    # No visible single object under the hero.
+    assert (
+        verify_action_spec(spec, before=after, after=after, keys=(",",)).status
+        == STATUS_PRECONDITION
+    )
 
 
 def test_verify_advance_message():
@@ -341,3 +372,189 @@ def test_worker_append_trace_writes_jsonl(tmp_path):
     path = tmp_path / "trace.jsonl"
     _append_trace(path, {"intent": "rest", "keys": ["."]})
     assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["intent"] == "rest"
+
+
+def inv_item(letter, category, *, equipped=False, unpaid=False):
+    return VisibleInventoryItem(
+        letter=letter,
+        description=f"an uncursed {category}",
+        quantity=1,
+        buc="uncursed",
+        equipped=equipped,
+        unpaid=unpaid,
+        category_hint=category,
+    )
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["Q", "S", "!", "F", "X"],
+)
+def test_catalog_rejects_production_denied_single_keys(key):
+    with pytest.raises(ValueError, match="denied production command"):
+        validate_action_catalog(
+            (ActionSpec("x", "movement", ("prompt:none",), (key,), ("always",)),)
+        )
+
+
+def test_catalog_rejects_denied_extended_command_spelled_as_keys():
+    with pytest.raises(ValueError, match="denied production command"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "movement",
+                    ("prompt:none",),
+                    ("#", "q", "u", "i", "t"),
+                    ("always",),
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="denied production command"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "movement",
+                    ("prompt:none",),
+                    ("#", "w", "i", "z", "a", "r", "d"),
+                    ("always",),
+                ),
+            )
+        )
+
+
+def test_pray_extended_command_is_not_denied():
+    validate_action_catalog(
+        (
+            ActionSpec(
+                "pray",
+                "prompt",
+                ("prompt:none",),
+                ("#", "p", "r", "a", "y", "\r"),
+                ("always",),
+                effect="pray",
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("effect", "pattern"),
+    [
+        ("apply_item", ("a", "{item_letter}")),
+        ("read_item", ("r", "{item_letter}")),
+        ("quaff_item", ("q", "{item_letter}")),
+        ("zap_wand", ("z", "{item_letter}")),
+        ("throw_item", ("t", "{item_letter}", "{direction}")),
+        ("wear_item", ("W", "{item_letter}")),
+        ("wield_item", ("w", "{item_letter}")),
+        ("takeoff_item", ("T", "{item_letter}")),
+        ("close_door", ("c", "{direction}")),
+        ("kick_door", ("\x04", "{direction}")),
+        ("pray", ("#", "p", "r", "a", "y", "\r")),
+    ],
+)
+def test_standard_effect_contracts_are_fixed(effect, pattern):
+    validate_action_catalog(
+        (ActionSpec("x", "item", ("prompt:none",), pattern, ("always",), effect=effect),)
+    )
+    with pytest.raises(ValueError, match="requires key_pattern"):
+        validate_action_catalog(
+            (ActionSpec("x", "item", ("prompt:none",), (">",), ("always",), effect=effect),)
+        )
+
+
+def test_inventory_predicates_use_only_visible_categories():
+    observation = frame("", (".....", ".@...", "....."))
+    weapon = inv_item("a", "weapon")
+    worn = inv_item("b", "armor", equipped=True)
+    spare_armor = inv_item("c", "armor")
+    unpaid_potion = inv_item("d", "potion", unpaid=True)
+    paid_potion = inv_item("e", "potion")
+    ctx = ActionContext(
+        observation,
+        inventory=(weapon, worn, spare_armor, unpaid_potion, paid_potion),
+    )
+    assert precondition("inventory_wieldable", ctx)
+    assert precondition("no_equipped_weapon", ctx)
+    assert precondition("inventory_wearable", ctx)
+    assert not precondition("no_equipped_armor", ctx)
+    assert precondition("inventory_worn", ctx)
+    assert precondition("inventory_potion", ctx)
+    # Only the unpaid potion is excluded; the paid one keeps the predicate true.
+    only_unpaid = ActionContext(observation, inventory=(unpaid_potion,))
+    assert not precondition("inventory_potion", only_unpaid)
+    # An equipped weapon is no longer wieldable / no longer "no weapon in hand".
+    equipped_weapon = ActionContext(observation, inventory=(inv_item("f", "weapon", equipped=True),))
+    assert not precondition("inventory_wieldable", equipped_weapon)
+    assert not precondition("no_equipped_weapon", equipped_weapon)
+
+
+def test_verify_wield_weapon_requires_the_recorded_item_letter():
+    before = frame("", ("....", ".@..", "...."))
+    after = frame("You wield the dagger.", ("....", ".@..", "...."))
+    spec = spec_by_id(load_action_catalog(CATALOG), "wield_weapon")
+    assert (
+        verify_action_spec(
+            spec, before=before, after=after, keys=("w", "a"), inventory=(inv_item("a", "weapon"),)
+        ).status
+        == STATUS_VERIFIED
+    )
+    # A different letter cannot be invented by a trace.
+    assert (
+        verify_action_spec(
+            spec, before=before, after=after, keys=("w", "b"), inventory=(inv_item("a", "weapon"),)
+        ).status
+        == STATUS_PRECONDITION
+    )
+    # No recorded inventory means the letter is unverifiable, not assumed.
+    assert (
+        verify_action_spec(spec, before=before, after=after, keys=("w", "a")).status
+        == STATUS_PRECONDITION
+    )
+
+
+def test_verify_ascend_stairs_from_remembered_tile():
+    from docich.nethack_exploration import NethackExplorer
+
+    explorer = NethackExplorer()
+    seen = frame("", ("....", ".@<.", "...."))
+    explorer.memory.update(seen)
+    on_stairs = frame("", ("....", "..@.", "...."))
+    assert explorer.memory.standing_on_up_stairs(on_stairs)
+    spec = spec_by_id(load_action_catalog(CATALOG), "ascend_stairs")
+    assert (
+        verify_action_spec(
+            spec, before=on_stairs, after=frame("You go up the stairs."), keys=("<",), explorer=explorer
+        ).status
+        == STATUS_VERIFIED
+    )
+    # Without the remembered staircase the command is not justified.
+    assert (
+        verify_action_spec(
+            spec,
+            before=on_stairs,
+            after=frame("You go up the stairs."),
+            keys=("<",),
+            explorer=NethackExplorer(),
+        ).status
+        == STATUS_PRECONDITION
+    )
+
+
+def test_verify_kick_door_only_after_a_failed_open_attempt():
+    before = frame("", ("....", ".@+.", "...."))
+    after = frame("You kick the door.", ("....", ".@+.", "...."))
+    spec = spec_by_id(load_action_catalog(CATALOG), "kick_door")
+    door = (1, 2, 1)
+    assert (
+        verify_action_spec(
+            spec, before=before, after=after, keys=("\x04", "l"), failed_doors=frozenset({door})
+        ).status
+        == STATUS_VERIFIED
+    )
+    assert (
+        verify_action_spec(spec, before=before, after=after, keys=("\x04", "l")).status
+        == STATUS_PRECONDITION
+    )

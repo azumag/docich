@@ -17,6 +17,19 @@ from .pixels import Frame
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
 HAND_COLORS = ((255, 174, 82), (205, 105, 24), (205, 149, 32))
+
+
+def resume_bijin_gift_panel(screen) -> bool:
+    """Recognize the complete native gift menu without guessing a chapter."""
+    header = screen.header or {}
+    if (screen.kind != 'gift_request' or header.get('chapter') is not None
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or not 1 <= header['month'] <= 12):
+        return False
+    rows = [''.join(word for x, word in line.spans() if x >= 144)
+            for line in screen.lines]
+    items = [row for row in rows if PRICE.fullmatch(row) and row != f"{header['gold']}G"]
+    return len(items) == 3 and set(items) == {'こうすい100G', 'くるま200G', 'いえ500G'}
 # Summoned-monster turn menu: a knight sprite sits left of the selected option
 # row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
 # Both measurements come from live frames (decision-003/024/029).
@@ -354,6 +367,7 @@ class Screen:
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
+    mixed_item_box: bool = False
     priest_ritual_scene: bool = False
     priest_ritual_dialogue: bool = False
     # Positive pixel evidence only; raw lines retain all unknown message cells.
@@ -753,6 +767,24 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                                            for side in ('enemy', 'ally')) if g]
     screen.menu_rows = _menu_rows(lines)
     box_rows = _box_rows(screen.menu_rows)
+    # A defense item box can overlay the summon menu with its egg enabled
+    # and its card row disabled. The old background fierce-attack label is
+    # still visible above it, so use both foreground rows and their knight,
+    # but never add the disabled card to the selectable menu rows.
+    if not box_rows and any(r.y in (192, 196) and r.spans() == [(176, 'たまごをつかう')]
+                            for r in screen.menu_rows):
+        grey = read_lines(frame, predicate=lambda r,g,b: 95 <= min(r,g,b)
+                          and max(r,g,b) <= 120 and max(r,g,b)-min(r,g,b) <= 5,
+                          rect=(176,176,256,216))
+        for y in (192, 196):
+            egg = next((r for r in screen.menu_rows if r.y == y
+                        and r.spans() == [(176, 'たまごをつかう')]), None)
+            card = next((r for r in grey if r.y == y + 16
+                         and r.spans() == [(176, 'きりふだ')]), None)
+            if egg and card and _menu_cursor(frame, [egg, card]) in (egg.y, card.y):
+                box_rows = [egg, card]
+                screen.mixed_item_box = True
+                break
     if not screen.menu_rows:
         # Measured disabled text is (106,105,106), not white. Keep it out
         # of selectable labels: only use all three exact rows to detect the
@@ -934,7 +966,7 @@ def classify_text(s: Screen) -> str:
         return 'okunote_menu'
     if egg_choice_names(s):
         return 'egg_choice_menu'
-    if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box:
+    if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box or s.mixed_item_box:
         return 'battle_menu'
     if _partial_human_commands(s):
         return 'battle_menu_pending'

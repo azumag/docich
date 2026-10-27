@@ -168,6 +168,23 @@ def _register_owner(root, owner_state):
     atomic_write_json(registry, {'owner_state': str(owner_state)})
 
 
+def _same_state_file(left, right):
+    """Return True only when both paths name the same existing state file."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        # A released corner's own state file may already be gone (the corner
+        # never wrote it, or cleanup removed it). Fall back to a normalized
+        # path comparison so a stale registry row that names that same path
+        # can still be retired instead of livelocking the shared slot.
+        try:
+            return str(Path(left).expanduser().resolve()) == str(
+                Path(right).expanduser().resolve()
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+
 def release_program_owner(g, owner_state):
     """Drop the shared program registry row that still names a released corner.
 
@@ -177,16 +194,16 @@ def release_program_owner(g, owner_state):
     observes ``failed`` as BUSY forever, which livelocks every later corner in
     the shared program slot (#2282).
 
-    The row is dropped only while it still names exactly this state file, and
-    only under the program flock, so a corner that has since taken the slot
-    keeps its own ownership.  A flock held by a running corner means the
-    registry already names that corner, so there is nothing stale to drop.
-    Returns True when a row was actually removed.
+    The row is dropped only while it still names the same existing state file,
+    independent of relative/absolute or symlink path spelling, and only under
+    the program flock. A corner that has since taken the slot therefore keeps
+    its own ownership. A flock held by a running corner means the registry
+    already names that corner, so there is nothing stale to drop. Missing or
+    unresolved paths fail closed. Returns True when a row was actually removed.
     """
     root = resolve_soren_root(g) / 'tmp/state'
     root.mkdir(parents=True, exist_ok=True)
     registry = root / REGISTRY_FILE
-    target = str(owner_state)
     try:
         with (root / 'docich_program.lock').open('a') as lock:
             try:
@@ -197,7 +214,10 @@ def release_program_owner(g, owner_state):
                 current = json.loads(registry.read_text())
             except (OSError, ValueError):
                 return False
-            if not isinstance(current, dict) or current.get('owner_state') != target:
+            if not isinstance(current, dict):
+                return False
+            current_owner = current.get('owner_state')
+            if not isinstance(current_owner, str) or not _same_state_file(current_owner, owner_state):
                 return False
             try:
                 registry.unlink()

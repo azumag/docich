@@ -280,7 +280,47 @@ def _filesystem_status(path:Path):
     available=info.f_bavail*block_size
     denominator=used+available
     used_percent=0 if denominator<=0 else (used*100+denominator-1)//denominator
-    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
+    # Inode counts answer whether an ENOSPC-like failure is really inode exhaustion (#2666).
+    # Some filesystems report f_files=0; that is unknown, not zero inodes.
+    files_total=info.f_files or None
+    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent,
+            'files_total':files_total,'files_available':(info.f_favail if files_total else None)}
+
+PROJECTION_GUARD_EVENT_MAX_BYTES=4096
+PROJECTION_GUARD_EVENTS=('would_refuse','refused','gate_degraded')
+PROJECTION_GUARD_POLICIES=('dry_run','enforce_reviewed','off')
+
+def _projection_guard_event(soren_root):
+    """Whitelisted last live-apply gate event for the observation gate (#2487).
+
+    Reads only ``tmp/state/projection_guard_last_event.json`` under the soren
+    checkout. Symlinks and non-regular files are refused (O_NOFOLLOW + fstat).
+    ``reason`` and ``quarantine_dir`` are withheld: they can carry paths.
+    The ``policy`` field is the policy the worker actually applied, so it is an
+    observed value rather than the file default.
+    """
+    entry={'present':False,'readable':False,'event':None,'policy':None,'recorded_at':None}
+    if not isinstance(soren_root,str) or not soren_root: return entry
+    path=Path(soren_root)/'tmp'/'state'/'projection_guard_last_event.json'
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except FileNotFoundError: return entry
+    except OSError:
+        entry['present']=True
+        return entry
+    entry['present']=True
+    with os.fdopen(fd,'rb') as handle:
+        info=os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size>PROJECTION_GUARD_EVENT_MAX_BYTES: return entry
+        try: data=json.loads(handle.read(PROJECTION_GUARD_EVENT_MAX_BYTES+1).decode('utf-8'))
+        except (ValueError,UnicodeDecodeError): return entry
+    if not isinstance(data,dict) or data.get('schema_version')!=1: return entry
+    event=data.get('event'); policy=data.get('policy'); recorded=data.get('recorded_at')
+    entry.update(readable=True,
+                 event=event if event in PROJECTION_GUARD_EVENTS else None,
+                 policy=policy if policy in PROJECTION_GUARD_POLICIES else None,
+                 recorded_at=recorded if type(recorded) is int else None)
+    return entry
 
 
 def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
@@ -813,12 +853,20 @@ def deploy_git(cfg,repo,sha):
     if state.get('deployment_intent'): raise ValueError('deployment recovery required')
     _verify_managed_projections(cfg,repo,state)
     old=state.get('sha')
-    if not SHA_RE.fullmatch(old or '') or git(root,'rev-parse','HEAD')!=old or not git_clean(root):
+    # #2681: a checkout that is not tracked-clean is unknown drift and stays
+    # fail-closed. A clean checkout whose HEAD moved away from the recorded
+    # baseline is resolved inside the transaction below: the deploy
+    # auto-rebaselines when that HEAD is an ancestor of the requested reviewed
+    # commit (rebaseline_git's reviewed conditions) and refuses otherwise.
+    if not SHA_RE.fullmatch(old or '') or not git_clean(root):
         raise ValueError('tracked VM drift detected')
+    head=git(root,'rev-parse','HEAD')
+    if not SHA_RE.fullmatch(head): raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
     projection_plans=[]
     applied=[]
     intent_written=False
+    rebaselined_from=None
     try:
         # The parent fetch must succeed and must not recurse. git's default
         # on-demand recursion resolves every gitlink reachable in the incoming
@@ -835,6 +883,23 @@ def deploy_git(cfg,repo,sha):
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
+        if head!=old:
+            # Safe auto-rebaseline (#2681): the baseline advanced out-of-band
+            # (#377 class) but the checkout is tracked-clean and its HEAD is an
+            # ancestor of the requested reviewed commit, i.e. exactly the
+            # conditions of the reviewed manual rebaseline_git recovery. An
+            # out-of-band commit that never reached main (the 2026-10-23
+            # docich#2681 incident) is not an ancestor and still fails closed.
+            _verify_ops_brief(cfg,repo,head)
+            ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
+                                    stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if ancestor.returncode!=0: raise ValueError('tracked VM drift detected')
+            history=(state.get('rebaseline_history') or [])[-9:]
+            history.append({'from':old,'to':head,'target':sha,'auto':True})
+            state={**state,'sha':head,'previous_head':old,'rebaseline_history':history}
+            write_json(state_path,state)
+            rebaselined_from=old
+            old=head
         write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
         intent_written=True
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
@@ -881,7 +946,11 @@ def deploy_git(cfg,repo,sha):
             try: _rollback_projection(changes)
             except Exception as error: rollback_errors.append(error)
         try:
-            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
+            # #2681: roll back to the pre-deploy production HEAD, not the
+            # recorded baseline. When the deploy refused an out-of-band HEAD,
+            # ``old`` may differ from ``head`` and resetting to ``old`` would
+            # overwrite unknown drift instead of preserving it for diagnosis.
+            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',head],
                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
             sync_owned_submodules(root)
         except Exception as error: rollback_errors.append(error)
@@ -893,7 +962,9 @@ def deploy_git(cfg,repo,sha):
         raise
     finally:
         _close_projection_plans(projection_plans)
-    return {'status':'deployed','sha':sha}
+    result={'status':'deployed','sha':sha}
+    if rebaselined_from is not None: result['rebaselined_from']=rebaselined_from
+    return result
 
 def deploy_prod(cfg,repo,sha):
     return deploy_git(cfg,repo,sha)
@@ -1657,8 +1728,10 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
+    soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
     return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
+            'projection_guard_last_event':_projection_guard_event(soren_root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():

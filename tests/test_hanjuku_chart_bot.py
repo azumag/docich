@@ -515,9 +515,10 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     assert lost['chart_step'] == 'A:test:J3'
     assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ'],
                                       'source': 'ジョンリギ'}
-    assert mem['active'] is None
-    assert 'order_start' not in names          # never re-picks the unready order
-    assert 'chart_adjust_request' in names     # holds for a chart instead
+    assert mem['active'] != 'A:test:J3'        # the unready order is not re-picked
+    assert all(r.get('chart_step') != 'A:test:J3' for r in mem['_records'] if r['decision'] == 'order_start')
+    assert 'chart_adjust_request' in names     # asks for a chart; a mechanical interim runs meanwhile
+    assert mem['active'] is None or mem['active'].startswith('I:')
 
 
 def test_commentary_is_grounded_and_holds_when_unknown():

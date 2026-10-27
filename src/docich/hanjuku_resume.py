@@ -544,7 +544,8 @@ def restore(adapter, deadline, cancel):
     from .xkit import XKit
     from .hanjuku_pixels import read_png
     from .hanjuku_screen import (fake_hero_announcement_chapter, parse, resume_sortie_panel,
-                                resume_egg_ritual_panel, resume_battle_menu_panel)
+                                resume_egg_ritual_panel, resume_battle_menu_panel,
+                                resume_bijin_gift_panel)
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
@@ -553,8 +554,10 @@ def restore(adapter, deadline, cancel):
     sortie_without_chapter = False
     ritual_without_chapter = False
     battle_menu_without_chapter = False
+    gift_without_chapter = False
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
-           and not ritual_without_chapter and not battle_menu_without_chapter):
+           and not ritual_without_chapter and not battle_menu_without_chapter
+           and not gift_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -581,6 +584,8 @@ def restore(adapter, deadline, cancel):
             sortie_without_chapter = True
         elif observed is None and resume_battle_menu_panel(screen):
             battle_menu_without_chapter = True
+        elif observed is None and resume_bijin_gift_panel(screen):
+            gift_without_chapter = True
     # These verified chapterless panels seed only their measured foreground
     # owner; chapter, route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}

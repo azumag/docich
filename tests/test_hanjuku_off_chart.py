@@ -198,7 +198,6 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
                                  'status': 'en_route', 'tick': 5}}}
     assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
     assert decisions(mem, 'chart_adjust_request')
-    assert not decisions(mem, 'chart_interim_hold')
     assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
     [hold] = decisions(mem, 'chart_interim_hold')
     assert hold['deviation_reason'] == 'interim_no_candidates'
@@ -243,7 +242,7 @@ def test_an_order_from_a_lost_castle_is_neither_picked_nor_blocking():
     mem = {**g401_memory(), 'captured': ['キカンドン', 'ナキューメラ', 'カストーラ'],
            'lost': ['ジョンリギ'], 'active': None}
     mem['chart_adjust'] = {'request_id': policy.chart_adjust.request_id(mem),
-                           'interim_order': stale, 'interim_count': policy.INTERIM_LIMIT}
+                           'interim_order': stale, 'interim_count': 2}
     assert policy.next_order(mem) is None
     actions = policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME)
     order = policy._order(mem)

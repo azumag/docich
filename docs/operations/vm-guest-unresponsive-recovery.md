@@ -138,6 +138,14 @@ power cycle に進み得る。次の点を承認依頼・Issue 記録に含め�
 - [ ] `workers.required_down` / `required_stale` / `zombies` が空。
 - [ ] `game_switch.phase=ready`、`active_game` が期待どおり、generation が整合。
 - [ ] corner-rotation timer が active/enabled。
+- [ ] `host_metrics`（#2578）: `status=ok`、`spans_reboot=true`、`boots>=2`、
+      `current_boot` が再起動後の boot、`newest_age_sec` が 60 秒前後
+      （＝再起動後も採取が再開している）。`samples` の最新点の `t` / `uptime_s` から
+      無応答が始まった時刻を推定し、`down_units` / PSI / `cpu_busy_pct` /
+      `dirty_kb` / `writeback_kb` の推移を事後調査の証拠として Issue に残す。
+      取得できない場合は `status`（`absent` / `unreadable` / `invalid` / `stale`）を
+      そのまま記録し、「指標なし」と「健全」を混同しない。詳細は
+      [host-metrics-ring.md](host-metrics-ring.md)。
 - [ ] 中断した予約が残っている場合は §6 の照合を行う。
 
 VM の docich HEAD は diagnostics の `sha` で確認する。Actions の candidate SHA と
@@ -255,6 +263,7 @@ VM の docich HEAD は diagnostics の `sha` で確認する。Actions の candi
 - Issue #2278: 本 runbook の根拠となる障害事例。
 - `docs/operations/runtime-diagnostics.md`: 通常時の read-only 診断契約。
 - `docs/operations/vm-monitor-silence-alert.md`: monitor 沈黙の独立検知。
+- `docs/operations/vm-deploy-blocker-alert.md`: main push deploy 失敗（reconcile_refused 等）の独立検知（docich#2487）。
 - `docs/corner-rotation.md`: 中断した予約の正規復旧（§6）。
 - `docs/operations/vm-storage-issues.md` / `vm-storage-reclaim-runbook.md`: storage 系。
 - `ops/vm_actions/README.md`: 標準の VM operations 経路（SSH gateway 前提）。

@@ -45,7 +45,7 @@ body は次の3キーだけを持つ1個の JSON object です。余分なキー
 ### 実行の性質と安全境界
 
 - owner login + immutable actor ID `9018513`、`github.triggering_actor == azumag`、protected `main`、main 上の workflow copy、Issue #293、Issue 作者が owner であることを検証します。
-- 操作前に production が現在の protected main と完全一致（`status=configured` かつ SHA 一致）することを要求します。
+- 操作前に production が配備済み reviewed baseline にあることを要求します（`status=configured`、かつ production HEAD が現在の protected main の SHA と完全一致、またはその reviewed ancestor。docich#2681 の `ops/vm_actions/check_operator_parity.py` が main 履歴との ancestor 証明を検証します。証明は public repository の anonymous git fetch と 50 commit の深さ上限に依存し、範囲外・fetch 失敗は fail-closed で deploy 要求になります）。
 - **body の編集が実行トリガーです。** 編集後に別の確認ダイアログはありません。編集＝本番操作要求として扱ってください。
 - `issues: edited` は Issue が closed でも配送され得ます。現在の workflow と authorizer は Issue が `open` のときだけ許可し、closed #293 の編集は skip / fail-closed します。bridge を使うときは #293 を再オープンしてください。
 - VM 側は reviewed な固定 launcher のみを実行し、stdout/stderr は VM private log に留めます。

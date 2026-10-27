@@ -251,15 +251,33 @@ def write_state(root, state):
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def write_receipt(root, request_id=REQUEST_ID, **overrides):
-    receipt = {
+def write_receipt(root, request_id=REQUEST_ID, receipt_overrides=None, result_overrides=None):
+    """Write the durable receipt exactly as the canonical writer does (#2670).
+
+    The terminal facts (error_code/to_game/generation/request_id) live under
+    ``result``; only the receipt identity and status are top-level.
+    """
+
+    result = {
         "request_id": request_id,
+        "operation": "switch",
         "status": "failed",
         "error_code": "rollback_failed",
+        "from_game": "nethack",
         "to_game": "sorengame",
         "generation": 3,
     }
-    receipt.update(overrides)
+    result.update(result_overrides or {})
+    receipt = {
+        "schema_version": 1,
+        "request_id": request_id,
+        "operation": "switch",
+        "target": "sorengame",
+        "generation": 3,
+        "status": "failed",
+        "result": result,
+    }
+    receipt.update(receipt_overrides or {})
     path = root / HELPER_MODULE.REQUESTS_REL / f"{request_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -406,13 +424,31 @@ class HelperOwnershipTests(unittest.TestCase):
                 HELPER_MODULE.verify_ownership(root, canonical())
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
+    def test_the_live_nested_result_receipt_proves_ownership(self):
+        """Regression #2670: the real receipt stores its facts under result."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_receipt(root)
+            write_runtimes(root, failed_seat(), previous_seat())
+            receipt = json.loads(
+                (root / HELPER_MODULE.REQUESTS_REL / f"{REQUEST_ID}.json").read_text(
+                    encoding="utf-8"))
+            self.assertEqual(receipt["status"], "failed")
+            self.assertNotIn("error_code", receipt)
+            self.assertNotIn("to_game", receipt)
+            HELPER_MODULE.verify_ownership(root, canonical())
+
     def test_a_foreign_or_contradicting_receipt_is_ownership_missing(self):
         cases = (
-            {"request_id": "11111111-2222-3333-4444-555555555555"},
-            {"status": "succeeded"},
-            {"error_code": "timeout"},
-            {"to_game": "othegame"},
-            {"generation": 2},
+            {"receipt_overrides": {"request_id": "11111111-2222-3333-4444-555555555555"}},
+            {"receipt_overrides": {"status": "succeeded"}},
+            {"receipt_overrides": {"result": None}},
+            {"result_overrides": {"status": "rolled_back"}},
+            {"result_overrides": {"request_id": "11111111-2222-3333-4444-555555555555"}},
+            {"result_overrides": {"error_code": "timeout"}},
+            {"result_overrides": {"to_game": "othegame"}},
+            {"result_overrides": {"generation": 2}},
         )
         for override in cases:
             with self.subTest(override=override):

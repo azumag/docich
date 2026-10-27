@@ -134,10 +134,12 @@ class RandomBrain:
 class NethackPolicyBrain:
     """Layered CLI NetHack brain with observational sidecars.
 
-    Gameplay actions still come exclusively from the reviewed deterministic
-    policy and progress resolver (one observed-context-checked key).
-    P3e advisory, P4a observation shadow, and P5e candidate shadow are
-    observational only and are never translated into gameplay Actions here.
+    Gameplay actions come from the reviewed deterministic policy and progress
+    resolver (one observed-context-checked key). When that path holds, one
+    strategist action from P3e advisory may be sent instead: an approved
+    proposal or the safe default answer to a blocking prompt. Such an action is
+    re-validated against the exact frame before sending. P4a observation shadow
+    and P5e candidate shadow stay observational only.
     """
 
     _STALL_HOLD_REPEAT_THRESHOLD = 10
@@ -180,6 +182,7 @@ class NethackPolicyBrain:
         self._plan_reject_streak = 0
         self._unusable_streak = 0
         self._action_validated = False
+        self._advisory_action_plan = False
         self._startup_checkpoint = None
         self.last_decision = None
         self.last_shadow = None
@@ -224,8 +227,6 @@ class NethackPolicyBrain:
             return []
         self._unusable_streak = 0
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import assert_p3b_safe
-
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
         startup_before = dict(self.startup.__dict__)
         startup_actions = self.startup.consider(normalized)
@@ -244,8 +245,9 @@ class NethackPolicyBrain:
             return startup_actions
         self.progress.observe(normalized, self.policy.explorer)
         decision = self.policy.decide(normalized)
-        assert_p3b_safe(decision)
         self.last_decision = decision
+        from ..nethack_policy import assert_p3b_safe
+        assert_p3b_safe(decision)
         resolved = self.progress.resolve(decision, normalized, self.policy.explorer)
         if self.last_progress_decision is None or resolved.intent != self.last_progress_decision.intent:
             # Fixed policy enums only; this is a plan, not proof of actuation
@@ -313,6 +315,13 @@ class NethackPolicyBrain:
                 f"docich: 警告: NetHack candidate shadow をスキップしました: {str(exc)[:200]}",
                 file=sys.stderr,
             )
+        if not production_actions and self.last_advisory is not None and self.last_advisory.actions:
+            # Only a held production path may use advisory keys, and only after
+            # validate_action has rechecked this exact frame.
+            advisory_actions = list(self.last_advisory.actions)
+            self._action_plan = (normalized, deepcopy(advisory_actions), None)
+            self._advisory_action_plan = True
+            return advisory_actions
         return production_actions
 
     def _reset_repeated_hold(self) -> None:
@@ -430,10 +439,11 @@ class NethackPolicyBrain:
         current = normalize_tty(fresh.text, cols=self.cols, rows=self.rows)
         if current != planned_obs:
             return self._reject("frame_changed")
-        if decision is not None and decision.intent == "decline_save":
+        if self._advisory_action_plan or (decision is not None and decision.intent == "decline_save"):
             # During draining the coordinator owns S/confirmation/cancel. A
             # fresh save prompt alone is NOT permission for the agent to send
-            # n. Missing state (including standalone unit calls) fails closed.
+            # n or any other advisory key. Missing state (including standalone
+            # unit calls) fails closed.
             if (
                 not isinstance(canonical, dict)
                 or canonical.get("phase") != "ready"
@@ -500,6 +510,7 @@ class NethackPolicyBrain:
         self._action_plan = None
         self._progress_trace_plan = None
         self._action_validated = False
+        self._advisory_action_plan = False
 
 
 class ResolverBrain:

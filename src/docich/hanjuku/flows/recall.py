@@ -69,7 +69,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         mem.pop('recall', None)
         mem['uncertain'] = True
         mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
-        return [pad('b')] if is_camp_menu(screen) else []
+        # A stuck recall must leave the screen it is on, not only a camp menu.
+        # map_target/world_map are the actual "return" screens; B closes them.
+        # A camp menu is closed with B as before; other screens keep the old
+        # no-input behaviour to avoid inventing inputs on text/battle frames.
+        if is_camp_menu(screen) or screen.kind in ('map_target', 'world_map'):
+            return [pad('b')]
+        return []
     stage = state.get('stage')
     if stage == 'hero_focus':
         if screen.kind != 'map':
@@ -88,7 +94,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if screen.kind != 'map':
             mem.pop('recall', None)
             mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
         # Re-detect every step: a tent clipped by the top edge is targeted
         # above the screen, and the cursor servo there scrolls the camera
         # until the flag shows and the real selecting cell is known.
@@ -161,7 +167,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if screen.kind == 'map':
                 mem.pop('recall', None)
                 mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind == 'world_map' else []
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])

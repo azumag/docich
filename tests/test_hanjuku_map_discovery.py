@@ -101,7 +101,7 @@ def initial_route_receipt():
 
 
 def caller_adopted_interim():
-    """Use the real request/adoption path; plant geography, never an order."""
+    """Use the real mechanical interim path; plant geography, never an order."""
     mem = home_receipt()
     from docich.hanjuku_map_sources import SOURCE_CASTLES
     proof = mem['map_registration']['castles']['アルマムーン']
@@ -113,14 +113,6 @@ def caller_adopted_interim():
     mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
     assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
-    pending = state['policy']['chart_adjust']
-    assert pending['interim_wanted'] is True
-    with chart.map_context(state['policy']):
-        candidates = policy.interim_candidates(state['policy'])
-    label = next(k for k, o in candidates.items() if o['target'] == 'グリン')
-    answer = {'request_id': pending['request_id'], 'seq': pending.get('interim_count', 0),
-              'status': 'ok', 'choice': label, 'confidence': 1.0}
-    _, state = decide(field(), state, run_identity=IDENTITY, interim=answer)
     active = state['policy']['active']
     assert active.startswith('I:')
     assert state['policy']['chart_adjust']['interim_order']['step'] == active

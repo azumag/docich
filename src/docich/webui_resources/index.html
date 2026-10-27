@@ -211,6 +211,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div><label>時刻指定（ローカル時刻）</label><input id="corners-schedule-at" type="datetime-local" step="60"/></div></div>
 <div class="actions">
 <button class="btn primary" id="corners-start">手動開始</button>
+<button class="btn" id="corners-resume-latest" style="display:none">最新セーブから再開</button>
 <button class="btn" id="corners-schedule">時刻指定</button>
 <button class="btn" id="corners-cancel-schedule">予約取消</button>
 <button class="btn" id="corners-stop">手動停止</button>
@@ -2420,6 +2421,7 @@ function updateCornerButtons(){
     ? "ゲーム設定を確認できないため、この画面から開始できません。停止可能な実行は手動停止できます。"
     : "このゲームは one-off runner で開始できません。停止可能な実行は手動停止できます。");
   const startBtn=document.getElementById("corners-start");
+  const resumeBtn=document.getElementById("corners-resume-latest");
   const scheduleBtn=document.getElementById("corners-schedule");
   const cancelScheduleBtn=document.getElementById("corners-cancel-schedule");
   const scheduleInput=document.getElementById("corners-schedule-at");
@@ -2428,6 +2430,7 @@ function updateCornerButtons(){
   const scheduledHere=!!(c&&r.queued_manual&&r.queued_manual.scheduled&&r.queued_manual.corner===c.id);
   const canSchedule=!!c && c.enabled && !c.paused && r.enabled!==false && !r.latch && !r.queued_manual;
   if(startBtn){ startBtn.disabled=!canStart; startBtn.textContent=queuedMode?"開始予約":"手動開始"; }
+  if(resumeBtn){ const isHanjuku=!!c&&c.game==="hanjuku-hero"; resumeBtn.style.display=isHanjuku?"":"none"; resumeBtn.disabled=!isHanjuku||!canStart; }
   if(scheduleBtn) scheduleBtn.disabled=!canSchedule;
   if(cancelScheduleBtn) cancelScheduleBtn.disabled=!scheduledHere;
   if(scheduleInput) scheduleInput.disabled=!canSchedule;
@@ -2451,6 +2454,8 @@ async function cornerAction(payload, confirmText){
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
       else if(r.action==="schedule") t=`${r.corner&&r.corner.id||"-"} を ${fmtTime(r.trigger_at)} 以降に1回だけ開始するよう予約しました。`;
       else if(r.action==="cancel-schedule") t=`${r.corner&&r.corner.id||"-"} の時刻指定予約を取り消しました。`;
+      else if(r.action==="resume-latest" && r.corner&&r.corner.game==="hanjuku-hero" && r.corner.target==="rotation")
+        t="半熟英雄のセーブからの再開を予約しました。現在のコーナー終了後、次の tick で開始します。状態欄で進行をご確認ください。";
       else if(r.corner&&r.corner.target==="rotation") {
         const name=r.corner.adapter==="tsuitate"?"衝立将棋":(r.corner.game==="hanjuku-hero"?"半熟英雄":"天気");
         t=r.action==="start"
@@ -3169,6 +3174,15 @@ document.addEventListener("DOMContentLoaded",()=>{
     const minutes=Number(dur&&dur.value?dur.value:5);
     cornerAction({action:"start",corner,duration_minutes:minutes},
       `コーナー ${corner} を手動開始しますか？（one-off runner・${minutes}分・確認ダイアログはこの画面だけ）`);
+  };
+  const cResume=document.getElementById("corners-resume-latest");
+  if(cResume) cResume.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const corner=sel?sel.value:"";
+    const row=((CORNERS_DATA&&CORNERS_DATA.catalog)||[]).find(x=>x.id===corner);
+    if(!row||row.game!=="hanjuku-hero"){ toast("最新セーブからの再開は半熟英雄だけに対応しています"); return; }
+    cornerAction({action:"resume-latest",corner},
+      "半熟英雄を最新のクイックセーブから再開しますか？（通常の開始予約は新規開始のままです）");
   };
   const cSchedule=document.getElementById("corners-schedule");
   if(cSchedule) cSchedule.onclick=()=>{

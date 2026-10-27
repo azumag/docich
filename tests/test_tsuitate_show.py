@@ -124,6 +124,29 @@ def test_write_show_is_atomic_and_never_leaves_a_temp_file(tmp_path):
         show.write_show(tmp_path / "missing", payload)
 
 
+def test_build_show_carries_a_bounded_verified_status_strip():
+    status = {"rating": "1005→1003", "clock": "AI計9秒 / 相手計66秒",
+              "fouls": "AI10回 / 相手0回", "shapes": "成り8回 / 打ち13回",
+              "junk": "x" * 200}
+    payload = show.build_show(_kifu(), color="sente", status=status)
+
+    # Unknown keys and over-long values never reach the bounded payload.
+    assert payload["status"] == {"rating": "1005→1003", "clock": "AI計9秒 / 相手計66秒",
+                                 "fouls": "AI10回 / 相手0回", "shapes": "成り8回 / 打ち13回"}
+    assert show.build_show(_kifu(), color="sente")["status"] is None
+    for broken in (None, "AIの勝ち", {"rating": 1005}, {"rating": "x" * (show.STATUS_VALUE_LIMIT + 1)}):
+        assert show.build_show(_kifu(), color="sente", status=broken)["status"] is None
+
+
+def test_show_view_projects_the_status_for_the_review_screen():
+    payload = _payload(status={"rating": "1005→1003", "junk": "drop me"})
+    projection = show.show_view(payload)
+
+    assert projection["status"] == {"rating": "1005→1003"}
+    # A drifted payload can never smuggle an unbounded status through.
+    assert show.show_view(_payload(status="x"))["status"] is None
+
+
 def test_show_view_projects_only_bounded_fields():
     payload = _payload(commentary={"1": "立ち上がりです。", "7": "x" * 500})
     payload["index"] = 4

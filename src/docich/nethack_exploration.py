@@ -2,8 +2,9 @@
 
 The planner uses only the normalized visible TTY map.  It never treats a
 monster, item, visible trap, closed door, or blank/unknown cell as passable.
-It issues at most one movement key per observation, preferring cardinal routes
-and considering diagonals when no cardinal step remains.
+It issues at most one movement key per observation, preferring a currently
+visible reachable down staircase before ordinary exploration frontiers, then
+cardinal routes and diagonals when no cardinal step remains.
 
 This is intentionally less ambitious than human play: getting stuck at a door
 is preferable to silently adding unreviewed door/item/combat semantics.
@@ -33,10 +34,15 @@ OPEN_DOOR_GLYPHS = frozenset({"-", "|", "−"})
 class LevelMemory:
     visits: dict[tuple[int, int], int] = field(default_factory=dict)
     seen: dict[tuple[int, int], str] = field(default_factory=dict)
-    # Down-staircase tiles seen on this level. The player glyph replaces the
+    # Staircase tiles seen on this level. The player glyph replaces the
     # terrain under the hero, so the tile must be remembered before it is
     # stepped on; ``seen`` alone would show '@' exactly when it matters.
     down_stairs: set[tuple[int, int]] = field(default_factory=set)
+    up_stairs: set[tuple[int, int]] = field(default_factory=set)
+    # Tiles that have been visibly a closed door at least once. Used by the
+    # canary catalog to close only a doorway the hero actually opened, never a
+    # wall tile that happens to share the '-', '|' glyphs of an open door.
+    doors: set[tuple[int, int]] = field(default_factory=set)
 
 
 class NethackExplorationMemory:
@@ -59,6 +65,25 @@ class NethackExplorationMemory:
         if obs.player is None:
             return False
         return obs.player in self.down_stairs_at(obs.vitals.dungeon_level)
+
+    def up_stairs_at(self, dungeon_level: int | None) -> frozenset[tuple[int, int]]:
+        """Read-only view of the remembered up-staircase tiles."""
+        if dungeon_level is None:
+            return frozenset()
+        memory = self.levels.get(dungeon_level)
+        return frozenset(memory.up_stairs) if memory is not None else frozenset()
+
+    def standing_on_up_stairs(self, obs: NethackObservation) -> bool:
+        if obs.player is None:
+            return False
+        return obs.player in self.up_stairs_at(obs.vitals.dungeon_level)
+
+    def doors_at(self, dungeon_level: int | None) -> frozenset[tuple[int, int]]:
+        """Read-only view of tiles seen as a closed door on this level."""
+        if dungeon_level is None:
+            return frozenset()
+        memory = self.levels.get(dungeon_level)
+        return frozenset(memory.doors) if memory is not None else frozenset()
 
     def forget_down_stairs(self, obs: NethackObservation) -> None:
         """Drop the hero's tile after the game refused to descend there.
@@ -85,6 +110,10 @@ class NethackExplorationMemory:
                     memory.seen[(x, y)] = glyph
                     if glyph == ">":
                         memory.down_stairs.add((x, y))
+                    elif glyph == "<":
+                        memory.up_stairs.add((x, y))
+                    elif glyph == "+":
+                        memory.doors.add((x, y))
         if obs.player is not None:
             memory.visits[obs.player] = memory.visits.get(obs.player, 0) + 1
         return memory
@@ -197,9 +226,29 @@ class NethackExplorer:
         if memory is None or obs.player is None or obs.prompt != "none":
             return None
 
+        # Progression beats generic coverage once a currently visible down
+        # staircase is reachable through the same reviewed safe cells. Try a
+        # cardinal-only route first, then the existing diagonal fallback. A
+        # remembered-but-no-longer-visible staircase is deliberately excluded:
+        # stale memory may justify one `>` only after the hero actually stands
+        # on that coordinate (#2672), but it must not attract exploration.
+        stair_step = self._plan_step(obs, memory, CARDINAL, stairs_only=True)
+        if stair_step is not None:
+            return stair_step
+        stair_step = self._plan_step(obs, memory, DIRECTIONS, stairs_only=True)
+        if stair_step is not None:
+            return stair_step
+
         return self._plan_step(obs, memory, CARDINAL) or self._plan_step(obs, memory, DIRECTIONS)
 
-    def _plan_step(self, obs: NethackObservation, memory: LevelMemory, directions) -> ExplorationStep | None:
+    def _plan_step(
+        self,
+        obs: NethackObservation,
+        memory: LevelMemory,
+        directions,
+        *,
+        stairs_only: bool = False,
+    ) -> ExplorationStep | None:
         start = obs.player
         assert start is not None
         queue = deque([start])
@@ -218,7 +267,17 @@ class NethackExplorer:
                 distance[nxt] = distance[pos] + 1
                 queue.append(nxt)
 
-        if candidates:
+        visible_stairs = [
+            pos
+            for pos in memory.down_stairs
+            if pos != start and pos in parent and _glyph(obs, pos) == ">"
+        ]
+        if visible_stairs:
+            target = min(visible_stairs, key=lambda p: (distance[p], p[1], p[0]))
+            reason = "reachable visible down-staircase"
+        elif stairs_only:
+            return None
+        elif candidates:
             # Prefer least-visited frontier, then shortest route, then stable
             # coordinate ordering for deterministic tests/replays.
             target = min(

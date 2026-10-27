@@ -478,8 +478,11 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2,
-                    'canceled':1,'soren_canceled':0}
+    assert ledger=={'present':True,'readable':True,'schema':2,'rounds':2,
+                    'graded_rounds':1,'viewers':2,'predictor_rows':2,'canceled':1,
+                    'soren_canceled':0,'viewers_won_gt0':0,'viewers_used_gt0':0,
+                    'viewers_hit_rate_eligible':0,'last_round_ended_at':None,
+                    'last_round_age_sec':-1,'min_rounds':3,'min_participations':1}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
@@ -493,20 +496,29 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         encoding='utf-8')
     legacy=module._collect_programs(state_dir,soren,int(time.time()))
     assert legacy['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':1,'viewers':1,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':True,'schema':1,'rounds':1,'graded_rounds':1,
+        'viewers':1,'predictor_rows':1,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':False,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
@@ -518,8 +530,156 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         }}),encoding='utf-8')
     soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
     assert soren_canceled['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':2,'viewers':0,
-        'canceled':1,'soren_canceled':1}
+        'present':True,'readable':True,'schema':2,'rounds':2,'graded_rounds':1,
+        'viewers':0,'predictor_rows':0,'canceled':1,'soren_canceled':1,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
+
+def test_prediction_ledger_reports_last_round_end_without_names(tmp_path):
+    # #2805: telling "empty when the report was written" from "empty now" needs
+    # the ledger's own newest round end. It is a bounded ISO stamp plus an age,
+    # never a row body: the round title, login and user name stay inside the
+    # corner projection and are not repeated here.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=1792955569  # 2026-10-25T19:12:49Z
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED',
+                  'ended_at':'2026-10-25T18:12:49Z','predictors':[
+                      {'user_id':'u1','user_login':'secret','user_name':'SECRET-NAME',
+                       'used':100,'won':300,'hit':True}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'ended_at':'2026-10-25T19:02:49Z','predictors':[
+                      {'user_id':'u2','used':50,'refunded':50,'hit':None}]},
+        }}),encoding='utf-8')
+
+    entry=module._collect_prediction_leaderboard(state_dir,now)
+
+    assert entry['last_round_ended_at']=='2026-10-25T19:02:49Z'
+    assert entry['last_round_age_sec']==600
+    assert entry['graded_rounds']==1
+    assert entry['rounds']==2 and entry['canceled']==1
+    assert entry['viewers']==2 and entry['predictor_rows']==2
+    assert entry['viewers_won_gt0']==1 and entry['viewers_used_gt0']==2
+    assert entry['viewers_hit_rate_eligible']==0
+    assert entry['min_rounds']==3 and entry['min_participations']==1
+    rendered=json.dumps(entry,ensure_ascii=False)
+    assert 'SECRET' not in rendered and 'secret' not in rendered
+
+
+def test_prediction_section_survives_the_hard_ceiling():
+    # #2805: ``corners`` is dropped whole against the collector ceiling and every
+    # 予想王 input (ledger, Soren handoff, HanJuku round, yoso corner run and the
+    # prediction boundary) lives inside it, so the ledger became unobservable
+    # exactly when a report needed it. The top-level ``prediction`` section keeps
+    # the same bounded counts and must never be dropped before the envelope fits.
+    # This covers the whole-section drop order; the largest-first fallback is
+    # covered separately below.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+        'soren_predictions':{'handoff_present':True,'handoff_bytes':2085,
+                             'handoff_rows':2,'handoff_oversized':False,
+                             'cursor_present':True},
+        'hanjuku_predictions':{'present':True,'readable':True,'status':'CANCELED',
+                               'mode':'canceled',
+                               'health':{'present':True,'readable':True,
+                                         'consecutive_errors':0,'last_error':None,
+                                         'last_ok_at':now-8}},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete',
+                       'recovery_required':False,'completed_at':now-2160},
+        'boundary':{'prediction':{'present':True,'readable':True,
+                                  'completed_at':now-1212324}},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    prediction=decoded['prediction']
+    assert prediction['state_dir_found'] is True
+    assert prediction['leaderboard']['rounds']==4
+    assert prediction['leaderboard']['graded_rounds']==0
+    assert prediction['leaderboard']['canceled']==4
+    assert prediction['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert prediction['leaderboard']['last_round_age_sec']==1239
+    assert prediction['leaderboard']['min_rounds']==3
+    assert prediction['leaderboard']['min_participations']==1
+    assert prediction['soren_handoff']['handoff_rows']==2
+    assert prediction['hanjuku']['status']=='CANCELED'
+    assert prediction['hanjuku']['health_ok'] is True
+    assert prediction['hanjuku']['last_ok_age_sec']==8
+    assert prediction['corner']['end_reason']=='audio-complete'
+    assert prediction['corner']['age_sec']==2160
+    assert prediction['boundary']['age_sec']==1212324
+
+
+def test_prediction_section_survives_the_pathological_fallback():
+    # The hard ceiling reduces twice: the whole-section drop order and, when the
+    # envelope is split into many medium sections, a largest-first fallback over
+    # every remaining top-level dict. ``prediction`` is exempt from both (#2805).
+    # Here the fallback is the only reduction that can help, and the prediction
+    # section is the largest remaining dict, so a fallback that ignored
+    # ``_HARD_KEEP`` would replace it first and the 予想王 counts would vanish.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+    }
+    for index in range(320):
+        payload['slice_%03d'%index]={'pad':'x'*180}
+
+    decoded=json.loads(module._diagnostics_budget(payload))
+
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['prediction']['leaderboard']['rounds']==4
+    assert decoded['prediction']['leaderboard']['canceled']==4
+    assert decoded['prediction']['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert decoded['prediction']['state_dir_found'] is True
+    omitted=sum(1 for key,value in decoded.items()
+                if key.startswith('slice_')
+                and isinstance(value,dict)
+                and value.get('status')=='output_omitted')
+    assert omitted>0
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():

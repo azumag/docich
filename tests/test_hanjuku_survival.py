@@ -306,6 +306,35 @@ def disabled_box_frame(rows, knight_at=None):
 DEFENSE_BOX = ((192, 'たまごをつかう'), (208, 'きりふだ'))
 
 
+def test_mixed_defense_box_over_summon_menu_reads_disabled_cursor_without_selecting_card():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')  # retained background
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    for y in range(200, 216):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.kind == 'battle_menu' and screen.mixed_item_box
+    assert screen.menu_cursor == 208
+    assert 'きりふだ' not in screen.text
+    assert p._battle_menu_to(screen, 'たまごをつかう') == p.pad('up')
+
+
+def test_mixed_box_requires_a_knight_and_accepts_either_foreground_row():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    assert not parse(c.frame()).mixed_item_box
+    for y in range(184, 200):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.mixed_item_box and screen.menu_cursor == 192
+    assert p._battle_menu_to(screen, 'たまごをつかう') == 'here'
+
+
 def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_rows():
     from docich.hanjuku_screen import parse
     c = Canvas()

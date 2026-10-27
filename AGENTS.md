@@ -74,6 +74,15 @@
 
 ストリームキー、OAuth token、APIキー、秘密鍵、push targetなどの機密情報は、`handoff.md` を含むこのリポジトリのどのファイル、ログ、Issueにも書かない。テストや進捗表示を理由に資格情報を探索・抽出しない。
 
+### 3.1 投稿前スキャンと合成値の使用（2026-10-23）
+
+レビューコメントの実測表へ実行環境の資格情報の実値を貼った事案（2026-10-23）を受け、以下を必須とする。
+
+- GitHub へのコメント投稿は、エージェント共通の投稿前スキャン `agent-guards/gh-comment`（ワークスペース直下、リポジトリ外）を経由する。ラッパーを経由しない直接投稿は禁止する。Issue / PR 本文も、投稿前に `agent-guards/secret_scan.py` で走査する。
+- 実測・検証・レビューの入力例には合成値のみを使う。実物の資格情報・トークン・コマンド出力の実値を、表・フィクスチャ・ログへ貼らない。
+- 秘密情報を含みうるコマンド出力やログはそのまま貼らず、要約して書く。
+- スキャンは最後の網であり、上記の規律の代替ではない。
+
 ## 4. handoff と永続メモリの棚卸し
 
 古くなった節や重複した調査は、根拠を追える形で要約・統合する。確認済みの事実を軽々しく削除しない。Claude Code の `~/.claude/projects/.../memory/` など、利用環境が提供する永続メモリがある場合だけ、古い情報を訂正し索引（`MEMORY.md` 等）も同期する。存在しないメモリ機構を作業の前提にしない。
@@ -183,3 +192,11 @@ worker / queue / model / provider / fallback / runtime component を変更した
 - macOS で CI 外の実行には、`conftest.py` が自動で次を適用する: 全プロセスの優先度を下げる（`nice` 10 とディスク I/O の utility 段階。利用者のアプリが CPU とディスクを優先して使える）、xdist の並列数を `DOCICH_TEST_MAX_WORKERS`（既定 4）までに抑える（`-n 8` を指定しても 4 になる）、フルスイートはマシン全体で同時に 1 本までにし、後から始めた方は先の実行が終わるまで待つ（最大 `DOCICH_TEST_LOCK_WAIT` 秒、既定 1800）。
 - 待ちを避けるために `DOCICH_TEST_FOREGROUND=1` を使わない。これは利用者が手元で意図して急ぐときだけに使う。
 - フルスイートの `timeout` は、実行時間（約4〜6分）に待ち時間を足して設定する。
+
+## 14. 検証系 worktree の作成先（#2735）
+
+- 検証系 worktree は本番 VM の soren root（`storage_reclaim.sh` の `$root` = `/home/ubuntu/soren`）配下の `$root/tmp/verify/<issue>-<slug>/` に作る。ローカル checkout の root と混同しない。
+- `/tmp` 直下、または `$root/tmp` 直下を worktree の親にしない。
+- 検証終了時は `git worktree remove` で必ず片付ける（不要になったら `git worktree prune`）。保存先の分離だけでは残留は防げず、放置が根因だった。
+- 残留の観測: `sys_tmp_reclaim_candidates` は `/tmp` 専用。`$root/tmp/verify/` 配下の残留は `storage_breakdown` の `soren_tmp`（合計 bytes のみ・coarse）でしか見えないため、手動確認も併用する。規約違反で `/tmp` 直下に置かれた worktree は `sys_tmp_top_level`（git_worktree 分類）に現れ、24h 経過後に `sys_tmp_reclaim_candidates` が検知する。
+- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。削除対象の拡張は別判断とする。

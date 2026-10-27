@@ -702,8 +702,10 @@ Soren の `twitch_predictions.sh` が追記する
 毎分の timer が台帳を読み直さない。symlink・oversize・契約違反の行は記録せず固定コードを返し、
 台帳の read/write に失敗した tick は cursor を進めないので同じ row を再試行する。
 この tick は best-effort で、失敗しても rotation の tick は止めない。
-診断は `prediction_leaderboard`（rounds/viewers/canceled/soren_canceled の件数のみ）と `soren_predictions`
+診断は `prediction_leaderboard`（件数のみ。キー一覧と閾値は
+`docs/operations/runtime-diagnostics.md` の `prediction` セクションが正本）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
+hard ceiling で `corners` が落ちても同じ bounded dict を top-level `prediction` から読める（#2805）。
 
 ### 半熟予想 round の owner-only 復旧（`cancel-prediction` / `sync-prediction`、#2216）
 
@@ -804,12 +806,15 @@ game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = tr
 seed から確定し、コミットメント（SHA-256）を配信ボードへ常時表示する。終了時に seed を
 開示し、誰でも公開コードで再計算・照合できる。LLM 出力はゲーム状態・答えにならない。
 
-進行は intro → 調査アンケート（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問アンケート →
-推理タイム → 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
-`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示 の順。アンケート・予想が
+進行は intro → 調査アンケート×2（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問
+アンケート×2 → 推理タイム（残りの部屋・容疑者の資料を一括公開し、全手がかりと全アリバイを
+照合表で提示する）→ 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
+`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示（判定・全容・動機・
+推理の4部構成）の順。予想を出す時点で全室の手がかりと全容疑者のアリバイが公開済みで、
+そこから犯人が一意に導ける（#2757）。アンケート・予想が
 使えない場合や票が0件の場合は seeded なAI探偵が進行する展示モードで、視聴者0人でも完走する。
 予想は作成後必ず精算または返金する（不成立は #933 の 2026-10-15 オーナー方針どおり
-CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
+CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（300秒）を
 差し引いた予算内にクランプする。
 
 表示は読み取り専用 view（loopback 8807）で、天気予報・予想王と同じ配信ネイティブ

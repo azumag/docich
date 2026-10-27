@@ -949,6 +949,17 @@ def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_on
     assert policy.deploy_step(panel, mem) == []                          # bounded: boss kit holds
 
 
+def test_picking_visible_card_resets_old_search_before_scrolling_to_required_card():
+    mem = memory()
+    mem['card_scroll'] = {'1-B1': policy.CARD_SCROLL_LIMIT, 'other': 2}
+    panel = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                 stocks=('11', '1', '1', '2'), selected=3)
+    assert policy.deploy_step(panel, mem) == [policy.pad('a')]
+    assert mem['card_scroll'] == {'other': 2}
+    assert policy.deploy_step(panel, mem) == [policy.pad('down')]
+    assert not mem.get('card_drop')
+
+
 # These new-path tests use the already measured name/header cells. No game
 # operation or arbitrary alternate-name override establishes the actor.
 def actor_panel(screen, general):

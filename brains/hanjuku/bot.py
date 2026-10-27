@@ -95,6 +95,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     recall = policy.get('recall') or {}
     if recall.get('stage') == 'await_dispatch' and not recall.get('request_trace'):
         recall['request_trace'] = {**state['decision_trace'], 'planned_at': now}
+    boundary = policy.get('card_upper_boundary') or {}
+    if (boundary.get('await_input') is True and actions == [{'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}]):
+        boundary['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.
     try:
@@ -317,6 +320,48 @@ def recall_input_receipts(runtime, state, meta):
     return {'request_trace': trace, 'a_inputs': count}
 
 
+def card_scroll_receipt(runtime, state, meta):
+    """Match the previous top-row Up to the sender journal and run identity."""
+    boundary = (state.get('policy') or {}).get('card_upper_boundary') or {}
+    trace = boundary.get('request_trace') or {}
+    identity = meta.get('hanjuku') or {}
+    if (boundary.get('await_input') is not True or not trace
+            or any(identity.get(k) is None or trace.get(k) != identity[k]
+                   for k in ('game', 'runtime_id', 'generation', 'lease_id'))
+            or not isinstance(trace.get('decision_id'), str)
+            or not isinstance(trace.get('frame_sha256'), str) or len(trace['frame_sha256']) != 64
+            or type(trace.get('planned_at')) not in (int, float)):
+        return None
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+        matches = set()
+        for raw in tail.splitlines():
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if (isinstance(row, dict) and row.get('event') == 'input_sent'
+                    and row.get('decision_id') == trace['decision_id']
+                    and row.get('decision_frame_sha256') == trace['frame_sha256']
+                    and type(row.get('at')) in (int, float)
+                    and trace['planned_at'] <= row['at'] < 10**12
+                    and row.get('type') == 'pad' and row.get('buttons') == ['up']
+                    and row.get('hold_ms') == 100):
+                matches.add(row['at'])
+    except OSError:
+        return None
+    return {'request_trace': trace, 'up_inputs': min(2, len(matches))}
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -341,6 +386,7 @@ def main():
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
+                                 card_scroll_input=card_scroll_receipt(runtime, state, meta),
                                  run_identity=meta.get('hanjuku'),
                                  chart_edition=chart_edition_setting())
             interval_ms=observation_interval_ms(state, actions)

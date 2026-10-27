@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample host metrics every minute (docich#2578 ring)
+
+[Timer]
+OnCalendar=*:*:00
+AccuracySec=1s
+Persistent=false
+Unit=docich-host-metrics.service
+
+[Install]
+WantedBy=timers.target

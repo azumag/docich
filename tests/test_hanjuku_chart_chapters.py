@@ -114,8 +114,7 @@ def test_policy_off_chart_reason_for_unmeasured_chapter(monkeypatch):
     monkeypatch.setitem(chart.CASTLES, 3, {})
     mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, None)
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'chart_adjust_request'
+    [rec] = [r for r in mem['_records'] if r['decision'] == 'chart_adjust_request']
     assert rec['off_chart_reason'] == 'chart_unavailable'
 
 

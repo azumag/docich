@@ -1,7 +1,8 @@
 """戦略層: off-chart replanning (interim orders and adjusted charts).
 
-Builds interim candidates when the chart has no ready order, adopts a JEV
-interim answer or a validated adjusted chart, and records every deviation.
+Builds interim candidates when the chart has no ready order, starts the first
+of them without waiting for a model, adopts a validated adjusted chart when
+one answers, and records every deviation.
 """
 from __future__ import annotations
 
@@ -11,10 +12,6 @@ from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
-
-
-INTERIM_LIMIT = 2             # JEV answers per off-chart situation
-INTERIM_MIN_CONFIDENCE = 0.7
 
 
 def _interim_source(mem, target, chart_order, owned, busy):
@@ -91,7 +88,7 @@ INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as 
 
 
 def interim_candidates(mem) -> dict:
-    """Deterministic off-chart sorties JEV may choose from while a chart is pending.
+    """Deterministic off-chart sorties while a chart is pending.
 
     Retake castles we lost, then staff owned castles last seen empty (the home
     castle first) with a spare general from a castle that keeps somebody,
@@ -101,9 +98,9 @@ def interim_candidates(mem) -> dict:
     castles fell without a battle and g407 left the home castle empty.
     Sources and generals come from measured general lists when known
     (``garrison``), so an idle general at any castle is used instead of only
-    the chart's general. Attacks carry cards (INTERIM_CARDS). There is no hold
-    label: JEV must pick one, and an unusable answer falls back to the first
-    candidate. JEV never produces keys or orders itself.
+    the chart's general. Attacks carry cards (INTERIM_CARDS). Only candidates
+    passing ``chart_adjust.startable`` are returned, and the first one is the
+    order that runs; no model chooses among them.
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
@@ -119,6 +116,20 @@ def interim_candidates(mem) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
+    # An interim sortie that has already gone out (launched/en route) must not be
+    # re-issued while it is still in flight: otherwise the same target would be
+    # attacked twice and the candidate list would never advance. Only recent
+    # sortie receipts count; a launched order or a lost sortie never observed
+    # to arrive must not hold its target forever (launched/launched_orders are
+    # never pruned).
+    now = int(mem.get('tick') or 0)
+    inflight = {sortie['target'] for step, sortie in (mem.get('sorties') or {}).items()
+                if isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
+                and isinstance(sortie, dict)
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
+                and sortie.get('target') is not None and sortie.get('tick') is not None
+                and 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS}
+    targets = [c for c in targets if c not in inflight]
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
@@ -164,56 +175,55 @@ def interim_candidates(mem) -> dict:
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
             'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
+    # Every candidate must be startable from the recorded garrisons, so a
+    # chart general named in another castle never reaches the castle menu.
+    situation = _adjust_situation(mem)
     out = {}
     known_retakes = [o for o in sorties['retake'] if not o.get('source_probe')]
     unread_retakes = [o for o in sorties['retake'] if o.get('source_probe')]
     for order in (*known_retakes, *moves, *unread_retakes, *sorties['attack']):
+        if chart_adjust.startable(order, situation) is not None:
+            continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
     return out
 
 
-def _pick_interim_order(candidates: dict, answer: dict):
-    """Return (label, order, confidence, fallback) — always a sortie order."""
-    choice, confidence = answer.get('choice'), answer.get('confidence')
-    order = candidates.get(choice)
-    confident = type(confidence) in (int, float) and confidence >= INTERIM_MIN_CONFIDENCE
-    if answer.get('status') == 'ok' and order is not None and confident:
-        return choice, order, confidence, False
-    # No hold: an unusable JEV answer still takes the first candidate.
-    label = next(iter(candidates))
-    return label, candidates[label], None, True
+def _mechanical_interim(mem, state, rid, digest):
+    """Start the next deterministic sortie while no adjusted plan is pending.
 
-
-def _adopt_interim(mem, state, rid):
-    answer = mem.get('_interim')
-    if (not isinstance(answer, dict) or answer.get('request_id') != rid
-            or answer.get('seq') != state.get('interim_count', 0)):
+    No model answers this: the first candidate from ``interim_candidates``
+    goes out once the previous interim order is no longer waiting to start.
+    An adjusted chart from the worker still replaces it when it is adopted.
+    """
+    interim = state.get('interim_order')
+    status = mem.get('orders') or {}
+    busy = (interim and status.get(interim['step']) in (None, 'pending')
+            and _source(interim, mem) in _owned(mem))
+    if busy:
         return
-    state['interim_count'] = state.get('interim_count', 0) + 1
-    state['interim_wanted'] = False
     candidates = interim_candidates(mem)
     if not candidates:
-        # No castle to retake, attack or staff with a known general: the only wait.
-        _record(mem, 'chart_interim_hold', chart_step=None, strategy_variant='chart_adjust_pending',
-                request_id=rid, choice=None, confidence=None, jev_status=answer.get('status') or 'no_candidates',
-                deviation_reason='interim_no_candidates',
-                reason='奪還・攻撃・移動できる候補が無いため暫定出撃を作らず調整チャートを待つ')
+        # A hold nobody can act on used to be silent (g530: sortie
+        # stopped with zero evidence); record the starvation once per
+        # request revision so diagnostics can see it.
+        if state.get('interim_hold_digest') != digest:
+            state['interim_hold_digest'] = digest
+            _record(mem, 'chart_interim_hold', chart_step=None,
+                    strategy_variant='chart_adjust_pending',
+                    request_id=rid, choice=None, confidence=None,
+                    jev_status='no_candidates',
+                    deviation_reason='interim_no_candidates',
+                    reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
         return
-    choice, order, confidence, fallback = _pick_interim_order(candidates, answer)
+    label, order = next(iter(candidates.items()))
+    state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
-    if fallback:
-        _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_fallback',
-                request_id=rid, choice=choice, confidence=confidence, general=order['general'],
-                source=order['source'], target=order['target'], purpose=order.get('purpose'),
-                jev_status=answer.get('status'),
-                deviation_reason='interim_fallback',
-                reason='JEV暫定判断が保留・低確信・候補外のため最初の候補で必ず出撃')
-    else:
-        _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_jev',
-                request_id=rid, choice=choice, confidence=confidence, general=order['general'],
-                source=order['source'], target=order['target'], purpose=order.get('purpose'),
-                reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
+    _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_mechanical',
+            request_id=rid, choice=label, confidence=None, general=order['general'],
+            source=order['source'], target=order['target'], purpose=order.get('purpose'),
+            deviation_reason='mechanical_chart',
+            reason='LLM応答を待たず決定的候補の先頭から暫定出撃')
 
 
 def _adjust_situation(mem):
@@ -249,7 +259,6 @@ def _adopt_plan(mem, doc, rid):
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
     state = mem.setdefault('chart_adjust', {})
-    state['interim_wanted'] = False
     state.pop('interim_order', None)
     mem['variant'] = 'chart_adjusted'
     # Digest for commentary: grounded order content, not the full plan blob.
@@ -268,7 +277,8 @@ def _off_chart(mem):
     situation (chapter, captures, order states); an adjusted chart is adopted
     only when it answers exactly that request, as a complete order list that
     replaces the previous plan. Until then the previous plan keeps waiting, or,
-    with no plan waiting, a bounded number of JEV-chosen interim orders may run.
+    with no plan waiting, the first deterministic interim candidate runs. No
+    model answer is required for progress.
     """
     # A deliberate recovery wait is not an exhausted chart. Do not ask the
     # planner to replace the boss order or send an interim sortie while the
@@ -299,18 +309,17 @@ def _off_chart(mem):
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
     digest = chart_adjust.request_digest(fields)
+    new_request = state.get('request_id') != rid
     prior_digest = state.get('request_digest')
-    if state.get('request_id') != rid:
+    if new_request:
         state.clear()
         state['request_id'] = rid
         state['request_digest'] = digest
-        state['interim_wanted'] = not _plan_pending(mem) and bool(interim_candidates(mem))
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 **fields,
-                reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
-        return
-    revision_changed = prior_digest is not None and prior_digest != digest
-    if prior_digest != digest:
+                reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し、決定的な暫定出撃を続ける')
+    revision_changed = (not new_request) and prior_digest is not None and prior_digest != digest
+    if (not new_request) and prior_digest != digest:
         # Same situation, newer payload (stock, gold, lost castles): republish
         # so the worker answers the current revision, then keep going so the
         # interim fallback still progresses this observation.
@@ -335,43 +344,5 @@ def _off_chart(mem):
     # Adoption identity prevents replay above; only a live plan may block
     # the interim candidates from being evaluated again.
     if _plan_pending(mem):
-        state['interim_wanted'] = False
         return
-    _adopt_interim(mem, state, rid)
-    interim = state.get('interim_order')
-    status = mem.get('orders') or {}
-    # An interim order whose source castle was lost can never run: it must
-    # not block the next one.
-    busy = (interim and status.get(interim['step']) in (None, 'pending')
-            and _source(interim, mem) in _owned(mem))
-    candidates = interim_candidates(mem)
-    if busy or not candidates:
-        if not candidates and state.get('interim_hold_digest') != digest:
-            # A hold nobody can act on used to be silent (g530: sortie
-            # stopped with zero evidence); record the starvation once per
-            # request revision so diagnostics can see it.
-            state['interim_hold_digest'] = digest
-            _record(mem, 'chart_interim_hold', chart_step=None,
-                    strategy_variant='chart_adjust_pending',
-                    request_id=rid, choice=None, confidence=None,
-                    jev_status='no_candidates',
-                    deviation_reason='interim_no_candidates',
-                    reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
-        state['interim_wanted'] = False
-    elif state.get('interim_count', 0) < INTERIM_LIMIT:
-        state['interim_wanted'] = True
-    else:
-        # JEV budget spent: still sortie with the first candidate (no hold).
-        state['interim_wanted'] = False
-        if not busy:
-            state['interim_count'] = state.get('interim_count', 0) + 1
-            label, order = next(iter(candidates.items()))
-            step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
-            state['interim_order'] = {**order, 'step': step}
-            _record(mem, 'chart_interim_order', chart_step=step,
-                    strategy_variant='chart_interim_fallback',
-                    request_id=rid, choice=label, confidence=None,
-                    general=order['general'], source=order['source'], target=order['target'],
-                    purpose=order.get('purpose'),
-                    deviation_reason='interim_fallback',
-                    reason='JEV暫定回数の上限に達したため最初の候補で必ず出撃')
+    _mechanical_interim(mem, state, rid, digest)
