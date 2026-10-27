@@ -11,7 +11,7 @@ from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
-from ..os_layer.roster import fixed_wage
+from ..os_layer.roster import fixed_wage, run_identity
 from ..strategy.bargains import merchant_card_spendable, plan_bargains
 from ..strategy.boss_cards import note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
@@ -145,6 +145,27 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         state = mem.get('army_count_check')
         scope = _soldier_count_scope(mem, screen.header)
         if mem.get('_run_identity') is not None and scope is None:
+            # A save can resume inside the month menu before the chapter is
+            # observable. Cancel this editor without confirming a purchase;
+            # otherwise the missing chapter makes every observation a hold.
+            header = screen.header or {}
+            key = _month_key(header) if header.get('year') is not None and header.get('month') is not None else None
+            identity = run_identity(mem.get('_run_identity'))
+            if (identity is not None and mem.get('chapter') is None
+                    and mem.get('resume_chapter_pending') is True
+                    and type(header.get('year')) is int and header['year'] > 0
+                    and type(header.get('month')) is int and 1 <= header['month'] <= 12
+                    and key == mem.get('month') == shop.get('key')
+                    and not shop.get('soldier_receipt') and not mem.get('month_sub')
+                    and screen.has('じゅうじキー') and screen.has('かわりますぞ')):
+                cancel = shop.get('chapterless_refill_cancel')
+                if cancel is None:
+                    cancel = shop['chapterless_refill_cancel'] = {'identity': identity, 'key': key, 'presses': 0}
+                    refill_outcome(mem, shop, 'unverified', reason='章が未確認の再開時は兵士購入を確定せず中止')
+                    shop['soldiers_done'] = True
+                if (isinstance(cancel, dict) and cancel.get('identity') == identity
+                        and cancel.get('key') == key and shop.get('soldiers_done') is True):
+                    return [pad('b')] if _army_count_increment(cancel, 'presses', 4) <= 3 else []
             return []  # a faded month/header cannot authorize a runtime purchase
         if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
                 and state.get('stage') == 'measured'
