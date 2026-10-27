@@ -9,6 +9,7 @@ import time
 import unittest
 import urllib.error
 import uuid
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -539,6 +540,31 @@ class TestLifecycle(Soren91AdapterTestBase):
                     adapter.readiness(time.monotonic() + 30, None)
         viewer_wait.assert_not_called()
         self.assertIn("viewer 待ち前に失敗", str(ctx.exception))
+
+    def test_readiness_fails_fast_when_renderer_exited_after_start(self):
+        # #2260 (Muse 2026-10-28 08:15): the renderer exited ~17s after start.
+        # Status shows running=false with lastExit at/after our start: fail now,
+        # before the viewer wait, even if the exit was never seen as "running".
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [
+                (200, {"ok": True, "running": False}),  # status before start
+                (202, {"ok": True, "started": True}),  # start
+            ]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            exited_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+            self.http_plan = [(200, {
+                "ok": True,
+                "running": False,
+                "lastExit": {"code": 0, "signal": None, "at": exited_at.isoformat()},
+            })]
+            with mock.patch(
+                "docich.adapters.cli_game.CliCoordinatorAdapter.readiness"
+            ) as viewer_wait:
+                with self.assertRaises(ReadinessTimeoutError) as ctx:
+                    adapter.readiness(time.monotonic() + 240, None)
+        viewer_wait.assert_not_called()
+        self.assertIn("起動後に終了しました", str(ctx.exception))
 
     def test_readiness_fails_closed_when_renderer_not_running(self):
         adapter = self._adapter()
