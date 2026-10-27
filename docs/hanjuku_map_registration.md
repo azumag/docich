@@ -66,6 +66,35 @@
 家への修復出張は別の校正値が必要であり、未校正の話では引き続き行わない。
 全体図の旗、全体図カーソル、家のハート位置は異なる測定量で、独立した校正値のまま扱う。
 
+
+## 近似シード（`approx_map`）と実測への移行
+
+第3〜12話を「まず動かす」ための近似シードを `hanjuku_chart.CASTLES_APPROX` に置いた。
+`config/games/hanjuku-hero.toml` の `[hanjuku].approx_map = true` のときだけ、
+`decide()` の呼出し中に限って `castles()` がこの表を返す。既定（テスト・明示OFF）は
+従来どおり空で、`chart_unavailable` のゲートを維持する。
+
+- 値は `SOURCE_CASTLES` の公開130×130旗bboxから `x=8*(left+1), y=8*(top+3)` で作る。
+  第1・2話の実測値との差は最大x6・y8 pxあり、**ネイティブのカーソルセルではない**。
+  城メニュー・屋根位置の既存確認（`_hold_off_castle` / `_align_on_roof` / `_target_roof_under_marker`）は
+  そのまま残すが、誤差による取り違えを完全には防げない。
+- `CASTLES` の実測値が常に優先する。`approx_map` 中は `map_registration.step` を止め、
+  近似セルで通常城の注文を解放する。ボスは含めない。
+  - 第3話の `3-B1`、第4話の `4-B1`、第9話の `9-B1` など、`ボス` を target にする注文は
+    座標がないため `orders()` から落ちる。第4話の4地点・第9話の移動ボスは別扱いのまま。
+  - 全通常城を取った後はボス注文がなくなるため、ボス攻略には実測（下記）が必要。
+- `CASTLES_APPROX` はデータであり、`CASTLES` / `WORLD_MAP_OFFSET` / `Y_JUMP_OFFSET` /
+  `HOUSE_VIEW` を書き換えない。近似を止めれば従来の `chart_unavailable` に戻る。
+
+### 近似を実測へ置き換える手順（C）
+
+ローカルのエミュレータで章ごとのネイティブフレームを取得し、`hanjuku_measure` の
+入力契約（256×224 RGB、順序付き `(frame, label)`）で城の屋根と実城名を対応させる。
+確定したセルを `CASTLES[chapter]` へ入れ、その章を `CASTLES_APPROX` から外す
+（`approx_map` は他章のために残してよい）。ボスは章の全通常城制圧後の画面で
+`CASTLES[chapter]['ボス']` を実測する。第4話は4地点、第9話は移動ボスなので
+単一の `ボス` セルにしない。実測値と近似値が同じ章に混在する間は、実測値を優先する。
+
 ## 特殊ボスと未確定範囲
 
 第4話の勝利は四季王の実名ごとに `boss_victories` へ記録し、通常城の

@@ -6471,6 +6471,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v253-bijin-monthly-owner",
             "hanjuku-chart-v254-bijin-stall-bound",
             "hanjuku-chart-v255-native-map-registration",
+            "hanjuku-chart-v256-approx-source-map",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

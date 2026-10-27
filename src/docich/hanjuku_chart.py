@@ -7,10 +7,14 @@ castle's roof anchor; they are chart facts, not live RAM reads. The hero is
 the name the bot enters (``HERO``).
 
 Chapter 1 and 2 coordinates are measured. Chapters 3–12 ship with empty
-static ``CASTLES``. A scoped policy call may add named native observations
-from that run's ``map_registration``; public source pixels remain search
-hints. Orders activate only when both endpoints have confirmed coordinates.
-See ``docs/hanjuku_map_registration.md`` for the evidence and remaining gates.
+static ``CASTLES`` plus a source-derived ``CASTLES_APPROX`` seed table. A
+scoped policy call may expose that table only while ``approx_map`` is enabled;
+the values are approximate (public 130x130 flag bboxes, not native cursor
+cells) and are always overridden by measured entries. A scoped policy call may
+also add named native observations from that run's ``map_registration``;
+public source pixels remain search hints. Orders activate only when both
+endpoints have coordinates. See ``docs/hanjuku_map_registration.md`` for the
+evidence and remaining gates.
 """
 from __future__ import annotations
 
@@ -25,16 +29,24 @@ MAP_SCHEMA = 1
 _MAP_DIGEST = re.compile(r'[0-9a-f]{64}\Z')
 
 _MAP_MEMORY = ContextVar('hanjuku_map_memory', default=None)
+_MAP_APPROX = ContextVar('hanjuku_map_approx', default=False)
 
 
 @contextmanager
-def map_context(memory):
-    """Expose one run's measured map only for this policy call/thread."""
+def map_context(memory, *, approx=False):
+    """Expose one run's map, and optionally the source seed, per call/thread."""
     token = _MAP_MEMORY.set(memory)
+    approx_token = _MAP_APPROX.set(bool(approx))
     try:
         yield
     finally:
         _MAP_MEMORY.reset(token)
+        _MAP_APPROX.reset(approx_token)
+
+
+def approximate_map() -> bool:
+    """Whether the current policy call may use the source seed table."""
+    return bool(_MAP_APPROX.get())
 
 HERO = 'どうし'
 
@@ -74,6 +86,20 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'ボス': (520, 200),
     },
     # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
+}
+
+# Public-source seed for chapters 3–12. The 8x + (1,3) model is approximate:
+# measured chapters 1/2 show residuals up to 6 px in x and 8 px in y. These
+# cells are never treated as measured and never include a boss: the source
+# catalog has boss names but no boss coordinates, and chapters 4/9 need
+# special handling. ``approx_map`` exposes them for navigation; a measured
+# CASTLES entry always wins, and map registration remains the authority for
+# exact cells.
+SOURCE_APPROX_CHAPTERS = frozenset(range(3, 13))
+CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
+    chapter: {name: (8 * (left + 1), 8 * (top + 3))
+              for name, (left, top) in map_sources.SOURCE_CASTLES[chapter].items()}
+    for chapter in SOURCE_APPROX_CHAPTERS
 }
 
 # Independent native-view calibrations. Castle cells are field-cursor top-left
@@ -944,6 +970,8 @@ def verified_castles(mem, chapter):
 
 def castles(chapter: int) -> dict:
     static = CASTLES.get(chapter, {})
+    if _MAP_APPROX.get():
+        static = {**CASTLES_APPROX.get(chapter, {}), **static}
     if chapter in (4, 9):
         # A generic chapter-4 point cannot identify four separate sites.
         # Chapter 9's moving boss has no reusable static coordinate.

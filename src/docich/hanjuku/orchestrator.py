@@ -146,12 +146,13 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
            run_identity: dict | None = None,
-           chart_edition: str | None = None) -> tuple[list[dict], dict]:
-    """Decide with only this observation's run-scoped verified map exposed."""
+           chart_edition: str | None = None,
+           approx_map: bool = False) -> tuple[list[dict], dict]:
+    """Decide with only this observation's verified/optional seed map exposed."""
     from .. import hanjuku_chart
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
-    with hanjuku_chart.map_context(memory):
+    with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,
                             card_scroll_input=card_scroll_input,

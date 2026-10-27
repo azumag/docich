@@ -208,6 +208,16 @@ def chart_edition_setting():
         return None
 
 
+def approx_map_setting():
+    """``[hanjuku].approx_map``; source-seeded cells for chapters 3–12."""
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        return (raw.get('hanjuku') or {}).get('approx_map') is True
+    except (OSError,tomllib.TOMLDecodeError):
+        return False
+
+
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
     """Ask JEV once for the pending interim choice; the answer is applied next cycle."""
     policy=state.get('policy') or {}
@@ -388,7 +398,8 @@ def main():
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
                                  card_scroll_input=card_scroll_receipt(runtime, state, meta),
                                  run_identity=meta.get('hanjuku'),
-                                 chart_edition=chart_edition_setting())
+                                 chart_edition=chart_edition_setting(),
+                                 approx_map=approx_map_setting())
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
