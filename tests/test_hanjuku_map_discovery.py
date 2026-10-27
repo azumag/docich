@@ -386,6 +386,26 @@ def test_existing_native_status_fixture_matches_only_its_real_chapter():
     assert survey._label(screen, 3) is None
 
 
+def enemy_info(name='グリン', *, include_level=True, include_count=True):
+    c = Canvas()
+    c.text(120, 31, name); c.text(184, 31, 'じょう')
+    c.text(120, 47, 'しゅうにゅう'); c.text(176, 47, '51'); c.text(200, 47, 'G')
+    if include_level:
+        c.text(120, 63, 'レベル'); c.text(184, 63, '2')
+    if include_count:
+        c.text(120, 79, 'しょうぐん'); c.text(184, 79, '1'); c.text(200, 79, 'めい')
+    return parse(c.frame())
+
+
+def test_enemy_info_name_requires_the_complete_foreground_and_chapter():
+    screen = enemy_info()
+    assert screen.kind == 'castle_info' and survey._label(screen, 3) == 'グリン'
+    assert survey._label(screen, 2) is None
+    assert survey._label(enemy_info('ヤマ'), 3) is None
+    assert survey._label(enemy_info(include_level=False), 3) is None
+    assert survey._label(enemy_info(include_count=False), 3) is None
+
+
 @pytest.mark.parametrize('decision', ['map_search_candidate', 'map_castle_confirmed',
                                      'map_registration_rejected', 'map_reanchored', None])
 def test_registration_evidence_uses_the_existing_bounded_native_frame_ring(tmp_path, decision):
