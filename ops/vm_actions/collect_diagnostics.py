@@ -209,6 +209,19 @@ HARD_JSON_BYTES = 56 * 1024
 # whole-section drop, so it yields only after every other section is gone.
 _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
                     "soren91_drop_profile", "host_metrics")
+# Sections that survive every ceiling reduction (#2805). ``corners`` is the
+# first whole section dropped and every 予想王 input lives inside it, so while
+# the production envelope stays above the ceiling the 予想王 ledger can only be
+# observed from a run that happened to fit. ``prediction`` duplicates the same
+# already-bounded dicts under a key the whole-section drops never take away.
+_HARD_KEEP = ("meta", "prediction")
+# Production thresholds of the 予想王 boards, kept in sync with
+# ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
+# ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
+# ``--min-participations`` override, so the defaults are the deployed values.
+# The collector runs against a fixed argv and does not import the docich package.
+_PREDICTION_MIN_ROUNDS = 3
+_PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -7856,11 +7869,43 @@ def _collect_retro_program_queues(soren):
     return queues
 
 
-def _collect_prediction_leaderboard(state_dir):
-    """Counts only; the 予想王 ledger never exposes viewer names or titles."""
+def _parse_iso_utc(value):
+    """Epoch seconds for a Twitch ISO-8601 UTC stamp, else None (#2805)."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            parsed = dt.datetime.strptime(value, fmt)
+        except (TypeError, ValueError):
+            continue
+        return parsed.replace(tzinfo=dt.timezone.utc).timestamp()
+    return None
+
+
+def _collect_prediction_leaderboard(state_dir, now=None):
+    """Counts only; the 予想王 ledger never exposes viewer names or titles.
+
+    The counts are chosen so one envelope can tell the three empty-ranking
+    states apart without reading the ledger again (#2805):
+
+    * ``rounds`` > 0 with ``graded_rounds`` 0 makes the hit-rate, won-points and
+      lost-points boards empty by contract.
+    * ``rounds`` > 0 with ``predictor_rows`` 0 means no participant row was
+      recorded at all, so every board is empty for a different reason.
+    * ``last_round_ended_at`` and ``last_round_age_sec`` say whether the ledger
+      advanced since the measured snapshot, which separates "empty when the
+      report was written" from "empty now".
+
+    ``viewers_*`` are per-viewer aggregate counts, never identities. The
+    thresholds are the production values recorded in ``min_rounds`` /
+    ``min_participations``.
+    """
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
-             "canceled": 0, "soren_canceled": 0}
+    entry = {"present": False, "readable": False, "schema": None, "rounds": 0,
+             "graded_rounds": 0, "viewers": 0, "predictor_rows": 0, "canceled": 0,
+             "soren_canceled": 0, "viewers_won_gt0": 0,
+             "viewers_used_gt0": 0, "viewers_hit_rate_eligible": 0,
+             "last_round_ended_at": None, "last_round_age_sec": -1,
+             "min_rounds": _PREDICTION_MIN_ROUNDS,
+             "min_participations": _PREDICTION_MIN_PARTICIPATIONS}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -7875,23 +7920,69 @@ def _collect_prediction_leaderboard(state_dir):
     if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
+    schema = data.get("schema")
     viewers = set()
-    canceled = soren_canceled = 0
+    totals = {}
+    ended = []
+    canceled = soren_canceled = graded = predictor_rows = 0
     for round_ in data["rounds"].values():
-        if isinstance(round_, dict) and round_.get("status") == "CANCELED":
+        if not isinstance(round_, dict):
+            continue
+        status = round_.get("status")
+        if status is None and schema == 1:
+            # A schema-1 ledger stored graded rounds only (``_upgrade_legacy``).
+            status = "RESOLVED"
+        if status == "CANCELED":
             # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
             canceled += 1
             if round_.get("corner") == "soren":
                 soren_canceled += 1
-        predictors = round_.get("predictors") if isinstance(round_, dict) else None
+        elif status == "RESOLVED":
+            graded += 1
+        round_ended = round_.get("ended_at")
+        if isinstance(round_ended, str) and round_ended:
+            # ISO-8601 UTC sorts lexicographically, so the max string is the
+            # newest round end; only the newest one leaves this projection.
+            ended.append(round_ended[:40])
+        predictors = round_.get("predictors")
         if not isinstance(predictors, list):
             continue
         for item in predictors:
-            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
-                viewers.add(item["user_id"])
-    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
+            if not isinstance(item, dict) or not isinstance(item.get("user_id"), str):
+                continue
+            viewers.add(item["user_id"])
+            predictor_rows += 1
+            row = totals.setdefault(item["user_id"],
+                                    {"rounds": 0, "used": 0, "won": 0})
+            if status == "RESOLVED":
+                row["rounds"] += 1
+            used = item.get("used")
+            if type(used) is int and used > 0:
+                row["used"] += used
+            won = item.get("won")
+            if type(won) is int and won > 0:
+                row["won"] += won
+    last_round_ended_at = max(ended) if ended else None
+    last_round_age_sec = -1
+    if last_round_ended_at is not None and now is not None:
+        parsed = _parse_iso_utc(last_round_ended_at)
+        if parsed is not None:
+            last_round_age_sec = _bounded_age(parsed, now)
+    entry.update(readable=True, schema=schema,
+                 rounds=min(len(data["rounds"]), 2000),
+                 graded_rounds=min(graded, 2000),
                  viewers=min(len(viewers), 100000),
-                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
+                 predictor_rows=min(predictor_rows, 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000),
+                 viewers_won_gt0=min(sum(1 for row in totals.values()
+                                        if row["won"] > 0), 100000),
+                 viewers_used_gt0=min(sum(1 for row in totals.values()
+                                         if row["used"] > 0), 100000),
+                 viewers_hit_rate_eligible=min(
+                     sum(1 for row in totals.values()
+                         if row["rounds"] >= _PREDICTION_MIN_ROUNDS), 100000),
+                 last_round_ended_at=last_round_ended_at,
+                 last_round_age_sec=last_round_age_sec)
     return entry
 
 
@@ -7923,6 +8014,96 @@ def _collect_soren_predictions(soren, state_dir):
         return entry
     entry["handoff_rows"] = min(sum(1 for line in lines if line.strip()), 1000)
     return entry
+
+
+def _bounded_age(value, now):
+    """Seconds since ``value`` for a plausible timestamp, else -1 (#2805)."""
+    if type(value) not in (int, float) or value <= 0:
+        return -1
+    age = int(now - value)
+    return age if 0 <= age <= 10 ** 9 else -1
+
+
+def _prediction_projection(corners, now):
+    """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
+
+    ``corners`` is dropped whole against the hard ceiling, and the ledger, the
+    Soren handoff, the HanJuku round state, the yoso corner run and the
+    prediction boundary all live inside it. When the production envelope grew
+    past the ceiling, every 予想王 report could only be answered from a run that
+    still fitted, so this re-projects the same already-bounded dicts under a key
+    that survives.
+
+    This is a *duplicate* projection, not a move: the ``corners.*`` keys keep
+    their existing shape and meaning so already documented consumers and the
+    regression tests stay honest, while ``prediction`` is the exempt copy. Both
+    read the same dict objects, so no file is read twice and the two cannot
+    disagree within one envelope. ``state_dir_found`` is repeated here for the
+    same reason: it is the only signal that separates "the 予想王 state dir was
+    never found" from "the ledger is empty", and it used to disappear with
+    ``corners``. No viewer name, login or title is added; the values are counts,
+    fixed enums, bounded timestamps and ages only.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+
+    def _section(name):
+        value = corners.get(name)
+        return value if isinstance(value, dict) else {}
+
+    leaderboard = _section("prediction_leaderboard")
+    handoff = _section("soren_predictions")
+    hanjuku = _section("hanjuku_predictions")
+    corner = _section("yoso_corner")
+    boundary = _section("boundary")
+    prediction = boundary.get("prediction")
+    prediction = prediction if isinstance(prediction, dict) else {}
+    health = hanjuku.get("health")
+    health = health if isinstance(health, dict) else {}
+    health_ok = None
+    if health:
+        health_ok = (health.get("present") is True
+                     and health.get("readable") is True
+                     and health.get("consecutive_errors") == 0
+                     and health.get("last_error") is None)
+
+    def _text(value):
+        return value if isinstance(value, str) else None
+
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "leaderboard": dict(leaderboard),
+        "soren_handoff": dict(handoff),
+        "hanjuku": {
+            "present": hanjuku.get("present") is True,
+            "readable": hanjuku.get("readable") is True,
+            "status": _text(hanjuku.get("status")),
+            "mode": _text(hanjuku.get("mode")),
+            "health_ok": health_ok,
+            "last_ok_age_sec": _bounded_age(health.get("last_ok_at"), now),
+        },
+        "corner": {
+            "present": corner.get("present") is True,
+            "readable": corner.get("readable") is True,
+            "status": _text(corner.get("status")),
+            "game": _text(corner.get("game")),
+            "end_reason": _text(corner.get("end_reason")),
+            "recovery_required": (corner.get("recovery_required")
+                                  if isinstance(corner.get("recovery_required"), bool)
+                                  else None),
+            "completed_at": (corner.get("completed_at")
+                             if type(corner.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(corner.get("completed_at"), now),
+        },
+        "boundary": {
+            "present": prediction.get("present") is True,
+            "readable": prediction.get("readable") is True,
+            "completed_at": (prediction.get("completed_at")
+                             if type(prediction.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(prediction.get("completed_at"), now),
+        },
+    }
 
 
 def _collect_programs(state_dir, soren, now):
@@ -7977,7 +8158,7 @@ def _collect_programs(state_dir, soren, now):
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
-    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir)
+    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir, now)
     payload["soren_predictions"] = _collect_soren_predictions(soren, state_dir)
     retro = payload.get("retro_corner")
     game_switch = payload.get("game_switch")
@@ -13093,12 +13274,13 @@ def _diagnostics_budget(payload):
     # Pathological fallback: a payload whose surviving sections are individually
     # small but numerous. Drop the remaining top-level sections largest-first,
     # keeping ``meta`` (the deployed SHA and collection status) so the envelope
-    # still identifies what it came from.
+    # still identifies what it came from, and ``prediction`` so the 予想王 counts
+    # stay observable (#2805).
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         for key, value in sorted(
                 payload.items(),
                 key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
-            if key == "meta" or not isinstance(value, dict):
+            if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
             payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
             text = _nethack_history_budget(payload)
@@ -13586,6 +13768,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "prediction": _prediction_projection(corners, now),
         "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
