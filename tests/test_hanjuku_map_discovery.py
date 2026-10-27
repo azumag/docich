@@ -460,6 +460,20 @@ def test_a_gap_requires_known_native_name_before_reanchoring_or_new_registration
     assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
 
 
+def test_reanchor_walks_to_visible_roof_without_guessing_its_identity():
+    mem = home_receipt()
+    feed(mem, status('グリン'))  # a gap invalidates the camera
+    assert feed(mem, field((HOME[0], HOME[1] + 32))) == [policy.pad('up', 16)]
+    assert not mem['map_discovery'].get('probe')
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+    assert feed(mem, field(HOME)) == []
+    assert feed(mem, field(HOME)) == [policy.pad('a')]
+    assert feed(mem, status('アルマムーン')) == []
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert any(r['decision'] == 'map_reanchored' for r in mem['_records'])
+    assert 'reanchor_walk' not in mem['map_discovery']
+
+
 @pytest.mark.parametrize('change', ['identity', 'chapter', 'digest', 'collision', 'foreign', 'readings'])
 def test_invalid_registration_envelope_never_reaches_chart_or_orders(change):
     mem = home_receipt()
