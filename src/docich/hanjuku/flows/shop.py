@@ -31,6 +31,16 @@ def _merchant_quote_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
+def _record_shop_exit(mem, shop, screen, reason):
+    """Record a merchant-list exit that spends nothing (diagnostic, no behavior change)."""
+    items = (shop or {}).get('items') or []
+    _record(mem, 'shop_list_exit', month=(shop or {}).get('key'),
+            observed_metric={'reason': reason, 'planned': [list(row) for row in items[:4]],
+                             'header_month': _month_key(screen.header),
+                             'mem_month': mem.get('month'), 'merchant_done': (shop or {}).get('merchant_done')},
+            reason='商人の品揃えを見ずに一覧から戻ったため、購入せず終了した理由を記録する')
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
@@ -47,10 +57,14 @@ def shop_step(screen: Screen, mem):
     # shop_list
     gold = (screen.header or {}).get('gold')
     if not shop or shop.get('key') != _month_key(screen.header):
+        _record_shop_exit(mem, shop, screen, 'month_key_mismatch')
         return [pad('b')]
     spendable = _merchant_spendable(mem, shop, screen.header)
     if spendable is None:
-        return [pad('b')]  # a faded header is not permission or evidence of missing stock
+        # A faded header is not permission or evidence of missing stock. Log
+        # the silent exit: a quiet 'b' here once left a planned purchase unbought.
+        _record_shop_exit(mem, shop, screen, 'spendable_unreadable')
+        return [pad('b')]
     listed = {}
     for line in screen.lines:
         joined = ''.join(line.words(120, 256))
