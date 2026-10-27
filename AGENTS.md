@@ -192,3 +192,11 @@ worker / queue / model / provider / fallback / runtime component を変更した
 - macOS で CI 外の実行には、`conftest.py` が自動で次を適用する: 全プロセスの優先度を下げる（`nice` 10 とディスク I/O の utility 段階。利用者のアプリが CPU とディスクを優先して使える）、xdist の並列数を `DOCICH_TEST_MAX_WORKERS`（既定 4）までに抑える（`-n 8` を指定しても 4 になる）、フルスイートはマシン全体で同時に 1 本までにし、後から始めた方は先の実行が終わるまで待つ（最大 `DOCICH_TEST_LOCK_WAIT` 秒、既定 1800）。
 - 待ちを避けるために `DOCICH_TEST_FOREGROUND=1` を使わない。これは利用者が手元で意図して急ぐときだけに使う。
 - フルスイートの `timeout` は、実行時間（約4〜6分）に待ち時間を足して設定する。
+
+## 14. 検証系 worktree の作成先（#2735）
+
+- 検証系 worktree は本番 VM の soren root（`storage_reclaim.sh` の `$root` = `/home/ubuntu/soren`）配下の `$root/tmp/verify/<issue>-<slug>/` に作る。ローカル checkout の root と混同しない。
+- `/tmp` 直下、または `$root/tmp` 直下を worktree の親にしない。
+- 検証終了時は `git worktree remove` で必ず片付ける（不要になったら `git worktree prune`）。保存先の分離だけでは残留は防げず、放置が根因だった。
+- 残留の観測: `sys_tmp_reclaim_candidates` は `/tmp` 専用。`$root/tmp/verify/` 配下の残留は `storage_breakdown` の `soren_tmp`（合計 bytes のみ・coarse）でしか見えないため、手動確認も併用する。規約違反で `/tmp` 直下に置かれた worktree は `sys_tmp_top_level`（git_worktree 分類）に現れ、24h 経過後に `sys_tmp_reclaim_candidates` が検知する。
+- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。削除対象の拡張は別判断とする。
