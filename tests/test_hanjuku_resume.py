@@ -950,6 +950,35 @@ def test_gift_checkpoint_requires_full_native_menu_and_readable_header(gold,hous
     assert not resume_bijin_gift_panel(parse(gifts(gold,house=house,prompt=prompt)))
 
 
+def test_castle_event_dialogue_checkpoint_restores_without_guessing_chapter(setup):
+    # g1059 07:42 stalled on 「メリ〜 クリスマ〜ス!」; g1063/g1065 then rolled
+    # back because no chapter or known panel ever appeared on the restore.
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1059-christmas-event-dialogue.png')
+    screen = parse(frame)
+    assert screen.kind == 'text' and screen.header['chapter'] is None
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy'].get('chapter') is None
+
+
+def test_headerless_dialogue_is_not_a_restorable_foreground():
+    from docich.hanjuku_screen import parse
+    from docich import hanjuku_resume
+    from test_hanjuku_chart_bot import Canvas
+    c = Canvas(); c.text(16, 175, 'メリー クリスマース!')
+    screen = parse(c.frame())
+    assert screen.kind == 'text'
+    assert not hanjuku_resume._castle_dialogue(screen)
+
+
 def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     from docich.hanjuku.os_layer.pixels import read_png
     from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel

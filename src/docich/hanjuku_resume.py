@@ -503,6 +503,18 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
                 break
 
 
+def _castle_dialogue(screen):
+    """A castle-hall dialogue: text plus the native year/month header.
+
+    g1059 stalled on a seasonal 「メリ〜 クリスマ〜ス!」 event, which shows
+    neither a chapter nor a known panel; the restore waited for one until
+    its deadline on every retry (g1063, g1065).
+    """
+    header = screen.header or {}
+    return (screen.kind == 'text' and header.get('chapter') is None
+            and type(header.get('year')) is int and type(header.get('month')) is int)
+
+
 def restore(adapter, deadline, cancel):
     """Pause, load, then reserialize and compare before staging any agent."""
     from .adapters.retroarch import send_ra_cmd
@@ -555,9 +567,10 @@ def restore(adapter, deadline, cancel):
     ritual_without_chapter = False
     battle_menu_without_chapter = False
     gift_without_chapter = False
+    dialogue_without_chapter = False
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
            and not ritual_without_chapter and not battle_menu_without_chapter
-           and not gift_without_chapter):
+           and not gift_without_chapter and not dialogue_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -586,6 +599,8 @@ def restore(adapter, deadline, cancel):
             battle_menu_without_chapter = True
         elif observed is None and resume_bijin_gift_panel(screen):
             gift_without_chapter = True
+        elif _castle_dialogue(screen):
+            dialogue_without_chapter = True
     # These verified chapterless panels seed only their measured foreground
     # owner; chapter, route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}
