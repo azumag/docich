@@ -334,6 +334,24 @@ def test_survey_hold_cannot_turn_into_the_generic_frozen_screen_confirm():
     assert not any(r['decision'] == 'no_input_hold_released' for r in updated['_records'])
 
 
+def test_closed_probe_releases_event_dialogue_after_its_b_budget():
+    # g1059 07:37: a reanchor probe was closing when a seasonal event
+    # (「メリ〜 クリスマ〜ス!」) took the screen. B does not advance it, and the
+    # held probe returned [] for 3+ minutes while blocking the text flow.
+    mem = home_receipt()
+    walk_to_grin(mem)
+    mem['map_discovery']['probe'].update(age=2*survey.MAX_PANEL, closing=True)
+    c = Canvas()
+    c.text(16, 175, 'メリー クリスマース!')
+    dialogue = c.frame()
+    assert parse(dialogue).kind == 'text'
+    mem.pop('_map_registration_hold', None)   # the orchestrator clears it per frame
+    assert feed(mem, dialogue) is None        # the ordinary text flow owns the frame
+    assert 'probe' not in mem['map_discovery']
+    assert not mem.get('_map_registration_hold')
+    assert any(r['decision'] == 'map_registration_released' for r in mem['_records'])
+
+
 def test_skipped_foreground_observations_invalidate_geometry_before_continuing():
     mem = home_receipt()
     mem['tick'] += 5  # e.g. a higher-priority monthly flow owned these frames
