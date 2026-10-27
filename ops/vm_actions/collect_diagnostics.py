@@ -2121,7 +2121,10 @@ BROWSER_OWNER_LABELS = (
     "other",
 )
 BROWSER_TYPE_LABELS = ("browser", "gpu", "renderer", "utility", "other")
-BROWSER_CPU_SAMPLE_SEC = 0.25
+BROWSER_CPU_SAMPLE_SEC = 0.5
+# Chromium child cmdlines can carry a long feature/field-trial prefix before
+# ``--type=``; 4 KiB was measured to classify every child as "browser".
+BROWSER_CMDLINE_BYTES = 16384
 _BROWSER_EXECUTABLES = frozenset({
     "chrome",
     "chromium",
@@ -2134,7 +2137,7 @@ _BROWSER_EXECUTABLES = frozenset({
 _BROWSER_SKIPPED_EXECUTABLES = frozenset({"chrome_crashpad_handler"})
 
 
-def _browser_read_cmdline(proc_root, pid, limit=4096):
+def _browser_read_cmdline(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
     """Read argv only to classify; the raw argv never leaves this module."""
     try:
         with open(proc_root / str(pid) / "cmdline", "rb") as fh:
