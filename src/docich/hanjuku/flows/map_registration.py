@@ -266,12 +266,26 @@ def step(screen, mem, frame):
                 return ([pad('a')] if move == 'here' else [move]) if move else []
             return []
         expected = probe.get('expected')
-        if ((expected is not None and name != expected)
-                or probe.get('name') not in (None, name)):
+        if probe.get('name') not in (None, name):
             _record(mem, 'map_registration_rejected', observed_metric={'expected': expected, 'name': name},
-                    reason='探索候補と実城名が一致しないため座標を登録せず閉じる')
+                    reason='同じ確認中に実城名が変わったため座標を登録せず閉じる')
             probe['closing'] = True
             return [pad('b')]
+        if expected is not None and name != expected:
+            known = verified_castles(mem, chapter)
+            if name not in known:
+                _record(mem, 'map_registration_rejected', observed_metric={'expected': expected, 'name': name},
+                        reason='探索候補と実城名が一致せず未確認の城のため座標を登録せず閉じる')
+                probe['closing'] = True
+                return [pad('b')]
+            # The source hint picked the wrong castle, but the screen names a
+            # location this run already measured. Re-anchor on that known name
+            # instead of closing and reopening the same menu forever.
+            probe['reanchor'] = True
+            probe['expected'] = name
+            _record(mem, 'map_search_candidate_mismatch', castle=name,
+                    observed_metric={'expected': expected, 'name': name},
+                    reason='探索候補と異なる既知城を確認したため、その城名でカメラを再アンカーする')
         probe['name'] = name
         tick = mem.get('tick')
         if type(tick) is not int or tick <= probe.get('read_tick', -1):
@@ -418,6 +432,8 @@ def step(screen, mem, frame):
         state['probe'] = {'position': [cursor[0]+camera[0], cursor[1]+camera[1]],
                           'field_frame': frame.digest(), 'age': 0,
                           'roof_kind': roof['kind'],
+                          'screen_cursor': list(cursor),
+                          'screen_roofs': [list(r['target']) for r in roofs],
                           'expected': expected if known else None}
         state.pop('last_input', None)
         return [pad('a')]
