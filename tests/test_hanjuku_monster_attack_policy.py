@@ -18,7 +18,12 @@ def choose(ally, enemy, first, second, *, enemy_hp=100, battle=None):
 def test_warawara_reverses_choice_for_monster_and_general_opponents():
     skills = ('９９かいパンチ', '９９かいキック')
     assert choose('ワラワラ', 'エッグスライム', *skills) == 'skill2'
-    assert choose('ワラワラ', 'クイーン', *skills) == 'skill1'
+    assert choose('ワラワラ', 'あたし', *skills) == 'skill1'
+
+
+def test_warawara_uses_monster_damage_column_for_boss():
+    skills = ('９９かいパンチ', '９９かいキック')
+    assert choose('ワラワラ', 'クイーン', *skills) == 'skill2'
 
 
 def test_self_damage_skill_is_excluded_from_normal_selection():
