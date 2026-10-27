@@ -719,6 +719,261 @@ def _classify_sys_tmp_top_level(path, *, max_entries=STORAGE_MAX_ENTRIES):
             bucket["allocated_bytes"] += _storage_allocated_bytes(st)
     return result
 
+# Case A of azumag/docich#2735: dry-run evidence only. A top-level /tmp entry is
+# counted as a reclaim candidate when every gate passes; nothing is read for
+# write, deleted or changed here. Deletion is a separate, later decision.
+SYS_TMP_RECLAIM_MIN_BYTES = 100 * 1024 * 1024
+SYS_TMP_RECLAIM_IDLE_SEC = 24 * 3600
+SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC = 5
+SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES = 1024 * 1024
+
+
+def _sys_tmp_recently_touched(entry_path, *, now, idle_sec):
+    """Cheap pre-gate: the entry, its .git and .git/objects mtimes.
+
+    Returns True (keep) on any doubt, including an unreadable entry.
+    """
+    for candidate in (entry_path, entry_path / ".git", entry_path / ".git" / "objects"):
+        try:
+            st = os.lstat(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            return True
+        if now - st.st_mtime < idle_sec:
+            return True
+    return False
+
+
+def _sys_tmp_recent_activity(path, *, now, idle_sec, max_entries):
+    """Return ``(recent, complete)`` for regular files under ``path``.
+
+    Symlinks are never followed. Any file whose mtime is within ``idle_sec``
+    (a future mtime included) makes the tree recent. An unreadable or
+    over-bound walk returns ``complete=False`` so the caller keeps the entry.
+    """
+    seen = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries:
+                        return False, False
+                    st = entry.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+                    elif not stat.S_ISLNK(st.st_mode) and now - st.st_mtime < idle_sec:
+                        return True, True
+        except OSError:
+            return False, False
+    return False, True
+
+
+def _sys_tmp_git_clean(path):
+    """True only when git proves ``path`` is a work tree with no changes."""
+    base = [
+        "git", "-c", "core.fsmonitor=false", "--no-optional-locks", "-C", str(path),
+    ]
+    try:
+        inside = subprocess.run(
+            base + ["rev-parse", "--is-inside-work-tree"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != b"true":
+            return False
+        status = subprocess.run(
+            base + ["status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return status.returncode == 0 and status.stdout == b""
+
+
+def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid):
+    """Return ``(referenced, complete)`` for the byte paths in ``roots``.
+
+    A root is referenced when a process cmdline contains it, or its cwd or any
+    fd resolves at or below it. Unreadable processes, fd overflow and a missing
+    proc root all return ``complete=False``; the caller then counts nothing.
+    """
+    referenced = set()
+    complete = True
+    fds_seen = 0
+    try:
+        proc_entries = os.scandir(proc_root)
+    except OSError:
+        return referenced, False
+
+    def _mark(target):
+        for root in roots:
+            if target == root or target.startswith(root + b"/"):
+                referenced.add(root)
+
+    with proc_entries:
+        for proc_entry in proc_entries:
+            if not proc_entry.name.isdigit() or int(proc_entry.name) == own_pid:
+                continue
+            base = Path(proc_entry.path)
+            try:
+                with open(base / "cmdline", "rb") as handle:
+                    cmdline = handle.read(SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
+            for root in roots:
+                if root in cmdline:
+                    referenced.add(root)
+            try:
+                _mark(os.fsencode(os.readlink(base / "cwd")))
+            except FileNotFoundError:
+                pass
+            except OSError:
+                complete = False
+            try:
+                with os.scandir(base / "fd") as fds:
+                    for fd_entry in fds:
+                        fds_seen += 1
+                        if fds_seen > max_proc_fds:
+                            return referenced, False
+                        try:
+                            _mark(os.fsencode(os.readlink(fd_entry.path)))
+                        except FileNotFoundError:
+                            continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+    return referenced, complete
+
+
+def _sys_tmp_reclaim_gate(path, *, now, max_entries, min_bytes, idle_sec, result, passed):
+    """Append ``(root_bytes, allocated_bytes)`` for entries passing gates 1-5.
+
+    Gate order is fixed: form, idle pre-gate, size, full idle walk, clean tree.
+    Each doubt keeps the entry and clears ``result["scan_complete"]`` only when
+    the scan itself was partial; a single doubtful entry never adds a count.
+    """
+    try:
+        entries = os.scandir(path)
+    except OSError:
+        result["scan_complete"] = False
+        return
+    with entries:
+        seen = 0
+        for entry in entries:
+            seen += 1
+            if seen > max_entries:
+                result["scan_complete"] = False
+                break
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                continue
+            entry_path = Path(entry.path)
+            try:
+                if not (entry_path / ".git").exists():
+                    continue
+                if _sys_tmp_recently_touched(entry_path, now=now, idle_sec=idle_sec):
+                    continue
+                usage = _storage_tree_usage(entry_path, max_entries=max_entries)
+                if not usage["scan_complete"]:
+                    continue
+                if usage["allocated_bytes"] < min_bytes:
+                    continue
+                recent, walk_complete = _sys_tmp_recent_activity(
+                    entry_path, now=now, idle_sec=idle_sec, max_entries=max_entries
+                )
+                if recent or not walk_complete:
+                    continue
+                if not _sys_tmp_git_clean(entry_path):
+                    continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            passed.append((os.fsencode(entry.path), usage["allocated_bytes"]))
+
+
+def _sweep_sys_tmp_reclaim_candidates(
+    path,
+    *,
+    max_entries=STORAGE_MAX_ENTRIES,
+    now=None,
+    proc_root="/proc",
+    min_bytes=SYS_TMP_RECLAIM_MIN_BYTES,
+    idle_sec=SYS_TMP_RECLAIM_IDLE_SEC,
+):
+    """Identity-free dry-run count of /tmp entries a reclaim could consider.
+
+    Only top-level directories that contain ``.git`` (clone or linked worktree)
+    are considered, and an entry counts only when all of these hold: at least
+    ``min_bytes`` allocated, no file touched within ``idle_sec``, a clean git
+    work tree, and no running process whose cmdline, cwd or fd points at it.
+    Symlinks are never followed. Anything that cannot be proven yields
+    ``scan_complete=False`` and is not counted. Nothing is deleted or written.
+    """
+    now = time.time() if now is None else now
+    result = {"count": 0, "allocated_bytes": 0, "scan_complete": True}
+    passed = []
+    try:
+        path = Path(path)
+        try:
+            root_st = os.lstat(path)
+        except FileNotFoundError:
+            return result
+        except OSError:
+            result["scan_complete"] = False
+            return result
+        if not stat.S_ISDIR(root_st.st_mode):
+            result["scan_complete"] = False
+            return result
+        _sys_tmp_reclaim_gate(
+            path,
+            now=now,
+            max_entries=max_entries,
+            min_bytes=min_bytes,
+            idle_sec=idle_sec,
+            result=result,
+            passed=passed,
+        )
+        if passed:
+            referenced, refs_complete = _sys_tmp_reference_scan(
+                [root for root, _size in passed],
+                proc_root=Path(proc_root),
+                max_proc_fds=TMP_SO_MAX_PROC_FDS,
+                own_pid=os.getpid(),
+            )
+            if not refs_complete:
+                result["scan_complete"] = False
+            for root, allocated in passed:
+                if not refs_complete or root in referenced:
+                    continue
+                result["count"] += 1
+                result["allocated_bytes"] += allocated
+    except Exception:
+        # The collector must never raise; partial proven counts are kept.
+        result["scan_complete"] = False
+    return result
+
+
 def _collect_storage_breakdown(
     soren,
     prod_root,
@@ -797,6 +1052,9 @@ def _collect_storage_breakdown(
         "swapfile": _storage_file_usage(swap_file),
         "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
         "sys_tmp_top_level": _classify_sys_tmp_top_level(sys_tmp, max_entries=max_entries),
+        "sys_tmp_reclaim_candidates": _sweep_sys_tmp_reclaim_candidates(
+            sys_tmp, max_entries=max_entries
+        ),
         "docich_git_objects": _storage_tree_usage(
             prod_root / ".git" / "objects", max_entries=max_entries
         ),
