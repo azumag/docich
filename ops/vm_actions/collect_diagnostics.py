@@ -731,7 +731,8 @@ SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES = 1024 * 1024
 def _sys_tmp_recently_touched(entry_path, *, now, idle_sec):
     """Cheap pre-gate: the entry, its .git and .git/objects mtimes.
 
-    Returns True (keep) on any doubt, including an unreadable entry.
+    Returns ``(recent, complete)``. An unreadable entry is ``complete=False``
+    and is kept by the caller.
     """
     for candidate in (entry_path, entry_path / ".git", entry_path / ".git" / "objects"):
         try:
@@ -739,10 +740,10 @@ def _sys_tmp_recently_touched(entry_path, *, now, idle_sec):
         except (FileNotFoundError, NotADirectoryError):
             continue
         except OSError:
-            return True
+            return True, False
         if now - st.st_mtime < idle_sec:
-            return True
-    return False
+            return True, True
+    return False, True
 
 
 def _sys_tmp_recent_activity(path, *, now, idle_sec, max_entries):
@@ -773,7 +774,9 @@ def _sys_tmp_recent_activity(path, *, now, idle_sec, max_entries):
 
 
 def _sys_tmp_git_clean(path):
-    """True only when git proves ``path`` is a work tree with no changes."""
+    """Tri-state git check: True clean work tree, False verified not-clean
+    (dirty, or a bare/non-work-tree repo), None when git could not verify.
+    """
     base = [
         "git", "-c", "core.fsmonitor=false", "--no-optional-locks", "-C", str(path),
     ]
@@ -786,8 +789,13 @@ def _sys_tmp_git_clean(path):
             timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
             check=False,
         )
-        if inside.returncode != 0 or inside.stdout.strip() != b"true":
+        if inside.returncode != 0:
+            return None
+        inside_out = inside.stdout.strip()
+        if inside_out == b"false":
             return False
+        if inside_out != b"true":
+            return None
         status = subprocess.run(
             base + ["status", "--porcelain"],
             stdin=subprocess.DEVNULL,
@@ -797,16 +805,20 @@ def _sys_tmp_git_clean(path):
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return status.returncode == 0 and status.stdout == b""
+        return None
+    if status.returncode != 0:
+        return None
+    return status.stdout == b""
 
 
-def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid):
+def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid, euid):
     """Return ``(referenced, complete)`` for the byte paths in ``roots``.
 
-    A root is referenced when a process cmdline contains it, or its cwd or any
-    fd resolves at or below it. Unreadable processes, fd overflow and a missing
-    proc root all return ``complete=False``; the caller then counts nothing.
+    A root is referenced when any process cmdline contains it. cwd and fd are
+    read only for processes owned by ``euid`` (the same scope as the tmp .so
+    scanner and the reviewed shell helper's effective view); other users'
+    cwd/fd are not readable and must not make the whole scan incomplete.
+    Fd overflow and a missing proc root return ``complete=False``.
     """
     referenced = set()
     complete = True
@@ -837,6 +849,14 @@ def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid):
             for root in roots:
                 if root in cmdline:
                     referenced.add(root)
+            try:
+                if proc_entry.stat(follow_symlinks=False).st_uid != euid:
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
             try:
                 _mark(os.fsencode(os.readlink(base / "cwd")))
             except FileNotFoundError:
@@ -892,19 +912,32 @@ def _sys_tmp_reclaim_gate(path, *, now, max_entries, min_bytes, idle_sec, result
             try:
                 if not (entry_path / ".git").exists():
                     continue
-                if _sys_tmp_recently_touched(entry_path, now=now, idle_sec=idle_sec):
+                recent, touch_complete = _sys_tmp_recently_touched(
+                    entry_path, now=now, idle_sec=idle_sec
+                )
+                if not touch_complete:
+                    result["scan_complete"] = False
+                if recent or not touch_complete:
                     continue
                 usage = _storage_tree_usage(entry_path, max_entries=max_entries)
                 if not usage["scan_complete"]:
+                    result["scan_complete"] = False
                     continue
                 if usage["allocated_bytes"] < min_bytes:
                     continue
                 recent, walk_complete = _sys_tmp_recent_activity(
                     entry_path, now=now, idle_sec=idle_sec, max_entries=max_entries
                 )
-                if recent or not walk_complete:
+                if not walk_complete:
+                    result["scan_complete"] = False
                     continue
-                if not _sys_tmp_git_clean(entry_path):
+                if recent:
+                    continue
+                clean = _sys_tmp_git_clean(entry_path)
+                if clean is None:
+                    result["scan_complete"] = False
+                    continue
+                if not clean:
                     continue
             except OSError:
                 result["scan_complete"] = False
@@ -920,6 +953,7 @@ def _sweep_sys_tmp_reclaim_candidates(
     proc_root="/proc",
     min_bytes=SYS_TMP_RECLAIM_MIN_BYTES,
     idle_sec=SYS_TMP_RECLAIM_IDLE_SEC,
+    euid=None,
 ):
     """Identity-free dry-run count of /tmp entries a reclaim could consider.
 
@@ -960,6 +994,7 @@ def _sweep_sys_tmp_reclaim_candidates(
                 proc_root=Path(proc_root),
                 max_proc_fds=TMP_SO_MAX_PROC_FDS,
                 own_pid=os.getpid(),
+                euid=os.geteuid() if euid is None else int(euid),
             )
             if not refs_complete:
                 result["scan_complete"] = False

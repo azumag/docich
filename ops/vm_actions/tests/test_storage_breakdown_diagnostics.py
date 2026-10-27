@@ -852,6 +852,7 @@ class SysTmpReclaimCandidateTests(unittest.TestCase):
         self.proc.mkdir()
         self.git_dirty = set()
         self.git_error = None
+        self.git_bare = set()
         self.git_calls = []
 
     def tearDown(self):
@@ -863,7 +864,8 @@ class SysTmpReclaimCandidateTests(unittest.TestCase):
             raise self.git_error
         repo = args[args.index("-C") + 1]
         if "rev-parse" in args:
-            return subprocess.CompletedProcess(args, 0, stdout=b"true\n", stderr=b"")
+            out = b"false\n" if repo in self.git_bare else b"true\n"
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
         out = b" M file.txt\n" if repo in self.git_dirty else b""
         return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
 
@@ -873,6 +875,7 @@ class SysTmpReclaimCandidateTests(unittest.TestCase):
             proc_root=self.proc,
             min_bytes=self.MIN_BYTES,
             idle_sec=self.IDLE,
+            euid=os.geteuid(),
         )
         kwargs.update(overrides)
         with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
@@ -960,6 +963,7 @@ class SysTmpReclaimCandidateTests(unittest.TestCase):
         result = self.sweep()
 
         self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
 
     def test_recent_git_dir_keeps_repo_before_git_runs(self):
         repo = self.make_repo("recent-objects")
@@ -990,6 +994,32 @@ class SysTmpReclaimCandidateTests(unittest.TestCase):
                 self.git_error = error
                 result = self.sweep()
                 self.assertEqual(result["count"], 0)
+                self.assertFalse(result["scan_complete"])
+        self.git_error = None
+
+    def test_bare_or_non_worktree_repo_is_kept_without_flagging(self):
+        repo = self.make_repo("bare")
+        self.git_bare.add(str(repo))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_foreign_user_process_cwd_is_not_read_but_cmdline_still_keeps(self):
+        repo = self.make_repo("foreign")
+        other_uid = os.geteuid() + 1
+        self.make_proc(910003, cwd=str(repo))
+
+        result = self.sweep(euid=other_uid)
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+
+        for child in self.proc.iterdir():
+            shutil.rmtree(child)
+        self.make_proc(910004, cmdline=f"tool\0{repo}\0".encode())
+        result = self.sweep(euid=other_uid)
+        self.assertEqual(result["count"], 0)
 
     def test_process_cmdline_cwd_and_fd_references_keep_repo(self):
         repo = self.make_repo("referenced")
