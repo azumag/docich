@@ -152,6 +152,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from .. import hanjuku_chart
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
+    memory['approx_map'] = bool(approx_map)
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,

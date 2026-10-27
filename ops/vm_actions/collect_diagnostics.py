@@ -6473,6 +6473,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v255-native-map-registration",
             "hanjuku-chart-v256-approx-source-map",
             "hanjuku-chart-v257-approx-fallback",
+            "hanjuku-chart-v258-approx-default",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -10986,6 +10987,7 @@ def _compact_hanjuku_policy(mem):
         'y_jump': ({'mode': text((mem.get('y_jump') or {}).get('mode'), 16),
                     'goal': text((mem.get('y_jump') or {}).get('goal'), 32)}
                    if isinstance(mem.get('y_jump'), dict) else None),
+        'approx_map': mem.get('approx_map') is True,
         'approx_fallback': mem.get('approx_fallback') is True,
         'approx_localize_miss': (mem.get('approx_localize_miss')
                                  if type(mem.get('approx_localize_miss')) is int else None),

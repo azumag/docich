@@ -209,13 +209,19 @@ def chart_edition_setting():
 
 
 def approx_map_setting():
-    """``[hanjuku].approx_map``; source-seeded cells for chapters 3–12."""
+    """``[hanjuku].approx_map``; source-seeded cells for chapters 3–12.
+
+    Default true: the deployed bot entrypoint may run from a checkout whose
+    config predates this key (the docich package is current). An explicit
+    ``approx_map = false`` remains the rollback switch.
+    """
     try:
         with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
             raw=tomllib.load(stream)
-        return (raw.get('hanjuku') or {}).get('approx_map') is True
+        value=(raw.get('hanjuku') or {}).get('approx_map')
+        return value is not False
     except (OSError,tomllib.TOMLDecodeError):
-        return False
+        return True
 
 
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
