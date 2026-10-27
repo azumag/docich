@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +65,22 @@ def test_hanjuku_resume_control_is_explicit_in_webui_resources():
     assert 'action:"resume-latest"' in html
     assert 'c.game==="hanjuku-hero"' in html
     assert "通常の開始予約は新規開始のままです" in html
+
+
+@pytest.mark.skipif(shutil.which('node') is None,reason='Node is required for WebUI JavaScript')
+def test_resume_success_message_describes_reservation_not_stop():
+    source='async function cornerAction'+webui.INDEX_HTML.split('async function cornerAction',1)[1].split('async function loadStatus',1)[0]
+    script='''
+const msg={textContent:''};
+const document={getElementById:()=>msg};
+const confirm=()=>true,toast=()=>{},loadCorners=async()=>{};
+const api=async()=>({ok:true,action:'resume-latest',corner:{id:'hanjuku-hero',game:'hanjuku-hero',target:'rotation'}});
+''' + source + '''
+(async()=>{await cornerAction({action:'resume-latest'},'confirm');process.stdout.write(msg.textContent);})();
+'''
+    result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=10,check=True)
+    assert 'セーブからの再開を予約' in result.stdout
+    assert '停止を要求' not in result.stdout
 
 
 # A fail-closed checkpoint decision is a domain conflict, not a WebUI crash.
