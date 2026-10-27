@@ -144,7 +144,8 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None, run_identity: dict | None = None,
+           recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
+           run_identity: dict | None = None,
            chart_edition: str | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
@@ -192,6 +193,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     mem['_adjusted']=adjusted
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
+    mem['_card_scroll_input']=card_scroll_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
@@ -218,7 +220,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -230,7 +232,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -566,6 +568,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
+    mem.pop('_card_scroll_input',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem

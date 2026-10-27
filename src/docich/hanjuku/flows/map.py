@@ -308,6 +308,7 @@ def map_step(screen: Screen, mem, frame):
         # The bounded inventory search belongs to this attempt, not the
         # order forever. A cancelled attempt must not exhaust every retry.
         (mem.get('card_scroll') or {}).pop(order['step'], None)
+        mem.pop('card_upper_boundary', None)
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
         mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
         mem.setdefault('dropper_card_kit', {}).pop(order['step'], None)

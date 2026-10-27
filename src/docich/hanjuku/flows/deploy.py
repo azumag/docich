@@ -382,6 +382,37 @@ def _card_proven_absent(card, inventory):
     return len(rows) < 4 or min(ids) < target < max(ids)
 
 
+def _upper_card_boundary(mem, order, card, inventory):
+    """Prove the top only with two delivered Up inputs and unchanged rows."""
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    rows = inventory['rows']
+    ids = [CARD_IDS.get(r['card']) for r in rows]
+    if (identity is None or len(rows) != 4 or None in ids or ids != sorted(ids)
+            or CARD_IDS.get(card) is None or CARD_IDS[card] >= min(ids)
+            or inventory['selected_y'] != rows[0]['y'] or inventory['remaining'] <= 0):
+        mem.pop('card_upper_boundary', None)
+        return False
+    scope = {'identity': identity, 'chapter': mem.get('chapter'), 'step': order['step'],
+             'card': card, 'rows': [[r['card'], r['stock']] for r in rows],
+             'remaining': inventory['remaining']}
+    state = mem.get('card_upper_boundary')
+    if not isinstance(state, dict) or state.get('scope') != scope:
+        state = mem['card_upper_boundary'] = {'scope': scope, 'confirmed': 0}
+    receipt = mem.get('_card_scroll_input') or {}
+    trace = state.get('request_trace')
+    if trace and receipt.get('request_trace') == trace and receipt.get('up_inputs') == 1:
+        count = state.get('confirmed', 0)
+        state['confirmed'] = min(2, count + 1) if type(count) is int and 0 <= count <= 2 else 0
+        state.pop('request_trace', None)
+        state.pop('await_input', None)
+        if state['confirmed'] == 2:
+            _record(mem, 'card_upper_boundary_verified', chart_step=order['step'], card=card,
+                    observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2},
+                    reason='一覧先頭で上入力を2回送っても同じ実在庫のため、この札は上に存在しない')
+    return state.get('confirmed') == 2
+
+
 def _selected_actor_guard(screen, mem, order):
     """A runtime sortie must show its actual named actor before confirmation.
 
@@ -1140,8 +1171,9 @@ def deploy_step(screen: Screen, mem):
         shown = {r['card'] for r in inventory['rows'] if r['stock'] > 0}
         card = next((c for c in planned if c in shown), planned[0])
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
+        upper_absent = row is None and _upper_card_boundary(mem, order, card, inventory)
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
-                and not _card_proven_absent(card, inventory)
+                and not upper_absent and not _card_proven_absent(card, inventory)
                 and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
                    else CARD_SCROLL_LIMIT)):
             scrolls = mem.setdefault('card_scroll', {})
@@ -1152,9 +1184,13 @@ def deploy_step(screen: Screen, mem):
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
             direction = ('up' if CARD_IDS.get(card, 99) <
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
+            boundary = mem.get('card_upper_boundary')
+            if direction == 'up' and isinstance(boundary, dict):
+                boundary['await_input'] = True
+                boundary.pop('request_trace', None)
             return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
-            proven = _card_proven_absent(card, inventory)
+            proven = upper_absent or _card_proven_absent(card, inventory)
             if proven:
                 # Measured, even for a card never listed before: a month plan
                 # buys a short boss card back (strategy.boss_cards).
@@ -1173,6 +1209,7 @@ def deploy_step(screen: Screen, mem):
                                 '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
         if inventory['selected_y'] == row['y']:
             picked.append(card)
+            mem.pop('card_upper_boundary', None)
             # A new card is a new bounded search; selection still needs the
             # existing carried-card confirmation before departure.
             (mem.get('card_scroll') or {}).pop(order['step'], None)
