@@ -27,6 +27,7 @@ MAX_PANEL = 12
 MAX_SCROLL = 64
 MAX_HOLD = 16
 MAX_BOOTSTRAP = 32
+MAX_BOOTSTRAP_SWEEP = 320
 
 
 def translation(previous, current, *, limit=None):
@@ -168,11 +169,27 @@ def _bootstrap(screen, mem, state, roofs):
                 reason='屋根が一つなので座標は作らず、自由カーソルだけで二屋根が見える範囲を有界探索')
     mem['_map_registration_hold'] = True
     if search.get('done'):
-        return []
+        # The hint can miss the second roof even while movement succeeds.
+        # Try one bounded sweep using directional inputs only; no sent
+        # distance becomes a coordinate or authorizes a confirmation.
+        if (not search.get('sweep_started') and search.get('attempts', 0) >= 8
+                and search.get('still') == 0 and not search.get('legs')):
+            search.update(done=False, sweep_started=True, attempts=0, still=0, view=None,
+                          legs=[[0, -1, 512], [1, -1, 512], [0, 1, 1024],
+                                [1, 1, 160], [0, -1, 1024], [1, 1, 160],
+                                [0, 1, 1024]])
+            _record(mem, 'map_bootstrap_sweep',
+                    reason='候補方向で二屋根を確認できないため、座標を推測せず追加の範囲を有界探索')
+        else:
+            return []
     view = [list(screen.cursor), sorted(list(r['target']) for r in roofs)]
     search['still'] = search['still']+1 if search.get('view') == view else 0
     search['view'] = view
-    if search['still'] >= 3 or search['attempts'] >= MAX_BOOTSTRAP or not search['legs']:
+    if search.get('sweep_started') and search['still'] >= 3 and search['legs']:
+        search['legs'].pop(0)  # a map edge ends this leg, not the whole sweep
+        search['still'] = 0
+    limit = MAX_BOOTSTRAP_SWEEP if search.get('sweep_started') else MAX_BOOTSTRAP
+    if search['still'] >= 3 or search['attempts'] >= limit or not search['legs']:
         search['done'] = True
         _record(mem, 'map_bootstrap_exhausted',
                 observed_metric={'attempts': search['attempts'], 'still': search['still'],
