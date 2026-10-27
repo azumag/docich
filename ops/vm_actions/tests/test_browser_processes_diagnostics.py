@@ -95,6 +95,9 @@ class BrowserProcessInventoryTests(unittest.TestCase):
         self.assertEqual(result["scan_complete"], 1)
         self.assertEqual(result["total"], 5)
         self.assertEqual(result["by_type"], {"browser": 1, "gpu": 1, "renderer": 3})
+        self.assertEqual(result["type_sources"], {"type_arg": 4, "no_type_arg": 1})
+        self.assertGreaterEqual(result["cmdline_bytes_max"], 1)
+        self.assertGreaterEqual(result["max_type_arg_offset"], 0)
         self.assertEqual(result["cpu_pct_total"], 370.0)
         self.assertEqual(result["rss_mb_total"], 5.0)
         self.assertEqual(result["oldest_age_sec"], 999)
@@ -138,7 +141,25 @@ class BrowserProcessInventoryTests(unittest.TestCase):
                     ppid=1000)
         result = self.module._collect_browser_processes(self.proc, sample_sec=0)
         self.assertEqual(result["by_type"], {"gpu": 1})
+        self.assertEqual(result["type_sources"], {"type_arg": 1, "no_type_arg": 0})
         self.assertEqual(result["by_owner"]["soren-shared-overlay"]["gpu_cpu_pct"], 0.0)
+
+    def test_type_flag_beyond_16k_is_found(self):
+        self._write(1000, ["node", "shared_overlay.mjs"], ppid=1)
+        self._write(2010, ["/x/chrome", "y" * 20000, "--type=renderer"],
+                    ppid=1000)
+        result = self.module._collect_browser_processes(self.proc, sample_sec=0)
+        self.assertEqual(result["by_type"], {"renderer": 1})
+        self.assertEqual(result["type_sources"], {"type_arg": 1, "no_type_arg": 0})
+        self.assertGreater(result["cmdline_bytes_max"], 16384)
+
+    def test_absent_type_flag_is_counted(self):
+        self._write(1000, ["node", "shared_overlay.mjs"], ppid=1)
+        self._write(2011, ["/x/chrome"], ppid=1000)
+        result = self.module._collect_browser_processes(self.proc, sample_sec=0)
+        self.assertEqual(result["by_type"], {"browser": 1})
+        self.assertEqual(result["type_sources"], {"type_arg": 0, "no_type_arg": 1})
+        self.assertNotIn("max_type_arg_offset", result)
 
     def test_empty_proc_reports_empty_without_error(self):
         result = self.module._collect_browser_processes(self.proc, sample_sec=0)
