@@ -38,6 +38,9 @@ Observed sources (all read-only):
     retention constants, the fixed unit-state mask and derived down-unit names
     only -- ring lines, paths and any other free text are never emitted, and
     unit names are never read from configuration.
+  - a fixed-label Chromium process inventory (owner / type / count / CPU /
+    RSS / age only; cmdline, URL, path and PID are never emitted) for #970
+    browser attribution.
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
     yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
@@ -2106,6 +2109,246 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
     if mirror["present"]:
         section["mirror"] = mirror
     return section
+
+
+BROWSER_OWNER_LABELS = (
+    "soren-shared-overlay",
+    "soren-game",
+    "twica",
+    "nethack-tiles",
+    "obs",
+    "webui",
+    "other",
+)
+BROWSER_TYPE_LABELS = ("browser", "gpu", "renderer", "utility", "other")
+BROWSER_CPU_SAMPLE_SEC = 0.25
+_BROWSER_EXECUTABLES = frozenset({
+    "chrome",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "headless_shell",
+    "chrome-headless-shell",
+})
+_BROWSER_SKIPPED_EXECUTABLES = frozenset({"chrome_crashpad_handler"})
+
+
+def _browser_read_cmdline(proc_root, pid, limit=4096):
+    """Read argv only to classify; the raw argv never leaves this module."""
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return None
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _browser_read_stat(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    rpar = text.rfind(")")
+    if rpar < 0:
+        return None
+    fields = text[rpar + 2:].split()
+    try:
+        return {
+            "ppid": int(fields[1]),
+            "ticks": int(fields[11]) + int(fields[12]),
+            "starttime": int(fields[19]),
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _browser_read_rss_kb(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        if line.startswith("VmRSS:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+    return 0
+
+
+def _browser_owner_label(argv):
+    """Map a process/ancestor argv to a fixed owner label; no raw text escapes."""
+    if not argv:
+        return None
+    joined = "\0".join(argv)
+    exe = os.path.basename(argv[0])
+    if ("shared_overlay.mjs" in joined
+            or "start_shared_overlay_service.sh" in joined
+            or "soren-shared-overlay" in joined):
+        return "soren-shared-overlay"
+    if "soviet_local" in joined:
+        return "soren-game"
+    if "twica" in joined:
+        return "twica"
+    if "nethack_tiles" in joined:
+        return "nethack-tiles"
+    if exe in {"obs", "obs-studio", "obs-browser-page"} or "obs-browser" in joined:
+        return "obs"
+    if "docich-webui" in joined or "webui" in joined:
+        return "webui"
+    return None
+
+
+def _browser_type_label(argv):
+    for arg in argv:
+        if arg.startswith("--type="):
+            value = arg.split("=", 1)[1]
+            if value == "gpu-process":
+                return "gpu"
+            if "renderer" in value:
+                return "renderer"
+            if "utility" in value:
+                return "utility"
+            return "other"
+    return "browser"
+
+
+def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
+    # Ancestors win over the Chromium process' own argv: a URL in the page
+    # arguments must not re-label a browser launched by a known subsystem.
+    current = stat["ppid"]
+    for _ in range(6):
+        if current <= 1:
+            break
+        argv = cmdlines.get(current)
+        if argv is None:
+            argv = _browser_read_cmdline(proc_root, current)
+            cmdlines[current] = argv
+        owner = _browser_owner_label(argv)
+        if owner is not None:
+            return owner
+        parent_stat = _browser_read_stat(proc_root, current)
+        parent = parent_stat["ppid"] if parent_stat else 1
+        if parent == current:
+            break
+        current = parent
+    # Only an orphaned Chromium (or one launched directly by an unclassified
+    # parent) falls back to its own argv.
+    return _browser_owner_label(cmdlines.get(pid)) or "other"
+
+
+def _collect_browser_processes(proc_root=Path("/proc"), *,
+                               sample_sec=BROWSER_CPU_SAMPLE_SEC,
+                               sleep=time.sleep, clock=time.monotonic,
+                               clk_tck=None):
+    """Read-only Chromium inventory by fixed owner/type labels (#970 follow-up).
+
+    Answers "which browser/view is eating CPU" without exposing any cmdline,
+    URL, path or PID. Only fixed owner/type labels, counts, CPU percentages,
+    RSS and age are emitted. A short two-sample CPU delta separates an idle
+    helper from a busy renderer; an unavailable /proc fails open to
+    ``unknown`` instead of failing the whole diagnostics operation.
+    """
+    if clk_tck is None:
+        try:
+            clk_tck = int(os.sysconf("SC_CLK_TCK"))
+        except (AttributeError, ValueError, OSError):
+            clk_tck = 100
+    if clk_tck <= 0:
+        clk_tck = 100
+    try:
+        pids = [int(name) for name in os.listdir(proc_root) if name.isdigit()]
+    except OSError:
+        return {"schema_version": 1, "status": "unknown", "scan_complete": 0}
+
+    cmdlines = {}
+    rows = []
+    for pid in pids:
+        argv = _browser_read_cmdline(proc_root, pid)
+        cmdlines[pid] = argv
+        if not argv:
+            continue
+        exe = os.path.basename(argv[0])
+        if exe in _BROWSER_SKIPPED_EXECUTABLES:
+            continue
+        if exe not in _BROWSER_EXECUTABLES and "chrom" not in exe.lower():
+            continue
+        stat = _browser_read_stat(proc_root, pid)
+        if stat is None:
+            continue
+        rows.append({
+            "pid": pid,
+            "type": _browser_type_label(argv),
+            "owner": _browser_owner_for_pid(proc_root, pid, stat, cmdlines),
+            "ticks": stat["ticks"],
+            "starttime": stat["starttime"],
+            "rss_kb": _browser_read_rss_kb(proc_root, pid),
+        })
+
+    if not rows:
+        return {
+            "schema_version": 1,
+            "status": "empty",
+            "scan_complete": 1,
+            "total": 0,
+            "cpu_pct_total": 0.0,
+            "rss_mb_total": 0.0,
+            "by_type": {},
+            "by_owner": {},
+        }
+
+    start_clock = clock()
+    if sample_sec > 0:
+        sleep(sample_sec)
+    end_clock = clock()
+    elapsed = end_clock - start_clock
+    if elapsed <= 0:
+        elapsed = 0.001
+    cpu_cap = 100.0 * max(1, os.cpu_count() or 1)
+    for row in rows:
+        after = _browser_read_stat(proc_root, row["pid"])
+        delta = after["ticks"] - row["ticks"] if after else 0
+        row["cpu_pct"] = round(
+            min(max(delta, 0) / (elapsed * clk_tck) * 100.0, cpu_cap), 1)
+
+    uptime = None
+    try:
+        uptime = float((proc_root / "uptime").read_text(encoding="ascii").split()[0])
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+
+    by_type = {}
+    by_owner = {}
+    for row in rows:
+        by_type[row["type"]] = by_type.get(row["type"], 0) + 1
+        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner["count"] += 1
+        owner["cpu_pct"] += row["cpu_pct"]
+        if row["type"] == "gpu":
+            owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
+        elif row["type"] == "renderer":
+            owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+
+    for owner in by_owner.values():
+        owner["cpu_pct"] = round(owner["cpu_pct"], 1)
+        for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
+            if key in owner:
+                owner[key] = round(owner[key], 1)
+
+    result = {
+        "schema_version": 1,
+        "status": "ok",
+        "scan_complete": 1,
+        "total": len(rows),
+        "cpu_pct_total": round(sum(row["cpu_pct"] for row in rows), 1),
+        "rss_mb_total": round(sum(row["rss_kb"] for row in rows) / 1024.0, 1),
+        "by_type": by_type,
+        "by_owner": by_owner,
+    }
+    if uptime is not None and rows:
+        ages = [max(0.0, uptime - row["starttime"] / clk_tck) for row in rows]
+        result["oldest_age_sec"] = int(max(ages))
+    return result
 
 
 def _empty_opencode_attribution_bucket():
@@ -13018,6 +13261,7 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "cpu_profile": _collect_cpu_profile(now),
+        "browser_processes": _collect_browser_processes(),
         "audio_priority": _collect_audio_priority(),
         "audio_gaps": _collect_audio_gaps(now),
         "shared_runtime_pids": _collect_shared_runtime_pids(soren),
