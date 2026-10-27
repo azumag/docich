@@ -455,16 +455,16 @@ def _named_step(screen, mem, frame, state):
     stage, actor = state['stage'], state.get('general')
     if stage in ('recheck_roster_open', 'recheck_pick', 'recheck_roster_read', 'recheck_focus') and not _valid_episode(mem, state):
         _defer(mem, state, '本人focusのUI episodeを確認できず旧状態では操作しない')
-        return [pad('b')] if screen.kind in ('text', 'main_menu') else []
+        return [pad('b')] if screen.kind in ('text', 'main_menu', 'world_map', 'map_target') else []
     if stage in ('recheck_status', 'recheck_read') and not _valid_camp(mem, state):
         _defer(mem, state, '同run・同UI episodeの現在tent receiptを確認できず数量や帰還を更新しない')
-        return [pad('b')] if screen.kind == 'text' else []
+        return [pad('b')] if screen.kind in ('text', 'world_map', 'map_target') else []
     if screen.kind == 'unknown':
         return _wait(mem, state, '未知前景では旧背景のmenuを選択しない')
     state['steps'] = state['steps'] + 1
     if state['steps'] > RECALL_LIMIT:
         _defer(mem, state, '本人再確認の観測上限に達したため古いUI位置では操作しない')
-        return [pad('b')] if screen.kind in ('main_menu', 'text') else []
+        return [pad('b')] if screen.kind in ('main_menu', 'text', 'world_map', 'map_target') else []
     if stage == 'recheck_roster_open':
         if screen.kind == 'main_menu':
             move = menu_to(screen, 'しょうぐん')
@@ -629,7 +629,7 @@ def _status_close_step(screen, mem, state):
     state['reads'] += 1
     if state['reads'] >= STATUS_CLOSE_READ_LIMIT:
         _defer(mem, state, 'status閉鎖を有限観測で確認できないため再確認予算を保って保留')
-        return [pad('b')] if screen.kind == 'text' else []
+        return [pad('b')] if screen.kind in ('text', 'world_map', 'map_target') else []
     if state['reads'] == 2 and screen.kind == 'text':
         _record(mem, 'retreat_recheck_status_close_retry', general=state['general'],
                 resulting_event='close_requested_not_observed',
@@ -784,7 +784,7 @@ def step(screen, mem, frame, existing):
             if budget['reads'] >= roster_receipts.MAX_GENERALS:
                 _defer(mem, state, '未知の匿名camp追加観測の有限予算に達したため帰還を確定しない',
                        status='anonymous_recheck_exhausted')
-                return [pad('b')] if is_camp_menu(screen) else []
+                return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else []
             budget['reads'] += 1
             state.update(anonymous_recheck=True, anonymous_identity=roster_receipts.run_identity(mem.get('_run_identity')),
                          anonymous_chapter=mem.get('chapter'))

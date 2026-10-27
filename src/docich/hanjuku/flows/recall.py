@@ -94,7 +94,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if screen.kind != 'map':
             mem.pop('recall', None)
             mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
         # Re-detect every step: a tent clipped by the top edge is targeted
         # above the screen, and the cursor servo there scrolls the camera
         # until the flag shows and the real selecting cell is known.
@@ -167,7 +167,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if screen.kind == 'map':
                 mem.pop('recall', None)
                 mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind == 'world_map' else []
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
