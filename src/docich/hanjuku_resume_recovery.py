@@ -104,10 +104,12 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         claim = failed.get('claim') if isinstance(failed, dict) else request
         previous = claim.get('startup_recovery') if isinstance(claim, dict) else None
         original = previous.get('original') if isinstance(previous, dict) else None
-        if (not isinstance(original, dict) or original.get('schema') != 1
+        if (not isinstance(original, dict) or type(original.get('schema')) is not int
+                or original.get('schema') != 1
                 or original.get('status') != 'claimed' or original.get('game') != 'hanjuku-hero'
                 or original.get('corner') != 'hanjuku-hero' or original.get('start_policy') != START_POLICY
-                or not isinstance(claim, dict) or claim.get('status') != 'claimed'
+                or not isinstance(claim, dict) or type(claim.get('schema')) is not int
+                or claim.get('schema') != 1 or claim.get('status') != 'claimed'
                 or claim.get('start_mode') != 'resume' or claim.get('game') != 'hanjuku-hero'
                 or claim.get('corner') != 'hanjuku-hero' or type(claim.get('generation')) is not int
                 or original.get('startup_recovery') is not None):
@@ -125,7 +127,8 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         if _start_mode(claim) != 'resume':
             raise CancelRefused('reservation_not_in_scope')
         if failed is not None:
-            if (request.get('status') != 'queued' or recovery.get('attempt_id') != second
+            if (type(request.get('schema')) is not int or request.get('schema') != 1
+                    or request.get('status') != 'queued' or recovery.get('attempt_id') != second
                     or recovery.get('original') != original
                     or recovery.get('fingerprint') != fingerprint(original)
                     or failed.get('attempt_id') != first

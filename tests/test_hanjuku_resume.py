@@ -811,7 +811,7 @@ def test_derived_retry_repairs_interrupted_ledger_write(failed_derived_attempt,m
     assert result['request_id']==s.manager.load(1000000.0)['queued_manual']['request_id']
 
 
-@pytest.mark.parametrize('bad',['gameplay','no-rollback','active','checkpoint','newer','queue','owner','provenance','tmux'])
+@pytest.mark.parametrize('bad',['gameplay','no-rollback','active','checkpoint','newer','queue','owner','provenance','tmux','schema'])
 def test_derived_retry_rejects_unsafe_or_conflicting_state(failed_derived_attempt,bad):
     s=failed_derived_attempt;base=Path(s.g.state_dir)
     if bad=='gameplay':(s.retry_spec.runtime_dir/'hanjuku_run.json').touch()
@@ -829,8 +829,8 @@ def test_derived_retry_rejects_unsafe_or_conflicting_state(failed_derived_attemp
     elif bad=='queue':
         state=s.manager.load(1000000.0);state['queued_manual']=dict(corner='weather',request_id=str(uuid.uuid4()),selected_at=1000000.0);s.manager.save(state)
     elif bad=='owner':atomic_write_json(base/'retro_corner.json',{'status':'active','game':'bastet'})
-    elif bad=='provenance':
-        claim=dict(s.retry_claim,rom_sha256='a'*64)
+    elif bad in {'provenance','schema'}:
+        claim=dict(s.retry_claim,**({'rom_sha256':'a'*64} if bad=='provenance' else {'schema':True}))
         atomic_write_json(base/'hanjuku-resume'/resume.REQUEST_FILE,claim)
         atomic_write_json(s.retry_spec.runtime_dir/resume.RECEIPT_FILE,claim)
     elif bad=='tmux':s.tmux.window_target_exists=lambda *args,**kwargs:True
