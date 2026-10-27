@@ -474,6 +474,37 @@ def test_reanchor_walks_to_visible_roof_without_guessing_its_identity():
     assert 'reanchor_walk' not in mem['map_discovery']
 
 
+def test_single_visible_roof_still_reanchors_and_tracks_the_camera():
+    # g1059 07:29 (snowfield): after a month menu only アルマムーン's roof was
+    # in view and the cursor sat 18 px away; the 2-roof reanchor gate held
+    # silently for 90 s.
+    mem = home_receipt()
+    feed(mem, status('グリン'))  # a gap invalidates the camera
+    lone = ((HOME, 'own'),)
+    assert feed(mem, field((HOME[0], HOME[1]+16), roofs=lone)) == [policy.pad('up', 16)]
+    assert feed(mem, field(HOME, roofs=lone)) == []
+    assert feed(mem, field(HOME, roofs=lone)) == [policy.pad('a')]
+    assert feed(mem, status('アルマムーン')) == []
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert any(r['decision'] == 'map_reanchored' for r in mem['_records'])
+    assert feed(mem, field(HOME, roofs=lone)) == []         # closed probe leaves the panel
+    moves = feed(mem, field(HOME, roofs=lone))
+    assert moves and moves[0]['buttons'] in (['right'], ['down'])
+    assert mem['map_discovery']['camera'] == [0, 0]
+    # A one-roof scroll inside one input's reach keeps the measured camera.
+    mem['map_discovery']['last_input'] = [0, 1, 16]
+    feed(mem, field(HOME, roofs=lone, camera=(16, 0)))
+    assert mem['map_discovery']['camera'] == [16, 0]
+    assert mem['map_discovery']['cursor_world'] == [HOME[0]+16, HOME[1]]
+    assert sum(r['decision'] == 'map_reanchored' for r in mem['_records']) == 1
+
+
+def test_single_roof_tracking_refuses_a_jump_beyond_one_input():
+    state = {'camera': [0, 0], 'roof_world': [list(HOME)], 'origin_frame': 'a'*64}
+    roofs = castle_roofs(field(HOME, roofs=((HOME, 'own'),), camera=(40, 0)))
+    assert survey._pose(state, roofs, HOME) is None
+
+
 def test_repeated_unknown_reanchor_restarts_the_run_map_instead_of_rereading_forever():
     # g1059 07:08: after a gap the cursor sat on アルマムーン's roof while only
     # コラダイン was registered; A/status/B/reject repeated every ~10 s with no
