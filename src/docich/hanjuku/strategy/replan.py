@@ -117,6 +117,34 @@ def interim_candidates(mem) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and c != boss]
     targets = list(dict.fromkeys(targets))
+    # An interim sortie that has already gone out (launched/en route) must not be
+    # re-issued while it is still in flight: otherwise the same target would be
+    # attacked twice and the candidate list would never advance.
+    inflight = set()
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    if isinstance(interim, dict):
+        step = interim.get('step')
+        if step is None or (mem.get('orders') or {}).get(step) not in ('failed', 'cancelled'):
+            if interim.get('target') is not None:
+                inflight.add(interim['target'])
+    for step, order in (mem.get('launched_orders') or {}).items():
+        if (isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
+                and (mem.get('orders') or {}).get(step) not in ('failed', 'cancelled')
+                and isinstance(order, dict) and order.get('target') is not None):
+            inflight.add(order['target'])
+    for step, sortie in (mem.get('sorties') or {}).items():
+        if (isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
+                and isinstance(sortie, dict)
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending', None)
+                and sortie.get('target') is not None):
+            inflight.add(sortie['target'])
+    for target, info in (mem.get('launched') or {}).items():
+        if (isinstance(info, dict)
+                and isinstance(info.get('step'), str)
+                and info['step'].startswith(chart_adjust.INTERIM_PREFIX)
+                and (mem.get('orders') or {}).get(info['step']) not in ('failed', 'cancelled')):
+            inflight.add(target)
+    targets = [c for c in targets if c not in inflight]
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
@@ -296,16 +324,17 @@ def _off_chart(mem):
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
     digest = chart_adjust.request_digest(fields)
+    new_request = state.get('request_id') != rid
     prior_digest = state.get('request_digest')
-    if state.get('request_id') != rid:
+    if new_request:
         state.clear()
         state['request_id'] = rid
         state['request_digest'] = digest
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 **fields,
                 reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し、決定的な暫定出撃を続ける')
-    revision_changed = prior_digest is not None and prior_digest != digest
-    if prior_digest != digest:
+    revision_changed = (not new_request) and prior_digest is not None and prior_digest != digest
+    if (not new_request) and prior_digest != digest:
         # Same situation, newer payload (stock, gold, lost castles): republish
         # so the worker answers the current revision, then keep going so the
         # interim fallback still progresses this observation.
