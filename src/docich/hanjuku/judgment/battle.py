@@ -1744,6 +1744,7 @@ def _defender_summon_last_resort(mem, cur, reading):
     a current bound reading, never the stale opponent HP from before summon.
     """
     if (not reading or not cur.get('okunote_only_observed')
+            or (cur.get('side') != 'defense' and not _own_egg_empty(mem, cur))
             or cur.get('ally') in (None, 'だいじん')
             or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
             or cur.get('enemy') in chart.BOSSES.values() or cur.get('planned_cards') or cur.get('card_flow')):
