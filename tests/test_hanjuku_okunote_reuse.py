@@ -101,6 +101,28 @@ def test_summon_low_hp_exception_requires_current_defending_general_and_live_ene
     assert p.battle_menu_step(s, mem) == [p.pad('b')]
 
 
+def attack_summon_memory(uses):
+    mem = summon_memory(); mem['battle']['side'] = 'attack'
+    if uses is not None: mem['egg_uses'] = {'アルテミス': uses}
+    return mem
+
+
+def test_attack_side_summon_with_observed_zero_own_egg_allows_last_resort():
+    mem = attack_summon_memory(0)
+    assert p.battle_menu_step(parse(summon_frame()), mem) == [p.pad('a')]
+
+
+@pytest.mark.parametrize('case', ['usable_egg', 'unobserved_egg', 'boss_enemy'])
+def test_attack_side_summon_negative_cases_keep_okunote_unused(case):
+    from docich import hanjuku_chart as chart
+    uses = {'usable_egg': 2, 'unobserved_egg': None, 'boss_enemy': 0}[case]
+    mem = attack_summon_memory(uses)
+    if case == 'boss_enemy':
+        boss = next(iter(chart.BOSSES.values()))
+        mem['battle']['enemy'] = boss; mem['battle']['summon_general_reading']['enemy'] = boss
+    assert p.battle_menu_step(parse(summon_frame()), mem) == [p.pad('b')]
+
+
 def test_next_use_rechecks_self_damage_instead_of_reusing_first_safe_hp():
     mem = memory(); mem['_run_identity'] = deepcopy(ID)
     cur = mem['battle']; cur.update(ally='どうし', ally_hp=90, start_ally_hp=90, side='attack')
