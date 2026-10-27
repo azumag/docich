@@ -731,6 +731,50 @@ def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
     assert snapshot_recovery(s)==before
 
 
+def interrupted_manual_release(s, *, last=None, owner=None):
+    """g1063 2026-10-28: the manual resume's probe hit its deadline; rotation
+    closed the slot as interrupted (no pending, no failed_corners audit)."""
+    base=Path(s.g.state_dir);ledger=s.manager.load(1000000.0)
+    ledger.update(status='waiting',pending=None,failed_corners=[],released_requests={},
+        last_result=last or {'at':1000000.0,'corner':'hanjuku-hero',
+                             'request_id':s.queue['request_id'],'status':'interrupted'})
+    s.manager.save(ledger)
+    atomic_write_json(base/'retro_corner.json', owner or {'status':'interrupted','game':'hanjuku-hero',
+        'rotation_request_id':s.queue['request_id'],'startup_resume_recovery':None})
+
+
+def test_manual_resume_closed_as_interrupted_recovers_same_checkpoint(recovery_setup):
+    s=recovery_setup;interrupted_manual_release(s)
+    base=Path(s.g.state_dir);before=snapshot_recovery(s)
+    with pytest.raises(AdapterError,match='another checkpoint request is pending'):
+        resume.prepare_start(s.g,dict(s.queue,request_id=str(uuid.uuid4())))
+    assert recover_startup(s)=={'status':'recovery-eligible','fingerprint':s.fingerprint}
+    assert snapshot_recovery(s)==before
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='recovery-queued'
+    current=read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['startup_recovery']['original']==s.claim
+    assert current['sha256']==s.claim['sha256']
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['resume_request_id']==s.queue['request_id']
+
+
+@pytest.mark.parametrize('change', ['other-request','completed','owner-other','owner-active','newer-run'])
+def test_interrupted_manual_recovery_refuses_other_evidence(recovery_setup,change):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    last={'at':1000000.0,'corner':'hanjuku-hero','request_id':s.queue['request_id'],'status':'interrupted'}
+    owner={'status':'interrupted','game':'hanjuku-hero','rotation_request_id':s.queue['request_id']}
+    if change=='other-request':last['request_id']=str(uuid.uuid4())
+    elif change=='completed':last['status']='completed'
+    elif change=='owner-other':owner['rotation_request_id']=str(uuid.uuid4())
+    elif change=='owner-active':owner['status']='active'
+    interrupted_manual_release(s,last=last,owner=owner)
+    if change=='newer-run':
+        runtime=base/'runtimes/g701-cafe1234';runtime.mkdir();(runtime/'hanjuku_run.json').touch()
+    before=snapshot_recovery(s)
+    with pytest.raises(s.op.CancelRefused):recover_startup(s,apply=True,expected=s.fingerprint)
+    assert snapshot_recovery(s)==before
+
+
 def test_automatic_recovery_works_after_original_audit_is_evicted(recovery_setup):
     s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
     ledger=s.manager.load(1000000.0)

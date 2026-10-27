@@ -302,6 +302,16 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         state = manager.load(recovery_at)
         if recovery_at < max(timestamp(original['selected_at']), timestamp(state['last_seen_at'])):
             raise CancelRefused('clock_regressed')
+        # g1063 2026-10-28: a manual transfer whose probe hit its deadline was
+        # closed by the rotation as interrupted, leaving no pending slot or
+        # failed-corner audit. The ledger's last result naming this exact
+        # logical request proves the same release.
+        last = state.get('last_result') or {}
+        interrupted_release = (not automatic and last.get('corner') == 'hanjuku-hero'
+                               and last.get('request_id') == logical
+                               and last.get('status') == 'interrupted')
+        if interrupted_release and not _no_newer_hanjuku_progress(base, store, original['generation']):
+            raise CancelRefused('newer_progress_unverified')
         owner_path = base / 'retro_corner.json'
         owner = _object(owner_path)
         # A crash after any of the writes below is repairable with the same
@@ -327,9 +337,9 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
             and row.get('request_id') == logical
             and row.get('resolution') == 'released-unverified'
             for row in (state.get('failed_corners') or []))
-        released_proven = audited_release or automatic
-        detached = (automatic and released_proven and not pending and not queued
-                    and state.get('status') in {'ready', 'waiting'})
+        released_proven = audited_release or automatic or interrupted_release
+        detached = ((automatic or interrupted_release) and released_proven and not pending
+                    and not queued and state.get('status') in {'ready', 'waiting'})
         recovered_pending = (recovery is not None and not pending
                              and queued.get('request_id') == attempt
                              and queued.get('resume_request_id') == logical
@@ -342,7 +352,8 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         if not ((owns_failure and (owner.get('status') == 'failed'
                                   or (owner.get('status') == 'interrupted'
                                       and owner.get('startup_resume_recovery') == attempt)))
-                or (automatic and released_proven and terminal_owner)):
+                or (automatic and released_proven and terminal_owner)
+                or (interrupted_release and owns_failure and owner.get('status') == 'interrupted')):
             raise CancelRefused('owner_not_terminal')
         if not apply:
             return {'status': 'recovery-eligible', 'fingerprint': digest}
