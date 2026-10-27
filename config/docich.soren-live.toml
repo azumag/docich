@@ -115,7 +115,7 @@ corners = [
   # 初回実走（slot 290・自動抽選・duration 完了・Soren 復帰）は 2026-10-18 に実測済み。
   # 2026-10-24 オーナー指示により manual_only を解除し、rolling rotation の
   # 自動抽選対象へ戻す。WebUI からの手動予約も引き続き可能。
-  { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true },
+  { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true, audio_enabled = true },
 ]
 
 [nethack_corner]

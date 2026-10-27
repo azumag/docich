@@ -327,33 +327,88 @@ class LawSimCornerManager:
             return False
         return actual == identity
 
-    def _announce_once(self, state):
-        """Publish a bounded narration once per corner request (best-effort)."""
+    def _init_narration(self, state):
+        """Initialize per-frame narration scheduling (best-effort)."""
         request_id = state.get("rotation_request_id")
-        if not isinstance(request_id, str) or state.get("announce_request_id") == request_id:
+        if not isinstance(request_id, str):
             return
-        state["announce_request_id"] = request_id
-        self._save(state)
-        try:
-            from .lawsim_narration import announcement
-            result = announcement(self.g, request_id=request_id,
-                                  audio_enabled=self.audio_enabled)
-        except Exception:
-            result = {"overlay": "failed", "speech": "failed"}
-        overlay = result.get("overlay") if isinstance(result, dict) else None
-        speech = result.get("speech") if isinstance(result, dict) else None
-        state["overlay_announcements"] = {
-            "sent": 1 if overlay == "sent" else 0,
-            "failed": 1 if overlay == "failed" else 0,
-            "skipped": 1 if overlay == "skipped" else 0,
-        }
+        if state.get("announce_request_id") != request_id:
+            state["announce_request_id"] = request_id
+        state["narration_next_frame"] = 0
+        state["narration_next_at"] = state.get("started_at", self.clock())
+        state["narration_frame_count"] = 0
+        state["overlay_announcements"] = {"sent": 0, "failed": 0, "skipped": 0}
         if self.audio_enabled:
-            state["narration"] = {
-                "enqueued": 1 if speech == "sent" else 0,
-                "delivery_failed": 1 if speech == "failed" else 0,
-                "skipped": 1 if speech == "skipped" else 0,
-            }
+            state["narration"] = {"enqueued": 0, "delivery_failed": 0, "skipped": 0, "frames": 0}
         self._save(state)
+        self._narrate_due(state)
+
+    def _narrate_due(self, state):
+        """Enqueue at most one due narration frame (best-effort)."""
+        if not self.audio_enabled:
+            return
+        try:
+            idx = state.get("narration_next_frame", 0)
+            if type(idx) is not int or isinstance(idx, bool) or idx < 0:
+                idx = 0
+            frame_count = state.get("narration_frame_count", 0)
+            if type(frame_count) is not int or isinstance(frame_count, bool) or frame_count < 0:
+                frame_count = 0
+            next_at = state.get("narration_next_at", self.clock())
+            if type(next_at) not in (int, float) or isinstance(next_at, bool):
+                next_at = self.clock()
+            if frame_count and idx >= frame_count:
+                return
+            if self.clock() < next_at:
+                return
+            request_id = state.get("rotation_request_id")
+            from .lawsim_narration import announcement
+            result = announcement(
+                self.g, request_id=request_id if isinstance(request_id, str) else None,
+                audio_enabled=True, frame_index=idx,
+            )
+            if not isinstance(result, dict):
+                result = {}
+            fc = result.get("frame_count", 0)
+            if type(fc) is int and not isinstance(fc, bool) and fc > 0:
+                frame_count = fc
+                state["narration_frame_count"] = frame_count
+            if frame_count and idx >= frame_count:
+                state["narration_next_frame"] = frame_count
+                self._save(state)
+                return
+            speech = result.get("speech")
+            overlay = result.get("overlay")
+            oa = state.get("overlay_announcements")
+            if not isinstance(oa, dict):
+                oa = {"sent": 0, "failed": 0, "skipped": 0}
+            if overlay == "sent":
+                oa["sent"] = oa.get("sent", 0) + 1
+            elif overlay == "failed":
+                oa["failed"] = oa.get("failed", 0) + 1
+            elif overlay == "skipped":
+                oa["skipped"] = oa.get("skipped", 0) + 1
+            state["overlay_announcements"] = oa
+            narr = state.get("narration")
+            if not isinstance(narr, dict):
+                narr = {"enqueued": 0, "delivery_failed": 0, "skipped": 0, "frames": 0}
+            if speech == "sent":
+                narr["enqueued"] = narr.get("enqueued", 0) + 1
+            elif speech == "failed":
+                narr["delivery_failed"] = narr.get("delivery_failed", 0) + 1
+            elif speech == "skipped":
+                narr["skipped"] = narr.get("skipped", 0) + 1
+            narr["frames"] = idx + 1
+            state["narration"] = narr
+            state["narration_next_frame"] = idx + 1
+            state["narration_next_at"] = next_at + 12
+            self._save(state)
+        except Exception:
+            pass
+
+    def _announce_once(self, state):
+        """Compatibility wrapper for the old one-shot narration entry."""
+        self._init_narration(state)
 
     def _wait_and_restore(self, state):
         identity = state.get("lawsim_runtime_identity")
@@ -367,6 +422,7 @@ class LawSimCornerManager:
             canonical = self._canonical()
             if canonical is None:
                 ends_at = state.get("ends_at")
+                self._narrate_due(state)
                 wait = self.poll_s if type(ends_at) not in (int, float) else max(0.05, ends_at - self.clock())
                 self.sleep(min(self.poll_s, wait))
                 continue
@@ -393,6 +449,7 @@ class LawSimCornerManager:
             ends_at = state.get("ends_at")
             if type(ends_at) not in (int, float) or isinstance(ends_at, bool) or ends_at < 0:
                 raise LawSimCornerError("lawsim end time is invalid")
+            self._narrate_due(state)
             remaining = ends_at - self.clock()
             if remaining <= 0:
                 return self._restore(state, end_reason="duration")

@@ -116,7 +116,7 @@ def test_production_catalog_enables_lawsim_auto_rotation():
     assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
     # duration_minutes 未指定 = lawsim_corner.DEFAULT_DURATION_MINUTES(3分) を使う。
-    assert row.duration_minutes is None and row.audio_enabled is False
+    assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 
