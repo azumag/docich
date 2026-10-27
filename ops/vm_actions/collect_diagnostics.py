@@ -7255,8 +7255,9 @@ def _collect_retro_program_queues(soren):
 def _collect_prediction_leaderboard(state_dir):
     """Counts only; the 予想王 ledger never exposes viewer names or titles."""
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
-             "canceled": 0, "soren_canceled": 0}
+    entry = {"present": False, "readable": False, "schema": 0, "rounds": 0, "viewers": 0,
+             "canceled": 0, "soren_canceled": 0,
+             "viewers_won_gt0": 0, "viewers_used_gt0": 0, "rounds_ge_min_rounds": 0}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -7273,21 +7274,45 @@ def _collect_prediction_leaderboard(state_dir):
         return entry
     viewers = set()
     canceled = soren_canceled = 0
+    # Per-viewer aggregates for the five department boards. Only fixed counts
+    # are surfaced; viewer identities and titles never cross this boundary.
+    viewer_totals = {}
+    MIN_ROUNDS = 3
     for round_ in data["rounds"].values():
         if isinstance(round_, dict) and round_.get("status") == "CANCELED":
             # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
             canceled += 1
             if round_.get("corner") == "soren":
                 soren_canceled += 1
+        status = round_.get("status") if isinstance(round_, dict) else None
         predictors = round_.get("predictors") if isinstance(round_, dict) else None
         if not isinstance(predictors, list):
             continue
         for item in predictors:
-            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
-                viewers.add(item["user_id"])
-    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
+            if not (isinstance(item, dict) and isinstance(item.get("user_id"), str)):
+                continue
+            viewers.add(item["user_id"])
+            totals = viewer_totals.setdefault(item["user_id"],
+                                             {"rounds": 0, "used": 0, "won": 0})
+            used = item.get("used")
+            if type(used) is int:
+                totals["used"] += used
+            won = item.get("won")
+            if type(won) is int:
+                totals["won"] += won
+            if status == "RESOLVED":
+                totals["rounds"] += 1
+    viewers_won_gt0 = sum(1 for t in viewer_totals.values() if t["won"] > 0)
+    viewers_used_gt0 = sum(1 for t in viewer_totals.values() if t["used"] > 0)
+    rounds_ge_min_rounds = sum(1 for t in viewer_totals.values()
+                               if t["rounds"] >= MIN_ROUNDS)
+    entry.update(readable=True, schema=data.get("schema"),
+                 rounds=min(len(data["rounds"]), 2000),
                  viewers=min(len(viewers), 100000),
-                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000),
+                 viewers_won_gt0=min(viewers_won_gt0, 100000),
+                 viewers_used_gt0=min(viewers_used_gt0, 100000),
+                 rounds_ge_min_rounds=min(rounds_ge_min_rounds, 100000))
     return entry
 
 
@@ -7347,7 +7372,10 @@ def _collect_programs(state_dir, soren, now):
         "mystery_corner": {"present": False, "readable": False},
         "lawsim_corner": {"present": False, "readable": False},
         "soren91_corner": {"present": False, "readable": False},
-        "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
+        "prediction_leaderboard": {"present": False, "readable": False, "schema": 0, "rounds": 0, "viewers": 0,
+                                   "canceled": 0, "soren_canceled": 0,
+                                   "viewers_won_gt0": 0, "viewers_used_gt0": 0,
+                                   "rounds_ge_min_rounds": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
                               "handoff_oversized": False, "cursor_present": False},
         "game_switch_fifo": {
@@ -12956,6 +12984,19 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        # 予想 (prediction) diagnostics are mirrored at top level so they survive
+        # the hard ceiling that drops the whole ``corners`` block (#2805). They
+        # are small (~300 B) and remain available even when corners is omitted.
+        "prediction_leaderboard": corners.get("prediction_leaderboard", {
+            "present": False, "readable": False, "schema": 0, "rounds": 0,
+            "viewers": 0, "canceled": 0, "soren_canceled": 0,
+            "viewers_won_gt0": 0, "viewers_used_gt0": 0, "rounds_ge_min_rounds": 0}),
+        "soren_predictions": corners.get("soren_predictions", {
+            "handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
+            "handoff_oversized": False, "cursor_present": False}),
+        "hanjuku_predictions": corners.get("hanjuku_predictions", {
+            "present": False, "readable": False}),
+        "yoso_corner": corners.get("yoso_corner", {"present": False, "readable": False}),
         "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),

@@ -478,8 +478,9 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2,
-                    'canceled':1,'soren_canceled':0}
+    assert ledger=={'present':True,'readable':True,'schema':2,'rounds':2,'viewers':2,
+                    'canceled':1,'soren_canceled':0,
+                    'viewers_won_gt0':0,'viewers_used_gt0':0,'rounds_ge_min_rounds':0}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
@@ -493,20 +494,23 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         encoding='utf-8')
     legacy=module._collect_programs(state_dir,soren,int(time.time()))
     assert legacy['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':1,'viewers':1,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':True,'schema':1,'rounds':1,'viewers':1,
+        'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'rounds_ge_min_rounds':0}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':False,'schema':0,'rounds':0,'viewers':0,
+        'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'rounds_ge_min_rounds':0}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':False,'readable':False,'schema':0,'rounds':0,'viewers':0,
+        'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'rounds_ge_min_rounds':0}
 
     # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
@@ -518,8 +522,9 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         }}),encoding='utf-8')
     soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
     assert soren_canceled['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':2,'viewers':0,
-        'canceled':1,'soren_canceled':1}
+        'present':True,'readable':True,'schema':2,'rounds':2,'viewers':0,
+        'canceled':1,'soren_canceled':1,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'rounds_ge_min_rounds':0}
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
