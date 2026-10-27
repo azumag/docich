@@ -48,6 +48,22 @@ def translation(previous, current, *, limit=None):
 
 
 def _label(screen, chapter):
+    if screen.kind == 'castle_info' and CASTLE_STATUS.search(screen.text) is None:
+        # Native enemy info has no ステータス word. Match its foreground
+        # rows and positions, not a castle name in background dialogue.
+        rows = {line.y: line for line in screen.lines if line.y in (31, 47, 63, 79)}
+        if len(rows) != 4 or any(UNKNOWN in rows[y].span(120, 216) for y in rows):
+            return None
+        header = rows[31].spans()
+        if (len(header) != 2 or header[0][0] != 120 or header[1] != (184, 'じょう')
+                or not re.fullmatch(r'しゅうにゅう\s*\d+\s*G', rows[47].span(120, 216))
+                or not re.fullmatch(r'レベル\s*\d+', rows[63].span(120, 216))
+                or not re.fullmatch(r'しょうぐん\s*\d+\s*めい', rows[79].span(120, 216))):
+            return None
+        label = header[0][1]
+        label = next((n for n in sources.SOURCE_CASTLES.get(chapter, {})
+                      if STATUS_NAMES.get(n, n) == label), label)
+        return label if label in sources.SOURCE_CASTLES.get(chapter, {}) else None
     if screen.kind not in {'castle_menu', 'castle_info'} or CASTLE_STATUS.search(screen.text) is None:
         return None
     names = []
