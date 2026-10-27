@@ -1,11 +1,13 @@
 import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from docich import corner_rotation, webui
 from docich.adapters.base import AdapterError
-from test_hanjuku_resume import setup, recovery_setup, automatic_recovery
+from test_hanjuku_resume import setup, recovery_setup, automatic_recovery, failed_derived_attempt
 
 
 def _handler(tmp_path):
@@ -63,6 +65,22 @@ def test_hanjuku_resume_control_is_explicit_in_webui_resources():
     assert 'action:"resume-latest"' in html
     assert 'c.game==="hanjuku-hero"' in html
     assert "通常の開始予約は新規開始のままです" in html
+
+
+@pytest.mark.skipif(shutil.which('node') is None,reason='Node is required for WebUI JavaScript')
+def test_resume_success_message_describes_reservation_not_stop():
+    source='async function cornerAction'+webui.INDEX_HTML.split('async function cornerAction',1)[1].split('async function loadStatus',1)[0]
+    script='''
+const msg={textContent:''};
+const document={getElementById:()=>msg};
+const confirm=()=>true,toast=()=>{},loadCorners=async()=>{};
+const api=async()=>({ok:true,action:'resume-latest',corner:{id:'hanjuku-hero',game:'hanjuku-hero',target:'rotation'}});
+''' + source + '''
+(async()=>{await cornerAction({action:'resume-latest'},'confirm');process.stdout.write(msg.textContent);})();
+'''
+    result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=10,check=True)
+    assert 'セーブからの再開を予約' in result.stdout
+    assert '停止を要求' not in result.stdout
 
 
 # A fail-closed checkpoint decision is a domain conflict, not a WebUI crash.
@@ -125,3 +143,16 @@ def test_webui_resume_returns_safe_conflict_for_failed_recovery(recovery_setup,m
     assert handler._handle_hanjuku_corner_start(row,resume_latest=True)==409
     assert error['code']=='hanjuku_resume_unavailable'
     assert 'gameplay_started' not in error['message']
+
+
+def test_webui_retries_failed_derived_attempt_with_same_save(failed_derived_attempt,monkeypatch):
+    from docich import hanjuku_resume_recovery as op
+    s=failed_derived_attempt;queue=op.queue_failed_start
+    monkeypatch.setattr(op,'queue_failed_start',lambda g:queue(g,tmux=s.tmux,now=lambda:1000000.0))
+    handler,sent=_handler(s.g.state_dir);handler.g=s.g
+    row=SimpleNamespace(id='hanjuku-hero',game='hanjuku-hero',adapter='game')
+    assert handler._handle_hanjuku_corner_start(row,resume_latest=True)==200
+    assert sent['payload']['action']=='resume-latest'
+    request=json.loads((s.g.state_dir/'hanjuku-resume/hanjuku_resume.json').read_text())
+    assert request['sha256']==s.claim['sha256']
+    assert request['startup_recovery']['failed_attempt']['claim']==s.retry_claim

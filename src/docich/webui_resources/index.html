@@ -2454,6 +2454,8 @@ async function cornerAction(payload, confirmText){
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
       else if(r.action==="schedule") t=`${r.corner&&r.corner.id||"-"} を ${fmtTime(r.trigger_at)} 以降に1回だけ開始するよう予約しました。`;
       else if(r.action==="cancel-schedule") t=`${r.corner&&r.corner.id||"-"} の時刻指定予約を取り消しました。`;
+      else if(r.action==="resume-latest" && r.corner&&r.corner.game==="hanjuku-hero" && r.corner.target==="rotation")
+        t="半熟英雄のセーブからの再開を予約しました。現在のコーナー終了後、次の tick で開始します。状態欄で進行をご確認ください。";
       else if(r.corner&&r.corner.target==="rotation") {
         const name=r.corner.adapter==="tsuitate"?"衝立将棋":(r.corner.game==="hanjuku-hero"?"半熟英雄":"天気");
         t=r.action==="start"
