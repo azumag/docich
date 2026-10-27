@@ -6475,6 +6475,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v257-approx-fallback",
             "hanjuku-chart-v258-approx-default",
             "hanjuku-chart-v259-known-reanchor",
+            "hanjuku-chart-v260-reanchor-restart",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

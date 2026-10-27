@@ -28,6 +28,7 @@ MAX_SCROLL = 64
 MAX_HOLD = 16
 MAX_BOOTSTRAP = 32
 MAX_BOOTSTRAP_SWEEP = 320
+REANCHOR_REJECT_LIMIT = 2
 
 
 def translation(previous, current, *, limit=None):
@@ -300,6 +301,23 @@ def step(screen, mem, frame):
                 probe['closing'] = True
                 _record(mem, 'map_registration_rejected', castle=name,
                         reason='画面の連続性が切れた後は既知の城名で原点を再確認するまで新規地点を登録しない')
+                state['reanchor_rejects'] = int(state.get('reanchor_rejects') or 0)+1
+                if state['reanchor_rejects'] >= REANCHOR_REJECT_LIMIT:
+                    # g1059 07:08: the cursor rested on an unregistered roof,
+                    # and the walk only runs when no roof is under it, so the
+                    # same status was re-read every ~10 s. Drop the whole run
+                    # map; the next field view is a fresh origin, never mixed
+                    # with the old coordinates.
+                    dropped = sorted(known)
+                    mem.pop('map_registration', None)
+                    for key in ('origin_frame', 'camera', 'roof_world', 'cursor_world',
+                                'candidate', 'stationary', 'last_input', 'bootstrap',
+                                'reanchor_stationary', 'reanchor_tick', 'reanchor_walk',
+                                'reanchor_rejects'):
+                        state.pop(key, None)
+                    _record(mem, 'map_registration_restarted', castle=name,
+                            observed_metric={'dropped': dropped},
+                            reason='既知の城へ戻れず未登録の城名の再確認が続くため、実測地図を破棄して原点から登録し直す')
                 return [pad('b')]
             camera = [known[name][i]-probe['screen_cursor'][i] for i in (0, 1)]
             state['camera'] = camera
@@ -307,6 +325,7 @@ def step(screen, mem, frame):
             state['roof_world'] = [[x+camera[0], y+camera[1]] for x,y in probe['screen_roofs']]
             state.pop('last_input', None)
             state.pop('reanchor_walk', None)
+            state.pop('reanchor_rejects', None)
             probe['closing'] = True
             _record(mem, 'map_reanchored', castle=name,
                     reason='既知の実城名と自由カーソル地点を再確認してカメラ位置を復元')
