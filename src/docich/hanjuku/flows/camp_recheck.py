@@ -734,7 +734,7 @@ def step(screen, mem, frame, existing):
                   or state.get('chapter') != queue[state['general']]['chapter']
                   or state.get('recheck_tick') != queue[state['general']]['tick']):
         mem.pop('recall', None)
-        return [pad('b')] if is_camp_menu(screen) else None
+        return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
     if not state and screen.kind == 'map' and frame is not None and not any(
             mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')):
         arrival_actor = next((name for name, row in queue.items()
@@ -792,7 +792,7 @@ def step(screen, mem, frame, existing):
         if state.get('anonymous_recheck') and (state.get('anonymous_identity') != roster_receipts.run_identity(mem.get('_run_identity'))
                                                or state.get('anonymous_chapter') != mem.get('chapter')):
             mem.pop('recall', None)
-            return [pad('b')] if is_camp_menu(screen) else None
+            return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
         if state.get('anonymous_recheck') and state['stage'].startswith('recheck_'):
             return _named_step(screen, mem, frame, state)
         if state.get('anonymous_recheck'):
