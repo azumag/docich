@@ -39,6 +39,7 @@ ALLY_MARK = (222, 72, 65)
 ENEMY_MARK = (57, 121, 189)
 MENU_ROW_Y = 148          # option rows live in the bottom command box band
 # Increasing effect order; choose the strongest of the three offered moves.
+OKUNOTE_SELF_DAMAGE_CHOICES = frozenset({'ヤケクソ'})
 OKUNOTE_CHOICES = ('ヤケクソ', 'おどす', 'よたる', 'あやまる', 'うそなき',
                    'しんだフリ', 'てぶくろ', 'ハダカでぶつかる', 'せっとく',
                    'くすぐってみる', 'せいしゅん', 'いあつする', 'ブンシーンもどき',

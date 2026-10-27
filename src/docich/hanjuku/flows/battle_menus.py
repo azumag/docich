@@ -21,7 +21,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
-                               _wounded_summoner, _summoner_return_risk)
+                               _wounded_summoner, _summoner_return_risk, _rescue_decision, _rescue_rearm,
+                               RESCUE_REENTRY_LIMIT, RESCUE_REARM_LIMIT)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
@@ -755,13 +756,23 @@ def okunote_step(screen, mem):
                     reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
         if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt):
             rescue = _survival_state(mem, cur)
-            if not flow.get('risk_declined'):
-                flow['risk_declined'] = True
-                _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
-                        observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
-                        reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
-            rescue['exhausted'] = True
-            return [pad('b')]
+            # Re-arm exhausted on tide change.
+            _rescue_rearm(mem, cur, {'owner': 'ally'})
+            rescue = _survival_state(mem, cur)
+            # Candidate-first: check safe okunote choices (not self-damage).
+            visible = {w for _, _, w in _options(screen)} if getattr(screen, 'kind', None) == 'battle_menu' else set()
+            okunote_visible = [w for w in OKUNOTE_CHOICES if (not visible or w in visible)]
+            from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
+            safe = [c for c in okunote_visible if c not in OKUNOTE_SELF_DAMAGE_CHOICES]
+            if not safe or rescue.get('exhausted'):
+                if not flow.get('risk_declined'):
+                    flow['risk_declined'] = True
+                    _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
+                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                            reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+                rescue['exhausted'] = True
+                return [pad('b')]
+            # safe candidate exists: fall through to open okunote
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
@@ -1374,6 +1385,28 @@ def monster_menu_step(screen: Screen, mem):
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
+    # #2831: summon-battle rescue re-evaluation.
+    _cur_battle = mem.get('battle')
+    if isinstance(_cur_battle, dict):
+        _rescue_rearm(mem, _cur_battle, {'owner': owner})
+        _rescue = _cur_battle.get('survival') or {}
+        _reentry = int(_cur_battle.get('rescue_reentry_count') or 0)
+        if (owner == 'ally' and not _rescue.get('egg_attempted')
+                and not _cur_battle.get('okunote_last_resort_recorded')
+                and not (_cur_battle.get('survival') or {}).get('exhausted')
+                and _reentry < RESCUE_REENTRY_LIMIT
+                and not _wounded_summoner(mem, owner, ally, enemy)):
+            _ctx = {'owner': owner,
+                    'ally_hp': ally.hp if ally else None,
+                    'enemy_hp': enemy.hp if enemy else None,
+                    'panel': panel, 'summon': _cur_battle.get('summon_general_reading')}
+            _dec = _rescue_decision(mem, _cur_battle, _ctx)
+            if _dec.get('action') == 'use':
+                _cur_battle['rescue_reentry_count'] = _reentry + 1
+                _record(mem, 'battle_rescue_reentry', **_battle_labels(_cur_battle),
+                        reason=_dec.get('reason'),
+                        observed_metric={'candidate': _dec.get('candidate')})
+                return [pad('b')]
     scope = [owner, ally.name if ally else None, enemy.name if enemy else None]
     if mem.get('monster_menu_choice_scope') != scope:
         mem.pop('monster_menu_choice', None)
