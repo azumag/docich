@@ -186,3 +186,14 @@ def test_round_cash_header_never_poisoned_as_zero_price_stock(ready, gold):
     assert ready['shop']['bargain_listing_planned'] is True
     assert (ready['shop'].get('want') or [None, 0])[1] == quantity
     assert not ready['shop'].get('bought')
+
+
+def test_unreadable_merchant_exit_is_recorded_not_silent(ready):
+    # A quiet 'b' on the merchant list once left a planned card unbought
+    # (g1059 8-6..8-10: five bargain plans, no buy or buy_skip record).
+    ready['month'] = '99-1'                  # the month no longer matches the shop
+    assert p.shop_step(listing(), ready) == [p.pad('b')]
+    record = ready['_records'][-1]
+    assert record['decision'] == 'shop_list_exit'
+    assert record['observed_metric']['reason'] == 'spendable_unreadable'
+    assert ready['shop'].get('bought') in (None, [])
