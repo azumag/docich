@@ -318,7 +318,7 @@ cmdline・URL・パス・PIDは出さず、argvはプロセス内の分類にだ
 - `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
   `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct`。
   `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
-- CPUは0.25秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
+- CPUは0.5秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
   `status=unknown` / `scan_complete=0`。
 
 ## 収集元（すべて read-only）

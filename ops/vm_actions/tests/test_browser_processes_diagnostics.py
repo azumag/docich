@@ -130,6 +130,16 @@ class BrowserProcessInventoryTests(unittest.TestCase):
         self.assertEqual(result["by_owner"]["soren-shared-overlay"]["count"], 1)
         self.assertNotIn("webui", result["by_owner"])
 
+    def test_long_cmdline_still_classifies_the_chromium_type(self):
+        # Chromium child cmdlines can carry a long prefix before --type=; a
+        # 4 KiB read classified every child as "browser" in production.
+        self._write(1000, ["node", "shared_overlay.mjs"], ppid=1)
+        self._write(2009, ["/x/chrome", "x" * 5000, "--type=gpu-process"],
+                    ppid=1000)
+        result = self.module._collect_browser_processes(self.proc, sample_sec=0)
+        self.assertEqual(result["by_type"], {"gpu": 1})
+        self.assertEqual(result["by_owner"]["soren-shared-overlay"]["gpu_cpu_pct"], 0.0)
+
     def test_empty_proc_reports_empty_without_error(self):
         result = self.module._collect_browser_processes(self.proc, sample_sec=0)
         self.assertEqual(result["status"], "empty")
