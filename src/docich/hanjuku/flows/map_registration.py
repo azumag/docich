@@ -264,8 +264,19 @@ def step(screen, mem, frame):
             state.pop('roof_world', None)
             state.pop('cursor_world', None)
             return None
-        mem['_map_registration_hold'] = True
         probe['age'] += 1
+        if probe['age'] > 2*MAX_PANEL and screen.kind == 'text':
+            # g1059 07:37: a seasonal event dialogue replaced the closing
+            # panel; B never advances it, and holding blocked the text flow
+            # for minutes. Castle panels stay held (no generic confirm A).
+            state.pop('probe', None)
+            state.pop('roof_world', None)
+            state.pop('cursor_world', None)
+            _record(mem, 'map_registration_released', screen=screen.kind,
+                    observed_metric={'age': probe['age']},
+                    reason='閉じる入力の上限後も地図へ戻らず会話文が出ているため、確認を破棄して画面を通常処理へ返す')
+            return None
+        mem['_map_registration_hold'] = True
         if probe.get('closing') or probe['age'] > MAX_PANEL:
             probe['closing'] = True
             return [pad('b')] if probe['age'] <= 2*MAX_PANEL else []
