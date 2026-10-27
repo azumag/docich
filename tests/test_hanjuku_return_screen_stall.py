@@ -17,3 +17,11 @@ def test_stuck_recall_aborts_with_b_on_world_map_dest():
     screen = Screen([], None, '', kind='world_map')
     assert p.world_map_step(screen, mem, None) == [p.pad('b')]
     assert 'recall' not in mem
+
+
+def test_stuck_recall_aborts_with_b_on_map_target_to_camp():
+    mem = {'chapter': 1, 'tick': 100, '_records': [],
+           'recall': {'stage': 'to_camp', 'steps': 5, 'target': [1, 1], 'hero': False}}
+    screen = Screen([], None, '', kind='map_target')
+    assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
+    assert 'recall' not in mem
