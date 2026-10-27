@@ -318,6 +318,9 @@ def _resume_prediction_context(root, identity):
             or any(receipt.get(k) != identity[k] for k in progress.KEYS)):
         raise ValueError('invalid verified Hanjuku resume receipt')
     chapter = receipt.get('chapter')
+    if chapter is None:
+        from .hanjuku_resume import source_chapter
+        chapter = source_chapter(root, receipt)
     if chapter is not None and (type(chapter) is not int or not 1 <= chapter <= progress.MAX_CHAPTER):
         raise ValueError('invalid verified Hanjuku resume chapter')
     return {'chapter': chapter}

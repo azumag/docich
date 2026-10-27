@@ -993,6 +993,42 @@ def test_chapterless_restore_reaching_month_menu_still_sends_input():
     assert not state['policy'].get('house')
 
 
+def _stalled_source(tmp_path, *, chapter=3, frame='a'*64, owner=None):
+    ident = {'game': 'hanjuku-hero', 'generation': 1059, 'lease_id': str(uuid.uuid4()),
+             'runtime_id': 'g1059-3d06125f'}
+    source = tmp_path / 'runtimes' / ident['runtime_id']; source.mkdir(parents=True)
+    atomic_write_json(source / 'hanjuku_bot.json', {
+        'decision_trace': {**ident, 'frame_sha256': frame},
+        'policy': {'chapter': chapter, '_run_identity': owner or ident}})
+    return {'status': 'verified', 'chapter': None,
+            'source_boundary': {**ident, 'frame_sha256': 'a'*64, 'outcome': 'screen_stalled'}}
+
+
+@pytest.mark.parametrize('change,expected', [(None, 3), ('frame', None), ('owner', None),
+                                             ('chapter', None), ('missing', None)])
+def test_source_chapter_requires_the_exact_stalled_frame_and_run(tmp_path, change, expected):
+    receipt = _stalled_source(tmp_path,
+                              frame='b'*64 if change == 'frame' else 'a'*64,
+                              chapter='3' if change == 'chapter' else 3,
+                              owner={'game': 'hanjuku-hero'} if change == 'owner' else None)
+    if change == 'missing':
+        (tmp_path / 'runtimes/g1059-3d06125f/hanjuku_bot.json').unlink()
+    assert resume.source_chapter(tmp_path, receipt) == expected
+
+
+def test_running_chapterless_restore_inherits_source_chapter(tmp_path):
+    # g1067 08:45: restored on a castle dialogue without a chapter; no sortie,
+    # map survey or prediction could start until a chapter was known.
+    receipt = _stalled_source(tmp_path)
+    runtime = tmp_path / 'runtimes/g1067-f31880ae'; runtime.mkdir()
+    atomic_write_json(runtime / resume.RECEIPT_FILE, {**receipt, 'runtime_id': runtime.name})
+    state = {'policy': {'name': {'done': True}, 'resume_chapter_pending': True, '_records': []}}
+    assert resume.inherit_running_chapter(runtime, state) == 3
+    assert state['policy']['chapter'] == 3 and 'resume_chapter_pending' not in state['policy']
+    assert state['policy']['chapter_evidence'] == 'resume_source_boundary'
+    assert resume.inherit_running_chapter(runtime, state) is None   # once only
+
+
 def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     from docich.hanjuku.os_layer.pixels import read_png
     from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel
