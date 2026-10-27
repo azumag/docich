@@ -29,6 +29,7 @@ MAX_HOLD = 16
 MAX_BOOTSTRAP = 32
 MAX_BOOTSTRAP_SWEEP = 320
 REANCHOR_REJECT_LIMIT = 2
+SINGLE_ROOF_SCROLL = MAX_HOLD+2   # camera shift one sent hold can produce
 
 
 def translation(previous, current, *, limit=None):
@@ -88,6 +89,13 @@ def _pose(state, roofs, cursor):
     if prior:
         camera = translation(prior, positions)
         last_camera = state.get('camera')
+        if camera is None and last_camera is not None and positions and min(len(prior), len(positions)) == 1:
+            # g1059 07:29 (snowfield): only one roof stays in view, so the
+            # two-anchor vote never forms. Accept the single pairing only
+            # when it is the one shift a single hold can reach.
+            shifts = {(a[0]-b[0], a[1]-b[1]) for a in prior for b in positions
+                      if max(abs(a[i]-b[i]-last_camera[i]) for i in (0, 1)) <= SINGLE_ROOF_SCROLL}
+            camera = next(iter(shifts)) if len(shifts) == 1 else None
         if camera is not None and last_camera is not None:
             if max(abs(a-b) for a,b in zip(camera, last_camera)) > MAX_SCROLL:
                 camera = None
@@ -379,7 +387,7 @@ def step(screen, mem, frame):
             state.pop('cursor_world', None)
             mem['_map_registration_hold'] = True
             near = [r for r in roofs if max(abs(r['target'][i]-screen.cursor[i]) for i in (0,1)) <= 2]
-            if len(near) == 1 and len(roofs) >= 2:
+            if len(near) == 1:  # the known name, not a second roof, fixes the camera
                 stamp = [list(screen.cursor), [list(r['target']) for r in roofs]]
                 if (state.get('reanchor_stationary') == stamp
                         and type(tick) is int and tick > state.get('reanchor_tick', tick)):
@@ -389,7 +397,7 @@ def step(screen, mem, frame):
                     return [pad('a')]
                 state['reanchor_stationary'] = stamp
                 state['reanchor_tick'] = tick
-            elif not near and len(roofs) >= 2 and known:
+            elif not near and roofs and known:
                 # A gap can leave the cursor away from every roof. Move only
                 # toward a visible roof; its identity and the camera remain
                 # unknown until the existing two-read reanchor succeeds.
