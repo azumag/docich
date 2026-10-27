@@ -2122,9 +2122,10 @@ BROWSER_OWNER_LABELS = (
 )
 BROWSER_TYPE_LABELS = ("browser", "gpu", "renderer", "utility", "other")
 BROWSER_CPU_SAMPLE_SEC = 0.5
-# Chromium child cmdlines can carry a long feature/field-trial prefix before
-# ``--type=``; 4 KiB was measured to classify every child as "browser".
-BROWSER_CMDLINE_BYTES = 16384
+# The first production samples still classified every Chromium child as
+# "browser" even at 16 KiB. Read the full bounded line (64 KiB) and derive the
+# type from the raw NUL-separated bytes at an argv boundary.
+BROWSER_CMDLINE_BYTES = 65536
 _BROWSER_EXECUTABLES = frozenset({
     "chrome",
     "chromium",
@@ -2202,18 +2203,31 @@ def _browser_owner_label(argv):
     return None
 
 
-def _browser_type_label(argv):
-    for arg in argv:
-        if arg.startswith("--type="):
-            value = arg.split("=", 1)[1]
-            if value == "gpu-process":
-                return "gpu"
-            if "renderer" in value:
-                return "renderer"
-            if "utility" in value:
-                return "utility"
-            return "other"
-    return "browser"
+def _browser_read_type(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
+    """Return (type, type_arg_offset, cmdline_bytes) from the raw cmdline.
+
+    The argv split is not enough: production classified every Chromium child
+    as "browser" even at 16 KiB, so the type is derived from the raw
+    NUL-separated bytes at an argv boundary. Only the fixed label, offset and
+    length leave this function; the bytes themselves never do.
+    """
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return "browser", None, 0
+    match = re.search(rb"(?:^|\x00)--type=([a-z-]+)", raw)
+    if match is None:
+        return "browser", None, len(raw)
+    value = match.group(1).decode("ascii", "ignore")
+    offset = match.start()
+    if value == "gpu-process":
+        return "gpu", offset, len(raw)
+    if "renderer" in value:
+        return "renderer", offset, len(raw)
+    if "utility" in value:
+        return "utility", offset, len(raw)
+    return "other", offset, len(raw)
 
 
 def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
@@ -2279,9 +2293,12 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         stat = _browser_read_stat(proc_root, pid)
         if stat is None:
             continue
+        btype, type_offset, cmdline_bytes = _browser_read_type(proc_root, pid)
         rows.append({
             "pid": pid,
-            "type": _browser_type_label(argv),
+            "type": btype,
+            "type_offset": type_offset,
+            "cmdline_bytes": cmdline_bytes,
             "owner": _browser_owner_for_pid(proc_root, pid, stat, cmdlines),
             "ticks": stat["ticks"],
             "starttime": stat["starttime"],
@@ -2298,6 +2315,7 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
             "rss_mb_total": 0.0,
             "by_type": {},
             "by_owner": {},
+            "type_sources": {"type_arg": 0, "no_type_arg": 0},
         }
 
     start_clock = clock()
@@ -2322,7 +2340,12 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
 
     by_type = {}
     by_owner = {}
+    type_sources = {"type_arg": 0, "no_type_arg": 0}
     for row in rows:
+        if row["type_offset"] is None:
+            type_sources["no_type_arg"] += 1
+        else:
+            type_sources["type_arg"] += 1
         by_type[row["type"]] = by_type.get(row["type"], 0) + 1
         owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
         owner["count"] += 1
@@ -2347,10 +2370,16 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         "rss_mb_total": round(sum(row["rss_kb"] for row in rows) / 1024.0, 1),
         "by_type": by_type,
         "by_owner": by_owner,
+        "type_sources": type_sources,
     }
     if uptime is not None and rows:
         ages = [max(0.0, uptime - row["starttime"] / clk_tck) for row in rows]
         result["oldest_age_sec"] = int(max(ages))
+    if rows:
+        result["cmdline_bytes_max"] = max(row["cmdline_bytes"] for row in rows)
+        offsets = [row["type_offset"] for row in rows if row["type_offset"] is not None]
+        if offsets:
+            result["max_type_arg_offset"] = max(offsets)
     return result
 
 

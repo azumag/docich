@@ -311,13 +311,15 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 ### browser_processes（#970 follow-up）
 
 Chromium のCPU消費をサブシステム単位で見る固定ラベル集計。プロセスの
-cmdline・URL・パス・PIDは出さず、argvはプロセス内の分類にだけ使う。
+cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトはプロセス内の分類にだけ使う。
 
 - `total` / `cpu_pct_total` / `rss_mb_total` / `oldest_age_sec`
 - `by_type`: `browser` / `gpu` / `renderer` / `utility` / `other` の件数
 - `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
   `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct`。
   `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
+- `type_sources`: `type_arg` / `no_type_arg` の件数。`cmdline_bytes_max` と
+  `max_type_arg_offset` は型判定の切り分け用（見つからない場合は後者を出さない）。
 - CPUは0.5秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
   `status=unknown` / `scan_complete=0`。
 
