@@ -18,6 +18,7 @@ sys.path.insert(0,str(ROOT/'src'))
 from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
+from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
@@ -396,6 +397,7 @@ def main():
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).
             state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
+            hanjuku_resume.inherit_running_chapter(runtime,state)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),

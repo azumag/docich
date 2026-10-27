@@ -503,6 +503,56 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
                 break
 
 
+SOURCE_KEYS = ('game', 'generation', 'lease_id', 'runtime_id')
+
+
+def source_chapter(state_dir, receipt):
+    """Chapter the stalled source run held at the exact checkpoint frame.
+
+    Owner rule (2026-10-28): keep the chapter across a stall and restore it.
+    The source bot's last decision must be on the boundary frame and carry
+    the boundary's run identity; anything else stays chapterless.
+    """
+    from .naming import runtime_directory
+    boundary = receipt.get('source_boundary') if isinstance(receipt, dict) else None
+    if not isinstance(boundary, dict) or not isinstance(boundary.get('frame_sha256'), str):
+        return None
+    try:
+        source = runtime_directory(Path(state_dir), boundary.get('runtime_id'))
+        record = read_record(source / 'hanjuku_bot.json', limit=256 * 1024)
+    except (AdapterError, ValueError, TypeError):
+        return None
+    trace = record.get('decision_trace') if isinstance(record.get('decision_trace'), dict) else {}
+    policy = record.get('policy') if isinstance(record.get('policy'), dict) else {}
+    owner = policy.get('_run_identity') if isinstance(policy.get('_run_identity'), dict) else {}
+    if (trace.get('frame_sha256') != boundary['frame_sha256']
+            or any(trace.get(k) != boundary.get(k) or owner.get(k) != boundary.get(k)
+                   for k in SOURCE_KEYS)):
+        return None
+    chapter = policy.get('chapter')
+    return chapter if type(chapter) is int and 1 <= chapter <= 12 else None
+
+
+def inherit_running_chapter(runtime, state):
+    """Seed a verified chapterless restore with its source chapter (hot-loaded)."""
+    policy = state.get('policy') if isinstance(state, dict) else None
+    if (not isinstance(policy, dict) or policy.get('resume_chapter_pending') is not True
+            or policy.get('chapter') is not None):
+        return None
+    receipt = read_record(Path(runtime) / RECEIPT_FILE)
+    if (receipt.get('status') != 'verified' or receipt.get('runtime_id') != Path(runtime).name
+            or receipt.get('chapter') is not None):
+        return None
+    chapter = source_chapter(Path(runtime).parent.parent, receipt)
+    if chapter is None:
+        return None
+    from .hanjuku.strategy.campaign import _enter_chapter
+    policy.pop('resume_chapter_pending', None)
+    _enter_chapter(policy, chapter, evidence='resume_source_boundary',
+                   reason='停滞時の最終フレームで確定していた章を再開後に引き継ぐ')
+    return chapter
+
+
 def _castle_dialogue(screen):
     """A castle-hall dialogue: text plus the native year/month header.
 
@@ -601,8 +651,10 @@ def restore(adapter, deadline, cancel):
             gift_without_chapter = True
         elif _castle_dialogue(screen):
             dialogue_without_chapter = True
+    if chapter is None:
+        chapter = source_chapter(adapter.g.state_dir, request)
     # These verified chapterless panels seed only their measured foreground
-    # owner; chapter, route and any old transaction need fresh evidence.
+    # owner; route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}
     if chapter is not None:
         policy['chapter'] = chapter
