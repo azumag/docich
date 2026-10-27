@@ -474,6 +474,49 @@ def test_reanchor_walks_to_visible_roof_without_guessing_its_identity():
     assert 'reanchor_walk' not in mem['map_discovery']
 
 
+def test_repeated_unknown_reanchor_restarts_the_run_map_instead_of_rereading_forever():
+    # g1059 07:08: after a gap the cursor sat on アルマムーン's roof while only
+    # コラダイン was registered; A/status/B/reject repeated every ~10 s with no
+    # input that could move the cursor off that roof.
+    mem = home_receipt()
+    feed(mem, status('グリン'))  # a gap invalidates the camera
+    assert feed(mem, field(GRIN)) == []
+    for _ in range(survey.REANCHOR_REJECT_LIMIT):
+        assert feed(mem, field(GRIN)) == [policy.pad('a')]
+        assert feed(mem, status('グリン')) == []
+        assert feed(mem, status('グリン')) == [policy.pad('b')]
+        assert feed(mem, field(GRIN)) == []      # closed probe leaves the panel
+    rejected = [r for r in mem['_records'] if r['decision'] == 'map_registration_rejected']
+    assert len(rejected) == survey.REANCHOR_REJECT_LIMIT
+    assert any(r['decision'] == 'map_registration_restarted' for r in mem['_records'])
+    assert survey.verified_castles(mem, 3) == {}
+    # A fresh origin registers the castle under the cursor by the normal
+    # stationary two-read transaction; no old coordinate is mixed in.
+    assert feed(mem, field(GRIN)) == []
+    assert feed(mem, field(GRIN)) == [policy.pad('a')]
+    assert feed(mem, status('グリン')) == []
+    assert feed(mem, status('グリン')) == [policy.pad('b')]
+    assert feed(mem, field(GRIN)) == []
+    assert survey.verified_castles(mem, 3) == {'グリン': GRIN}
+
+
+def test_a_successful_reanchor_clears_earlier_unknown_rejections():
+    mem = home_receipt()
+    feed(mem, status('グリン'))
+    assert feed(mem, field(GRIN)) == []
+    assert feed(mem, field(GRIN)) == [policy.pad('a')]
+    assert feed(mem, status('グリン')) == []
+    assert feed(mem, status('グリン')) == [policy.pad('b')]
+    assert feed(mem, field(HOME)) == []
+    assert feed(mem, field(HOME)) == []
+    assert feed(mem, field(HOME)) == [policy.pad('a')]
+    assert feed(mem, status('アルマムーン')) == []
+    assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
+    assert any(r['decision'] == 'map_reanchored' for r in mem['_records'])
+    assert 'reanchor_rejects' not in mem['map_discovery']
+    assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+
+
 @pytest.mark.parametrize('change', ['identity', 'chapter', 'digest', 'collision', 'foreign', 'readings'])
 def test_invalid_registration_envelope_never_reaches_chart_or_orders(change):
     mem = home_receipt()
