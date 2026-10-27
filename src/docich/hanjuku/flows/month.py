@@ -311,6 +311,16 @@ def month_step(screen: Screen, mem):
         if isinstance(move, list):
             return move
         return [pad('a')] if move == 'here' else [move] if move else []
+    if shop and shop.get('items') and not shop.get('merchant_skip_logged'):
+        # Diagnostic only: planned merchant items were skipped by the gate above
+        # (g1059 8-5: bargain_plan, then month_done with bought []; no merchant
+        # decision). Records which gate closed it, once per month.
+        shop['merchant_skip_logged'] = True
+        _record(mem, 'merchant_skipped', month=shop.get('key'),
+                observed_metric={'merchant_done': bool(shop.get('merchant_done')),
+                                 'low_army_first': bool(low_army_first(shop)),
+                                 'planned': [list(row) for row in shop['items'][:4]]},
+                reason='商人の予定品があるのに月初メニューから商人へ入らなかった理由を記録する')
     if (mem.get('month_sub', {}).get('kind') == 'egg'
             and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
         mem.pop('month_sub')
