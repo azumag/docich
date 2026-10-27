@@ -225,7 +225,8 @@ def step(screen, mem, frame):
     chapter = mem.get('chapter')
     identity = run_identity(mem.get('_run_identity'))
     if (identity is None or chapter not in sources.SOURCE_CASTLES
-            or chart.CASTLES.get(chapter) or chart.approximate_map()
+            or chart.CASTLES.get(chapter)
+            or (chart.approximate_map() and not mem.get('approx_fallback'))
             or frame is None or (frame.width, frame.height) != (256, 224)):
         return None
     state = mem.get('map_discovery')

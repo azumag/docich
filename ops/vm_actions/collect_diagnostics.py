@@ -6472,6 +6472,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v254-bijin-stall-bound",
             "hanjuku-chart-v255-native-map-registration",
             "hanjuku-chart-v256-approx-source-map",
+            "hanjuku-chart-v257-approx-fallback",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -10938,6 +10939,68 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
+def _compact_hanjuku_policy(mem):
+    """Small map/route summary that survives the tactical detail drop.
+
+    The full tactical section is dropped when the diagnostics envelope is
+    large, which hid chapter/active/orders exactly when a sortie had stopped.
+    Keep only fixed names, bounded counts and status tokens; no free text,
+    identities, frame hashes or decision reasons.
+    """
+    if not isinstance(mem, dict):
+        return None
+    def text(value, limit=64):
+        return value if isinstance(value, str) and len(value) <= limit else None
+    def names(value, limit=12):
+        return ([item for item in value if isinstance(item, str)][:limit]
+                if isinstance(value, list) else None)
+    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
+    registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
+    chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
+    cursor = mem.get('cursor')
+    tick = mem.get('tick')
+    return {
+        'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'variant': text(mem.get('variant'), 32),
+        'active': text(mem.get('active'), 32),
+        'tick': tick if type(tick) is int and tick >= 0 else None,
+        'month': text(mem.get('month'), 16),
+        'orders': {text(step, 32) or '?': text(status, 32) or '?'
+                   for step, status in list(orders.items())[:20]
+                   if isinstance(step, str) and isinstance(status, str)},
+        'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
+                           and len(mem['captured']) <= 64 else None),
+        'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
+                     for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'sorties': {text(step, 32) or '?': {'status': text(value.get('status'), 32),
+                                            'target': text(value.get('target'), 32)}
+                    for step, value in list(sorties.items())[:12]
+                    if isinstance(value, dict)},
+        'cursor': ([item for item in cursor[:2] if type(item) is int]
+                   if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
+        'uncertain': mem.get('uncertain') is True,
+        'nav_search': mem.get('nav_search') is True,
+        'y_jump': ({'mode': text((mem.get('y_jump') or {}).get('mode'), 16),
+                    'goal': text((mem.get('y_jump') or {}).get('goal'), 32)}
+                   if isinstance(mem.get('y_jump'), dict) else None),
+        'approx_fallback': mem.get('approx_fallback') is True,
+        'approx_localize_miss': (mem.get('approx_localize_miss')
+                                 if type(mem.get('approx_localize_miss')) is int else None),
+        'map_discovery': ({'candidate': text(discovery.get('candidate'), 32),
+                           'attempts': discovery.get('attempts')
+                           if type(discovery.get('attempts')) is int else None}
+                          if discovery else None),
+        'map_registration_castles': (len(registration.get('castles'))
+                                     if isinstance(registration.get('castles'), dict) else None),
+        'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
+                          'has_plan': isinstance(mem.get('chart_plan'), dict)}
+                         if chart_adjust else None),
+    }
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -10982,7 +11045,8 @@ def _collect_hanjuku_tactical(state_dir, now):
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
+                    'age_sec': int(age), 'policy': _compact_hanjuku_policy(mem),
+                    'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -11015,6 +11079,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
+                   policy=_compact_hanjuku_policy(mem),
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
@@ -13177,7 +13242,17 @@ def _diagnostics_budget(payload):
         refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
         house_deferral = (payload['hanjuku_tactical'].get('last_house_deferral')
                           if isinstance(payload['hanjuku_tactical'], dict) else None)
+        summary = payload['hanjuku_tactical']
+        policy = summary.get('policy') if isinstance(summary, dict) else None
+        chapter = summary.get('chapter') if isinstance(summary, dict) else None
+        age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if isinstance(policy, dict):
+            payload['hanjuku_tactical']['policy'] = policy
+        if type(chapter) is int:
+            payload['hanjuku_tactical']['chapter'] = chapter
+        if type(age_sec) is int:
+            payload['hanjuku_tactical']['age_sec'] = age_sec
         if house_deferral is not None:
             payload['hanjuku_tactical']['last_house_deferral'] = _compact_hanjuku_house_deferral(house_deferral)
         if refill is not None:

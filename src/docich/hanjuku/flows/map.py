@@ -172,6 +172,7 @@ def world_map_step(screen, mem, frame):
                 reason='全体マップの▲（部隊マーカー）を定期確認')
     return [pad('y')]
 OFF_CASTLE_LIMIT = 3           # refusals before pressing A anyway (bounded)
+APPROX_LOCALIZE_LIMIT = 4      # observations without a roof anchor before native survey
 
 
 def _hold_off_castle(screen, mem, order) -> bool:
@@ -352,6 +353,27 @@ def map_step(screen: Screen, mem, frame):
     if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
         return _start_y_jump(mem, order, source, 'map')
     result = nav_step(screen, mem, frame, goal, source)
+    if chart.approximate_map():
+        cursor_before = mem.get('cursor')
+        if mem.get('anchor') or result == 'arrived':
+            mem.pop('approx_localize_miss', None)
+        else:
+            misses = int(mem.get('approx_localize_miss') or 0) + 1
+            mem['approx_localize_miss'] = misses
+            if misses >= APPROX_LOCALIZE_LIMIT:
+                order_step = (order or {}).get('step')
+                mem['approx_fallback'] = True
+                mem.pop('approx_localize_miss', None)
+                mem['active'] = None
+                mem['picked'] = []
+                mem['uncertain'] = True
+                mem.pop('cursor', None)
+                _record(mem, 'approx_map_fallback', chart_step=order_step,
+                        screen=screen.kind,
+                        observed_metric={'misses': misses, 'cursor': cursor_before,
+                                         'screen_cursor': list(_cursor(screen) or ())},
+                        reason='近似座標で屋根に再アンカーできないため近似を止め、実測地図探索へ切り替える')
+                return []
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
             mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again

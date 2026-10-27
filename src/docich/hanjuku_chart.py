@@ -970,7 +970,8 @@ def verified_castles(mem, chapter):
 
 def castles(chapter: int) -> dict:
     static = CASTLES.get(chapter, {})
-    if _MAP_APPROX.get():
+    memory = _MAP_MEMORY.get()
+    if _MAP_APPROX.get() and not (isinstance(memory, dict) and memory.get('approx_fallback')):
         static = {**CASTLES_APPROX.get(chapter, {}), **static}
     if chapter in (4, 9):
         # A generic chapter-4 point cannot identify four separate sites.
