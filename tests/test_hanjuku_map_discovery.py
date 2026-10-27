@@ -5,6 +5,7 @@ image pixels are search hints only; no test claims a measured chapter-3 map.
 """
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -296,10 +297,29 @@ def test_single_roof_bootstrap_stops_without_two_roofs_and_never_confirms(moving
         pads.extend(a['buttons'][0] for a in actions)
         assert not mem.get('map_registration')
         assert not mem['map_discovery'].get('origin_frame')
+        if mem['map_discovery']['bootstrap'].get('done'):
+            break
     assert pads and set(pads) <= {'left', 'right', 'up', 'down'}
     assert len(pads) <= (survey.MAX_BOOTSTRAP if moving_cursor else 3)
     assert mem['map_discovery']['bootstrap']['done'] is True
     assert any(r['decision'] == 'map_bootstrap_exhausted' for r in mem['_records'])
+
+
+def test_exhausted_hint_gets_one_bounded_direction_only_sweep():
+    mem = memory()
+    state = {'bootstrap': {'done': True, 'attempts': 21, 'still': 0, 'legs': []}}
+    roofs = [{'target': (100, 100)}]
+    actions = []
+    for i in range(survey.MAX_BOOTSTRAP_SWEEP + 5):
+        step = survey._bootstrap(SimpleNamespace(cursor=(100 + i % 2, 100)), mem, state, roofs)
+        actions.extend(step)
+        if state['bootstrap'].get('done'):
+            break
+    assert state['bootstrap']['done'] and state['bootstrap']['sweep_started']
+    assert len(actions) <= survey.MAX_BOOTSTRAP_SWEEP
+    assert {a['buttons'][0] for a in actions} <= {'left', 'right', 'up', 'down'}
+    assert not mem.get('map_registration') and not state.get('origin_frame')
+    assert survey._bootstrap(SimpleNamespace(cursor=(100, 100)), mem, state, roofs) == []
 
 
 def test_survey_hold_cannot_turn_into_the_generic_frozen_screen_confirm():
