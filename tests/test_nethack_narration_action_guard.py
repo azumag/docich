@@ -35,15 +35,25 @@ def _observation():
     )
 
 
+class _InlineThread:
+    def __init__(self, *, target, args, **kwargs):
+        self.target = target
+        self.args = args
+
+    def start(self):
+        self.target(*self.args)
+
+
 def test_message_narration_does_not_change_brain_actions(monkeypatch):
     """#2798: compare the same brain path with narration on and off.
 
     A direct NethackLayeredPolicy comparison is invalid after blocking-prompt
-    handling moved into the brain.  The contract we need is narrower: enabling
+    handling moved into the brain. The contract we need is narrower: enabling
     narration must not add, remove, or replace the brain's reviewed action.
     """
     audio = Mock()
     monkeypatch.setattr("docich.nethack_narration.enqueue_audio_text", audio)
+    monkeypatch.setattr("docich.nethack_narration.threading.Thread", _InlineThread)
 
     narrated = build_brain(SimpleNamespace(), _game(narration_enabled=True))
     silent = build_brain(SimpleNamespace(), _game(narration_enabled=False))
