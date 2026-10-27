@@ -291,6 +291,7 @@ def step(screen, mem, frame):
             state['cursor_world'] = list(known[name])
             state['roof_world'] = [[x+camera[0], y+camera[1]] for x,y in probe['screen_roofs']]
             state.pop('last_input', None)
+            state.pop('reanchor_walk', None)
             probe['closing'] = True
             _record(mem, 'map_reanchored', castle=name,
                     reason='既知の実城名と自由カーソル地点を再確認してカメラ位置を復元')
@@ -354,6 +355,23 @@ def step(screen, mem, frame):
                     return [pad('a')]
                 state['reanchor_stationary'] = stamp
                 state['reanchor_tick'] = tick
+            elif not near and len(roofs) >= 2 and known:
+                # A gap can leave the cursor away from every roof. Move only
+                # toward a visible roof; its identity and the camera remain
+                # unknown until the existing two-read reanchor succeeds.
+                walk = state.setdefault('reanchor_walk', {'attempts': 0, 'still': 0})
+                view = [list(screen.cursor), sorted(list(r['target']) for r in roofs)]
+                walk['still'] = walk.get('still', 0) + 1 if walk.get('view') == view else 0
+                walk['view'] = view
+                if walk['still'] >= 3 or walk.get('attempts', 0) >= MAX_BOOTSTRAP:
+                    return []
+                target = min(roofs, key=lambda r: sum(abs(r['target'][i] - screen.cursor[i]) for i in (0, 1)))['target']
+                dx, dy = (target[i] - screen.cursor[i] for i in (0, 1))
+                axis = 0 if abs(dx) >= abs(dy) else 1
+                distance = (dx, dy)[axis]
+                walk['attempts'] = walk.get('attempts', 0) + 1
+                return [pad((('left', 'right') if axis == 0 else ('up', 'down'))[distance > 0],
+                            min(MAX_HOLD, abs(distance)))]
             return []
         return _bootstrap(screen, mem, state, roofs)
     state.setdefault('origin_frame', frame.digest())
