@@ -47,7 +47,31 @@ MAX_WARMUP = 120.0
 MAX_COMPONENTS = 40
 MAX_TOP_PROCESSES = 20
 MAX_SPAWN_ROWS = 30
+MAX_OTHER_COMMS = 8
 MAX_CMDLINE_BYTES = 4096
+
+OTHER_COMM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,15}$")
+OTHER_COMM_SECRET_MARKERS = (
+    "sk-", "ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_",
+    "xox", "akia", "aiza", "bearer", "token", "secret", "password",
+    "passwd", "api_key", "apikey",
+)
+
+
+def other_comm_label(comm):
+    """Fixed-label fallback for the residual `other` component.
+
+    `comm` is a <=15-character process name, not argv. Only a lowercase safe
+    identifier is emitted; unsupported or secret-like names become
+    "redacted", so the residual CPU stays attributable without exposing
+    arbitrary process text.
+    """
+    value = (comm or "").strip().lower()
+    if not OTHER_COMM_RE.fullmatch(value):
+        return "redacted"
+    if any(marker in value for marker in OTHER_COMM_SECRET_MARKERS):
+        return "redacted"
+    return value
 
 SCENARIO_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SUBCOMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -517,6 +541,7 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
     window_start_ticks = int((uptime_start or 0) * clk_tck)
     components = {}
     spawns = {}
+    other_comms = {}
     top = []
     for rec in tracker.procs.values():
         first, last = rec["first"], rec["last"]
@@ -540,6 +565,11 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
         comp["spawned"] += int(born_in_window)
         comp["rss_kb_max_sum"] += rec["rss_max"]
         comp["threads_max_sum"] += rec["threads_max"]
+        if rec["component"] == "other":
+            label = other_comm_label(first.get("comm"))
+            entry = other_comms.setdefault(label, {"ticks": 0, "processes": 0})
+            entry["ticks"] += max(d_ticks, 0)
+            entry["processes"] += 1
         top.append((max(d_ticks, 0), rec))
 
     total_ticks = sum(c["ticks"] for c in components.values()) or 1
@@ -570,6 +600,12 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
          for (own, spawner), n in spawns.items()),
         key=lambda r: (-r["count"], r["component"], r["spawner"]),
     )
+    other_rows = [{
+        "comm": name,
+        "cpu_pct": _round(100.0 * c["ticks"] / clk_tck / elapsed),
+        "processes": c["processes"],
+    } for name, c in other_comms.items()]
+    other_rows.sort(key=lambda r: (-r["cpu_pct"], -r["processes"], r["comm"]))
 
     host = {}
     if host_start and host_end and host_end[1] > host_start[1]:
@@ -611,6 +647,8 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
         "components": comp_rows[:MAX_COMPONENTS],
         "components_truncated": max(len(comp_rows) - MAX_COMPONENTS, 0),
         "spawns": spawn_rows[:MAX_SPAWN_ROWS],
+        "other_comms": other_rows[:MAX_OTHER_COMMS],
+        "other_comms_truncated": max(len(other_rows) - MAX_OTHER_COMMS, 0),
         "top_processes": top_rows,
     }
 

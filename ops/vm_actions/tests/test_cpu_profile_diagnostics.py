@@ -91,6 +91,11 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
                 {"component": "ffmpeg:capture", "spawner": "worker:chat_worker", "count": 7},
                 {"component": "token:bad", "spawner": "browser", "count": 100},
             ],
+            "other_comms": [
+                {"comm": "opencode", "cpu_pct": 70.0, "processes": 3},
+                {"comm": "sed", "cpu_pct": 20.0, "processes": 12},
+                {"comm": "token:bad", "cpu_pct": 5.0, "processes": 1},
+            ],
             "top_processes": [{"pid": 123, "component": "browser", "cmdline": "secret"}],
         }
 
@@ -108,10 +113,12 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
         self.assertEqual(out["spawns"], [
             {"component": "ffmpeg:capture", "spawner": "worker:chat_worker", "count": 7}
         ])
+        self.assertEqual(out["other_top"], "opencode 70% | sed 20%")
         encoded = json.dumps(out, sort_keys=True)
         self.assertNotIn("secret", encoded)
         self.assertNotIn("cmdline", encoded)
         self.assertNotIn("top_processes", encoded)
+        self.assertNotIn("token:bad", encoded)
         self.assertNotIn("/home/ubuntu", encoded)
 
     def test_cpu_top_and_spawn_top_summaries(self):
@@ -123,8 +130,10 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
         # Head rows only; the rejected `token:do-not-project` label never leaks.
         self.assertEqual(out["cpu_top"], "browser 110% | ffmpeg:stream 42% | tail 2%")
         self.assertEqual(out["spawn_top"], "ffmpeg:capture<-worker:chat_worker 7")
+        self.assertEqual(out["other_top"], "opencode 70% | sed 20%")
         self.assertIsInstance(out["cpu_top"], str)
         self.assertIsInstance(out["spawn_top"], str)
+        self.assertIsInstance(out["other_top"], str)
 
     def test_ambiguous_other_label_is_separated_from_the_tail(self):
         # A real `other` component row must not be confused with the aggregate
