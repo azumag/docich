@@ -69,7 +69,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         mem.pop('recall', None)
         mem['uncertain'] = True
         mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
-        return [pad('b')] if is_camp_menu(screen) else []
+        # A stuck recall must leave the screen it is on, not only a camp menu.
+        # map_target/world_map are the actual "return" screens; B closes them.
+        # A camp menu is closed with B as before; other screens keep the old
+        # no-input behaviour to avoid inventing inputs on text/battle frames.
+        if is_camp_menu(screen) or screen.kind in ('map_target', 'world_map'):
+            return [pad('b')]
+        return []
     stage = state.get('stage')
     if stage == 'hero_focus':
         if screen.kind != 'map':
