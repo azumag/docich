@@ -8,6 +8,7 @@ from copy import deepcopy
 
 from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
+from ... import hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss)
@@ -278,6 +279,10 @@ def map_step(screen: Screen, mem, frame):
         mem['active'] = None
         mem['picked'] = []
         order = None
+    if isinstance(order, dict) and str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX):
+        if (mem.get('chart_adjust') or {}).get('request_id') == chart_adjust.request_id(mem):
+            _off_chart(mem)
+            order = _order(mem) or next_order(mem) or order
     if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
         # Before choosing what to do next, read every castle's owner at once.
         mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
@@ -291,9 +296,10 @@ def map_step(screen: Screen, mem, frame):
                       and not sortie.get('verification_unavailable')
                       and sortie.get('source') in _owned(mem)), None)
         order = order or next_order(mem)
-        if order is None:
+        if (order is None or (isinstance(order, dict)
+                              and str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX))):
             _off_chart(mem)
-            order = next_order(mem)
+            order = next_order(mem) or order
         if order is None:
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance

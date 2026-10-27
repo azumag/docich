@@ -48,6 +48,17 @@ def decisions(mem, kind):
     return [r for r in mem['_records'] if r['decision'] == kind]
 
 
+def no_plan_active(mem):
+    # The mechanical interim may run while the LLM chart is pending; no plan order may.
+    return mem.get('active') is None or mem['active'].startswith('I:')
+
+
+def finish_interim(mem):
+    # The interim sortie has gone out; the next map step may take the chart's turn.
+    if (mem.get('active') or '').startswith('I:'):
+        policy._finish_order(mem, 'launched')
+
+
 def test_off_chart_records_one_request_per_situation_and_holds():
     mem = stuck_memory()
     assert policy.map_step(map_screen(), mem, FRAME) == []
@@ -55,13 +66,14 @@ def test_off_chart_records_one_request_per_situation_and_holds():
     assert request['off_chart_reason'] == 'orders_locked'
     assert request['blocked'] == [{'step': '1-B1', 'after': ['all_captured']}]
     assert request['request_id'] == adjust.request_id(mem) == mem['chart_adjust']['request_id']
-    assert mem.get('active') is None
+    assert no_plan_active(mem)
     # Holding on the same situation does not spam requests.
     assert policy.map_step(map_screen(), mem, FRAME) == []
     assert len(decisions(mem, 'chart_adjust_request')) == 1
     # A new capture is a new situation: 1-B1 becomes ready, no request needed.
     mem['captured'].append('スペンソニア')
     mem['captured'].append('ジョンリギ')
+    finish_interim(mem)
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == '1-B1'
 
@@ -84,13 +96,14 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     # A stale answer (other request) is ignored.
     mem['_adjusted'] = adjust.validate(adjusted_doc('0' * 16))
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem.get('active') is None and not decisions(mem, 'chart_adjust_applied')
+    assert no_plan_active(mem) and not decisions(mem, 'chart_adjust_applied')
+    finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
     [applied] = decisions(mem, 'chart_adjust_applied')
     assert applied['steps'] == [j1, j2] and applied['local_steps'] == ['J1', 'J2']
     assert mem['variant'] == 'chart_adjusted' and mem['active'] == j1
-    [start] = decisions(mem, 'order_start')
+    start = decisions(mem, 'order_start')[-1]
     assert start['target'] == 'スペンソニア' and start['strategy_variant'] == 'chart_adjusted'
     # The adopted list survives without the file (persisted in memory, JSON-safe).
     mem = json.loads(json.dumps({k: v for k, v in mem.items() if k != '_adjusted'}))
@@ -104,11 +117,12 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     assert len(decisions(mem, 'chart_adjust_request')) == 1
     assert [o['step'] for o in mem['chart_plan']['orders']] == [j1, j2]
     assert mem['chart_plan']['purchases']['month'] == [1, 8]
-    assert mem['chart_adjust']['interim_wanted'] is False     # plan still waiting: no JEV
+    assert 'interim_order' not in mem['chart_adjust']         # plan still waiting: no interim
     mem['captured'].append('スペンソニア')
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem.get('active') is None  # the adjusted condition cannot skip ジョンリギ
+    assert no_plan_active(mem)  # the adjusted condition cannot skip ジョンリギ
     mem['captured'].append('ジョンリギ')
+    finish_interim(mem)
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == j2
     # The base chart is never mutated.
@@ -119,6 +133,7 @@ def test_second_generation_reusing_local_steps_runs_its_own_orders():
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)
     first = mem['chart_adjust']['request_id']
+    finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(first, orders=[
         {'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン', 'target': 'スペンソニア'}]))
     policy.map_step(map_screen(), mem, FRAME)
@@ -127,6 +142,7 @@ def test_second_generation_reusing_local_steps_runs_its_own_orders():
     policy.map_step(map_screen(), mem, FRAME)            # exhausted: new request
     second = mem['chart_adjust']['request_id']
     assert second != first
+    finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(second, orders=[
         {'step': 'J1', 'general': 'ヴィーナス', 'source': 'カストーラ', 'target': 'スペンソニア'}]))
     policy.map_step(map_screen(), mem, FRAME)
@@ -247,6 +263,7 @@ def test_bot_entry_publishes_request_and_offers_saved_chart(tmp_path):
     assert 'chart_adjust_request' in module.INPUT_CONTEXT_DECISIONS
     # The worker answers; the bot offers the validated chart to decide().
     adjust.save(tmp_path, adjusted_doc(request['request_id']))
+    finish_interim(mem)
     mem['_adjusted'] = adjust.load(tmp_path)
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == adjust.execution_step(request['request_id'], 'J1')
@@ -260,7 +277,8 @@ def test_decide_offers_adjusted_chart_without_persisting_it(monkeypatch):
     del memory['_records']
     actions, state = hanjuku_bot.decide(FRAME, {'policy': memory})
     rid = state['policy']['chart_adjust']['request_id']
-    assert actions == [] and [r['decision'] for r in state['_records']] == ['chart_adjust_request']
+    assert [r['decision'] for r in state['_records']][:2] == ['chart_adjust_request', 'chart_interim_order']
+    finish_interim(state['policy'])
     actions, state = hanjuku_bot.decide(FRAME, state, adjusted=adjust.validate(adjusted_doc(rid)))
     assert state['policy']['active'] == adjust.execution_step(rid, 'J1')
     assert '_adjusted' not in state['policy']
@@ -287,65 +305,31 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     assert all(c['source'] in set(mem['captured']) | {'アルマムーン'} for c in candidates.values())
 
 
-def test_jev_interim_choice_becomes_a_bounded_deterministic_order():
+def test_mechanical_interim_runs_without_any_model_answer():
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem['chart_adjust']['interim_wanted'] is True
-    label = next(k for k, v in policy.interim_candidates(mem).items() if v['target'] == 'スペンソニア')
-    mem['_interim'] = _answer(mem, label)
-    policy.map_step(map_screen(), mem, FRAME)
-    [interim] = decisions(mem, 'chart_interim_order')
-    assert mem['active'] == interim['chart_step'] and interim['chart_step'].startswith('I:')
-    assert interim['target'] == 'スペンソニア'
+    [first] = decisions(mem, 'chart_interim_order')
+    assert first['strategy_variant'] == 'chart_interim_mechanical'
+    assert first['target'] in {'ジョンリギ', 'スペンソニア'}
+    assert mem['active'] == first['chart_step'] and first['chart_step'].startswith('I:')
+    assert 'interim_wanted' not in mem['chart_adjust']
     # The interim sortie does not change the pending LLM request.
     rid = mem['chart_adjust']['request_id']
     mem['orders'][mem['active']] = 'launched'
+    mem.setdefault('sorties', {})[first['chart_step']] = {
+        'general': first['general'], 'source': first['source'], 'target': first['target'],
+        'status': 'en_route', 'tick': mem.get('tick') or 0}
     mem['active'] = None
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['chart_adjust']['request_id'] == rid and len(decisions(mem, 'chart_adjust_request')) == 1
-    assert mem['chart_adjust']['interim_wanted'] is True      # second (last) attempt
-    # A stale answer (old seq) is ignored.
-    mem['_interim'] = {**_answer(mem, label), 'seq': 0}
-    policy.map_step(map_screen(), mem, FRAME)
-    assert len(decisions(mem, 'chart_interim_order')) == 1
-    # hold is not a choice: the answer falls back to the first attack candidate.
-    mem['_interim'] = _answer(mem, 'hold')
-    policy.map_step(map_screen(), mem, FRAME)
-    orders = decisions(mem, 'chart_interim_order')
-    assert len(orders) == 2
-    assert orders[-1]['strategy_variant'] == 'chart_interim_fallback'
-    assert orders[-1]['target'] in {'ジョンリギ', 'スペンソニア'}
-    assert not decisions(mem, 'chart_interim_hold')
-    assert mem['chart_adjust']['interim_wanted'] is False     # JEV budget spent
-    # Even after the JEV budget, the next free slot still sorties (no pure hold).
-    mem['orders'][mem['active']] = 'launched'
-    mem['active'] = None
-    policy.map_step(map_screen(), mem, FRAME)
-    assert len(decisions(mem, 'chart_interim_order')) == 3
-    assert mem['active'] is not None
-    # The LLM chart still wins when it arrives (finish the interim first).
-    mem['orders'][mem['active']] = 'launched'
-    mem['active'] = None
+    # The only other chart general is marching, so the interim holds until the answer.
+    assert len(decisions(mem, 'chart_interim_order')) == 1 and mem.get('active') is None
+    assert decisions(mem, 'chart_interim_hold')
+    # The LLM chart still wins when it arrives.
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem['active'] == adjust.execution_step(rid, 'J1')
-    assert 'interim_order' not in mem['chart_adjust']
-
-
-@pytest.mark.parametrize('answer', [
-    {'choice': 'attack_99'}, {'choice': None, 'status': 'timeout'},
-    {'confidence': 0.2}, {'status': 'missing_key', 'choice': None},
-    {'choice': 'hold'}])
-def test_unusable_jev_answers_fallback_to_first_attack(answer):
-    mem = stuck_memory()
-    policy.map_step(map_screen(), mem, FRAME)
-    mem['_interim'] = {**_answer(mem, 'attack_1'), **answer}
-    policy.map_step(map_screen(), mem, FRAME)
-    [order] = decisions(mem, 'chart_interim_order')
-    assert order['strategy_variant'] == 'chart_interim_fallback'
-    assert order['target'] in {'ジョンリギ', 'スペンソニア'}
-    assert mem.get('active') == order['chart_step']
-    assert not decisions(mem, 'chart_interim_hold')
+    # J1's general is still marching to the interim target, so the adopted plan waits.
+    assert decisions(mem, 'chart_adjust_applied') and 'interim_order' not in mem['chart_adjust']
 
 
 def test_hanjuku_interim_ask_projects_state_and_validates_choice():
@@ -359,7 +343,8 @@ def test_hanjuku_interim_ask_projects_state_and_validates_choice():
         return {'status': 'ok', 'meta': {'latency_ms': 12.0},
                 'data': {'answers': {'interim_action': {'choice': 'attack_1', 'confidence': 0.8}}}}
     answer = hanjuku_interim.ask(mem, env={}, transport=transport)
-    assert answer['status'] == 'ok' and answer['choice'] == 'attack_1' and answer['seq'] == 0
+    # The mechanical interim already took seq 0 when the step ran.
+    assert answer['status'] == 'ok' and answer['choice'] == 'attack_1' and answer['seq'] == 1
     request = seen['request']
     assert set(request) == {'model', 'state', 'questions'}
     # No hold/skip label: only attack candidates.
@@ -390,11 +375,9 @@ def test_bot_asks_jev_once_per_pending_seq(tmp_path):
     fake = lambda m, **k: calls.append(1) or _answer(m, 'attack_1')
     cfg = {'interim_jev': True, 'interim_timeout_ms': 1500}
     meta = {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1, 'lease_id': 'l'}}
-    assert module.ask_interim(tmp_path, state, meta, settings=cfg, ask=fake)['choice'] == 'attack_1'
+    # The interim order is mechanical now: no JEV question is asked at all.
     assert module.ask_interim(tmp_path, state, meta, settings=cfg, ask=fake) is None
-    assert len(calls) == 1
-    assert module.ask_interim(tmp_path, {'policy': mem}, meta, settings={**cfg, 'interim_jev': False},
-                              ask=fake) is None
+    assert calls == []
 
 
 # ---------------------------------------------------------------- step 3: async worker
@@ -666,6 +649,7 @@ def _launch(monkeypatch, mem):
 def _adopt(mem, orders):
     policy.map_step(map_screen(), mem, FRAME)
     rid = mem['chart_adjust']['request_id']
+    finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid, orders=orders))
     policy.map_step(map_screen(), mem, FRAME)
     mem['_adjusted'] = None
@@ -954,19 +938,12 @@ def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeyp
     policy._finish_order(mem, 'launched')
     policy.map_step(map_screen(), mem, FRAME)            # J2 waits for the capture
     state = mem['chart_adjust']
-    assert state['request_id'] != rid and state['interim_wanted'] is False
-    mem['_interim'] = {'request_id': state['request_id'], 'seq': 0, 'status': 'ok',
-                       'choice': 'attack_1', 'confidence': 0.9}
+    assert state['request_id'] != rid and 'interim_order' not in state
+    interims = len(decisions(mem, 'chart_interim_order'))  # the setup's first interim already ran
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem.get('active') is None and not decisions(mem, 'chart_interim_order')
+    assert mem.get('active') is None and len(decisions(mem, 'chart_interim_order')) == interims
     # Exhaust the plan: J2 failed. Now an interim sortie may run.
     mem['orders'][adjust.execution_step(rid, 'J2')] = 'failed'
-    mem['_interim'] = None
-    policy.map_step(map_screen(), mem, FRAME)
-    state = mem['chart_adjust']
-    assert state['interim_wanted'] is True
-    mem['_interim'] = {'request_id': state['request_id'], 'seq': 0, 'status': 'ok',
-                       'choice': 'attack_1', 'confidence': 0.9}
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'].startswith(adjust.INTERIM_PREFIX)
     assert mem['chart_plan']['purchases'] is not None          # plan evidence kept
@@ -1143,7 +1120,8 @@ def test_a_bound_answer_is_adopted_only_for_the_current_payload_revision():
     digest = mem['chart_adjust']['request_digest']
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest='0' * 64))
     policy.map_step(map_screen(), mem, FRAME)
-    assert not decisions(mem, 'chart_adjust_applied') and mem.get('active') is None
+    assert not decisions(mem, 'chart_adjust_applied') and no_plan_active(mem)
+    finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest=digest))
     policy.map_step(map_screen(), mem, FRAME)
     [applied] = decisions(mem, 'chart_adjust_applied')
@@ -1235,11 +1213,7 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
     assert policy.interim_candidates(mem) == receipt['candidates']
     assert mem.get('active') is None and not mem.get('recall')
     assert policy.next_order(mem) is None
-    policy._off_chart(mem)
-    assert mem['chart_adjust']['interim_wanted'] is True
-    mem['_interim'] = {'request_id': rid, 'seq': 0, 'status': 'ok',
-                       'choice': 'retake_1', 'confidence': 1}
-    policy._off_chart(mem)
+    policy._off_chart(mem)     # no model answer needed: the first candidate starts
     order = policy.next_order(mem)
     assert order['target'] == 'ナキューメラ' and order['source'] == 'アルマムーン'
     assert order['purpose'] == 'retake' and order['general'] == 'ヴィーナス'
@@ -1254,7 +1228,7 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
                                             (['ヴィーナス'], False), (None, False)])
 def test_g514_recovered_retake_still_requires_a_readable_spare_defender(monkeypatch, present, allows):
     _, mem = g514_locked_plan()
-    mem['chart_adjust']['interim_count'] = policy.INTERIM_LIMIT
+    mem['chart_adjust']['interim_count'] = 2
     policy._off_chart(mem)
     order = policy.next_order(mem)
     assert order['target'] == 'ナキューメラ'
@@ -1273,7 +1247,7 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     mem['garrison']['カストーラ'] = ['ココット', 'ゼウス']
     assert policy._plan_pending(mem)
     policy._off_chart(mem)
-    assert not mem['chart_adjust']['interim_wanted']
+    assert not mem['chart_adjust'].get('interim_order')
     _, mem = g514_locked_plan()
     mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
