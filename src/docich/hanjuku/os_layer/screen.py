@@ -17,6 +17,19 @@ from .pixels import Frame
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
 HAND_COLORS = ((255, 174, 82), (205, 105, 24), (205, 149, 32))
+
+
+def resume_bijin_gift_panel(screen) -> bool:
+    """Recognize the complete native gift menu without guessing a chapter."""
+    header = screen.header or {}
+    if (screen.kind != 'gift_request' or header.get('chapter') is not None
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or not 1 <= header['month'] <= 12):
+        return False
+    rows = [''.join(word for x, word in line.spans() if x >= 144)
+            for line in screen.lines]
+    items = [row for row in rows if PRICE.fullmatch(row) and row != f"{header['gold']}G"]
+    return len(items) == 3 and set(items) == {'こうすい100G', 'くるま200G', 'いえ500G'}
 # Summoned-monster turn menu: a knight sprite sits left of the selected option
 # row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
 # Both measurements come from live frames (decision-003/024/029).
