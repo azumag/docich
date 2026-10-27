@@ -1505,6 +1505,12 @@ def _cpu_profile_label(value):
     return None
 
 
+def _cpu_profile_comm_label(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", value):
+        return None
+    return value
+
+
 def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
     """Project one fixed profiler report without exposing arbitrary /tmp JSON."""
     result = {
@@ -1658,6 +1664,23 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
             spawn_top_parts.append(f"{component}<-{spawner}")
     spawn_top = " | ".join(spawn_top_parts)
 
+    # The residual `other` component is otherwise opaque. Expose only the
+    # profiler's sanitized comm labels (<=16 chars, lowercase) and their CPU,
+    # so the short-lived/generic consumers can be attributed without emitting
+    # argv, paths or PIDs.
+    other_top_parts = []
+    raw_other = data.get("other_comms")
+    if isinstance(raw_other, list):
+        for item in raw_other[:5]:
+            if not isinstance(item, dict):
+                continue
+            comm = _cpu_profile_comm_label(item.get("comm"))
+            pct = _cpu_profile_number(item.get("cpu_pct"), maximum=10**6)
+            if comm is None or pct is None:
+                continue
+            other_top_parts.append(f"{comm} {pct:.0f}%")
+    other_top = " | ".join(other_top_parts)
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -1672,6 +1695,7 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "spawns": spawns,
         "cpu_top": cpu_top,
         "spawn_top": spawn_top,
+        "other_top": other_top,
     }
 
 
