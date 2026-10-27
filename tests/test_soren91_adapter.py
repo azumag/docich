@@ -1432,6 +1432,45 @@ class TestRendererFailover(Soren91AdapterTestBase):
         attempts = soren91_renderer.load_selection(self.g.state_dir)["attempts"]
         self.assertIn("CDP proxy", attempts[0]["error"])
 
+    def test_renderer_exit_during_viewer_wait_fails_fast(self):
+        # #2260 (2026-10-28): the Mac CDP child exited ~17s after it came up,
+        # and the adapter waited out the presenter's 240s viewer wait. A
+        # renderer that stops after its CDP proxy answered must fail the wait.
+        adapter = self._adapter(self._enabled_game())
+        cdp_up = [True]
+        adapter._cdp_proxy_ready = lambda: cdp_up[0]
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    urllib.error.URLError("no route"),  # windows /v1/status
+                    urllib.error.URLError("no route"),  # windows best-effort /v1/stop
+                    (200, {"ok": True, "running": False}),  # mac /v1/status
+                    (202, {"ok": True, "started": True}),  # mac /v1/start
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        self.assertTrue(adapter._renderer_up_seen)
+
+        viewer_entered = []
+
+        def viewer_wait(self_, deadline, cancel):
+            # The presenter wait polls _check_active; the renderer dies here.
+            viewer_entered.append(True)
+            cdp_up[0] = False
+            while True:
+                self_._check_active(deadline, cancel)
+                time.sleep(0.01)
+
+        with mock.patch("docich.adapters.soren91.RENDERER_WATCH_INTERVAL_S", 0.0), \
+                mock.patch.object(CliCoordinatorAdapter, "readiness", new=viewer_wait), \
+                self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            started = time.monotonic()
+            with self.assertRaises(ReadinessTimeoutError) as ctx:
+                adapter.readiness(time.monotonic() + 240, None)
+        self.assertTrue(viewer_entered)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("起動後に停止", str(ctx.exception))
+
     def test_mode_pins_one_host(self):
         soren91_renderer.save_mode(self.g.state_dir, "mac")
         self._materialize([
