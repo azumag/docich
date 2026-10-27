@@ -179,14 +179,23 @@ def _card_use_unclassified(mem, cur, reason):
 
 
 def reset_battle_controls(mem):
-    """Discard controls belonging to the previous combatant."""
+    # Carryover detection for #2831
+    _prev_reentry = mem.get('rescue_reentry_count')
+    if type(_prev_reentry) is int and _prev_reentry > 0:
+        try:
+            _record(mem, 'battle_rescue_carryover_cleared',
+                    reason='previous fight rescue reentry counter reset for new battle',
+                    observed_metric={'previous_count': _prev_reentry})
+        except Exception:
+            pass
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)
     for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
                 'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
                 'indep_menu', 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel',
+                'rescue_reentry_count', 'rescue_rearm_count'):
         mem.pop(key, None)
 
 
@@ -1182,6 +1191,8 @@ def _general_egg_rescue_recheck(mem, cur):
 
 
 HERO_SURVIVAL_REOPEN_LIMIT = 2    # extra unopened-menu episodes for a losing hero
+RESCUE_REENTRY_LIMIT = HERO_SURVIVAL_REOPEN_LIMIT  # bounded summon-battle re-entry
+RESCUE_REARM_LIMIT = HERO_SURVIVAL_REOPEN_LIMIT    # bounded re-arm after exhausted
 
 
 def _hero_losing_melee(cur):
@@ -1791,6 +1802,126 @@ def _hold_general_loss_metric(mem):
 HERO_RECALL_RATIO_TENTHS = 4   # hero HP at or below 40% of his full strength after a win
 HERO_RECALL_MIN_HP = 20        # and never below this when his full strength is unknown
 
+
+def _rescue_decision(mem, cur, context):
+    """Single-criterion rescue decision (means-level + skill-level pre-check).
+
+    Returns {'action': 'use'|'conserve'|'unknown', 'candidate': str|None,
+             'reason': str, 'guard_rejected': [str]}.
+    No screen argument: callers extract observations into ``context``.
+    """
+    guard_rejected = []
+    if not isinstance(cur, dict):
+        return {'action': 'unknown', 'candidate': None,
+                'reason': 'no battle context', 'guard_rejected': guard_rejected}
+    context = context or {}
+    candidates = []
+    # Means-level candidates.
+    try:
+        if _survival_needed(cur):
+            candidates.append('egg')
+    except Exception:
+        guard_rejected.append("exception")
+    try:
+        if _hero_retreat_needed(cur) or _default_retreat_needed(cur):
+            if 'retreat' not in candidates:
+                candidates.append('retreat')
+    except Exception:
+        guard_rejected.append("exception")
+    last_resort_ok = False
+    reading = context.get('summon')
+    try:
+        if _defender_last_resort(mem, cur) or (reading and _defender_summon_last_resort(mem, cur, reading)):
+            last_resort_ok = True
+            if 'okunote' not in candidates:
+                candidates.append('okunote')
+    except Exception:
+        guard_rejected.append("exception")
+    try:
+        w = _defender_egg_window(mem, cur)
+        if w and w.get('due'):
+            if 'okunote' not in candidates:
+                candidates.append('okunote')
+    except Exception:
+        guard_rejected.append("exception")
+    try:
+        own_egg = _own_egg_needed(mem, cur)
+        own_egg_needed = own_egg[0] if isinstance(own_egg, tuple) else own_egg
+        if own_egg_needed:
+            if 'egg' not in candidates:
+                candidates.append('egg')
+    except Exception:
+        guard_rejected.append("exception")
+    # Layer 2: okunote self-damage exclusion on observed menu choices.
+    observed_choices = context.get('okunote_choices')
+    if 'okunote' in candidates and not last_resort_ok:
+        if observed_choices:
+            from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
+            safe = [c for c in observed_choices
+                    if c not in OKUNOTE_SELF_DAMAGE_CHOICES]
+            if not safe:
+                candidates = [c for c in candidates if c != 'okunote']
+                guard_rejected.append('okunote_self_damage')
+    # conserve check
+    try:
+        if (_pre_summon_hp_advantage(cur) or _healthy_melee_advantage(cur)):
+            if not _survival_needed(cur):
+                return {'action': 'conserve', 'candidate': None,
+                        'reason': 'healthy advantage', 'guard_rejected': guard_rejected}
+    except Exception:
+        guard_rejected.append("exception")
+    survival_needed = False
+    try:
+        survival_needed = bool(_survival_needed(cur))
+    except Exception:
+        survival_needed = False
+    hero_retreat = False
+    try:
+        hero_retreat = bool(_hero_retreat_needed(cur))
+    except Exception:
+        hero_retreat = False
+    if candidates and (survival_needed or hero_retreat or last_resort_ok):
+        return {'action': 'use', 'candidate': candidates[0],
+                'reason': 'survival/retreat needed', 'guard_rejected': guard_rejected}
+    return {'action': 'unknown', 'candidate': None,
+            'reason': 'no rescue needed or no candidate', 'guard_rejected': guard_rejected}
+
+
+def _rescue_rearm(mem, cur, context):
+    """Bounded re-arm of an exhausted rescue state on tide change."""
+    if not isinstance(cur, dict):
+        return False
+    rescue = cur.get('survival') or {}
+    if not rescue.get('exhausted'):
+        return False
+    count = int(cur.get('rescue_rearm_count') or 0)
+    if count >= RESCUE_REARM_LIMIT:
+        return False
+    context = context or {}
+    hp = cur.get('ally_hp')
+    prev = cur.get('_rescue_eval_hp')
+    rearm = False
+    if (type(prev) is int and type(hp) is int
+            and prev - hp >= max(1, GENERAL_CRITICAL_RETREAT_HP // 2)):
+        rearm = True
+    try:
+        pass
+    except Exception:
+        pass
+    if not rearm:
+        return False
+    rescue['exhausted'] = False
+    cur['rescue_rearm_count'] = count + 1
+    cur['_rescue_eval_hp'] = hp
+    cur['_rescue_prev_survival'] = True
+    try:
+        _record(mem, 'battle_rescue_rearmed', **_battle_labels(cur),
+                reason='tide change re-armed exhausted rescue',
+                observed_metric={'hp': hp, 'previous_hp': prev,
+                                'episode': count + 1, 'limit': RESCUE_REARM_LIMIT})
+    except Exception:
+        pass
+    return True
 
 def _hero_marching(mem):
     now = int(mem.get('tick') or 0)
