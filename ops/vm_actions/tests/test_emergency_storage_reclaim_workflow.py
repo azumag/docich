@@ -37,8 +37,10 @@ class EmergencyStorageReclaimWorkflowTests(unittest.TestCase):
         self.assertIn("json.loads(path.read_text()).get('storage') or {}", text)
         self.assertNotIn("get('filesystem')", text)
 
-    def test_epoch_three_triggers_metrics_verified_run(self):
-        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "3\n")
+    def test_epoch_matches_the_current_trigger_value(self):
+        # Bumping the epoch changes the emergency-reclaim workflow trigger.
+        # Update this pin in the same PR as the bump (#2820 -> 4).
+        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "4\n")
 
 
 if __name__ == "__main__":
