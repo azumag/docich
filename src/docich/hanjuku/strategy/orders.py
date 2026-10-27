@@ -95,6 +95,194 @@ def _hero_source_alternative(order, mem):
             and bool(_order_hero_alternatives(order, mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
 
 
+def _gate_dicts(mem, *keys):
+    for key in keys:
+        value = mem.get(key)
+        if isinstance(value, dict):
+            return value, key
+    return None, keys[0]
+
+
+def _hero_broken_sortie_suppressed(order, mem) -> bool:
+    step = order.get('step')
+    gates, _ = _gate_dicts(mem, 'hero_broken_sortie_gates', 'broken_hero_sortie_gates',
+                           'hero_broken_egg_sortie_gates')
+    if not isinstance(gates, dict):
+        gates = {}
+    gate = gates.get(step) if isinstance(gates, dict) else None
+    if not isinstance(gate, dict):
+        return False
+    if not _hero_egg_broken(mem):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    current_alternative = _hero_source_alternative(order, mem)
+    if gate.get('alternative') != current_alternative:
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    if gate.get('month') != mem.get('month'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    count = gate.get('count', 0)
+    if count >= HERO_BROKEN_SORTIE_CANCEL_LIMIT:
+        gates.pop(step, None)
+        mem.setdefault('orders', {})[step] = 'failed'
+        return True
+    return True
+
+
+def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
+    step = order.get('step')
+    gates, _ = _gate_dicts(mem, 'sortie_cancelled_observed_gates', 'sortie_cancelled_gates',
+                           'sortie_cancel_gates', 'sortie_cancel_observed_gates', 'cancelled_sortie_gates')
+    if not isinstance(gates, dict):
+        gates = {}
+    gate = gates.get(step) if isinstance(gates, dict) else None
+    if not isinstance(gate, dict):
+        return False
+    general = gate.get('general')
+    source = gate.get('source')
+    if gate.get('month') != mem.get('month'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    garrison = (mem.get('garrison') or {}).get(source)
+    general_present = isinstance(garrison, list) and general in garrison
+    if not general_present:
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    sortie = (mem.get('sorties') or {}).get(step)
+    if not (isinstance(sortie, dict) and sortie.get('status') == 'cancelled'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    count = gate.get('count', 0)
+    if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
+        gates.pop(step, None)
+        mem.setdefault('orders', {})[step] = 'failed'
+        return True
+    return True
+
+
+def _source_defender_suppressed(order, mem) -> bool:
+    step = order.get('step')
+    gates, _ = _gate_dicts(mem, 'sortie_held_source_defender_gates', 'source_defender_cancel_gates',
+                           'sortie_held_source_defender_cancel_gates', 'sortie_source_defender_cancel_gates')
+    if not isinstance(gates, dict):
+        gates = {}
+    gate = gates.get(step) if isinstance(gates, dict) else None
+    if not isinstance(gate, dict):
+        return False
+    source = gate.get('source') or _source(order, mem)
+    if gate.get('month') != mem.get('month'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    if source != _source(order, mem):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    current_present = (mem.get('garrison') or {}).get(source)
+    current_present_tuple = tuple(sorted(current_present)) if isinstance(current_present, list) else None
+    if current_present_tuple != gate.get('present'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    busy, _ = _en_route(mem)
+    unknown = set(mem.get('general_location_unknown') or ())
+    unavailable = busy | unknown
+    current_available = None
+    if isinstance(current_present, list):
+        current_available = tuple(sorted(set(current_present) - unavailable))
+    if current_available != gate.get('available'):
+        gates.pop(step, None)
+        if (mem.get('orders') or {}).get(step) == 'failed':
+            mem.setdefault('orders', {})[step] = None
+        return False
+    count = gate.get('count', 0)
+    if count >= SOURCE_DEFENDER_CANCEL_LIMIT:
+        gates.pop(step, None)
+        mem.setdefault('orders', {})[step] = 'failed'
+        return True
+    return True
+
+
+def _record_source_defender_cancel(mem, order, present=None, available=None):
+    step = order.get('step')
+    if not step:
+        return
+    source = _source(order, mem)
+    month = mem.get('month')
+    present_tuple = None
+    if isinstance(present, list):
+        present_tuple = tuple(sorted(present))
+    elif isinstance(present, (tuple, set, frozenset)):
+        present_tuple = tuple(sorted(present))
+    busy, _ = _en_route(mem)
+    unknown = set(mem.get('general_location_unknown') or ())
+    unavailable = busy | unknown
+    if available is None and isinstance(present, list):
+        available = tuple(sorted(set(present) - unavailable))
+    elif isinstance(available, (list, tuple, set, frozenset)):
+        available = tuple(sorted(available))
+    counts = mem.setdefault('sortie_held_source_defender_counts', {})
+    for key in ('source_defender_cancel_counts', 'sortie_held_source_defender_cancel_counts',
+                'sortie_source_defender_cancel_counts'):
+        mem[key] = counts
+    counts[step] = counts.get(step, 0) + 1
+    count = counts[step]
+    gates = mem.setdefault('sortie_held_source_defender_gates', {})
+    for key in ('source_defender_cancel_gates', 'sortie_held_source_defender_cancel_gates',
+                'sortie_source_defender_cancel_gates'):
+        mem[key] = gates
+    limit = SOURCE_DEFENDER_CANCEL_LIMIT
+    if count >= limit:
+        gates.pop(step, None)
+        mem.setdefault('orders', {})[step] = 'failed'
+    else:
+        gates[step] = {'source': source, 'month': month, 'present': present_tuple,
+                       'available': available, 'count': count}
+
+
+def _record_sortie_cancelled_observed(mem, order, sortie):
+    step = order.get('step')
+    if not step or not isinstance(sortie, dict):
+        return
+    general = sortie.get('general')
+    source = sortie.get('source')
+    month = mem.get('month')
+    counts = mem.setdefault('sortie_cancelled_observed_counts', {})
+    for key in ('sortie_cancelled_counts', 'sortie_cancel_counts', 'sortie_cancel_observed_counts',
+                'cancelled_sortie_counts', 'sortie_cancel'):
+        mem[key] = counts
+    counts[step] = counts.get(step, 0) + 1
+    count = counts[step]
+    gates = mem.setdefault('sortie_cancelled_observed_gates', {})
+    for key in ('sortie_cancelled_gates', 'sortie_cancel_gates', 'sortie_cancel_observed_gates',
+                'cancelled_sortie_gates'):
+        mem[key] = gates
+    limit = SORTIE_CANCELLED_OBSERVED_LIMIT
+    if count >= limit:
+        gates.pop(step, None)
+        mem.setdefault('orders', {})[step] = 'failed'
+    else:
+        gates[step] = {'general': general, 'source': source, 'month': month,
+                       'count': count, 'target': sortie.get('target')}
+
+
+
 def _boss_egg_depleted(order, mem) -> bool:
     # g486: どうし left with 3 uses and lost to the Queen's Hydra after
     # the second card missed its input window. Chapter 1's source recommends
@@ -137,6 +325,12 @@ def _boss_target_unlocked(order, mem):
 
 
 def _ready(order, mem) -> bool:
+    if _sortie_cancelled_observed_suppressed(order, mem):
+        return False
+    if _source_defender_suppressed(order, mem):
+        return False
+    if _hero_broken_sortie_suppressed(order, mem):
+        return False
     if not _boss_target_unlocked(order, mem):
         return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
@@ -464,6 +658,9 @@ def _arrival_castle(mem, owned):
 
 
 SOURCE_LOCATION_RECHECK_LIMIT = 3
+SORTIE_CANCELLED_OBSERVED_LIMIT = 3
+SOURCE_DEFENDER_CANCEL_LIMIT = 3
+HERO_BROKEN_SORTIE_CANCEL_LIMIT = 3
 
 
 def _source_location_recheck(mem, source):
