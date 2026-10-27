@@ -299,3 +299,24 @@ def test_tactical_omission_preserves_the_policy_summary(monkeypatch):
     tactical = payload['hanjuku_tactical']
     assert tactical['status'] == 'output_omitted'
     assert tactical['chapter'] == 3 and tactical['policy'] == policy
+
+
+def test_recent_decisions_are_fixed_tokens_only(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, variant='chart_unavailable', active=None)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'situation_held',
+         'screen_kind': 'map', 'at': 105, 'reason': 'DO NOT EMIT', 'chart_step': '3-Z1'},
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 108, 'reason': 'DO NOT EMIT'},
+    ]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(row, ensure_ascii=False) for row in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recent = out['policy']['recent_decisions']
+    assert [row['decision'] for row in recent] == ['situation_held', 'order_start']
+    assert [row['screen_kind'] for row in recent] == ['map', 'map']
+    text = json.dumps(out, ensure_ascii=False)
+    assert 'DO NOT EMIT' not in text and '3-Z1' not in text

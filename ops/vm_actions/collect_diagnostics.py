@@ -10940,6 +10940,58 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log.
+
+    Only allowlisted tokens, fixed screen kinds and ages leave this reader.
+    Reasons, chart steps, general/castle names, frame hashes and identities
+    remain private; a malformed or unattributed line is skipped.
+    """
+    out = []
+    try:
+        fd = _open_hanjuku_scene_source(Path(runtime) / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return out
+            offset = max(0, info.st_size - 64 * 1024)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()[-256:]
+        finally:
+            os.close(fd)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    continue
+                event = row.get("event")
+                decision = row.get("decision")
+                if not isinstance(event, str) or not re.fullmatch(r"[a-z_]{1,48}", event):
+                    continue
+                if decision is not None and (
+                        not isinstance(decision, str)
+                        or not re.fullmatch(r"[a-z_]{1,64}", decision)):
+                    continue
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    continue
+                kind = row.get("screen_kind")
+                kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                out.append({"event": event, "decision": decision,
+                            "screen_kind": kind, "age_sec": age})
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                continue
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return []
+    return out[-limit:]
+
+
 def _compact_hanjuku_policy(mem, state=None):
     """Small map/route summary that survives the tactical detail drop.
 
@@ -11053,7 +11105,8 @@ def _collect_hanjuku_tactical(state_dir, now):
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'policy': _compact_hanjuku_policy(mem, bot),
+                    'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
+                               'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
@@ -11087,7 +11140,8 @@ def _collect_hanjuku_tactical(state_dir, now):
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
-                   policy=_compact_hanjuku_policy(mem, bot),
+                   policy={**_compact_hanjuku_policy(mem, bot),
+                           'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
