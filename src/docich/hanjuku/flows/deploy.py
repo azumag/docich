@@ -1173,6 +1173,9 @@ def deploy_step(screen: Screen, mem):
                                 '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
         if inventory['selected_y'] == row['y']:
             picked.append(card)
+            # A new card is a new bounded search; selection still needs the
+            # existing carried-card confirmation before departure.
+            (mem.get('card_scroll') or {}).pop(order['step'], None)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'inventory_evidence': inventory['inventory_evidence'],
