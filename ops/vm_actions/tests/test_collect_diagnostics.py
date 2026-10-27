@@ -578,6 +578,8 @@ def test_prediction_section_survives_the_hard_ceiling():
     # prediction boundary) lives inside it, so the ledger became unobservable
     # exactly when a report needed it. The top-level ``prediction`` section keeps
     # the same bounded counts and must never be dropped before the envelope fits.
+    # This covers the whole-section drop order; the largest-first fallback is
+    # covered separately below.
     module=load_collector()
     now=1792955569
     corners={
@@ -632,6 +634,52 @@ def test_prediction_section_survives_the_hard_ceiling():
     assert prediction['corner']['end_reason']=='audio-complete'
     assert prediction['corner']['age_sec']==2160
     assert prediction['boundary']['age_sec']==1212324
+
+
+def test_prediction_section_survives_the_pathological_fallback():
+    # The hard ceiling reduces twice: the whole-section drop order and, when the
+    # envelope is split into many medium sections, a largest-first fallback over
+    # every remaining top-level dict. ``prediction`` is exempt from both (#2805).
+    # Here the fallback is the only reduction that can help, and the prediction
+    # section is the largest remaining dict, so a fallback that ignored
+    # ``_HARD_KEEP`` would replace it first and the 予想王 counts would vanish.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+    }
+    for index in range(320):
+        payload['slice_%03d'%index]={'pad':'x'*180}
+
+    decoded=json.loads(module._diagnostics_budget(payload))
+
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['prediction']['leaderboard']['rounds']==4
+    assert decoded['prediction']['leaderboard']['canceled']==4
+    assert decoded['prediction']['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert decoded['prediction']['state_dir_found'] is True
+    omitted=sum(1 for key,value in decoded.items()
+                if key.startswith('slice_')
+                and isinstance(value,dict)
+                and value.get('status')=='output_omitted')
+    assert omitted>0
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
