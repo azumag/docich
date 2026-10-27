@@ -731,6 +731,50 @@ def test_detached_automatic_recovery_refuses_uncertainty(recovery_setup,change):
     assert snapshot_recovery(s)==before
 
 
+def interrupted_manual_release(s, *, last=None, owner=None):
+    """g1063 2026-10-28: the manual resume's probe hit its deadline; rotation
+    closed the slot as interrupted (no pending, no failed_corners audit)."""
+    base=Path(s.g.state_dir);ledger=s.manager.load(1000000.0)
+    ledger.update(status='waiting',pending=None,failed_corners=[],released_requests={},
+        last_result=last or {'at':1000000.0,'corner':'hanjuku-hero',
+                             'request_id':s.queue['request_id'],'status':'interrupted'})
+    s.manager.save(ledger)
+    atomic_write_json(base/'retro_corner.json', owner or {'status':'interrupted','game':'hanjuku-hero',
+        'rotation_request_id':s.queue['request_id'],'startup_resume_recovery':None})
+
+
+def test_manual_resume_closed_as_interrupted_recovers_same_checkpoint(recovery_setup):
+    s=recovery_setup;interrupted_manual_release(s)
+    base=Path(s.g.state_dir);before=snapshot_recovery(s)
+    with pytest.raises(AdapterError,match='another checkpoint request is pending'):
+        resume.prepare_start(s.g,dict(s.queue,request_id=str(uuid.uuid4())))
+    assert recover_startup(s)=={'status':'recovery-eligible','fingerprint':s.fingerprint}
+    assert snapshot_recovery(s)==before
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='recovery-queued'
+    current=read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['startup_recovery']['original']==s.claim
+    assert current['sha256']==s.claim['sha256']
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['resume_request_id']==s.queue['request_id']
+
+
+@pytest.mark.parametrize('change', ['other-request','completed','owner-other','owner-active','newer-run'])
+def test_interrupted_manual_recovery_refuses_other_evidence(recovery_setup,change):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    last={'at':1000000.0,'corner':'hanjuku-hero','request_id':s.queue['request_id'],'status':'interrupted'}
+    owner={'status':'interrupted','game':'hanjuku-hero','rotation_request_id':s.queue['request_id']}
+    if change=='other-request':last['request_id']=str(uuid.uuid4())
+    elif change=='completed':last['status']='completed'
+    elif change=='owner-other':owner['rotation_request_id']=str(uuid.uuid4())
+    elif change=='owner-active':owner['status']='active'
+    interrupted_manual_release(s,last=last,owner=owner)
+    if change=='newer-run':
+        runtime=base/'runtimes/g701-cafe1234';runtime.mkdir();(runtime/'hanjuku_run.json').touch()
+    before=snapshot_recovery(s)
+    with pytest.raises(s.op.CancelRefused):recover_startup(s,apply=True,expected=s.fingerprint)
+    assert snapshot_recovery(s)==before
+
+
 def test_automatic_recovery_works_after_original_audit_is_evicted(recovery_setup):
     s=recovery_setup;automatic_recovery(s,released=True,reused_owner=True)
     ledger=s.manager.load(1000000.0)
@@ -904,6 +948,49 @@ def test_gift_checkpoint_requires_full_native_menu_and_readable_header(gold,hous
     from docich.hanjuku_screen import parse,resume_bijin_gift_panel
     from test_hanjuku_bijin_house_policy import gifts
     assert not resume_bijin_gift_panel(parse(gifts(gold,house=house,prompt=prompt)))
+
+
+def test_castle_event_dialogue_checkpoint_restores_without_guessing_chapter(setup):
+    # g1059 07:42 stalled on 「メリ〜 クリスマ〜ス!」; g1063/g1065 then rolled
+    # back because no chapter or known panel ever appeared on the restore.
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1059-christmas-event-dialogue.png')
+    screen = parse(frame)
+    assert screen.kind == 'text' and screen.header['chapter'] is None
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy'].get('chapter') is None
+
+
+def test_headerless_dialogue_is_not_a_restorable_foreground():
+    from docich.hanjuku_screen import parse
+    from docich import hanjuku_resume
+    from test_hanjuku_chart_bot import Canvas
+    c = Canvas(); c.text(16, 175, 'メリー クリスマース!')
+    screen = parse(c.frame())
+    assert screen.kind == 'text'
+    assert not hanjuku_resume._castle_dialogue(screen)
+
+
+def test_chapterless_restore_reaching_month_menu_still_sends_input():
+    # g1067 08:40: after a chapterless restore the house scan read
+    # mem['chapter'] at the monthly menu; every observation raised KeyError
+    # ("invalid observation") and the bot sent nothing.
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1067-chapterless-month-menu.png').resized()
+    policy = {'name': {'done': True}, 'resume_chapter_pending': True}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions
+    assert state['policy'].get('chapter') is None
+    assert not state['policy'].get('house')
 
 
 def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
