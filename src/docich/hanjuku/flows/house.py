@@ -681,6 +681,10 @@ def step(screen, mem, frame):
         # Monthly roster/status reads return to the monthly menu and never
         # dispatch a repair trip. Only the field route needs a measured house.
         if ((screen.kind != 'map' and not monthly)
+                # g1067 08:40: a chapterless checkpoint restore reached the
+                # monthly menu; the scan's chapter scope raised KeyError on
+                # every observation and the bot sent no input.
+                or mem.get('chapter') is None
                 or (not monthly and mem.get('chapter') not in HOUSE_VIEW)
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
                 or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)

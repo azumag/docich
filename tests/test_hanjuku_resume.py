@@ -979,6 +979,20 @@ def test_headerless_dialogue_is_not_a_restorable_foreground():
     assert not hanjuku_resume._castle_dialogue(screen)
 
 
+def test_chapterless_restore_reaching_month_menu_still_sends_input():
+    # g1067 08:40: after a chapterless restore the house scan read
+    # mem['chapter'] at the monthly menu; every observation raised KeyError
+    # ("invalid observation") and the bot sent nothing.
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1067-chapterless-month-menu.png').resized()
+    policy = {'name': {'done': True}, 'resume_chapter_pending': True}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions
+    assert state['policy'].get('chapter') is None
+    assert not state['policy'].get('house')
+
+
 def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     from docich.hanjuku.os_layer.pixels import read_png
     from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel
