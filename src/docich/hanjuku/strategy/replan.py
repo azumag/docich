@@ -119,31 +119,17 @@ def interim_candidates(mem) -> dict:
     targets = list(dict.fromkeys(targets))
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
-    # attacked twice and the candidate list would never advance.
-    inflight = set()
-    interim = (mem.get('chart_adjust') or {}).get('interim_order')
-    if isinstance(interim, dict):
-        step = interim.get('step')
-        if step is None or (mem.get('orders') or {}).get(step) not in ('failed', 'cancelled'):
-            if interim.get('target') is not None:
-                inflight.add(interim['target'])
-    for step, order in (mem.get('launched_orders') or {}).items():
-        if (isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
-                and (mem.get('orders') or {}).get(step) not in ('failed', 'cancelled')
-                and isinstance(order, dict) and order.get('target') is not None):
-            inflight.add(order['target'])
-    for step, sortie in (mem.get('sorties') or {}).items():
-        if (isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
+    # attacked twice and the candidate list would never advance. Only recent
+    # sortie receipts count; a launched order or a lost sortie never observed
+    # to arrive must not hold its target forever (launched/launched_orders are
+    # never pruned).
+    now = int(mem.get('tick') or 0)
+    inflight = {sortie['target'] for step, sortie in (mem.get('sorties') or {}).items()
+                if isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
                 and isinstance(sortie, dict)
-                and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending', None)
-                and sortie.get('target') is not None):
-            inflight.add(sortie['target'])
-    for target, info in (mem.get('launched') or {}).items():
-        if (isinstance(info, dict)
-                and isinstance(info.get('step'), str)
-                and info['step'].startswith(chart_adjust.INTERIM_PREFIX)
-                and (mem.get('orders') or {}).get(info['step']) not in ('failed', 'cancelled')):
-            inflight.add(target)
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
+                and sortie.get('target') is not None and sortie.get('tick') is not None
+                and 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS}
     targets = [c for c in targets if c not in inflight]
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.

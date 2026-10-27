@@ -112,8 +112,7 @@ def test_purchases_are_tuples_and_purchase_for_selects_month():
 def test_policy_off_chart_reason_for_unmeasured_chapter():
     mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, None)
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'chart_adjust_request'
+    [rec] = [r for r in mem['_records'] if r['decision'] == 'chart_adjust_request']
     assert rec['off_chart_reason'] == 'chart_unavailable'
 
 
