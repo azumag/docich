@@ -70,7 +70,9 @@ def _label(screen, chapter):
         return None
     names = []
     for row in screen.lines:
-        text = row.span(16, 240).replace(' ', '')
+        # Unknown glyphs at the row ends are map pixels outside the windows
+        # (g1059 07:36 snowfield); any inside the text still reject the row.
+        text = row.span(16, 240).replace(' ', '').strip(UNKNOWN)
         if UNKNOWN in text:
             continue
         match = re.fullmatch(r'(?:しゅつげき)?(.+?)じょう(?:ステータス)?', text)

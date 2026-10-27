@@ -386,6 +386,16 @@ def test_existing_native_status_fixture_matches_only_its_real_chapter():
     assert survey._label(screen, 3) is None
 
 
+def test_status_name_reads_inside_windows_when_the_map_edges_are_unreadable():
+    # g1059 07:36: the snowfield left of and right of the menu windows reads
+    # as unknown glyphs, so the whole name row was discarded for 25 frames.
+    frame = read_png(Path(__file__).parent/'fixtures/hanjuku/g1059-snow-castle-status-menu.png')
+    screen = parse(frame)
+    assert screen.kind == 'castle_menu'
+    assert survey._label(screen, 3) == 'アルマムーン'
+    assert survey._label(screen, 8) is None   # not a chapter-8 castle
+
+
 def enemy_info(name='グリン', *, include_level=True, include_count=True):
     c = Canvas()
     c.text(120, 31, name); c.text(184, 31, 'じょう')
