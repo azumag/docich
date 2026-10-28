@@ -1155,6 +1155,11 @@ def _repair_step(screen, mem, frame):
         from ..os_layer.world import NAME as _NAME
         if name == _NAME and not _sole_defender_repair_due(mem, name, state.get('source')):
             return _exit(mem, '主人公を修理へ派遣しない')
+        if state.get('sole_defender') and not _sole_defender_repair_due(mem, name, state.get('source')):
+            if name == _NAME:
+                return _exit(mem, '主人公を修理へ派遣しない')
+            else:
+                return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
         info = general_status(screen)
         if info is None:
             return []
