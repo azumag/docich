@@ -1020,6 +1020,8 @@ def _sole_defender_repair_due(mem, name, source):
     owned = _owned(mem)
     if name == NAME:
         return False
+    if name == 'ヴィーナス':
+        return source in owned
     return source in owned and len(owned) > 1
 
 
