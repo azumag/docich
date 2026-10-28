@@ -1009,18 +1009,23 @@ def _income_step(screen, mem, frame):
     return []
 
 
+VENUS_NAME = 'ヴィーナス'
+
+
 def _sole_defender_repair_due(mem, name, source):
     """Repair immediately unless this is the hero or last-castle sole defender.
 
-    Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
-    only defender. A previous-month deferral is not permission to leave
-    the hero unprotected, including after a hotload.
+    Issue #2834 / owner note (2026-10-11) states broken Venus must be
+    prioritized even as sole defender/last castle. See
+    https://github.com/azumag/docich/issues/2834#issuecomment-3394591127
+    for the owner instruction. A previous-month deferral is not permission
+    to leave the hero unprotected, including after a hotload.
     """
     from ..os_layer.world import NAME, _owned
     owned = _owned(mem)
     if name == NAME:
         return False
-    if name == 'ヴィーナス':
+    if name == VENUS_NAME:
         return source in owned
     return source in owned and len(owned) > 1
 
@@ -1094,17 +1099,14 @@ def _repair_step(screen, mem, frame):
             else:
                 if len(names) < 2:
                     state['sole_defender'] = True
-                    _record(mem, 'repair_sole_defender', castle=source,
-                            observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
-                            reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
-                    try:
-                        from ..decision_log import _record as _drecord
-                        _drecord(mem, 'house_repair_sole_defender', chart_step=None, general=name,
-                                 castle=source,
-                                 observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
-                                 reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
-                    except Exception:
-                        pass
+                    if name == VENUS_NAME:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+                    else:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
                 else:
                     state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
@@ -1133,21 +1135,15 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
         if len(present) < 2:
             state['sole_defender'] = True
-            try:
-                from ..os_layer.world import _owned as _owned_fn
+            from ..os_layer.world import _owned as _owned_fn
+            if name == VENUS_NAME:
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+            else:
                 _record(mem, 'repair_sole_defender', castle=state['source'],
                         observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
                         reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
-                try:
-                    from ..decision_log import _record as _drecord
-                    _drecord(mem, 'house_repair_sole_defender', chart_step=None, general=name,
-                             castle=state['source'],
-                             observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
-                             reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
-                except Exception:
-                    pass
-            except Exception:
-                pass
         else:
             state.pop('sole_defender', None)
         actions = _choose(screen, name)

@@ -653,6 +653,8 @@ def _general_repair_targets(mem):
                for s in (mem.get('sorties') or {}).values()):
             continue
         # Issue #2834: broken Venus must go to repair even when sole defender/last castle
+        # Owner instruction (2026-10-11) in issue #2834 prioritizes broken Venus.
+        # See https://github.com/azumag/docich/issues/2834
         if name == 'ヴィーナス':
             targets.append(name)
             continue
