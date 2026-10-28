@@ -670,6 +670,8 @@ def test_stationary_y_cursor_closes_without_confirming_or_retrying_same_order():
     assert not policy._want_y_jump(mem, order, 'アルマムーン', 'map')
     assert policy._want_y_jump(mem, {'step': 'NEXT'}, 'アルマムーン', 'map')
     assert policy._want_y_jump(mem, order, 'アルマムーン', 'target')
+    mem['y_jump_last'] = {'step': 'X', 'mode': 'target', 'moves': 1, 'why': 'view_closed'}
+    assert not policy._want_y_jump(mem, order, 'アルマムーン', 'map')
 
 
 def test_y_cursor_motion_resets_stall_and_can_still_confirm():

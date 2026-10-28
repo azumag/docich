@@ -287,6 +287,9 @@ def _y_jump_step(mem, frame):
     if jump['still'] >= Y_JUMP_STILL_LIMIT:
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'cursor_stationary')
+        # Another mode can overwrite y_jump_last. Keep this order/mode's
+        # budget exhausted until the normal order-start reset instead.
+        mem.setdefault('y_jumps', {})[f"{jump['step']}:{jump['mode']}"] = Y_JUMP_LIMIT
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
                 reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
