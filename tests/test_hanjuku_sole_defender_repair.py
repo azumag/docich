@@ -88,13 +88,22 @@ def test_losing_other_castles_after_selection_cancels_the_repair(general, should
     if general in ('どうし', 'ココット'):
         # Cannot be selected as sole defender at castle_pick; simulate post-selection state
         mem['house'].update(phase='castle_kit', general=general, sole_defender=True)
+        mem['captured'] = []
+        with patch.object(world, '_owned', return_value={'アルマムーン'}):
+            actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
+        if should_cancel:
+            assert actions == []
+            assert mem['house']['phase'] == 'close'
+        else:
+            assert mem['house']['phase'] == 'castle_kit'
+        return
     else:
         mem['house'].update(general=general)
         with patch.object(world, '_owned', return_value={'アルマムーン'}):
             assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
             assert mem['house']['phase'] == 'castle_kit'
     mem['captured'] = []
-    with patch.object(world, '_owned', return_value=set()):
+    with patch.object(world, '_owned', return_value={'アルマムーン'}):
         actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
         if should_cancel:
             assert actions == []
