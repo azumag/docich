@@ -1130,6 +1130,8 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃画面で対象本人の卵割れを確認できないため派遣しない')
         if not _repair_hp_ready(info):
             return _exit(mem, '負傷またはHP未確認の将軍を無装備の卵修理へ派遣せず在城で回復を待つ')
+        if name == NAME and not _sole_defender_repair_due(mem, name, state.get('source')):
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
         _phase(state, 'castle_confirm')
         return [pad('b')]  # no battle cards are spent on a repair trip
     if phase == 'castle_confirm':
