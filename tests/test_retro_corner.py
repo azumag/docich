@@ -255,6 +255,74 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
         self.assertEqual(mgr._read_state()["status"], "failed")
 
+    def test_rollback_failed_start_terminalizes_after_recovery_restored_previous(self):
+        # Production 2026-10-28 (hanjuku-hero): the start failed, its own
+        # rollback failed too, and the reviewed game-switch recover re-leased
+        # the previous Soren. The receipt stays ``failed`` with no restored
+        # generation (and, as recorded there, no source game); only the
+        # stable canonical proves the restore, as in tsuitate/weather (#1937).
+        for from_game in ("sorengame", None):
+            with self.subTest(from_game=from_game):
+                mgr, coordinator, request_id = self._setup_failed_start(
+                    terminal_status="failed", corner_status="failed",
+                    error_code="rollback_failed")
+                receipt = mgr.store.receipts.load(request_id)
+                receipt["result"]["from_game"] = from_game
+                mgr.store.receipts.save(receipt)
+
+                self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+                result = mgr._read_state()
+                self.assertEqual(result["status"], "interrupted")
+                self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+                self.assertIsNone(result["last_error_code"])
+                self.assertEqual(coordinator.calls, [])
+
+    def _assert_rollback_failed_stays_latched(self, mutate):
+        mgr, _, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="rollback_failed")
+        mutate(mgr)
+
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def _mutate_canonical(self, mgr, change):
+        canonical, _ = mgr.store.canonical.load()
+        change(canonical)
+        mgr.store.canonical.save(canonical)
+
+    def test_rollback_failed_start_stays_latched_while_a_runtime_is_retiring(self):
+        def retiring(canonical):
+            names = runtime_names(3)
+            canonical["retiring"] = [dict(
+                canonical["active"], generation=3, runtime_id="g3-abcdef",
+                lease_id=str(uuid.uuid4()), game_window=names.game_window,
+                agent_window=names.agent_window, adapter_session=names.adapter_session,
+                cleanup_role="failed_candidate")]
+            canonical["next_generation"] = 4
+
+        self._assert_rollback_failed_stays_latched(
+            lambda mgr: self._mutate_canonical(mgr, retiring))
+
+    def test_rollback_failed_start_stays_latched_until_recovery_left_failed(self):
+        def failed(canonical):
+            canonical.update(phase="failed", previous=canonical["active"], active=None)
+
+        self._assert_rollback_failed_stays_latched(
+            lambda mgr: self._mutate_canonical(mgr, failed))
+
+    def test_rollback_failed_start_stays_latched_when_another_game_owns_the_slot(self):
+        self._assert_rollback_failed_stays_latched(lambda mgr: self._mutate_canonical(
+            mgr, lambda canonical: canonical["active"].update(game="robots")))
+
+    def test_rollback_failed_start_needs_the_same_code_in_its_receipt(self):
+        def mismatch(mgr):
+            receipt = mgr.store.receipts.load(mgr._read_state()["rotation_request_id"])
+            receipt["result"]["error_code"] = "start_failed"
+            mgr.store.receipts.save(receipt)
+
+        self._assert_rollback_failed_stays_latched(mismatch)
+
     def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
         for state_error, receipt_error in (
             ("start_failed", "agent_start_failed"),
