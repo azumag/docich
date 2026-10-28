@@ -775,6 +775,9 @@ def okunote_step(screen, mem):
                 rescue['exhausted'] = True
                 return [pad('b')]
             # safe candidate exists: fall through to open okunote
+            _record(mem, 'battle_okunote_risk_accepted', **_battle_labels(cur),
+                    observed_metric={'ally_hp': hp, 'safe_candidates': safe},
+                    reason='低HPだが観測した安全候補があるため奥の手を開く')
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':

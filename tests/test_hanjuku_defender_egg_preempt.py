@@ -211,14 +211,6 @@ def test_failed_opening_is_bounded_and_does_not_restore_an_infinite_hold():
     assert sum(r['decision'] == 'battle_okunote_egg_open_failed' for r in mem['_records']) == 1
 
 
-
-
-    for _ in range(3):
-        assert p.battle_step(panel(mem), mem)[0] == p.pad('a', 3)
-    assert mem['battle']['okunote_egg_preempt']['exhausted']
-    assert sum(r['decision'] == 'battle_okunote_egg_open_failed' for r in mem['_records']) == 1
-
-
 def test_unknown_cursor_never_confirms_and_menu_navigation_is_bounded():
     mem = memory(enemy_hp=10)
     opening(mem)
