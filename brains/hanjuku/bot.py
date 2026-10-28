@@ -48,7 +48,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable','battle_egg_before_retreat',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
-    'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',
+    'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined','battle_okunote_risk_accepted',
     'battle_hero_retreat_open','battle_hero_retreat_select',
     'battle_hero_retreat_unavailable','battle_hero_retreat_cancel_card',
     'name_wait','name_confirm','name_delete','name_type','order_start',
