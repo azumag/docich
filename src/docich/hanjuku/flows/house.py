@@ -1010,7 +1010,7 @@ def _income_step(screen, mem, frame):
 
 
 def _sole_defender_repair_due(mem, name, source):
-    """Repair immediately unless this is the hero.
+    """Repair immediately unless this is the hero or (non-Venus last-castle sole defender).
 
     Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
     only defender. A previous-month deferral is not permission to leave
@@ -1020,7 +1020,9 @@ def _sole_defender_repair_due(mem, name, source):
     owned = _owned(mem)
     if name == NAME:
         return False
-    return source in owned
+    if name == 'ヴィーナス':
+        return source in owned
+    return source in owned and len(owned) > 1
 
 
 def _repair_step(screen, mem, frame):
