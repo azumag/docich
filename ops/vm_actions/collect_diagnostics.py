@@ -9032,6 +9032,44 @@ def _collect_resolver_daemon():
     return {'schema_version': 2, 'units': units}
 
 
+CC_ADAPTER_DEFAULT_PORT = 4100
+
+
+def _probe_cc_adapter(port, timeout=1.0):
+    """Read-only loopback GET of the CC adapter ``/healthz`` (docich#2894).
+
+    Self-contained on purpose: the gateway copies only a fixed file set into
+    its collector checkout, so this must not import ``docich.cc_translation_adapter``.
+    Returns ``{"state": "ok", "upstream": ...}`` or a state in
+    {"unreachable", "invalid"}; the body is reduced to the upstream name.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=timeout) as response:
+            body = json.loads(response.read(4096).decode("utf-8"))
+    except Exception:
+        return {"state": "unreachable"}
+    if not isinstance(body, dict) or body.get("status") != "ok" or not isinstance(
+        body.get("upstream"), str
+    ):
+        return {"state": "invalid"}
+    return {"state": "ok", "upstream": body["upstream"]}
+
+
+def _collect_cc_translation_adapter():
+    """Read-only healthz of the CC translation adapter (docich#2894).
+
+    Reports the probe state and the upstream name the adapter advertises only;
+    no prompt, key, or response body is read into the envelope.
+    """
+    port = CC_ADAPTER_DEFAULT_PORT
+    raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
+    if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
+        port = int(raw_port)
+    health = _probe_cc_adapter(port)
+    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
+
+
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
 
 
@@ -13959,6 +13997,7 @@ def main(argv):
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
+        "cc_translation_adapter": _collect_cc_translation_adapter(),
     }
     retention = payload["opencode_retention"]
     attempt = retention["attempt"]

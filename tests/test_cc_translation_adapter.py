@@ -5,7 +5,10 @@ import urllib.error
 import urllib.request
 
 from docich import captions
-from docich.cc_translation_adapter import make_server, parse_upstream
+import socket
+import unittest.mock
+
+from docich.cc_translation_adapter import describe_health, make_server, parse_upstream, probe_health
 
 
 def _post(url, payload, *, raw=None):
@@ -29,7 +32,7 @@ class CcTranslationAdapterTest(unittest.TestCase):
             self.prompts.append((prompt, timeout))
             return self.result
 
-        self.server = make_server(translate, port=0, timeout=7.0)
+        self.server = make_server(translate, port=0, timeout=7.0, upstream="vercel-api:m")
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -75,6 +78,11 @@ class CcTranslationAdapterTest(unittest.TestCase):
         self.assertEqual((status, body["error"]["type"]), (400, "invalid_request"))
         self.assertEqual(self.prompts, [])
 
+    def test_healthz_reports_upstream_name_only(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(body, {"status": "ok", "upstream": "vercel-api:m"})
+
     def test_bind_is_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
@@ -95,6 +103,39 @@ class CcTranslationAdapterTest(unittest.TestCase):
             endpoint=self.url, models=("upstream-model",), timeout=5.0, attempts_per_model=1
         )
         self.assertEqual(client.translate(["こんにちは"], max_chars=64), ["Hello there"])
+
+
+class CcAdapterHealthProbeTest(unittest.TestCase):
+    def _serve(self, upstream):
+        server = make_server(lambda p, t: ("", ""), port=0, timeout=7.0, upstream=upstream)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def test_probe_reports_upstream_name_from_live_adapter(self):
+        port = self._serve("vercel-api:m")
+        health = probe_health(port, timeout=2.0)
+        self.assertEqual(health, {"state": "ok", "upstream": "vercel-api:m"})
+        self.assertEqual(describe_health(health), "ok (upstream=vercel-api:m)")
+
+    def test_probe_unreachable_when_nothing_listens(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        health = probe_health(port, timeout=0.5)
+        self.assertEqual(health, {"state": "unreachable"})
+        self.assertEqual(describe_health(health), "unreachable")
+
+    def test_probe_rejects_non_adapter_health_body(self):
+        port = self._serve("vercel-api:m")
+        with unittest.mock.patch(
+            "docich.cc_translation_adapter.json.loads", return_value={"status": "down"}
+        ):
+            health = probe_health(port, timeout=2.0)
+        self.assertEqual(health, {"state": "invalid"})
+        self.assertEqual(describe_health(health), "invalid response")
 
 
 if __name__ == "__main__":
