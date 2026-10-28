@@ -165,7 +165,8 @@ def test_a_frozen_unreadable_name_screen_never_types_or_confirms():
 def test_a_message_over_a_field_is_acknowledged_not_recentred():
     frame = field_text()
     assert classify(frame) == 'field'
-    seen, state = hold(frame, NO_INPUT_HOLD_MAX + 1)
+    from docich.hanjuku.orchestrator import FIELD_TEXT_HOLD_MAX
+    seen, state = hold(frame, FIELD_TEXT_HOLD_MAX + 1)
     assert all(actions == [] for actions in seen[:-1])
     assert seen[-1] == [pad('a')]
 
@@ -205,3 +206,26 @@ def test_the_gate_keeps_its_bookkeeping_small_and_versioned():
     assert state['no_input_streak'] == 0
     assert 0 < len(state['no_input_frames']) <= 2
     assert all(isinstance(d, str) for d in state['no_input_frames'])
+
+
+def test_an_animated_field_message_is_acknowledged_by_its_text():
+    # g1067 11:13-11:23: the castle-progress notice sat over animated water;
+    # five distinct digests kept the no-input streak at 1 until input_stalled.
+    import copy
+    from pathlib import Path
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku.orchestrator import decide, FIELD_TEXT_HOLD_MAX
+    from docich.hanjuku_screen import parse
+    root = Path(__file__).parent / 'fixtures' / 'hanjuku'
+    frames = [read_png(root / f'g1067-prince-progress-{i}.png') for i in range(3)]
+    assert len({f.digest() for f in frames}) == 3
+    assert {parse(f).kind for f in frames} == {'text'}
+    ident = {'game': 'hanjuku-hero', 'generation': 1067, 'runtime_id': 'g1067-test', 'lease_id': 'l'}
+    state = {'policy': {'chapter': 3, '_run_identity': dict(ident)}}
+    for i in range(FIELD_TEXT_HOLD_MAX + 3):
+        actions, state = decide(frames[i % 3], copy.deepcopy(state), run_identity=ident)
+        if actions:
+            break
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert i <= FIELD_TEXT_HOLD_MAX + 1
+    assert any(r['decision'] == 'no_input_fallback' for r in state['_records'])
