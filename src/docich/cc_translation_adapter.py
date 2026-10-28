@@ -27,6 +27,7 @@ MAX_PROMPT_CHARS = 64 * 1024
 DEFAULT_TIMEOUT_SEC = 25.0
 MAX_TIMEOUT_SEC = 45.0
 CHAT_PATH = "/v1/chat/completions"
+HEALTH_PATH = "/healthz"
 
 # (prompt, timeout) -> (output, failure_kind); failure_kind is "" on success.
 Translator = Callable[[str, float], tuple[str, str]]
@@ -56,10 +57,19 @@ def dispatch_translator(spec: AgentSpec, env: Mapping[str, str]) -> Translator:
     return translate
 
 
-def _make_handler(translate: Translator, timeout: float) -> type[BaseHTTPRequestHandler]:
+def _make_handler(
+    translate: Translator, timeout: float, upstream: str
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "docich-cc-adapter"
         sys_version = ""
+
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path != HEALTH_PATH:
+                self._send_error(404, "not_found")
+                return
+            # Only the configured upstream name is exposed; never the key or prompt.
+            self._send_json(200, {"status": "ok", "upstream": upstream})
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             if self.path != CHAT_PATH:
@@ -117,11 +127,16 @@ def _make_handler(translate: Translator, timeout: float) -> type[BaseHTTPRequest
 
 
 def make_server(
-    translate: Translator, *, port: int = DEFAULT_PORT, timeout: float = DEFAULT_TIMEOUT_SEC
+    translate: Translator,
+    *,
+    port: int = DEFAULT_PORT,
+    timeout: float = DEFAULT_TIMEOUT_SEC,
+    upstream: str = "",
 ) -> ThreadingHTTPServer:
     if not 0.1 <= timeout <= MAX_TIMEOUT_SEC:
         raise ValueError("adapter timeout must be between 0.1 and 45 seconds")
-    return ThreadingHTTPServer((LOOPBACK_HOST, port), _make_handler(translate, timeout))
+    handler = _make_handler(translate, timeout, upstream)
+    return ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
 
 
 def main(env: Mapping[str, str] | None = None) -> int:
@@ -135,7 +150,12 @@ def main(env: Mapping[str, str] | None = None) -> int:
     if not 1 <= port <= 65535:
         raise ValueError("adapter port must be between 1 and 65535")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = make_server(dispatch_translator(upstream, env), port=port, timeout=timeout)
+    server = make_server(
+        dispatch_translator(upstream, env),
+        port=port,
+        timeout=timeout,
+        upstream=upstream.raw,
+    )
     LOGGER.info("[CC_TRANSLATION_ADAPTER] listening on %s:%s", LOOPBACK_HOST, port)
     try:
         server.serve_forever()

@@ -29,7 +29,7 @@ class CcTranslationAdapterTest(unittest.TestCase):
             self.prompts.append((prompt, timeout))
             return self.result
 
-        self.server = make_server(translate, port=0, timeout=7.0)
+        self.server = make_server(translate, port=0, timeout=7.0, upstream="vercel-api:m")
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -74,6 +74,11 @@ class CcTranslationAdapterTest(unittest.TestCase):
         status, body = _post(self.url, None, raw=b"not json")
         self.assertEqual((status, body["error"]["type"]), (400, "invalid_request"))
         self.assertEqual(self.prompts, [])
+
+    def test_healthz_reports_upstream_name_only(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(body, {"status": "ok", "upstream": "vercel-api:m"})
 
     def test_bind_is_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
