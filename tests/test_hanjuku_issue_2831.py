@@ -23,10 +23,9 @@ def test_rescue_decision_unknown_without_battle():
 def test_rescue_decision_guard_rejects_all_self_damage():
     cur = {"ally_hp": 10, "enemy_hp": 50, "start_ally_hp": 90,
            "side": "defense", "ally": "ゼウス", "enemy": "ミント",
-           "castle": "アルマムーン", "okunote_only_observed": True}
+           "castle": "アルマムーン", "okunote_only_observed": True,
+           "survival": {"exhausted": True}}
     mem = {"chapter": 1, "battle": cur}
     ctx = {"owner": "ally", "okunote_choices": ["ヤケクソ"]}
     d = _rescue_decision(mem, cur, ctx)
-    # okunote candidate exists (last_resort may not), but layer-2 excludes
-    # self-damage; if no safe candidate remains, action is not 'use' via okunote.
-    assert d["action"] in ("use", "unknown", "conserve")
+    assert d.get("candidate") != "okunote"
