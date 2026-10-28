@@ -1385,28 +1385,6 @@ def monster_menu_step(screen: Screen, mem):
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
-    # #2831: summon-battle rescue re-evaluation.
-    _cur_battle = mem.get('battle')
-    if isinstance(_cur_battle, dict):
-        _rescue_rearm(mem, _cur_battle, {'owner': owner})
-        _rescue = _cur_battle.get('survival') or {}
-        _reentry = int(_cur_battle.get('rescue_reentry_count') or 0)
-        if (owner == 'ally' and not _rescue.get('egg_attempted')
-                and not _cur_battle.get('okunote_last_resort_recorded')
-                and not (_cur_battle.get('survival') or {}).get('exhausted')
-                and _reentry < RESCUE_REENTRY_LIMIT
-                and not _wounded_summoner(mem, owner, ally, enemy)):
-            _ctx = {'owner': owner,
-                    'ally_hp': ally.hp if ally else None,
-                    'enemy_hp': enemy.hp if enemy else None,
-                    'panel': panel, 'summon': _cur_battle.get('summon_general_reading')}
-            _dec = _rescue_decision(mem, _cur_battle, _ctx)
-            if _dec.get('action') == 'use':
-                _cur_battle['rescue_reentry_count'] = _reentry + 1
-                _record(mem, 'battle_rescue_reentry', **_battle_labels(_cur_battle),
-                        reason=_dec.get('reason'),
-                        observed_metric={'candidate': _dec.get('candidate')})
-                return [pad('b')]
     scope = [owner, ally.name if ally else None, enemy.name if enemy else None]
     if mem.get('monster_menu_choice_scope') != scope:
         mem.pop('monster_menu_choice', None)
