@@ -317,7 +317,8 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     interim = state.get('interim_order')
     status = mem.get('orders') or {}
     busy = (interim and status.get(interim['step']) in (None, 'pending')
-            and _source(interim, mem) in _owned(mem))
+            and _source(interim, mem) in _owned(mem)
+            and routes.order_allowed(mem, interim, _source(interim, mem)))
     if busy:
         return
     candidates = interim_candidates(mem, allow_sole)

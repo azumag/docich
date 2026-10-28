@@ -1,8 +1,9 @@
-"""Chapter-three castle relays using the existing chart's directed legs.
+"""Chapter-three castle relays using the existing chart's castle-to-castle legs.
 
 This is not a terrain detector. A nearby castle is not proof that a straight
 march can cross the cliffs. Keep the chart's legs, stop inside owned castles,
-and read the actual roster before forwarding a reinforcement.
+and read the actual roster before forwarding a reinforcement. A chart leg may
+be retraced to an owned castle to bring a rear garrison back toward the front.
 """
 from collections import deque
 
@@ -19,7 +20,8 @@ def legs(chapter):
 
 def allowed(mem, source, target):
     return (mem.get('chapter') != 3 or chart.is_boss_castle(target)
-            or (source, target) in legs(3))
+            or (source, target) in legs(3)
+            or (target in _owned(mem) and (target, source) in legs(3)))
 
 
 def order_allowed(mem, order, source):
@@ -33,6 +35,9 @@ def order_allowed(mem, order, source):
 def path(mem, source, target, owned):
     """Intermediate castles must be ours; never march through an enemy town."""
     graph = legs(mem.get('chapter'))
+    # Retrace an existing segment only into our own castle; this is a return
+    # along the same terrain, never a new diagonal attack on an enemy castle.
+    graph |= {(b, a) for a, b in graph if a in owned}
     cells = chart.castles(mem.get('chapter'))
     queue = deque([(source,)])
     seen = {source}

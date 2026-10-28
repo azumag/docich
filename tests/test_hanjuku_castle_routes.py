@@ -160,3 +160,33 @@ def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypa
     assert mem['active'] is None and 'y_jump' not in mem
     assert mem['_map_registration_hold'] is True
     assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'
+
+
+def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
+    mem = state()
+    mem['garrison']['グリン'] = []
+    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー']
+    # The live layout has no spare at home or the front, only at the end of
+    # a chart branch. A directed-only graph would strand this reinforcement.
+    route = routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']))
+    assert route == ('リグア', 'グリン', 'アルマムーン', 'コラダイン', 'イーピヨル', 'ドンダム')
+    first = next(iter(replan.interim_candidates(mem).values()))
+    assert (first['source'], first['target'], first['purpose']) == ('リグア', 'グリン', 'move')
+    assert routes.allowed(mem, 'リグア', 'グリン')
+    mem['captured'].remove('グリン')
+    mem['lost'].append('グリン')
+    assert not routes.allowed(mem, 'リグア', 'グリン')
+    assert routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']) - {'グリン'}) is None
+
+
+def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
+    mem = state()
+    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー']
+    old = {'step': 'I:old:1', 'source': 'リグア', 'target': 'ドンダム',
+           'general': 'ヘラ', 'purpose': 'retake', 'cards': [], 'after': None}
+    mem['orders'][old['step']] = 'pending'
+    pending = {'interim_order': old}
+    replan._mechanical_interim(mem, pending, 'new-request', 'synthetic-digest')
+    new = pending['interim_order']
+    assert new['step'] != old['step']
+    assert (new['source'], new['target'], new['purpose']) == ('リグア', 'グリン', 'move')
