@@ -785,3 +785,29 @@ def test_candidate_mismatch_on_a_known_castle_reanchors_instead_of_rejecting():
     assert feed(mem, status('アルマムーン')) == [policy.pad('b')]
     assert any(r['decision'] == 'map_search_candidate_mismatch' for r in mem['_records'])
     assert survey.verified_castles(mem, 3) == {'アルマムーン': HOME}
+
+
+def test_single_roof_pixel_jitter_keeps_the_camera_through_a_full_hold():
+    # g1067 09:42: the cursor resting on Grin moved its roof target by 1 px;
+    # the 18 px left hold then read as 19 and every search step lost the pose.
+    state = {'origin_frame': 'f', 'roof_world': [[223, 191]], 'camera': [1, 34],
+             'cursor_world': [223, 190], 'last_input': [0, -1, survey.MAX_HOLD]}
+    assert survey._pose(state, [{'target': (223, 157)}], (204, 156)) == (1, 34)
+    assert state['cursor_world'] == [205, 190]
+
+
+def test_discovery_yields_the_field_to_a_startable_interim_retake():
+    # g1067 09:33-09:43: Grin was lost while two of nine castles were
+    # measured; discovery held every field frame, so the retake candidate
+    # never reached the map flow and no sortie left for 40 minutes.
+    mem = initial_route_receipt()
+    assert set(survey.verified_castles(mem, 3)) == {'アルマムーン', 'グリン'}
+    mem['lost'] = ['グリン']
+    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    with chart.map_context(mem):
+        assert survey.step(parse(field()), mem, field()) is None
+    _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
+    active = state['policy']['active']
+    assert active.startswith('I:')
+    assert state['policy']['chart_adjust']['interim_order']['target'] == 'グリン'
