@@ -1035,13 +1035,13 @@ def _repair_step(screen, mem, frame):
     state = mem['house']
     phase, name = state['phase'], state['general']
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
-            and state.get('sole_defender')
-            and not _sole_defender_repair_due(mem, name, state.get('source'))):
+            and state.get('sole_defender')):
         from ..os_layer.world import NAME as _HNAME
-        if name == _HNAME:
-            return _exit(mem, '主人公を修理へ派遣しない')
-        else:
-            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+        if name == _HNAME or not _sole_defender_repair_due(mem, name, state.get('source')):
+            if name == _HNAME:
+                return _exit(mem, '主人公を修理へ派遣しない')
+            else:
+                return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
