@@ -323,6 +323,44 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
 
         self._assert_rollback_failed_stays_latched(mismatch)
 
+    def test_released_rollback_failed_start_is_retired_by_the_rotation_settle(self):
+        # Production 2026-10-28: the rotation released the slot after the
+        # reviewed recover, but the settle only knew the prelaunch shapes, so
+        # retro_corner.json stayed failed and blocked every later game corner.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="rollback_failed")
+        ledger = {
+            "schema": 1, "status": "waiting",
+            "known_corners": {"robots": {"id": "robots", "adapter": "game", "game": "robots"}},
+            "released_requests": {"robots": {"request_id": request_id, "at": 1.0}},
+            "failed_corners": [],
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_released_rollback_failed_start_stays_failed_until_previous_is_owned(self):
+        mgr, _, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="rollback_failed")
+        self._mutate_canonical(mgr, lambda canonical: canonical["active"].update(game="robots"))
+        ledger = {
+            "schema": 1, "status": "waiting",
+            "known_corners": {"robots": {"id": "robots", "adapter": "game", "game": "robots"}},
+            "released_requests": {"robots": {"request_id": request_id, "at": 1.0}},
+            "failed_corners": [],
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
     def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
         for state_error, receipt_error in (
             ("start_failed", "agent_start_failed"),

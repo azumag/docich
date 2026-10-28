@@ -30,6 +30,7 @@ from .game_switch import (
     DEFAULT_REQUEST_TIMEOUT_S,
     ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
+    ERROR_ROLLBACK_FAILED,
     ERROR_TIMEOUT,
     GameSwitchBusyError,
     GameSwitchCoordinator,
@@ -1177,6 +1178,7 @@ class RetroCornerManager:
             return False
         if not isinstance(corner_id, str) or not corner_id:
             return False
+        rollback_failed = False
         try:
             with self._locked():
                 state = self._read_state()
@@ -1186,10 +1188,20 @@ class RetroCornerManager:
                     return False
                 if not self._released_record_proved(state, corner_id, request_id):
                     return False
-                result = self._terminalize_prelaunch_quiesce_failure(
-                    state, expected_request_id=request_id,
-                    precommit=self._clear_released_stop_request,
-                )
+                rollback_failed = state.get("last_error_code") == ERROR_ROLLBACK_FAILED
+                if rollback_failed:
+                    # The prelaunch settle never accepts a failed rollback;
+                    # the rolled-back reconciliation below re-proves the
+                    # receipt and the stable previous owner under its own
+                    # locks, which this tick lock would otherwise block.
+                    if not self._clear_released_stop_request():
+                        return None
+                    result = None
+                else:
+                    result = self._terminalize_prelaunch_quiesce_failure(
+                        state, expected_request_id=request_id,
+                        precommit=self._clear_released_stop_request,
+                    )
                 status = getattr(result, "status", None)
                 if status == "queued":
                     # Pin the verified release record before answering "retry".
@@ -1200,6 +1212,8 @@ class RetroCornerManager:
                     self._record_released_settle_pending(state, corner_id, request_id)
         except (RetroCornerError, GameSwitchBusyError):
             return False
+        if rollback_failed:
+            return True if self.reconcile_failed_rotation_start(request_id) else False
         status = getattr(result, "status", None)
         if status == "succeeded":
             return True

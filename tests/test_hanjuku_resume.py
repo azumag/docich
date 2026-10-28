@@ -629,6 +629,93 @@ def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recove
     assert snapshot_recovery(s)==before
 
 
+@pytest.fixture
+def refused_unclaimed_attempt(recovery_setup):
+    # g1073 2026-10-28: the first derived attempt was refused at claim
+    # (identity mismatch) before it claimed, its rollback failed, a reviewed
+    # recover restored Soren and the rotation released the slot.
+    s=recovery_setup;base=Path(s.g.state_dir)
+    recover_startup(s,apply=True,expected=s.fingerprint)
+    ledger=s.manager.load(1000000.0);first=ledger['queued_manual']['request_id']
+    ledger.update(status='waiting',reason='not-due',pending=None,queued_manual=None,failed_corners=[{
+        'corner':'hanjuku-hero','request_id':first,'resolution':'released-unverified'}])
+    s.manager.save(ledger)
+    rd=base/'runtimes/g701-cafe1234';(rd/'states').mkdir(parents=True)
+    row=dict(s.store.accept_request(first,'switch','hanjuku-hero').receipt)
+    row.update(runtime_id=rd.name,runtime_dir=str(rd),status='failed',
+               result={'request_id':first,'generation':701,'status':'failed',
+                       'error_code':'rollback_failed','cleanup_pending':None})
+    s.store.receipts.save(row)
+    from docich.game_switch import _initial_state
+    idle=_initial_state();idle['next_generation']=702;s.store.canonical.save(idle)
+    atomic_write_json(base/'retro_corner.json',{
+        'status':'interrupted','game':'hanjuku-hero','rotation_request_id':first})
+    s.unclaimed_first=first;s.unclaimed_runtime=rd
+    return s
+
+
+def test_refused_unclaimed_attempt_queues_one_more_attempt_of_the_same_checkpoint(
+        refused_unclaimed_attempt):
+    s=refused_unclaimed_attempt;base=Path(s.g.state_dir)
+    result=s.op.queue_failed_start(s.g,tmux=s.tmux,now=lambda:1000000.0)
+    assert result['status']=='queued' and result['request_id']!=s.unclaimed_first
+    current=read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['status']=='queued' and current['explicit_resume'] is True
+    assert current['startup_recovery']['attempt_id']==result['request_id']
+    assert current['startup_recovery']['unclaimed_attempt']=={'attempt_id':s.unclaimed_first}
+    assert current['startup_recovery']['original']==s.claim
+    assert current['sha256']==s.claim['sha256'] and current['request_id']==s.queue['request_id']
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['request_id']==result['request_id'] and queued['resume_latest'] is True
+    before=snapshot_recovery(s)
+    assert s.op.queue_failed_start(s.g,tmux=s.tmux,now=lambda:1000000.0)==result
+    assert snapshot_recovery(s)==before
+    # The new attempt claims the same sealed checkpoint.
+    ledger=s.manager.load(1000000.0)
+    ledger.update(status='running',pending=dict(queued,source='manual',phase='dispatched'),queued_manual=None)
+    s.manager.save(ledger)
+    rd=base/'runtimes/g702-babe1234';(rd/'states').mkdir(parents=True)
+    spec=replace(s.spec,generation=702,runtime_id=rd.name,runtime_dir=rd,lease_id=str(uuid.uuid4()))
+    adapter=SimpleNamespace(**{**vars(s.adapter),'spec':spec})
+    candidate={k:getattr(spec,k) for k in ('game','runtime_id','generation','lease_id')}
+    resume.prepare_start(s.g,ledger['pending'])
+    s.game.raw['hanjuku']={'script_bot':True}
+    with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
+        resume.claim(adapter,time.monotonic()+30,None)
+    receipt=read_record(rd/resume.RECEIPT_FILE)
+    assert receipt['status']=='claimed' and receipt['request_id']==s.claim['request_id']
+    assert (rd/'states/hanjuku-hero.state').read_bytes()==s.source.read_bytes()
+
+
+@pytest.mark.parametrize('bad',['claimed','played','presented','unreleased','owner-failed',
+                                'receipt-pending','queued-other','window'])
+def test_refused_unclaimed_attempt_retry_refuses_uncertainty(refused_unclaimed_attempt,bad):
+    s=refused_unclaimed_attempt;base=Path(s.g.state_dir);rd=s.unclaimed_runtime
+    if bad=='claimed':atomic_write_json(rd/resume.RECEIPT_FILE,s.claim)
+    if bad=='played':(rd/'hanjuku_events.jsonl').touch()
+    if bad=='presented':atomic_write_json(rd/'presentation.json',{'status':'stopped'})
+    if bad in {'unreleased','queued-other'}:
+        ledger=s.manager.load(1000000.0)
+        if bad=='unreleased':ledger['failed_corners']=[]
+        else:ledger['queued_manual']={'corner':'bastet','request_id':str(uuid.uuid4()),'selected_at':1.0}
+        s.manager.save(ledger)
+    if bad=='owner-failed':
+        atomic_write_json(base/'retro_corner.json',{
+            'status':'failed','game':'hanjuku-hero','rotation_request_id':s.unclaimed_first})
+    if bad=='receipt-pending':
+        row=s.store.receipts.load(s.unclaimed_first);row['result']['cleanup_pending']=True
+        s.store.receipts.save(row)
+    if bad=='window':
+        class Present:
+            def window_target_exists(self,target,**kwargs):return target.endswith('game-g701')
+            def session_target_exists(self,*args,**kwargs):return False
+        s.tmux=Present()
+    before=snapshot_recovery(s)
+    with pytest.raises(s.op.CancelRefused):
+        s.op.queue_failed_start(s.g,tmux=s.tmux,now=lambda:1000000.0)
+    assert snapshot_recovery(s)==before
+
+
 def automatic_recovery(s, *, released=False, reused_owner=False):
     base = Path(s.g.state_dir)
     s.claim = dict(s.claim, dispatch_source='automatic', explicit_resume=False)
