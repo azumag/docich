@@ -308,7 +308,7 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                 observed_metric={'source_garrison': list(
                     (mem.get('garrison') or {}).get(order['source']) or ()),
                     'month': mem.get('month')},
-                reason='守備制約下の月次フォールバック: 1将軍出撃（出撃元は敵観測と喪失を監視）')
+                reason='守備制約下の月次フォールバック: 1将軍出撃（出撃元の喪失を監視）')
     state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
