@@ -11,7 +11,7 @@ from ... import hanjuku_chart as chart
 from ... import hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
-                            _hold_guarded_sortie, _hold_locked_boss)
+                            _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import pad
@@ -116,6 +116,11 @@ def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
     if mem.get('y_jump'):
+        order = _order(mem)
+        if order is not None and mem['y_jump'].get('step') == order['step']:
+            routed = _hold_unrouted_sortie(mem, order)
+            if routed is not None:
+                return routed
         return _y_jump_step(mem, frame)
     recall = mem.get('recall')
     if recall and recall.get('stage') == 'await_dispatch':
@@ -415,6 +420,11 @@ def map_step(screen: Screen, mem, frame):
 
 
 def target_step(screen: Screen, mem, frame):
+    current = _order(mem)
+    if current is not None:
+        routed = _hold_unrouted_sortie(mem, current)
+        if routed is not None:
+            return routed
     if _drop_stale_y_jump(screen, mem):
         return []
     order = _order(mem)

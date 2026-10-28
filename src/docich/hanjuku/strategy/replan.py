@@ -9,6 +9,7 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
+from . import routes
 from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
@@ -32,6 +33,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     busy = busy | set(mem.get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
+    if chapter == 3:
+        owned = {c for c in owned if routes.allowed(mem, c, target)}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
     # castle that keeps somebody behind is required, then the nearest goes.
     need = 1 if allow_sole else 2
@@ -44,6 +47,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
+    probes = sorted(c for c in owned if routes.probe_due(mem, c))
+    if probes:
+        return probes[0], MOVE_ANY_GENERAL
     recheck = sorted((c for c in owned if _source_location_recheck_due(mem, c)),
                      key=lambda c: (_distance(chapter, c, target), c))
     if recheck:
@@ -160,6 +166,33 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     garrison = mem.get('garrison') or {}
     moves = []
+    if chapter == 3:
+        # Stage spare generals along chart legs rather than aiming a distant
+        # enemy straight across a cliff. Every stage ends at an owned castle.
+        seen_legs = set()
+        for target in targets:
+            options = []
+            for donor in sorted(owned):
+                free = [g for g in garrison.get(donor) or () if g not in busy
+                        and g not in (mem.get('general_location_unknown') or ())]
+                probe = routes.probe_due(mem, donor)
+                if len(free) < 2 and not probe:
+                    continue
+                route = routes.path(mem, donor, target, owned)
+                if route and len(route) > 2 and route[1] not in heading:
+                    options.append((len(route), donor, route, free, probe))
+            if not options:
+                continue
+            _, donor, route, free, probe = min(options, key=lambda v: (v[0], v[1]))
+            leg = (donor, route[1])
+            if leg in seen_legs:
+                continue
+            seen_legs.add(leg)
+            general = MOVE_ANY_GENERAL if len(free) < 2 else sorted(free, key=lambda g: g == NAME)[0]
+            moves.append({'general': general, 'source': donor, 'target': route[1],
+                          'cards': [], 'after': None, 'purpose': 'move',
+                          'note': f'暫定: {target}への中継として{route[1]}へ移動',
+                          **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
              if garrison.get(c) == [] and c not in heading]
     for target in empty:
@@ -169,8 +202,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # the reading; with fewer than two there the move is cancelled
         # (deploy_step), which records the list and drops the donor.
         known = [c for c in owned if c != target
+                 and routes.allowed(mem, c, target)
                  and len([g for g in garrison.get(c) or () if g not in busy]) >= 2]
-        unread = [c for c in owned if c != target and garrison.get(c) is None]
+        unread = [c for c in owned if c != target and garrison.get(c) is None
+                  and routes.allowed(mem, c, target)]
         donors = (sorted(known, key=lambda c: _distance(chapter, c, target))
                   + sorted(unread, key=lambda c: _distance(chapter, c, target)))
         if not donors:
