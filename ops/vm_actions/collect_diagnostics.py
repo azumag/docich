@@ -6487,6 +6487,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v269-field-text-by-text",
             "hanjuku-chart-v270-battle-menu-open-wait",
             "hanjuku-chart-v271-y-jump-unreadable-bounded",
+            "hanjuku-chart-v272-y-jump-stationary-bounded",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
