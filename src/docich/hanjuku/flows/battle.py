@@ -476,6 +476,29 @@ def battle_step(screen: Screen, mem):
             # after a resolution the chart cannot follow up on.
             cur['card_flow'] = None
         return []
+    # The opening taunt can coexist with a complete HP panel. B is ignored
+    # while it is visible, so do not spend any opening budget or pending wait.
+    # Match only the reported phrase (including its typing prefix); other
+    # dialogue and unread OCR do not establish this particular foreground.
+    # The wait is bounded per stay: the counter restarts only after a complete
+    # panel shows no taunt. At the cap the existing judgment runs again, so a
+    # taunt that never leaves the OCR text cannot hold input forever.
+    if (not cur.get('egg_battle') and not mem.get('egg_battle')
+            and 'ここがおまえ' in screen.text.replace(' ', '').replace('\n', '')):
+        waits = cur.get('opening_dialogue_waits', 0) + 1
+        cur['opening_dialogue_waits'] = waits
+        if waits == 1:
+            _record(mem, 'battle_opening_dialogue_wait', **_battle_labels(cur),
+                    observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+                    reason='敵の開始台詞を読めたため、消えるまで戦闘入力を保留')
+        if waits <= OPENING_DIALOGUE_WAIT_LIMIT:
+            return [{'type': 'wait', 'ms': 50}]
+        if waits == OPENING_DIALOGUE_WAIT_LIMIT + 1:
+            _record(mem, 'battle_opening_dialogue_exhausted', **_battle_labels(cur),
+                    observed_metric={'waits': waits - 1, 'limit': OPENING_DIALOGUE_WAIT_LIMIT},
+                    reason='開始台詞の保留が上限に達したため、既存の戦闘判断へ戻す')
+    else:
+        cur.pop('opening_dialogue_waits', None)
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
@@ -488,7 +511,7 @@ def battle_step(screen: Screen, mem):
     if _egg_rescue_pending(cur):
         return [{'type': 'wait', 'ms': 50}]
     if not melee_followup and _general_egg_rescue_recheck(mem, cur):
-        return _human_menu_open(cur, 'survival')
+        return _human_menu_open(cur, 'survival', mem)
     if not melee_followup and _egg_before_retreat(mem, cur):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
@@ -502,7 +525,7 @@ def battle_step(screen: Screen, mem):
                 observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
                                  'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
-        return _human_menu_open(cur, 'survival')
+        return _human_menu_open(cur, 'survival', mem)
     retreat = None if melee_followup else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -675,7 +698,7 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                                      'open_attempt': rescue['opens']},
                     reason='救済メニューの未確認表示予算を使い切った後、危険HPで一度だけ再確認')
-            return _human_menu_open(cur, 'survival')  # one final live inspection
+            return _human_menu_open(cur, 'survival', mem)  # one final live inspection
         conserving = (rescue.get('conserving_melee') is True
                       and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))
         if not conserving and _conserved_army_recheck(mem, cur):
@@ -692,7 +715,7 @@ def battle_step(screen: Screen, mem):
             rescue['opens'] += 1
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
-            return _human_menu_open(cur, 'survival')
+            return _human_menu_open(cur, 'survival', mem)
     return _melee_step(mem, cur)
 
 
@@ -758,7 +781,7 @@ def _melee_step(mem, cur):
                                      'enemy_hp': cur.get('enemy_hp'),
                                      'enemy_opening_hp': cur.get('start_enemy_hp')},
                     reason='主人公だけが押し負けている白兵のため、未確認の戦闘メニューを再び開いて卵・切り札を探す')
-            return _human_menu_open(cur, 'survival')
+            return _human_menu_open(cur, 'survival', mem)
     mode = 'card_damage_probe' if probe else 'power_mash' if safe else 'egg_safe_hold'
     egg_window = _defender_egg_window(mem, cur)
     taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
@@ -851,7 +874,7 @@ def _hero_retreat_open(mem, cur):
                              'melee_balance': _melee_balance(cur),
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
-    return _human_menu_open(cur, 'retreat')
+    return _human_menu_open(cur, 'retreat', mem)
 
 
 def _defender_egg_open(mem, cur):
@@ -870,7 +893,7 @@ def _defender_egg_open(mem, cur):
             observed_metric={**window, 'open_attempt': guard['opens']},
             expected_metric='実メニューの奥の手と現在カーソルを確認して選択',
             reason='味方の卵・札が使えず敵の召喚危険が目前のため、連打を止めて奥の手を確認する')
-    return _human_menu_open(cur, 'defender_egg')
+    return _human_menu_open(cur, 'defender_egg', mem)
 
 
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False):
@@ -1112,6 +1135,7 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
 BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
+OPENING_DIALOGUE_WAIT_LIMIT = 12   # consecutive taunt-visible panels before the existing judgment resumes (chosen bound, not measured)
 
 
 def message_step(screen: Screen, mem):

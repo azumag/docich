@@ -744,7 +744,7 @@ def test_unarmed_egg_enemy_checks_rescue_then_rechecks_hp_before_retreat(side):
                start_enemy_hp=18, side=side, planned_cards=[])
     assert p.battle_step(battle(mem), mem) == [p.pad('b')]
     assert not cur.get('melee_holds')
-    assert '衝突前' in mem['_records'][-1]['reason']
+    assert any('衝突前' in r.get('reason', '') for r in mem['_records'])
     assert p.battle_menu_step(menu(('こうげき', 'たいきゃく')), mem) == [p.pad('b')]
     assert cur['survival']['exhausted']
     if side == 'attack':

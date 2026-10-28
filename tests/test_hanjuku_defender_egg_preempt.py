@@ -16,6 +16,11 @@ from docich.hanjuku_screen import Battle, Screen, parse
 from test_hanjuku_chart_bot import Canvas
 
 
+def last_decision(mem, decision):
+    # The command-open request can be recorded after the decision under test.
+    return next(r for r in reversed(mem['_records']) if r['decision'] == decision)
+
+
 def memory(*, chapter=1, enemy='リーキ', enemy_hp=30, ally='トレビス', ally_hp=66):
     return {'chapter': chapter, 'battle': {
         'enemy': enemy, 'ally': ally, 'castle': p.chart.home_castle(chapter), 'side': 'defense',
@@ -60,8 +65,7 @@ def test_wall_hp_boundary_includes_one_hit_and_observation_latency(chapter):
     assert window['open_at_hp'] == boundary and not window['due']
     mem['battle']['enemy_hp'] = boundary
     opening(mem)
-    record = mem['_records'][-1]
-    assert record['decision'] == 'battle_okunote_egg_open'
+    record = last_decision(mem, 'battle_okunote_egg_open')
     assert record['observed_metric']['reason'] == 'wall_hp_window'
 
 
@@ -81,7 +85,7 @@ def test_castle_defense_overrides_all_four_roster_thoughts(enemy):
 def test_large_inter_observation_hp_drop_moves_the_deadline_earlier():
     mem = memory(enemy_hp=24)
     assert p.battle_step(panel(mem, enemy_hp=12), mem) == [p.pad('b')]
-    window = mem['_records'][-1]['observed_metric']
+    window = last_decision(mem, 'battle_okunote_egg_open')['observed_metric']
     assert window['observed_hp_drop'] == 12
     assert window['input_margin_hp'] == 16 and window['open_at_hp'] == 19
     assert mem['battle']['defender_enemy_hp_drop'] == 12
@@ -108,7 +112,7 @@ def test_exhausted_position_guard_uses_okunote_before_forced_power_mashing(chang
     mem = memory()
     mem['battle'].update(changes)
     opening(mem)
-    assert mem['_records'][-1]['observed_metric']['reason'] == 'unmeasured_clash_guard_exhausted'
+    assert last_decision(mem, 'battle_okunote_egg_open')['observed_metric']['reason'] == 'unmeasured_clash_guard_exhausted'
     assert not any(r['decision'] == 'battle_melee' for r in mem['_records'])
 
 
