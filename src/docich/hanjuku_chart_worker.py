@@ -8,6 +8,15 @@ corner observers never generate the same request twice in parallel) that asks th
 The answer is accepted only through ``hanjuku_chart_adjust.save`` (strict
 validation against measured chart facts). The bot keeps running a JEV interim
 sortie (no hold) until a valid answer lands; nothing here sends input.
+
+``hanjuku_chart_worker.json`` (STATE) is the claim record: ``request_id`` /
+``request_digest`` / ``attempts`` of the revision being answered, plus the
+outcome of the last generation (``last_status`` / ``last_detail`` / ``last_at``).
+A provider rate limit (#2936) is not a wrong answer: it gives the attempt back,
+counts a ``rate_limited`` strike and sets ``cooldown_until``, during which no
+revision is generated. ``detail`` carries only fixed classifications: the
+validator's own messages for ``invalid_output``, the dispatcher kind for
+``generate_failed``.
 """
 from __future__ import annotations
 
@@ -15,6 +24,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -29,6 +39,9 @@ from .retroarch_boundary import read_record
 STATE = 'hanjuku_chart_worker.json'
 LOCK = 'hanjuku_chart_worker.lock'
 LABEL = 'RADIO:hanjuku-chart-adjust'
+RATE_LIMIT_KIND = 'rate_limit'        # dispatcher failure kind (llm/dispatch.py), never provider text
+RATE_LIMIT_RETRY_LIMIT = 3            # rate-limited generations tolerated per request revision
+_DETAIL = re.compile(r'[A-Za-z0-9 _/:.-]{1,80}')
 DECISION_TAIL_BYTES = 131072
 RESULT_DECISIONS = frozenset({'order_launched', 'order_failed', 'order_retry', 'battle_start',
                               'battle_result', 'chart_adjust_applied', 'chart_interim_order'})
@@ -173,6 +186,44 @@ def _default_generate(g, cfg, prompt: str) -> tuple[str, str]:
     return result.output, result.last_agent
 
 
+def _now() -> float:
+    return time.time()
+
+
+def _invalid_detail(exc: ValueError) -> str:
+    """Fixed classification of a rejected answer: the validator's own message
+    (``hanjuku_chart_adjust`` raises constant strings), ``json_decode`` for a
+    malformed JSON body (its message carries positions, not words), otherwise
+    ``value_error``. Model text never reaches the history."""
+    if isinstance(exc, json.JSONDecodeError):
+        return 'json_decode'
+    message = str(exc)
+    return message if _DETAIL.fullmatch(message) else 'value_error'
+
+
+def _rate_limited(status: str, detail) -> bool:
+    return (status == 'generate_failed' and isinstance(detail, str)
+            and detail.rsplit(':', 1)[-1] == RATE_LIMIT_KIND)
+
+
+def _settle_state(runtime_dir: Path, request: dict, status: str, detail, cooldown_s):
+    """Record the outcome on the claim ``consider`` wrote (same lock, same revision)."""
+    state = read_record(runtime_dir / STATE) or {}
+    if (state.get('request_id') != request.get('request_id')
+            or state.get('request_digest') != request.get('request_digest')):
+        return
+    now = _now()
+    state.update(last_status=status, last_detail=detail, last_at=now)
+    if cooldown_s is not None:
+        # g1075 07:09 JST (#2936): after one rate-limited call the next two
+        # observations re-claimed the request and failed in 5 ms each, spending
+        # the revision's attempts on a provider that had just said no.
+        state['attempts'] = max(0, int(state.get('attempts') or 0) - 1)
+        state['rate_limited'] = int(state.get('rate_limited') or 0) + 1
+        state['cooldown_until'] = now + cooldown_s
+    atomic_write_json(runtime_dir / STATE, state)
+
+
 def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
     """Generate once. ``lock_fd`` (the claimed worker lock) is released only
     after the answer is saved and logged, so no other observer process can
@@ -190,8 +241,8 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
             status = 'superseded'
         else:
             adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'), request)
-    except ValueError:
-        status = 'invalid_output'
+    except ValueError as exc:
+        status, detail = 'invalid_output', _invalid_detail(exc)
     except RuntimeError as exc:
         # Failure kinds are dispatcher classifications, never provider text.
         status, detail = 'generate_failed', str(exc)[:80]
@@ -199,11 +250,17 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
         status, detail = 'worker_error', type(exc).__name__
     finally:
         _busy.clear()
+    cooldown_s = cfg.get('rate_limit_cooldown_s', 300) if _rate_limited(status, detail) else None
+    try:
+        _settle_state(runtime_dir, request, status, detail, cooldown_s)
+    except Exception:
+        pass
     try:
         append_log(runtime_dir, adjust.HISTORY_LOG, {
             'event': 'adjust_worker', 'at': time.time(), 'status': status, 'detail': detail,
             'request_id': request.get('request_id'),
             'elapsed_s': round(time.monotonic() - started, 3),
+            **({'cooldown_s': cooldown_s} if cooldown_s is not None else {}),
             **{k: request.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}})
     except Exception:
         pass
@@ -241,14 +298,21 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
                 and adjusted.get('request_digest') == request.get('request_digest')):
             return None
         state = read_record(runtime_dir / STATE) or {}
+        cooldown_until = state.get('cooldown_until')
+        if type(cooldown_until) in (int, float) and _now() < cooldown_until:
+            # The provider said rate_limit: a new payload revision does not
+            # make it answer sooner, so every revision waits for the cooldown.
+            return None
         same_revision = (state.get('request_id') == request['request_id']
                          and state.get('request_digest') == request.get('request_digest'))
-        attempts = state.get('attempts', 0) if same_revision else 0
-        if attempts >= cfg['max_attempts']:
+        attempts = int(state.get('attempts') or 0) if same_revision else 0
+        rate_limited = int(state.get('rate_limited') or 0) if same_revision else 0
+        if attempts >= cfg['max_attempts'] or rate_limited >= RATE_LIMIT_RETRY_LIMIT:
             return None
         atomic_write_json(runtime_dir / STATE, {'request_id': request['request_id'],
                                                 'request_digest': request.get('request_digest'),
-                                                'attempts': attempts + 1, 'at': time.time()})
+                                                'attempts': attempts + 1, 'rate_limited': rate_limited,
+                                                'at': time.time()})
         _busy.set()
         generate = generate or _default_generate
         owned = False

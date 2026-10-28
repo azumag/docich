@@ -508,6 +508,12 @@ g747の2年4月は実兵0、70G、完全名簿の賃金6Gに対し、一覧に�
     出力は `hanjuku_chart_adjust.save()` が城名・切り札名・unlock条件を実測済みチャート事実で検証し、
     正規化済みフィールドだけを `hanjuku_chart_adjusted.json`（schema 1: 独自order列＋月次purchases）へ保存する。
     request_id/章はモデル出力ではなく要求から付ける。1要求あたり最大 `max_attempts` 回、要求が更新済みなら破棄。
+    検証で落ちた回答は `adjust_worker status=invalid_output` に検証側の固定文（`invalid source/target castle` /
+    `no startable order` / `json_decode` など）を `detail` として残す（モデル本文は記録しない）。provider の
+    `rate_limit` は回答の誤りではないので attempts を消費せず、`rate_limit_cooldown_s`（既定300秒）の間は
+    revision が変わっても生成しない。同じ revision で rate_limit が3回続いたら、その revision では生成を止める（#2936）。
+    ワーカー状態 `hanjuku_chart_worker.json` は直近結果（`last_status` / `last_detail` / `last_at`）と
+    `rate_limited` / `cooldown_until` を持つ。
   - L1b 暫定JEV: 調整チャート未着の間、bot（main thread）が JEV（semantic_decision の choice API、既定1.5秒）に
     決定的候補からラベルを1つだけ選ばせる。候補は切り札なしで、順に
     `retake_N`（奪われた城の奪還）→ `move_N`（空と確認した自軍城へ、2人以上いる城から主人公以外の1人を
