@@ -1122,6 +1122,21 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
         if len(present) < 2:
             state['sole_defender'] = True
+            try:
+                from ..os_layer.world import _owned as _owned_fn
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                try:
+                    from ..decision_log import _record as _drecord
+                    _drecord(mem, 'house_repair_sole_defender', chart_step=None, general=name,
+                             castle=state['source'],
+                             observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                             reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                except Exception:
+                    pass
+            except Exception:
+                pass
         else:
             state.pop('sole_defender', None)
         actions = _choose(screen, name)
