@@ -127,6 +127,9 @@ _rescue_decision(mem, cur, context) -> dict
 (b) 召喚戦中の不利 → 再評価発火 (g1059) + re-arm 経路カバー
 (c) 低 HP でも安全候補ありなら使用 (#2864)
 (d) 明らかに有利なら温存 (#2863)
+(e) g1067 (満HP・優勢 + グリンボー最小35 vs 敵残HP上限25, lethal=false): 
+    ゲート却下が rescue_needed をラッチせず、満HP・優勢で退却ガードが発動しない
+    (#2896)。カード使用 or 戦闘継続で終わること。
 各否定ケース + decision log 追跡可能性。
 
 ## 7. 着手見込み

@@ -21,8 +21,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
-                               _wounded_summoner, _summoner_return_risk, _rescue_decision, _rescue_rearm,
-                               RESCUE_REENTRY_LIMIT, RESCUE_REARM_LIMIT)
+                               _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
@@ -761,6 +760,7 @@ def okunote_step(screen, mem):
             rescue = _survival_state(mem, cur)
             # Candidate-first: check safe okunote choices (not self-damage).
             visible = {w for _, _, w in _options(screen)} if getattr(screen, 'kind', None) == 'battle_menu' else set()
+            # Fallback to static OKUNOTE_CHOICES when menu not yet visible; filter to observed choices once visible.
             okunote_visible = [w for w in OKUNOTE_CHOICES if (not visible or w in visible)]
             from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
             safe = [c for c in okunote_visible if c not in OKUNOTE_SELF_DAMAGE_CHOICES]

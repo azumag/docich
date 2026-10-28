@@ -179,15 +179,6 @@ def _card_use_unclassified(mem, cur, reason):
 
 
 def reset_battle_controls(mem):
-    # Carryover detection for #2831
-    _prev_reentry = mem.get('rescue_reentry_count')
-    if type(_prev_reentry) is int and _prev_reentry > 0:
-        try:
-            _record(mem, 'battle_rescue_carryover_cleared',
-                    reason='previous fight rescue reentry counter reset for new battle',
-                    observed_metric={'previous_count': _prev_reentry})
-        except Exception:
-            pass
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)
     for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
@@ -445,7 +436,9 @@ def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
                 resulting_event='card_not_selected',
                 reason='単発で倒し切れる保証がなく、次の接触・壁判定で敵に召喚される危険があるため実一覧の代替手段を確認')
     refused[card] = signature
-    cur['card_damage_rescue_needed'] = True
+    # #2896: suppress rescue-needed latch in favourable battles (branch-local).
+    if not _full_hp_melee_advantage(cur):
+        cur['card_damage_rescue_needed'] = True
     flow = cur.get('card_flow') or {}
     tid = flow.get('tactic_id')
     if flow.get('card') == card and tid in cur.get('tactics_done', []):
@@ -1557,7 +1550,8 @@ def _default_retreat_needed(cur):
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')
-            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur))):
+            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur)
+                    or _full_hp_melee_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -1633,6 +1627,34 @@ def _healthy_melee_advantage(cur):
 # of 81 openings failed and generals died with eggs and cards unused (g1075
 # ドンダム 28->2 HP, 2026-10-28).
 COMMAND_OPEN_WAITS = 4
+
+
+def _full_hp_melee_advantage(cur):
+    if (cur.get('ally') == NAME or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_soldiers_current') is not True):
+        return False
+    hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    balance = _melee_balance(cur)
+    scores = balance['ally_melee_score'], balance['enemy_melee_score']
+    max_hp = general_max_hp('shujinko' if False else ('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')))
+    return (all(type(n) is int and n > 0 for n in (hp, enemy, start, *scores))
+            and all(type(n) is int and 0 <= n <= 7 for n in (ours, theirs))
+            and type(max_hp) is int and hp == max_hp
+            and hp > GENERAL_CRITICAL_RETREAT_HP
+            and hp > enemy
+            and hp * 10 > start * 7
+            and scores[0] > scores[1])
+
+
+# #2896 aliases for the favourable-melee predicate (full-HP / actual advantage).
+_actual_melee_advantage = _full_hp_melee_advantage
+_melee_advantage = _full_hp_melee_advantage
+_full_hp_melee_advantage = _full_hp_melee_advantage
+_current_melee_advantage = _full_hp_melee_advantage
+_melee_lead = _full_hp_melee_advantage
 
 
 def _command_open_wait(mem, cur):
@@ -1900,20 +1922,18 @@ def _rescue_rearm(mem, cur, context):
     context = context or {}
     hp = cur.get('ally_hp')
     prev = cur.get('_rescue_eval_hp')
-    rearm = False
-    if (type(prev) is int and type(hp) is int
-            and prev - hp >= max(1, GENERAL_CRITICAL_RETREAT_HP // 2)):
-        rearm = True
-    try:
-        pass
-    except Exception:
-        pass
+    # Record HP at the exhausted latch on first evaluation so a later tide
+    # change (HP drop) can be detected (design §2.2 ①).
+    if prev is None and type(hp) is int:
+        cur['_rescue_eval_hp'] = hp
+        return False
+    rearm = (type(prev) is int and type(hp) is int
+             and prev - hp >= max(1, GENERAL_CRITICAL_RETREAT_HP // 2))
     if not rearm:
         return False
     rescue['exhausted'] = False
     cur['rescue_rearm_count'] = count + 1
     cur['_rescue_eval_hp'] = hp
-    cur['_rescue_prev_survival'] = True
     try:
         _record(mem, 'battle_rescue_rearmed', **_battle_labels(cur),
                 reason='tide change re-armed exhausted rescue',
