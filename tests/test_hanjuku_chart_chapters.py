@@ -54,16 +54,17 @@ def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter, monke
 
 
 def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypatch):
-    """Lock the chapter 3 gate independently of any real coordinate claim.
+    """Lock the chapter 3 gate independently of the measured coordinates.
 
     The planted cells are synthetic: this checks which orders the gate exposes
-    once home and the three initial targets exist, not that those coordinates
-    were measured. Until labeled native frames are recorded, chapter 3 must
-    stay empty and emit no orders.
+    once home and the three initial targets exist. The real cells (isolated
+    probe, 2026-10-28) unlock every ordinary order; the unmeasured boss keeps
+    3-B1 out.
     """
     chapter = 3
-    assert chart.castles(chapter) == {}
-    assert chart.orders(chapter) == ()
+    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter]) - {'ボス'}
+    assert [o['step'] for o in chart.orders(chapter)] == [
+        o['step'] for o in chart.all_orders(chapter) if o['target'] != 'ボス']
 
     home = chart.home_castle(chapter)
     # Home plus グリン alone unlocks only the first initial route.
@@ -256,3 +257,17 @@ def test_native_resumed_party_and_intro_reach_map_with_actions():
     actions, state = decide(read_png(fixtures / 'resume-chapter-2-map.png').resized(), state)
     assert actions, 'the actual post-party map must not remain chapterless and held'
     assert state['policy']['chapter'] == 2
+
+
+def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
+    # Isolated probe 2026-10-28 (g1067 savestate, 9ねん1のつき): enemy flag
+    # top-left pixels on the Y view; every cell is the free cursor on that
+    # castle's roof after a Y jump, confirmed by the castle's own name.
+    flags = {'グリン': (171, 85), 'コラダイン': (147, 97), 'イーピヨル': (161, 127),
+             'ドンダム': (135, 149), 'メガパタ': (121, 127), 'パタゴーヌ': (107, 99),
+             'アバロン': (93, 137), 'リグア': (81, 81)}
+    ox, oy = chart.WORLD_MAP_OFFSET[3]
+    for name, (fx, fy) in flags.items():
+        x, y = chart.CASTLES[3][name]
+        assert abs(round(x / 8 + ox) - fx) <= 1 and abs(round(y / 8 + oy) - fy) <= 1, name
+    assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
