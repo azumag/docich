@@ -256,3 +256,22 @@ def test_direct_adapter_model_must_match_agent_before_key_or_worker():
     with mock.patch("docich.discord_chat.read_secret") as key, mock.patch("docich.reply_research_api.answer_once") as answer:
         assert call_agent(spec, _request(spec), timeout=5, env={}).returncode != 0
         key.assert_not_called(); answer.assert_not_called()
+
+
+def test_cc_translation_label_reaches_transport_and_only_exact_prefix_is_admitted():
+    # Real _direct_chat gate; only the transport (answer_once) is replaced.
+    spec = parse_agents("vercel-api:openai/gpt-4.1-nano")[0]
+    env = {"AI_GATEWAY_API_KEY": "SYNTHETIC_KEY", "DOCICH_CHAT_VERCEL_UPSTREAM": "openai",
+           "DOCICH_CHAT_VERCEL_BILLING_MODE": "credits_only"}
+    from docich.llm.contracts import DispatchRequest
+    def request(label):
+        return DispatchRequest(label=label, prompt="synthetic chunk", agents=(spec,))
+    with mock.patch("docich.reply_research_api.answer_once", return_value="translated") as answer:
+        result = call_agent(spec, request("CC_TRANSLATION"), timeout=5, env=env)
+        assert result.returncode == 0 and result.output == "translated"
+        assert answer.call_count == 1
+    for label in ("cc-translation", "CC_TRANSLATION_RESEARCH", "CC_TRANSLATION-PREPASS", "cc_translation"):
+        with mock.patch("docich.reply_research_api.answer_once") as answer:
+            result = call_agent(spec, request(label), timeout=5, env=env)
+            assert (result.returncode, result.failure_kind) == (2, "invalid_provider"), label
+            answer.assert_not_called()

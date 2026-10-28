@@ -244,12 +244,15 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
     """Explicit direct API specs never start OpenCode or invent a fallback.
 
     Normal COMMENT/RADIO generation is allowed; RESEARCH/PREPASS remain
-    separate. The request's ordered agents, if any, are still the operator's
-    explicit application-level fallback policy.
+    separate. CC_TRANSLATION is allowed only here: the caption adapter calls
+    call_agent directly and never goes through dispatch(), so validate_label
+    and the COMMENT/RADIO queue/backoff lanes do not apply to it. The request's
+    ordered agents, if any, are still the operator's explicit application-level
+    fallback policy.
     """
     from ..discord_chat import ChatRateLimit, Settings, direct_chat_options, read_secret
     from ..reply_research_api import answer_once
-    if (not request.label.startswith(("COMMENT", "RADIO"))
+    if (not request.label.startswith(("COMMENT", "RADIO", "CC_TRANSLATION"))
             or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
         return ProviderResult(2, failure_kind="invalid_provider", detail="generation_only")
     if spec.raw != f"{spec.provider}:{spec.model}":
