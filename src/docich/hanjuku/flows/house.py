@@ -1032,13 +1032,17 @@ def _repair_step(screen, mem, frame):
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
-    from ..os_layer.world import NAME
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
             and state.get('sole_defender')
             and not _sole_defender_repair_due(mem, name, state.get('source'))):
-        if name == NAME:
-            return _exit(mem, '主人公を修理へ派遣しない')
-        return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+        from ..os_layer.world import NAME as _HNAME
+        if name == _HNAME:
+            if phase == 'castle_kit':
+                pass  # handled below
+            else:
+                return _exit(mem, '主人公を修理へ派遣しない')
+        else:
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
