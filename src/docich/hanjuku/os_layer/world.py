@@ -15,6 +15,7 @@ from .readers import STATUS_NAMES, _cursor
 
 
 NAME = chart.HERO
+VENUS_NAME = 'ヴィーナス'
 EDGE_X = (8, 232)             # cursor cell clamps; the camera scrolls beyond
 EDGE_Y = (8, 200)
 ANCHOR_PX = 24                # roof-to-castle association radius (castles >=100 px apart)

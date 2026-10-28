@@ -1009,9 +1009,6 @@ def _income_step(screen, mem, frame):
     return []
 
 
-VENUS_NAME = 'ヴィーナス'
-
-
 def _sole_defender_repair_due(mem, name, source):
     """Repair immediately unless this is the hero or last-castle sole defender.
 
@@ -1021,7 +1018,7 @@ def _sole_defender_repair_due(mem, name, source):
     A previous-month deferral is not permission to leave the hero
     unprotected, including after a hotload.
     """
-    from ..os_layer.world import NAME, _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     owned = _owned(mem)
     if name == NAME:
         return False
