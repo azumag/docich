@@ -75,7 +75,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.live_eligible is False for c in catalog)
     # 2026-10-24 オーナー指示 (#2694) で自動抽選へ復帰。
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
-    assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is False
+    assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is True
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
