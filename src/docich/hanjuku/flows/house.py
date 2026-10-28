@@ -1086,6 +1086,14 @@ def _repair_step(screen, mem, frame):
                     _record(mem, 'repair_sole_defender', castle=source,
                             observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
                             reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                    try:
+                        from ..decision_log import _record as _drecord
+                        _drecord(mem, 'house_repair_sole_defender', chart_step=None, general=name,
+                                 castle=source,
+                                 observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                 reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                    except Exception:
+                        pass
                 else:
                     state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
