@@ -72,7 +72,7 @@ def test_hero_recheck_is_bounded_per_fight():
     start_battle(mem)
     failed_open_budget(mem)
     assert policy.battle_step(panel(ally_hp=81), mem) == MASH
-    actions = [policy.battle_step(panel(ally_hp=54), mem) for _ in range(30)]
+    actions = [policy.battle_step(panel(ally_hp=54), mem) for _ in range(50)]
     rechecks = [rec for rec in mem['_records'] if rec.get('decision') == 'battle_hero_survival_recheck']
     assert len(rechecks) == policy.HERO_SURVIVAL_REOPEN_LIMIT
     assert rechecks[0]['observed_metric']['episode'] == 1

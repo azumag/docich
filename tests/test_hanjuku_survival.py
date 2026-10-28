@@ -160,7 +160,7 @@ def test_unreadable_cursor_and_missing_menu_are_bounded():
     mem = memory()
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert p.battle_step(battle(mem), mem)[0] == p.pad('a', 3)
     for _ in range(12):
@@ -200,10 +200,10 @@ def test_missing_retreat_menu_still_exhausts_its_original_three_openings():
                         start_enemy_hp=26, side='attack', planned_cards=[])
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert mem['battle']['hero_retreat']['opens'] == 3
-    for _ in range(20):
+    for _ in range(40):
         p.battle_step(battle(mem), mem)
     assert mem['battle']['hero_retreat']['opens'] == 3
     assert not mem['battle'].get('command_open_pending')
@@ -223,7 +223,7 @@ def test_opening_fade_with_high_no_input_streak_never_blindly_confirms():
     p._human_menu_open(mem['battle'], 'survival')
     frame = Canvas().frame()
     state = {'policy': mem, 'no_input_streak': 999}
-    for _ in range(2):
+    for _ in range(p.COMMAND_OPEN_WAITS):
         actions, state = decide(frame, state)
         assert actions == [{'type': 'wait', 'ms': 50}]
     assert p.command_open_pending_step(parse(frame), state['policy']) is None

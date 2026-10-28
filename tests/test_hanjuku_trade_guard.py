@@ -434,10 +434,10 @@ def test_trade_guard_is_released_before_a_real_pending_command_owner(phase):
     blank_dialogue = trade_pixels(question=False, rows=(), hand=False)
     assert classify(other_frame) == phase and parse(other_frame).kind == 'unknown'
     assert classify(blank_dialogue) == 'dialogue' and parse(blank_dialogue).kind == 'unknown'
-    # The real higher-priority owner consumes its two waits without dispatching
+    # The real higher-priority owner consumes its waits without dispatching
     # trade_guard_step. A prior exchange must already be gone on that field/fade.
-    for frame, expected in ((other_frame, [{'type': 'wait', 'ms': 50}]),
-                            (blank_dialogue, [{'type': 'wait', 'ms': 50}]),
+    waits = [(blank_dialogue, [{'type': 'wait', 'ms': 50}])] * (policy.COMMAND_OPEN_WAITS - 1)
+    for frame, expected in ((other_frame, [{'type': 'wait', 'ms': 50}]), *waits,
                             (blank_dialogue, [policy.pad('a')])):
         actions, state = decide(frame, json.loads(json.dumps(state)))
         control_actions, control = decide(frame, json.loads(json.dumps(control)))
