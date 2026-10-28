@@ -30,7 +30,12 @@ def policy_case(ally, enemy, skills, *, enemy_hp=100, enemy_soldiers=0):
                      if 'もどれ' not in ''.join(line.known.split())]
     assert len(skill_indexes) == 2
     for index, skill in zip(skill_indexes, skills):
-        screen.menu_rows[index] = replace(screen.menu_rows[index], known=skill)
+        # TextLine.known is derived from cells rather than a dataclass field.
+        # Preserve the native row anchor while replacing only the counterfactual label.
+        row = screen.menu_rows[index]
+        start_x = min(x for x, _ in row.cells)
+        screen.menu_rows[index] = replace(
+            row, cells=tuple((start_x + 8 * i, ch) for i, ch in enumerate(skill)))
     screen.egg_rows = [
         replace(row, name=ally, hp=100) if row.side == 'ally'
         else replace(row, name=enemy, hp=enemy_hp) if row.side == 'enemy'
