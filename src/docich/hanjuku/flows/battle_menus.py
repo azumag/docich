@@ -21,9 +21,10 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
-                               _wounded_summoner, _summoner_return_risk)
+                               _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
-                               _monster_owner, _monster_damage_second, _monster_damage_first)
+                               _monster_owner, _monster_damage_second, _monster_damage_first,
+                               _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
@@ -755,13 +756,29 @@ def okunote_step(screen, mem):
                     reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
         if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt):
             rescue = _survival_state(mem, cur)
-            if not flow.get('risk_declined'):
-                flow['risk_declined'] = True
-                _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
-                        observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
-                        reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
-            rescue['exhausted'] = True
-            return [pad('b')]
+            # Re-arm exhausted on tide change.
+            _rescue_rearm(mem, cur, {'owner': 'ally'})
+            rescue = _survival_state(mem, cur)
+            # Candidate-first: check safe okunote choices (not self-damage).
+            visible = {w for _, _, w in _options(screen)} if getattr(screen, 'kind', None) == 'battle_menu' else set()
+            # Unobserved is not safe (#2102): do not fall back to the static
+            # OKUNOTE_CHOICES when the menu is not visible.
+            okunote_visible = [w for w in OKUNOTE_CHOICES if w in visible] if visible else []
+            from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
+            safe = [c for c in okunote_visible if c not in OKUNOTE_SELF_DAMAGE_CHOICES]
+
+            if not safe or rescue.get('exhausted'):
+                if not flow.get('risk_declined'):
+                    flow['risk_declined'] = True
+                    _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
+                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                            reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+                rescue['exhausted'] = True
+                return [pad('b')]
+            # safe candidate exists: fall through to open okunote
+            _record(mem, 'battle_okunote_risk_accepted', **_battle_labels(cur),
+                    observed_metric={'ally_hp': hp, 'safe_candidates': safe},
+                    reason='低HPだが観測した安全候補があるため奥の手を開く')
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
@@ -1482,6 +1499,25 @@ def monster_menu_step(screen: Screen, mem):
                 mem['monster_ally_max_hp'] = max(int(seen or 0), ally_hp)
         elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
+        # Issue #2835: opponent-aware attack command selection.
+        # Gate rationale:
+        #   - special_cycle/damage_first/damage_second/powerless/heal_first are
+        #     already-resolved tactics that must not be overridden.
+        #   - `default == 'skill1'`: only intervene when the generic default
+        #     is the first skill; if experience/owner already chose skill2
+        #     (effect-only second skill), keep that conservative choice.
+        #   - `not behind`: when the summoner is behind, keep the existing
+        #     behind-policy (skill2 effect) rather than the opponent-aware
+        #     attack pick, matching policy 1-3 which assume a non-behind
+        #     position for the summoned monster's own attack.
+        #   - `not heal_first` keeps heal-first monsters on their recovery path.
+        if (not special_cycle and not damage_first and not damage_second
+                and not powerless and len(skill_lines) >= 2
+                and default == 'skill1' and not heal_first and not behind):
+            policy_default = _monster_attack_policy_default(
+                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
+            if policy_default is not None:
+                default = policy_default
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
         # Special monster owner tactics must not be overridden by generic

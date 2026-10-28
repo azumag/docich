@@ -655,6 +655,36 @@ def test_the_y_cursor_is_found_with_live_capture_colour_shifts():
         assert found is not None and abs(found[0] - 150) <= 1 and abs(found[1] - 140) <= 1
 
 
+def test_stationary_y_cursor_closes_without_confirming_or_retrying_same_order():
+    """Synthetic stationary detection models the roof false positive in #2915."""
+    order = {'step': 'X'}
+    mem = {'chapter': 1, '_records': [], 'cursor': [300, 300], 'uncertain': True}
+    policy._start_y_jump(mem, order, 'アルマムーン', 'map')
+    frame = _y_view((150.0, 140.0), gold=True)
+    actions = [policy._y_jump_step(mem, frame) for _ in range(4)]
+    assert all(a['buttons'] != ['a'] for batch in actions for a in batch)
+    assert actions[-1] == [policy.pad('y')]
+    assert 'y_jump' not in mem and 'near_goal' not in mem
+    assert mem['cursor'] == [300, 300] and mem['uncertain'] is True
+    assert mem['y_jump_last']['why'] == 'cursor_stationary'
+    assert not policy._want_y_jump(mem, order, 'アルマムーン', 'map')
+    assert policy._want_y_jump(mem, {'step': 'NEXT'}, 'アルマムーン', 'map')
+    assert policy._want_y_jump(mem, order, 'アルマムーン', 'target')
+    mem['y_jump_last'] = {'step': 'X', 'mode': 'target', 'moves': 1, 'why': 'view_closed'}
+    assert not policy._want_y_jump(mem, order, 'アルマムーン', 'map')
+
+
+def test_y_cursor_motion_resets_stall_and_can_still_confirm():
+    mem = {'chapter': 1, '_records': []}
+    policy._start_y_jump(mem, {'step': 'X'}, 'アルマムーン', 'map')
+    for point in [(150, 140), (150, 140), (150, 140), (140, 130), (140, 130)]:
+        assert policy._y_jump_step(mem, _y_view(point)) != [policy.pad('y')]
+    gx, gy = CASTLES['アルマムーン']
+    ox, oy = policy.Y_JUMP_OFFSET[1]
+    assert policy._y_jump_step(mem, _y_view((gx / 8 + ox, gy / 8 + oy))) == [policy.pad('a')]
+    assert decisions(mem, 'y_jump_confirm') and not decisions(mem, 'y_jump_failed')
+
+
 def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch):
     """g419 08:34/08:44: the hero and ココット were sent to open fields by dead reckoning."""
     def arrived(_screen, mem, *_a, **_k):
