@@ -136,6 +136,11 @@ class TsuitateStartQueryStaticContractTests(unittest.TestCase):
         self.assertIn('queue_manual("tsuitate-view")', module)
         self.assertNotIn("subprocess", module)
         self.assertNotIn("os.system", module)
+        compile(module, str(START_MODULE), "exec")
+        syntax = subprocess.run(
+            ["bash", "-n", str(START_SCRIPT)], text=True, capture_output=True, check=False
+        )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
 
 if __name__ == "__main__":
