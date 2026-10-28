@@ -640,9 +640,11 @@ def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
     blank = _world_map_frame({})
     results = [policy.world_map_step(parse(blank), mem, blank) for _ in range(policy.Y_JUMP_WAIT)]
     assert results[-1] == [policy.pad('y')] and decisions(mem, 'y_jump_failed')
+    # A jump that closed without ever moving the cursor is not reopened for the
+    # same order: Y would only toggle again (g1075 2026-10-28, 69 closes at 0
+    # moves left the ring sitting still over the sea for a minute per order).
     mem['cursor'] = list(CASTLES['アルマムーン'])
-    mem['y_jumps'] = {'X:target': policy.Y_JUMP_LIMIT}
-    assert policy.target_step(marker, mem, FRAME) != [policy.pad('y')]    # limit reached
+    assert policy.target_step(marker, mem, FRAME) != [policy.pad('y')]
 
 
 def test_the_y_cursor_is_found_with_live_capture_colour_shifts():
@@ -754,6 +756,7 @@ def test_a_just_opened_jump_waits_for_the_view_instead_of_being_dropped():
     mem['tick'] = 10 + policy.Y_JUMP_OPEN_GRACE
     policy.target_step(marker, mem, FRAME)
     assert decisions(mem, 'y_jump_failed')                              # bounded
+    assert not policy._want_y_jump(mem, order, 'ゴーメン', 'target')     # closed at 0 moves
 
 
 def test_gold_edge_arrows_are_not_a_cursor_and_a_far_jump_is_never_confirmed():
