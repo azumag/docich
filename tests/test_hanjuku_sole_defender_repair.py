@@ -81,8 +81,14 @@ def test_actual_single_general_list_can_select_repair_without_old_permission(gen
 @pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ヴィーナス', False)])
 def test_losing_other_castles_after_selection_cancels_the_repair(general, should_cancel):
     from test_hanjuku_retake_guard import generals
-    mem = memory('1-7'); mem['house'].update(phase='castle_pick', source='アルマムーン')
-    assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
+    mem = memory('1-7')
+    mem['house'].update(phase='castle_pick', source='アルマムーン')
+    if general == 'どうし':
+        # Hero cannot be selected as sole defender at castle_pick; simulate post-selection state
+        mem['house'].update(phase='castle_kit', sole_defender=True)
+    else:
+        assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
+        assert mem['house']['phase'] == 'castle_kit'
     mem['captured'] = []
     actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
     if should_cancel:
