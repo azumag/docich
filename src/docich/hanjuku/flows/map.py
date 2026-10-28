@@ -112,6 +112,20 @@ def _world_map_wanted(mem) -> bool:
             or tick - int(last) >= WORLD_SURVEY_TICKS)
 
 
+def _picker_origin(chapter, frame):
+    """The recalling unit's chart cell, only when the picker shows exactly one ▲.
+
+    DSH 2026-10-28: the picker cursor starts on home, so only a unique army
+    marker is bound. Several markers are ambiguous and leave origin unknown.
+    """
+    offset = WORLD_MAP_OFFSET.get(chapter)
+    markers = world_markers(frame) if frame is not None and offset else []
+    if len(markers) != 1:
+        return None
+    x0, y0, x1, y1 = markers[0]
+    return [round(((x0 + x1) / 2 - offset[0]) * 8), round(((y0 + y1) / 2 - offset[1]) * 8)]
+
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -142,6 +156,10 @@ def world_map_step(screen, mem, frame):
             mem.pop('recall', None)
             mem['uncertain'] = True
             return [pad('b')]
+        if recall.get('origin') is None:
+            picked = _picker_origin(chapter, frame)
+            if picked is not None:
+                recall.update(origin=picked, origin_source='picker')
         goal = _recall_goal(mem, flags)
         if not cursor or not offset or goal is None:
             return [pad('right')] if cursor else []
@@ -150,7 +168,7 @@ def world_map_step(screen, mem, frame):
             origin = recall.get('origin')
             _record(mem, 'camp_recall_destination',
                     observed_metric={'castle': goal, 'origin': origin,
-                                     'origin_source': 'roofs' if origin else 'fallback',
+                                     'origin_source': recall.get('origin_source', 'fallback') if origin else 'fallback',
                                      'hero_castle': _hero_castle(mem)},
                     reason='現在地から近い自軍城を選び、同距離ならどうしの在城先を優先する')
         if nearby != [goal]:
