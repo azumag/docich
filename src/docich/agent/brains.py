@@ -315,7 +315,7 @@ class NethackPolicyBrain:
                 f"docich: 警告: NetHack candidate shadow をスキップしました: {str(exc)[:200]}",
                 file=sys.stderr,
             )
-        if not production_actions and self.last_advisory is not None and self.last_advisory.actions:
+        if not production_actions and decision.intent != "prompt_decision" and self.last_advisory is not None and self.last_advisory.actions:
             # Only a held production path may use advisory keys, and only after
             # validate_action has rechecked this exact frame.
             advisory_actions = list(self.last_advisory.actions)
