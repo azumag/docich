@@ -190,6 +190,7 @@ Y_JUMP_WAIT = 6                # frames without a readable cursor before closing
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
 Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
+Y_JUMP_STILL_LIMIT = 3         # readable observations unchanged after directional inputs
 
 
 def _note_failed_jump(mem, jump, why):
@@ -230,7 +231,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         return False
     last = mem.get('y_jump_last') or {}
     if (last.get('step') == order['step'] and last.get('mode') == mode
-            and not int(last.get('moves') or 0)):
+            and (not int(last.get('moves') or 0) or last.get('why') == 'cursor_stationary')):
         # The last jump for this order closed without moving the cursor. The
         # view is not opening or readable here, so walk instead of toggling Y.
         return False
@@ -263,6 +264,8 @@ def _y_jump_step(mem, frame):
         jump['owners'] = True
         _apply_world_flags(mem, flags)          # the same view also shows every owner
     if cursor is None:
+        jump.pop('last_cursor', None)
+        jump['still'] = 0
         jump['wait'] += 1
         if jump['wait'] < Y_JUMP_WAIT:
             return []
@@ -274,6 +277,20 @@ def _y_jump_step(mem, frame):
     gx, gy = chart.castles(chapter)[jump['goal']]
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
+    # A roof misread as the G stays fixed even while the real cursor moves
+    # (#2915). Count observations after issued inputs, not the initial read.
+    # Never turn that stationary detection into an arrival or a new cell.
+    previous = jump.get('last_cursor')
+    jump['still'] = (int(jump.get('still') or 0) + 1
+                     if previous == list(cursor) and jump['moves'] else 0)
+    jump['last_cursor'] = list(cursor)
+    if jump['still'] >= Y_JUMP_STILL_LIMIT:
+        mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'cursor_stationary')
+        _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
+                observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
+                reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
+        return [pad('y')]
     if jump['moves'] >= Y_JUMP_MOVES and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
         mem.pop('y_jump', None)
