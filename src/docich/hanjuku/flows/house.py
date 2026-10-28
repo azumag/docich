@@ -1039,10 +1039,7 @@ def _repair_step(screen, mem, frame):
             and not _sole_defender_repair_due(mem, name, state.get('source'))):
         from ..os_layer.world import NAME as _HNAME
         if name == _HNAME:
-            if phase == 'castle_kit':
-                pass  # handled below
-            else:
-                return _exit(mem, '主人公を修理へ派遣しない')
+            return _exit(mem, '主人公を修理へ派遣しない')
         else:
             return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
