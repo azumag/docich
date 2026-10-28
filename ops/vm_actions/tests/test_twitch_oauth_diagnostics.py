@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from temp_roots import real_tempdir
+
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
     "oauth_diagnostics", ROOT / "ops/vm_actions/collect_diagnostics.py")
@@ -17,7 +19,7 @@ NOW = 1792562400  # 2026-10-21T06:00:00Z
 
 class TwitchOAuthDiagnosticsTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = real_tempdir()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / "twitch_oauth").mkdir(mode=0o700)
