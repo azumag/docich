@@ -1032,9 +1032,12 @@ def _repair_step(screen, mem, frame):
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
+    from ..os_layer.world import NAME
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
             and state.get('sole_defender')
             and not _sole_defender_repair_due(mem, name, state.get('source'))):
+        if name == NAME:
+            return _exit(mem, '主人公を修理へ派遣しない')
         return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
@@ -1078,7 +1081,7 @@ def _repair_step(screen, mem, frame):
             if name not in names:
                 _phase(state, 'find_castle')
             elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):
-                _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
+                _record(mem, 'general_deferred', reason='主人公を残す')
                 _next_general(mem)
             else:
                 if len(names) < 2:
@@ -1146,8 +1149,9 @@ def _repair_step(screen, mem, frame):
     if phase == 'castle_kit':
         if screen.kind != 'card_select':
             return []
-        if name == NAME and not _sole_defender_repair_due(mem, name, state.get('source')):
-            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+        from ..os_layer.world import NAME as _NAME
+        if name == _NAME and not _sole_defender_repair_due(mem, name, state.get('source')):
+            return _exit(mem, '主人公を修理へ派遣しない')
         info = general_status(screen)
         if info is None:
             return []
