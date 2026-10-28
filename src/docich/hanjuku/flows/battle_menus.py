@@ -760,10 +760,12 @@ def okunote_step(screen, mem):
             rescue = _survival_state(mem, cur)
             # Candidate-first: check safe okunote choices (not self-damage).
             visible = {w for _, _, w in _options(screen)} if getattr(screen, 'kind', None) == 'battle_menu' else set()
-            # Fallback to static OKUNOTE_CHOICES when menu not yet visible; filter to observed choices once visible.
-            okunote_visible = [w for w in OKUNOTE_CHOICES if (not visible or w in visible)]
+            # Unobserved is not safe (#2102): do not fall back to the static
+            # OKUNOTE_CHOICES when the menu is not visible.
+            okunote_visible = [w for w in OKUNOTE_CHOICES if w in visible] if visible else []
             from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
             safe = [c for c in okunote_visible if c not in OKUNOTE_SELF_DAMAGE_CHOICES]
+
             if not safe or rescue.get('exhausted'):
                 if not flow.get('risk_declined'):
                     flow['risk_declined'] = True

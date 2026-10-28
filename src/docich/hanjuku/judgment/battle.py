@@ -179,6 +179,14 @@ def _card_use_unclassified(mem, cur, reason):
 
 
 def reset_battle_controls(mem):
+    _prev_reentry = mem.get('rescue_reentry_count')
+    if type(_prev_reentry) is int and _prev_reentry > 0:
+        try:
+            _record(mem, 'battle_rescue_carryover_cleared',
+                    reason='previous fight rescue reentry counter reset for new battle',
+                    observed_metric={'previous_count': _prev_reentry})
+        except Exception:
+            pass
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)
     for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
@@ -1639,7 +1647,7 @@ def _full_hp_melee_advantage(cur):
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
     balance = _melee_balance(cur)
     scores = balance['ally_melee_score'], balance['enemy_melee_score']
-    max_hp = general_max_hp('shujinko' if False else ('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')))
+    max_hp = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
     return (all(type(n) is int and n > 0 for n in (hp, enemy, start, *scores))
             and all(type(n) is int and 0 <= n <= 7 for n in (ours, theirs))
             and type(max_hp) is int and hp == max_hp
@@ -1649,12 +1657,7 @@ def _full_hp_melee_advantage(cur):
             and scores[0] > scores[1])
 
 
-# #2896 aliases for the favourable-melee predicate (full-HP / actual advantage).
-_actual_melee_advantage = _full_hp_melee_advantage
-_melee_advantage = _full_hp_melee_advantage
-_full_hp_melee_advantage = _full_hp_melee_advantage
-_current_melee_advantage = _full_hp_melee_advantage
-_melee_lead = _full_hp_melee_advantage
+# (aliases removed; callers use _full_hp_melee_advantage directly)
 
 
 def _command_open_wait(mem, cur):
