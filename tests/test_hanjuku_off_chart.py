@@ -531,7 +531,8 @@ def test_the_y_whole_map_view_updates_every_castle_owner_and_closes_with_y():
     assert owners['observed_metric'] == {'アルマムーン': 'own', 'キカンドン': 'enemy', 'ジョンリギ': 'own'}
 
 
-def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due():
+def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due(monkeypatch):
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 5)            # an uncalibrated chapter
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'tick': 10}
     assert policy.map_step(map_screen(100, 100), mem, FRAME) == [policy.pad('y')]
     assert decisions(mem, 'world_map_open') and mem['world_map_tick'] == 10

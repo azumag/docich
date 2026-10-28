@@ -271,3 +271,35 @@ def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
         x, y = chart.CASTLES[3][name]
         assert abs(round(x / 8 + ox) - fx) <= 1 and abs(round(y / 8 + oy) - fy) <= 1, name
     assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
+
+
+# WRAM 0x1700 castle records ([id, x, y, ...], 16 bytes, 8 px tiles) read from
+# isolated probe savestates on 2026-10-28, in record order.
+WRAM_TILES = {
+    1: {'アルマムーン': (88, 96), 'ナキューメラ': (86, 76), 'キカンドン': (68, 86), 'ジョンリギ': (66, 68),
+        'カストーラ': (72, 44), 'スペンソニア': (46, 44), 'ゴーメン': (34, 72)},
+    2: {'アルマムーン': (62, 102), 'ハドリバーグ': (90, 88), 'フーリック': (42, 86), 'グロン': (92, 56),
+        'ドミノーラ': (58, 58), 'ウラノポリス': (32, 58), 'スペランザ': (78, 40), 'アウスパジア': (34, 32)},
+    3: {'アルマムーン': (86, 16), 'グリン': (104, 36), 'コラダイン': (80, 48), 'イーピヨル': (94, 78),
+        'ドンダム': (68, 100), 'メガパタ': (54, 78), 'パタゴーヌ': (40, 50), 'アバロン': (26, 88),
+        'リグア': (14, 32)},
+}
+
+
+def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
+    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    for chapter, tiles in WRAM_TILES.items():
+        assert {n: (x + 2, y + 1) for n, (x, y) in tiles.items()} == SOURCE_CASTLES[chapter]
+        for name, cell in chart.CASTLES[chapter].items():
+            if name in tiles:
+                approx = chart.CASTLES_APPROX.get(chapter, {}).get(name) or tuple(
+                    8 * (v + d) for v, d in zip(SOURCE_CASTLES[chapter][name], (1, 3)))
+                limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
+                assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
+    for chapter in range(4, 13):
+        assert chart.CASTLES[chapter] == {
+            n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
+        assert 'ボス' not in chart.CASTLES[chapter]
+        assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
+        assert chart.orders(chapter)
+        assert not any(o['target'] == 'ボス' for o in chart.orders(chapter))

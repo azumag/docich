@@ -80,7 +80,10 @@ def test_off_chart_records_one_request_per_situation_and_holds():
     assert mem['card_scroll'] == {'other': 4}  # a new attempt gets a bounded search
 
 
-def test_unavailable_and_exhausted_charts_are_distinguished():
+def test_unavailable_and_exhausted_charts_are_distinguished(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 5, {})                 # an unmeasured chapter
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 5)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 5)
     mem = {'chapter': 5, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, FRAME)
     assert decisions(mem, 'chart_adjust_request')[0]['off_chart_reason'] == 'chart_unavailable'
