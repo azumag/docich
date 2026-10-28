@@ -80,7 +80,9 @@ def test_actual_single_general_list_can_select_repair_without_old_permission(gen
 
 @pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ココット', True), ('ヴィーナス', False)])
 def test_losing_other_castles_after_selection_cancels_the_repair(general, should_cancel):
+    from unittest.mock import patch
     from test_hanjuku_retake_guard import generals
+    from docich.hanjuku.os_layer import world
     mem = memory('1-7')
     mem['house'].update(phase='castle_pick', source='アルマムーン')
     if general in ('どうし', 'ココット'):
@@ -88,15 +90,17 @@ def test_losing_other_castles_after_selection_cancels_the_repair(general, should
         mem['house'].update(phase='castle_kit', general=general, sole_defender=True)
     else:
         mem['house'].update(general=general)
-        assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
-        assert mem['house']['phase'] == 'castle_kit'
+        with patch.object(world, '_owned', return_value={'アルマムーン'}):
+            assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
+            assert mem['house']['phase'] == 'castle_kit'
     mem['captured'] = []
-    actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
-    if should_cancel:
-        assert actions == []
-        assert mem['house']['phase'] == 'close'
-    else:
-        assert mem['house']['phase'] == 'castle_kit'
+    with patch.object(world, '_owned', return_value=set()):
+        actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
+        if should_cancel:
+            assert actions == []
+            assert mem['house']['phase'] == 'close'
+        else:
+            assert mem['house']['phase'] == 'castle_kit'
 
 
 def test_next_field_general_does_not_inherit_the_previous_castle_guard():
@@ -108,11 +112,14 @@ def test_next_field_general_does_not_inherit_the_previous_castle_guard():
 
 
 def test_broken_venus_repairs_even_as_last_castle_sole_defender():
+    from unittest.mock import patch
+    from docich.hanjuku.os_layer import world
     mem = memory('1-7')
     mem['captured'] = []
     mem['house'].update(general='ヴィーナス', source='アルマムーン')
-    assert house._repair_step(castle_status('アルマムーン', ['ヴィーナス']), mem, None) == [p.pad('b')]
-    assert mem['house']['phase'] == 'castle_sortie'
-    assert mem['house'].get('sole_defender') is True
-    assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
-    assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
+    with patch.object(world, '_owned', return_value={'アルマムーン'}):
+        assert house._repair_step(castle_status('アルマムーン', ['ヴィーナス']), mem, None) == [p.pad('b')]
+        assert mem['house']['phase'] == 'castle_sortie'
+        assert mem['house'].get('sole_defender') is True
+        assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
+        assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
