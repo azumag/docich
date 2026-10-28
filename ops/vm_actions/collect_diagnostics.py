@@ -147,6 +147,7 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.cc_translation_adapter import DEFAULT_PORT as _CC_ADAPTER_DEFAULT_PORT, probe_health as _probe_cc_adapter  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
@@ -9032,6 +9033,20 @@ def _collect_resolver_daemon():
     return {'schema_version': 2, 'units': units}
 
 
+def _collect_cc_translation_adapter():
+    """Read-only healthz of the CC translation adapter (docich#2894).
+
+    Reports the probe state and the upstream name the adapter advertises only;
+    no prompt, key, or response body is read into the envelope.
+    """
+    port = _CC_ADAPTER_DEFAULT_PORT
+    raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
+    if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
+        port = int(raw_port)
+    health = _probe_cc_adapter(port)
+    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
+
+
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
 
 
@@ -13959,6 +13974,7 @@ def main(argv):
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
+        "cc_translation_adapter": _collect_cc_translation_adapter(),
     }
     retention = payload["opencode_retention"]
     attempt = retention["attempt"]

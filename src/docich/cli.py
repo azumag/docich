@@ -48,6 +48,7 @@ from .netcmd import send_ra_cmd
 from .trading import cli as trading_cli
 from .trading import paper_ai_canary
 from .state import State
+from .cc_translation_adapter import describe_health, probe_health
 from .stream import (
     CaptionSocketDirectoryError,
     StreamRuntime,
@@ -1065,6 +1066,7 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
                 detail = f"{detail}; {socket_detail}"
             print(f"  captions.active: {'はい' if active else 'いいえ'}")
             print(f"  captions.detail: {detail}")
+            print(f"  captions.adapter: {describe_health(probe_health())}")
             print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")

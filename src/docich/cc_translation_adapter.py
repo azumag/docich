@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Mapping
 
@@ -31,6 +32,33 @@ HEALTH_PATH = "/healthz"
 
 # (prompt, timeout) -> (output, failure_kind); failure_kind is "" on success.
 Translator = Callable[[str, float], tuple[str, str]]
+
+
+def probe_health(port: int = DEFAULT_PORT, timeout: float = 1.0) -> dict:
+    """Read-only loopback GET of ``/healthz``; never trusts a proxy.
+
+    Returns ``{"state": "ok", "upstream": ...}`` or ``{"state": ...}`` with state
+    in {"unreachable", "invalid"}. The body is reduced to the upstream name only.
+    """
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    url = f"http://{LOOPBACK_HOST}:{port}{HEALTH_PATH}"
+    try:
+        with opener.open(url, timeout=timeout) as response:
+            body = json.loads(response.read(4096).decode("utf-8"))
+    except Exception:
+        return {"state": "unreachable"}
+    if not isinstance(body, dict) or body.get("status") != "ok" or not isinstance(
+        body.get("upstream"), str
+    ):
+        return {"state": "invalid"}
+    return {"state": "ok", "upstream": body["upstream"]}
+
+
+def describe_health(health: dict) -> str:
+    if health.get("state") == "ok":
+        return f"ok (upstream={health['upstream']})"
+    return {"unreachable": "unreachable", "invalid": "invalid response"}[health["state"]]
 
 
 def parse_upstream(raw: str) -> AgentSpec:

@@ -19,14 +19,24 @@
 - 健康確認（値は出ない）: `curl -s http://127.0.0.1:4100/healthz` → `{"status": "ok", "upstream": "<provider>:<model>"}`。
 - 失敗は HTTP 502 と kind のみ（`rate_limit` / `provider_failed` など）。log は `[CC_TRANSLATION_ADAPTER] failed kind=...`。
 
-## 配置前の未確定事項（#2900）
+## 配置時の固定値（#2900、VM 上で read-only 確認済み）
 
-以下は VM 側の read-only 確認で埋めてから配置 PR に固定する。推測では固定しない。
+unit・PR 本文・本 README は以下の同じ値で揃えている。
 
-1. `EnvironmentFile` の実パス（unit の `/home/ubuntu/soren/.env` は仮置き）。
-2. docich src の配置先（unit の `PYTHONPATH=/home/ubuntu/work/docich/src` は仮置き）。
+1. `EnvironmentFile`: `/home/ubuntu/soren/.env`（存在する env ファイル。値は読まない・表示しない）。
+2. docich src の配置先: `/home/ubuntu/docich/src`（unit の `PYTHONPATH`）。
+
+以下は未確認。推測で固定しない。pre-switch gate として #2900 に記録してから配置する。
+
 3. 既存 direct-chat 経路（`vercel-api`）が本番 VM で実キーにより応答するか、レイテンシ（目安 <10s）と品質の実測。
 4. 使う upstream の規約確認を一文で `#2900` に記録（AGENTS §11 と同じ基準）。
+5. VM 側の env に `DOCICH_CC_ADAPTER_UPSTREAM`（と必要なら `DOCICH_CC_ADAPTER_PORT`）が未設定の場合は、配置時に owner 管理の env へ追加する。`DOCICH_CHAT_VERCEL_UPSTREAM` の存在も同じ read-only 確認で見る（値は出さない）。
+
+## 状態確認（docich status / diagnostics）
+
+- `docich status` の `captions.adapter` 行: 127.0.0.1 の `/healthz` を read-only で 1 回だけ probe し、`ok (upstream=…)` / `unreachable` / `invalid response` を表示する。配信未設定（`stream.mode=null`）では表示しない扱い。
+- `collect_diagnostics` の `cc_translation_adapter` 節: probe の state・port・upstream 名のみ。prompt・key・応答本文は含めない。
+- AGENTS §11 の確認: 本機能は registry（既存 unit 一覧）・queue（処理キューを持たない）に影響しない。health は上記 probe、telemetry はこの節のみ。
 
 ## 配置
 
