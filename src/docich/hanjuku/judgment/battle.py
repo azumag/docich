@@ -1670,7 +1670,8 @@ def _command_open_wait(mem, cur):
     # Repeated B there can close the menu just requested. Current HP is still
     # read before this short wait, and the old opening budgets are retained.
     pending['waits'] = pending.get('waits', 0) + 1
-    if pending['waits'] > COMMAND_OPEN_WAITS:
+    _waits_limit = 2 if pending.get('owner') == 'defender_egg' else COMMAND_OPEN_WAITS
+    if pending['waits'] > _waits_limit:
         cur.pop('command_open_pending', None)
         return None
     _record(mem, 'battle_command_open_wait', **_battle_labels(cur),
