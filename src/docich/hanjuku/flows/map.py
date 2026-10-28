@@ -169,6 +169,7 @@ def world_map_step(screen, mem, frame):
             _record(mem, 'camp_recall_destination',
                     observed_metric={'castle': goal, 'origin': origin,
                                      'origin_source': recall.get('origin_source', 'fallback') if origin else 'fallback',
+                                     'picker_boxes': [list(b) for b in world_markers(frame)],
                                      'hero_castle': _hero_castle(mem)},
                     reason='現在地から近い自軍城を選び、同距離ならどうしの在城先を優先する')
         if nearby != [goal]:
