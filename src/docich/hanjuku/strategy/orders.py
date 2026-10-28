@@ -609,7 +609,35 @@ def _retake_order(order, mem):
                  or order.get('target') in (mem.get('lost') or ())))
 
 
+def _defense_break_allowed(order, mem):
+    """Use the monthly fallback only for the exact mechanically chosen actor/route.
+
+    A chart field alone is not permission. Revalidate the current monthly
+    evaluation, loss latch and effective actor/source at the execution gate.
+    """
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    wait = mem.get('defense_wait') or {}
+    if (not isinstance(interim, dict)
+            or any(order.get(k) != interim.get(k) for k in
+                   ('step', 'general', 'source', 'target', 'purpose'))
+            or not str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
+            or type(wait.get('cycles')) is not int or wait['cycles'] < 1
+            or not mem.get('month') or wait.get('eval_month') != mem['month']):
+        return False
+    source = _source(order, mem)
+    return (source == interim.get('source') and source in _owned(mem)
+            and _sortie_general(order, mem) == interim.get('general')
+            and interim.get('general') in ((mem.get('garrison') or {}).get(source) or ())
+            and interim.get('general') not in (_en_route(mem)[0]
+                                              | set(mem.get('general_location_unknown') or ()))
+            and source not in (mem.get('lost') or ())
+            and source not in (mem.get('defense_break_blocked') or ())
+            and (mem.get('defense_break_sources') or {}).get(source) == interim.get('target'))
+
+
 def _reserve_source_guard(order, mem):
+    if _defense_break_allowed(order, mem):
+        return False
     # Original chart offensives and boss waves retain their sequences. A
     # recapture or an off-chart attack must leave a measured idle defender.
     # Adjusted orders normally omit purpose; only explicit moves are exempt.
