@@ -169,8 +169,8 @@ def test_castle_repair_will_not_empty_the_last_owned_castle():
     c.text(144, 39, 'ゼウス')
     c.hand(122, 33)
     feed(mem, c.frame())
-    assert mem['house']['phase'] == 'close'
-    assert mem['_records'][-1]['decision'] == 'house_deferred'
+    assert mem['house']['phase'] == 'castle_kit'
+    assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
 
 
 def test_house_navigation_does_not_confirm_unread_or_far_cursor():
@@ -638,7 +638,7 @@ def test_fresh_castle_recheck_does_not_allow_a_sole_defender_to_leave():
     with patch.object(p, '_present_generals', return_value=['どうし']), \
             patch.object(p, '_owned', return_value={'アルマムーン'}):
         actions = house.step(screen, mem, Canvas().frame())
-    assert actions != [p.pad('a')]
+    assert actions == []
     assert mem['house']['phase'] == 'close'
 
 

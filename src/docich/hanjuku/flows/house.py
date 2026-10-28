@@ -1027,7 +1027,7 @@ def _repair_step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
-    from ..os_layer.world import _owned
+    from ..os_layer.world import NAME, _owned
     from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
