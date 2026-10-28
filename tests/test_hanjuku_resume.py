@@ -756,6 +756,10 @@ def test_manual_resume_closed_as_interrupted_recovers_same_checkpoint(recovery_s
     assert current['sha256']==s.claim['sha256']
     queued=s.manager.load(1000000.0)['queued_manual']
     assert queued['resume_request_id']==s.queue['request_id']
+    # g1073 11:47: the queued retry is resume_latest; a manual original kept
+    # explicit_resume=False and the start refused the reservation identity.
+    assert queued['resume_latest'] is True
+    assert current['dispatch_source']=='manual' and current['explicit_resume'] is True
 
 
 @pytest.mark.parametrize('change', ['other-request','completed','owner-other','owner-active','newer-run'])
@@ -969,6 +973,24 @@ def test_castle_event_dialogue_checkpoint_restores_without_guessing_chapter(setu
     assert state['policy'].get('chapter') is None
 
 
+def test_stalled_field_notice_restores_with_the_source_chapter(setup, monkeypatch):
+    # g1071 11:30: the g1067 stall checkpoint showed 「かんじゅくプリンスじょうは
+    # いっぽ かんせいに ちかづいた!!」 with no header; the restore waited
+    # out its deadline and the switch rolled back.
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1067-prince-progress-0.png')
+    screen = parse(frame)
+    assert screen.kind == 'text' and screen.header is None
+    assert not resume._castle_dialogue(screen)
+    monkeypatch.setattr(resume, 'source_chapter', lambda *_a: 3)
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] == 3
+    assert read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy'] == {
+        'name': {'done': True}, 'chapter': 3}
+
+
 def test_headerless_dialogue_is_not_a_restorable_foreground():
     from docich.hanjuku_screen import parse
     from docich import hanjuku_resume
@@ -993,7 +1015,7 @@ def test_chapterless_restore_reaching_month_menu_still_sends_input():
     assert not state['policy'].get('house')
 
 
-def _stalled_source(tmp_path, *, chapter=3, frame='a'*64, owner=None):
+def _stalled_source(tmp_path, *, chapter=3, frame='a'*64, owner=None, outcome='screen_stalled'):
     ident = {'game': 'hanjuku-hero', 'generation': 1059, 'lease_id': str(uuid.uuid4()),
              'runtime_id': 'g1059-3d06125f'}
     source = tmp_path / 'runtimes' / ident['runtime_id']; source.mkdir(parents=True)
@@ -1001,14 +1023,18 @@ def _stalled_source(tmp_path, *, chapter=3, frame='a'*64, owner=None):
         'decision_trace': {**ident, 'frame_sha256': frame},
         'policy': {'chapter': chapter, '_run_identity': owner or ident}})
     return {'status': 'verified', 'chapter': None,
-            'source_boundary': {**ident, 'frame_sha256': 'a'*64, 'outcome': 'screen_stalled'}}
+            'source_boundary': {**ident, 'frame_sha256': 'a'*64, 'outcome': outcome}}
 
 
-@pytest.mark.parametrize('change,expected', [(None, 3), ('frame', None), ('owner', None),
-                                             ('chapter', None), ('missing', None)])
+@pytest.mark.parametrize('change,expected', [(None, 3), ('frame', 3), ('frame-unstalled', None),
+                                             ('owner', None), ('chapter', None), ('missing', None)])
 def test_source_chapter_requires_the_exact_stalled_frame_and_run(tmp_path, change, expected):
+    # A stalled run sent no input after its last decision, so an animated
+    # boundary digest (g1067 11:23) still carries the chapter; other
+    # outcomes need the exact frame.
     receipt = _stalled_source(tmp_path,
-                              frame='b'*64 if change == 'frame' else 'a'*64,
+                              frame='b'*64 if change in ('frame', 'frame-unstalled') else 'a'*64,
+                              outcome='game_over' if change == 'frame-unstalled' else 'screen_stalled',
                               chapter='3' if change == 'chapter' else 3,
                               owner={'game': 'hanjuku-hero'} if change == 'owner' else None)
     if change == 'missing':
