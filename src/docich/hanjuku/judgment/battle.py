@@ -179,14 +179,14 @@ def _card_use_unclassified(mem, cur, reason):
 
 
 def reset_battle_controls(mem):
-    """Discard controls belonging to the previous combatant."""
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)
     for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
                 'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
                 'indep_menu', 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel',
+                'rescue_reentry_count', 'rescue_rearm_count'):
         mem.pop(key, None)
 
 
@@ -436,7 +436,9 @@ def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
                 resulting_event='card_not_selected',
                 reason='単発で倒し切れる保証がなく、次の接触・壁判定で敵に召喚される危険があるため実一覧の代替手段を確認')
     refused[card] = signature
-    cur['card_damage_rescue_needed'] = True
+    # #2896: suppress rescue-needed latch in favourable battles (branch-local).
+    if not _full_hp_melee_advantage(cur):
+        cur['card_damage_rescue_needed'] = True
     flow = cur.get('card_flow') or {}
     tid = flow.get('tactic_id')
     if flow.get('card') == card and tid in cur.get('tactics_done', []):
@@ -1182,6 +1184,8 @@ def _general_egg_rescue_recheck(mem, cur):
 
 
 HERO_SURVIVAL_REOPEN_LIMIT = 2    # extra unopened-menu episodes for a losing hero
+RESCUE_REENTRY_LIMIT = HERO_SURVIVAL_REOPEN_LIMIT  # bounded summon-battle re-entry
+RESCUE_REARM_LIMIT = HERO_SURVIVAL_REOPEN_LIMIT    # bounded re-arm after exhausted
 
 
 def _hero_losing_melee(cur):
@@ -1546,7 +1550,8 @@ def _default_retreat_needed(cur):
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')
-            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur))):
+            and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur)
+                    or _full_hp_melee_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -1622,6 +1627,29 @@ def _healthy_melee_advantage(cur):
 # of 81 openings failed and generals died with eggs and cards unused (g1075
 # ドンダム 28->2 HP, 2026-10-28).
 COMMAND_OPEN_WAITS = 4
+
+
+def _full_hp_melee_advantage(cur):
+    if (cur.get('ally') == NAME or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_soldiers_current') is not True):
+        return False
+    hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    balance = _melee_balance(cur)
+    scores = balance['ally_melee_score'], balance['enemy_melee_score']
+    max_hp = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    return (all(type(n) is int and n > 0 for n in (hp, enemy, start, *scores))
+            and all(type(n) is int and 0 <= n <= 7 for n in (ours, theirs))
+            and type(max_hp) is int and hp == max_hp
+            and hp > GENERAL_CRITICAL_RETREAT_HP
+            and hp > enemy
+            and hp * 10 > start * 7
+            and scores[0] > scores[1])
+
+
+# (aliases removed; callers use _full_hp_melee_advantage directly)
 
 
 def _command_open_wait(mem, cur):
@@ -1791,6 +1819,40 @@ def _hold_general_loss_metric(mem):
 HERO_RECALL_RATIO_TENTHS = 4   # hero HP at or below 40% of his full strength after a win
 HERO_RECALL_MIN_HP = 20        # and never below this when his full strength is unknown
 
+
+def _rescue_rearm(mem, cur, context):
+    """Bounded re-arm of an exhausted rescue state on tide change."""
+    if not isinstance(cur, dict):
+        return False
+    rescue = cur.get('survival') or {}
+    if not rescue.get('exhausted'):
+        return False
+    count = int(cur.get('rescue_rearm_count') or 0)
+    if count >= RESCUE_REARM_LIMIT:
+        return False
+    context = context or {}
+    hp = cur.get('ally_hp')
+    prev = cur.get('_rescue_eval_hp')
+    # Record HP at the exhausted latch on first evaluation so a later tide
+    # change (HP drop) can be detected (design §2.2 ①).
+    if prev is None and type(hp) is int:
+        cur['_rescue_eval_hp'] = hp
+        return False
+    rearm = (type(prev) is int and type(hp) is int
+             and prev - hp >= max(1, GENERAL_CRITICAL_RETREAT_HP // 2))
+    if not rearm:
+        return False
+    rescue['exhausted'] = False
+    cur['rescue_rearm_count'] = count + 1
+    cur['_rescue_eval_hp'] = hp
+    try:
+        _record(mem, 'battle_rescue_rearmed', **_battle_labels(cur),
+                reason='tide change re-armed exhausted rescue',
+                observed_metric={'hp': hp, 'previous_hp': prev,
+                                'episode': count + 1, 'limit': RESCUE_REARM_LIMIT})
+    except Exception:
+        pass
+    return True
 
 def _hero_marching(mem):
     now = int(mem.get('tick') or 0)

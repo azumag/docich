@@ -203,8 +203,10 @@ def test_failed_opening_is_bounded_and_does_not_restore_an_infinite_hold():
         assert p.battle_step(panel(mem), mem) == [p.pad('b')]
         for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(panel(mem), mem) == [{'type': 'wait', 'ms': 50}]
+
     for _ in range(3):
         assert p.battle_step(panel(mem), mem)[0] == p.pad('a', 3)
+
     assert mem['battle']['okunote_egg_preempt']['exhausted']
     assert sum(r['decision'] == 'battle_okunote_egg_open_failed' for r in mem['_records']) == 1
 
