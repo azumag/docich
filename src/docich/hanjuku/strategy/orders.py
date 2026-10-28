@@ -627,6 +627,9 @@ def _defense_break_allowed(order, mem):
     source = _source(order, mem)
     return (source == interim.get('source') and source in _owned(mem)
             and _sortie_general(order, mem) == interim.get('general')
+            and interim.get('general') in ((mem.get('garrison') or {}).get(source) or ())
+            and interim.get('general') not in (_en_route(mem)[0]
+                                              | set(mem.get('general_location_unknown') or ()))
             and source not in (mem.get('lost') or ())
             and source not in (mem.get('defense_break_blocked') or ())
             and (mem.get('defense_break_sources') or {}).get(source) == interim.get('target'))

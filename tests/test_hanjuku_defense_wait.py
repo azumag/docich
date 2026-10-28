@@ -67,6 +67,9 @@ def test_defense_break_does_not_authorize_foreign_or_expired_order():
         assert orders._reserve_source_guard({**order, field: value}, mem)
     for change in [{'month': '8-3'}, {'lost': [HOME]},
                    {'defense_break_blocked': [HOME]}, {'defense_break_sources': {}},
+                   {'general_location_unknown': [order['general']]}, {'garrison': {HOME: []}},
+                   {'sorties': {'other': {'general': order['general'], 'status': 'en_route',
+                                         'target': order['target'], 'tick': mem['tick']}}},
                    {'general_override': {order['step']: 'ゼウス'}}]:
         altered = copy.deepcopy(mem)
         altered.update(change)
