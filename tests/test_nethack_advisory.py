@@ -362,5 +362,62 @@ class TestAdvisoryController(unittest.TestCase):
         self.assertEqual(strategist.calls, [])
 
 
+class TestBrainAdvisoryCanonicalGate(unittest.TestCase):
+    """Advisory plan on a non-prompt hold is rejected by the canonical gate."""
+
+    def setUp(self) -> None:
+        from docich.adapters.base import Observation
+        from docich.agent.brains import NethackPolicyBrain
+
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        g = SimpleNamespace(state_dir=root, repo_root=root)
+        game = SimpleNamespace(
+            name="nethack",
+            adapter="cli",
+            raw={"cli": {"cols": 80, "rows": 5}},
+            agent=SimpleNamespace(brain="nethack", command=""),
+        )
+        self.brain = NethackPolicyBrain(g, game)
+        self.Observation = Observation
+        self.ready = {"phase": "ready", "operation": None, "request_id": None, "active": {"game": "nethack"}}
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def observation(self, text: str):
+        return self.Observation(
+            game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=text
+        )
+
+    def test_advisory_plan_rejected_on_frame_change_or_bad_canonical(self) -> None:
+        from docich.nethack_advisory import AdvisoryOutcome
+        from docich.actions import Action
+        from docich.nethack_policy import PolicyDecision
+
+        text = "msg\n.@....\n......\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n"
+        obs = self.observation(text)
+
+        held = PolicyDecision(layer="strategic", intent="inspect_screen", reason="test", requires_llm=True)
+        self.brain.progress.observe = lambda *a, **k: None
+        self.brain.progress.resolve = lambda decision, o, explorer: held
+        self.brain.advisory.consider = lambda raw, o, d: AdvisoryOutcome(
+            status="proposed", actions=(Action(type="text", text="."),)
+        )
+
+        actions = self.brain.decide(obs)
+        self.assertEqual([(a.type, a.text) for a in actions], [("text", ".")])
+
+        # A changed frame rejects the advisory plan.
+        self.assertFalse(
+            self.brain.validate_action(actions[0], self.observation("changed --More--"), canonical=self.ready)
+        )
+        # A missing/not-ready canonical state rejects the advisory plan.
+        self.brain.discard_action_plan()
+        actions2 = self.brain.decide(obs)
+        self.assertFalse(self.brain.validate_action(actions2[0], obs, canonical=None))
+        self.brain.discard_action_plan()
+
+
 if __name__ == "__main__":
     unittest.main()
