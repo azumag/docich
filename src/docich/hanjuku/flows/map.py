@@ -147,8 +147,10 @@ def world_map_step(screen, mem, frame):
             return [pad('right')] if cursor else []
         if recall.get('goal') != goal or not recall.get('destination_selected'):
             recall.update(goal=goal, destination_selected=True)
+            origin = recall.get('origin')
             _record(mem, 'camp_recall_destination',
-                    observed_metric={'castle': goal, 'origin': recall.get('origin'),
+                    observed_metric={'castle': goal, 'origin': origin,
+                                     'origin_source': 'roofs' if origin else 'fallback',
                                      'hero_castle': _hero_castle(mem)},
                     reason='現在地から近い自軍城を選び、同距離ならどうしの在城先を優先する')
         if nearby != [goal]:
