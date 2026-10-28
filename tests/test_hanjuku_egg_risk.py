@@ -164,7 +164,8 @@ def test_risk_or_unknown_enemy_avoids_assist_pulses_until_resources_are_checked(
     mem = memory(chapter=chapter)
     if enemy in ('クミン', 'オレガノ'):
         assert enter(panel(enemy), mem) == [policy.pad('b')]
-        assert mem['_records'][-1]['decision'] == 'battle_survival'
+        # A command-open request is recorded after the survival decision.
+        assert any(r['decision'] == 'battle_survival' for r in mem['_records'])
         return  # a known unarmed egg fight now checks resources before contact
     assert enter(panel(enemy), mem) == []
     for _ in range(3):
