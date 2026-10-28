@@ -85,7 +85,24 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'ハドリバーグ': (742, 732),
         'ボス': (520, 200),
     },
-    # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
+    # Measured 2026-10-28 in the isolated libretro probe from the g1067
+    # chapter 3 savestate (9ねん1のつき): Y jump to each flag (Y cursor =
+    # cell/8 + (63, 47.5), always landing at screen (130, 125)), cursor walked
+    # onto the nearest roof, A showed the castle's own name in its status or
+    # castle menu for all nine. The boss is not measured (docs: after every
+    # ordinary castle is captured), so 3-B1 stays unready.
+    3: {
+        'アルマムーン': (710, 144),
+        'グリン': (852, 320),
+        'コラダイン': (661, 409),
+        'イーピヨル': (773, 649),
+        'ドンダム': (568, 832),
+        'メガパタ': (456, 656),
+        'パタゴーヌ': (341, 425),
+        'アバロン': (229, 729),
+        'リグア': (133, 281),
+    },
+    # 4–12: from the source flag table below (``SOURCE_CHAPTERS``).
 }
 
 # Public-source seed for chapters 3–12. The 8x + (1,3) model is approximate:
@@ -95,18 +112,38 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
 # special handling. ``approx_map`` exposes them for navigation; a measured
 # CASTLES entry always wins, and map registration remains the authority for
 # exact cells.
-SOURCE_APPROX_CHAPTERS = frozenset(range(3, 13))
+SOURCE_APPROX_CHAPTERS = frozenset(range(4, 13))   # 3 is measured
 CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
     chapter: {name: (8 * (left + 1), 8 * (top + 3))
               for name, (left, top) in map_sources.SOURCE_CASTLES[chapter].items()}
     for chapter in SOURCE_APPROX_CHAPTERS
 }
 
+# Chapters 4–12 come from the GCGX flag table. Its flag top-left is the
+# game's own castle tile + (2, 1): the WRAM castle records at 0x1700
+# ([id, x, y, ...], 16 bytes, x/y in 8 px tiles; isolated probe savestates
+# 2026-10-28) match all 24 ordinary castles of chapters 1–3 exactly. The
+# CASTLES_APPROX cell 8*(flag + (1, 3)) is within 8 px of every probe-measured
+# ordinary cell except chapter 3's large home castle (16 px); a Y jump lands
+# on the cell and the last pixels are walked onto the roof. Bosses are not in
+# the source table: boss cells stay unmeasured (chapter 4 has four sites and
+# chapter 9's boss moves).
+SOURCE_CHAPTERS = frozenset(range(4, 13))
+for _chapter in sorted(SOURCE_CHAPTERS):
+    CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
+del _chapter
+
 # Independent native-view calibrations. Castle cells are field-cursor top-left
 # coordinates; flags and the Y selection cursor use different pixel anchors.
 # Keep these values separate when registering a chapter from a source map.
-WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0)}
-Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
+WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0), 3: (64.3, 45.5)}  # ch3: 8 enemy flags, 64.0-64.5 / 45.0-45.9
+Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5), 3: (63.0, 47.5)}
+# The Y view is the same 1/8 island frame in chapters 1–3 (Y cursor offsets
+# identical, flag offsets within 0.6 px); source chapters use their mean.
+for _chapter in sorted(SOURCE_CHAPTERS):
+    WORLD_MAP_OFFSET[_chapter] = (64.3, 45.0)
+    Y_JUMP_OFFSET[_chapter] = (63.0, 47.5)
+del _chapter
 # Heart centres on the native Y view. HOUSE_TARGET separately selects the
 # integer cell; a roster read from the monthly menu needs neither coordinate.
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}

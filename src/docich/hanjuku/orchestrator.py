@@ -33,6 +33,9 @@ from .version import BOT_VERSION
 # screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
+# A message box over the field that no flow claims is acknowledged sooner:
+# the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
+FIELD_TEXT_HOLD_MAX = 4
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
 # command box the game draws the menu over several frames. The panel reads
@@ -524,14 +527,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
+    # g1067 11:13-11:23: 「かんじゅくプリンスじょうは いっぽ かんせいに ちかづいた!!」
+    # sat over the field for ten minutes; the water and the ▼ prompt changed
+    # the digest on every observation, the streak never passed 1, and the run
+    # ended input_stalled. A message box is the same screen while it reads the
+    # same text.
+    hold_key=f'text:{screen.text}' if kind=='text' and screen.text else digest
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
-    elif digest in frozen:
+    elif hold_key in frozen:
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
+    bounded_wait=any(mem.get(k) for k in ('recall','house','month_sub','sortie_attempt','y_jump',
+                                           'resume_egg_ritual'))
+    hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
+              else NO_INPUT_HOLD_MAX)
+    if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
@@ -588,7 +601,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                        reason='同一画面で入力0件の観測が上限を超えたため、フェーズ別の既定入力で保留を解消する')
         streak=0
     updated['no_input_streak']=streak
-    updated['no_input_frames']=[digest]+[d for d in frozen if d!=digest][:1]
+    updated['no_input_frames']=[hold_key]+[d for d in frozen if d!=hold_key][:1]
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)

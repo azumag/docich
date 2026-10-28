@@ -4,7 +4,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich.hanjuku_map_sources import SOURCE_CASTLES
 from docich.hanjuku.orchestrator import decide
-from test_hanjuku_map_discovery import IDENTITY, field
+from test_hanjuku_map_discovery import IDENTITY, field, unmeasured_chapter_three  # noqa: F401
 
 
 def test_approx_table_covers_every_source_castle_and_never_a_boss():

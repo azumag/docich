@@ -54,16 +54,17 @@ def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter, monke
 
 
 def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypatch):
-    """Lock the chapter 3 gate independently of any real coordinate claim.
+    """Lock the chapter 3 gate independently of the measured coordinates.
 
     The planted cells are synthetic: this checks which orders the gate exposes
-    once home and the three initial targets exist, not that those coordinates
-    were measured. Until labeled native frames are recorded, chapter 3 must
-    stay empty and emit no orders.
+    once home and the three initial targets exist. The real cells (isolated
+    probe, 2026-10-28) unlock every ordinary order; the unmeasured boss keeps
+    3-B1 out.
     """
     chapter = 3
-    assert chart.castles(chapter) == {}
-    assert chart.orders(chapter) == ()
+    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter]) - {'ボス'}
+    assert [o['step'] for o in chart.orders(chapter)] == [
+        o['step'] for o in chart.all_orders(chapter) if o['target'] != 'ボス']
 
     home = chart.home_castle(chapter)
     # Home plus グリン alone unlocks only the first initial route.
@@ -256,3 +257,49 @@ def test_native_resumed_party_and_intro_reach_map_with_actions():
     actions, state = decide(read_png(fixtures / 'resume-chapter-2-map.png').resized(), state)
     assert actions, 'the actual post-party map must not remain chapterless and held'
     assert state['policy']['chapter'] == 2
+
+
+def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
+    # Isolated probe 2026-10-28 (g1067 savestate, 9ねん1のつき): enemy flag
+    # top-left pixels on the Y view; every cell is the free cursor on that
+    # castle's roof after a Y jump, confirmed by the castle's own name.
+    flags = {'グリン': (171, 85), 'コラダイン': (147, 97), 'イーピヨル': (161, 127),
+             'ドンダム': (135, 149), 'メガパタ': (121, 127), 'パタゴーヌ': (107, 99),
+             'アバロン': (93, 137), 'リグア': (81, 81)}
+    ox, oy = chart.WORLD_MAP_OFFSET[3]
+    for name, (fx, fy) in flags.items():
+        x, y = chart.CASTLES[3][name]
+        assert abs(round(x / 8 + ox) - fx) <= 1 and abs(round(y / 8 + oy) - fy) <= 1, name
+    assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
+
+
+# WRAM 0x1700 castle records ([id, x, y, ...], 16 bytes, 8 px tiles) read from
+# isolated probe savestates on 2026-10-28, in record order.
+WRAM_TILES = {
+    1: {'アルマムーン': (88, 96), 'ナキューメラ': (86, 76), 'キカンドン': (68, 86), 'ジョンリギ': (66, 68),
+        'カストーラ': (72, 44), 'スペンソニア': (46, 44), 'ゴーメン': (34, 72)},
+    2: {'アルマムーン': (62, 102), 'ハドリバーグ': (90, 88), 'フーリック': (42, 86), 'グロン': (92, 56),
+        'ドミノーラ': (58, 58), 'ウラノポリス': (32, 58), 'スペランザ': (78, 40), 'アウスパジア': (34, 32)},
+    3: {'アルマムーン': (86, 16), 'グリン': (104, 36), 'コラダイン': (80, 48), 'イーピヨル': (94, 78),
+        'ドンダム': (68, 100), 'メガパタ': (54, 78), 'パタゴーヌ': (40, 50), 'アバロン': (26, 88),
+        'リグア': (14, 32)},
+}
+
+
+def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
+    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    for chapter, tiles in WRAM_TILES.items():
+        assert {n: (x + 2, y + 1) for n, (x, y) in tiles.items()} == SOURCE_CASTLES[chapter]
+        for name, cell in chart.CASTLES[chapter].items():
+            if name in tiles:
+                approx = chart.CASTLES_APPROX.get(chapter, {}).get(name) or tuple(
+                    8 * (v + d) for v, d in zip(SOURCE_CASTLES[chapter][name], (1, 3)))
+                limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
+                assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
+    for chapter in range(4, 13):
+        assert chart.CASTLES[chapter] == {
+            n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
+        assert 'ボス' not in chart.CASTLES[chapter]
+        assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
+        assert chart.orders(chapter)
+        assert not any(o['target'] == 'ボス' for o in chart.orders(chapter))

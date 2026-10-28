@@ -506,6 +506,9 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
 SOURCE_KEYS = ('game', 'generation', 'lease_id', 'runtime_id')
 
 
+STALLED_OUTCOMES = frozenset({'input_stalled', 'screen_stalled'})
+
+
 def source_chapter(state_dir, receipt):
     """Chapter the stalled source run held at the exact checkpoint frame.
 
@@ -525,9 +528,14 @@ def source_chapter(state_dir, receipt):
     trace = record.get('decision_trace') if isinstance(record.get('decision_trace'), dict) else {}
     policy = record.get('policy') if isinstance(record.get('policy'), dict) else {}
     owner = policy.get('_run_identity') if isinstance(policy.get('_run_identity'), dict) else {}
+    if any(trace.get(k) != boundary.get(k) or owner.get(k) != boundary.get(k)
+           for k in SOURCE_KEYS):
+        return None
     if (trace.get('frame_sha256') != boundary['frame_sha256']
-            or any(trace.get(k) != boundary.get(k) or owner.get(k) != boundary.get(k)
-                   for k in SOURCE_KEYS)):
+            and boundary.get('outcome') not in STALLED_OUTCOMES):
+        # g1067 11:23: animated water gave the stall boundary a newer digest
+        # than the bot's last decision. A stalled run sent no input after it,
+        # so its chapter cannot have changed; other outcomes need the frame.
         return None
     chapter = policy.get('chapter')
     return chapter if type(chapter) is int and 1 <= chapter <= 12 else None
@@ -618,9 +626,12 @@ def restore(adapter, deadline, cancel):
     battle_menu_without_chapter = False
     gift_without_chapter = False
     dialogue_without_chapter = False
+    message_without_chapter = False
+    inherited = source_chapter(adapter.g.state_dir, request)
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
            and not ritual_without_chapter and not battle_menu_without_chapter
-           and not gift_without_chapter and not dialogue_without_chapter):
+           and not gift_without_chapter and not dialogue_without_chapter
+           and not message_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -651,6 +662,11 @@ def restore(adapter, deadline, cancel):
             gift_without_chapter = True
         elif _castle_dialogue(screen):
             dialogue_without_chapter = True
+        elif observed is None and inherited is not None and screen.kind == 'text' and screen.text:
+            # g1071 11:30: the stall checkpoint showed a headerless field
+            # notice (「かんじゅくプリンスじょうは…」) and the wait ran out the
+            # deadline. The source run still proves the chapter.
+            message_without_chapter = True
     if chapter is None:
         chapter = source_chapter(adapter.g.state_dir, request)
     # These verified chapterless panels seed only their measured foreground

@@ -261,7 +261,10 @@ def test_month_plan_step_names_the_current_chapter():
         assert month_chart_step(unknown) == 'month'
 
 
-def test_chart_orders_follow_the_chart_and_unlock_on_captures():
+def test_chart_orders_follow_the_chart_and_unlock_on_captures(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 5, {})                 # an unmeasured chapter
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 5)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 5)
     mem = {'chapter': 1, 'orders': {}}
     assert [policy.next_order(mem)['step']] == ['1-A1']
     mem['orders'] = {'1-A1': 'launched', '1-V1': 'launched', '1-C1': 'launched'}
@@ -272,7 +275,7 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures():
     mem['captured'] = ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ']
     mem['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
     assert policy.next_order(mem)['target'] == 'けっかい'
-    assert policy.next_order({'chapter': 3, 'orders': {}}) is None
+    assert policy.next_order({'chapter': 5, 'orders': {}}) is None
 
 
 def test_month_plan_commentary_follows_the_actual_plan():
@@ -749,13 +752,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v266-interim-before-search'
+    assert state['bot_version'] == 'hanjuku-chart-v271-y-jump-unreadable-bounded'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_native_map_registration_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v266-interim-before-search'
+    assert BOT_VERSION == 'hanjuku-chart-v271-y-jump-unreadable-bounded'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():

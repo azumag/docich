@@ -473,6 +473,19 @@ def target_step(screen: Screen, mem, frame):
             # arrival so the sortie is cancelled and retried within its bounds.
             return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
+        if screen.marker and order['target'] != chart.boss_castle(mem.get('chapter') or 0):
+            # g1067 09:49-10:19: dead reckoning stopped the marker 10 px right
+            # of Grin's roof, and the up/down nudges never corrected x; every
+            # retake was cancelled twice. A roof of the expected owner beside
+            # the marker is the castle the estimate meant: walk onto it.
+            kinds = ('own',) if order['target'] in _owned(mem) else ('enemy',)
+            aligned = _align_on_roof(screen, mem, frame, kinds, f"{order['step']}:target")
+            if aligned and aligned != 'on':
+                mem['near_goal'] = {'step': order['step'], 'goal': order['target'], 'mode': 'target'}
+                _record(mem, 'target_roof_align', chart_step=order['step'], target=order['target'],
+                        observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ())},
+                        reason='推定到着点の近くに目的と同じ色の屋根があるため、その屋根へマーカーを合わせる')
+                return _deploy_input(screen, mem, order, aligned, '推定到着点の近くの屋根へ出撃先マーカーを合わせる')
         return _unverified_target(screen, mem, order)
     if result == 'arrived':
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
