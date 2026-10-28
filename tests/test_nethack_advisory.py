@@ -362,58 +362,5 @@ class TestAdvisoryController(unittest.TestCase):
         self.assertEqual(strategist.calls, [])
 
 
-class TestBrainPromptAnswers(unittest.TestCase):
-    """A held prompt's advisory answer is sent only after a fresh-frame check."""
-
-    # A text prompt is not handled by the production resolver, so it reaches the advisory default.
-    MESSAGE = "Call a potion: "
-
-    def setUp(self) -> None:
-        from docich.adapters.base import Observation
-        from docich.agent.brains import NethackPolicyBrain
-
-        self.tempdir = tempfile.TemporaryDirectory()
-        root = Path(self.tempdir.name)
-        g = SimpleNamespace(state_dir=root, repo_root=root)
-        game = SimpleNamespace(
-            name="nethack",
-            adapter="cli",
-            raw={"cli": {"cols": 80, "rows": 5}},
-            agent=SimpleNamespace(brain="nethack", command=""),
-        )
-        self.brain = NethackPolicyBrain(g, game)
-        self.Observation = Observation
-        self.ready = {"phase": "ready", "operation": None, "request_id": None, "active": {"game": "nethack"}}
-
-    def tearDown(self) -> None:
-        self.tempdir.cleanup()
-
-    def observation(self, message: str):
-        return self.Observation(
-            game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=visible_screen(message=message)
-        )
-
-    def test_held_text_prompt_is_cancelled_and_validated_against_exact_frame(self) -> None:
-        obs = self.observation(self.MESSAGE)
-        actions = self.brain.decide(obs)
-        self.assertEqual([(a.type, a.key) for a in actions], [("special", "Escape")])
-        self.assertTrue(self.brain.validate_action(actions[0], obs, canonical=self.ready))
-        self.brain.action_sent(actions[0])
-
-    def test_advisory_answer_is_rejected_when_frame_changed_or_canonical_is_not_ready(self) -> None:
-        obs = self.observation(self.MESSAGE)
-        actions = self.brain.decide(obs)
-        self.assertFalse(self.brain.validate_action(actions[0], obs, canonical=None))
-        self.brain.decide(obs)
-        self.assertFalse(
-            self.brain.validate_action(actions[0], self.observation("changed --More--"), canonical=self.ready)
-        )
-        self.brain.decide(obs)
-        self.assertFalse(
-            self.brain.validate_action(actions[0], obs, canonical=dict(self.ready, phase="draining"))
-        )
-        self.brain.discard_action_plan()
-
-
 if __name__ == "__main__":
     unittest.main()

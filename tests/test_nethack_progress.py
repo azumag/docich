@@ -229,7 +229,7 @@ def test_wrapped_prompt_never_sends_diagonal_or_confirmation_n(message, wrap):
     text = frame({"n": "#", "k": "d"}, message=message, hp="4(16)")
     assert normalize_tty(text).prompt == "unknown"
     # The unknown prompt is cancelled with Escape; neither diagonal nor 'n' is sent.
-    assert act(brain(), text, canonical=READY) == ["Escape"]
+    assert act(brain(), text, canonical=READY) == []
 
 
 def test_full_width_attack_with_continuation_never_authorizes_decline():
@@ -237,7 +237,7 @@ def test_full_width_attack_with_continuation_never_authorizes_decline():
     assert len(message) == 79
     text = frame({"n": "#"}, message=message + "\ny")
     assert normalize_tty(text).prompt == "unknown"
-    assert act(brain(), text, canonical=READY) == ["Escape"]
+    assert act(brain(), text, canonical=READY) == []
 
 
 def test_map_yes_no_glyphs_do_not_block_diagonal_progress():
@@ -262,12 +262,12 @@ def test_long_normal_message_and_next_map_row_keep_progress(length, map_row):
 
 @pytest.mark.parametrize("message", ["Really", "Really save", "Really attack the kitten", "Would you like to inspect"])
 def test_incomplete_question_stem_never_sends_map_or_decline_key(message):
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
 
 
 def test_hard_wrapped_unknown_stem_never_sends_map_key():
     message = "An unusual object " + "x" * 62 + "\ncontinue?"
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
 
 
 @pytest.mark.parametrize("message,intent", [

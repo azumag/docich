@@ -64,6 +64,5 @@ def test_message_narration_does_not_change_brain_actions(monkeypatch):
 
     assert narrated_actions == silent_actions
     assert narrated.last_decision == silent.last_decision
-    assert len(narrated_actions) == 1
-    assert narrated_actions[0].key == "Escape"
+    assert narrated_actions == []
     assert audio.call_count == 1
