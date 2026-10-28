@@ -160,5 +160,5 @@ _rescue_decision(mem, cur, context) -> dict
 
 - #2831 rescue re-entry は descope 済み。judgment/battle.py に `_rescue_decision` は存在しない。
 - 救済判定は flows/battle_menus.py の候補優先 (candidate-first) モデルで実装済み。
-- `_rescue_rearm` (tide change re-arm) と carryover 検出 (reset_battle_controls) は維持。
+- `_rescue_rearm` (tide change re-arm) は維持。carryover 検出ブロックは #2882 descope (618e427) で削除済み; reset_battle_controls に残るのは rescue_reentry_count / rescue_rearm_count の pop のみ (検出は不発)。
 - #2863 (conserve) は未実装のため OPEN 維持。本方針と同一の判断基準で一体設計する (follow-up)。
