@@ -14,13 +14,17 @@ from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_b
                                _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
 
 
-def _interim_source(mem, target, chart_order, owned, busy):
+def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
     A castle whose general list we last read is used as measured: an empty one
     is never a source (g401: the chart general had already left キカンドン and
     the bot pressed A there for 14 minutes). Without a reading, fall back to
     the chart's source, then the home castle, as before.
+
+    ``allow_sole`` is the monthly fallback of the defence wait: a castle with a
+    single general may send it, except a castle already lost or blocked after
+    an earlier break (g401: an emptied castle fell).
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
@@ -30,8 +34,11 @@ def _interim_source(mem, target, chart_order, owned, busy):
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
     # castle that keeps somebody behind is required, then the nearest goes.
-    staffed = sorted((c for c in owned if len(set(free[c])) >= 2
-                      and set(free[c]) - unavailable_for_attack),
+    need = 1 if allow_sole else 2
+    excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
+                if allow_sole else set())
+    staffed = sorted((c for c in owned if len(set(free[c])) >= need
+                      and set(free[c]) - unavailable_for_attack and c not in excluded),
                      key=lambda c: _distance(chapter, c, target))
     if staffed:
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
@@ -87,7 +94,7 @@ MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
 
 
-def interim_candidates(mem) -> dict:
+def interim_candidates(mem, allow_sole=False) -> dict:
     """Deterministic off-chart sorties while a chart is pending.
 
     Retake castles we lost, then staff owned castles last seen empty (the home
@@ -105,7 +112,6 @@ def interim_candidates(mem) -> dict:
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
     busy, _ = _en_route(mem)
     heading = _reserved_targets(mem)
@@ -115,7 +121,7 @@ def interim_candidates(mem) -> dict:
     lost = [c for c in mem.get('lost') or () if c in castles]
     lost.sort(key=lambda c: c != home)          # a lost home castle is retaken first
     targets = [c for c in (*lost, *chart_orders, *castles)
-               if c in castles and c not in owned and c != boss]
+               if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
@@ -136,7 +142,7 @@ def interim_candidates(mem) -> dict:
     targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
     for target in targets:
-        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
+        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy, allow_sole)
         if picked is None:
             continue
         source, general = picked
@@ -189,7 +195,84 @@ def interim_candidates(mem) -> dict:
     return out
 
 
-def _mechanical_interim(mem, state, rid, digest):
+DEFENSE_WAIT_MAX_CYCLES = 2     # absolute cap on monthly evaluations before a break
+
+
+def _sole_starved(mem):
+    """True when no owned castle can spare a general and some castle holds one.
+
+    Only the two-generals-stay rule blocks here: the castle data and the
+    targets exist, and every owned castle has at most one free general.
+    """
+    chapter = mem.get('chapter') or 0
+    castles = chart.castles(chapter)
+    boss = chart.boss_castle(chapter)
+    owned = _owned(mem) & set(castles)
+    if not owned or not [c for c in castles if c not in owned and c != boss]:
+        return False
+    busy, _ = _en_route(mem)
+    busy = busy | set(mem.get('general_location_unknown') or ())
+    garrison = mem.get('garrison') or {}
+    free = {c: {g for g in garrison.get(c) or () if g not in busy} for c in owned}
+    return all(len(free[c]) <= 1 for c in owned) and any(len(free[c]) == 1 for c in owned)
+
+
+def _joiner_prospects(mem):
+    """Generals who may join a castle soon: unplaced at home, or marching."""
+    return bool(_unplaced_castle_generals(mem)) or bool(_en_route(mem)[0])
+
+
+def _defense_gate(mem):
+    """'hold', 'break' or None for a sole-general starvation.
+
+    None: the normal path runs (candidates exist, or the starvation is not the
+    two-generals rule). 'hold': wait for a second general with no model request
+    and no per-tick record. 'break': the monthly fallback lets one general
+    leave its castle. Records are written on entry, on each monthly evaluation
+    and on release only.
+    """
+    # A break whose source was lost afterwards is never repeated from there.
+    sources = mem.get('defense_break_sources') or {}
+    for source in [c for c in sources if c in (mem.get('lost') or ())]:
+        blocked = list(mem.get('defense_break_blocked') or ())
+        mem['defense_break_blocked'] = sorted({*blocked, source})
+        _record(mem, 'defense_break_lost', chart_step=None, strategy_variant='chart_defense_break',
+                observed_metric={'castle': source, 'target': sources[source]},
+                expected_metric={'castle_kept': True},
+                reason='1将軍出撃の出撃元が落ちたため、同じ城からの守備崩し出撃を禁止する')
+        sources.pop(source)
+    if interim_candidates(mem):
+        if mem.pop('defense_wait', None):
+            _record(mem, 'chart_defense_wait_released', chart_step=None,
+                    strategy_variant='chart_defense_wait',
+                    reason='2人目の将軍が使えるようになったため参入待ちを解除し通常運行に戻す')
+        return None
+    if not _sole_starved(mem):
+        return None
+    month = mem.get('month')
+    owned = sorted(_owned(mem))
+    garrison = mem.get('garrison') or {}
+    observed = {'owned': owned, 'garrison': {c: list(garrison.get(c) or ()) for c in owned},
+                'month': month, 'prospects': _joiner_prospects(mem)}
+    wait = mem.get('defense_wait')
+    if not wait:
+        wait = mem['defense_wait'] = {'since': month, 'eval_month': month, 'cycles': 0}
+        _record(mem, 'chart_defense_wait', chart_step=None, strategy_variant='chart_defense_wait',
+                observed_metric=observed, expected_metric={'generals_per_source': 2},
+                reason='出撃元に将軍2人以上を残す制約で候補0件。2人目の参入を待つ（LLM要求なし）')
+    elif month != wait['eval_month']:
+        wait['eval_month'] = month
+        wait['cycles'] += 1
+        _record(mem, 'chart_defense_wait_eval', chart_step=None, strategy_variant='chart_defense_wait',
+                observed_metric={**observed, 'cycles': wait['cycles']},
+                reason='月次評価: 2人目の将軍がまだ使えない')
+    cycles, prospects = wait['cycles'], observed['prospects']
+    if cycles >= DEFENSE_WAIT_MAX_CYCLES or (cycles >= 1 and not prospects):
+        return 'break'
+    return 'hold'
+
+
+def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     """Start the next deterministic sortie while no adjusted plan is pending.
 
     No model answers this: the first candidate from ``interim_candidates``
@@ -202,7 +285,7 @@ def _mechanical_interim(mem, state, rid, digest):
             and _source(interim, mem) in _owned(mem))
     if busy:
         return
-    candidates = interim_candidates(mem)
+    candidates = interim_candidates(mem, allow_sole)
     if not candidates:
         # A hold nobody can act on used to be silent (g530: sortie
         # stopped with zero evidence); record the starvation once per
@@ -217,6 +300,15 @@ def _mechanical_interim(mem, state, rid, digest):
                     reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
         return
     label, order = next(iter(candidates.items()))
+    if allow_sole and len(set(((mem.get('garrison') or {}).get(order['source']) or ()))) < 2:
+        # Only the monthly defence-break fallback sends a sole general out.
+        mem.setdefault('defense_break_sources', {})[order['source']] = order['target']
+        _record(mem, 'sortie_defense_break', chart_step=None, strategy_variant='chart_defense_break',
+                general=order['general'], source=order['source'], target=order['target'],
+                observed_metric={'source_garrison': list(
+                    (mem.get('garrison') or {}).get(order['source']) or ()),
+                    'month': mem.get('month')},
+                reason='守備制約下の月次フォールバック: 1将軍出撃（出撃元の喪失を監視）')
     state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
@@ -298,6 +390,9 @@ def _off_chart(mem):
                     reason='第1話ボス出撃前に主人公の卵が消耗しているため、通常の月次回復を待つ')
         return
     mem.pop('boss_egg_wait', None)
+    gate = _defense_gate(mem)
+    if gate == 'hold' and not _plan_pending(mem):
+        return  # wait for a second general: no model request, no per-tick churn
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
@@ -346,4 +441,4 @@ def _off_chart(mem):
     # the interim candidates from being evaluated again.
     if _plan_pending(mem):
         return
-    _mechanical_interim(mem, state, rid, digest)
+    _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))

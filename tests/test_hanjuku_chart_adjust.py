@@ -61,6 +61,7 @@ def finish_interim(mem):
 
 def test_off_chart_records_one_request_per_situation_and_holds():
     mem = stuck_memory()
+    mem['card_scroll'] = {'1-B1': 32, 'other': 4}
     assert policy.map_step(map_screen(), mem, FRAME) == []
     [request] = decisions(mem, 'chart_adjust_request')
     assert request['off_chart_reason'] == 'orders_locked'
@@ -76,10 +77,14 @@ def test_off_chart_records_one_request_per_situation_and_holds():
     finish_interim(mem)
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == '1-B1'
+    assert mem['card_scroll'] == {'other': 4}  # a new attempt gets a bounded search
 
 
-def test_unavailable_and_exhausted_charts_are_distinguished():
-    mem = {'chapter': 3, 'orders': {}, '_records': []}
+def test_unavailable_and_exhausted_charts_are_distinguished(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 5, {})                 # an unmeasured chapter
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 5)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 5)
+    mem = {'chapter': 5, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, FRAME)
     assert decisions(mem, 'chart_adjust_request')[0]['off_chart_reason'] == 'chart_unavailable'
     mem = stuck_memory()

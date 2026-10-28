@@ -902,6 +902,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     else:
         outcome = 'unclassified'
     castle = cur.get('castle')
+    from ...hanjuku_map_sources import SEASON_KINGS
+    seasonal_boss = (mem.get('chapter') == 4 and
+                     (cur.get('enemy') in SEASON_KINGS or chart.is_boss_castle(castle)))
+    season_win = (seasonal_boss and outcome == 'win' and cur.get('side') == 'attack'
+                  and cur.get('enemy') in SEASON_KINGS
+                  and castle in (chart.boss_castle(4), *chart.boss_sites(4))
+                  and cur.get('entry_evidence') == 'measured_boss_entry')
     receipt = cur.get('defeat_owner') or {}
     observed_owner = (receipt.get('owner') if isinstance(receipt, dict)
                       and receipt.get('castle') == castle
@@ -911,7 +918,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                       and type(ally_hp) is int and type(enemy_hp) is int
                       and cur.get('side') == 'defense' and outcome == 'loss' else None)
     defense_retained = observed_owner == 'own'
-    if outcome == 'win' and castle and cur.get('side') == 'attack':
+    if outcome == 'win' and castle and cur.get('side') == 'attack' and not seasonal_boss:
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         captured = mem.setdefault('captured', [])
         if castle not in captured:
@@ -922,9 +929,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _garrison_move(mem, cur.get('ally'), target=castle)
         # Our own general stands there now: the remembered defender is stale.
         _drop_defender_record(mem, [castle])
-    if outcome == 'win' and castle and cur.get('side') == 'defense':
+    if outcome == 'win' and castle and cur.get('side') == 'defense' and not seasonal_boss:
         _garrison_move(mem, cur.get('ally'), target=castle)
-    if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
+    if (outcome == 'loss' and castle and cur.get('side') == 'defense' and not seasonal_boss
+            and not (defense_continues or defense_retained)):
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
@@ -1027,16 +1035,27 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                     reason='攻撃の再試行上限に到達したため、この手順を打ち切って計画外の判断へ渡す')
     boss = chart.BOSSES.get(mem.get('chapter') or 0)
     resulting = None
-    if outcome == 'win' and boss and cur.get('enemy') == boss:
+    if season_win:
+        victories = mem.setdefault('boss_victories', {})
+        victories[cur['enemy']] = {
+            'enemy': cur['enemy'], 'chapter': 4,
+            'site': castle if castle in chart.boss_sites(4) else None,
+            'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
+        resulting = f"season_king_defeated:{cur['enemy']}"
+        if SEASON_KINGS <= set(victories):
+            mem['boss_defeated'] = 4
+            resulting = 'chapter_4_boss_defeated'
+    elif outcome == 'win' and boss and cur.get('enemy') == boss and mem.get('chapter') != 4:
         resulting = f"chapter_{mem['chapter']}_boss_defeated"
         # A boss HP reading proves this battle result, not the next chapter.
         # Only a visible chapter header or a next-chapter fact (castle name,
         # enemy general debut) may advance and reset route state; the defeat
         # is the context a further-jump general needs (observe_chapter_general).
         mem['boss_defeated'] = mem.get('chapter')
-    elif outcome == 'win' and castle and cur.get('side') == 'attack':
+    elif outcome == 'win' and castle and cur.get('side') == 'attack' and not seasonal_boss:
         resulting = f'captured:{castle}'
-    elif outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
+    elif (outcome == 'loss' and castle and cur.get('side') == 'defense' and not seasonal_boss
+          and not (defense_continues or defense_retained)):
         resulting = f'lost:{castle}'
     if defense_continues:
         resulting = f'defense_continues:{castle}'

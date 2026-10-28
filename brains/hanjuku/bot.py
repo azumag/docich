@@ -18,6 +18,7 @@ sys.path.insert(0,str(ROOT/'src'))
 from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
+from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
@@ -95,6 +96,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     recall = policy.get('recall') or {}
     if recall.get('stage') == 'await_dispatch' and not recall.get('request_trace'):
         recall['request_trace'] = {**state['decision_trace'], 'planned_at': now}
+    boundary = policy.get('card_upper_boundary') or {}
+    if (boundary.get('await_input') is True and actions == [{'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}]):
+        boundary['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.
     try:
@@ -117,7 +121,12 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # battle_result is recorded after leaving combat and may already show
     # the map. Keep combat pixels in the same bounded ring, including holds
     # and enemy-owned menus, without claiming an input or a battle outcome.
-    capture=(menu_navigation_feedback(state, actions) or bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
+    capture=(menu_navigation_feedback(state, actions) or bool(card_flow)
+             or bool((policy.get('map_discovery') or {}).get('probe'))
+             or any(r.get('decision') in {'map_bootstrap_started', 'map_bootstrap_exhausted',
+                                         'map_search_candidate', 'map_castle_confirmed',
+                                         'map_registration_rejected', 'map_reanchored'} for r in records)
+             or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
@@ -198,6 +207,22 @@ def chart_edition_setting():
         return value if isinstance(value,str) else None
     except (OSError,tomllib.TOMLDecodeError):
         return None
+
+
+def approx_map_setting():
+    """``[hanjuku].approx_map``; source-seeded cells for chapters 3–12.
+
+    Default true: the deployed bot entrypoint may run from a checkout whose
+    config predates this key (the docich package is current). An explicit
+    ``approx_map = false`` remains the rollback switch.
+    """
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        value=(raw.get('hanjuku') or {}).get('approx_map')
+        return value is not False
+    except (OSError,tomllib.TOMLDecodeError):
+        return True
 
 
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
@@ -312,6 +337,48 @@ def recall_input_receipts(runtime, state, meta):
     return {'request_trace': trace, 'a_inputs': count}
 
 
+def card_scroll_receipt(runtime, state, meta):
+    """Match the previous top-row Up to the sender journal and run identity."""
+    boundary = (state.get('policy') or {}).get('card_upper_boundary') or {}
+    trace = boundary.get('request_trace') or {}
+    identity = meta.get('hanjuku') or {}
+    if (boundary.get('await_input') is not True or not trace
+            or any(identity.get(k) is None or trace.get(k) != identity[k]
+                   for k in ('game', 'runtime_id', 'generation', 'lease_id'))
+            or not isinstance(trace.get('decision_id'), str)
+            or not isinstance(trace.get('frame_sha256'), str) or len(trace['frame_sha256']) != 64
+            or type(trace.get('planned_at')) not in (int, float)):
+        return None
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+        matches = set()
+        for raw in tail.splitlines():
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if (isinstance(row, dict) and row.get('event') == 'input_sent'
+                    and row.get('decision_id') == trace['decision_id']
+                    and row.get('decision_frame_sha256') == trace['frame_sha256']
+                    and type(row.get('at')) in (int, float)
+                    and trace['planned_at'] <= row['at'] < 10**12
+                    and row.get('type') == 'pad' and row.get('buttons') == ['up']
+                    and row.get('hold_ms') == 100):
+                matches.add(row['at'])
+    except OSError:
+        return None
+    return {'request_trace': trace, 'up_inputs': min(2, len(matches))}
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -330,14 +397,17 @@ def main():
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).
             state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
+            hanjuku_resume.inherit_running_chapter(runtime,state)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
+                                 card_scroll_input=card_scroll_receipt(runtime, state, meta),
                                  run_identity=meta.get('hanjuku'),
-                                 chart_edition=chart_edition_setting())
+                                 chart_edition=chart_edition_setting(),
+                                 approx_map=approx_map_setting())
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

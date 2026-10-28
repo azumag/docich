@@ -12,7 +12,7 @@ from ..decision_log import _record
 
 def _is_boss_order(order, mem) -> bool:
     chapter = mem.get('chapter') or 0
-    return bool(order) and order.get('target') == chart.boss_castle(chapter)
+    return bool(order) and order.get('target') in (chart.boss_castle(chapter), *chart.boss_sites(chapter))
 
 
 # Owner (2026-09-29): 敵にエッグを使わせない. gcgx ai.html: an enemy general

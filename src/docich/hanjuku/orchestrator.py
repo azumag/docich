@@ -33,6 +33,9 @@ from .version import BOT_VERSION
 # screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
+# A message box over the field that no flow claims is acknowledged sooner:
+# the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
+FIELD_TEXT_HOLD_MAX = 4
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
 # command box the game draws the menu over several frames. The panel reads
@@ -144,8 +147,26 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None, run_identity: dict | None = None,
-           chart_edition: str | None = None) -> tuple[list[dict], dict]:
+           recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
+           run_identity: dict | None = None,
+           chart_edition: str | None = None,
+           approx_map: bool = False) -> tuple[list[dict], dict]:
+    """Decide with only this observation's verified/optional seed map exposed."""
+    from .. import hanjuku_chart
+    hanjuku_chart.migrate_legacy_labels(state)
+    memory = dict(state.get('policy') or {})
+    memory['approx_map'] = bool(approx_map)
+    with hanjuku_chart.map_context(memory, approx=approx_map):
+        return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
+                            experience=experience, recall_inputs=recall_inputs,
+                            card_scroll_input=card_scroll_input,
+                            run_identity=run_identity, chart_edition=chart_edition,
+                            _memory=memory)
+
+
+def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
+                 experience=None, recall_inputs=None, card_scroll_input=None, run_identity=None,
+                 chart_edition=None, _memory):
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -163,35 +184,38 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from .os_layer import roster as hanjuku_roster
     from .. import hanjuku_chart
     from .os_layer.screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
-    # State written before the castle-label rename still names chapter 1's home
-    # castle ほんじょう. Rename it here, before anything reads or writes it, so
-    # garrison keys, order sources and free-text notes all match the chart.
-    hanjuku_chart.migrate_legacy_labels(state)
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
-    mem=dict(state.get('policy') or {})
+    mem=_memory
+    mem.pop('_map_registration_hold', None)
     if phase != 'dialogue':
         mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
     mem['_run_identity'] = identity
+    reset_native_map_scope = False
     if identity is not None and mem.get('survey_run_identity') != identity:
         previous_identity = (hanjuku_roster.run_identity(mem.get('survey_run_identity'))
                              or hanjuku_roster.run_identity(state.get('decision_trace')))
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
+            reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
-                        'starter_party'):
+                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
         mem['survey_run_identity'] = identity
     mem['_records']=[]
+    if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
+        campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
+                                reason='ランIDが変わったため旧ランの実測地図と出撃状態を破棄')
     mem['_adjusted']=adjusted
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
+    mem['_card_scroll_input']=card_scroll_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
@@ -218,7 +242,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -230,7 +254,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -362,6 +386,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # resumes on its own screen. This covers return and outbound flows alike.
     concert_house_event = (
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None:
+        from .flows import map_registration
+        actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
@@ -376,7 +403,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             # game's orders, captures or cursor into it.
             stats=mem.get('stats')
             kept_experience=mem.get('_experience')
-            mem={'_records':mem['_records'],'previous_stats':stats,'_experience':kept_experience}
+            records = mem['_records']
+            mem.clear()
+            mem.update(_records=records, previous_stats=stats, _experience=kept_experience)
             decision_log._record(mem,'new_game_detected',chart_step='name',
                            reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=name_flow.name_step(screen,mem)
@@ -498,17 +527,28 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
+    # g1067 11:13-11:23: 「かんじゅくプリンスじょうは いっぽ かんせいに ちかづいた!!」
+    # sat over the field for ten minutes; the water and the ▼ prompt changed
+    # the digest on every observation, the streak never passed 1, and the run
+    # ended input_stalled. A message box is the same screen while it reads the
+    # same text.
+    hold_key=f'text:{screen.text}' if kind=='text' and screen.text else digest
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
-    elif digest in frozen:
+    elif hold_key in frozen:
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
+    bounded_wait=any(mem.get(k) for k in ('recall','house','month_sub','sortie_attempt','y_jump',
+                                           'resume_egg_ritual'))
+    hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
+              else NO_INPUT_HOLD_MAX)
+    if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
+            and not mem.get('_map_registration_hold')
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)
@@ -561,11 +601,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                        reason='同一画面で入力0件の観測が上限を超えたため、フェーズ別の既定入力で保留を解消する')
         streak=0
     updated['no_input_streak']=streak
-    updated['no_input_frames']=[digest]+[d for d in frozen if d!=digest][:1]
+    updated['no_input_frames']=[hold_key]+[d for d in frozen if d!=hold_key][:1]
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
+    mem.pop('_card_scroll_input',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem

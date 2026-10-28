@@ -30,6 +30,7 @@ from .game_switch import (
     DEFAULT_REQUEST_TIMEOUT_S,
     ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
+    ERROR_ROLLBACK_FAILED,
     ERROR_TIMEOUT,
     GameSwitchBusyError,
     GameSwitchCoordinator,
@@ -826,6 +827,7 @@ class RetroCornerManager:
             ERROR_PREPARE_FAILED,
             ERROR_QUIESCE_FAILED,
             ERROR_READINESS_TIMEOUT,
+            ERROR_ROLLBACK_FAILED,
             ERROR_START_FAILED,
             GameSwitchBusyError,
         )
@@ -849,7 +851,7 @@ class RetroCornerManager:
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
                                 ERROR_PREPARE_FAILED,
                                 ERROR_QUIESCE_FAILED, ERROR_READINESS_TIMEOUT,
-                                ERROR_TIMEOUT,
+                                ERROR_TIMEOUT, ERROR_ROLLBACK_FAILED,
                             }):
                         return False
                 if ((status not in {"starting", "interrupted"} and not failed_start)
@@ -873,27 +875,38 @@ class RetroCornerManager:
                 # now describe a Soren restart. The terminal receipt remains
                 # bound to this request; a newer active generation is safe
                 # only after all tracked candidate/retiring runtimes cleared.
+                # A start whose own rollback also failed (#1937 for the
+                # scripted corners) ends with a ``failed`` receipt that has no
+                # restored generation: game-switch kept the previous runtime
+                # for a reviewed recovery, which later re-leased it. Only the
+                # stable canonical below proves that restore finished.
+                rollback_failed = (failed_start
+                                   and state.get("last_error_code") == ERROR_ROLLBACK_FAILED)
+                terminal = "failed" if rollback_failed else "rolled_back"
                 if (receipt.get("operation") != "switch"
                         or receipt.get("target") != target
-                        or receipt.get("status") != "rolled_back"
+                        or receipt.get("status") != terminal
                         or not isinstance(result, dict)
                         or result.get("request_id") != request_id
-                        or result.get("status") != "rolled_back"
+                        or result.get("status") != terminal
                         or result.get("operation") != "switch"
                         or (failed_start
                             and result.get("error_code") != state.get("last_error_code"))
-                        or result.get("from_game") != previous
+                        or result.get("from_game") not in ((None, previous) if rollback_failed
+                                                           else (previous,))
                         or result.get("to_game") != target
                         or type(result.get("generation")) is not int
                         or result.get("generation") != receipt.get("generation")
-                        or type(result.get("restored_generation")) is not int
+                        or (not rollback_failed
+                            and type(result.get("restored_generation")) is not int)
                         or (result.get("cleanup_pending") is not None
                             and result.get("cleanup_pending") is not False)
                         or canonical.get("phase") != "ready"
                         or not isinstance(active, dict)
                         or active.get("game") != previous
                         or type(active.get("generation")) is not int
-                        or active.get("generation") < result.get("restored_generation")
+                        or active.get("generation") < (1 if rollback_failed
+                                                       else result.get("restored_generation"))
                         or not active.get("runtime_id")
                         or canonical.get("candidate") is not None
                         or canonical.get("previous") is not None
@@ -1165,6 +1178,7 @@ class RetroCornerManager:
             return False
         if not isinstance(corner_id, str) or not corner_id:
             return False
+        rollback_failed = False
         try:
             with self._locked():
                 state = self._read_state()
@@ -1174,10 +1188,20 @@ class RetroCornerManager:
                     return False
                 if not self._released_record_proved(state, corner_id, request_id):
                     return False
-                result = self._terminalize_prelaunch_quiesce_failure(
-                    state, expected_request_id=request_id,
-                    precommit=self._clear_released_stop_request,
-                )
+                rollback_failed = state.get("last_error_code") == ERROR_ROLLBACK_FAILED
+                if rollback_failed:
+                    # The prelaunch settle never accepts a failed rollback;
+                    # the rolled-back reconciliation below re-proves the
+                    # receipt and the stable previous owner under its own
+                    # locks, which this tick lock would otherwise block.
+                    if not self._clear_released_stop_request():
+                        return None
+                    result = None
+                else:
+                    result = self._terminalize_prelaunch_quiesce_failure(
+                        state, expected_request_id=request_id,
+                        precommit=self._clear_released_stop_request,
+                    )
                 status = getattr(result, "status", None)
                 if status == "queued":
                     # Pin the verified release record before answering "retry".
@@ -1188,6 +1212,8 @@ class RetroCornerManager:
                     self._record_released_settle_pending(state, corner_id, request_id)
         except (RetroCornerError, GameSwitchBusyError):
             return False
+        if rollback_failed:
+            return True if self.reconcile_failed_rotation_start(request_id) else False
         status = getattr(result, "status", None)
         if status == "succeeded":
             return True

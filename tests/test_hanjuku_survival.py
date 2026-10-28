@@ -160,7 +160,7 @@ def test_unreadable_cursor_and_missing_menu_are_bounded():
     mem = memory()
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert p.battle_step(battle(mem), mem)[0] == p.pad('a', 3)
     for _ in range(12):
@@ -200,10 +200,10 @@ def test_missing_retreat_menu_still_exhausts_its_original_three_openings():
                         start_enemy_hp=26, side='attack', planned_cards=[])
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert mem['battle']['hero_retreat']['opens'] == 3
-    for _ in range(20):
+    for _ in range(40):
         p.battle_step(battle(mem), mem)
     assert mem['battle']['hero_retreat']['opens'] == 3
     assert not mem['battle'].get('command_open_pending')
@@ -223,7 +223,7 @@ def test_opening_fade_with_high_no_input_streak_never_blindly_confirms():
     p._human_menu_open(mem['battle'], 'survival')
     frame = Canvas().frame()
     state = {'policy': mem, 'no_input_streak': 999}
-    for _ in range(2):
+    for _ in range(p.COMMAND_OPEN_WAITS):
         actions, state = decide(frame, state)
         assert actions == [{'type': 'wait', 'ms': 50}]
     assert p.command_open_pending_step(parse(frame), state['policy']) is None
@@ -304,6 +304,35 @@ def disabled_box_frame(rows, knight_at=None):
 
 
 DEFENSE_BOX = ((192, 'たまごをつかう'), (208, 'きりふだ'))
+
+
+def test_mixed_defense_box_over_summon_menu_reads_disabled_cursor_without_selecting_card():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')  # retained background
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    for y in range(200, 216):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.kind == 'battle_menu' and screen.mixed_item_box
+    assert screen.menu_cursor == 208
+    assert 'きりふだ' not in screen.text
+    assert p._battle_menu_to(screen, 'たまごをつかう') == p.pad('up')
+
+
+def test_mixed_box_requires_a_knight_and_accepts_either_foreground_row():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    assert not parse(c.frame()).mixed_item_box
+    for y in range(184, 200):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.mixed_item_box and screen.menu_cursor == 192
+    assert p._battle_menu_to(screen, 'たまごをつかう') == 'here'
 
 
 def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_rows():

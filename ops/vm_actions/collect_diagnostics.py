@@ -209,6 +209,19 @@ HARD_JSON_BYTES = 56 * 1024
 # whole-section drop, so it yields only after every other section is gone.
 _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
                     "soren91_drop_profile", "host_metrics")
+# Sections that survive every ceiling reduction (#2805). ``corners`` is the
+# first whole section dropped and every 予想王 input lives inside it, so while
+# the production envelope stays above the ceiling the 予想王 ledger can only be
+# observed from a run that happened to fit. ``prediction`` duplicates the same
+# already-bounded dicts under a key the whole-section drops never take away.
+_HARD_KEEP = ("meta", "prediction")
+# Production thresholds of the 予想王 boards, kept in sync with
+# ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
+# ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
+# ``--min-participations`` override, so the defaults are the deployed values.
+# The collector runs against a fixed argv and does not import the docich package.
+_PREDICTION_MIN_ROUNDS = 3
+_PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -6440,6 +6453,10 @@ def _project_corner_state(data):
             "hanjuku-chart-v235-boss-card-rebuy",
             "hanjuku-chart-v236-readable-prose-boundary",
             "hanjuku-chart-v237-clash-gauge-dropper-carry",
+            "hanjuku-chart-v238-native-map-registration",
+            "hanjuku-chart-v239-map-bootstrap-source-guard",
+            "hanjuku-chart-v240-map-identity-hold",
+            "hanjuku-chart-v241-deploy-endpoint-guard",
             "hanjuku-chart-v238-queen-command-window",
             "hanjuku-chart-v239-concert-picker-escape",
             "hanjuku-chart-v241-sortie-confirm-cancel",
@@ -6453,6 +6470,23 @@ def _project_corner_state(data):
             "hanjuku-chart-v252-current-roster-recruit",
             "hanjuku-chart-v253-bijin-monthly-owner",
             "hanjuku-chart-v254-bijin-stall-bound",
+            "hanjuku-chart-v255-native-map-registration",
+            "hanjuku-chart-v256-approx-source-map",
+            "hanjuku-chart-v257-approx-fallback",
+            "hanjuku-chart-v258-approx-default",
+            "hanjuku-chart-v259-known-reanchor",
+            "hanjuku-chart-v260-reanchor-restart",
+            "hanjuku-chart-v261-single-roof-reanchor",
+            "hanjuku-chart-v262-status-label-edges",
+            "hanjuku-chart-v263-probe-release-text",
+            "hanjuku-chart-v264-house-needs-chapter",
+            "hanjuku-chart-v265-resume-inherit-chapter",
+            "hanjuku-chart-v266-interim-before-search",
+            "hanjuku-chart-v267-chapter3-measured",
+            "hanjuku-chart-v268-all-chapter-castles",
+            "hanjuku-chart-v269-field-text-by-text",
+            "hanjuku-chart-v270-battle-menu-open-wait",
+            "hanjuku-chart-v271-y-jump-unreadable-bounded",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -7856,11 +7890,43 @@ def _collect_retro_program_queues(soren):
     return queues
 
 
-def _collect_prediction_leaderboard(state_dir):
-    """Counts only; the 予想王 ledger never exposes viewer names or titles."""
+def _parse_iso_utc(value):
+    """Epoch seconds for a Twitch ISO-8601 UTC stamp, else None (#2805)."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            parsed = dt.datetime.strptime(value, fmt)
+        except (TypeError, ValueError):
+            continue
+        return parsed.replace(tzinfo=dt.timezone.utc).timestamp()
+    return None
+
+
+def _collect_prediction_leaderboard(state_dir, now=None):
+    """Counts only; the 予想王 ledger never exposes viewer names or titles.
+
+    The counts are chosen so one envelope can tell the three empty-ranking
+    states apart without reading the ledger again (#2805):
+
+    * ``rounds`` > 0 with ``graded_rounds`` 0 makes the hit-rate, won-points and
+      lost-points boards empty by contract.
+    * ``rounds`` > 0 with ``predictor_rows`` 0 means no participant row was
+      recorded at all, so every board is empty for a different reason.
+    * ``last_round_ended_at`` and ``last_round_age_sec`` say whether the ledger
+      advanced since the measured snapshot, which separates "empty when the
+      report was written" from "empty now".
+
+    ``viewers_*`` are per-viewer aggregate counts, never identities. The
+    thresholds are the production values recorded in ``min_rounds`` /
+    ``min_participations``.
+    """
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
-             "canceled": 0, "soren_canceled": 0}
+    entry = {"present": False, "readable": False, "schema": None, "rounds": 0,
+             "graded_rounds": 0, "viewers": 0, "predictor_rows": 0, "canceled": 0,
+             "soren_canceled": 0, "viewers_won_gt0": 0,
+             "viewers_used_gt0": 0, "viewers_hit_rate_eligible": 0,
+             "last_round_ended_at": None, "last_round_age_sec": -1,
+             "min_rounds": _PREDICTION_MIN_ROUNDS,
+             "min_participations": _PREDICTION_MIN_PARTICIPATIONS}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -7875,23 +7941,69 @@ def _collect_prediction_leaderboard(state_dir):
     if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
+    schema = data.get("schema")
     viewers = set()
-    canceled = soren_canceled = 0
+    totals = {}
+    ended = []
+    canceled = soren_canceled = graded = predictor_rows = 0
     for round_ in data["rounds"].values():
-        if isinstance(round_, dict) and round_.get("status") == "CANCELED":
+        if not isinstance(round_, dict):
+            continue
+        status = round_.get("status")
+        if status is None and schema == 1:
+            # A schema-1 ledger stored graded rounds only (``_upgrade_legacy``).
+            status = "RESOLVED"
+        if status == "CANCELED":
             # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
             canceled += 1
             if round_.get("corner") == "soren":
                 soren_canceled += 1
-        predictors = round_.get("predictors") if isinstance(round_, dict) else None
+        elif status == "RESOLVED":
+            graded += 1
+        round_ended = round_.get("ended_at")
+        if isinstance(round_ended, str) and round_ended:
+            # ISO-8601 UTC sorts lexicographically, so the max string is the
+            # newest round end; only the newest one leaves this projection.
+            ended.append(round_ended[:40])
+        predictors = round_.get("predictors")
         if not isinstance(predictors, list):
             continue
         for item in predictors:
-            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
-                viewers.add(item["user_id"])
-    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
+            if not isinstance(item, dict) or not isinstance(item.get("user_id"), str):
+                continue
+            viewers.add(item["user_id"])
+            predictor_rows += 1
+            row = totals.setdefault(item["user_id"],
+                                    {"rounds": 0, "used": 0, "won": 0})
+            if status == "RESOLVED":
+                row["rounds"] += 1
+            used = item.get("used")
+            if type(used) is int and used > 0:
+                row["used"] += used
+            won = item.get("won")
+            if type(won) is int and won > 0:
+                row["won"] += won
+    last_round_ended_at = max(ended) if ended else None
+    last_round_age_sec = -1
+    if last_round_ended_at is not None and now is not None:
+        parsed = _parse_iso_utc(last_round_ended_at)
+        if parsed is not None:
+            last_round_age_sec = _bounded_age(parsed, now)
+    entry.update(readable=True, schema=schema,
+                 rounds=min(len(data["rounds"]), 2000),
+                 graded_rounds=min(graded, 2000),
                  viewers=min(len(viewers), 100000),
-                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
+                 predictor_rows=min(predictor_rows, 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000),
+                 viewers_won_gt0=min(sum(1 for row in totals.values()
+                                        if row["won"] > 0), 100000),
+                 viewers_used_gt0=min(sum(1 for row in totals.values()
+                                         if row["used"] > 0), 100000),
+                 viewers_hit_rate_eligible=min(
+                     sum(1 for row in totals.values()
+                         if row["rounds"] >= _PREDICTION_MIN_ROUNDS), 100000),
+                 last_round_ended_at=last_round_ended_at,
+                 last_round_age_sec=last_round_age_sec)
     return entry
 
 
@@ -7923,6 +8035,96 @@ def _collect_soren_predictions(soren, state_dir):
         return entry
     entry["handoff_rows"] = min(sum(1 for line in lines if line.strip()), 1000)
     return entry
+
+
+def _bounded_age(value, now):
+    """Seconds since ``value`` for a plausible timestamp, else -1 (#2805)."""
+    if type(value) not in (int, float) or value <= 0:
+        return -1
+    age = int(now - value)
+    return age if 0 <= age <= 10 ** 9 else -1
+
+
+def _prediction_projection(corners, now):
+    """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
+
+    ``corners`` is dropped whole against the hard ceiling, and the ledger, the
+    Soren handoff, the HanJuku round state, the yoso corner run and the
+    prediction boundary all live inside it. When the production envelope grew
+    past the ceiling, every 予想王 report could only be answered from a run that
+    still fitted, so this re-projects the same already-bounded dicts under a key
+    that survives.
+
+    This is a *duplicate* projection, not a move: the ``corners.*`` keys keep
+    their existing shape and meaning so already documented consumers and the
+    regression tests stay honest, while ``prediction`` is the exempt copy. Both
+    read the same dict objects, so no file is read twice and the two cannot
+    disagree within one envelope. ``state_dir_found`` is repeated here for the
+    same reason: it is the only signal that separates "the 予想王 state dir was
+    never found" from "the ledger is empty", and it used to disappear with
+    ``corners``. No viewer name, login or title is added; the values are counts,
+    fixed enums, bounded timestamps and ages only.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+
+    def _section(name):
+        value = corners.get(name)
+        return value if isinstance(value, dict) else {}
+
+    leaderboard = _section("prediction_leaderboard")
+    handoff = _section("soren_predictions")
+    hanjuku = _section("hanjuku_predictions")
+    corner = _section("yoso_corner")
+    boundary = _section("boundary")
+    prediction = boundary.get("prediction")
+    prediction = prediction if isinstance(prediction, dict) else {}
+    health = hanjuku.get("health")
+    health = health if isinstance(health, dict) else {}
+    health_ok = None
+    if health:
+        health_ok = (health.get("present") is True
+                     and health.get("readable") is True
+                     and health.get("consecutive_errors") == 0
+                     and health.get("last_error") is None)
+
+    def _text(value):
+        return value if isinstance(value, str) else None
+
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "leaderboard": dict(leaderboard),
+        "soren_handoff": dict(handoff),
+        "hanjuku": {
+            "present": hanjuku.get("present") is True,
+            "readable": hanjuku.get("readable") is True,
+            "status": _text(hanjuku.get("status")),
+            "mode": _text(hanjuku.get("mode")),
+            "health_ok": health_ok,
+            "last_ok_age_sec": _bounded_age(health.get("last_ok_at"), now),
+        },
+        "corner": {
+            "present": corner.get("present") is True,
+            "readable": corner.get("readable") is True,
+            "status": _text(corner.get("status")),
+            "game": _text(corner.get("game")),
+            "end_reason": _text(corner.get("end_reason")),
+            "recovery_required": (corner.get("recovery_required")
+                                  if isinstance(corner.get("recovery_required"), bool)
+                                  else None),
+            "completed_at": (corner.get("completed_at")
+                             if type(corner.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(corner.get("completed_at"), now),
+        },
+        "boundary": {
+            "present": prediction.get("present") is True,
+            "readable": prediction.get("readable") is True,
+            "completed_at": (prediction.get("completed_at")
+                             if type(prediction.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(prediction.get("completed_at"), now),
+        },
+    }
 
 
 def _collect_programs(state_dir, soren, now):
@@ -7977,7 +8179,7 @@ def _collect_programs(state_dir, soren, now):
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
-    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir)
+    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir, now)
     payload["soren_predictions"] = _collect_soren_predictions(soren, state_dir)
     retro = payload.get("retro_corner")
     game_switch = payload.get("game_switch")
@@ -8830,6 +9032,44 @@ def _collect_resolver_daemon():
             'scopes': scopes,
         }
     return {'schema_version': 2, 'units': units}
+
+
+CC_ADAPTER_DEFAULT_PORT = 4100
+
+
+def _probe_cc_adapter(port, timeout=1.0):
+    """Read-only loopback GET of the CC adapter ``/healthz`` (docich#2894).
+
+    Self-contained on purpose: the gateway copies only a fixed file set into
+    its collector checkout, so this must not import ``docich.cc_translation_adapter``.
+    Returns ``{"state": "ok", "upstream": ...}`` or a state in
+    {"unreachable", "invalid"}; the body is reduced to the upstream name.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=timeout) as response:
+            body = json.loads(response.read(4096).decode("utf-8"))
+    except Exception:
+        return {"state": "unreachable"}
+    if not isinstance(body, dict) or body.get("status") != "ok" or not isinstance(
+        body.get("upstream"), str
+    ):
+        return {"state": "invalid"}
+    return {"state": "ok", "upstream": body["upstream"]}
+
+
+def _collect_cc_translation_adapter():
+    """Read-only healthz of the CC translation adapter (docich#2894).
+
+    Reports the probe state and the upstream name the adapter advertises only;
+    no prompt, key, or response body is read into the envelope.
+    """
+    port = CC_ADAPTER_DEFAULT_PORT
+    raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
+    if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
+        port = int(raw_port)
+    health = _probe_cc_adapter(port)
+    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -10751,6 +10991,127 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log.
+
+    Only allowlisted tokens, fixed screen kinds and ages leave this reader.
+    Reasons, chart steps, general/castle names, frame hashes and identities
+    remain private; a malformed or unattributed line is skipped.
+    """
+    out = []
+    try:
+        fd = _open_hanjuku_scene_source(Path(runtime) / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return out
+            offset = max(0, info.st_size - 64 * 1024)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()[-256:]
+        finally:
+            os.close(fd)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    continue
+                event = row.get("event")
+                decision = row.get("decision")
+                if not isinstance(event, str) or not re.fullmatch(r"[a-z_]{1,48}", event):
+                    continue
+                if decision is not None and (
+                        not isinstance(decision, str)
+                        or not re.fullmatch(r"[a-z_]{1,64}", decision)):
+                    continue
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    continue
+                kind = row.get("screen_kind")
+                kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                out.append({"event": event, "decision": decision,
+                            "screen_kind": kind, "age_sec": age})
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                continue
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return []
+    return out[-limit:]
+
+
+def _compact_hanjuku_policy(mem, state=None):
+    """Small map/route summary that survives the tactical detail drop.
+
+    The full tactical section is dropped when the diagnostics envelope is
+    large, which hid chapter/active/orders exactly when a sortie had stopped.
+    Keep only fixed names, bounded counts and status tokens; no free text,
+    identities, frame hashes or decision reasons.
+    """
+    if not isinstance(mem, dict):
+        return None
+    def text(value, limit=64):
+        return value if isinstance(value, str) and len(value) <= limit else None
+    def names(value, limit=12):
+        return ([item for item in value if isinstance(item, str)][:limit]
+                if isinstance(value, list) else None)
+    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
+    registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
+    chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
+    cursor = mem.get('cursor')
+    tick = mem.get('tick')
+    state = state if isinstance(state, dict) else {}
+    return {
+        'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'screen_kind': text(state.get('screen_kind'), 32),
+        'phase': text(state.get('phase'), 32),
+        'step': state.get('step') if type(state.get('step')) is int else None,
+        'no_input_streak': (state.get('no_input_streak')
+                            if type(state.get('no_input_streak')) is int else None),
+        'variant': text(mem.get('variant'), 32),
+        'active': text(mem.get('active'), 32),
+        'tick': tick if type(tick) is int and tick >= 0 else None,
+        'month': text(mem.get('month'), 16),
+        'orders': {text(step, 32) or '?': text(status, 32) or '?'
+                   for step, status in list(orders.items())[:20]
+                   if isinstance(step, str) and isinstance(status, str)},
+        'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
+                           and len(mem['captured']) <= 64 else None),
+        'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
+                     for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'sorties': {text(step, 32) or '?': {'status': text(value.get('status'), 32),
+                                            'target': text(value.get('target'), 32)}
+                    for step, value in list(sorties.items())[:12]
+                    if isinstance(value, dict)},
+        'cursor': ([item for item in cursor[:2] if type(item) is int]
+                   if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
+        'uncertain': mem.get('uncertain') is True,
+        'nav_search': mem.get('nav_search') is True,
+        'y_jump': ({'mode': text((mem.get('y_jump') or {}).get('mode'), 16),
+                    'goal': text((mem.get('y_jump') or {}).get('goal'), 32)}
+                   if isinstance(mem.get('y_jump'), dict) else None),
+        'approx_map': mem.get('approx_map') is True,
+        'approx_fallback': mem.get('approx_fallback') is True,
+        'approx_localize_miss': (mem.get('approx_localize_miss')
+                                 if type(mem.get('approx_localize_miss')) is int else None),
+        'map_discovery': ({'candidate': text(discovery.get('candidate'), 32),
+                           'attempts': discovery.get('attempts')
+                           if type(discovery.get('attempts')) is int else None}
+                          if discovery else None),
+        'map_registration_castles': (len(registration.get('castles'))
+                                     if isinstance(registration.get('castles'), dict) else None),
+        'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
+                          'has_plan': isinstance(mem.get('chart_plan'), dict)}
+                         if chart_adjust else None),
+    }
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -10795,7 +11156,9 @@ def _collect_hanjuku_tactical(state_dir, now):
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
+                    'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
+                               'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                    'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -10828,6 +11191,8 @@ def _collect_hanjuku_tactical(state_dir, now):
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
+                   policy={**_compact_hanjuku_policy(mem, bot),
+                           'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
@@ -12990,7 +13355,17 @@ def _diagnostics_budget(payload):
         refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
         house_deferral = (payload['hanjuku_tactical'].get('last_house_deferral')
                           if isinstance(payload['hanjuku_tactical'], dict) else None)
+        summary = payload['hanjuku_tactical']
+        policy = summary.get('policy') if isinstance(summary, dict) else None
+        chapter = summary.get('chapter') if isinstance(summary, dict) else None
+        age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if isinstance(policy, dict):
+            payload['hanjuku_tactical']['policy'] = policy
+        if type(chapter) is int:
+            payload['hanjuku_tactical']['chapter'] = chapter
+        if type(age_sec) is int:
+            payload['hanjuku_tactical']['age_sec'] = age_sec
         if house_deferral is not None:
             payload['hanjuku_tactical']['last_house_deferral'] = _compact_hanjuku_house_deferral(house_deferral)
         if refill is not None:
@@ -13093,12 +13468,13 @@ def _diagnostics_budget(payload):
     # Pathological fallback: a payload whose surviving sections are individually
     # small but numerous. Drop the remaining top-level sections largest-first,
     # keeping ``meta`` (the deployed SHA and collection status) so the envelope
-    # still identifies what it came from.
+    # still identifies what it came from, and ``prediction`` so the 予想王 counts
+    # stay observable (#2805).
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         for key, value in sorted(
                 payload.items(),
                 key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
-            if key == "meta" or not isinstance(value, dict):
+            if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
             payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
             text = _nethack_history_budget(payload)
@@ -13586,6 +13962,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "prediction": _prediction_projection(corners, now),
         "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
@@ -13622,6 +13999,7 @@ def main(argv):
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
+        "cc_translation_adapter": _collect_cc_translation_adapter(),
     }
     retention = payload["opencode_retention"]
     attempt = retention["attempt"]

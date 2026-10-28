@@ -181,7 +181,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
-Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
+Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
@@ -190,6 +190,17 @@ Y_JUMP_WAIT = 6                # frames without a readable cursor before closing
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
 Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
+
+
+def _note_failed_jump(mem, jump, why):
+    """Remember the closed jump so a view that never moved is not reopened.
+
+    Y is a toggle: reopening it after a close that moved nothing only toggles
+    the view again (g1075 2026-10-28: 69 closes at 0 moves, ~1 minute of Y
+    blinking per order while the ring cursor sat still on the sea).
+    """
+    mem['y_jump_last'] = {'step': jump.get('step'), 'mode': jump.get('mode'),
+                          'moves': int(jump.get('moves') or 0), 'why': why}
 
 
 def _drop_stale_y_jump(screen, mem):
@@ -206,6 +217,7 @@ def _drop_stale_y_jump(screen, mem):
         return True                      # the view is still opening: press nothing
     mem.pop('y_jump', None)
     if jump:
+        _note_failed_jump(mem, jump, 'view_closed')
         _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                 screen=screen.kind, observed_metric={'moves': jump.get('moves')},
                 reason='全体マップが決定前に閉じたためジャンプを中断として扱う')
@@ -215,6 +227,12 @@ def _drop_stale_y_jump(screen, mem):
 def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
+        return False
+    last = mem.get('y_jump_last') or {}
+    if (last.get('step') == order['step'] and last.get('mode') == mode
+            and not int(last.get('moves') or 0)):
+        # The last jump for this order closed without moving the cursor. The
+        # view is not opening or readable here, so walk instead of toggling Y.
         return False
     key = f"{order['step']}:{mode}"
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
@@ -249,6 +267,7 @@ def _y_jump_step(mem, frame):
         if jump['wait'] < Y_JUMP_WAIT:
             return []
         mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return [pad('y')]
@@ -258,6 +277,7 @@ def _y_jump_step(mem, frame):
     if jump['moves'] >= Y_JUMP_MOVES and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
         mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'residual')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},

@@ -1616,6 +1616,14 @@ def _healthy_melee_advantage(cur):
             and hp > enemy * 2 and hp * 10 > start * 7)
 
 
+# Measured B-to-menu latency in production (g1059-g1075, n=47): median
+# 1.9 s, p90 2.8 s, max 5.0 s, at ~0.65 s per battle observation. Two waits
+# (~1.3 s) re-pressed B while the box was still sliding in and closed it: 34
+# of 81 openings failed and generals died with eggs and cards unused (g1075
+# ドンダム 28->2 HP, 2026-10-28).
+COMMAND_OPEN_WAITS = 4
+
+
 def _command_open_wait(mem, cur):
     pending = cur.get('command_open_pending')
     if not pending:
@@ -1629,7 +1637,7 @@ def _command_open_wait(mem, cur):
     # Repeated B there can close the menu just requested. Current HP is still
     # read before this short wait, and the old opening budgets are retained.
     pending['waits'] = pending.get('waits', 0) + 1
-    if pending['waits'] > 2:
+    if pending['waits'] > COMMAND_OPEN_WAITS:
         cur.pop('command_open_pending', None)
         return None
     _record(mem, 'battle_command_open_wait', **_battle_labels(cur),

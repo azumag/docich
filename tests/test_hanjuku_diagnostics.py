@@ -256,3 +256,67 @@ def test_route_deferral_projects_only_in_its_fresh_scope(tmp_path, monkeypatch, 
     mem['tick'] -= 401
     mem['_run_identity'] = {**mem['_run_identity'], 'generation': 515}
     assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
+
+
+def test_unsupported_chapter_keeps_a_bounded_policy_summary(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, variant='chart', active='3-Z1',
+                         orders={'3-Z1': 'pending', '3-B1': 'pending'},
+                         captured=['グリン'], garrison={'アルマムーン': ['どうし']},
+                         cursor=[712, 160], approx_fallback=False,
+                         approx_localize_miss=2)
+    bot.update(screen_kind='map', phase='field', step=7, no_input_streak=0)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['status'] == 'unsupported_chapter' and out['chapter'] == 3
+    policy = out['policy']
+    assert policy['chapter'] == 3 and policy['variant'] == 'chart'
+    assert policy['active'] == '3-Z1'
+    assert policy['orders'] == {'3-Z1': 'pending', '3-B1': 'pending'}
+    assert policy['garrison'] == {'アルマムーン': 1}
+    assert policy['cursor'] == [712, 160]
+    assert policy['approx_localize_miss'] == 2
+    assert policy['screen_kind'] == 'map' and policy['phase'] == 'field'
+    assert policy['step'] == 7 and policy['no_input_streak'] == 0
+    # No free text, identities or hashes leak through the compact summary.
+    text = json.dumps(out, ensure_ascii=False)
+    for secret in ('private-lease', 'DO NOT EMIT', 'private-general'):
+        assert secret not in text
+
+
+def test_tactical_omission_preserves_the_policy_summary(monkeypatch):
+    policy = {'chapter': 3, 'active': '3-Z1', 'orders': {'3-Z1': 'pending'}}
+    payload = {'hanjuku_tactical': {'status': 'unsupported_chapter', 'chapter': 3,
+                                    'age_sec': 10, 'policy': policy,
+                                    'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert tactical['status'] == 'output_omitted'
+    assert tactical['chapter'] == 3 and tactical['policy'] == policy
+
+
+def test_recent_decisions_are_fixed_tokens_only(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, variant='chart_unavailable', active=None)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'situation_held',
+         'screen_kind': 'map', 'at': 105, 'reason': 'DO NOT EMIT', 'chart_step': '3-Z1'},
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 108, 'reason': 'DO NOT EMIT'},
+    ]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(row, ensure_ascii=False) for row in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recent = out['policy']['recent_decisions']
+    assert [row['decision'] for row in recent] == ['situation_held', 'order_start']
+    assert [row['screen_kind'] for row in recent] == ['map', 'map']
+    text = json.dumps(out, ensure_ascii=False)
+    assert 'DO NOT EMIT' not in text and '3-Z1' not in text

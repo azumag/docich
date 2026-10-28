@@ -172,6 +172,7 @@ def world_map_step(screen, mem, frame):
                 reason='全体マップの▲（部隊マーカー）を定期確認')
     return [pad('y')]
 OFF_CASTLE_LIMIT = 3           # refusals before pressing A anyway (bounded)
+APPROX_LOCALIZE_LIMIT = 4      # observations without a roof anchor before native survey
 
 
 def _hold_off_castle(screen, mem, order) -> bool:
@@ -206,6 +207,18 @@ def _hold_off_castle(screen, mem, order) -> bool:
                              'roofs': mem.get('roofs_seen'), 'held': count + 1},
             reason='出撃元に着いたと推定したがカーソル位置に城の屋根が無いため、決定せず内陸で再特定する')
     return True
+
+
+def _measured_goal(mem, order, castle):
+    """Last coordinate boundary, including already-issued reconciliation."""
+    goal = chart.castles(mem.get('chapter') or 0).get(castle)
+    if goal is None:
+        mem['active'] = None
+        mem['picked'] = []
+        mem['_map_registration_hold'] = True
+        _record(mem, 'map_coordinates_unavailable', chart_step=order['step'], castle=castle,
+                reason='現在のランで有効な座標がないため入力せず、既存注文の実行を停止')
+    return goal
 
 
 def map_step(screen: Screen, mem, frame):
@@ -305,6 +318,10 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []
+        # The bounded inventory search belongs to this attempt, not the
+        # order forever. A cancelled attempt must not exhaust every retry.
+        (mem.get('card_scroll') or {}).pop(order['step'], None)
+        mem.pop('card_upper_boundary', None)
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
         mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
         mem.setdefault('dropper_card_kit', {}).pop(order['step'], None)
@@ -317,7 +334,9 @@ def map_step(screen: Screen, mem, frame):
                 cards=list(order['cards']),
                 reason=order['note'])
     source = _source(order, mem)
-    goal = chart.castles(mem['chapter'])[source]
+    goal = _measured_goal(mem, order, source)
+    if goal is None:
+        return []
     if screen.cursor and not screen.marker and _near_goal(mem, order, source, 'map'):
         aligned = _align_on_roof(screen, mem, frame, ('own',), f"{order['step']}:map")
         if aligned == 'on':
@@ -334,6 +353,27 @@ def map_step(screen: Screen, mem, frame):
     if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
         return _start_y_jump(mem, order, source, 'map')
     result = nav_step(screen, mem, frame, goal, source)
+    if chart.approximate_map():
+        cursor_before = mem.get('cursor')
+        if mem.get('anchor') or result == 'arrived':
+            mem.pop('approx_localize_miss', None)
+        else:
+            misses = int(mem.get('approx_localize_miss') or 0) + 1
+            mem['approx_localize_miss'] = misses
+            if misses >= APPROX_LOCALIZE_LIMIT:
+                order_step = (order or {}).get('step')
+                mem['approx_fallback'] = True
+                mem.pop('approx_localize_miss', None)
+                mem['active'] = None
+                mem['picked'] = []
+                mem['uncertain'] = True
+                mem.pop('cursor', None)
+                _record(mem, 'approx_map_fallback', chart_step=order_step,
+                        screen=screen.kind,
+                        observed_metric={'misses': misses, 'cursor': cursor_before,
+                                         'screen_cursor': list(_cursor(screen) or ())},
+                        reason='近似座標で屋根に再アンカーできないため近似を止め、実測地図探索へ切り替える')
+                return []
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
             mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again
@@ -400,7 +440,9 @@ def target_step(screen: Screen, mem, frame):
                 or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
-    goal = chart.castles(mem['chapter'])[order['target']]
+    goal = _measured_goal(mem, order, order['target'])
+    if goal is None:
+        return []
     result = None
     if screen.marker and _near_goal(mem, order, order['target'], 'target'):
         if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
@@ -429,6 +471,19 @@ def target_step(screen: Screen, mem, frame):
             # arrival so the sortie is cancelled and retried within its bounds.
             return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
+        if screen.marker and order['target'] != chart.boss_castle(mem.get('chapter') or 0):
+            # g1067 09:49-10:19: dead reckoning stopped the marker 10 px right
+            # of Grin's roof, and the up/down nudges never corrected x; every
+            # retake was cancelled twice. A roof of the expected owner beside
+            # the marker is the castle the estimate meant: walk onto it.
+            kinds = ('own',) if order['target'] in _owned(mem) else ('enemy',)
+            aligned = _align_on_roof(screen, mem, frame, kinds, f"{order['step']}:target")
+            if aligned and aligned != 'on':
+                mem['near_goal'] = {'step': order['step'], 'goal': order['target'], 'mode': 'target'}
+                _record(mem, 'target_roof_align', chart_step=order['step'], target=order['target'],
+                        observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ())},
+                        reason='推定到着点の近くに目的と同じ色の屋根があるため、その屋根へマーカーを合わせる')
+                return _deploy_input(screen, mem, order, aligned, '推定到着点の近くの屋根へ出撃先マーカーを合わせる')
         return _unverified_target(screen, mem, order)
     if result == 'arrived':
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
