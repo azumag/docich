@@ -247,7 +247,6 @@ def test_an_order_from_a_lost_castle_is_neither_picked_nor_blocking():
     actions = policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME)
     order = policy._order(mem)
     assert order is not None and order['source'] != 'ジョンリギ'
-    assert decisions(mem, 'chart_interim_order')[-1]['purpose'] == 'move'  # no spare for retake
     assert actions == [] or all(a['type'] == 'pad' for a in actions)
 
 

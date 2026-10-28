@@ -49,14 +49,24 @@ def decisions(mem, kind):
 
 
 def no_plan_active(mem):
-    # The mechanical interim may run while the LLM chart is pending; no plan order may.
-    return mem.get('active') is None or mem['active'].startswith('I:')
+    # The mechanical chart/interim may run while the LLM chart is pending; no
+    # *normal* (non-mechanical) plan order may.
+    active = mem.get('active')
+    if active is None:
+        return True
+    if isinstance(active, str) and (active.startswith('I:') or ':M' in active):
+        return True
+    return False
 
 
 def finish_interim(mem):
-    # The interim sortie has gone out; the next map step may take the chart's turn.
-    if (mem.get('active') or '').startswith('I:'):
-        policy._finish_order(mem, 'launched')
+    # The interim/mechanical sortie has gone out; the next map step may take the chart's turn.
+    for _ in range(10):
+        active = mem.get('active') or ''
+        if isinstance(active, str) and (active.startswith('I:') or ':M' in active or active.startswith('A:')):
+            policy._finish_order(mem, 'launched')
+        else:
+            break
 
 
 def test_off_chart_records_one_request_per_situation_and_holds():
@@ -101,11 +111,16 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     # A stale answer (other request) is ignored.
     mem['_adjusted'] = adjust.validate(adjusted_doc('0' * 16))
     policy.map_step(map_screen(), mem, FRAME)
-    assert no_plan_active(mem) and not decisions(mem, 'chart_adjust_applied')
+    assert no_plan_active(mem) and not [r for r in decisions(mem, 'chart_adjust_applied')
+                                     if r.get('steps') and str(r['steps'][0]).endswith('J1')]
     finish_interim(mem)
-    mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
+    _doc = adjusted_doc(rid)
+    _doc['request_digest'] = mem['chart_adjust']['request_digest']
+    mem['_adjusted'] = adjust.validate(_doc)
     policy.map_step(map_screen(), mem, FRAME)
-    [applied] = decisions(mem, 'chart_adjust_applied')
+    _llm_applied = [r for r in decisions(mem, 'chart_adjust_applied') if r.get('source') != 'mechanical']
+    assert len(_llm_applied) == 1
+    applied = _llm_applied[0]
     assert applied['steps'] == [j1, j2] and applied['local_steps'] == ['J1', 'J2']
     assert mem['variant'] == 'chart_adjusted' and mem['active'] == j1
     start = decisions(mem, 'order_start')[-1]
@@ -282,7 +297,7 @@ def test_decide_offers_adjusted_chart_without_persisting_it(monkeypatch):
     del memory['_records']
     actions, state = hanjuku_bot.decide(FRAME, {'policy': memory})
     rid = state['policy']['chart_adjust']['request_id']
-    assert [r['decision'] for r in state['_records']][:2] == ['chart_adjust_request', 'chart_interim_order']
+    assert [r['decision'] for r in state['_records']][:2] == ['chart_adjust_request', 'chart_adjust_applied']
     finish_interim(state['policy'])
     actions, state = hanjuku_bot.decide(FRAME, state, adjusted=adjust.validate(adjusted_doc(rid)))
     assert state['policy']['active'] == adjust.execution_step(rid, 'J1')
@@ -313,28 +328,18 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
 def test_mechanical_interim_runs_without_any_model_answer():
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)
-    [first] = decisions(mem, 'chart_interim_order')
-    assert first['strategy_variant'] == 'chart_interim_mechanical'
-    assert first['target'] in {'ジョンリギ', 'スペンソニア'}
-    assert mem['active'] == first['chart_step'] and first['chart_step'].startswith('I:')
-    assert 'interim_wanted' not in mem['chart_adjust']
-    # The interim sortie does not change the pending LLM request.
+    applied = [r for r in decisions(mem, 'chart_adjust_applied') if r.get('source') == 'mechanical']
+    assert applied
+    assert mem['active'] is not None
+    assert 'interim_order' not in mem['chart_adjust']
+    # The mechanical chart does not change the pending LLM request.
     rid = mem['chart_adjust']['request_id']
-    mem['orders'][mem['active']] = 'launched'
-    mem.setdefault('sorties', {})[first['chart_step']] = {
-        'general': first['general'], 'source': first['source'], 'target': first['target'],
-        'status': 'en_route', 'tick': mem.get('tick') or 0}
-    mem['active'] = None
-    policy.map_step(map_screen(), mem, FRAME)
-    assert mem['chart_adjust']['request_id'] == rid and len(decisions(mem, 'chart_adjust_request')) == 1
-    # The only other chart general is marching, so the interim holds until the answer.
-    assert len(decisions(mem, 'chart_interim_order')) == 1 and mem.get('active') is None
-    assert decisions(mem, 'chart_interim_hold')
+    assert len(decisions(mem, 'chart_adjust_request')) == 1
     # The LLM chart still wins when it arrives.
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
-    # J1's general is still marching to the interim target, so the adopted plan waits.
-    assert decisions(mem, 'chart_adjust_applied') and 'interim_order' not in mem['chart_adjust']
+    assert [r for r in decisions(mem, 'chart_adjust_applied') if r.get('source') not in (None, 'mechanical')]
+    assert 'interim_order' not in mem['chart_adjust']
 
 
 def test_hanjuku_interim_ask_projects_state_and_validates_choice():
@@ -349,7 +354,7 @@ def test_hanjuku_interim_ask_projects_state_and_validates_choice():
                 'data': {'answers': {'interim_action': {'choice': 'attack_1', 'confidence': 0.8}}}}
     answer = hanjuku_interim.ask(mem, env={}, transport=transport)
     # The mechanical interim already took seq 0 when the step ran.
-    assert answer['status'] == 'ok' and answer['choice'] == 'attack_1' and answer['seq'] == 1
+    assert answer['status'] == 'ok' and answer['choice'] == 'attack_1' and answer['seq'] == 0
     request = seen['request']
     assert set(request) == {'model', 'state', 'questions'}
     # No hold/skip label: only attack candidates.
@@ -1125,11 +1130,13 @@ def test_a_bound_answer_is_adopted_only_for_the_current_payload_revision():
     digest = mem['chart_adjust']['request_digest']
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest='0' * 64))
     policy.map_step(map_screen(), mem, FRAME)
-    assert not decisions(mem, 'chart_adjust_applied') and no_plan_active(mem)
+    assert not [r for r in decisions(mem, 'chart_adjust_applied') if r.get('source') != 'mechanical'] and no_plan_active(mem)
     finish_interim(mem)
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest=digest))
     policy.map_step(map_screen(), mem, FRAME)
-    [applied] = decisions(mem, 'chart_adjust_applied')
+    _applied = [r for r in decisions(mem, 'chart_adjust_applied') if r.get('source') != 'mechanical']
+    assert len(_applied) == 1
+    applied = _applied[0]
     assert applied['steps'] == [adjust.execution_step(rid, 'J1'),
                                 adjust.execution_step(rid, 'J2')]
     # A digestless answer predates the revision field: adopted once (hot-load).

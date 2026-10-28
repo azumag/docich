@@ -292,7 +292,8 @@ def map_step(screen: Screen, mem, frame):
         mem['active'] = None
         mem['picked'] = []
         order = None
-    if isinstance(order, dict) and str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX):
+    if isinstance(order, dict) and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
+                                    or (mem.get('chart_plan') or {}).get('source') == 'mechanical'):
         if (mem.get('chart_adjust') or {}).get('request_id') == chart_adjust.request_id(mem):
             _off_chart(mem)
             order = _order(mem) or next_order(mem) or order
@@ -310,7 +311,8 @@ def map_step(screen: Screen, mem, frame):
                       and sortie.get('source') in _owned(mem)), None)
         order = order or next_order(mem)
         if (order is None or (isinstance(order, dict)
-                              and str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX))):
+                              and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
+                                   or (mem.get('chart_plan') or {}).get('source') == 'mechanical'))):
             _off_chart(mem)
             order = next_order(mem) or order
         if order is None:

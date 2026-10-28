@@ -319,6 +319,41 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             reason='LLM応答を待たず決定的候補の先頭から暫定出撃')
 
 
+def _mechanical_chart(mem, state, rid, digest):
+    """Construct and adopt a full chart mechanically (no LLM answer)."""
+    if (mem.get('chart_plan') or {}).get('request_id') == rid:
+        return
+    if _plan_pending(mem):
+        return
+    allow_sole = _defense_gate(mem) == 'break'
+    candidates = interim_candidates(mem, allow_sole=allow_sole)
+    if not candidates:
+        _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
+        return
+    chapter = mem.get('chapter') or 0
+    orders = []
+    for i, (label, order) in enumerate(candidates.items(), 1):
+        orders.append({
+            'step': 'M%d' % i,
+            'general': order['general'],
+            'source': order['source'],
+            'target': order['target'],
+            'cards': list(order.get('cards') or ()),
+            'after': order.get('after'),
+            'note': order.get('note') or '',
+        })
+    doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
+           'source': 'mechanical', 'orders': orders, 'purchases': None,
+           'recruitment': None}
+    try:
+        validated = chart_adjust.validate(doc)
+    except ValueError:
+        _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
+        return
+    validated = dict(validated, request_digest=digest)
+    _adopt_plan(mem, validated, rid)
+
+
 def _adjust_situation(mem):
     """Where the generals are, for the adjusted-chart request.
 
@@ -420,6 +455,10 @@ def _off_chart(mem):
         # so the worker answers the current revision, then keep going so the
         # interim fallback still progresses this observation.
         state['request_digest'] = digest
+        # A mechanical chart was built for the previous revision; discard it so
+        # the normal chart / a fresh mechanical chart can take over.
+        if (mem.get('chart_plan') or {}).get('source') == 'mechanical':
+            mem['chart_plan'] = None
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 **fields,
                 reason='チャート外: 状況が更新されたため同じ要求を最新の在庫・配置で再要求')
@@ -427,7 +466,7 @@ def _off_chart(mem):
     plan = mem.get('chart_plan') or {}
     doc_digest = doc.get('request_digest') if doc else None
     if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
-            and plan.get('request_id') != rid
+            and (plan.get('request_id') != rid or (mem.get('chart_plan') or {}).get('source') == 'mechanical')
             and ((doc_digest == state.get('request_digest'))
                  # A digestless answer predates the revision field (old worker
                  # during a hot-load): accepted until a revision actually
@@ -441,4 +480,10 @@ def _off_chart(mem):
     # the interim candidates from being evaluated again.
     if _plan_pending(mem):
         return
-    _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
+    # Never overwrite an adopted (non-mechanical) chart with a mechanical one:
+    # the mechanical chart is only a stand-in while the LLM answer is pending.
+    if (mem.get('chart_plan') or {}).get('source') not in (None, 'mechanical'):
+        # Fall back to the single interim sortie for exhausted adopted plans.
+        _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
+        return
+    _mechanical_chart(mem, state, rid, digest)
