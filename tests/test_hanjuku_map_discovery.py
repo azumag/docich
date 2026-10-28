@@ -18,6 +18,18 @@ from docich.hanjuku_screen import Screen, parse, castle_roofs
 from test_hanjuku_chart_bot import Canvas, HAND, UNKNOWN
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 
+@pytest.fixture(autouse=True)
+def unmeasured_chapter_three(monkeypatch):
+    # Chapter 3 is measured since 2026-10-28; these synthetic fixtures keep
+    # exercising runtime registration on the source-only chapter they model.
+    monkeypatch.setitem(chart.CASTLES, 3, {})
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 3)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 3)
+    monkeypatch.setitem(chart.CASTLES_APPROX, 3, {
+        name: (8 * (left + 1), 8 * (top + 3))
+        for name, (left, top) in chart.map_sources.SOURCE_CASTLES[3].items()})
+
+
 IDENTITY = {'game': 'hanjuku-hero', 'generation': 900,
             'runtime_id': 'g900-synthetic', 'lease_id': 'test-map-survey'}
 HOME = (60, 28)

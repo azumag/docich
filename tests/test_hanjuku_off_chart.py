@@ -542,7 +542,7 @@ def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due():
     mem.pop('world_map_due')
     mem['tick'] = 10 + policy.WORLD_SURVEY_TICKS
     assert policy._world_map_wanted(mem) is True
-    assert policy._world_map_wanted({'chapter': 3, 'tick': 0}) is False   # not calibrated
+    assert policy._world_map_wanted({'chapter': 5, 'tick': 0}) is False   # not calibrated
 
 
 def test_a_lost_search_first_presses_select_to_show_the_hero(monkeypatch):
@@ -956,6 +956,8 @@ def test_a_chapter_2_memory_without_evidence_returns_to_chapter_1_once():
 
 def test_an_unmeasured_chapter_never_walks_another_chapters_cells(monkeypatch):
     monkeypatch.setitem(chart.CASTLES, 3, {})
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 3)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 3)
     mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'name': {'done': True}}
     policy.observe_chapter_castle(mem, 'グリン')             # only chapter 3 has グリン
     assert mem['chapter'] == 3 and mem['variant'] == 'chart_unavailable'
@@ -1485,3 +1487,52 @@ def test_a_recent_world_map_enemy_flag_vetoes_a_roof_capture(flag_age, captured)
     assert ('スペンソニア' in mem['captured']) is captured
     vetoes = decisions(mem, 'castle_owned_vetoed')
     assert (len(vetoes) == 1) is (not captured)
+
+
+def test_an_unverified_target_walks_onto_the_enemy_roof_beside_the_marker(monkeypatch):
+    # g1067 09:49-10:19: dead reckoning stopped the marker at x=232 with
+    # Grin's roof 10 px left; the up/down nudges never fixed x and every
+    # retake was cancelled twice instead of stepping left onto the roof.
+    from docich.hanjuku.flows import map as flow_map
+    from docich.hanjuku.os_layer import navigation
+    roofs = [{'target': (222, 157), 'kind': 'enemy', 'clipped': False}]
+    monkeypatch.setattr(flow_map, 'castle_roofs', lambda *_a, **_k: roofs)
+    monkeypatch.setattr(navigation, 'castle_roofs', lambda *_a, **_k: roofs)
+    monkeypatch.setattr(flow_map, '_measured_goal', lambda *_a: (223, 190))
+    monkeypatch.setattr(flow_map, 'nav_step', lambda *_a, **_k: 'arrived')
+    monkeypatch.setattr(flow_map, '_want_y_jump', lambda *_a: False)
+    order = {'step': 'I:1', 'general': 'ソーピニヨン', 'source': 'アルマムーン', 'target': 'グリン',
+             'cards': [], 'after': None, 'note': 't', 'purpose': 'retake'}
+    mem = {'chapter': 3, 'orders': {'I:1': 'pending'}, 'picked': [], '_records': [], 'active': 'I:1',
+           'launched_orders': {'I:1': order}, 'cursor': [223, 190], 'lost': ['グリン']}
+    monkeypatch.setattr(flow_map, '_order', lambda _m: order)
+    off = Screen(lines=[], hand=None, text='', kind='map_target', marker=(232, 161))
+    actions = flow_map.target_step(off, mem, FRAME)
+    assert [a['buttons'][0] for a in actions] == ['left', 'up']
+    assert decisions(mem, 'target_roof_align') and not decisions(mem, 'target_not_under_marker')
+    on = Screen(lines=[], hand=None, text='', kind='map_target', marker=(222, 157))
+    monkeypatch.setattr(flow_map, 'departure_snapshot', lambda *_a: {'source': 'アルマムーン'})
+    monkeypatch.setattr(flow_map, '_deploy_context',
+                        lambda *_a, **_k: {'general': 'ソーピニヨン'})
+    monkeypatch.setattr(flow_map, '_finish_order', lambda *_a, **_k: None)
+    assert flow_map.target_step(on, mem, FRAME) == [policy.pad('a')]
+    assert mem['sorties']['I:1']['target'] == 'グリン'
+
+
+def test_an_unverified_target_without_a_nearby_roof_still_cancels(monkeypatch):
+    from docich.hanjuku.flows import map as flow_map
+    from docich.hanjuku.os_layer import navigation
+    roofs = [{'target': (100, 60), 'kind': 'enemy', 'clipped': False}]
+    monkeypatch.setattr(flow_map, 'castle_roofs', lambda *_a, **_k: roofs)
+    monkeypatch.setattr(navigation, 'castle_roofs', lambda *_a, **_k: roofs)
+    monkeypatch.setattr(flow_map, '_measured_goal', lambda *_a: (223, 190))
+    monkeypatch.setattr(flow_map, 'nav_step', lambda *_a, **_k: 'arrived')
+    monkeypatch.setattr(flow_map, '_want_y_jump', lambda *_a: False)
+    order = {'step': 'I:1', 'general': 'ソーピニヨン', 'source': 'アルマムーン', 'target': 'グリン',
+             'cards': [], 'after': None, 'note': 't', 'purpose': 'retake'}
+    mem = {'chapter': 3, 'orders': {'I:1': 'pending'}, 'picked': [], '_records': [], 'active': 'I:1',
+           'launched_orders': {'I:1': order}, 'cursor': [223, 190], 'lost': ['グリン']}
+    monkeypatch.setattr(flow_map, '_order', lambda _m: order)
+    off = Screen(lines=[], hand=None, text='', kind='map_target', marker=(232, 200))
+    assert flow_map.target_step(off, mem, FRAME) == []
+    assert decisions(mem, 'target_not_under_marker') and not decisions(mem, 'target_roof_align')
