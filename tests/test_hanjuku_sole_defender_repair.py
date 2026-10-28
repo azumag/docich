@@ -85,8 +85,9 @@ def test_losing_other_castles_after_selection_cancels_the_repair(general, should
     mem['house'].update(phase='castle_pick', source='アルマムーン')
     if general == 'どうし':
         # Hero cannot be selected as sole defender at castle_pick; simulate post-selection state
-        mem['house'].update(phase='castle_kit', sole_defender=True)
+        mem['house'].update(phase='castle_kit', general='どうし', sole_defender=True)
     else:
+        mem['house'].update(general=general)
         assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
         assert mem['house']['phase'] == 'castle_kit'
     mem['captured'] = []
