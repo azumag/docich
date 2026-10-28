@@ -137,3 +137,28 @@ _rescue_decision(mem, cur, context) -> dict
 - 実装開始 2026-10-28 午後。
 - テスト + PR 2026-10-29。本番反映は次回ゲーム起動から。
 - (C)(D) は PR レビューで最終確認。
+
+## 8. 観測ソースの設計判断 (#2864 残作業, 2026-10-28)
+
+### 8.1 採用方針: 候補優先 (candidate-first) を維持 (#2102 整合)
+
+- 救済が必要な低HPでは、観測済みの安全候補 (自傷系以外) がある場合のみ奥の手を開く。
+- 自傷系候補 (OKUNOTE_SELF_DAMAGE_CHOICES = {'ヤケクソ'}) は候補集合から除外する (flows 選択段でも除外)。
+- 候補未観測 (メニュー未表示) の場合は開かず、`battle_okunote_risk_declined` を記録して白兵へ戻る (g482 実測との整合)。
+- 代替救済 (退却等) は低HPで確実に到達させる経路を別途維持する (#2864 option (ii) の観点)。
+- 拒否理由は `battle_okunote_risk_declined`、受諾は `battle_okunote_risk_accepted` として decision log に記録する。
+
+### 8.2 前提の検証 (プールの自傷は1つのみ)
+
+- OKUNOTE_SELF_DAMAGE_CHOICES は {'ヤケクソ'} のみ (os_layer/screen.py)。
+- OKUNOTE_CHOICES の候補は重複なしで3件提示される (g482 実測)。
+- よって候補集合に自傷系が含まれても、安全候補が残る場合は開封後の選択で自傷系を除外できる。
+- 選択時は candidates から自傷系を除外し、残った安全候補のうち最も効果の高いものを選ぶ (flows/battle_menus.py 選択段)。
+- 候補未観測時は開かず、代替救済経路に委ねる (g482 整合)。
+
+### 8.3 descope 後の実態との整合 (#2831 option A)
+
+- #2831 rescue re-entry は descope 済み。judgment/battle.py に `_rescue_decision` は存在しない。
+- 救済判定は flows/battle_menus.py の候補優先 (candidate-first) モデルで実装済み。
+- `_rescue_rearm` (tide change re-arm) と carryover 検出 (reset_battle_controls) は維持。
+- #2863 (conserve) は未実装のため OPEN 維持。本方針と同一の判断基準で一体設計する (follow-up)。

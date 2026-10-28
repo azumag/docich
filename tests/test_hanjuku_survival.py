@@ -722,7 +722,7 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     mem = memory(34, 59)
     mem['battle']['ally_hp'] = hp
     mem['battle']['side'] = 'defense'
-    screen = menu(('おくのて',), kind='battle_menu')
+    screen = menu(('ヤケクソ',), kind='battle_menu')
     screen.hidden_battle_commands = hidden
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert mem['battle']['survival']['exhausted']
@@ -1078,3 +1078,13 @@ def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhau
     mem['battle']['survival']['exhausted'] = True
     assert not p._hero_retreat_needed(mem['battle'])
     assert mem['battle']['cards_selected'] == ['イッテツーン']
+
+
+def test_low_hp_opens_okunote_when_safe_candidate_visible():
+    mem = memory(34, 59)
+    mem['battle']['ally_hp'] = 34
+    mem['battle']['side'] = 'defense'
+    screen = menu(('おどす',), kind='battle_menu')
+    assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
+    assert not mem['battle'].get('survival', {}).get('exhausted')
+    assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])

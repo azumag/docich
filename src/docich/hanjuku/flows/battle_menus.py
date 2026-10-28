@@ -794,7 +794,8 @@ def okunote_step(screen, mem):
     if screen.kind == 'battle_menu' and 'おくのて' in names:
         label = 'おくのて'
     else:
-        candidates = [w for w in OKUNOTE_CHOICES if w in names]
+        from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES as _sd
+        candidates = [w for w in OKUNOTE_CHOICES if w in names and w not in _sd]
         if not candidates:
             return []
         label = candidates[-1]
