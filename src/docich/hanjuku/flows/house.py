@@ -1031,7 +1031,7 @@ def _repair_step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
-    from ..os_layer.world import NAME, _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
@@ -1088,9 +1088,10 @@ def _repair_step(screen, mem, frame):
                 _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
+                from ..os_layer.world import VENUS_NAME as _VENUS_NAME
                 if len(names) < 2:
                     state['sole_defender'] = True
-                    if name == VENUS_NAME:
+                    if name == _VENUS_NAME:
                         _record(mem, 'repair_sole_defender', castle=source,
                                 observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
                                 reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
@@ -1126,8 +1127,8 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
         if len(present) < 2:
             state['sole_defender'] = True
-            from ..os_layer.world import _owned as _owned_fn
-            if name == VENUS_NAME:
+            from ..os_layer.world import _owned as _owned_fn, VENUS_NAME as _VENUS_NAME
+            if name == _VENUS_NAME:
                 _record(mem, 'repair_sole_defender', castle=state['source'],
                         observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
                         reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
