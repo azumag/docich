@@ -342,6 +342,24 @@ def test_next_run_uses_new_record(env):
     assert (row['target'], row['middle']) == (6,3)
 
 
+def test_identityless_timer_tick_does_not_starve_the_owner_creation(env):
+    # g1067 2026-10-28: the retro/rotation timers tick without an identity
+    # every minute. With only a finished round on file they consumed the
+    # poll window, so the owner's observe tick (which alone may create) was
+    # always "not yet due" and no prediction opened for the new run.
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'screen_stalled')
+    env.tick(101)
+    assert env.state()['round']['status'] in p.DONE
+    env.setup(ID2)
+    before = env.state()['next_poll_at']
+    env.tick(140, None)
+    assert env.state()['next_poll_at'] == before
+    env.tick(141, ID2)
+    assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+
+
 def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
     env.tick()
     progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
