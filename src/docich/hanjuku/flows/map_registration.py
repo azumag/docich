@@ -30,6 +30,7 @@ MAX_BOOTSTRAP = 32
 MAX_BOOTSTRAP_SWEEP = 320
 REANCHOR_REJECT_LIMIT = 2
 SINGLE_ROOF_SCROLL = MAX_HOLD+2   # camera shift one sent hold can produce
+ROOF_JITTER = 1                   # roof target wobble under a resting cursor
 
 
 def translation(previous, current, *, limit=None):
@@ -98,6 +99,11 @@ def _pose(state, roofs, cursor):
             shifts = {(a[0]-b[0], a[1]-b[1]) for a in prior for b in positions
                       if max(abs(a[i]-b[i]-last_camera[i]) for i in (0, 1)) <= SINGLE_ROOF_SCROLL}
             camera = next(iter(shifts)) if len(shifts) == 1 else None
+            if camera is not None and max(abs(camera[i]-last_camera[i]) for i in (0, 1)) <= ROOF_JITTER:
+                # g1067 09:42: the cursor resting on Grin moved its roof
+                # target by 1 px, so an 18 px hold read as 19 and every
+                # search step lost the camera and walked back to re-anchor.
+                camera = tuple(last_camera)
         if camera is not None and last_camera is not None:
             if max(abs(a-b) for a,b in zip(camera, last_camera)) > MAX_SCROLL:
                 camera = None
@@ -387,8 +393,14 @@ def step(screen, mem, frame):
         state.pop('probe', None)
         return []
     known = verified_castles(mem, chapter)
-    from ..strategy.orders import next_order
+    from ..strategy.orders import _plan_pending, next_order
     if next_order(mem) is not None:
+        return None
+    from ..strategy.replan import interim_candidates
+    if not _plan_pending(mem) and interim_candidates(mem):
+        # g1067 09:33-09:43: Grin was lost with two castles measured, and
+        # discovery held every field frame, so the map flow never started
+        # the retake. A startable interim sortie goes before more search.
         return None
     roofs = [r for r in castle_roofs(frame) if not r['clipped']][:16]
     camera = _pose(state, roofs, tuple(screen.cursor))

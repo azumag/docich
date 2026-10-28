@@ -6481,6 +6481,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v263-probe-release-text",
             "hanjuku-chart-v264-house-needs-chapter",
             "hanjuku-chart-v265-resume-inherit-chapter",
+            "hanjuku-chart-v266-interim-before-search",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
