@@ -123,6 +123,16 @@ def _is_monster_opponent(enemy):
 
 
 def _is_self_damage_skill(skill):
+    """Whether a skill damages the user itself.
+
+    Primary source of truth is MONSTER_SELF_DAMAGE_SKILLS (wiki attack-data
+    table rows explicitly marked 自爆 / 自分にNダメージ).  The text
+    heuristics below are a conservative safety net for skills whose table
+    row has not yet been transcribed or whose OCR spelling drifts; they only
+    match obvious self-destruct wording and never turn a normal attack into
+    self-damage.  Upstream label matching is fail-closed, so this only ever
+    sees skill names actually read from the menu.
+    """
     if not skill:
         return False
     if _fold_skill(skill) in {_fold_skill(s) for s in reference.MONSTER_SELF_DAMAGE_SKILLS}:

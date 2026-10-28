@@ -1484,6 +1484,17 @@ def monster_menu_step(screen: Screen, mem):
         elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
         # Issue #2835: opponent-aware attack command selection.
+        # Gate rationale:
+        #   - special_cycle/damage_first/damage_second/powerless/heal_first are
+        #     already-resolved tactics that must not be overridden.
+        #   - `default == 'skill1'`: only intervene when the generic default
+        #     is the first skill; if experience/owner already chose skill2
+        #     (effect-only second skill), keep that conservative choice.
+        #   - `not behind`: when the summoner is behind, keep the existing
+        #     behind-policy (skill2 effect) rather than the opponent-aware
+        #     attack pick, matching policy 1-3 which assume a non-behind
+        #     position for the summoned monster's own attack.
+        #   - `not heal_first` keeps heal-first monsters on their recovery path.
         if (not special_cycle and not damage_first and not damage_second
                 and not powerless and len(skill_lines) >= 2
                 and default == 'skill1' and not heal_first and not behind):

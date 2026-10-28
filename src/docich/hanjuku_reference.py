@@ -514,12 +514,16 @@ MONSTER_ATTACK_DATA: dict[str, dict[str, tuple]] = {
         'skill2': ('ばくはつする', 0, 0, 1, True, True),
     },
 }
-MONSTER_ATTACKS = MONSTER_ATTACK_DATA
-MONSTER_ATTACK_TABLE = MONSTER_ATTACK_DATA
 
 # Skills that damage the user itself; excluded from normal attack selection.
+# Source: SFC half-cooked hero data wiki "エッグモンスター／攻撃データ"
+# (https://wikiwiki.jp/hjksfc/エッグモンスター/攻撃データ).
+# Only skills explicitly marked 自爆 / 自分にNダメージ in that table are
+# listed here.  'ばくはつする' (ウッドボール) is 自爆; 'ハードバズーカ'
+# (ハードマン) is NOT self-damage — it is an ALL-target attack (回数=AL)
+# with no 自爆 note, so it is intentionally omitted.
 MONSTER_SELF_DAMAGE_SKILLS: frozenset[str] = frozenset({
-    'ばくはつする', 'ハードバズーカ',
+    'ばくはつする',
 })
 
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
