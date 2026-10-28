@@ -676,7 +676,7 @@ def _hold_locked_boss(mem, order):
 def _hold_unrouted_sortie(mem, order):
     from ..strategy import routes
     if ((mem.get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
-            or routes.allowed(mem, _source(order, mem), order.get('target'))):
+            or routes.order_allowed(mem, order, _source(order, mem))):
         return None
     mem.pop('y_jump', None)
     mem.pop('sortie_attempt', None)

@@ -47,6 +47,19 @@ def test_adjusted_order_and_source_override_cannot_bypass_the_route():
     assert not orders._ready(order, mem)
 
 
+def test_a_relay_castle_lost_after_planning_is_not_attacked_as_an_empty_move():
+    mem = state()
+    order = {'step': 'I:relay:1', 'source': 'アルマムーン', 'target': 'コラダイン',
+             'general': 'ミュスカデ', 'cards': [], 'after': None, 'purpose': 'move'}
+    assert orders._ready(order, mem)
+    mem['captured'].remove('コラダイン')
+    mem['lost'].append('コラダイン')
+    assert not orders._ready(order, mem)
+    mem['active'] = order['step']
+    assert deploy._hold_unrouted_sortie(mem, order) is not None
+    assert mem['active'] is None
+
+
 def add_transfer(mem, source, target, general='ミュスカデ'):
     step = source + '-hop'
     mem['sorties'][step] = {'source': source, 'target': target, 'general': general,

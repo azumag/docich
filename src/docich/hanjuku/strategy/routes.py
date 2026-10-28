@@ -7,7 +7,7 @@ and read the actual roster before forwarding a reinforcement.
 from collections import deque
 
 from ... import hanjuku_chart as chart
-from ..os_layer.world import SORTIE_BUSY_TICKS
+from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 PROBE_INTERVAL = 40
 
@@ -20,6 +20,14 @@ def legs(chapter):
 def allowed(mem, source, target):
     return (mem.get('chapter') != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3))
+
+
+def order_allowed(mem, order, source):
+    if mem.get('chapter') != 3 or chart.is_boss_castle(order.get('target')):
+        return True
+    owned = _owned(mem)
+    return (source in owned and allowed(mem, source, order.get('target'))
+            and (order.get('purpose') != 'move' or order.get('target') in owned))
 
 
 def path(mem, source, target, owned):

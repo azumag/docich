@@ -330,8 +330,8 @@ def _boss_target_unlocked(order, mem):
 
 def _ready(order, mem) -> bool:
     if (mem.get('chapter') == 3 and not chart.is_boss_castle(order.get('target'))
-            and not routes.allowed(mem, _source(order, mem) if 'step' in order else order.get('source'),
-                                   order.get('target'))):
+            and not routes.order_allowed(mem, order,
+                                         _source(order, mem) if 'step' in order else order.get('source'))):
         return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
