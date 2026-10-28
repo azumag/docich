@@ -1089,7 +1089,7 @@ def _repair_step(screen, mem, frame):
             if name not in names:
                 _phase(state, 'find_castle')
             elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):
-                _record(mem, 'general_deferred', reason='主人公を残す')
+                _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
                 if len(names) < 2:
