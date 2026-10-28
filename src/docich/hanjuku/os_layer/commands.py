@@ -190,10 +190,15 @@ def kana_cell(ch):
     return None
 
 
-def _human_menu_open(cur, owner):
+def _human_menu_open(cur, owner, mem=None):
     if (not cur.get('egg_battle')
             and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
         cur['command_open_pending'] = {'owner': owner, 'waits': 0}
+        if mem is not None:
+            _record(mem, 'battle_command_open_requested',
+                    ally=cur.get('ally'), enemy=cur.get('enemy'),
+                    observed_metric={'owner': owner},
+                    reason='通常戦闘の救済メニューを開くBを計画。送信・表示成功は未確認')
     return [pad('b')]
 
 
