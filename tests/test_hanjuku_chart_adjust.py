@@ -453,6 +453,138 @@ def test_worker_rejects_bad_output_and_bounds_attempts(tmp_path):
     assert [e['status'] for e in events if e['event'] == 'adjust_worker'] == ['invalid_output'] * 2
 
 
+def test_worker_history_names_why_an_answer_was_invalid(tmp_path):
+    """#2936: g1075 logged 13 consecutive invalid_output rows with detail null,
+    so a model that keeps answering badly could not be told from one that
+    never answers. The history carries the validator's own fixed message."""
+    from docich import hanjuku_chart_worker as worker
+    _requested(tmp_path)
+    answers = iter([
+        ('まだ考え中です', 'x'),                                            # no JSON object at all
+        ('{"orders": [}', 'x'),                                              # braces found, body malformed
+        ('{"orders": [{"step": "J1", "general": "ココット", "source": "月", "target": "けっかい"}]}', 'x'),
+    ])
+    gen = lambda g, cfg, prompt: next(answers)
+    for _ in range(3):
+        assert worker.consider(None, Game(max_attempts=3), tmp_path, generate=gen, background=False)
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    rows = [e for e in events if e['event'] == 'adjust_worker']
+    assert [(e['status'], e['detail']) for e in rows] == [
+        ('invalid_output', 'no json object'),
+        ('invalid_output', 'json_decode'),
+        ('invalid_output', 'invalid source/target castle')]
+    assert all('cooldown_s' not in e for e in rows)
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert (state['last_status'], state['last_detail']) == ('invalid_output', 'invalid source/target castle')
+    assert state['attempts'] == 3 and 'cooldown_until' not in state
+
+
+def test_no_startable_order_is_named_in_the_worker_history(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    request = _requested(tmp_path)
+    # The only order names a general the request records in another castle.
+    body = adjusted_doc(request['request_id'], orders=[
+        {'step': 'J1', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
+         'cards': [], 'after': None}])
+    current = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    current['garrison'] = {'ゴーメン': ['ココット']}
+    (tmp_path / adjust.REQUEST_FILE).write_text(json.dumps(current, ensure_ascii=False), encoding='utf-8')
+    assert worker.consider(None, Game(), tmp_path, generate=lambda *a: (json.dumps(body), 'x'),
+                           background=False)
+    assert adjust.load(tmp_path) is None
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(e['status'], e['detail']) for e in events if e['event'] == 'adjust_worker'] == [
+        ('invalid_output', 'no startable order')]
+
+
+def test_rate_limit_cools_the_worker_down_without_spending_the_revision(tmp_path, monkeypatch):
+    """#2936 (g1075 07:08-07:09 JST): one rate-limited call, then two 5 ms
+    retries that spent the revision's attempts. A rate limit gives the attempt
+    back and pauses generation for every revision until the cooldown ends."""
+    from docich import hanjuku_chart_worker as worker
+    _requested(tmp_path)
+    clock = [1_000.0]
+    monkeypatch.setattr(worker, '_now', lambda: clock[0])
+    calls = []
+
+    def limited(g, cfg, prompt):
+        calls.append(clock[0])
+        raise RuntimeError('rc-79:rate_limit')
+    game = Game(rate_limit_cooldown_s=120)
+    assert worker.consider(None, game, tmp_path, generate=limited, background=False)
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert (state['attempts'], state['rate_limited'], state['cooldown_until']) == (0, 1, 1_120.0)
+    assert (state['last_status'], state['last_detail']) == ('generate_failed', 'rc-79:rate_limit')
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    [row] = [e for e in events if e['event'] == 'adjust_worker']
+    assert (row['status'], row['detail'], row['cooldown_s']) == ('generate_failed', 'rc-79:rate_limit', 120)
+    # Inside the cooldown nothing generates, not even for a new payload revision.
+    clock[0] = 1_060.0
+    assert worker.consider(None, game, tmp_path, generate=limited, background=False) is None
+    current = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    current['card_stock'] = {'イッテツーン': 2}
+    current['request_digest'] = adjust.request_digest(current)
+    (tmp_path / adjust.REQUEST_FILE).write_text(json.dumps(current, ensure_ascii=False), encoding='utf-8')
+    assert worker.consider(None, game, tmp_path, generate=limited, background=False) is None
+    assert len(calls) == 1
+    # After the cooldown the new revision is tried; its strikes start from zero.
+    clock[0] = 1_121.0
+    assert worker.consider(None, game, tmp_path, generate=limited, background=False)
+    assert len(calls) == 2
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert state['request_digest'] == current['request_digest']
+    assert (state['attempts'], state['rate_limited']) == (0, 1)
+
+
+def test_repeated_rate_limits_on_one_revision_stop_after_the_strike_limit(tmp_path, monkeypatch):
+    from docich import hanjuku_chart_worker as worker
+    _requested(tmp_path)
+    clock = [0.0]
+    monkeypatch.setattr(worker, '_now', lambda: clock[0])
+    calls = []
+
+    def limited(g, cfg, prompt):
+        calls.append(1)
+        raise RuntimeError('rc-79:rate_limit')
+    for _ in range(worker.RATE_LIMIT_RETRY_LIMIT):
+        clock[0] += 1_000.0                       # past every cooldown
+        assert worker.consider(None, Game(), tmp_path, generate=limited, background=False)
+    clock[0] += 1_000.0
+    assert worker.consider(None, Game(), tmp_path, generate=limited, background=False) is None
+    assert len(calls) == worker.RATE_LIMIT_RETRY_LIMIT
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert (state['attempts'], state['rate_limited']) == (0, worker.RATE_LIMIT_RETRY_LIMIT)
+    assert adjust.load(tmp_path) is None
+
+
+def test_other_generation_failures_keep_spending_attempts_without_a_cooldown(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    _requested(tmp_path)
+    failing = lambda g, cfg, prompt: (_ for _ in ()).throw(RuntimeError('rc-1:empty'))
+    assert worker.consider(None, Game(), tmp_path, generate=failing, background=False)
+    assert worker.consider(None, Game(), tmp_path, generate=failing, background=False)
+    assert worker.consider(None, Game(), tmp_path, generate=failing, background=False) is None
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert state['attempts'] == 2 and state.get('rate_limited', 0) == 0 and 'cooldown_until' not in state
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    rows = [e for e in events if e['event'] == 'adjust_worker']
+    assert [(e['status'], e['detail']) for e in rows] == [('generate_failed', 'rc-1:empty')] * 2
+    assert all('cooldown_s' not in e for e in rows)
+
+
+def test_chart_adjust_rate_limit_cooldown_is_bounded():
+    assert adjust.settings({'enabled': True, 'agents': 'codex'})['rate_limit_cooldown_s'] == 300
+    assert adjust.settings({'enabled': True, 'agents': 'codex',
+                            'rate_limit_cooldown_s': 60})['rate_limit_cooldown_s'] == 60
+    for bad in (10, 3601, '300', 300.0):
+        with pytest.raises(ValueError):
+            adjust.settings({'enabled': True, 'agents': 'codex', 'rate_limit_cooldown_s': bad})
+
+
 def test_chart_adjust_direct_chain_is_explicit_opt_in():
     cfg = adjust.settings({
         'enabled': True,
