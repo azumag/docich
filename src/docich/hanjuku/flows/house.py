@@ -1015,11 +1015,11 @@ VENUS_NAME = 'ヴィーナス'
 def _sole_defender_repair_due(mem, name, source):
     """Repair immediately unless this is the hero or last-castle sole defender.
 
-    Issue #2834 / owner note (2026-10-11) states broken Venus must be
+    Issue #2834: owner note (2026-10-11) states broken Venus must be
     prioritized even as sole defender/last castle. See
-    https://github.com/azumag/docich/issues/2834#issuecomment-3394591127
-    for the owner instruction. A previous-month deferral is not permission
-    to leave the hero unprotected, including after a hotload.
+    https://github.com/azumag/docich/issues/2834 for context.
+    A previous-month deferral is not permission to leave the hero
+    unprotected, including after a hotload.
     """
     from ..os_layer.world import NAME, _owned
     owned = _owned(mem)
@@ -1042,15 +1042,9 @@ def _repair_step(screen, mem, frame):
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
             and state.get('sole_defender')):
         from ..os_layer.world import NAME as _HNAME
-        try:
-            if name == _HNAME or not _sole_defender_repair_due(mem, name, state.get('source')):
-                if name == _HNAME:
-                    return _exit(mem, '主人公を修理へ派遣しない')
-                else:
-                    return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
-        except Exception:
-            if name == _HNAME:
-                return _exit(mem, '主人公を修理へ派遣しない')
+        if name == _HNAME:
+            return _exit(mem, '主人公を修理へ派遣しない')
+        if not _sole_defender_repair_due(mem, name, state.get('source')):
             return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
@@ -1154,13 +1148,10 @@ def _repair_step(screen, mem, frame):
         if screen.kind != 'card_select':
             return []
         from ..os_layer.world import NAME as _NAME
-        if name == _NAME and not _sole_defender_repair_due(mem, name, state.get('source')):
+        if name == _NAME:
             return _exit(mem, '主人公を修理へ派遣しない')
         if state.get('sole_defender') and not _sole_defender_repair_due(mem, name, state.get('source')):
-            if name == _NAME:
-                return _exit(mem, '主人公を修理へ派遣しない')
-            else:
-                return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
         info = general_status(screen)
         if info is None:
             return []

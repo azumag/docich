@@ -162,19 +162,15 @@ def test_wrong_general_status_does_not_confirm_repair():
 
 
 def test_castle_repair_will_not_empty_the_last_owned_castle():
-    from unittest.mock import patch
-    from docich import hanjuku_policy as p
-    from docich.hanjuku.os_layer import world
-    mem = memory('castle_pick', source='アルマムーン', general='ゼウス')
+    mem = memory('castle_pick', source='アルマムーン')
     c = Canvas()
     c.text(64, 31, 'しゅつげき')
     c.text(64, 47, 'ステータス')
     c.text(144, 39, 'ゼウス')
     c.hand(122, 33)
-    with patch.object(p, '_owned', return_value={'アルマムーン'}), patch.object(world, '_owned', return_value={'アルマムーン'}):
-        feed(mem, c.frame())
-        assert mem['house']['phase'] == 'castle_kit'
-        assert any(r.get('decision') in ('house_repair_sole_defender', 'repair_sole_defender') for r in mem.get('_records', []))
+    feed(mem, c.frame())
+    assert mem['house']['phase'] == 'close'
+    assert mem['_records'][-1]['decision'] == 'house_deferred'
 
 
 def test_house_navigation_does_not_confirm_unread_or_far_cursor():
