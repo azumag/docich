@@ -37,7 +37,7 @@ def test_every_nonhero_sole_defender_repairs_immediately(general, deferred):
     assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
-@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('ヴィーナス', [])])
+@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('どうし', [])])
 @pytest.mark.parametrize('deferred', [None, '1-6'])
 def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, owned, deferred):
     mem = memory('1-7'); mem['captured'] = owned
@@ -50,7 +50,7 @@ def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, 
 
 
 @pytest.mark.parametrize('phase', ['castle_pick', 'castle_kit', 'castle_confirm', 'house_confirm'])
-@pytest.mark.parametrize('general,last', [('どうし', False), ('ヴィーナス', True)])
+@pytest.mark.parametrize('general,last', [('どうし', False), ('どうし', True)])
 def test_hotloaded_sole_permission_cannot_bypass_final_protection(phase, general, last):
     from test_hanjuku_retake_guard import generals
     mem = memory('1-7')
@@ -93,3 +93,14 @@ def test_next_field_general_does_not_inherit_the_previous_castle_guard():
     house._next_general(mem)
     assert mem['house']['general'] == 'ゼウス' and mem['house']['phase'] == 'find_field'
     assert mem['house']['source'] is None and not mem['house'].get('sole_defender')
+
+
+def test_broken_venus_repairs_even_as_last_castle_sole_defender():
+    mem = memory('1-7')
+    mem['captured'] = []
+    mem['house'].update(general='ヴィーナス', source='アルマムーン')
+    assert house._repair_step(castle_status('アルマムーン', ['ヴィーナス']), mem, None) == [p.pad('b')]
+    assert mem['house']['phase'] == 'castle_sortie'
+    assert mem['house'].get('sole_defender') is True
+    assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
+    assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])

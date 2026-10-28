@@ -1010,15 +1010,17 @@ def _income_step(screen, mem, frame):
 
 
 def _sole_defender_repair_due(mem, name, source):
-    """Repair immediately unless this is the hero or our last castle.
+    """Repair immediately unless this is the hero.
 
     Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
     only defender. A previous-month deferral is not permission to leave
-    the hero or the last castle unprotected, including after a hotload.
+    the hero unprotected, including after a hotload.
     """
     from ..os_layer.world import NAME, _owned
     owned = _owned(mem)
-    return name != NAME and source in owned and len(owned) > 1
+    if name == NAME:
+        return False
+    return source in owned
 
 
 def _repair_step(screen, mem, frame):

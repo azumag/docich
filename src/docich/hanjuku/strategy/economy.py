@@ -652,10 +652,7 @@ def _general_repair_targets(mem):
                and not _castle_status_after_sortie(info, s, mem)
                for s in (mem.get('sorties') or {}).values()):
             continue
-        if len(owned) == 1 and not any(
-                name in (mem.get('garrison') or {}).get(c, [])
-                and len((mem.get('garrison') or {}).get(c, [])) > 1 for c in owned):
-            continue  # keep the last castle's sole defender; dispatch rechecks it too
+        # Issue #2834: broken Venus must go to repair even when sole defender/last castle
         targets.append(name)
     return sorted(targets)
 
