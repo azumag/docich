@@ -571,6 +571,8 @@ def _observe_garrison(screen, mem, order):
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
+    from ..strategy import routes
+    routes.observed_roster(mem, castle, present)
     if castle in _owned(mem):
         # A marching general the game stopped inside this castle is only
         # visible here: our own castles print no entry message. Continue his
@@ -669,6 +671,18 @@ def _hold_locked_boss(mem, order):
     return _hold_guarded_sortie(mem, order, 'boss_target_locked',
             '章内の通常城をすべて制圧した現在の根拠がないため、未解放ボス城への未送信出撃を保留',
             {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or [])})
+
+
+def _hold_unrouted_sortie(mem, order):
+    from ..strategy import routes
+    if ((mem.get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
+            or routes.order_allowed(mem, order, _source(order, mem))):
+        return None
+    mem.pop('y_jump', None)
+    mem.pop('sortie_attempt', None)
+    return _hold_guarded_sortie(mem, order, 'sortie_route_unverified',
+            '第3話の既存城間ルートにない直行を取り消し、中継城経由で選び直す',
+            {'source': _source(order, mem), 'target': order.get('target')})
 
 
 def _keep_sortie_defender(screen, mem, order):
@@ -961,6 +975,9 @@ def deploy_step(screen: Screen, mem):
             mem['active'] = None
             mem['picked'] = []
             return []
+    routed = _hold_unrouted_sortie(mem, order)
+    if routed is not None:
+        return routed
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked

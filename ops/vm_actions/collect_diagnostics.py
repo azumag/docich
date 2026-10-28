@@ -6490,6 +6490,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v272-y-jump-stationary-bounded",
             "hanjuku-chart-v273-defense-break-execution",
             "hanjuku-chart-v275-battle-opening-dialogue",
+            "hanjuku-chart-v276-chapter-three-relays",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
