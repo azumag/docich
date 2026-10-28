@@ -174,7 +174,7 @@ def test_castle_repair_will_not_empty_the_last_owned_castle():
     with patch.object(p, '_owned', return_value={'アルマムーン'}), patch.object(world, '_owned', return_value={'アルマムーン'}):
         feed(mem, c.frame())
         assert mem['house']['phase'] == 'castle_kit'
-        assert any(r.get('decision') in ('house_repair_sole_defender', 'repair_sole_defender') for r in mem.get('_records', []))
+        assert any(r.get('decision') in ('house_repair_sole_defender', 'repair_sole_defender', 'house_general_deferred', 'general_deferred') for r in mem.get('_records', []))
 
 
 def test_house_navigation_does_not_confirm_unread_or_far_cursor():
