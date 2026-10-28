@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.strategy import orders
 
 HOME = chart.home_castle(3)
 
@@ -41,6 +42,7 @@ def test_same_month_adds_no_records():
 
 def test_month_change_without_prospects_breaks_sole_general():
     mem = starved_memory()
+    mem['orders'] = {o['step']: 'launched' for o in chart.orders(3)}
     replan._off_chart(mem)
     mem['month'] = '8-2'
     replan._off_chart(mem)
@@ -48,6 +50,27 @@ def test_month_change_without_prospects_breaks_sole_general():
     assert 'sortie_defense_break' in kinds(mem)
     brk = [r for r in mem['_records'] if r['decision'] == 'sortie_defense_break'][0]
     assert brk['source'] == HOME and brk['general'] == 'アルテミス'
+    order = mem['chart_adjust']['interim_order']
+    assert orders.next_order(mem) == order
+    assert orders._source_spare_missing(order, mem, allow_probe=True) is False
+
+
+def test_defense_break_does_not_authorize_foreign_or_expired_order():
+    import copy
+    mem = starved_memory()
+    replan._off_chart(mem)
+    mem['month'] = '8-2'
+    replan._off_chart(mem)
+    order = mem['chart_adjust']['interim_order']
+    for field, value in [('step', 'I:foreign:1'), ('general', 'ゼウス'),
+                         ('target', 'foreign'), ('source', 'foreign')]:
+        assert orders._reserve_source_guard({**order, field: value}, mem)
+    for change in [{'month': '8-3'}, {'lost': [HOME]},
+                   {'defense_break_blocked': [HOME]}, {'defense_break_sources': {}},
+                   {'general_override': {order['step']: 'ゼウス'}}]:
+        altered = copy.deepcopy(mem)
+        altered.update(change)
+        assert orders._reserve_source_guard(order, altered)
 
 
 def test_prospects_extend_once_then_cap_forces_break():
