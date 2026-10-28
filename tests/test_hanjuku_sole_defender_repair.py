@@ -78,13 +78,18 @@ def test_actual_single_general_list_can_select_repair_without_old_permission(gen
     assert mem['house']['phase'] == 'castle_kit' and mem['house']['sole_defender'] is True
 
 
-def test_losing_other_castles_after_selection_cancels_the_repair():
+@pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ヴィーナス', False)])
+def test_losing_other_castles_after_selection_cancels_the_repair(general, should_cancel):
     from test_hanjuku_retake_guard import generals
     mem = memory('1-7'); mem['house'].update(phase='castle_pick', source='アルマムーン')
-    assert house._repair_step(generals(['ヴィーナス']), mem, None) == [p.pad('a')]
+    assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
     mem['captured'] = []
-    assert house._repair_step(Screen([], None, '', kind='card_select'), mem, None) == []
-    assert mem['house']['phase'] == 'close'
+    actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
+    if should_cancel:
+        assert actions == []
+        assert mem['house']['phase'] == 'close'
+    else:
+        assert mem['house']['phase'] == 'castle_kit'
 
 
 def test_next_field_general_does_not_inherit_the_previous_castle_guard():
