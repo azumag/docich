@@ -118,6 +118,11 @@ def world_map_step(screen, mem, frame):
     if mem.get('y_jump'):
         order = _order(mem)
         if order is not None and mem['y_jump'].get('step') == order['step']:
+            if ('_run_identity' in mem
+                    and (_measured_goal(mem, order, _source(order, mem)) is None
+                         or _measured_goal(mem, order, order['target']) is None)):
+                mem.pop('y_jump', None)
+                return []
             routed = _hold_unrouted_sortie(mem, order)
             if routed is not None:
                 return routed
@@ -420,11 +425,6 @@ def map_step(screen: Screen, mem, frame):
 
 
 def target_step(screen: Screen, mem, frame):
-    current = _order(mem)
-    if current is not None:
-        routed = _hold_unrouted_sortie(mem, current)
-        if routed is not None:
-            return routed
     if _drop_stale_y_jump(screen, mem):
         return []
     order = _order(mem)
@@ -453,6 +453,9 @@ def target_step(screen: Screen, mem, frame):
     goal = _measured_goal(mem, order, order['target'])
     if goal is None:
         return []
+    routed = _hold_unrouted_sortie(mem, order)
+    if routed is not None:
+        return routed
     result = None
     if screen.marker and _near_goal(mem, order, order['target'], 'target'):
         if order['target'] == chart.boss_castle(mem.get('chapter') or 0):

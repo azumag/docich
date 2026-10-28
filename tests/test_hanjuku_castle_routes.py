@@ -145,3 +145,18 @@ def test_hotloaded_unsafe_pending_order_cannot_finish_the_old_confirmation(kind)
     assert mem['active'] is None and 'y_jump' not in mem
     assert mem['orders'][order['step']] == 'failed'
     assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
+
+
+def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypatch):
+    mem = state()
+    monkeypatch.setitem(chart.CASTLES, 3, {})
+    order = {'step': 'I:old:1', 'general': 'ミュスカデ', 'source': 'アルマムーン',
+             'target': 'ドンダム', 'cards': [], 'after': None, 'purpose': 'retake'}
+    mem.update(active=order['step'], chart_adjust={'interim_order': order},
+               _run_identity=None,
+               y_jump={'step': order['step'], 'goal': 'ドンダム', 'mode': 'target'})
+    with chart.map_context(mem):
+        assert map_flow.world_map_step(Screen([], None, '', kind='world_map'), mem, None) == []
+    assert mem['active'] is None and 'y_jump' not in mem
+    assert mem['_map_registration_hold'] is True
+    assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'

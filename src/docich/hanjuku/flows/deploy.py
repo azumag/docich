@@ -946,9 +946,6 @@ def deploy_step(screen: Screen, mem):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
-    routed = _hold_unrouted_sortie(mem, order)
-    if routed is not None:
-        return routed
     if ('_run_identity' in mem
             and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
         # The deploy continuation (castle menu, general list, card select,
@@ -978,6 +975,9 @@ def deploy_step(screen: Screen, mem):
             mem['active'] = None
             mem['picked'] = []
             return []
+    routed = _hold_unrouted_sortie(mem, order)
+    if routed is not None:
+        return routed
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
