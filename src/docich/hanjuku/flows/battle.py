@@ -480,12 +480,25 @@ def battle_step(screen: Screen, mem):
     # while it is visible, so do not spend any opening budget or pending wait.
     # Match only the reported phrase (including its typing prefix); other
     # dialogue and unread OCR do not establish this particular foreground.
+    # The wait is bounded per stay: the counter restarts only after a complete
+    # panel shows no taunt. At the cap the existing judgment runs again, so a
+    # taunt that never leaves the OCR text cannot hold input forever.
     if (not cur.get('egg_battle') and not mem.get('egg_battle')
             and 'ここがおまえ' in screen.text.replace(' ', '').replace('\n', '')):
-        _record(mem, 'battle_opening_dialogue_wait', **_battle_labels(cur),
-                observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
-                reason='敵の開始台詞を読めたため、消えるまで戦闘入力を保留')
-        return [{'type': 'wait', 'ms': 50}]
+        waits = cur.get('opening_dialogue_waits', 0) + 1
+        cur['opening_dialogue_waits'] = waits
+        if waits == 1:
+            _record(mem, 'battle_opening_dialogue_wait', **_battle_labels(cur),
+                    observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+                    reason='敵の開始台詞を読めたため、消えるまで戦闘入力を保留')
+        if waits <= OPENING_DIALOGUE_WAIT_LIMIT:
+            return [{'type': 'wait', 'ms': 50}]
+        if waits == OPENING_DIALOGUE_WAIT_LIMIT + 1:
+            _record(mem, 'battle_opening_dialogue_exhausted', **_battle_labels(cur),
+                    observed_metric={'waits': waits - 1, 'limit': OPENING_DIALOGUE_WAIT_LIMIT},
+                    reason='開始台詞の保留が上限に達したため、既存の戦闘判断へ戻す')
+    else:
+        cur.pop('opening_dialogue_waits', None)
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
@@ -1122,6 +1135,7 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
 BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
+OPENING_DIALOGUE_WAIT_LIMIT = 12   # consecutive taunt-visible panels before the existing judgment resumes (chosen bound, not measured)
 
 
 def message_step(screen: Screen, mem):

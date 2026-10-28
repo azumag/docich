@@ -61,7 +61,45 @@ def test_synthetic_pixels_through_orchestrator_do_not_fallback_to_input():
         c.text(x, 176, text, (32, 32, 32))
     c.text(24, 63, 'ここがおまえのはかばだ')
     state = {'policy': memory()}
-    for _ in range(16):
+    for _ in range(p.OPENING_DIALOGUE_WAIT_LIMIT):
         actions, state = decide(c.frame(), state)
         assert actions == [{'type': 'wait', 'ms': 50}]
     assert state['policy']['battle']['ally_hp'] == 30
+
+
+def test_persistent_taunt_is_bounded_then_existing_judgment_resumes():
+    limit = p.OPENING_DIALOGUE_WAIT_LIMIT
+    baseline_mem = memory()
+    baseline = battle(baseline_mem)
+    baseline.text = 'たたかいはつづく'
+    expected = [p.battle_step(baseline, baseline_mem), p.battle_step(baseline, baseline_mem)]
+
+    mem = memory()
+    s = battle(mem)
+    s.text = 'ここがおまえのはかばだ'
+    for _ in range(limit):
+        assert p.battle_step(s, mem) == [{'type': 'wait', 'ms': 50}]
+    assert mem['battle']['opening_dialogue_waits'] == limit
+    assert sum(r['decision'] == 'battle_opening_dialogue_wait' for r in mem['_records']) == 1
+    assert not any(r['decision'] == 'battle_opening_dialogue_exhausted' for r in mem['_records'])
+
+    assert [p.battle_step(s, mem), p.battle_step(s, mem)] == expected
+    exhausted = [r for r in mem['_records'] if r['decision'] == 'battle_opening_dialogue_exhausted']
+    assert len(exhausted) == 1
+    assert sum(r['decision'] == 'battle_opening_dialogue_wait' for r in mem['_records']) == 1
+
+
+def test_taunt_absence_restarts_the_opening_dialogue_bound():
+    limit = p.OPENING_DIALOGUE_WAIT_LIMIT
+    mem = memory()
+    s = battle(mem)
+    s.text = 'ここがおまえのはかばだ'
+    for _ in range(limit):
+        p.battle_step(s, mem)
+    s.text = ''
+    p.battle_step(s, mem)
+    assert 'opening_dialogue_waits' not in mem['battle']
+    s.text = 'ここがおまえのはかばだ'
+    assert p.battle_step(s, mem) == [{'type': 'wait', 'ms': 50}]
+    assert mem['battle']['opening_dialogue_waits'] == 1
+    assert sum(r['decision'] == 'battle_opening_dialogue_wait' for r in mem['_records']) == 2
