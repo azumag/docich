@@ -37,7 +37,7 @@ def test_every_nonhero_sole_defender_repairs_immediately(general, deferred):
     assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
-@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('どうし', [])])
+@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('どうし', []), ('ココット', [])])
 @pytest.mark.parametrize('deferred', [None, '1-6'])
 def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, owned, deferred):
     mem = memory('1-7'); mem['captured'] = owned
@@ -50,7 +50,7 @@ def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, 
 
 
 @pytest.mark.parametrize('phase', ['castle_pick', 'castle_kit', 'castle_confirm', 'house_confirm'])
-@pytest.mark.parametrize('general,last', [('どうし', False), ('どうし', True)])
+@pytest.mark.parametrize('general,last', [('どうし', False), ('どうし', True), ('ココット', True)])
 def test_hotloaded_sole_permission_cannot_bypass_final_protection(phase, general, last):
     from test_hanjuku_retake_guard import generals
     mem = memory('1-7')
@@ -78,14 +78,14 @@ def test_actual_single_general_list_can_select_repair_without_old_permission(gen
     assert mem['house']['phase'] == 'castle_kit' and mem['house']['sole_defender'] is True
 
 
-@pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ヴィーナス', False)])
+@pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ココット', True), ('ヴィーナス', False)])
 def test_losing_other_castles_after_selection_cancels_the_repair(general, should_cancel):
     from test_hanjuku_retake_guard import generals
     mem = memory('1-7')
     mem['house'].update(phase='castle_pick', source='アルマムーン')
-    if general == 'どうし':
-        # Hero cannot be selected as sole defender at castle_pick; simulate post-selection state
-        mem['house'].update(phase='castle_kit', general='どうし', sole_defender=True)
+    if general in ('どうし', 'ココット'):
+        # Cannot be selected as sole defender at castle_pick; simulate post-selection state
+        mem['house'].update(phase='castle_kit', general=general, sole_defender=True)
     else:
         mem['house'].update(general=general)
         assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
