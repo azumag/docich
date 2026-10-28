@@ -361,11 +361,13 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
             recovery = {'original': original, 'attempt_id': attempt, 'fingerprint': digest}
             request = {k: v for k, v in original.items()
                        if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
-            request.update(status='queued', startup_recovery=recovery)
-            if automatic:
-                # This is now an explicit operator retry of the SAME sealed
-                # transfer, not a fresh selection or an automatic replay loop.
-                request.update(dispatch_source='manual', explicit_resume=True)
+            # This is now an explicit operator retry of the SAME sealed
+            # transfer, not a fresh selection or an automatic replay loop. The
+            # queued row below is resume_latest, so the request must say so
+            # for every original (g1071 11:44: a manual original kept
+            # explicit_resume=False and the start refused the identity).
+            request.update(status='queued', startup_recovery=recovery,
+                           dispatch_source='manual', explicit_resume=True)
             atomic_write_json(root / REQUEST_FILE, request)
         if owns_failure and owner['status'] == 'failed':
             atomic_write_json(owner_path, dict(owner, status='interrupted',
