@@ -135,11 +135,11 @@ class NethackPolicyBrain:
     """Layered CLI NetHack brain with observational sidecars.
 
     Gameplay actions come from the reviewed deterministic policy and progress
-    resolver (one observed-context-checked key). When that path holds, one
-    strategist action from P3e advisory may be sent instead: an approved
-    proposal or the safe default answer to a blocking prompt. Such an action is
-    re-validated against the exact frame before sending. P4a observation shadow
-    and P5e candidate shadow stay observational only.
+    resolver (one observed-context-checked key). When that path holds and the
+    intent is not prompt_decision, one strategist action from P3e advisory may
+    be sent instead: an approved proposal. Such an action is re-validated
+    against the exact frame before sending. P4a observation shadow and P5e
+    candidate shadow stay observational only.
     """
 
     _STALL_HOLD_REPEAT_THRESHOLD = 10

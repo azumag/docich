@@ -228,7 +228,8 @@ def test_wrapped_prompt_never_sends_diagonal_or_confirmation_n(message, wrap):
     # is tested with an eligible canonical state, not masked by its owner gate.
     text = frame({"n": "#", "k": "d"}, message=message, hp="4(16)")
     assert normalize_tty(text).prompt == "unknown"
-    # The unknown prompt is cancelled with Escape; neither diagonal nor 'n' is sent.
+    # The unknown prompt yields no reviewed action; brain stays in sync with
+    # base policy (no fallback keystroke). Neither diagonal nor 'n' is sent.
     assert act(brain(), text, canonical=READY) == []
 
 
