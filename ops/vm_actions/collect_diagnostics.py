@@ -9509,9 +9509,14 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None):
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None):
     if workers["required_down"] or workers["required_stale"]:
         return "critical"
+    # A detached resume claim is an actionable operational condition: raise it
+    # through the runtime health alert so the owner is notified within hours
+    # (#2870). Normal claimed/queued/verified transitions must not trigger.
+    if isinstance(hanjuku_resume, dict) and hanjuku_resume.get("status") == "detached_claim":
+        return "warn"
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     if isinstance(retro, dict) and retro.get("recovery_required") is True:
         return "warn"
@@ -13932,11 +13937,12 @@ def main(argv):
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
+    hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners),
+        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume),
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
@@ -13965,7 +13971,7 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "prediction": _prediction_projection(corners, now),
-        "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
+        "hanjuku_resume": hanjuku_resume,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),

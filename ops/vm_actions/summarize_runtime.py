@@ -229,6 +229,13 @@ def summarize(data):
     severity = data.get("status")
     if severity not in {"ok", "warn", "critical"}:
         raise ValueError("invalid diagnostics severity")
+    # A detached resume claim is an actionable operational condition (#2870):
+    # promote an otherwise-ok payload to warn so the runtime health alert fires.
+    hanjuku_resume = data.get("hanjuku_resume")
+    if (isinstance(hanjuku_resume, dict)
+            and hanjuku_resume.get("status") == "detached_claim"
+            and severity == "ok"):
+        severity = "warn"
 
     workers = data.get("workers") or {}
     queues = data.get("queues") or {}
@@ -376,6 +383,7 @@ def summarize(data):
             f"improvement_stale={int(improvement.get('stale') is True)}",
             f"retry_pending={int(improvement.get('retry_pending') is True)}",
             f"corner_game_switch_busy={int(_game_switch_busy(corners))}",
+            f"hanjuku_resume_detached_claim={int(isinstance(hanjuku_resume, dict) and hanjuku_resume.get('status') == 'detached_claim')}",
             f"game_switch_fifo_queued={_integer(fifo, 'queued_count')}",
             f"game_switch_fifo_malformed={_integer(fifo, 'malformed_count')}",
             f"game_switch_fifo_head_present={int(isinstance(fifo, dict) and isinstance(fifo.get('head'), dict))}",

@@ -77,6 +77,12 @@ read-only diagnostics の `hanjuku_resume.status=detached_claim` は、安定し
 check操作で上記条件を再検証するための識別子である。公開するのは固定statusとdigestだけで、
 保存bytes・パス・request/lease IDを返さない。
 
+`detached_claim` は運用アラートで早期に可視化する（#2870）。runtime diagnostics collector は
+`hanjuku_resume.status` が `detached_claim` のとき overall severity を `warn` にし（required
+worker の停止があれば `critical` のまま）、runtime 要約には固定トークン
+`hanjuku_resume_detached_claim=<0|1>` を出す。`prepared` / `queued` / `claimed` / `verified_receipt`
+の通常遷移では severity を変えない。通知だけで、claim の変更や自動回収は行わない。
+
 レビュー・CI・protected main・正規配備後に、最新診断、check、recover、
 同じ保存のロード後core照合、AI開始、継続・終了とslot解放を別々に検証する。
 再試行経路の修正だけでは、元の起動失敗原因が解消したことや本番復旧を意味しない。
