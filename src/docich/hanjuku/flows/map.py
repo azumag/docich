@@ -611,10 +611,19 @@ def _unverified_target(screen, mem, order):
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
     cancels = mem.setdefault('target_cancel', {})
+    boss = order['target'] == chart.boss_castle(mem.get('chapter') or 0)
+    if boss:
+        # Boss cancels count per cell: the ones at a withdrawn cell say
+        # nothing about the new one (g1075 2026-10-29: 3-B1 failed after four
+        # cancels at the chapter 3 cave). See _boss_retry_due.
+        cell = list(chart.castles(mem.get('chapter') or 0).get(order['target']) or ())
+        cells = mem.setdefault('boss_cancel_cell', {})
+        if cells.get(step) != cell:
+            cancels.pop(step, None)
+            cells[step] = cell
     cancels[step] = cancels.get(step, 0) + 1
     mem.pop('sortie_attempt', None)
-    limit = (BOSS_TARGET_CANCEL_LIMIT if order['target'] == chart.boss_castle(mem.get('chapter') or 0)
-             else TARGET_CANCEL_LIMIT)
+    limit = BOSS_TARGET_CANCEL_LIMIT if boss else TARGET_CANCEL_LIMIT
     state = 'failed' if cancels[step] >= limit else 'pending'
     _finish_order(mem, state, target=order['target'],
                   deviation_reason='出撃先を屋根で確認できない',

@@ -857,8 +857,13 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                             for v in variants)]
         screen.hand = find_hand(frame, option_positions=positions)
         screen.selected = _selected(lines, screen.hand)
-    if screen.kind == 'unknown' and is_world_map(frame):
+    if screen.kind in ('unknown', 'map_target') and is_world_map(frame):
+        # The sortie G on the Y view is the target marker's blue square. With
+        # no enemy flag left it is the only blue there once it covers the
+        # chapter 3 cave's blue gate, so the open view read as the field
+        # target screen and the next Y closed it (g1075 2026-10-29 14:28:16).
         screen.kind = 'world_map'
+        screen.marker = None
     return screen
 
 
