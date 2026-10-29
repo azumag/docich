@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 import time
 import tomllib
@@ -404,6 +405,76 @@ def overtaken_confirm(path: Path, frame, state: dict, actions):
     return fresh
 
 
+# g1075 18:58:48.87: an A decided on the dialogue 「ウッドボールは すばやく よけた!」
+# was sent after the corner had captured ガートルード's skill box sliding in. It
+# chose であい, and the agent's next frame was already the enemy's menu. The
+# sender journal records the frame each input reached; the phase change into a
+# menu leaves that frame among the hanjuku_frames snapshots.
+SNAPSHOT_NAME = re.compile(r'frame-\d{3}\.png')
+OVERTAKEN_FRAMES_MAX = 2
+
+
+def overtaken_frames(runtime, state, *, now=None):
+    """(sha256, Frame) of command screens a dialogue-decided A actually reached.
+
+    Reads a bounded tail of the existing journal; inputs are taken once, after
+    ``state['overtaken_input_at']`` (the first run only sets that mark).
+    """
+    now = time.time() if now is None else now
+    since = state.get('overtaken_input_at')
+    found = []
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return found
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+        phases, snapshots, inputs = {}, {}, []
+        for raw in tail.splitlines():
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(row, dict) or type(row.get('at')) not in (int, float):
+                continue
+            if row.get('event') == 'observation' and isinstance(row.get('frame_sha256'), str):
+                phases[row['frame_sha256']] = row.get('phase')
+                if isinstance(row.get('snapshot'), str) and SNAPSHOT_NAME.fullmatch(row['snapshot']):
+                    snapshots[row['frame_sha256']] = row['snapshot']
+            elif row.get('event') == 'input_sent' and row['at'] <= now + 1:
+                inputs.append(row)
+        if type(since) not in (int, float):
+            state['overtaken_input_at'] = max([row['at'] for row in inputs], default=now)
+            return found
+        for row in inputs:
+            if row['at'] <= since:
+                continue
+            state['overtaken_input_at'] = max(state['overtaken_input_at'], row['at'])
+            sent, decided = row.get('frame_sha256'), row.get('decision_frame_sha256')
+            if (row.get('type') != 'pad' or row.get('buttons') != ['a']
+                    or not isinstance(sent, str) or not isinstance(decided, str) or sent == decided
+                    or phases.get(decided) != 'dialogue' or phases.get(sent) not in ('field', 'event')
+                    or sent not in snapshots or len(found) >= OVERTAKEN_FRAMES_MAX):
+                continue
+            snapshot = runtime / 'hanjuku_frames' / snapshots[sent]
+            if snapshot.is_symlink() or not snapshot.is_file():
+                continue
+            try:
+                frame = read_png(snapshot).resized()
+            except (OSError, ValueError):
+                continue
+            if frame.digest() == sent:        # the 120-slot ring may have moved on
+                found.append((sent, frame))
+    except OSError:
+        return found
+    return found
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -430,6 +501,7 @@ def main():
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
                                  card_scroll_input=card_scroll_receipt(runtime, state, meta),
+                                 overtaken_frames=overtaken_frames(runtime, state),
                                  run_identity=meta.get('hanjuku'),
                                  chart_edition=chart_edition_setting(),
                                  approx_map=approx_map_setting())

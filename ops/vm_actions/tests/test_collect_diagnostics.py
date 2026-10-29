@@ -1175,7 +1175,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v309-card-stock-skip",
                  "hanjuku-chart-v310-monster-menu-drawing",
                  "hanjuku-chart-v311-overtaken-confirm",
-                 "hanjuku-chart-v312-monster-unchosen-turn",)
+                 "hanjuku-chart-v312-monster-unchosen-turn",
+                 "hanjuku-chart-v313-monster-overtaken-turn",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

@@ -403,7 +403,7 @@ def _unchosen_turn_candidate(screen, mem):
                                'enemy_hp': enemy.hp if enemy else None}
 
 
-def count_unchosen_monster_turn(mem):
+def count_unchosen_monster_turn(mem, *, sent_frame=None):
     """Count a turn our summon spent on its top skill without our choice.
 
     The skill box can take a press that left before it appeared: an A decided
@@ -428,10 +428,29 @@ def count_unchosen_monster_turn(mem):
         stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy_hp, 'turns': {}}
     turns = stall.setdefault('turns', {})
     turns['skill1'] = turns.get('skill1', 0) + 1
-    _record(mem, 'monster_turn_unchosen',
-            observed_metric={'ally': seen['ally'], 'enemy': enemy, 'enemy_hp': enemy_hp,
-                             'turns': dict(turns)},
-            reason='技メニューが出たのにこちらが選ばないまま次の画面へ進んだため、最上段の1技目を使ったターンとして数える')
+    observed = {'ally': seen['ally'], 'enemy': enemy, 'enemy_hp': enemy_hp, 'turns': dict(turns)}
+    if sent_frame:
+        observed['sent_frame_sha256'] = sent_frame
+    _record(mem, 'monster_turn_unchosen', observed_metric=observed,
+            reason=('会話画面で決めたAが送信時には技メニューに届いていたため、最上段の1技目を使ったターンとして数える'
+                    if sent_frame else
+                    '技メニューが出たのにこちらが選ばないまま次の画面へ進んだため、最上段の1技目を使ったターンとして数える'))
+
+
+def count_overtaken_monster_turn(screen, mem, sent_frame):
+    """Count the turn an A decided on a dialogue page spent on our summon's box.
+
+    g1075 18:58:48.87: the A decided on 「ウッドボールは すばやく よけた!」 was
+    sent after the corner had captured ガートルード's box sliding in and chose
+    であい; the agent's next frame was already the enemy's menu, so the box was
+    never in a decision. The sender journal names the frame each input reached
+    (bot.py hands over its snapshot), and that frame shows whose box took it.
+    """
+    mem.pop('monster_own_choice', None)     # this A was decided on a dialogue page
+    _unchosen_turn_candidate(screen, mem)
+    if mem.get('monster_unchosen'):
+        count_unchosen_monster_turn(mem, sent_frame=sent_frame)
+        mem['monster_own_choice'] = True    # spent: the same box leaving is not another turn
 
 
 def monster_menu_pending_step(screen, mem):
