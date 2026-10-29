@@ -284,7 +284,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     key = f"{order['step']}:{mode}"
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
-    if (mode == 'target' and name == chart.boss_castle(chapter)
+    if (mode == 'target' and chart.is_boss_castle(name)
             and (mem.get('y_jumped') or {}).get(order['step']) != name):
         # A boss target is confirmed only by a jump (``_target_roof_under_marker``),
         # so an estimate that already reads "near" must not skip it (g1075

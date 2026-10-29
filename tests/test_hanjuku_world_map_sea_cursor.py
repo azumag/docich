@@ -22,7 +22,7 @@ LAND = FIXTURES / 'g1075-world-map-land-cursor.png'
 SEA = FIXTURES / 'g1075-world-map-sea-cursor.png'
 FADE = FIXTURES / 'g1075-world-map-fade.png'
 
-# Every saved Y view in the repository (chapters 1-3). No other PNG is one.
+# Every saved Y view in the repository (chapters 1-4). No other PNG is one.
 WORLD_VIEWS = {
     'g1075-world-map-land-cursor.png', 'g1075-world-map-sea-cursor.png',
     'g1075-world-map-ring-west-edge.png', 'g1075-world-map-ring-top-edge.png',
@@ -34,6 +34,7 @@ WORLD_VIEWS = {
     'chapter-2-boss-y-focus.png', 'g749-cinnamon-recall-picker-29564.png',
     'hanjuku_recall_picker_20260929.png', 'g464-frame-022.png',
     'g1075-ch3-y-view-face-over-boss-skull.png',
+    'g1075-ch4-y-view-season-skulls.png',
 }
 
 

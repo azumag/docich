@@ -202,7 +202,7 @@ def observe_owners(mem, roofs, cam):
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
-    fixed = {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    fixed = {chart.home_castle(chapter), chart.boss_castle(chapter), *chart.boss_sites(chapter)}
     if len(roofs) < 2:
         return                      # one lone roof: camera association not trusted
     seen = {}
@@ -329,7 +329,7 @@ def _apply_world_flags(mem, flags):
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
     for castle, owner in flags.items():
-        if castle in (home, chart.boss_castle(chapter)):
+        if castle == home or chart.is_boss_castle(castle):
             continue
         if owner == 'enemy' and castle in captured:
             mem['captured'] = captured = [c for c in captured if c != castle]

@@ -155,6 +155,21 @@ for _chapter in sorted(SOURCE_CHAPTERS):
     CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
 del _chapter
 
+# Chapter 4's 四季王 sites, read 2026-10-30 07:44:16 JST from the live g1075 Y
+# view with every ordinary castle ours (owner: register them). The four
+# corner skulls are chapter 3's boss skull sprite pixel for pixel, at
+# (-20, -2), (+72, -2), (-22, +94) and (+74, +96) view px from it. Chapter
+# 3's cell (306, 141) put the marker on the building under its skull (v295),
+# so each site takes that cell plus 8x its skull's offset. Production is
+# read-only: no march has entered a site through these cells yet.
+SEASON_SITE_CELLS = {
+    '四季王城(北西)': (146, 125),
+    '四季王城(北東)': (882, 125),
+    '四季王城(南西)': (130, 893),
+    '四季王城(南東)': (898, 909),
+}
+CASTLES[4].update(SEASON_SITE_CELLS)
+
 # Independent native-view calibrations. Castle cells are field-cursor top-left
 # coordinates; flags and the Y selection cursor use different pixel anchors.
 # Keep these values separate when registering a chapter from a source map.
@@ -441,10 +456,26 @@ CHAPTER_4_ORDERS = (
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
      'target': 'マラコビア', 'after': ('captured', 'ミヒラギアン'),
      'note': '主人公 左下ボス城方面へ'},
-    {'step': '4-B1', 'general': HERO, 'source': 'マラコビア',
+    # 四季王 (owner 2026-10-30): the four sites once every ordinary castle is
+    # ours, never the hero (the boss companion rule picks the strongest fit
+    # general) and never while a castle is lost. Nearest march first: each
+    # site from its closest castle, 323/343/365/377 cells (Manhattan).
+    {'step': '4-B1', 'general': HERO, 'source': 'ミヒラギアン',
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
-     'target': 'ボス', 'after': ('all_captured',),
-     'note': '四季王（季節ボス）へ 乗り込み前にセーブ前提はbot対象外'},
+     'target': '四季王城(南西)', 'after': ('all_captured',),
+     'note': '四季王（南西）へ 乗り込み前にセーブ前提はbot対象外'},
+    {'step': '4-B2', 'general': HERO, 'source': 'ネクスドリア',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(南東)', 'after': ('all_captured',),
+     'note': '四季王（南東）へ'},
+    {'step': '4-B3', 'general': HERO, 'source': 'フヌイヌム',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(北東)', 'after': ('all_captured',),
+     'note': '四季王（北東）へ'},
+    {'step': '4-B4', 'general': HERO, 'source': 'アルカ',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(北西)', 'after': ('all_captured',),
+     'note': '四季王（北西）へ'},
 )
 
 _H5 = HOME_CASTLES[5]
