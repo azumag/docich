@@ -62,12 +62,17 @@ def observe_entry_return(screen, mem):
 
 
 def _defender_successor(mem, cur, b):
-    """Two stable living-general panels can continue a known castle defense."""
+    """Two stable living-general panels can continue a known castle defense.
+
+    The successor may finish the attacker at once, so the confirming panels can
+    show the enemy at 0 (g1075 14:20: クランベリー 51 vs カシュー 1, then 0;
+    requiring HP left recorded the won defense as a lost home castle).
+    """
     maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
     eligible = (cur.get('side') == 'defense' and bool(cur.get('castle'))
                 and cur.get('ally_hp') == 0 and (cur.get('enemy_hp') or 0) > 0
                 and b.enemy == cur.get('enemy') and b.ally != cur.get('ally')
-                and maximum is not None and 0 < b.ally_hp <= maximum and b.enemy_hp > 0)
+                and maximum is not None and 0 < b.ally_hp <= maximum)
     reading = [b.enemy, b.ally]
     if not eligible:
         cur.pop('successor_seen', None)

@@ -321,7 +321,9 @@ def _apply_world_flags(mem, flags):
         if home not in lost:
             lost.insert(0, home)
         (mem.get('garrison') or {}).pop(home, None)
-    elif home_owner == 'own' and mem.get('home_lost'):
+    elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
+        # A defense loss lists home in lost without home_lost; the own flag
+        # clears that too (g1075 14:24: アルマムーン own, still lost).
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
