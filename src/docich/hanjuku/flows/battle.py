@@ -392,6 +392,7 @@ def _finished_record_replaced(mem, cur, b):
             and b.enemy_hp > 0 and b.ally_hp > 0
             and isinstance(b.enemy, str) and isinstance(b.ally, str)
             and b.enemy and b.ally):
+        mem.pop('battle_seen', None)
         return False
     reading = [b.enemy, b.ally]
     if mem.get('battle_seen') != reading:
@@ -438,6 +439,7 @@ def battle_step(screen: Screen, mem):
         cur.pop('entry_successor_seen', None)
         cur.pop('attack_successor_seen', None)
         cur.pop('unlocated_successor_seen', None)
+        mem.pop('battle_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
