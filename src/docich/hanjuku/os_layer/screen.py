@@ -763,15 +763,20 @@ def _partial_monster_menu(frame, screen):
     if screen.battle is not None:
         return False
     from ...hanjuku_reference import MONSTER_SKILLS
+    from .readers import _fold_skill
+    # The screen reads もっとはやく!! where the reference has もっとはやく！！
+    # (g1075 20:15:33): compare folded, as the settled box does.
+    boxes = [[_fold_skill(label) for label in (*skills, 'たまごに')]
+             for skills in MONSTER_SKILLS.values()]
     rows = screen.menu_rows
     first = rows[0].spans() if rows else []
     if (rows and rows[0].y > 176 and len(first) == 1 and first[0][0] == 176
-            and any(first[0][1] in skills for skills in MONSTER_SKILLS.values())):
+            and any(_fold_skill(first[0][1]) in labels[:-1] for labels in boxes)):
         return any(row.y == rows[0].y for row in screen.egg_rows or _egg_rows(frame))
     # Only a box's first letter shows at the right edge when it starts to pan.
-    fragments = [word for line in screen.lines if line.y in (176, 192, 208)
+    fragments = [_fold_skill(word) for line in screen.lines if line.y in (176, 192, 208)
                  for x, word in line.spans() if x > 176 and (len(word) >= 2 or x >= 240)]
-    boxes = [(*skills, 'たまごに') for skills in MONSTER_SKILLS.values()] + [EGG_BATTLE_COMMANDS]
+    boxes.append([_fold_skill(label) for label in EGG_BATTLE_COMMANDS])
     return any(sum(any(label.startswith(word) for label in labels) for word in fragments) >= 2
                for labels in boxes) and bool(screen.egg_rows or _egg_rows(frame))
 

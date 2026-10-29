@@ -20,6 +20,7 @@ SLIDING = FIXTURES / 'g1075-omedetori-menu-sliding-up.png'     # 18:05:26, rows 
 PANNING = FIXTURES / 'g1075-omedetori-menu-panning-in.png'     # 18:08:26, ミカ/あた/たま at x240
 DIALOGUE = FIXTURES / 'g1075-omedetori-kyuu-dialogue.png'      # 18:05:29, after ミカンをおす
 SETTLED = FIXTURES / 'g1075-omedetori-menu-riesling.png'       # 18:10:47, rows at y176
+METRONOME = FIXTURES / 'g1075-metronome-menu-sliding-up.png'  # 2026-10-29 20:15:33, もっとはやく!! at y188
 
 
 def kind(path):
@@ -81,3 +82,16 @@ def test_a_box_that_never_settles_falls_back_after_the_bound():
     assert all('a' not in b for b in seen[:MONSTER_MENU_PENDING_MAX])
     assert seen[MONSTER_MENU_PENDING_MAX] == ['a']
     assert 'monster_menu_incomplete' in [r['decision'] for r in state['_records']]
+
+
+def test_a_sliding_box_whose_skills_read_half_width_still_waits():
+    # 20:15:33: もっとはやく!!/もっとおそく!! were drawn without the third row
+    # or the cursor; the reference spells them with ！！, the box was read as
+    # text, and its default A confirmed the top skill.
+    assert kind(METRONOME) == 'monster_menu_pending'
+    state = summon_state()
+    state['policy']['battle'].update(ally='メトロノーム', enemy='ドラゴンフライ', ally_hp=51,
+                                     enemy_hp=202, start_ally_hp=51, start_enemy_hp=234)
+    actions, state = hanjuku_bot.decide(read_png(METRONOME), state)
+    assert 'a' not in buttons(actions)
+    assert 'monster_menu_drawing' in [r['decision'] for r in state['_records']]
