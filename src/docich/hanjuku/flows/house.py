@@ -1014,30 +1014,39 @@ def _income_step(screen, mem, frame):
 
 
 def _sole_defender_repair_due(mem, name, source):
-    """Repair immediately unless this is the hero or our last castle.
+    """Repair immediately unless this is the hero or last-castle sole defender.
 
-    Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
-    only defender. A previous-month deferral is not permission to leave
-    the hero or the last castle unprotected, including after a hotload.
+    Issue #2834: owner note (2026-10-11) states broken Venus must be
+    prioritized even as sole defender/last castle. See
+    https://github.com/azumag/docich/issues/2834 for context.
+    A previous-month deferral is not permission to leave the hero
+    unprotected, including after a hotload.
     """
-    from ..os_layer.world import NAME, _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     owned = _owned(mem)
-    return name != NAME and source in owned and len(owned) > 1
+    if name == NAME:
+        return False
+    if name == VENUS_NAME:
+        return source in owned
+    return source in owned and len(owned) > 1
 
 
 def _repair_step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
-    from ..os_layer.world import _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
-            and state.get('sole_defender')
-            and not _sole_defender_repair_due(mem, name, state.get('source'))):
-        return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+            and state.get('sole_defender')):
+        from ..os_layer.world import NAME as _HNAME
+        if name == _HNAME:
+            return _exit(mem, '主人公を修理へ派遣しない')
+        if not _sole_defender_repair_due(mem, name, state.get('source')):
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
@@ -1083,11 +1092,17 @@ def _repair_step(screen, mem, frame):
                 _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
+                from ..os_layer.world import VENUS_NAME as _VENUS_NAME
                 if len(names) < 2:
                     state['sole_defender'] = True
-                    _record(mem, 'repair_sole_defender', castle=source,
-                            observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
-                            reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                    if name == _VENUS_NAME:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+                    else:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
                 else:
                     state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
@@ -1116,6 +1131,15 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
         if len(present) < 2:
             state['sole_defender'] = True
+            from ..os_layer.world import _owned as _owned_fn, VENUS_NAME as _VENUS_NAME
+            if name == _VENUS_NAME:
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+            else:
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
         else:
             state.pop('sole_defender', None)
         actions = _choose(screen, name)
@@ -1125,6 +1149,13 @@ def _repair_step(screen, mem, frame):
     if phase == 'castle_kit':
         if screen.kind != 'card_select':
             return []
+        from ..os_layer.world import NAME as _NAME
+        if name == _NAME and state.get('sole_defender'):
+            return _exit(mem, '主人公を修理へ派遣しない')
+        if state.get('sole_defender') and not _sole_defender_repair_due(mem, name, state.get('source')):
+            if name == _NAME:
+                return _exit(mem, '主人公を修理へ派遣しない')
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
         info = general_status(screen)
         if info is None:
             return []

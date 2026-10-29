@@ -652,6 +652,13 @@ def _general_repair_targets(mem):
                and not _castle_status_after_sortie(info, s, mem)
                for s in (mem.get('sorties') or {}).values()):
             continue
+        from ..os_layer.world import VENUS_NAME
+        # Issue #2834: broken Venus must go to repair even when sole defender/last castle
+        # Owner instruction (2026-10-11) in issue #2834 prioritizes broken Venus.
+        # See https://github.com/azumag/docich/issues/2834
+        if name == VENUS_NAME:
+            targets.append(name)
+            continue
         if len(owned) == 1 and not any(
                 name in (mem.get('garrison') or {}).get(c, [])
                 and len((mem.get('garrison') or {}).get(c, [])) > 1 for c in owned):
