@@ -998,7 +998,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _garrison_move(mem, cur.get('ally'), target=castle)
         # Our own general stands there now: the remembered defender is stale.
         _drop_defender_record(mem, [castle])
-    if outcome == 'win' and castle and cur.get('side') == 'defense' and not seasonal_boss:
+    if (outcome == 'win' and castle and cur.get('side') == 'defense' and not seasonal_boss
+            # g1075 2026-10-29 23:58: a recruit had cleared アルマムーン's list
+            # and the joiner's win made it [ビシソワーズ]; the hero's castle
+            # then looked one-general and retakes waited 37 minutes. A
+            # defender is one resident, not the list: unread stays unread.
+            and (mem.get('garrison') or {}).get(castle) is not None):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if (outcome == 'loss' and castle and cur.get('side') == 'defense' and not seasonal_boss
             and not (defense_continues or defense_retained)):
