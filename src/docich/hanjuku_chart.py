@@ -100,15 +100,16 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     # chapter 3 savestate (9ねん1のつき): Y jump to each flag (Y cursor =
     # cell/8 + (63, 47.5), always landing at screen (130, 125)), cursor walked
     # onto the nearest roof, A showed the castle's own name in its status or
-    # castle menu for all nine. The boss cell was read 2026-10-29 from the live
-    # g1075 Y view after every ordinary castle had been captured (frames at
-    # 09:11 and 09:14 JST): the nine flags sit on this grid and the one castle
-    # drawn as a building (grey walls, blue gate, inside a dashed ring) spans
-    # view (134-141, 126-129). Its centre (137.5, 127.5) is the Y cursor aim
-    # point (cell/8 + Y_JUMP_OFFSET), the way the chapter 2 tower was placed.
-    # Production is read-only, so no A press confirmed the name; a wrong cell
-    # is bounded by the boss target cancel limit, while no cell held 3-B1
-    # unready for good once the eight ordinary castles were taken.
+    # castle menu for all nine. The boss cell is the skull the live g1075 Y
+    # view draws in the island's north-west once every ordinary castle is
+    # captured (2026-10-29 14:25-14:29 JST): grey skull view (101-107, 64-69),
+    # centre (104, 66.5) = the Y cursor aim point (cell/8 + Y_JUMP_OFFSET),
+    # the way the chapter 2 tower was placed. The wiki castle diagram puts
+    # ❾完熟プリンス城 in the top row with アルマムーン, and the enemy generals
+    # on the view walk out from the skull. The first cell, (596, 640), was the
+    # cave inside the cliff ring (GCGX: the black ring around the cave is
+    # cliff): every 3-B1 target view left the marker on the ice-mountain cave
+    # entrance. Production is read-only, so no A press confirmed the name.
     3: {
         'アルマムーン': (710, 144),
         'グリン': (852, 320),
@@ -119,7 +120,7 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'パタゴーヌ': (341, 425),
         'アバロン': (229, 729),
         'リグア': (133, 281),
-        'ボス': (596, 640),
+        'ボス': (328, 152),
     },
     # 4–12: from the source flag table below (``SOURCE_CHAPTERS``).
 }
