@@ -931,6 +931,17 @@ def okunote_step(screen, mem):
                             reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
                 rescue['exhausted'] = True
                 return [pad('b')]
+            # Conserve: healthy melee advantage despite low HP -> keep okunote closed.
+            if _hold_melee_egg(mem, cur, visible):
+                if not flow.get('risk_conserved'):
+                    flow['risk_conserved'] = True
+                    _record(mem, 'battle_okunote_risk_conserved', **_battle_labels(cur),
+                            observed_metric={'ally_hp': hp, 'safe_candidates': safe,
+                                             'melee_balance': _melee_balance(cur)},
+                            reason='低HPだが白兵優位のため奥の手を温存し白兵へ戻る')
+                flow['risk_declined'] = True
+                rescue['exhausted'] = True
+                return [pad('b')]
             # safe candidate exists: fall through to open okunote
             _record(mem, 'battle_okunote_risk_accepted', **_battle_labels(cur),
                     observed_metric={'ally_hp': hp, 'safe_candidates': safe},
