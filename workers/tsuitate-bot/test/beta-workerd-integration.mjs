@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -19,6 +20,8 @@ let mf, python, pythonError = "", connections = 0, queueJoins = 0;
 const peers = new Set(), packets = [], endedGames = new Set();
 const nullSyncGames = new Set(), resultLookups = new Map();
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+const CONTROL_PREFIX = "beta-control-v1\nPOST\n/beta-control\n";
+const CONTROL_SECRET = "fixture-only-control-capability-not-credential";
 const view = (gameId) => ({ gameId, yourColor: "sente",
   yourPieces: [{ square: "5i", role: "king" }, { square: "5g", role: "pawn" }, { square: "2h", role: "rook" }],
   yourHand: {}, turn: "sente", moveNumber: 1,
@@ -74,6 +77,15 @@ async function until(predicate) {
   while (Date.now() < deadline) { if (await predicate()) return; await pause(20); }
   throw new Error("local_fixture_timeout");
 }
+async function control(payload) {
+  const raw = JSON.stringify(payload);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac("sha256", CONTROL_SECRET)
+    .update(CONTROL_PREFIX + timestamp + "." + raw).digest("hex");
+  return mf.dispatchFetch("http://local-only.test/beta-control", { method: "POST", body: raw,
+    headers: { "Content-Type": "application/json", "X-Beta-Control-Timestamp": timestamp,
+      "X-Beta-Control-Signature": `sha256=${signature}` } });
+}
 try {
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const localOrigin = `http://127.0.0.1:${server.address().port}`;
@@ -87,7 +99,7 @@ try {
   const options = (token = "fixture-only-not-a-credential") => ({ ...convertV4MiniflareOptions({ name: "beta-local-test-only", modules: true, script,
     compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"],
     durableObjects: { BETA_ARENA: { className: "RuntimeBetaArena", useSQLite: true } },
-    bindings: { BETA_CONTROL_SECRET: "fixture-only-control-capability-not-credential",
+    bindings: { BETA_CONTROL_SECRET: CONTROL_SECRET,
       TSUITATE_BOT_TOKEN: token, LOCAL_SOCKET_ORIGIN: localOrigin } }),
     resourcePersistencePath: join(temporary, "state") });
   mf = new Miniflare(options(""));
@@ -121,6 +133,9 @@ try {
   assert.equal((await json("/wrong-singleton")).code, "not_singleton");
   const starts = await Promise.all([owner("start", "local-fixture"), owner("start", "local-fixture")]);
   assert.ok(starts.every((result) => result.status === 200), JSON.stringify(starts));
+  const absentRun = await control({ action: "run", runId: "absent-run" });
+  assert.equal(absentRun.status, 409, "BetaArena must expose runStatus");
+  assert.equal((await absentRun.json()).error, "run_mismatch");
   await until(() => packets.filter((packet) => packet.event === "game:move").length === 1);
   assert.equal((await json("/evidence")).pendingPersisted, true);
   assert.equal((await json("/evidence")).sqlite, true);
