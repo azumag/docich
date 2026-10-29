@@ -27,7 +27,8 @@ from docich.hanjuku.flows.recall import MENU_OPEN_WAIT, MENU_REOPEN_LIMIT, _camp
 from docich.hanjuku.orchestrator import decide, pad
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.pixels import read_png
-from docich.hanjuku.os_layer.readers import world_cursor, world_flags
+from docich.hanjuku.os_layer.readers import (WORLD_FLAG_ENEMY, WORLD_FLAG_OWN, WORLD_MAP_OFFSET,
+                                             _near_colour, world_cursor, world_flags)
 from docich.hanjuku.os_layer.screen import _target_marker, own_camps, parse
 from docich.hanjuku.strategy.orders import BOSS_TARGET_CANCEL_LIMIT, _boss_retry_due
 
@@ -106,12 +107,22 @@ def test_the_v293_marker_landed_beside_the_building_and_v295_moves_by_the_gap():
     assert abs(bx - (landed[0] + gap[0])) <= 0.5 and by == landed[1] + gap[1]
 
 
-def test_the_cave_no_longer_reads_as_an_enemy_boss_flag(monkeypatch):
+def flag_box_pixels(frame, cell, colour):
+    ox, oy = WORLD_MAP_OFFSET[3]
+    mx, my = round(cell[0] / 8 + ox), round(cell[1] / 8 + oy)
+    return [(x, y) for x in range(mx - 2, mx + 6) for y in range(my - 2, my + 5)
+            if _near_colour(frame.pixel(x, y), colour)]
+
+
+def test_the_cave_no_longer_reads_as_an_enemy_boss_flag():
     frame = read_png(SKULL_VIEW)
     assert 'ボス' not in world_flags(frame, 3, world_cursor(frame))
-    # The v278 cell put the boss flag box on the cave's blue gate: ボス 'enemy'.
-    monkeypatch.setitem(chart.CASTLES[3], 'ボス', OLD_CELL)
-    assert world_flags(frame, 3, world_cursor(frame))['ボス'] == 'enemy'
+    # The v278 cell put the boss flag box on the cave's blue gate (14:36:15
+    # logged ボス 'enemy'); the skull cell's box has neither flag colour.
+    assert flag_box_pixels(frame, OLD_CELL, WORLD_FLAG_ENEMY) == [(138, 127)]
+    cell = chart.castles(3)['ボス']
+    assert flag_box_pixels(frame, cell, WORLD_FLAG_ENEMY) == []
+    assert flag_box_pixels(frame, cell, WORLD_FLAG_OWN) == []
 
 
 def test_the_y_view_with_the_g_over_the_cave_is_the_world_map():
