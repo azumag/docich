@@ -12,7 +12,7 @@ import time
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
-from ...hanjuku_egg_reference import general_max_hp
+from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
@@ -215,6 +215,38 @@ def _rare_card_inventory(screen, mem, order, inventory):
             observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
     return [pad('down')]
+
+
+def _egg_drop_substitutes(mem, order, present):
+    """Substitutes able to drop the measured defender's egg, in list order.
+
+    g1075 2026-10-29 12:58: the K1 retake of リグア sent シャルドネ (max HP 56)
+    against ガルバンゾー (30): 86 mod 16 = 6, no stocked card has 卵落 above
+    it, ガルバンゾー summoned at HP 13 and シャルドネ fell. The substitute
+    was simply the first name in the list (デーメーテール, 49 + 30 -> 15).
+    With the same stock リースリング (37 + 30 = 67 -> 3) drops it with
+    グリンボー (卵落 4). Only a measured defender that holds an egg counts;
+    otherwise the list order is kept (fail-closed).
+    """
+    enemy = _sortie_defender(mem, order)
+    enemy_max = general_max_hp(enemy) if enemy else None
+    if (enemy is None or enemy_egg_triggers(enemy).has_egg is not True
+            or type(enemy_max) is not int or enemy_max <= 0):
+        return []
+    stock = mem.get('card_stock') or {}
+    cards = [name for name in reference.CARDS
+             if int(stock.get(name, 0) or 0) > 0
+             and CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
+             and not boss_card_reserved(mem, order, name)]
+    able = []
+    for general in present:
+        ally_max = general_max_hp(general)
+        if type(ally_max) is not int or ally_max <= 0:
+            continue
+        plan = reference.egg_drop_plan(enemy_max, ally_max)
+        if reference.egg_droppers(cards, plan['max_hp_sum']):
+            able.append(general)
+    return able
 
 
 def _dropper_card_inventory(mem, order, inventory, wanted) -> bool:
@@ -1103,12 +1135,15 @@ def deploy_step(screen: Screen, mem):
                         observed_metric={'present': [NAME, *present][:8]},
                         reason='計画の将軍がいないため、主人公を代役にせず他の将軍か出撃元の変更を待つ')
             if present and not mem.get('general_override', {}).get(order['step']):
-                mem.setdefault('general_override', {})[order['step']] = present[0]
+                droppers = _egg_drop_substitutes(mem, order, present)
+                chosen = droppers[0] if droppers else present[0]
+                mem.setdefault('general_override', {})[order['step']] = chosen
                 _record(mem, 'order_substitute', strategy_variant='substitute_general',
-                        deviation_reason=f"{order['general']}が出撃元にいないため{present[0]}が代わりに出撃",
+                        deviation_reason=f"{order['general']}が出撃元にいないため{chosen}が代わりに出撃",
                         observed_metric=present[:8], expected_metric=f"{order['target']}の占領",
-                        reason='後続手順とボス条件を満たすため')
-                move = menu_to(screen, present[0])
+                        reason=('守備将軍の卵を落とせる最大HPの将軍を代役にする' if droppers
+                                else '後続手順とボス条件を満たすため'))
+                move = menu_to(screen, chosen)
                 return [pad('a')] if move == 'here' else [move] if move else []
             if (not mem.get('source_override', {}).get(order['step'])
                     and chart.home_castle(mem.get('chapter') or 1) in _owned(mem)):
