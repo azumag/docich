@@ -270,7 +270,8 @@ def test_cc_translation_label_reaches_transport_and_only_exact_prefix_is_admitte
         result = call_agent(spec, request("CC_TRANSLATION"), timeout=5, env=env)
         assert result.returncode == 0 and result.output == "translated"
         assert answer.call_count == 1
-    for label in ("cc-translation", "CC_TRANSLATION_RESEARCH", "CC_TRANSLATION-PREPASS", "cc_translation"):
+    for label in ("cc-translation", "CC_TRANSLATION_FOO", "CC_TRANSLATION2", "CC_TRANSLATION_RESEARCH",
+                  "CC_TRANSLATION-PREPASS", "cc_translation", "CC_TRANSLATION "):
         with mock.patch("docich.reply_research_api.answer_once") as answer:
             result = call_agent(spec, request(label), timeout=5, env=env)
             assert (result.returncode, result.failure_kind) == (2, "invalid_provider"), label
