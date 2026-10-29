@@ -482,8 +482,13 @@ def _summon_scene(mem):
         mem['battle']['summon_scene'] = True
 
 
+# Summon dialogue advances by itself (19:57:04: the last page went to the box
+# with no A). A page still there after this many looks gets its A.
+SUMMON_DIALOGUE_LOOKS = 4
+
+
 def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
-    """Send a summon battle's dialogue A only on the second look at a page.
+    """Send a summon battle's dialogue A only when a page has stayed for a while.
 
     g1075 2026-10-29: every stray A that confirmed a box's top row in a summon
     battle was decided on the first look at the page before that box (18:43:30,
@@ -492,6 +497,10 @@ def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
     skill box instead: the top skill ran past the two-turn switch, and
     あけまつ greeted twice. A page that is still there on the next look gets
     its A; one that leaves by itself never sends a press into the next box.
+    Two looks were not enough (v314): at 19:57:14.20 and 20:14:43.52 the A sent
+    on the second look at the last page was followed 0.2 s later by the skill
+    box, and the turn went on without our choice. The box takes a press that
+    meets the page's own advance, so the page is left to advance by itself.
     An egg monster's entrance page starts the scene: at 19:53:46 the bot's own
     たまごをつかう brought あけまつ in, and its first box took the A decided on
     the page before it because no box had been seen yet.
@@ -505,13 +514,17 @@ def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
         mem.pop('summon_dialogue', None)
         return actions
     key = f'text:{screen.text}' if kind == 'text' and screen.text else digest
-    if mem.pop('summon_dialogue', None) == key:
+    seen = mem.get('summon_dialogue')
+    looks = (seen['looks'] + 1 if isinstance(seen, dict) and seen.get('key') == key
+             and type(seen.get('looks')) is int else 1)
+    if looks >= SUMMON_DIALOGUE_LOOKS:
+        mem.pop('summon_dialogue', None)
         return actions
-    mem['summon_dialogue'] = key
+    mem['summon_dialogue'] = {'key': key, 'looks': looks}
     if not battle.get('summon_dialogue_paced'):
         battle['summon_dialogue_paced'] = True
         _record(mem, 'summon_dialogue_paced',
-                reason='召喚戦の会話は同じページを2回見てからAを送り、最後のページで決めたAが次の技・コマンド欄を確定しないようにする')
+                reason='召喚戦の会話は自動で進むため、同じページが続くときだけAを送り、最後のページへのAが次の技・コマンド欄を確定しないようにする')
     return []
 
 
