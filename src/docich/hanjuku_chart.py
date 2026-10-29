@@ -89,8 +89,15 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     # chapter 3 savestate (9ねん1のつき): Y jump to each flag (Y cursor =
     # cell/8 + (63, 47.5), always landing at screen (130, 125)), cursor walked
     # onto the nearest roof, A showed the castle's own name in its status or
-    # castle menu for all nine. The boss is not measured (docs: after every
-    # ordinary castle is captured), so 3-B1 stays unready.
+    # castle menu for all nine. The boss cell was read 2026-10-29 from the live
+    # g1075 Y view after every ordinary castle had been captured (frames at
+    # 09:11 and 09:14 JST): the nine flags sit on this grid and the one castle
+    # drawn as a building (grey walls, blue gate, inside a dashed ring) spans
+    # view (134-141, 126-129). Its centre (137.5, 127.5) is the Y cursor aim
+    # point (cell/8 + Y_JUMP_OFFSET), the way the chapter 2 tower was placed.
+    # Production is read-only, so no A press confirmed the name; a wrong cell
+    # is bounded by the boss target cancel limit, while no cell held 3-B1
+    # unready for good once the eight ordinary castles were taken.
     3: {
         'アルマムーン': (710, 144),
         'グリン': (852, 320),
@@ -101,6 +108,7 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'パタゴーヌ': (341, 425),
         'アバロン': (229, 729),
         'リグア': (133, 281),
+        'ボス': (596, 640),
     },
     # 4–12: from the source flag table below (``SOURCE_CHAPTERS``).
 }

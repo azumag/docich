@@ -58,13 +58,13 @@ def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypa
 
     The planted cells are synthetic: this checks which orders the gate exposes
     once home and the three initial targets exist. The real cells (isolated
-    probe, 2026-10-28) unlock every ordinary order; the unmeasured boss keeps
-    3-B1 out.
+    probe, 2026-10-28; boss from the live Y view, 2026-10-29) expose every
+    order, and 3-B1 still waits for ``all_captured``.
     """
     chapter = 3
-    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter]) - {'ボス'}
+    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter])
     assert [o['step'] for o in chart.orders(chapter)] == [
-        o['step'] for o in chart.all_orders(chapter) if o['target'] != 'ボス']
+        o['step'] for o in chart.all_orders(chapter)]
 
     home = chart.home_castle(chapter)
     # Home plus グリン alone unlocks only the first initial route.
@@ -271,6 +271,32 @@ def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
         x, y = chart.CASTLES[3][name]
         assert abs(round(x / 8 + ox) - fx) <= 1 and abs(round(y / 8 + oy) - fy) <= 1, name
     assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
+
+
+def test_chapter_3_boss_cell_is_the_walled_castle_inside_the_dashed_ring_on_the_y_view():
+    # Live g1075 2026-10-29 09:11/09:14 JST, every ordinary castle captured:
+    # the nine flags sit on the WORLD_MAP_OFFSET grid and the one castle drawn
+    # as a building (grey walls, blue gate, dashed ring) spans view
+    # (134-141, 126-129). Its centre is the Y cursor aim point, as the
+    # chapter 2 tower was placed. No A press confirmed it (read-only runtime).
+    from docich.hanjuku.strategy.orders import _ready
+    ox, oy = chart.Y_JUMP_OFFSET[3]
+    bx, by = chart.CASTLES[3]['ボス']
+    assert (bx / 8 + ox, by / 8 + oy) == (137.5, 127.5)
+    fx, fy = chart.WORLD_MAP_OFFSET[3]
+    boss_flag = (round(bx / 8 + fx), round(by / 8 + fy))
+    for name, (x, y) in chart.CASTLES[3].items():
+        if name != 'ボス':
+            # The owner-flag boxes (8x7 view px) of the boss and of every
+            # ordinary castle never overlap on the Y view.
+            assert max(abs(round(x / 8 + fx) - boss_flag[0]), abs(round(y / 8 + fy) - boss_flag[1])) >= 8, name
+    assert chart.castles(3)['ボス'] == (bx, by) and chart.boss_castle(3) == 'ボス'
+    boss_order = next(o for o in chart.orders(3) if o['step'] == '3-B1')
+    assert boss_order['target'] == 'ボス' and boss_order['after'] == ('all_captured',)
+    ordinary = [n for n in chart.CASTLE_NAMES[3] if n not in (chart.home_castle(3), 'ボス')]
+    assert len(ordinary) == 8
+    assert not _ready(boss_order, {'chapter': 3, 'captured': ordinary[:-1]})
+    assert _ready(boss_order, {'chapter': 3, 'captured': ordinary})
 
 
 # WRAM 0x1700 castle records ([id, x, y, ...], 16 bytes, 8 px tiles) read from
