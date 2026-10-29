@@ -392,13 +392,14 @@ def _finished_record_replaced(mem, cur, b):
             and b.enemy_hp > 0 and b.ally_hp > 0
             and isinstance(b.enemy, str) and isinstance(b.ally, str)
             and b.enemy and b.ally):
-        mem.pop('battle_seen', None)
+        cur.pop('finished_replacement_seen', None)
         return False
     reading = [b.enemy, b.ally]
-    if mem.get('battle_seen') != reading:
-        mem['battle_seen'] = reading
+    if cur.get('finished_replacement_seen') != reading:
+        cur['finished_replacement_seen'] = reading
         return False
     battle_end(mem, 'battle', panel_changed=True)
+    reset_battle_controls(mem)
     return True
 
 
@@ -422,6 +423,7 @@ def battle_step(screen: Screen, mem):
             mem['battle'].pop('attack_successor_seen', None)
             mem['battle'].pop('unlocated_successor_seen', None)
             mem['battle'].pop('unlocated_zero_candidate', None)
+            mem['battle'].pop('finished_replacement_seen', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -439,6 +441,7 @@ def battle_step(screen: Screen, mem):
         cur.pop('entry_successor_seen', None)
         cur.pop('attack_successor_seen', None)
         cur.pop('unlocated_successor_seen', None)
+        cur.pop('finished_replacement_seen', None)
         mem.pop('battle_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
