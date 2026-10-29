@@ -43,9 +43,25 @@ def test_the_strongest_companion_of_every_read_list_goes():
 
 
 def test_a_read_heros_castle_without_a_strong_spare_falls_back_to_the_best_read_list():
-    mem = memory()
+    mem = memory(ミヒラギアン=['アルテミス', 'キール'])
     mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
     assert orders._boss_companion_source(site_order(), mem) == 'ミヒラギアン'
+
+
+def test_a_lone_general_never_leaves_its_castle_for_a_site():
+    """Owner 2026-10-30 (1人残す): g1075 lost フヌイヌム (08:34:54) and
+    ミヒラギアン (08:47:06) after their lone generals left for the sites."""
+    mem = memory()
+    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス']) == []
+    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'キール']) == ['アルテミス']
+    # A marching general is no defender.
+    mem['sorties'] = {'x': {'general': 'キール', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
+    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'キール']) == []
+    # Every read list lone and the hero's castle read: nothing goes, nothing is emptied.
+    mem = memory()
+    mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    assert orders._boss_companion_source(site_order(), mem) is None
+    assert not orders._ready(site_order(), mem)
 
 
 def test_an_egg_is_the_screens_reading_else_the_rosters():

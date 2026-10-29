@@ -54,9 +54,14 @@ def _order_hero_alternatives(order, mem, names):
         # 四季王 fights as a summoned monster from the first turn with no
         # きりふだ row (g1075 08:27:56 サマカンテ), so a general without an
         # egg can only melee it (カペリーニ/ミュスカデ were sent so).
+        # Owner 2026-10-30 (1人残す): any other castle keeps one general too;
+        # g1075 lost フヌイヌム (08:34) and ミヒラギアン (08:47) after their
+        # lone ミュスカデ/アルテミス left for the sites.
         unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+        present = set(names or ()) - unavailable
         candidates = [g for g in candidates if _holds_egg(mem, g)
-                      and not chart_adjust.hero_guard_short(names, g, unavailable)]
+                      and not chart_adjust.hero_guard_short(names, g, unavailable)
+                      and (NAME in present or present - {g})]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
