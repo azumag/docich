@@ -3965,11 +3965,7 @@ def test_broken_hero_allows_other_general_and_friendly_staffing_move():
 
 def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
-    # v305: the hero keeps two others, so the spare comes from a list of four.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'クミン', 'タルタル']
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス']
-    assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
     mem['garrison']['アルマムーン'] = ['どうし']
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 

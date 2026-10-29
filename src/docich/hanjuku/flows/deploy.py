@@ -766,9 +766,10 @@ def _keep_hero_guard(screen, mem, order):
     would leave must keep ``HERO_CASTLE_GUARD`` others beside him. A planned
     hero or a spare picked on this list counts as one companion leaving; the
     hero alone still goes as planned. Base chart and boss orders keep their
-    own sequences.
+    own sequences, and our only castle may leave the hero alone (owner:
+    otherwise nothing could attack).
     """
-    if (_is_boss_order(order, mem)
+    if (_is_boss_order(order, mem) or len(_owned(mem)) == 1
             or not order['step'].startswith((chart_adjust.INTERIM_PREFIX, chart_adjust.PLAN_PREFIX))):
         return None
     present = _present_generals(screen)

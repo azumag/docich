@@ -68,3 +68,33 @@ def test_a_lone_hero_keeps_the_existing_sole_fallback():
     mem = _retake_memory([HERO])
     assert policy._interim_source(mem, 'ジョンリギ', None, {'アルマムーン'}, set(),
                                   allow_sole=True) == ('アルマムーン', HERO)
+
+
+# Owner (2026-10-29): 自城が一つだけのときは、攻める手立てがなくなってしまうため、
+# しゅじんこう一人になるのを許容する.
+
+def test_a_single_castle_of_ours_may_leave_the_hero_alone():
+    assert chart_adjust.hero_guard_short([HERO, 'タピオカ'], 'タピオカ', sole_castle=True) is False
+
+
+def test_startable_lifts_the_guard_for_a_single_castle():
+    home = chart.home_castle(1)
+    request = {'chapter': 1, 'captured': [], 'home_lost': False,
+               'garrison': {home: [HERO, 'ゼウス']}, 'en_route': []}
+    assert chart_adjust.startable(_order('ゼウス', source=home), request) is None
+    request['captured'] = ['キカンドン']
+    assert chart_adjust.startable(_order('ゼウス', source=home), request) == 'hero_castle_guard'
+    assert chart_adjust.startable(_order('ゼウス', source=home),
+                                  {**request, 'owned': [home]}) is None
+
+
+def test_interim_from_our_only_castle_sends_the_spare():
+    home = chart.home_castle(1)
+    mem = {'chapter': 1, 'tick': 100, 'orders': {}, '_records': [], 'captured': [],
+           'garrison': {home: [HERO, 'ゼウス']}}
+    attacks = [o for o in policy.interim_candidates(mem).values() if o['source'] == home]
+    assert attacks and attacks[0]['general'] == 'ゼウス'
+    mem['captured'] = ['キカンドン']
+    mem['garrison']['キカンドン'] = ['ココット']
+    assert all(o['source'] != home or o['general'] == policy.MOVE_ANY_GENERAL
+               for o in policy.interim_candidates(mem).values())

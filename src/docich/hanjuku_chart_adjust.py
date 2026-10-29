@@ -35,19 +35,21 @@ CARD_NAMES = frozenset({
     'ハリケーン', 'キャトルミュー'})
 # Owner (2026-10-29): 主人公のいる城が手薄になるのはよくない -- the game ends
 # when the hero falls. An off-chart order leaves this many other generals
-# with the hero; the hero leaving is a separate decision.
+# with the hero; the hero leaving is a separate decision. With a single
+# castle of ours the hero may be left alone, or nothing could ever attack.
 HERO_CASTLE_GUARD = 2
 
 
-def hero_guard_short(names, general, unavailable=()) -> bool:
+def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bool:
     """True when sending ``general`` from ``names`` thins the hero's castle.
 
     ``names`` is one castle's general list; ``unavailable`` (marching, location
     unknown) never guards. A general not in the list (a spare picked on the
-    real list) still takes one of the others.
+    real list) still takes one of the others. ``sole_castle`` (our only
+    castle) lifts the guard.
     """
     present = set(names or ()) - set(unavailable or ())
-    if chart.HERO not in present or general == chart.HERO:
+    if sole_castle or chart.HERO not in present or general == chart.HERO:
         return False
     others = present - {chart.HERO}
     left = len(others - {general}) if general in others else len(others) - 1
@@ -152,6 +154,18 @@ def request_digest(record) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _sole_castle(request) -> bool:
+    """Whether the request shows a single castle of ours (unknown: False)."""
+    owned = request.get('owned')
+    if isinstance(owned, (list, tuple)):
+        return len(set(owned)) == 1
+    chapter, captured = request.get('chapter'), request.get('captured')
+    if type(chapter) is not int or not isinstance(captured, (list, tuple)):
+        return False
+    home = set() if request.get('home_lost') else {chart.home_castle(chapter)}
+    return len(set(captured) | home) == 1
+
+
 def startable(order, request) -> str | None:
     """Why ``order`` cannot start in the requested situation, or None.
 
@@ -175,7 +189,7 @@ def startable(order, request) -> str | None:
         # An unrecorded general (a joiner, a spare picked on the list) is
         # counted on the real list when the sortie opens it.
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
-                garrison.get(source), general, marching):
+                garrison.get(source), general, marching, sole_castle=_sole_castle(request)):
             return 'hero_castle_guard'
         return None
     if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
