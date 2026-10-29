@@ -1670,7 +1670,7 @@ def monster_menu_step(screen: Screen, mem):
     special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261029-omedetori-v1'
+    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
