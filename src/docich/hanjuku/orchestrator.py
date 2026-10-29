@@ -368,6 +368,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('battle_menu_pending_ticks', None)
     if kind != 'monster_menu_pending':
         mem.pop('monster_menu_pending_ticks', None)
+    if (mem.get('monster_unchosen') and kind not in ('monster_menu', 'monster_menu_pending', 'unknown')
+            and (kind != 'text' or screen.text)):
+        # The turn moved on (a message, the enemy's menu, the battle field).
+        battle_menus_flow.count_unchosen_monster_turn(mem)
+    if kind == 'text' and screen.text:
+        mem.pop('monster_own_choice', None)
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
         mem['battle'].pop('entry_successor_seen', None)
@@ -378,6 +384,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         battle_flow.battle_end(mem,kind)
     if after_battle:
         battle_judgment.reset_battle_controls(mem)
+        mem.pop('monster_unchosen', None)
+        mem.pop('monster_own_choice', None)
     battle_flow.observe_entry_return(screen, mem)
     if kind != 'egg_choice_menu':
         mem.pop('egg_choice', None)
@@ -526,7 +534,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind=='monster_menu':
         actions=battle_menus_flow.monster_menu_step(screen,mem)
     elif kind=='monster_menu_pending':
-        actions=battle_menus_flow.monster_menu_pending_step(mem)
+        actions=battle_menus_flow.monster_menu_pending_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=battle_menus_flow.egg_battle_step(screen,mem)
     elif kind=='okunote_menu':

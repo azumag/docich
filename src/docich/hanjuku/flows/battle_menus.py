@@ -388,8 +388,55 @@ def _survival_card_list(screen, mem, cur, flow, names):
 MONSTER_MENU_PENDING_MAX = 8
 
 
-def monster_menu_pending_step(mem):
+def _unchosen_turn_candidate(screen, mem):
+    """Our summon's box, seen moving while we have not chosen this turn."""
+    if mem.get('monster_own_choice'):
+        return              # the box leaving after our own choice
+    panel = {row.side: row for row in screen.egg_rows if row.side}
+    ally, enemy = panel.get('ally'), panel.get('enemy')
+    skills = [skill.replace(' ', '') for skill in reference.MONSTER_SKILLS.get(ally.name, ())] if ally else []
+    words = [word for line in screen.lines if line.y >= 176
+             for x, word in line.spans() if x >= 176 and len(word) >= 2]
+    if not any(skill.startswith(word) for skill in skills for word in words):
+        return              # not our monster's box (or its owner unread)
+    mem['monster_unchosen'] = {'ally': ally.name, 'enemy': enemy.name if enemy else None,
+                               'enemy_hp': enemy.hp if enemy else None}
+
+
+def count_unchosen_monster_turn(mem):
+    """Count a turn our summon spent on its top skill without our choice.
+
+    The skill box can take a press that left before it appeared: an A decided
+    on a dialogue frame arrived as the box slid in (g1075 18:27:47, 18:43:30)
+    and confirmed the top row. The cursor starts every turn on the top row
+    (ラビットサタン and ガートルード needed a down for skill 2 on each turn),
+    so that turn spent skill 1. Count it so the stall switch still comes after
+    MONSTER_STALL_TURNS uses of a skill that never moves the enemy HP.
+    """
+    seen = mem.pop('monster_unchosen', None)
+    if not isinstance(seen, dict) or not seen.get('ally'):
+        return
+    stall = mem.get('monster_stall')
+    enemy, enemy_hp = seen.get('enemy'), seen.get('enemy_hp')
+    if isinstance(stall, dict) and isinstance(stall.get('scope'), list) and stall['scope'][:1] == [seen['ally']]:
+        enemy = enemy or stall['scope'][1]
+        enemy_hp = enemy_hp if type(enemy_hp) is int else stall.get('enemy_hp')
+    if not enemy or type(enemy_hp) is not int:
+        return
+    scope = [seen['ally'], enemy]
+    if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy_hp:
+        stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy_hp, 'turns': {}}
+    turns = stall.setdefault('turns', {})
+    turns['skill1'] = turns.get('skill1', 0) + 1
+    _record(mem, 'monster_turn_unchosen',
+            observed_metric={'ally': seen['ally'], 'enemy': enemy, 'enemy_hp': enemy_hp,
+                             'turns': dict(turns)},
+            reason='技メニューが出たのにこちらが選ばないまま次の画面へ進んだため、最上段の1技目を使ったターンとして数える')
+
+
+def monster_menu_pending_step(screen, mem):
     """Hold the confirm until the summon skill box settles; its own step decides."""
+    _unchosen_turn_candidate(screen, mem)
     ticks = mem['monster_menu_pending_ticks'] = mem.get('monster_menu_pending_ticks', 0) + 1
     if ticks == 1:
         _record(mem, 'monster_menu_drawing',
@@ -1470,6 +1517,10 @@ def monster_menu_step(screen: Screen, mem):
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
+    if owner == 'ally':
+        mem.pop('monster_unchosen', None)       # our own turn: this step decides it
+    else:
+        count_unchosen_monster_turn(mem)
     scope = [owner, ally.name if ally else None, enemy.name if enemy else None]
     if mem.get('monster_menu_choice_scope') != scope:
         mem.pop('monster_menu_choice', None)
@@ -1694,6 +1745,8 @@ def monster_menu_step(screen: Screen, mem):
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')
+    if owner == 'ally':
+        mem['monster_own_choice'] = True
     if action == 'retreat':
         if return_index is None:
             return []
