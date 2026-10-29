@@ -156,7 +156,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
                     observed_metric={'cursor': list(world), 'screen_cursor': list(s),
                                      'roofs': mem.get('roofs_seen'), 'held': held + 1},
                     reason='屋根で位置を確認できないまま到着と推定したため、決定せず屋根で再特定する')
-            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search}
+            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search,
+                               'tick': int(mem.get('tick') or 0), 'kind': screen.kind}
             return [pad('up', 12)] if s[1] > 100 else [pad('down', 12)]
         mem.pop('unverified', None)
         mem['uncertain'] = False
@@ -167,7 +168,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
             frames = min(abs(d), MAX_HOLD_FRAMES)
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
-    mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
+    mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search,
+                       'tick': int(mem.get('tick') or 0), 'kind': screen.kind}
     mem['nav_pressed'] = bool(actions)
     return actions
 

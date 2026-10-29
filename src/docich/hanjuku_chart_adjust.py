@@ -37,7 +37,8 @@ CARD_NAMES = frozenset({
 
 def settings(raw) -> dict:
     """``[hanjuku.chart_adjust]``: a non-empty ``agents`` chain is consent to
-    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice."""
+    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice;
+    ``rate_limit_cooldown_s`` pauses generation after a provider rate limit (#2936)."""
     raw = raw if isinstance(raw, dict) else {}
     enabled = raw.get('enabled', False)
     agents = raw.get('agents', '')
@@ -47,6 +48,7 @@ def settings(raw) -> dict:
     attempts = raw.get('max_attempts', 2)
     interim = raw.get('interim_jev', False)
     interim_timeout = raw.get('interim_timeout_ms', 1500)
+    cooldown = raw.get('rate_limit_cooldown_s', 300)
     if type(enabled) is not bool or type(interim) is not bool or type(direct_enabled) is not bool:
         raise ValueError('hanjuku.chart_adjust enabled/interim_jev/direct_enabled must be boolean')
     if not isinstance(agents, str) or len(agents) > 1024:
@@ -70,9 +72,12 @@ def settings(raw) -> dict:
         raise ValueError('hanjuku.chart_adjust.max_attempts must be 1..3')
     if type(interim_timeout) is not int or not 50 <= interim_timeout <= 5000:
         raise ValueError('hanjuku.chart_adjust.interim_timeout_ms must be 50..5000')
+    if type(cooldown) is not int or not 30 <= cooldown <= 3600:
+        raise ValueError('hanjuku.chart_adjust.rate_limit_cooldown_s must be 30..3600')
     return {'enabled': enabled and bool(agents.strip()), 'agents': agents.strip(),
             'direct_enabled': direct_enabled,
             'timeout_s': timeout, 'max_attempts': attempts,
+            'rate_limit_cooldown_s': cooldown,
             'interim_jev': interim, 'interim_timeout_ms': interim_timeout}
 
 

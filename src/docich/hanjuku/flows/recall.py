@@ -213,8 +213,9 @@ def _observe_recall_origin(screen, mem, frame, state):
     origin = observed_cursor_cell(screen, mem, frame)
     if origin is None:
         state.pop('origin', None)
+        state.pop('origin_source', None)
     else:
-        state['origin'] = origin
+        state.update(origin=origin, origin_source='roofs')
 
 
 def _finish_hero_recall(mem, state, goal):

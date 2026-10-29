@@ -309,6 +309,31 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
     assert mem['uncertain'] is True and home != tuple(mem['cursor'])
 
 
+def test_unanchored_map_frames_keep_integrating_measured_motion(monkeypatch):
+    """#2935 g1075: after SELECT seeded the hero castle, the estimate froze at
+    [571,282] while the real cursor walked to the west edge; left was pressed
+    for 95 minutes. Continuous map frames are measured even while unanchored."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    goal = chart.castles(3)['リグア']
+    mem = {'chapter': 3, 'cursor': [571, 282], 'uncertain': True, '_records': [],
+           'tick': 101,
+           'nav_last': {'screen': [8, 180], 'expected': [-28, 0], 'search': False,
+                        'tick': 100, 'kind': 'map'}}
+    for expected_x in (543, 515, 487):
+        actions = policy.nav_step(map_screen(8, 180), mem, FRAME, goal)
+        assert [a['buttons'][0] for a in actions] == ['left']
+        assert mem['cursor'] == [expected_x, 282]
+        mem['tick'] += 1
+    assert not decisions(mem, 'nav_stuck')
+    # The same frame after an off-map observation is not a measured step.
+    stale = {'chapter': 3, 'cursor': [571, 282], 'uncertain': True, '_records': [],
+             'tick': 140,
+             'nav_last': {'screen': [8, 180], 'expected': [-28, 0], 'search': False,
+                          'tick': 100, 'kind': 'map'}}
+    policy.nav_step(map_screen(8, 180), stale, FRAME, goal)
+    assert stale['cursor'] == [571, 282]
+
+
 def test_moving_cursor_or_leaving_the_map_never_counts_as_stuck(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
     order = {'step': 'X1', 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',

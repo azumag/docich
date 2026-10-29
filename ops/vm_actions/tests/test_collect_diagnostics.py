@@ -165,6 +165,24 @@ def test_rotation_projection_reports_scheduled_manual_without_request_identity(t
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_compact_policy_projects_battle_hp_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 3,
+        'battle': {'enemy': 'ヴィーナス', 'ally': 'どうし', 'start_enemy_hp': 9999,
+                   'start_ally_hp': 90, 'egg_battle': True,
+                   'note': 'DO-NOT-PUBLISH'},
+        'monster_panel': {'ally': 'バルーンフィンチ', 'ally_hp': 120,
+                          'enemy': 'ヴィーナス', 'enemy_hp': 9999,
+                          'note': 'DO-NOT-PUBLISH'}})
+    assert policy['battle']['start_enemy_hp'] == 9999
+    assert policy['battle']['start_ally_hp'] == 90
+    assert policy['battle']['egg_battle'] is True
+    assert policy['monster_panel']['ally_hp'] == 120
+    assert policy['monster_panel']['enemy_hp'] == 9999
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+
+
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({
@@ -1121,7 +1139,9 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v173-resume-sortie-menu",
                 "hanjuku-chart-v174-status-reuse-hero-guard",
                 "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety")
-    versions += ("hanjuku-chart-v275-battle-opening-dialogue",)
+    versions += ("hanjuku-chart-v275-battle-opening-dialogue",
+                 "hanjuku-chart-v276-chapter-three-relays",
+                 "hanjuku-chart-v277-nav-motion-continuity",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

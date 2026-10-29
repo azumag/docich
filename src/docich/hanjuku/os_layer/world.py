@@ -92,10 +92,23 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
     castles = chart.castles(mem.get('chapter') or 1)
     world = mem.get('cursor')
     last = mem.get('nav_last')
-    # A search step (see ``nav_step``) is our own measured motion, so it
-    # integrates even while uncertain; motion from before an off-map screen
-    # never does.
-    if world and last and last.get('screen') and (not mem.get('uncertain') or last.get('search')):
+    # Screen displacement is measured, so a continuous run of map frames
+    # integrates even while unanchored; the estimate only freezes when a
+    # non-measured move (SELECT/Y) or an off-map screen breaks the run. g1075
+    # 05:52: an unanchored walk to リグア kept the estimate at [571,282] while
+    # the real cursor reached the west edge, so pressing left never ended.
+    tick = mem.get('tick')
+    last_tick = last.get('tick') if isinstance(last, dict) else None
+    if not isinstance(last, dict):
+        trusted = False
+    elif last_tick is None or type(tick) is not int:
+        # Legacy/hot-loaded memory without continuity fields: keep the old
+        # rule (trust only anchored frames or the inland search).
+        trusted = not mem.get('uncertain') or last.get('search')
+    else:
+        trusted = (type(last_tick) is int and type(tick) is int
+                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+    if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
             if _at_edge(s[axis], bounds) or _at_edge(last['screen'][axis], bounds):
