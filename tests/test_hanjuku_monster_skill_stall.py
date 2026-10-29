@@ -23,8 +23,9 @@ def screen():
     return parse(frame, phase=classify(frame))
 
 
-def turn(sc, mem):
-    """One own turn: a new menu draw forgets the cached choice."""
+def turn(sc, mem, observations=20):
+    """One own turn: many observations later, a new menu draw forgets the cached choice."""
+    mem['tick'] += observations
     mem.pop('monster_menu_choice', None)
     mem['_records'] = []
     monster_menu_step(sc, mem)
@@ -48,22 +49,38 @@ def test_the_other_skill_is_tried_after_the_bounded_turns_then_the_stall_is_reco
     assert stalls == [MONSTER_STALL_TURNS, 2 * MONSTER_STALL_TURNS]
 
 
+def test_a_redraw_of_the_same_turn_keeps_its_choice_and_is_not_counted():
+    # v289 live 14:13:28 and :29: one turn decided twice, counted twice.
+    sc, mem = screen(), {'chapter': 3, 'tick': 1}
+    for _ in range(MONSTER_STALL_TURNS):
+        turn(sc, mem)
+        assert turn(sc, mem, observations=1)[0] == 'skill1'        # redraw: still skill1
+    assert mem['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS}
+    choice, records = turn(sc, mem)
+    assert (choice, 'monster_skill_stall' in records) == ('skill2', True)
+    assert turn(sc, mem, observations=1) == ('skill2', ['monster_menu_choice'])
+    assert mem['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS, 'skill2': 1}
+
+
 def unit(name, hp):
     return SimpleNamespace(name=name, hp=hp)
 
 
 def test_a_change_in_the_enemy_hp_starts_the_count_over():
-    mem = {}
+    mem = {'tick': 0}
     ally = unit('おめでとり', 900)
     for _ in range(MONSTER_STALL_TURNS):
+        mem['tick'] += 20
         assert _monster_stall_switch(mem, 'ally', ally, unit('ラズベリー', 45), 'skill1', 2) == 'skill1'
+    mem['tick'] += 20
     assert _monster_stall_switch(mem, 'ally', ally, unit('ラズベリー', 40), 'skill1', 2) == 'skill1'
     assert mem['monster_stall']['turns'] == {'skill1': 1}
 
 
 def test_another_pair_starts_its_own_count():
-    mem = {}
+    mem = {'tick': 0}
     for _ in range(MONSTER_STALL_TURNS):
+        mem['tick'] += 20
         _monster_stall_switch(mem, 'ally', unit('おめでとり', 900), unit('ラズベリー', 45), 'skill1', 2)
     assert _monster_stall_switch(mem, 'ally', unit('なると', 300), unit('ラズベリー', 45), 'skill1', 2) == 'skill1'
 
