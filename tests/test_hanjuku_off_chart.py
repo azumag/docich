@@ -338,6 +338,52 @@ def test_unanchored_map_frames_keep_integrating_measured_motion(monkeypatch):
     assert stale['cursor'] == [571, 282]
 
 
+def test_nav_select_recoveries_are_bounded_per_order_step(monkeypatch):
+    """#2935 g1075: SELECT re-placed the estimate every ~6 s and the same hold
+    walked the cursor back to the screen edge. Recoveries are bounded per step."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'cursor': [500, 500],
+           'uncertain': True, 'nav_search': True}
+    goal = CASTLES['アルマムーン']
+    for _ in range(policy.NAV_RECOVER_LIMIT):
+        mem.pop('select_used', None)
+        assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal,
+                               step='X1') == [policy.pad('select')]
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal, step='X1') == 'infeasible'
+    assert len(decisions(mem, 'select_to_hero')) == policy.NAV_RECOVER_LIMIT
+    # Another step keeps its own budget; without a step nothing is counted.
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal, step='X2') == [policy.pad('select')]
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal) == [policy.pad('select')]
+
+
+def test_map_step_abandons_a_step_that_keeps_needing_select(monkeypatch):
+    """#2935 g1075: 05:52-07:28 spent 1,967 s in nav_stuck bursts without a sortie.
+    Past the bound the step is failed so the picker can choose another one."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    step = 'I:9bacc4:10'
+    order = {'step': step, 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 'test', 'purpose': 'move'}
+    mem = {'chapter': 1, 'captured': [], 'orders': {}, 'picked': [], '_records': [], 'tick': 100,
+           'active': step, 'launched_orders': {step: order}, 'cursor': [500, 500],
+           'uncertain': True, 'unanchored': policy.SELECT_AFTER, 'select_used': True,
+           'garrison': {'アルマムーン': [chart.HERO]},
+           # A jump that closed with 0 moves is not reopened: keep Y out of the way.
+           'y_jump_last': {'step': step, 'mode': 'map', 'moves': 0, 'why': 'cursor_stationary'}}
+    for _ in range(policy.NAV_RECOVER_LIMIT):
+        mem['tick'] += policy.SELECT_EVERY + 1
+        assert policy.map_step(map_screen(8, 180), mem, FRAME) == [policy.pad('select')]
+    mem['tick'] += policy.SELECT_EVERY + 1
+    assert policy.map_step(map_screen(8, 180), mem, FRAME) == []
+    assert mem['orders'][step] == 'failed' and mem['active'] is None
+    assert decisions(mem, 'order_failed')
+    [record] = decisions(mem, 'nav_infeasible')
+    assert record['chart_step'] == step
+    assert record['observed_metric']['recoveries'] == policy.NAV_RECOVER_LIMIT
+
+
 def test_moving_cursor_or_leaving_the_map_never_counts_as_stuck(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
     order = {'step': 'X1', 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
