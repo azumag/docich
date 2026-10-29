@@ -1344,7 +1344,12 @@ MONSTER_MENU_HOLD_LIMIT = 30
 # Own turns one skill may spend while the enemy panel HP never moves. g1075
 # 2026-10-29 13:37-13:57: a defending おめでとり used ミカンをおす 30 times,
 # its HP 1000 -> 603, while ラズベリー stayed at 45 HP; あたためる was never tried.
-MONSTER_STALL_TURNS = 4
+# With 4 turns (v289) the switch came at 14:13, ~10 minutes and 190 HP later,
+# and one あたためる took ラズベリー from 45 to 0.
+MONSTER_STALL_TURNS = 2
+# A menu redraw re-decides the same turn on the next observation (14:13:28
+# and :29 both chose あたためる); decisions this close count as one turn.
+MONSTER_STALL_SAME_TURN_TICKS = 3
 
 
 def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
@@ -1364,6 +1369,10 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
     if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy.hp:
         stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy.hp, 'turns': {}}
     turns = stall['turns']
+    tick = mem.get('tick')
+    if (type(tick) is int and type(stall.get('tick')) is int and stall.get('last') in ('skill1', 'skill2')
+            and 0 <= tick - stall['tick'] <= MONSTER_STALL_SAME_TURN_TICKS):
+        return stall['last']                  # the same turn, redrawn: keep its choice
     other = 'skill2' if action == 'skill1' else 'skill1'
     if turns.get(action, 0) >= MONSTER_STALL_TURNS:
         if turns.get(other, 0) < MONSTER_STALL_TURNS:
@@ -1379,6 +1388,7 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
                     observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
                                      'turns': dict(turns)},
                     reason='両方の技で敵のHPが変わらないが、召喚獣を戻すと将軍が出るため選択を維持する')
+    stall['last'], stall['tick'] = action, tick
     turns[action] = turns.get(action, 0) + 1
     return action
 
