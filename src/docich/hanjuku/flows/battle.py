@@ -369,6 +369,40 @@ def _observe_defender(mem, cur):
                 reason='戦闘パネルの対戦相手をこの城の守備将軍として記録し、再出撃の卵落計画に使う')
 
 
+def battle_finished(cur):
+    """A panel HP of 0 on either side: the fight this record was read from is over."""
+    return (isinstance(cur, dict) and type(cur.get('enemy_hp')) is int
+            and type(cur.get('ally_hp')) is int and 0 in (cur['enemy_hp'], cur['ally_hp']))
+
+
+def _finished_record_replaced(mem, cur, b):
+    """A new panel can close a finished record once two identical readings agree.
+
+    g1075 15:13 (#3009): ヘパイストス fell to 0 and the 帰還先ピッカー covered the
+    return. アポロン's next panel showed クランベリー, nothing closed the old
+    record, and the new fight never opened. A new fight starts with both sides
+    above 0, and two matching readings keep a misread zero-HP panel from
+    closing a fight that is still on the field.
+    """
+    if not (isinstance(cur, dict)
+            and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] == 0
+            and type(cur.get('ally_hp')) is int and cur['ally_hp'] > 0):
+        return False
+    if not (type(b.enemy_hp) is int and type(b.ally_hp) is int
+            and b.enemy_hp > 0 and b.ally_hp > 0
+            and isinstance(b.enemy, str) and isinstance(b.ally, str)
+            and b.enemy and b.ally):
+        cur.pop('finished_replacement_seen', None)
+        return False
+    reading = [b.enemy, b.ally]
+    if cur.get('finished_replacement_seen') != reading:
+        cur['finished_replacement_seen'] = reading
+        return False
+    battle_end(mem, 'battle', panel_changed=True)
+    reset_battle_controls(mem)
+    return True
+
+
 def _drop_defender_record(mem, castles):
     """Capture or loss makes a castle's remembered defender stale."""
     defenders = mem.get('castle_defenders') or {}
@@ -389,6 +423,7 @@ def battle_step(screen: Screen, mem):
             mem['battle'].pop('attack_successor_seen', None)
             mem['battle'].pop('unlocated_successor_seen', None)
             mem['battle'].pop('unlocated_zero_candidate', None)
+            mem['battle'].pop('finished_replacement_seen', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -397,14 +432,17 @@ def battle_step(screen: Screen, mem):
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)
                 or _attack_defender_successor(mem, cur, b) or _unlocated_successor(mem, cur, b)):
-            _card_battle_reading(screen, cur, mem)
-            return []
+            if not _finished_record_replaced(mem, cur, b):
+                _card_battle_reading(screen, cur, mem)
+                return []
         cur = None
     elif cur:
         cur.pop('successor_seen', None)
         cur.pop('entry_successor_seen', None)
         cur.pop('attack_successor_seen', None)
         cur.pop('unlocated_successor_seen', None)
+        cur.pop('finished_replacement_seen', None)
+        mem.pop('battle_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
@@ -941,7 +979,7 @@ def _defender_egg_open(mem, cur):
 
 
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
-               attack_continues=False):
+               attack_continues=False, panel_changed=False):
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -950,7 +988,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     # A panel can blink during the melee; end only on the second
     # consecutive observation without it.
     cur['away'] = cur.get('away', 0) + 1
-    if cur['away'] < 2 and not (defense_continues or actor_continues or attack_continues):
+    if cur['away'] < 2 and not (defense_continues or actor_continues or attack_continues or panel_changed):
         return
     from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])

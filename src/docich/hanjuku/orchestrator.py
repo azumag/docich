@@ -383,7 +383,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem['battle'].pop('entry_successor_seen', None)
         mem['battle'].pop('unlocated_successor_seen', None)
         mem['battle'].pop('unlocated_zero_candidate', None)
-    after_battle = kind in readers.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
+    # The 帰還先ピッカー (world_map) can cover a fight that already ended at HP 0;
+    # it closes that record, but never an unfinished fight (#3009).
+    after_battle = (kind in readers.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
+                    or (kind == 'world_map' and battle_flow.battle_finished(mem.get('battle'))))
     if mem.get('battle') and after_battle:
         battle_flow.battle_end(mem,kind)
     if after_battle:
