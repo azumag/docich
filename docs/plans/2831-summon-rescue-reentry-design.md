@@ -162,3 +162,60 @@ _rescue_decision(mem, cur, context) -> dict
 - 救済判定は flows/battle_menus.py の候補優先 (candidate-first) モデルで実装済み。
 - `_rescue_rearm` (tide change re-arm) は維持。carryover 検出ブロックは #2882 descope (618e427) で削除済み; reset_battle_controls に残るのは rescue_reentry_count / rescue_rearm_count の pop のみ (検出は不発)。
 - #2863 (conserve) は未実装のため OPEN 維持。本方針と同一の判断基準で一体設計する (follow-up)。
+
+## 9. #2863 conserve (温存) follow-up 設計案 (draft, DSH Must 2 拡張)
+
+### 9.1 単一基準（軸ごとの使う/温存基準）
+
+#### 9.1.0 共通基準
+- 卵・きりふだ・奥の手・退却の各軸で「使う/温存」を同一の melee advantage 判定で統一する。
+- 基準: HP・兵士数・戦闘力の実観測に基づく melee advantage。兵数未観測時は #2102 再発防止のため温存に倒さない (unknown)。
+- `_hold_melee_egg` / `_healthy_melee_advantage` / `_full_hp_melee_advantage` の3述語は、`card_soldiers_current is not True` または HP/兵数未観測で False を返す（未観測 → unknown）。
+- `_pre_summon_hp_advantage` は退却軸専用の HP リード主義述語であり、docstring の通り「Unknown armies stay unknown; no soldier count is needed or manufactured」（兵数不要）。卵/きりふだ/奥の手軸の温存判定には流用禁止。
+
+#### 9.1.1 卵軸 (egg)
+- 温存条件: `_hold_melee_egg(mem, cur, labels)` が True。内部で:
+  - 第1: `_healthy_melee_margin_evidence(mem, cur)` が not None（実観測の margin）。
+  - 第2: fallback の healthy 判定: `_melee_balance` の scores[0] > scores[1]、HP が max の BEHIND_EGG_RATIO_TENTHS 境界、兵数 0-6、HP 未観測なし。
+- **卵軸の温存判定に `_full_hp_melee_advantage` は使わない。** 理由: 卵温存は「HP が満タンでなくても melee 優位なら温存」を許容する（healthy margin / continuation evidence）のに対し、`_full_hp_melee_advantage` は `hp == max_hp` を要求し、温存の機会を過剰に狭める。卵軸は `_healthy_melee_advantage`（現パネルの優位）と `_hold_melee_egg` の continuation evidence を主基準とし、`_full_hp_melee_advantage` はきりふだ軸・#2896 の rescue latch 抑制に限定して使う。
+- 閾値根拠: BEHIND_EGG_RATIO_TENTHS（既存定数）、兵数上限 6（`_melee_balance` の 7 シルエット上限との整合）、HP > enemy*2（hero のみ、カードなし時）。#2896 の `hp * 10 > start * 7` は温存継続の下限として共有する。
+
+#### 9.1.2 きりふだ軸 (card)
+- 温存条件: `_full_hp_melee_advantage(cur)` が True（#2896 共有 predicate、g1067）かつ candidate が lethal でない（`_card_damage_gate` の allowed=False でも rescue latch を立てない）。
+- **#2896 との関係（述語共有）**: `_full_hp_melee_advantage` はきりふだ軸で **述語を共有**する。`_card_gate_refused` は `if not _full_hp_melee_advantage(cur): cur['card_damage_rescue_needed'] = True`。つまり満HP優位の局面ではカード gate 却下でも rescue latch を立てない（g1067）。温存側でも同じ predicate を使い、きりふだを温存するか否かの判定を統一する。共有 predicate は `_full_hp_melee_advantage` に一本化し、きりふだ軸独自の閾値は持たない。
+
+#### 9.1.3 奥の手軸 (okunote)
+- 既存: `_survival_menu` の conserving 分岐（`_hold_melee_egg` + cards exhausted/checked>=3）で `battle_egg_conserve` を記録。
+- 温存条件: 低HPでも安全候補（OKUNOTE_SELF_DAMAGE_CHOICES 以外）が visible かつ `_hold_melee_egg` が True の場合は開かず温存を記録して白兵へ戻る。安全候補が無い/未観測は開かず declined（#2102）。
+
+#### 9.1.4 退却軸 (retreat)
+- 温存条件: `_healthy_melee_advantage` または `_pre_summon_hp_advantage` が True の場合、`_default_retreat_needed` は False（退却しない = 温存）。`_pre_summon_hp_advantage` は HP lead + 資源枯渇時の melee 継続。
+- 閾値: BEHIND_EGG_RATIO_TENTHS、STRONG_RETREAT_HP / GENERAL_CRITICAL_RETREAT_HP。
+
+### 9.2 decision log kind と既存 kind との統合
+- 既存: `battle_egg_conserve`（flows/battle_menus.py `_survival_menu` の conserving 分岐）が卵軸の温存を記録済み。
+- 新設候補: `battle_okunote_risk_conserved`（奥の手軸の温存）。
+- 二重登録回避の方針: 軸ごとに kind を分ける。卵軸の温存は `battle_egg_conserve` を再利用し、奥の手軸の温存のみ `battle_okunote_risk_conserved` を新設する。きりふだ軸は既存の `battle_card_damage_rejected` / `card_damage_rescue_needed` フローに統合し、新設 kind は作らない。退却軸は既存の retreat decision log を再利用。
+- つまり新設 kind は `battle_okunote_risk_conserved` の 1 つのみ。卵軸では再利用を明記。
+
+### 9.3 接続点
+- `_survival_menu` (flows/battle_menus.py): 卵軸の温存判定（conserving 分岐）と cards_checked ガード。
+- `okunote_step` (flows/battle_menus.py): 奥の手軸の risk_accepted / risk_declined / risk_conserved 分岐（hp <= MAX_SELF_DAMAGE ブロック内）。
+- `_card_gate_refused` (judgment/battle.py): きりふだ軸の rescue latch 抑制（#2896）。
+- `_default_retreat_needed` / `_hero_retreat_needed` (judgment/battle.py): 退却軸の温存（melee advantage による retreat 抑制）。
+- `_hold_melee_egg` (judgment/battle.py): 共通の温存 predicate。
+
+### 9.4 テスト計画
+- 軸ごとの肯定/否定:
+  - 卵: `_hold_melee_egg` True で conserving 分岐 → `battle_egg_conserve` 記録 + B 返却（肯定）；HP 未観測/兵数未観測 → False → 使用分岐（否定）。
+  - きりふだ: `_full_hp_melee_advantage` True + gate refused → rescue latch 不立（#2896 g1067）；HP 低下 → latch 立つ。
+  - 奥の手: 低HP + visible safe candidate + `_hold_melee_egg` True → 温存記録 + B（肯定）；safe candidate なし/未観測 → `battle_okunote_risk_declined`（#2102）。
+  - 退却: `_healthy_melee_advantage` True → retreat 不発（温存）；HP 危険 → retreat 発火。
+- 維持する既存回帰: #2863 (conserve)、#2864 (self-damage filter)、#2896 (full-HP melee advantage latch)、#2102 (未観測 → unknown)。
+- #2102 明示テスト: 兵数未観測 (`card_soldiers_current is not True`) で `_hold_melee_egg` / `_healthy_melee_advantage` / `_full_hp_melee_advantage` が False を返し、温存側へ分岐しない assert。
+- g 番号: g1059 (召喚戦中の不利再評価)、g1067 (満HP優勢 + グリンボー最小35 vs 敵残HP上限25)、g482 (候補未観測)、g713 (Zeus 7 シルエット)、g745 (conserved army recheck)。
+
+### 9.5 Note 同梱予定（実装 PR 段階でスコープクリープ確認）
+- `battle_okunote_risk_accepted` 記録のラッチ追加。
+- 肯定側テストの assert 締め (3値許容 → 単一期待値)。
+- §9.4 のテスト一覧は設計確定後に実装 PR で実装。本 PR は設計のみ。
