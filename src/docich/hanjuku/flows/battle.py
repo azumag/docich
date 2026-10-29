@@ -967,6 +967,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
+        # g1075 15:42:43: パタゴーヌ fell, the survey Y closed before its
+        # enemy flag was read, and the roof streak built while it was ours
+        # (164 readings) took it back 3 s later. The loss is the newest flag.
+        mem.setdefault('world_flags', {})[castle] = {
+            'kind': 'enemy', 'tick': int(mem.get('tick') or 0), 'chapter': mem.get('chapter') or 0}
+        (mem.get('owner_streak') or {}).pop(castle, None)
         # The attacking enemy general moved into the castle he took, so a
         # retake sortie can plan against the panel we just saw (#1553).
         if (isinstance(cur.get('enemy'), str) and cur['enemy'] not in reference.BOSS_GENERALS
