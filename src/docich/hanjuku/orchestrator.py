@@ -52,7 +52,7 @@ BATTLE_DRAW_HOLD_MAX = 3
 # foreground. A 'text' conversation or an unreadable frame never qualifies.
 BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
                                 'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
-                                'monster_menu'})
+                                'monster_menu', 'monster_menu_pending'})
 # The concert's optional music picker is closed with B, but a stale gold-
 # cursor match can keep the picker test true on a screen B never changes. On
 # 2026-10-10 17:45 UTC exactly that sent B 128 times until the 300 s
@@ -366,6 +366,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # a return to the map or a following event/menu closes the record.
     if kind != 'battle_menu_pending':
         mem.pop('battle_menu_pending_ticks', None)
+    if kind != 'monster_menu_pending':
+        mem.pop('monster_menu_pending_ticks', None)
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
         mem['battle'].pop('entry_successor_seen', None)
@@ -523,6 +525,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=battle_menus_flow.egg_choice_step(screen,mem)
     elif kind=='monster_menu':
         actions=battle_menus_flow.monster_menu_step(screen,mem)
+    elif kind=='monster_menu_pending':
+        actions=battle_menus_flow.monster_menu_pending_step(mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=battle_menus_flow.egg_battle_step(screen,mem)
     elif kind=='okunote_menu':

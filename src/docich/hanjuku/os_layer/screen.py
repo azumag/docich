@@ -423,6 +423,7 @@ class Screen:
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
     mixed_item_box: bool = False
+    monster_menu_drawing: bool = False
     priest_ritual_scene: bool = False
     priest_ritual_dialogue: bool = False
     # Positive pixel evidence only; raw lines retain all unknown message cells.
@@ -744,6 +745,29 @@ def _partial_human_commands(screen):
             and screen.menu_rows[0].spans() == [(176, 'たまごをつかう')])
 
 
+# The summoned monster's skill box never appears in one frame. It slides up
+# with the HP panel from below (g1075 2026-10-29 18:05-18:12: ミカンをおす at
+# y188-208, the panel's ally row on the same y, the last row cut off) or pans
+# in from the right as the enemy general's box leaves (only ミカ/あた/たま at
+# x240). Both read 'text', and the generic A confirmed the top skill: of 9
+# おめでとり turns, 7 were taken that way. Those turns never reached the
+# skill-stall count (it saw 2), so ミカンをおす ran 9 times before あたためる.
+def _partial_monster_menu(frame, screen):
+    if screen.battle is not None:
+        return False
+    from ...hanjuku_reference import MONSTER_SKILLS
+    rows = screen.menu_rows
+    first = rows[0].spans() if rows else []
+    if (rows and rows[0].y > 176 and len(first) == 1 and first[0][0] == 176
+            and any(first[0][1] in skills for skills in MONSTER_SKILLS.values())):
+        return any(row.y == rows[0].y for row in screen.egg_rows or _egg_rows(frame))
+    fragments = [word for line in screen.lines if line.y in (176, 192, 208)
+                 for x, word in line.spans() if x > 176 and len(word) >= 2]
+    return any(sum(any(label.startswith(word) for label in (*skills, 'たまごに'))
+                   for word in fragments) >= 2
+               for skills in MONSTER_SKILLS.values()) and bool(screen.egg_rows or _egg_rows(frame))
+
+
 def egg_choice_names(screen):
     """The measured Elabel summon picker, not monster skills or HP panels."""
     from ...hanjuku_reference import MONSTER_SKILLS
@@ -773,7 +797,7 @@ def month_confirmation_positions(screen):
 
 
 _HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *(\d+)G')
-_KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu',
+_KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu', 'monster_menu_pending',
                               'egg_battle_menu', 'okunote_menu', 'egg_choice_menu', 'card_select'})
 
 
@@ -868,6 +892,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.disabled_item_box &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
+    screen.monster_menu_drawing = _partial_monster_menu(frame, screen)
     command_menu = classify_text(screen) in (_KNIGHT_MENU_KINDS - {'card_select'})
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event') and not command_menu:
         # Command menus have no map-selection cursor. Their coarse phase can
@@ -1067,6 +1092,8 @@ def classify_text(s: Screen) -> str:
     if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         # Our summoned monster's own turn: the option box with たまごに もどれ.
         return 'monster_menu'
+    if s.monster_menu_drawing:
+        return 'monster_menu_pending'
     if 'しゅつげき' in t and 'ステータス' in t:
         # The general list opens beside the castle menu; its hand is right of it.
         if s.hand and s.hand[0] > 100:
