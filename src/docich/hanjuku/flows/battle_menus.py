@@ -1341,6 +1341,46 @@ def egg_battle_step(screen: Screen, mem):
 # window (g344 kept the same menu for 31 s) and far below the 300 s stasis
 # limit, yet bounded so a stuck screen cannot freeze the corner.
 MONSTER_MENU_HOLD_LIMIT = 30
+# Own turns one skill may spend while the enemy panel HP never moves. g1075
+# 2026-10-29 13:37-13:57: a defending おめでとり used ミカンをおす 30 times,
+# its HP 1000 -> 603, while ラズベリー stayed at 45 HP; あたためる was never tried.
+MONSTER_STALL_TURNS = 4
+
+
+def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
+    """Try the other skill once the chosen one has not moved the enemy's HP.
+
+    Counts our own decided turns per skill while the enemy panel HP stays the
+    same for this ally/enemy pair; any HP change starts over. When both skills
+    have spent their turns the choice is kept (returning the summon exposes
+    its general) and the stall is recorded once.
+    """
+    if owner != 'ally' or ally is None or enemy is None or skill_count < 2:
+        return action
+    if action not in ('skill1', 'skill2') or type(enemy.hp) is not int:
+        return action
+    scope = [ally.name, enemy.name]
+    stall = mem.get('monster_stall')
+    if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy.hp:
+        stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy.hp, 'turns': {}}
+    turns = stall['turns']
+    other = 'skill2' if action == 'skill1' else 'skill1'
+    if turns.get(action, 0) >= MONSTER_STALL_TURNS:
+        if turns.get(other, 0) < MONSTER_STALL_TURNS:
+            if not turns.get(other):
+                _record(mem, 'monster_skill_stall', strategy_variant=f'monster_stall_{other}',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns), 'from': action, 'to': other},
+                        reason=f'{MONSTER_STALL_TURNS}ターン使っても敵のHPが変わらないため、もう一方の技を試す')
+            action = other
+        elif not stall.get('recorded'):
+            stall['recorded'] = True
+            _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_both',
+                    observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                     'turns': dict(turns)},
+                    reason='両方の技で敵のHPが変わらないが、召喚獣を戻すと将軍が出るため選択を維持する')
+    turns[action] = turns.get(action, 0) + 1
+    return action
 
 
 def monster_menu_step(screen: Screen, mem):
@@ -1532,6 +1572,8 @@ def monster_menu_step(screen: Screen, mem):
         # retain the explicit, measured two-useless-skills exception.
         if action == 'retreat' and not powerless:
             action = default
+        if not special_cycle and not damage_first and not damage_second:
+            action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines))
         # Keep the existing telemetry shape. The general's exposure risk is
         # still reported, but useful summons no longer request a return that
         # needs to be blocked by that separate guard.
@@ -1590,7 +1632,12 @@ def monster_menu_step(screen: Screen, mem):
         else:
             label, why = first, ('敵召喚獣には混乱技の反復より実ダメージの1技目を優先する'
                                  if damage_first else '先手を取れる1技目を続ける')
-        if not special_cycle and action != default and action != 'retreat':
+        stalled = (mem.get('monster_stall') or {}).get('turns') or {}
+        if (not special_cycle and action != default and action != 'retreat'
+                and stalled.get(default, 0) >= MONSTER_STALL_TURNS):
+            label = first if action == 'skill1' else second
+            why = f'{MONSTER_STALL_TURNS}ターン使っても敵のHPが変わらない技の代わりに試す（既定 {default}）'
+        elif not special_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
