@@ -240,6 +240,7 @@ def test_parent_navigation_budget_cannot_block_the_irreversible_candidate_choice
 def test_pending_unknown_frames_do_not_escape_to_generic_a_or_old_month_transaction(monkeypatch):
     mem = memory(enemy_hp=10)
     opening(mem)
+    mem['battle']['okunote_egg_preempt']['opens'] = p.DEFENDER_EGG_OPEN_LIMIT  # no retry budget left
     mem['month_sub'] = {'kind': 'soldiers'}  # a stale transaction is not the active battle
     monkeypatch.setattr(p, 'month_sub_step', lambda *args: (_ for _ in ()).throw(AssertionError('old transaction ran')))
     c = Canvas((120, 120, 120))
