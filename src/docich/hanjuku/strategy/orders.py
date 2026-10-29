@@ -7,7 +7,7 @@ last-castle guard. Returns plans and records; never pad input.
 from __future__ import annotations
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
-from ...hanjuku_egg_reference import general_max_hp
+from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
@@ -47,33 +47,57 @@ def _order_hero_alternatives(order, mem, names):
     candidates = _hero_alternatives(mem, names)
     if not _is_boss_order(order, mem):
         return candidates
-    if order.get('target') in chart.boss_sites(4):
+    site = order.get('target') in chart.boss_sites(4)
+    if site:
         # Owner 2026-10-30: a 四季王 sortie still leaves HERO_CASTLE_GUARD
-        # generals beside the hero when it leaves the hero's castle.
+        # generals beside the hero when it leaves the hero's castle. The
+        # 四季王 fights as a summoned monster from the first turn with no
+        # きりふだ row (g1075 08:27:56 サマカンテ), so a general without an
+        # egg can only melee it (カペリーニ/ミュスカデ were sent so).
         unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
-        candidates = [g for g in candidates if not chart_adjust.hero_guard_short(names, g, unavailable)]
+        candidates = [g for g in candidates if _holds_egg(mem, g)
+                      and not chart_adjust.hero_guard_short(names, g, unavailable)]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
-    boss = (reference.general_strength(chart.BOSSES.get(mem.get('chapter')))
-            or reference.general_strength('しゅじんこう'))
-    if boss is None:
+    if _boss_stats(mem) is None:
         return []
     fit = [name for name in candidates
            if reference.general_strength(name) is not None and not _boss_companion_unfit(mem, name)]
-    strong = [name for name in fit
-              if (stats := reference.general_strength(name)) is not None
-              and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
-              and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+    strong = [name for name in fit if _boss_comparable(mem, name)]
     if strong:
-        return strong
+        # Owner 2026-10-30 (四季王): 強い将軍から, so the strongest leads.
+        return sorted(strong, key=_strength, reverse=True) if site else strong
     # Owner (2026-10-14): waiting for a comparable companion left the boss
     # castle unattacked for a whole run while healthy generals sat in other
     # castles. A fit but weaker substitute still attacks, strongest first.
     # The hero is never sent (owner: 主人公boss禁止), and an injured or
     # egg-depleted substitute is still left to recover.
-    return sorted(fit, key=lambda name: (reference.general_strength(name) or (0, 0))[:2],
-                  reverse=True)
+    return sorted(fit, key=_strength, reverse=True)
+
+
+def _strength(name):
+    return (reference.general_strength(name) or (0, 0))[:2]
+
+
+def _boss_stats(mem):
+    return (reference.general_strength(chart.BOSSES.get(mem.get('chapter')))
+            or reference.general_strength('しゅじんこう'))
+
+
+def _boss_comparable(mem, name):
+    boss, stats = _boss_stats(mem), reference.general_strength(name)
+    return (boss is not None and stats is not None
+            and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
+            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP)
+
+
+def _holds_egg(mem, name):
+    """An egg the sortie screen showed, else the roster's own (GENERAL_EGGS);
+    a rotten egg or a read count of 0 is none."""
+    kind = (mem.get('egg_types') or {}).get(name)
+    held = kind != 'くさってる' if kind is not None else bool((GENERAL_EGGS.get(name) or (False,))[0])
+    return held and (mem.get('egg_uses') or {}).get(name) != 0
 
 
 def _boss_companion_unfit(mem, name):
@@ -90,7 +114,22 @@ def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = mem.get('garrison') or {}
     source = _source(order, mem)
-    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    chapter = mem.get('chapter') or 0
+    owned = _owned(mem) & set(chart.castles(chapter))
+    if order.get('target') in chart.boss_sites(4):
+        # Owner 2026-10-30: 強い将軍から. Every read list's strongest companion
+        # competes, not the chart source's first fit one (g1075 08:20-08:25
+        # sent each source's lone アルテミス 49/7, カペリーニ 63/7, ミュスカデ
+        # 57/9). The hero's castle, where joiners stand, is read first while
+        # no read list holds one as strong as the hero.
+        best = {c: names[0] for c in owned
+                if (names := _order_hero_alternatives(order, mem, garrison.get(c)))}
+        home = chart.home_castle(chapter)
+        if (home in owned and garrison.get(home) is None
+                and not any(_boss_comparable(mem, g) for g in best.values())):
+            return home
+        return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
+                   default=None)
     castles = [source] + sorted(owned - {source})
     return next((castle for castle in castles if castle in owned
                  and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
