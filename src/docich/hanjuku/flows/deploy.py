@@ -699,8 +699,11 @@ def _keep_last_castle(screen, mem, order):
 
 
 def _hold_guarded_sortie(mem, order, decision, reason, observed):
-    mem.setdefault('orders', {})[order['step']] = (
-        'failed' if order['step'].startswith('I:') else 'pending')
+    orders = mem.setdefault('orders', {})
+    # A cancel limit may have just retired the step (failed); an adjusted
+    # step put back to pending was re-issued every 10 s (g1075 J2 x15).
+    if orders.get(order['step']) != 'failed':
+        orders[order['step']] = 'failed' if order['step'].startswith('I:') else 'pending'
     mem['active'] = None
     mem['picked'] = []
     mem.setdefault('sortie_general', {}).pop(order['step'], None)
@@ -763,7 +766,8 @@ def _keep_sortie_defender(screen, mem, order):
     if recheck is not None:
         recheck['attempts'] = min(SOURCE_LOCATION_RECHECK_LIMIT, recheck['attempts'] + 1)
         mem.setdefault('source_location_rechecks', {})[source] = recheck
-        _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
+        _record_source_defender_cancel(mem, order, present=present, available=sorted(available),
+                                       gate=False)
         return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
             '所在未確認の将軍を守備人数に含めず取り消し、同じ一覧の再確認を上限付きで残す',
             {'present': present[:8], 'available': sorted(available),
