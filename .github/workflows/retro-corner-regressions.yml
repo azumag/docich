@@ -381,6 +381,7 @@ jobs:
           tests/test_hanjuku_saved_stop.py tests/test_hanjuku_stall_checkpoint.py
           tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
           tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
+          tests/test_presentation_projection_latency.py
       - name: Hanjuku checkpoint diagnostics and redaction
         run: python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py
       - name: Transactional switch contract

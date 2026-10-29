@@ -18,6 +18,8 @@ RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
+MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
+MENU_REOPEN_LIMIT = 3          # presses again per recall
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -139,7 +141,29 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                     reason='主人公の部隊メニューが開かない（城内など）ため帰還指示を取り消す')
             return [pad('b')] if screen.kind != 'map' else []
         if not is_camp_menu(screen):
+            if screen.kind == 'map' and not state.get('hero'):
+                # Back on the bare map: the A on the tent opened nothing or
+                # an event swallowed it (g1075 2026-10-29 14:57:27: a defense
+                # message right after the A, then 61 silent map observations
+                # with the tent in view until 15:07). Go back onto the tent.
+                waits = state['menu_map_waits'] = int(state.get('menu_map_waits') or 0) + 1
+                if waits >= MENU_OPEN_WAIT:
+                    reopens = state['menu_reopens'] = int(state.get('menu_reopens') or 0) + 1
+                    state.pop('menu_map_waits', None)
+                    if reopens > MENU_REOPEN_LIMIT:
+                        mem.pop('recall', None)
+                        mem['uncertain'] = True
+                        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                        _record(mem, 'camp_recall_aborted', resulting_event='camp_menu_not_opened',
+                                observed_metric={'camp': state.get('target'), 'reopens': reopens - 1},
+                                reason='野営で決定し直しても野営メニューが開かないため帰還指示を断念する')
+                        return []
+                    state['stage'] = 'to_camp'
+                    _record(mem, 'camp_menu_not_opened', observed_metric={
+                                'camp': state.get('target'), 'map_observations': waits, 'reopen': reopens},
+                            reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
+        state.pop('menu_map_waits', None)
         move = menu_to(screen, 'きかん')
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1

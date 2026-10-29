@@ -37,6 +37,9 @@ ENV_FILE = Path("/home/ubuntu/.config/docich/webui.env")
 INSTALL = Path("/usr/local/libexec/azumag-vm-ops")
 MAX_ENV = 64 * 1024
 MAX_RESPONSE = 8192
+# git status on the production checkout maps the pack/index and needs headroom
+# above 256 MiB; 512 MiB keeps the query bounded while allowing that read.
+MAX_ADDRESS_SPACE = 512 * 1024 * 1024
 INSTALLED_FILES = ("gateway_entry.py", "tsuitate_status_gateway.py")
 CAPABILITY_KEYS = ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL")
 FORBIDDEN_KEYS = ("DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN")
@@ -307,7 +310,7 @@ def main(core, config_path: str) -> int:
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
-        resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+        resource.setrlimit(resource.RLIMIT_AS, (MAX_ADDRESS_SPACE, MAX_ADDRESS_SPACE))
         signal.alarm(20)
         os.environ["PATH"] = "/usr/bin:/bin"
         os.environ["GIT_OPTIONAL_LOCKS"] = "0"
