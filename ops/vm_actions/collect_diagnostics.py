@@ -6535,6 +6535,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v324-hold-gate-reload",
             "hanjuku-chart-v325-lost-chart-general",
             "hanjuku-chart-v326-target-jump-settle",
+            "hanjuku-chart-v327-hopeless-attack-retreat",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
