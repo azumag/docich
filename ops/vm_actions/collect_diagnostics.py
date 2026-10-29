@@ -6520,6 +6520,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v309-card-stock-skip",
             "hanjuku-chart-v310-monster-menu-drawing",
             "hanjuku-chart-v311-overtaken-confirm",
+            "hanjuku-chart-v312-monster-unchosen-turn",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

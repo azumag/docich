@@ -893,6 +893,8 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.disabled_item_box &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
     screen.monster_menu_drawing = _partial_monster_menu(frame, screen)
+    if screen.monster_menu_drawing and not screen.egg_rows:
+        screen.egg_rows = _egg_rows(frame)   # the panel names whose box is moving
     command_menu = classify_text(screen) in (_KNIGHT_MENU_KINDS - {'card_select'})
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event') and not command_menu:
         # Command menus have no map-selection cursor. Their coarse phase can
