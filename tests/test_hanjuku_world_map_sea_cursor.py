@@ -27,6 +27,8 @@ WORLD_VIEWS = {
     'g1075-world-map-land-cursor.png', 'g1075-world-map-sea-cursor.png',
     'g1075-world-map-ring-west-edge.png', 'g1075-world-map-ring-top-edge.png',
     'g1075-world-map-ring-off.png',
+    'g1075-ch3-y-view-boss-skull.png', 'g1075-ch3-y-view-g-over-cave.png',
+    'g1075-ch3-y-view-g-on-boss-aim.png',
     'g1075-ch3-recall-picker-almamoon.png', 'g1075-ch3-recall-picker-grin.png',
     'chapter-2-boss-y-focus.png', 'g749-cinnamon-recall-picker-29564.png',
     'hanjuku_recall_picker_20260929.png', 'g464-frame-022.png',
