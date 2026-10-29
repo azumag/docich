@@ -27,6 +27,8 @@ PAN = FIXTURES / 'g1075-dionysus-command-pan.png'             # 19:16:47, こう
 ATTACK = FIXTURES / 'g1075-dionysus-attack-dialogue.png'      # 19:16:33, デュオニソス のこうげ…
 KYUU = FIXTURES / 'g1075-omedetori-kyuu-dialogue.png'
 SLIDING = FIXTURES / 'g1075-omedetori-menu-sliding-up.png'
+ENTRANCE = FIXTURES / 'g1075-excalibur-entrance-dialogue.png'   # 19:00:45, エッグモンスター エクスカリバー たんじょう!
+AKEMATSU = FIXTURES / 'g1075-akematsu-first-box.png'            # 19:53:46, the box a stray A reached
 
 
 def kind(path):
@@ -88,3 +90,12 @@ def test_a_stray_greeting_counts_as_akematsus_one_greeting():
     menus.count_unchosen_monster_turn(mem)
     ally, enemy = SimpleNamespace(name='あけまつ'), SimpleNamespace(name='キャンディー')
     assert akematsu_assessment(mem, ally, enemy)['action'] == 'skill2'      # おもてなし next
+
+
+def test_an_egg_monster_entrance_starts_the_paced_scene():
+    # 19:53:26 たまごをつかう, 19:53:46 あけまつ's first box took the A decided
+    # on the page before it: no box had been seen in this battle yet.
+    assert kind(ENTRANCE) == 'text' and kind(AKEMATSU) == 'monster_menu'
+    st, _, buttons = run(state('リーキ', 'ヴィーナス'), ENTRANCE, KYUU, ENTRANCE, ENTRANCE)
+    assert buttons == [[], [], [], ['a']]
+    assert st['policy']['battle']['summon_scene'] is True
