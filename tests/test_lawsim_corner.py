@@ -492,9 +492,13 @@ def test_lawsim_view_uses_fullscreen_cover_fit():
 
 
 def test_lawsim_view_has_throttled_canvas_scene():
+    import re
+
     assert '<canvas id="scene">' in HTML
     assert "visibilitychange" in HTML
     assert "setInterval(sceneTick,250)" in HTML
+    # canvas must sit behind header / #board (contract: never hides them)
+    assert re.search(r"canvas#scene\{[^}]*z-index:-1", HTML)
 
 
 def test_lawsim_narration_is_bounded_and_covers_session():
@@ -508,6 +512,69 @@ def test_lawsim_narration_is_bounded_and_covers_session():
     })
     assert 0 < len(text) <= MAX_SPEECH
     assert "L" in text
+
+
+def test_lawsim_speech_matches_real_enqueue_signature(monkeypatch):
+    # Pins the call shape: a stub with a drifted signature must fail here,
+    # not be swallowed by speech()'s broad except (which would return "failed").
+    import inspect
+    from types import SimpleNamespace
+    from docich import lawsim_narration
+    from docich.trading import soren_output
+
+    real_sig = inspect.signature(soren_output.enqueue_audio_text)
+    calls = []
+
+    def stub(*args, **kwargs):
+        real_sig.bind(*args, **kwargs)
+        calls.append(kwargs)
+
+    monkeypatch.setattr(lawsim_narration, "enqueue_audio_text", stub)
+    g = SimpleNamespace(state_dir=None)
+    assert lawsim_narration.speech(g, "text") == "sent"
+    assert calls == [{"context": lawsim_narration.CONTEXT, "speaker": "",
+                      "dedup_scope": lawsim_narration.CONTEXT}]
+
+
+def test_lawsim_narration_frame_timing_contract(tmp_path, monkeypatch):
+    # started_at + k*12s schedule; at most one bounded frame per due tick;
+    # stop at narration_frame_count; nothing enqueued past the end.
+    from types import SimpleNamespace
+
+    (tmp_path / "docich.toml").write_text("", encoding="utf-8")
+    g = SimpleNamespace(state_dir=tmp_path / "run")
+    now = [1000.0]
+    manager = LawSimCornerManager(g, audio_enabled=True, clock=lambda: now[0])
+
+    frames = []
+
+    def fake_announcement(g, *, audio_enabled=False, frame_index=None, **kwargs):
+        frames.append(frame_index)
+        return {"overlay": "skipped", "speech": "sent",
+                "frame_index": frame_index, "frame_count": 2}
+
+    monkeypatch.setattr("docich.lawsim_narration.announcement", fake_announcement)
+    state = {"started_at": 1000.0, "narration_next_at": 1000.0,
+             "narration_next_frame": 0, "narration_frame_count": 0}
+
+    manager._narrate_due(state)          # t=1000: frame 0
+    assert frames == [0]
+    assert state["narration_next_at"] == 1012.0
+
+    now[0] = 1005.0                      # not yet due: no enqueue
+    manager._narrate_due(state)
+    assert frames == [0]
+
+    now[0] = 1012.0                      # t=1012: frame 1, fixed 12s step
+    manager._narrate_due(state)
+    assert frames == [0, 1]
+    assert state["narration_next_at"] == 1024.0
+
+    now[0] = 1024.0                      # frame_count reached: no more enqueues
+    manager._narrate_due(state)
+    assert frames == [0, 1]
+    assert state["narration_next_frame"] == 2
+    assert state["narration"]["enqueued"] == 2
 
 
 def test_lawsim_corner_audio_enabled_stored(tmp_path):
