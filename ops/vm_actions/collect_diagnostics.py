@@ -6541,6 +6541,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v330-site-strongest-egg",
             "hanjuku-chart-v331-site-entry-repeat",
             "hanjuku-chart-v333-site-keep-defender",
+            "hanjuku-chart-v335-y-jump-interrupted",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
