@@ -1155,7 +1155,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v297-camp-menu-reopen",
                  "hanjuku-chart-v298-okunote-effect-label",
                  "hanjuku-chart-v300-recall-picker-stationary",
-                 "hanjuku-chart-v301-boss-flag-not-read",)
+                 "hanjuku-chart-v302-defense-loss-flag",
+                 "hanjuku-chart-v303-boss-flag-not-read",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

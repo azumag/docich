@@ -125,6 +125,30 @@ def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
     return []
 
 
+# The owner survey's Y opens the same view with no jump in flight. g1075
+# 2026-10-29: 7 of 46 surveys met an unreadable first frame (the fade in) and
+# the generic A closed the view unread; at 15:42:44 that hid パタゴーヌ's new
+# enemy flag. Hold that A only for the first observations after the survey Y.
+WORLD_SURVEY_UNKNOWN_HOLD_TICKS = 3
+
+
+def world_survey_unknown_hold_step(screen, mem, generic):
+    """Withhold the generic confirm on the fade right after the survey Y."""
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    opened, tick = mem.get('world_map_tick'), mem.get('tick')
+    if (screen.kind != 'unknown' or not confirms or isinstance(mem.get('y_jump'), dict)
+            or type(opened) is not int or type(tick) is not int
+            or not 0 < tick - opened <= WORLD_SURVEY_UNKNOWN_HOLD_TICKS):
+        return None
+    decision_log._record(mem, 'world_map_unknown_hold', screen=screen.kind,
+                         observed_metric={'after_y': tick - opened,
+                                          'limit': WORLD_SURVEY_UNKNOWN_HOLD_TICKS},
+                         reason='全城確認のYの直後の読めない画面で既定のAを押すと全体マップを読まずに閉じるため保留する')
+    return []
+
+
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
     """Withhold a generic confirm on an unreadable battle draw, boundedly.
 
@@ -561,6 +585,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         jump_hold = y_jump_unknown_hold_step(screen, mem, state.get('screen_kind'), actions)
         if jump_hold is not None:
             actions = jump_hold
+        survey_hold = world_survey_unknown_hold_step(screen, mem, actions)
+        if survey_hold is not None:
+            actions = survey_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
