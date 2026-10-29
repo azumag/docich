@@ -1242,6 +1242,13 @@ def _boss_entry_cell(mem, general):
     """The boss castle an entry text names: chapter 4's 「ボスじょう」 is one of
     four 四季王 sites, the one this general is marching on (no site, no guess)."""
     chapter = mem.get('chapter') or 0
+    current = mem.get('attack') or {}
+    if (chapter == 4 and current.get('general') == general and current.get('castle') in chart.boss_sites(4)
+            and current.get('entry_evidence') == 'measured_boss_entry'):
+        # The same entry text on the next frame: its march is arrived by now
+        # (g1075 08:41:12-22: ヴィーナス's 4-B4 entry, bound once, was held
+        # 7 times and then rewritten to ボス without a step).
+        return current['castle']
     if chapter == 4:
         # An unconfirmed launch keeps its site as planned_target only (g1075
         # 08:34:57: カペリーニ's 4-B2 entry matched nothing and was held 7 times).

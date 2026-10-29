@@ -79,3 +79,25 @@ def test_an_unconfirmed_site_launch_binds_its_entry_after_a_long_march():
     assert policy.message_step(screen, mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
                              'step': '4-B2', 'entry_evidence': 'measured_boss_entry'}
+
+
+def test_the_same_site_entry_on_the_next_frame_keeps_its_site_and_step():
+    """g1075 08:41:12-22: ヴィーナス's 4-B4 entry bound to 四季王城(北西) once;
+    the text stayed on screen, matched nothing and after 7 holds became ボス."""
+    from docich import hanjuku_policy as policy
+    from docich.hanjuku_screen import Screen, classify_text
+    def entry():
+        screen = Screen(lines=[], hand=None, text='ヴィーナスしょうぐんがボスじょうにせめこんだ!!')
+        screen.kind = classify_text(screen)
+        return screen
+    mem = {'chapter': 4, 'tick': 132700, 'orders': {'4-B4': 'launched'},
+           'sorties': {'4-B4': {'general': 'ヴィーナス', 'source': 'アルカ', 'status': 'en_route',
+                                'target': '四季王城(北西)', 'tick': 131798}}}
+    bound = {'general': 'ヴィーナス', 'castle': '四季王城(北西)', 'side': 'attack',
+             'step': '4-B4', 'entry_evidence': 'measured_boss_entry'}
+    assert policy.message_step(entry(), mem) == [policy.pad('a')]
+    assert mem['attack'] == bound and mem['sorties']['4-B4']['status'] == 'arrived'
+    for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT + 1):
+        assert policy.message_step(entry(), mem) == [policy.pad('a')]
+    assert mem['attack'] == bound
+    assert 'situation_held' not in [r['decision'] for r in mem['_records']]
