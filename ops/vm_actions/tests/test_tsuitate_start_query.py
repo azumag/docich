@@ -145,6 +145,17 @@ class TsuitateBackgroundStartTests(unittest.TestCase):
             self.assertEqual(self.module.start_one_background_match(now=self.now), self.run_id)
         call.assert_called_once_with("status")
 
+    def test_paused_same_hour_run_requires_attention(self):
+        status = {"state": "paused", "runId": self.run_id, "readyForNextRun": False}
+        with mock.patch.object(self.module, "_install_control_environment"), mock.patch.object(
+            self.module, "call_beta_control", return_value=status
+        ) as call:
+            with self.assertRaisesRegex(
+                self.module.BackgroundStartError, "control_state_requires_attention"
+            ):
+                self.module.start_one_background_match(now=self.now)
+        call.assert_called_once_with("status")
+
     def test_other_active_run_is_never_stopped_or_replaced(self):
         status = {"state": "playing", "runId": "other-run", "readyForNextRun": False}
         with mock.patch.object(self.module, "_install_control_environment"), mock.patch.object(
