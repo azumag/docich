@@ -106,15 +106,67 @@ def test_dispatch_receipt_cannot_be_retargeted(monkeypatch):
     assert mem['recall']['goal'] == 'アルマムーン'
 
 
-@pytest.mark.parametrize('cursor', ['missing', 'stuck'])
-def test_picker_stall_has_a_finite_budget(monkeypatch, cursor):
+def test_picker_stall_has_a_finite_budget(monkeypatch):
     mem = memory(list(p.chart.castles(1)['キカンドン']))
     at(monkeypatch, 'アルマムーン')
-    if cursor == 'missing': monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
     for _ in range(p.RECALL_LIMIT - 1):
         assert not any(a.get('buttons') == ['a'] for a in p.world_map_step(VIEW, mem, picker()))
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
     assert not mem.get('recall')
+
+
+def chapter3_at(monkeypatch, castle):
+    x, y = p.chart.castles(3)[castle]; ox, oy = p.WORLD_MAP_OFFSET[3]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {
+        c: 'enemy' if c == 'ボス' else 'own' for c in p.chart.castles(3)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+
+
+def chapter3_memory():
+    return {'chapter': 3, 'tick': 100, '_records': [],
+            'captured': [c for c in p.chart.castles(3) if c not in ('ボス', 'アルマムーン')],
+            'recall': {'stage': 'dest', 'steps': 0,
+                       'origin': list(p.chart.castles(3)['パタゴーヌ'])}}
+
+
+def test_stationary_picker_cursor_tries_the_other_axis_then_gives_up(monkeypatch):
+    # g1075 15:10:55-15:14:46: aiming at パタゴーヌ, the ring stayed on
+    # アルマムーン through 54 left presses; one down press reached グリン.
+    mem = chapter3_memory()
+    chapter3_at(monkeypatch, 'アルマムーン')
+    presses = [p.world_map_step(VIEW, mem, picker()) for _ in range(p.PICKER_STILL_LIMIT)]
+    assert mem['recall']['goal'] == 'パタゴーヌ'
+    assert presses == ([[p.pad('left')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('down')]] * (p.PICKER_STILL_LIMIT - p.PICKER_AXIS_SWITCH))
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
+    assert not mem.get('recall') and mem['uncertain'] and mem['recall_skip'] == {'tick': 100}
+    steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
+    assert [r['observed_metric']['still'] for r in steps] == list(range(p.PICKER_STILL_LIMIT + 1))
+    assert mem['_records'][-1]['decision'] == 'camp_recall_aborted'
+    assert mem['_records'][-1]['resulting_event'] == 'picker_cursor_stationary'
+
+
+def test_moved_picker_cursor_returns_to_the_main_axis(monkeypatch):
+    mem = chapter3_memory()
+    chapter3_at(monkeypatch, 'アルマムーン')
+    for _ in range(p.PICKER_AXIS_SWITCH):
+        p.world_map_step(VIEW, mem, picker())
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('down')]
+    chapter3_at(monkeypatch, 'グリン')
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
+    assert mem['recall']['picker_still'] == 0
+
+
+def test_moving_picker_cursor_keeps_pressing(monkeypatch):
+    mem = memory(list(p.chart.castles(1)['キカンドン']))
+    x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
+    at(monkeypatch, 'アルマムーン')
+    for step in range(p.PICKER_STILL_LIMIT * 2):
+        monkeypatch.setattr(p, 'world_cursor', lambda _, s=step: (x / 8 + ox - s % 2, y / 8 + oy))
+        assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
+    assert mem['recall']['picker_still'] == 0
 
 
 def test_unknown_origin_does_not_borrow_old_integrated_cursor_or_picker_without_marker(monkeypatch):
