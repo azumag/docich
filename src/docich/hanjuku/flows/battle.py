@@ -384,10 +384,17 @@ def _finished_record_replaced(mem, cur, b):
     above 0, and two matching readings keep a misread zero-HP panel from
     closing a fight that is still on the field.
     """
-    if not battle_finished(cur) or not (b.enemy_hp > 0 and b.ally_hp > 0):
+    if not battle_finished(cur) or not (type(b.enemy_hp) is int and type(b.ally_hp) is int
+            and b.enemy_hp > 0 and b.ally_hp > 0
+            and isinstance(b.enemy, str) and isinstance(b.ally, str)
+            and b.enemy and b.ally):
         return False
-    reading = [b.enemy, b.ally]
-    if mem.get('battle_seen') != reading:
+    tick = mem.get('tick')
+    reading = (b.enemy, b.ally, b.enemy_hp, b.ally_hp, tick)
+    prev = mem.get('battle_seen')
+    if isinstance(prev, tuple) and prev and prev[-1] == tick:
+        return False
+    if prev != reading:
         mem['battle_seen'] = reading
         return False
     battle_end(mem, 'battle', panel_changed=True)
