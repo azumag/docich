@@ -30,6 +30,13 @@ def selected(mem, cur, *, candidate):
                               'phase': 'candidate_selected' if candidate else 'parent_selected'}
 
 
+def candidate_chosen(mem, cur):
+    """This battle's okunote candidate was chosen; following text is its effect."""
+    attempt = cur.get('okunote_attempt')
+    return (isinstance(attempt, dict) and attempt.get('scope') == _scope(mem, cur)
+            and attempt.get('phase') == 'candidate_selected')
+
+
 def summon_reading(screen, mem, cur):
     """Bind our current human HP and a real enemy monster, with distinct pools."""
     identity = run_identity(mem.get('_run_identity'))
@@ -60,9 +67,7 @@ def summon_reading(screen, mem, cur):
 
 def combat_return(screen, mem, cur, *, summon=None):
     """A complete live panel ends the chosen attempt, without claiming an effect."""
-    attempt = cur.get('okunote_attempt')
-    if (not isinstance(attempt, dict) or attempt.get('scope') != _scope(mem, cur)
-            or attempt.get('phase') != 'candidate_selected'):
+    if not candidate_chosen(mem, cur):
         return
     b = screen.battle
     ordinary = (screen.kind == 'battle' and b is not None
