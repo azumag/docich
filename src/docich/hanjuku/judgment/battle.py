@@ -340,6 +340,81 @@ def _card_melee_ready(mem, cur):
                 and _control_melee_advantage(cur, hp, cur.get('ally_soldiers'), cur.get('enemy_soldiers')))
 
 
+# gcgx EggHero 白兵戦闘処理 (X はキャラ左端)。前衛の開始位置と接触間隔、
+# 左右の壁、後退初速ごとの後退ドット。将軍は後衛 (前衛の 24 ドット後ろ) に
+# 立つとみる: 剣の稽古の初接触 (同じ戦闘14同士) で敵将軍 X=85 は前衛の
+# 接触 112 から 24 と押し返しを引いた値に合う。兵士が無くてもそう扱う。
+CLASH_ENEMY_FRONT_START = 48
+CLASH_ALLY_FRONT_START = 200
+CLASH_GAP = 24
+CLASH_LEFT_WALL = 4
+CLASH_RIGHT_WALL = 240
+CLASH_REAR_OFFSET = 24
+CLASH_BACKOFF_DOTS = {5: 62, 6: 77, 7: 92, 8: 107, 9: 122, 10: 137}
+CLASH_MASH_MAX = 8            # 後退中の連打は 8 回分までしか加速に入らない
+CLASH_APTITUDE_SPEED = 6      # 得意地形・季節。城攻・城守・洞窟は速度が上がらない
+CLASH_NO_SPEED_APTITUDES = frozenset({'', '城攻', '城守', '洞窟'})
+CLASH_MARGIN = 16             # 離散移動・押し返し・壁際の処理順の誤差
+CLASH_SAFE_EFFECTS = frozenset({'fixed', 'hp_scaled', 'soldier_clear'})
+
+
+def _backoff_dots(pusher_soldiers, pushed_soldiers, pusher_combat):
+    """押し返された側の後退ドット。初速が表の外なら None (外挿しない)。"""
+    a = max(0, 2 * pusher_soldiers - 2 * pushed_soldiers)
+    return CLASH_BACKOFF_DOTS.get(max(5, (a + pusher_combat) // 4 + 4))
+
+
+def _enemy_egg_reach(mem, cur, context, estimate):
+    """攻城戦の残りの白兵で、敵の思考タイプの卵判定に届くか。
+
+    gcgx EggHero 卵使用思考: B (瀕死) と D (4の倍数) は敵将軍の壁接触、
+    C は接触時の敵将軍 X <= 話数*4+32 で判定する。A は開幕で決まり、当方の
+    携行は47以下。押し合いの加速・後退から、敵の加速は下限 (兵士0・連打0・
+    城補正0)、当方は上限 (兵士は読めた数か6・連打8・得意補正) で
+    敵将軍の最左位置を出す。接触ごとに左へ寄るなら届くとする。
+    単発の切り札は位置を動かさないので、届かなければ倒し切れなくても
+    この戦闘で卵は出ない。止める・半減・自傷の札は位置に効くので対象外。
+    """
+    chapter = mem.get('chapter')
+    enemy_name = cur.get('enemy')
+    ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
+    ally = reference.general_strength(ally_name)
+    enemy = reference.general_strength(enemy_name)
+    profile = reference.general_profile(ally_name)
+    if (cur.get('side') != 'attack' or type(chapter) is not int or chapter not in range(1, 13)
+            or enemy_name in reference.BOSS_GENERALS or enemy_name in chart.BOSSES.values()
+            or ally is None or enemy is None or profile is None
+            or estimate['effect_kind'] not in CLASH_SAFE_EFFECTS or estimate['self_harm']):
+        return None
+    triggers = enemy_egg_triggers(enemy_name, player_castle_defense=False)
+    ours = context['ally_soldiers']
+    ours = ours if type(ours) is int and 0 <= ours <= reference.MAX_BATTLE_SOLDIERS else None
+    soldiers = reference.MAX_BATTLE_SOLDIERS if ours is None else ours
+    aptitude = 0 if profile['aptitude'] in CLASH_NO_SPEED_APTITUDES else CLASH_APTITUDE_SPEED
+    ally_accel = 2 * soldiers + CLASH_MASH_MAX + 16 + ally[1] + aptitude
+    enemy_accel = 16 + enemy[1]
+    enemy_back = _backoff_dots(soldiers, 0, ally[1])
+    ally_back = _backoff_dots(0, soldiers, enemy[1])
+    clash_x = chapter * 4 + 32
+    bound = {'ally_soldiers_upper': soldiers, 'ally_accel_upper': ally_accel,
+             'enemy_accel_lower': enemy_accel, 'enemy_backoff_upper': enemy_back,
+             'ally_backoff_lower': ally_back, 'clash_x_threshold': clash_x,
+             'clash_checked': triggers.clash_position is not False,
+             'enemy_general_x_min': None, 'unreachable': False}
+    if enemy_back is None or ally_back is None or enemy_accel * ally_back < ally_accel * enemy_back:
+        return bound  # 接触が左へ寄り続け、いずれ敵将軍が壁に当たる
+    travel = CLASH_ALLY_FRONT_START - CLASH_ENEMY_FRONT_START - CLASH_GAP
+    first = CLASH_ENEMY_FRONT_START + travel * enemy_accel / (enemy_accel + ally_accel)
+    # 当方の将軍が右壁で後退を止められると接触はここへ寄っていく。
+    settled = (CLASH_RIGHT_WALL - CLASH_REAR_OFFSET - CLASH_GAP
+               - enemy_back * ally_accel / enemy_accel)
+    general_x = min(first, settled) - CLASH_MARGIN - CLASH_REAR_OFFSET
+    bound['enemy_general_x_min'] = round(general_x, 1)
+    bound['unreachable'] = (general_x - enemy_back > CLASH_LEFT_WALL
+                            and (not bound['clash_checked'] or general_x > clash_x))
+    return bound
+
+
 def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     """A selection gate, separate from use, hit, kill and egg-loss receipts.
 
@@ -358,10 +433,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     boss = cur.get('enemy') in reference.BOSS_GENERALS
     threat = True if boss else _egg_threat(triggers)
     drop = _egg_drop_evidence(cur, card) if not summoned and not boss else None
+    reach = (_enemy_egg_reach(mem, cur, context, estimate)
+             if not summoned and threat is not False else None)
     result = {'allowed': False, 'needs_live_list': False, 'role': 'nonlethal_egg_risk',
               'estimate': estimate, 'enemy_egg_threat': threat,
               'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
-              'listed_followups': []}
+              'egg_reach': reach, 'listed_followups': []}
     if (cur.get('card_context_unclassified')
             or any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
             or (summoned and cur.get('card_summon_observed') is not True)):
@@ -374,6 +451,8 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         result.update(allowed=True, role='healing_not_a_kill')
     elif threat is False:
         result.update(allowed=True, role='no_autonomous_egg_trigger')
+    elif reach and reach['unreachable']:
+        result.update(allowed=True, role='enemy_egg_triggers_unreachable')
     elif drop and drop.get('drops'):
         result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
     elif listed_cards is None:

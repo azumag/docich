@@ -6515,6 +6515,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v304-boss-sortie-overdue",
             "hanjuku-chart-v305-hero-castle-guard",
             "hanjuku-chart-v306-dome-camp",
+            "hanjuku-chart-v307-card-egg-reach",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
