@@ -1,0 +1,56 @@
+name: Tsuitate public replay evidence
+
+on:
+  push:
+    branches:
+      - ops/tsuitate-public-replay-status
+    paths:
+      - .github/workflows/tsuitate-public-replay-evidence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Fetch and verify the exact public replay
+        env:
+          STATUS_FILE: ${{ runner.temp }}/tsuitate-status.json
+          TSUITATE_RUN_ID: hourly-2026102902
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$STATUS_FILE" <<'JSON'
+          {
+            "schema": 1,
+            "status": "ok",
+            "runId": "hourly-2026102902",
+            "state": "finished",
+            "gameId": "hqw-_G83FKW4",
+            "completedGames": 1,
+            "reservedGames": 1,
+            "readyForNextRun": true,
+            "brainVersion": "tsuitate-brain-v11",
+            "errorCode": null,
+            "gameResult": {
+              "outcome": "loss",
+              "reason": "checkmate",
+              "endedAt": "2026-10-29T02:35:21.384Z",
+              "moveNumber": 85,
+              "resultConfidence": "verified"
+            }
+          }
+          JSON
+          timeout --kill-after=5s 20s python3 ops/vm_actions/tsuitate_public_replay_query.py > "$RUNNER_TEMP/replay.json"
+          python3 - "$RUNNER_TEMP/replay.json" <<'PY'
+          import json, pathlib, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(data["body"])
+          PY
