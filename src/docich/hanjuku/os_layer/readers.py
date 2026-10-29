@@ -172,8 +172,86 @@ _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
            if 100 <= dx * dx + dy * dy <= 169]          # radius 5-6.5 px, half-pixel units
 
 
+def _is_blue_pixel(pixel) -> bool:
+    r, g, b = pixel
+    return r <= 40 and g <= 80 and b >= 150 and b - g >= 100
+
+
+def _is_black_pixel(pixel) -> bool:
+    r, g, b = pixel
+    return r <= 70 and g <= 70 and b <= 70
+
+
 def world_cursor(frame):
-    """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
+    """Centre of the Y view's cursor.
+
+    Detection order:
+      1. chapter-3 whole map: 3x3 blue centre dot inside a black dashed ring
+         (radius 8-9 px) (g1075);
+      2. gold G corners (chapter 1/2 sortie cursor);
+      3. white dashed ring (chapter 2 boss / snowy maps).
+    """
+    if frame is None:
+        return None
+    # 1. Blue-dotted black dashed ring. The white ring vote cannot see this
+    # cursor, and the gold map frame would otherwise be misread as a G.
+    blue_pixels = [(x, y) for x in range(40, 220) for y in range(40, 200)
+                   if _is_blue_pixel(frame.pixel(x, y))]
+    blue_set = set(blue_pixels)
+    seen = set()
+    components = []
+    for seed in blue_pixels:
+        if seed in seen:
+            continue
+        stack = [seed]
+        seen.add(seed)
+        comp = []
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                           (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                nxt = (x + dx, y + dy)
+                if nxt in blue_set and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        components.append(comp)
+    # Blue-dotted black-ring candidates are normally single on a frame;
+    # when more than one appears, the largest ring is taken (g1075 has one).
+    best_ring = 0
+    best_center = None
+    best_size = 0
+    for comp in components:
+        if len(comp) < 8 or len(comp) > 10:
+            continue
+        xs = [p[0] for p in comp]
+        ys = [p[1] for p in comp]
+        if max(xs) - min(xs) > 2 or max(ys) - min(ys) > 2:
+            continue
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        ring = 0
+        ix = int(round(cx))
+        iy = int(round(cy))
+        for x in range(ix - 11, ix + 12):
+            for y in range(iy - 11, iy + 12):
+                if not (0 <= x < frame.width and 0 <= y < frame.height):
+                    continue
+                dx = x - cx
+                dy = y - cy
+                r2 = dx * dx + dy * dy
+                if 56 <= r2 <= 110 and _is_black_pixel(frame.pixel(x, y)):
+                    ring += 1
+        if ring < 50:
+            continue
+        if ring > best_ring or (ring == best_ring and len(comp) > best_size):
+            best_ring = ring
+            best_size = len(comp)
+            best_center = (cx, cy)
+    if best_center is not None:
+        return best_center
+
+    # 2. gold G corners
     gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
             if _near_colour(frame.pixel(x, y), (255, 182, 0))]
     # Only the compact G corners (~15 px box): the map's gold edge arrows are
@@ -191,6 +269,7 @@ def world_cursor(frame):
         xs = [x for x, _ in best]; ys = [y for _, y in best]
         if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
             return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    # 3. white dashed ring
     votes = {}
     for x in range(40, 220):
         for y in range(40, 200):
@@ -210,6 +289,7 @@ def world_cursor(frame):
         return None
     key, count = max(votes.items(), key=lambda kv: kv[1])
     return (key[0] / 2, key[1] / 2) if count >= 18 else None
+
 
 
 UNDER_CURSOR_PX = 8            # roof target vs cursor cell when standing on a castle
