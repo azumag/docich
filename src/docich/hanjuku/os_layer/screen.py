@@ -264,6 +264,60 @@ def own_camps(frame: Frame) -> list[dict]:
                for t in found):
             continue
         found.append({'target': target, 'clipped': flag is None})
+    for dome in _dome_camps(frame):
+        if not any(abs(t['target'][0] - dome['target'][0]) <= 8
+                   and abs(t['target'][1] - dome['target'][1]) <= 8 for t in found):
+            found.append(dome)
+    return found
+
+
+# Our camp drawn as a dome with a brown door under the same red/orange flag
+# (g1075 2026-10-29 13:34 and 14:25, chapter 3 beside the cave, where ゼウス
+# and others camped and never came back). The owner reads it as the tent of
+# two or more generals; every saved frame of it is winter, so it may also be
+# the winter tent. Colours measured on that sprite (frame 13:34 x174-187,
+# y42-57); a full flag is required, a clipped dome waits for the camera.
+DOME_DOOR = (123, 88, 0)
+DOME_BODY = ((131, 198, 222), (115, 149, 197), (205, 206, 246))
+DOME_OUTLINE = (32, 32, 32)
+
+
+def _dome_camps(frame: Frame) -> list[dict]:
+    door = {(x, y) for y in range(frame.height) for x in range(frame.width)
+            if frame.pixel(x, y) == DOME_DOOR}
+    found, seen = [], set()
+    for start in sorted(door):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if n in door and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        if not 6 <= len(comp) <= 24 or x1 - x0 > 5 or y1 - y0 > 4 or y0 < 14:
+            continue
+        window = [(x, y) for y in range(y0 - 14, min(frame.height, y1 + 2))
+                  for x in range(max(0, x0 - 8), min(frame.width, x1 + 9))]
+        body = [c for c in window if frame.pixel(*c) in DOME_BODY]
+        outline = [c for c in window if frame.pixel(*c) == DOME_OUTLINE]
+        flag = [c for c in window if c[1] < y0 - 6]
+        red = [c for c in flag if frame.pixel(*c) == CAMP_FLAG]
+        orange = [c for c in flag if frame.pixel(*c) == CAMP_ORANGE]
+        if len(body) < 20 or len(outline) < 25 or len(red) < 2 or len(orange) < 2:
+            continue
+        shape = body + outline
+        # Same cell as the small tent: one left of the body, bottom-aligned 16 px.
+        target = (min(c[0] for c in shape) - 1, max(c[1] for c in shape) - 15)
+        found.append({'target': target, 'clipped': False, 'kind': 'dome'})
     return found
 
 
