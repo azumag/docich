@@ -101,6 +101,8 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     mem.pop('expect_menu', None)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
+PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
+PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor before giving up
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
@@ -186,8 +188,33 @@ def world_map_step(screen, mem, frame):
         if nearby != [goal]:
             gx, gy = chart.castles(chapter)[goal]
             dx, dy = gx / 8 + offset[0] - cursor[0], gy / 8 + offset[1] - cursor[1]
-            return [pad(('right' if dx > 0 else 'left') if abs(dx) >= abs(dy)
-                        else ('down' if dy > 0 else 'up'))]
+            across = 'right' if dx > 0 else 'left'
+            along = 'down' if dy > 0 else 'up'
+            press, other = (across, along) if abs(dx) >= abs(dy) else (along, across)
+            # g1075 15:10:55-15:14:46: the ring stayed on アルマムーン through
+            # 54 left presses (only the enemy ボス lies to its left), and one
+            # down press moved it to グリン. Record every step, so its frame is
+            # kept, try the other axis when the reading does not move, and stop
+            # once it has not changed for a while.
+            still = (int(recall.get('picker_still') or 0) + 1
+                     if recall.get('picker_cursor') == list(cursor) else 0)
+            recall.update(picker_cursor=list(cursor), picker_still=still)
+            if still >= PICKER_AXIS_SWITCH and min(abs(dx), abs(dy)) >= 3:
+                press = other
+            _record(mem, 'camp_recall_picker_step',
+                    observed_metric={'cursor': list(cursor), 'goal': goal,
+                                     'offset': [round(dx, 1), round(dy, 1)], 'press': press,
+                                     'still': still},
+                    reason='帰還先の城へ全体マップのカーソルを1歩動かす')
+            if still >= PICKER_STILL_LIMIT:
+                _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
+                        observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},
+                        reason='帰還先カーソルが入力しても動かないため取り消して通常の行動に戻る')
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                return [pad('b')]
+            return [pad(press)]
         return _request_recall(mem, recall, goal,
                                [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
     flags = world_flags(frame, mem.get('chapter') or 0)
