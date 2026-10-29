@@ -81,15 +81,29 @@ def _battle_draw_scope(mem):
 # sortie. Hold the A a bounded number of observations; after that the jump is
 # dropped and the ordinary default applies again.
 Y_JUMP_UNKNOWN_HOLD_MAX = 6
+# The fade into the view and a misread mid-move come straight after the field
+# map or the view itself; an unreadable run that starts there is one episode.
+# A battle or scene that interrupts the view is not the view: g1075 2026-10-29
+# 13:12:29-13:13:08, an arrival battle opened mid-jump and holds 2-4 landed on
+# its draws, using up the bound before the view came back at 13:13:09.
+Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 
 
-def y_jump_unknown_hold_step(screen, mem, generic):
+def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
     """Withhold the generic confirm while a Y jump is open, boundedly."""
     confirms = (isinstance(generic, list) and len(generic) == 1
                 and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
                 and generic[0].get('buttons') == ['a'])
     jump = mem.get('y_jump')
-    if not confirms or screen.kind != 'unknown' or not isinstance(jump, dict):
+    if screen.kind != 'unknown' or not isinstance(jump, dict):
+        return None
+    tick = mem.get('tick')
+    episode = (previous_kind == 'unknown' and type(tick) is int
+               and jump.get('unknown_tick') == tick - 1)
+    if previous_kind not in Y_JUMP_VIEW_KINDS and not episode:
+        return None
+    jump['unknown_tick'] = tick
+    if not confirms:
         return None
     held = jump.get('unknown_holds')
     held = held if type(held) is int and held >= 0 else 0
@@ -363,7 +377,22 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     month_dialog = ((sub.get('kind') == 'recruit' and not readers.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
-    recall_dialog = recall and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
+    if (recall and phase == 'concert' and recall.get('stage') != 'await_dispatch'
+            and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')):
+        # g1075 2026-10-29 13:02: the month rolled over while the camp recall
+        # was choosing its destination. The month-start scene (「こんげつは……」,
+        # phase 'concert') was handed to the recall, which waits on text, so
+        # nothing was pressed for 91 observations until the recall gave up;
+        # meanwhile ポセイドン (HP 1, no soldiers) marched back into リグア and
+        # fell. The scene closes the picker anyway: drop the recall and let the
+        # scene advance. The camp is found again on the map afterwards.
+        mem.pop('recall', None)
+        mem['uncertain'] = True
+        decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
+                             observed_metric={'stage': recall.get('stage'), 'steps': recall.get('steps')},
+                             reason='舞台の場面（月初など）が始まり帰還先の選択が閉じたため、帰還指示を中断して場面を進める')
+        recall = {}
+    recall_dialog = recall and phase != 'concert' and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
         not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
         and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
         (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
@@ -529,7 +558,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
         if draw_hold is not None:
             actions = draw_hold
-        jump_hold = y_jump_unknown_hold_step(screen, mem, actions)
+        jump_hold = y_jump_unknown_hold_step(screen, mem, state.get('screen_kind'), actions)
         if jump_hold is not None:
             actions = jump_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):

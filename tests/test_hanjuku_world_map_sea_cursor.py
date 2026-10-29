@@ -33,7 +33,9 @@ WORLD_VIEWS = {
 
 
 def jump_state(goal='リグア'):
-    return {'policy': {'chapter': 3, 'tick': 100,
+    # Y was pressed on the target map; the next frame is the fade or the view.
+    return {'screen_kind': 'map_target',
+            'policy': {'chapter': 3, 'tick': 100,
                        'y_jump': {'goal': goal, 'mode': 'target', 'step': 'I:b59ab6:2',
                                   'moves': 0, 'wait': 0, 'tick': 99}}}
 
