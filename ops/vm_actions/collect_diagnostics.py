@@ -6498,6 +6498,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v282-world-map-sea-cursor",
             "hanjuku-chart-v283-ring-edge-align-half",
             "hanjuku-chart-v284-long-march-bind",
+            "hanjuku-chart-v285-egg-drop-substitute",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
