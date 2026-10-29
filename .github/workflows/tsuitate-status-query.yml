@@ -149,6 +149,32 @@ jobs:
           current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
           [[ "$current" == "$SHA" ]]
 
+      - name: Analyze the verified public replay after terminal
+        id: replay
+        if: steps.status.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          STATUS_FILE: ${{ runner.temp }}/tsuitate-status/output/status.json
+          TSUITATE_RUN_ID: ${{ steps.auth.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/tsuitate-status"
+          timeout --kill-after=5s 20s \
+            python3 control/ops/vm_actions/tsuitate_public_replay_query.py \
+            > "$work/replay-reply.json"
+
+      - name: Recheck current protected main before public replay reply
+        if: steps.replay.outcome == 'success'
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+
       - name: Return bounded status metadata to the control Issue
         if: ${{ always() && steps.auth.outcome == 'success' }}
         shell: bash
@@ -168,6 +194,17 @@ jobs:
           python3 control/ops/vm_actions/tsuitate_status_query_reply.py > "$work/reply.json"
           gh api --method POST repos/azumag/docich/issues/2938/comments \
             --input "$work/reply.json" > /dev/null
+
+      - name: Return bounded public replay facts to the control Issue
+        if: steps.replay.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/tsuitate-status"
+          gh api --method POST repos/azumag/docich/issues/2938/comments \
+            --input "$work/replay-reply.json" > /dev/null
 
       - name: Fail when query did not succeed
         if: steps.status.outcome != 'success'
