@@ -273,17 +273,21 @@ def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
     assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
 
 
-def test_chapter_3_boss_cell_is_the_skull_not_the_cave_on_the_y_view():
-    # Live g1075 2026-10-29 14:25-14:29 JST, every ordinary castle captured:
-    # the grey skull at view (101-107, 64-69) is ❾完熟プリンス城 (wiki castle
-    # diagram: top row with アルマムーン). Its centre is the Y cursor aim
-    # point, as the chapter 2 tower was placed. The first cell aimed at the
-    # cave inside the cliff ring, (137.5, 127.5). No A press confirmed the
-    # name (read-only runtime).
+def test_chapter_3_boss_cell_puts_the_marker_on_the_building_under_the_skull():
+    # Live g1075 2026-10-29 JST, every ordinary castle captured: the skull at
+    # Y view (101-107, 64-69) marks ❾完熟プリンス城, a tall building. The v293
+    # aim at the skull centre, G read at (104.5, 66.5), left the field marker
+    # centred at (138, 123), 6 px right of the building (98-125 x 82-142), and
+    # the general camped. The aim moves by the gap to the building centre.
+    # The first cell aimed at the cave inside the cliff ring, (137.5, 127.5).
+    # No A press confirmed the name (read-only runtime).
     from docich.hanjuku.strategy.orders import _ready
     ox, oy = chart.Y_JUMP_OFFSET[3]
     bx, by = chart.CASTLES[3]['ボス']
-    assert (bx / 8 + ox, by / 8 + oy) == (104.0, 66.5)
+    assert (bx / 8 + ox, by / 8 + oy) == (101.25, 65.125)
+    landed = ((104.5 - ox) * 8, (66.5 - oy) * 8)        # the v293 jump's cell
+    gap = (111.5 - 138, 112 - 123)                      # marker centre -> building centre
+    assert abs(bx - (landed[0] + gap[0])) <= 0.5 and by == landed[1] + gap[1]
     fx, fy = chart.WORLD_MAP_OFFSET[3]
     boss_flag = (round(bx / 8 + fx), round(by / 8 + fy))
     for name, (x, y) in chart.CASTLES[3].items():

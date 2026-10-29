@@ -100,16 +100,18 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     # chapter 3 savestate (9ねん1のつき): Y jump to each flag (Y cursor =
     # cell/8 + (63, 47.5), always landing at screen (130, 125)), cursor walked
     # onto the nearest roof, A showed the castle's own name in its status or
-    # castle menu for all nine. The boss cell is the skull the live g1075 Y
-    # view draws in the island's north-west once every ordinary castle is
-    # captured (2026-10-29 14:25-14:29 JST): grey skull view (101-107, 64-69),
-    # centre (104, 66.5) = the Y cursor aim point (cell/8 + Y_JUMP_OFFSET),
-    # the way the chapter 2 tower was placed. The wiki castle diagram puts
-    # ❾完熟プリンス城 in the top row with アルマムーン, and the enemy generals
-    # on the view walk out from the skull. The first cell, (596, 640), was the
-    # cave inside the cliff ring (GCGX: the black ring around the cave is
-    # cliff): every 3-B1 target view left the marker on the ice-mountain cave
-    # entrance. Production is read-only, so no A press confirmed the name.
+    # castle menu for all nine. The boss castle is the tall building under
+    # the skull the live g1075 Y view draws in the island's north-west once
+    # every ordinary castle is captured (grey skull view 101-107 x 64-69; the
+    # wiki castle diagram puts ❾完熟プリンス城 in that top row). A Y jump
+    # aimed at the skull centre (104, 66.5) (v293, 14:56:18 JST, G read at
+    # (104.5, 66.5)) left the field marker 6 px right of the building (cursor
+    # centre (138, 123), building 98-125 x 82-142), and アポロン camped there
+    # instead of entering. The cell moves by the measured gap to the building
+    # centre (111.5, 112): -26.5, -11 px, so the Y aim is (101.25, 65.125).
+    # The first cell, (596, 640), was the cave inside the cliff ring (GCGX:
+    # the black ring around the cave is cliff). Production is read-only, so
+    # no A press confirmed the name.
     3: {
         'アルマムーン': (710, 144),
         'グリン': (852, 320),
@@ -120,7 +122,7 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'パタゴーヌ': (341, 425),
         'アバロン': (229, 729),
         'リグア': (133, 281),
-        'ボス': (328, 152),
+        'ボス': (306, 141),
     },
     # 4–12: from the source flag table below (``SOURCE_CHAPTERS``).
 }
