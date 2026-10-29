@@ -21,6 +21,8 @@ from docich import hanjuku_experience
 from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
+from docich.hanjuku.decision_log import _record
+from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback
 from docich.retroarch_boundary import read_record
@@ -381,6 +383,27 @@ def card_scroll_receipt(runtime, state, meta):
     return {'request_trace': trace, 'up_inputs': min(2, len(matches))}
 
 
+# The agent and the corner monitor both write screenshots/latest.png. A pad A
+# reaches the game about 0.5 s after the observation it was decided on (median
+# of 136 inputs, 2026-10-29). g1075 18:27:47.3: an A decided on a dialogue frame
+# was sent at 47.8, after the corner had already captured ラビットサタン's skill
+# menu at 47.6, and confirmed デスのカマ outside the skill-stall count.
+CONFIRM = {'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}
+
+
+def overtaken_confirm(path: Path, frame, state: dict, actions):
+    """The newest capture when it has left this text frame for a command screen."""
+    if actions != [CONFIRM] or state.get('screen_kind') not in ('text', 'unknown'):
+        return None
+    try:
+        fresh = read_png(path).resized()
+    except (OSError, ValueError):
+        return None
+    if fresh.digest() == frame.digest() or classify(frame) == 'event' or classify(fresh) != 'event':
+        return None
+    return fresh
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -410,6 +433,17 @@ def main():
                                  run_identity=meta.get('hanjuku'),
                                  chart_edition=chart_edition_setting(),
                                  approx_map=approx_map_setting())
+            fresh=overtaken_confirm(Path(obs['screenshot']),frame,state,actions)
+            if fresh is not None:
+                actions=[]
+                policy=state.get('policy') or {}
+                state.setdefault('_records',[]).append(_record(
+                    {'active':policy.get('active'),'variant':policy.get('variant','chart'),
+                     'chapter':policy.get('chapter')},
+                    'confirm_overtaken',screen=state.get('screen_kind'),
+                    observed_metric={'decided_phase':classify(frame),'fresh_phase':'event',
+                                     'fresh_frame_sha256':fresh.digest()},
+                    reason='文字画面で決めたAの送信前に最新の画面がコマンド表示へ変わったため、未読の最上段を確定しないよう送らず次の観測で決め直す'))
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
