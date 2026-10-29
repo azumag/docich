@@ -799,6 +799,53 @@ def test_lawsim_corner_state_is_collected_without_the_runtime_identity(tmp_path)
     assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
 
 
+def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
+    # #3054 (#2917 項目4): the narration and overlay counters live in
+    # lawsim_corner.json, but ``corners`` is the first section the hard ceiling
+    # drops, so they were never observable in production. The top-level ``lawsim``
+    # section carries integer counts only and must survive the ceiling, like
+    # ``prediction`` (#2805).
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=int(time.time())
+    (state_dir/'lawsim_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'lawsim-view',
+        'end_reason':'operator-moved-during-lawsim','completed_at':now-600,
+        'narration':{'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6,
+                     'text':'DO-NOT-PUBLISH'},
+        'overlay_announcements':{'sent':5,'failed':0,'skipped':1,'title':'DO-NOT-PUBLISH'},
+        'bills':[{'name':'DO-NOT-PUBLISH'}]}),encoding='utf-8')
+    programs=module._collect_programs(state_dir,tmp_path/'soren',now)
+    corners={**programs,'state_dir_found':True}
+    lawsim=module._lawsim_projection({'lawsim_corner':programs['lawsim_corner'],
+                                      'state_dir_found':True},now)
+    assert lawsim['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert lawsim['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    assert lawsim['status']=='completed' and lawsim['game']=='lawsim-view'
+    assert lawsim['end_reason']=='operator-moved-during-lawsim'
+    assert lawsim['present'] is True and lawsim['readable'] is True
+    assert lawsim['state_dir_found'] is True
+    assert lawsim['age_sec']==600
+    assert 'DO-NOT-PUBLISH' not in json.dumps(corners,ensure_ascii=False)
+
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'lawsim':lawsim,
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['lawsim']['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert decoded['lawsim']['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+
+
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
     # docich#1221: the presenter pane dies with its tmux window, so the
     # corner's own record is the only durable evidence of *why* a
