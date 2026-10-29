@@ -448,10 +448,20 @@ def _source_list_open(order, mem) -> bool:
 
 def _boss_retry_due(order, mem) -> bool:
     """A boss sortie failed only by cancelled targets gets its remaining retries
-    (g421 13:48: the tower-roof check cancelled どうし twice before #1251)."""
-    return ((mem.get('orders') or {}).get(order['step']) == 'failed'
-            and order.get('target') == chart.boss_castle(mem.get('chapter') or 0)
-            and 0 < (mem.get('target_cancel') or {}).get(order['step'], 0) < BOSS_TARGET_CANCEL_LIMIT)
+    (g421 13:48: the tower-roof check cancelled どうし twice before #1251).
+
+    The cancels belong to the boss cell they were counted at. A cell the chart
+    no longer holds, or cancels recorded before cells were kept, leave the
+    current cell untried (g1075 2026-10-29: four cancels at the cave)."""
+    chapter = mem.get('chapter') or 0
+    if ((mem.get('orders') or {}).get(order['step']) != 'failed'
+            or order.get('target') != chart.boss_castle(chapter)):
+        return False
+    cancels = (mem.get('target_cancel') or {}).get(order['step'], 0)
+    cell = list(chart.castles(chapter).get(order['target']) or ())
+    if cancels and (mem.get('boss_cancel_cell') or {}).get(order['step']) != cell:
+        return True
+    return 0 < cancels < BOSS_TARGET_CANCEL_LIMIT
 
 
 def next_order(mem):
