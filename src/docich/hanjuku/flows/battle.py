@@ -1243,9 +1243,11 @@ def _boss_entry_cell(mem, general):
     four 四季王 sites, the one this general is marching on (no site, no guess)."""
     chapter = mem.get('chapter') or 0
     if chapter == 4:
-        sites = {s.get('target') for s in (mem.get('sorties') or {}).values()
+        # An unconfirmed launch keeps its site as planned_target only (g1075
+        # 08:34:57: カペリーニ's 4-B2 entry matched nothing and was held 7 times).
+        sites = {s.get('target') or s.get('planned_target') for s in (mem.get('sorties') or {}).values()
                  if isinstance(s, dict) and s.get('general') == general
-                 and s.get('target') in chart.boss_sites(4)
+                 and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)
                  and s.get('status') in ('en_route', 'launched_unconfirmed')}
         if len(sites) == 1:
             return sites.pop()
