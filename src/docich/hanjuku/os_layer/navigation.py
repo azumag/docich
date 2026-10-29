@@ -206,6 +206,20 @@ def _note_failed_jump(mem, jump, why):
                           'moves': int(jump.get('moves') or 0), 'why': why}
 
 
+def _forget_failed_jump(mem, step, mode=None):
+    """A new attempt of ``step`` may open the view again.
+
+    The toggle guard in ``_want_y_jump`` belongs to one attempt, like the jump
+    count. g1075 2026-10-29 13:31: the boss target view closed early, the
+    immediate second Y showed nothing (0 moves), and that record outlived the
+    cancel and the order restart: the 13:36 retry walked to ボス without a
+    jump, and a boss target is only confirmed by a Y jump.
+    """
+    last = mem.get('y_jump_last') or {}
+    if last.get('step') == step and (mode is None or last.get('mode') == mode):
+        mem.pop('y_jump_last', None)
+
+
 def _drop_stale_y_jump(screen, mem):
     """Back on a map screen with a jump still open: the Y view was closed by
     something else (g419 08:45: an event ended it at 8 moves and the stale
@@ -240,6 +254,12 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     key = f"{order['step']}:{mode}"
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
+    if (mode == 'target' and name == chart.boss_castle(chapter)
+            and (mem.get('y_jumped') or {}).get(order['step']) != name):
+        # A boss target is confirmed only by a jump (``_target_roof_under_marker``),
+        # so an estimate that already reads "near" must not skip it (g1075
+        # 2026-10-29 13:37: the retry walked onto its stale estimate and stopped).
+        return True
     world, goal = mem.get('cursor'), chart.castles(chapter)[name]
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 

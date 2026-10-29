@@ -16,7 +16,7 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _requ
                             camp_recall_step)
 from ..os_layer.commands import pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _want_y_jump, _y_jump_step, nav_step)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
                                 world_flags, world_markers)
 from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
@@ -67,6 +67,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 # fresh target jumps (g421 18:24: six were spent before a defense
                 # battle, the marker came back unplaced and the bot idled).
                 (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+                _forget_failed_jump(mem, step, 'target')
                 (mem.get('y_jumped') or {}).pop(step, None)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
@@ -359,6 +360,7 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('rare_scan', None)
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
+        _forget_failed_jump(mem, order['step'])
         mem.pop('castle_verified', None)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
@@ -606,6 +608,7 @@ def _unverified_target(screen, mem, order):
     # carried over from the first attempt, so the boss target was walked to).
     mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                       if not k.startswith(f'{step}:')}
+    _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
     cancels = mem.setdefault('target_cancel', {})
     cancels[step] = cancels.get(step, 0) + 1
