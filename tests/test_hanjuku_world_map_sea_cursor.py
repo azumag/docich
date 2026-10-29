@@ -29,6 +29,7 @@ WORLD_VIEWS = {
     'g1075-world-map-ring-off.png',
     'chapter-2-boss-y-focus.png', 'g749-cinnamon-recall-picker-29564.png',
     'hanjuku_recall_picker_20260929.png', 'g464-frame-022.png',
+    'g1075-ch3-y-view-face-over-boss-skull.png',
 }
 
 

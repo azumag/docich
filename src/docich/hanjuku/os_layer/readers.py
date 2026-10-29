@@ -105,12 +105,20 @@ def world_flags(frame, chapter, cursor=None):
 
     A flag under the Y cursor is not read: the sortie cursor's G is the same
     blue as an enemy flag (isolated probe: the home flag read as enemy).
+
+    The boss castle is not read either. Chapter 3 draws it as a skull with no
+    flag, and g1075 15:10:55 read ボス as own from the face of アポロン, camped
+    beside it, whose (230,56,90) pixels fell into the box. Its owner is never
+    taken from flags (captures and losses skip it), so nothing is lost.
     """
     offset = WORLD_MAP_OFFSET.get(chapter)
     if not offset or frame is None:
         return {}
     out = {}
+    boss = chart.boss_castle(chapter)
     for name, (wx, wy) in chart.castles(chapter).items():
+        if name == boss:
+            continue
         mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
         if cursor and abs(mx + 2 - cursor[0]) <= 10 and abs(my + 1 - cursor[1]) <= 10:
             continue
