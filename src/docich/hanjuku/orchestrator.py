@@ -149,6 +149,36 @@ def world_survey_unknown_hold_step(screen, mem, generic):
     return []
 
 
+# A target jump's confirm returns to the sortie map with the marker on the
+# target; the frames between are unreadable. g1075 2026-10-30 05:43:09: the
+# generic A on that fade decided the target unseen, the order left the target
+# picker unobserved and was recorded launched_unconfirmed (4 of 5 interim
+# sorties 04:30-06:19), then re-read from its source list.
+Y_JUMP_TARGET_SETTLE_TICKS = 3
+
+
+def y_jump_target_settle_step(screen, mem, generic):
+    """Withhold the generic confirm on the fade right after a target confirm."""
+    confirmed = mem.get('y_jump_target_confirmed')
+    if not isinstance(confirmed, dict):
+        return None
+    tick, at = mem.get('tick'), confirmed.get('tick')
+    if (screen.kind != 'unknown' or type(tick) is not int or type(at) is not int
+            or not 0 < tick - at <= Y_JUMP_TARGET_SETTLE_TICKS):
+        mem.pop('y_jump_target_confirmed', None)
+        return None
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    if not confirms:
+        return None
+    decision_log._record(mem, 'y_jump_target_settle_hold', chart_step=confirmed.get('step'),
+                         screen=screen.kind,
+                         observed_metric={'after_confirm': tick - at, 'limit': Y_JUMP_TARGET_SETTLE_TICKS},
+                         reason='出撃先ジャンプの決定直後の読めない画面で既定のAを押すと出撃先を見ずに決定するため保留する')
+    return []
+
+
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
     """Withhold a generic confirm on an unreadable battle draw, boundedly.
 
@@ -607,6 +637,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         survey_hold = world_survey_unknown_hold_step(screen, mem, actions)
         if survey_hold is not None:
             actions = survey_hold
+        settle_hold = y_jump_target_settle_step(screen, mem, actions)
+        if settle_hold is not None:
+            actions = settle_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
