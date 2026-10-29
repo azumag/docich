@@ -66,7 +66,7 @@ def test_each_turn_is_decided_on_the_settled_box_so_the_stall_switch_comes_after
         for _ in range(6):
             actions, state = hanjuku_bot.decide(read_png(DIALOGUE), state)
             acks.append(buttons(actions))
-        assert acks == [[], ['a']] * 3                 # the message is acknowledged on its second look
+        assert acks == [[], [], [], ['a'], [], []]     # only a page that stays gets its A
     assert picks[:MONSTER_STALL_TURNS] == [['a']] * MONSTER_STALL_TURNS
     assert picks[MONSTER_STALL_TURNS] == ['down']       # toward あたためる
     assert state['policy']['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS, 'skill2': 1}

@@ -66,9 +66,11 @@ def test_our_generals_box_panning_in_is_not_confirmed():
     assert st['policy']['battle']['summon_scene'] is True
 
 
-def test_a_summon_dialogue_page_is_acknowledged_on_its_second_look():
-    st, decisions, buttons = run(state(), PAN, KYUU, KYUU, ATTACK, ATTACK, KYUU)
-    assert buttons[1:] == [[], ['a'], [], ['a'], []]
+def test_a_summon_dialogue_page_is_acknowledged_only_once_it_stays():
+    # 19:57:14 and 20:14:43: an A on the second look at the last page still
+    # met the skill box. Pages advance by themselves; only a lasting one gets A.
+    st, decisions, buttons = run(state(), PAN, KYUU, KYUU, ATTACK, ATTACK, *[KYUU] * 5)
+    assert buttons[1:] == [[], [], [], [], [], [], [], ['a'], []]
     assert decisions.count('summon_dialogue_paced') == 1
 
 
@@ -96,6 +98,6 @@ def test_an_egg_monster_entrance_starts_the_paced_scene():
     # 19:53:26 たまごをつかう, 19:53:46 あけまつ's first box took the A decided
     # on the page before it: no box had been seen in this battle yet.
     assert kind(ENTRANCE) == 'text' and kind(AKEMATSU) == 'monster_menu'
-    st, _, buttons = run(state('リーキ', 'ヴィーナス'), ENTRANCE, KYUU, ENTRANCE, ENTRANCE)
-    assert buttons == [[], [], [], ['a']]
+    st, _, buttons = run(state('リーキ', 'ヴィーナス'), ENTRANCE, KYUU, *[ENTRANCE] * 4)
+    assert buttons == [[], [], [], [], [], ['a']]
     assert st['policy']['battle']['summon_scene'] is True
