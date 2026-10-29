@@ -176,6 +176,11 @@ class TsuitateStatusGatewayProjectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.module.QueryError, "invalid_command"):
                     self.module.parse_command(command)
 
+    def test_address_space_limit_allows_production_git_status(self):
+        # _ready() runs git status on the production checkout. 256 MiB is not
+        # enough for that read on the live repository; keep at least 512 MiB.
+        self.assertGreaterEqual(self.module.MAX_ADDRESS_SPACE, 512 * 1024 * 1024)
+
 
 class TsuitateStatusReplyTests(unittest.TestCase):
     @classmethod
