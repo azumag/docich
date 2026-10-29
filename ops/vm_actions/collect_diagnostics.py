@@ -6512,6 +6512,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v300-recall-picker-stationary",
             "hanjuku-chart-v302-defense-loss-flag",
             "hanjuku-chart-v303-boss-flag-not-read",
+            "hanjuku-chart-v304-boss-sortie-overdue",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
