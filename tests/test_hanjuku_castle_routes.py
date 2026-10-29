@@ -272,3 +272,45 @@ def test_probe_never_opens_a_castle_whose_list_was_read_after_the_last_dispatch(
     assert not routes.probe_due({**mem, 'chapter': 2}, 'グリン')
     mem.pop('route_probe_read_tick')
     assert not orders._source_list_open({**retake, 'source_probe': False}, mem)
+
+
+def victoria_drain():
+    """g1075 2026-10-29 23:03 JST, chapter 4 (#3037): ビクトリア is recorded
+    empty and its list was never read; アポロン and アルファルファ were sent
+    there and have left the busy window, so the same move went out again."""
+    mem = {'chapter': 4, 'tick': 101173,
+           'captured': ['ビクトリア', 'ミヒラギアン', 'マラコビア', 'アルカ'],
+           'lost': ['フヌイヌム', 'ネクスドリア'], 'orders': {},
+           'garrison': {'アルカ': ['ブカティーニ'], 'ビクトリア': [], 'マラコビア': ['ラズベリー'],
+                        'アルマムーン': ['どうし', 'バーミセリ', 'トレビス', 'ココット'],
+                        'ミヒラギアン': ['アテナ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    for step, general, tick in (('I:0fa434:2', 'アポロン', 95400), ('I:49a839:1', 'アルファルファ', 96181)):
+        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
+                                'status': 'en_route', 'tick': tick}
+        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+                                        'target': 'ビクトリア', 'general': general, 'step': step}
+        mem['orders'][step] = 'launched'
+    return mem
+
+
+def moves_into(mem, castle):
+    return [o for o in replan.interim_candidates(mem).values()
+            if o['purpose'] == 'move' and o['target'] == castle]
+
+
+def test_a_castle_sent_moves_since_its_last_reading_is_not_refilled_in_chapter_4():
+    mem = victoria_drain()
+    assert routes.incoming(mem, 'ビクトリア') == []        # both moves are past the busy window
+    assert len(routes.unread_dispatches(mem, 'ビクトリア')) == 2
+    assert not moves_into(mem, 'ビクトリア')
+    assert not routes.probe_due(mem, 'ビクトリア')          # no list probe outside chapter 3
+
+
+def test_a_read_list_in_chapter_4_makes_an_empty_castle_a_move_target_again():
+    mem = victoria_drain()
+    mem['tick'] += 1
+    routes.observed_roster(mem, 'ビクトリア', [])
+    assert routes.unread_dispatches(mem, 'ビクトリア') == []
+    assert [o['source'] for o in moves_into(mem, 'ビクトリア')] == ['アルマムーン']

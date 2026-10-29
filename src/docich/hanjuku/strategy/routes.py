@@ -102,8 +102,8 @@ def probe_due(mem, castle):
 
 
 def observed_roster(mem, castle, names):
-    if mem.get('chapter') != 3:
-        return
+    # Every chapter: chapter 4 recorded ビクトリア empty, never read it, and
+    # sent five moves there (g1075 2026-10-29, #3037).
     mem.setdefault('route_probe_read_tick', {})[castle] = int(mem.get('tick') or 0)
     for step, sortie in incoming(mem, castle):
         if sortie.get('general') in names:
