@@ -85,6 +85,15 @@ SDL_SOFTWARE_RENDER_ENV = {
     'SDL_FRAMEBUFFER_ACCELERATION': '0',
 }
 
+# 投影 ffplay の x11grab 入力は、既定ではストリーム解析(FPS 推定)で読んだ約20
+# フレームを捨てずに先頭から表示する。x11grab は ffplay の realtime 扱いではない
+# ので外部クロックはこの遅れを取り戻さず、起動時の遅れがそのまま常駐する。
+# 15fps では約1.3秒になり、RetroArch から直接 Pulse へ出る音声が配信で映像より
+# 約1秒先行した(2026-10-29 本番 VM 実測: 元窓→:99 の投影遅延 1.2〜1.3秒)。
+# 解析で読んだフレームは捨て、FPS 推定の先読みもしない(VM の FFmpeg 6.1.1 で
+# 最初に渡るフレームが約1.2秒前のものから約0.07秒前のものになることを確認)。
+PROJECTION_INPUT_LOW_LATENCY = ('-fflags', 'nobuffer', '-fpsprobesize', '0')
+
 CELL_ASPECT_MIN = 0.25
 CELL_ASPECT_MAX = 4.0
 
@@ -481,6 +490,7 @@ def main(argv=None) -> int:
                                           player_width, content_height]}
             process = launch([
                 'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
+                *PROJECTION_INPUT_LOW_LATENCY,
                 '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
                 '-window_id', window_id, '-video_size', f'{width}x{height}',
                 '-i', f':{number}',
