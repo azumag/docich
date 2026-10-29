@@ -6502,6 +6502,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v286-recall-yields-month-scene",
             "hanjuku-chart-v287-retry-owned-target",
             "hanjuku-chart-v288-boss-jump-fresh-attempt",
+            "hanjuku-chart-v289-monster-skill-no-progress",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
