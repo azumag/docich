@@ -110,7 +110,10 @@ def world_flags(frame, chapter, cursor=None):
     if not offset or frame is None:
         return {}
     out = {}
+    boss = chart.boss_castle(chapter)
     for name, (wx, wy) in chart.castles(chapter).items():
+        if name == boss:
+            continue
         mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
         if cursor and abs(mx + 2 - cursor[0]) <= 10 and abs(my + 1 - cursor[1]) <= 10:
             continue
@@ -262,7 +265,7 @@ def world_cursor(frame):
                 for dx, dy in _Y_RING:
                     key = (2 * x + dx, 2 * y + dy)
                     votes[key] = votes.get(key, 0) + 1
-    votes = {k: v for k, v in votes.items() if 140 <= k[0] <= 372 and 106 <= k[1] <= 338}
+    votes = {k: v for k, v in votes.items() if 128 <= k[0] <= 382 and 94 <= k[1] <= 348}
     if not votes:
         return None
     key, count = max(votes.items(), key=lambda kv: kv[1])
