@@ -54,7 +54,7 @@ jobs:
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           print(data["body"])
           PY
-      - name: Inspect bounded public foul-attempt shape and relevant move windows
+      - name: Read allowlisted public foul attempts and relevant move windows
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +62,7 @@ jobs:
           import json
           import urllib.request
           from src.docich.tsuitate_review import (
-              MAX_REPLAY_BYTES, NoRedirect, REPLAY_TIMEOUT_S, _entry, _table_of,
+              MAX_REPLAY_BYTES, NoRedirect, REPLAY_TIMEOUT_S, USI, _entry, _table_of,
               read_kifu_detail, replay_url,
           )
 
@@ -86,9 +86,16 @@ jobs:
           print("Foul-Attempt-Count:", len(refs))
           for i, ref in enumerate(refs, 1):
               obj = _entry(table, ref)
-              if not isinstance(obj, dict):
-                  raise SystemExit("unexpected foul attempt")
-              print(f"Foul-Attempt-{i}-Keys:", ",".join(sorted(obj)))
+              if not isinstance(obj, dict) or set(obj) != {"byColor", "moveNumber", "usi"}:
+                  raise SystemExit("unexpected foul attempt shape")
+              by = _entry(table, obj["byColor"])
+              number = _entry(table, obj["moveNumber"])
+              usi = _entry(table, obj["usi"])
+              if by not in {"sente", "gote"} or type(number) is not int or not 1 <= number <= 512:
+                  raise SystemExit("unexpected foul attempt metadata")
+              if not isinstance(usi, str) or not USI.fullmatch(usi):
+                  raise SystemExit("unexpected foul attempt move")
+              print(f"Foul-Attempt-{i}: {by} move={number} usi={usi}")
 
           detail, failure = read_kifu_detail(game_id, terminal)
           if detail is None:
