@@ -27,3 +27,11 @@ def test_g1075_world_cursor_ring_off_is_skipped():
 def test_chapter2_boss_world_cursor_unchanged():
     frame = read_png(FIXTURES / 'chapter-2-boss-y-focus.png')
     assert policy.world_cursor(frame) == (128.0, 72.5)
+
+
+def test_g1075_world_cursor_off_state_fixture_is_skipped():
+    # Dedicated g1075 fixture for the off-state false positive: the blinking
+    # ring is off, so no cursor may be reported even though a 3x3 blue dot
+    # with a partial black ring remains.
+    frame = read_png(FIXTURES / 'g1075-world-map-cursor-off.png')
+    assert policy.world_cursor(frame) is None
