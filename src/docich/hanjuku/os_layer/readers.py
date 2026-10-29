@@ -166,7 +166,7 @@ _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
 
 def _is_blue_pixel(pixel) -> bool:
     r, g, b = pixel
-    return b >= 80 and b - r >= 40 and b - g >= 40
+    return r <= 40 and g <= 80 and b >= 150 and b - g >= 100
 
 
 def _is_black_pixel(pixel) -> bool:
@@ -232,7 +232,7 @@ def world_cursor(frame):
                 r2 = dx * dx + dy * dy
                 if 56 <= r2 <= 110 and _is_black_pixel(frame.pixel(x, y)):
                     ring += 1
-        if ring < 8:
+        if ring < 8 or ring > 25:
             continue
         if ring > best_ring or (ring == best_ring and len(comp) > best_size):
             best_ring = ring
