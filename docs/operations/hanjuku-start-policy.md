@@ -41,28 +41,47 @@
 
 自動slotで保存をclaimした後にswitchがrollbackすると、`claimed` が残り、
 以後の開始は `another checkpoint request is pending` で拒否される。
-この状態は保存を削除して解消せず、既存の `check-recover-hanjuku-resume` →
-`recover-hanjuku-resume` operatorで同じ封印保存を一度だけ再試行する。
-通常のtimerに無条件の再試行や要求の取消は追加しない。
+WebUIの「最新セーブから再開」はこの状態を検出し、既存の復旧検証を通過した場合に
+同じ封印保存を一度だけ再試行する。既存の `check-recover-hanjuku-resume` →
+`recover-hanjuku-resume` operatorも使用できる。保存を削除したり、通常timerに
+無条件の再試行や要求の取消を追加したりしない。
 
 対象は `terminal-boundary-v1 / resume / automatic / explicit_resume=false` のclaim。
 同一requestの `rolled_back` receipt、runtime側claimの完全一致、AI開始記録の不在、
 presenterの停止とtmux資源解放、安定したcanonical、保存・ROM・coreのdigest一致を
 既存writer lockの下で再検証する。ユーザーの休止設定と競合予約も引き続き拒否条件とする。
-元のpendingが残っている場合に加え、slot解放済みの場合は同じrequestの
-`failed_corners` または `released_requests` の解放記録と空の予約枠を要求する。
-履歴が失われた場合や別ownerが稼働中の場合は拒否し、推測で回収しない。
+元のpendingが残っている場合に加え、slot解放済みの場合は空の予約枠と、
+元requestのrollback receipt・停止済みpresentation・tmux資源不在を要求する。
+保持数に上限のある `failed_corners` / `released_requests` の記録が消えていても、
+lock下で新しい半熟の成功・未完了receipt、実行記録、保存がないことを確認する。
+新しい進行、判定不能な状態、別ownerが稼働中の場合は拒否する。
 
 再試行はoperatorによる手動予約となるが、元requestの完全な記録を
 `startup_recovery.original` に保存し、logical UUID・保存・source boundaryを保つ。
 別コーナーが再利用した終了済みownerファイルは変更しない。途中の書込みが失敗しても
 同一fingerprint・派生attemptで再実行でき、claim後の再実行は新しい試行を作らない。
 
+最初の派生attempt自身がAI開始前にrollbackした場合、WebUIの明示的な再開操作に限り、
+そのattemptのclaimとrollback receiptを照合し、同じlogical request・封印保存を使う
+2回目の派生attemptを1回だけ予約する。前のclaimを非公開復旧記録に保持する。
+新規playの痕跡、資源残存、新しい半熟進行、競合予約、ユーザー休止があれば拒否する。
+通常timerによる自動再試行や3回目以降の自動生成はしない。
+
+復元画面が章番号を含まない美女のおねだり画面の場合、年・月・所持金と3つの価格付き
+選択肢すべてが読めたときだけ、章不明のまま既存の贈り物処理へ引き継ぐ。
+既存の1000G境界と待機上限は変更せず、画面から章・支払い済み状態を推測しない。
+
 read-only diagnostics の `hanjuku_resume.status=detached_claim` は、安定したcanonicalから
 外れたclaimとruntime側記録の一致を示す。`reservation_fingerprint` を既存operatorの
 `expected_reservation` に渡す。これは復旧可能性や資源解放の証明ではなく、
 check操作で上記条件を再検証するための識別子である。公開するのは固定statusとdigestだけで、
 保存bytes・パス・request/lease IDを返さない。
+
+`detached_claim` は運用アラートで早期に可視化する（#2870）。runtime diagnostics collector は
+`hanjuku_resume.status` が `detached_claim` のとき overall severity を `warn` にし（required
+worker の停止があれば `critical` のまま）、runtime 要約には固定トークン
+`hanjuku_resume_detached_claim=<0|1>` を出す。`prepared` / `queued` / `claimed` / `verified_receipt`
+の通常遷移では severity を変えない。通知だけで、claim の変更や自動回収は行わない。
 
 レビュー・CI・protected main・正規配備後に、最新診断、check、recover、
 同じ保存のロード後core照合、AI開始、継続・終了とslot解放を別々に検証する。

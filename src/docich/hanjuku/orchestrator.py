@@ -33,6 +33,9 @@ from .version import BOT_VERSION
 # screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
+# A message box over the field that no flow claims is acknowledged sooner:
+# the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
+FIELD_TEXT_HOLD_MAX = 4
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
 # command box the game draws the menu over several frames. The panel reads
@@ -49,7 +52,7 @@ BATTLE_DRAW_HOLD_MAX = 3
 # foreground. A 'text' conversation or an unreadable frame never qualifies.
 BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
                                 'okunote_menu', 'egg_battle_menu', 'egg_choice_menu',
-                                'monster_menu'})
+                                'monster_menu', 'monster_menu_pending'})
 # The concert's optional music picker is closed with B, but a stale gold-
 # cursor match can keep the picker test true on a screen B never changes. On
 # 2026-10-10 17:45 UTC exactly that sent B 128 times until the 300 s
@@ -68,6 +71,82 @@ def _battle_draw_scope(mem):
     cur = mem.get('battle') or {}
     return [mem.get('chapter'), cur.get('ally'), cur.get('enemy'),
             cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
+
+
+# A Y jump still open while the frame reads 'unknown' (the fade into the view,
+# or a view misread): the scene-confirm A there decides the jump wherever the
+# cursor happens to be. g1075 2026-10-29: 5 of 26 jumps in 2 h were confirmed
+# that way (4 on the first frame after Y, one mid-move), the field cursor
+# landed on the sea and the order walked for minutes before cancelling the
+# sortie. Hold the A a bounded number of observations; after that the jump is
+# dropped and the ordinary default applies again.
+Y_JUMP_UNKNOWN_HOLD_MAX = 6
+# The fade into the view and a misread mid-move come straight after the field
+# map or the view itself; an unreadable run that starts there is one episode.
+# A battle or scene that interrupts the view is not the view: g1075 2026-10-29
+# 13:12:29-13:13:08, an arrival battle opened mid-jump and holds 2-4 landed on
+# its draws, using up the bound before the view came back at 13:13:09.
+Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
+
+
+def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
+    """Withhold the generic confirm while a Y jump is open, boundedly."""
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    jump = mem.get('y_jump')
+    if screen.kind != 'unknown' or not isinstance(jump, dict):
+        return None
+    tick = mem.get('tick')
+    episode = (previous_kind == 'unknown' and type(tick) is int
+               and jump.get('unknown_tick') == tick - 1)
+    if previous_kind not in Y_JUMP_VIEW_KINDS and not episode:
+        return None
+    jump['unknown_tick'] = tick
+    if not confirms:
+        return None
+    held = jump.get('unknown_holds')
+    held = held if type(held) is int and held >= 0 else 0
+    if held >= Y_JUMP_UNKNOWN_HOLD_MAX:
+        from .os_layer.navigation import _note_failed_jump
+        mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'view_unreadable')
+        decision_log._record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
+                             screen=screen.kind,
+                             observed_metric={'moves': jump.get('moves'), 'unknown_holds': held},
+                             reason='全体マップのジャンプ中に読めない画面が続いたため、ジャンプを中断して既定の入力に戻す')
+        return None
+    jump['unknown_holds'] = held + 1
+    decision_log._record(mem, 'y_jump_unknown_hold', chart_step=jump.get('step'), target=jump.get('goal'),
+                         screen=screen.kind,
+                         observed_metric={'held': held + 1, 'limit': Y_JUMP_UNKNOWN_HOLD_MAX,
+                                          'moves': jump.get('moves')},
+                         reason='全体マップのジャンプ中に読めない画面で既定のAを押すと現在地で決定してしまうため保留する')
+    return []
+
+
+# The owner survey's Y opens the same view with no jump in flight. g1075
+# 2026-10-29: 7 of 46 surveys met an unreadable first frame (the fade in) and
+# the generic A closed the view unread; at 15:42:44 that hid パタゴーヌ's new
+# enemy flag. Hold that A only for the first observations after the survey Y.
+WORLD_SURVEY_UNKNOWN_HOLD_TICKS = 3
+
+
+def world_survey_unknown_hold_step(screen, mem, generic):
+    """Withhold the generic confirm on the fade right after the survey Y."""
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    opened, tick = mem.get('world_map_tick'), mem.get('tick')
+    if (screen.kind != 'unknown' or not confirms or isinstance(mem.get('y_jump'), dict)
+            or type(opened) is not int or type(tick) is not int
+            or not 0 < tick - opened <= WORLD_SURVEY_UNKNOWN_HOLD_TICKS):
+        return None
+    decision_log._record(mem, 'world_map_unknown_hold', screen=screen.kind,
+                         observed_metric={'after_y': tick - opened,
+                                          'limit': WORLD_SURVEY_UNKNOWN_HOLD_TICKS},
+                         reason='全城確認のYの直後の読めない画面で既定のAを押すと全体マップを読まずに閉じるため保留する')
+    return []
 
 
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
@@ -144,8 +223,27 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None, run_identity: dict | None = None,
-           chart_edition: str | None = None) -> tuple[list[dict], dict]:
+           recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
+           overtaken_frames: list | None = None,
+           run_identity: dict | None = None,
+           chart_edition: str | None = None,
+           approx_map: bool = False) -> tuple[list[dict], dict]:
+    """Decide with only this observation's verified/optional seed map exposed."""
+    from .. import hanjuku_chart
+    hanjuku_chart.migrate_legacy_labels(state)
+    memory = dict(state.get('policy') or {})
+    memory['approx_map'] = bool(approx_map)
+    with hanjuku_chart.map_context(memory, approx=approx_map):
+        return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
+                            experience=experience, recall_inputs=recall_inputs,
+                            card_scroll_input=card_scroll_input, overtaken_frames=overtaken_frames,
+                            run_identity=run_identity, chart_edition=chart_edition,
+                            _memory=memory)
+
+
+def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
+                 experience=None, recall_inputs=None, card_scroll_input=None, overtaken_frames=None,
+                 run_identity=None, chart_edition=None, _memory):
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -163,40 +261,46 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from .os_layer import roster as hanjuku_roster
     from .. import hanjuku_chart
     from .os_layer.screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
-    # State written before the castle-label rename still names chapter 1's home
-    # castle ほんじょう. Rename it here, before anything reads or writes it, so
-    # garrison keys, order sources and free-text notes all match the chart.
-    hanjuku_chart.migrate_legacy_labels(state)
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
-    mem=dict(state.get('policy') or {})
+    mem=_memory
+    mem.pop('_map_registration_hold', None)
     if phase != 'dialogue':
         mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
     mem['_run_identity'] = identity
+    reset_native_map_scope = False
     if identity is not None and mem.get('survey_run_identity') != identity:
         previous_identity = (hanjuku_roster.run_identity(mem.get('survey_run_identity'))
                              or hanjuku_roster.run_identity(state.get('decision_trace')))
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
+            reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
-                        'starter_party'):
+                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
         mem['survey_run_identity'] = identity
     mem['_records']=[]
+    if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
+        campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
+                                reason='ランIDが変わったため旧ランの実測地図と出撃状態を破棄')
     mem['_adjusted']=adjusted
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
+    mem['_card_scroll_input']=card_scroll_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
+    for sent in overtaken_frames or ():
+        # (sha256, Frame): an earlier A reached this frame, not the one it was decided on.
+        battle_menus_flow.count_overtaken_monster_turn(parse(sent[1], phase=classify(sent[1])), mem, sent[0])
     if prompts_flow.summer_bonus_continue(screen,mem):
         screen.kind='summer_bonus'
     prompts_flow.observe_events(screen,mem)
@@ -218,7 +322,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -230,7 +334,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -266,6 +370,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # a return to the map or a following event/menu closes the record.
     if kind != 'battle_menu_pending':
         mem.pop('battle_menu_pending_ticks', None)
+    if kind != 'monster_menu_pending':
+        mem.pop('monster_menu_pending_ticks', None)
+    if (mem.get('monster_unchosen') and kind not in ('monster_menu', 'monster_menu_pending', 'unknown')
+            and (kind != 'text' or screen.text)):
+        # The turn moved on (a message, the enemy's menu, the battle field).
+        battle_menus_flow.count_unchosen_monster_turn(mem)
+    if kind == 'text' and screen.text:
+        mem.pop('monster_own_choice', None)
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
         mem['battle'].pop('entry_successor_seen', None)
@@ -276,6 +388,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         battle_flow.battle_end(mem,kind)
     if after_battle:
         battle_judgment.reset_battle_controls(mem)
+        mem.pop('monster_unchosen', None)
+        mem.pop('monster_own_choice', None)
     battle_flow.observe_entry_return(screen, mem)
     if kind != 'egg_choice_menu':
         mem.pop('egg_choice', None)
@@ -301,7 +415,22 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     month_dialog = ((sub.get('kind') == 'recruit' and not readers.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
-    recall_dialog = recall and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
+    if (recall and phase == 'concert' and recall.get('stage') != 'await_dispatch'
+            and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')):
+        # g1075 2026-10-29 13:02: the month rolled over while the camp recall
+        # was choosing its destination. The month-start scene (「こんげつは……」,
+        # phase 'concert') was handed to the recall, which waits on text, so
+        # nothing was pressed for 91 observations until the recall gave up;
+        # meanwhile ポセイドン (HP 1, no soldiers) marched back into リグア and
+        # fell. The scene closes the picker anyway: drop the recall and let the
+        # scene advance. The camp is found again on the map afterwards.
+        mem.pop('recall', None)
+        mem['uncertain'] = True
+        decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
+                             observed_metric={'stage': recall.get('stage'), 'steps': recall.get('steps')},
+                             reason='舞台の場面（月初など）が始まり帰還先の選択が閉じたため、帰還指示を中断して場面を進める')
+        recall = {}
+    recall_dialog = recall and phase != 'concert' and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
         not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
         and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
         (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
@@ -362,6 +491,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # resumes on its own screen. This covers return and outbound flows alike.
     concert_house_event = (
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None:
+        from .flows import map_registration
+        actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
@@ -376,7 +508,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             # game's orders, captures or cursor into it.
             stats=mem.get('stats')
             kept_experience=mem.get('_experience')
-            mem={'_records':mem['_records'],'previous_stats':stats,'_experience':kept_experience}
+            records = mem['_records']
+            mem.clear()
+            mem.update(_records=records, previous_stats=stats, _experience=kept_experience)
             decision_log._record(mem,'new_game_detected',chart_step='name',
                            reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=name_flow.name_step(screen,mem)
@@ -403,6 +537,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=battle_menus_flow.egg_choice_step(screen,mem)
     elif kind=='monster_menu':
         actions=battle_menus_flow.monster_menu_step(screen,mem)
+    elif kind=='monster_menu_pending':
+        actions=battle_menus_flow.monster_menu_pending_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=battle_menus_flow.egg_battle_step(screen,mem)
     elif kind=='okunote_menu':
@@ -462,6 +598,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
         if draw_hold is not None:
             actions = draw_hold
+        jump_hold = y_jump_unknown_hold_step(screen, mem, state.get('screen_kind'), actions)
+        if jump_hold is not None:
+            actions = jump_hold
+        survey_hold = world_survey_unknown_hold_step(screen, mem, actions)
+        if survey_hold is not None:
+            actions = survey_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
@@ -469,6 +611,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
     # A concert picker that B cannot close must not consume the whole stall
     # window. Count unchanged observations that produced the same picker B;
     # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
@@ -498,17 +641,28 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
     # input is sent; the five phases whose reviewed default is deliberately
     # empty get the key a player would reach for instead of another wait.
+    # g1067 11:13-11:23: 「かんじゅくプリンスじょうは いっぽ かんせいに ちかづいた!!」
+    # sat over the field for ten minutes; the water and the ▼ prompt changed
+    # the digest on every observation, the streak never passed 1, and the run
+    # ended input_stalled. A message box is the same screen while it reads the
+    # same text.
+    hold_key=f'text:{screen.text}' if kind=='text' and screen.text else digest
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
     if actions:
         streak=0
-    elif digest in frozen:
+    elif hold_key in frozen:
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold and not bijin_guard_hold
+    bounded_wait=any(mem.get(k) for k in ('recall','house','month_sub','sortie_attempt','y_jump',
+                                           'resume_egg_ritual'))
+    hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
+              else NO_INPUT_HOLD_MAX)
+    if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
+            and not mem.get('_map_registration_hold')
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
                      and mem['boss_card_hold'].get(mem.get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)
@@ -561,11 +715,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                        reason='同一画面で入力0件の観測が上限を超えたため、フェーズ別の既定入力で保留を解消する')
         streak=0
     updated['no_input_streak']=streak
-    updated['no_input_frames']=[digest]+[d for d in frozen if d!=digest][:1]
+    updated['no_input_frames']=[hold_key]+[d for d in frozen if d!=hold_key][:1]
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
+    mem.pop('_card_scroll_input',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem

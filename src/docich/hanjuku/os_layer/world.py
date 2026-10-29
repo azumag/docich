@@ -15,6 +15,7 @@ from .readers import STATUS_NAMES, _cursor
 
 
 NAME = chart.HERO
+VENUS_NAME = 'ヴィーナス'
 EDGE_X = (8, 232)             # cursor cell clamps; the camera scrolls beyond
 EDGE_Y = (8, 200)
 ANCHOR_PX = 24                # roof-to-castle association radius (castles >=100 px apart)
@@ -92,10 +93,23 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
     castles = chart.castles(mem.get('chapter') or 1)
     world = mem.get('cursor')
     last = mem.get('nav_last')
-    # A search step (see ``nav_step``) is our own measured motion, so it
-    # integrates even while uncertain; motion from before an off-map screen
-    # never does.
-    if world and last and last.get('screen') and (not mem.get('uncertain') or last.get('search')):
+    # Screen displacement is measured, so a continuous run of map frames
+    # integrates even while unanchored; the estimate only freezes when a
+    # non-measured move (SELECT/Y) or an off-map screen breaks the run. g1075
+    # 05:52: an unanchored walk to リグア kept the estimate at [571,282] while
+    # the real cursor reached the west edge, so pressing left never ended.
+    tick = mem.get('tick')
+    last_tick = last.get('tick') if isinstance(last, dict) else None
+    if not isinstance(last, dict):
+        trusted = False
+    elif last_tick is None or type(tick) is not int:
+        # Legacy/hot-loaded memory without continuity fields: keep the old
+        # rule (trust only anchored frames or the inland search).
+        trusted = not mem.get('uncertain') or last.get('search')
+    else:
+        trusted = (type(last_tick) is int and type(tick) is int
+                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+    if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
             if _at_edge(s[axis], bounds) or _at_edge(last['screen'][axis], bounds):
@@ -308,7 +322,9 @@ def _apply_world_flags(mem, flags):
         if home not in lost:
             lost.insert(0, home)
         (mem.get('garrison') or {}).pop(home, None)
-    elif home_owner == 'own' and mem.get('home_lost'):
+    elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
+        # A defense loss lists home in lost without home_lost; the own flag
+        # clears that too (g1075 14:24: アルマムーン own, still lost).
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
@@ -366,7 +382,7 @@ def _hero_castle(mem):
 # ---------------------------------------------------------------- house (あたしの家)
 # Measured field view position of the house per chapter (moved from the
 # house flow so the economy strategy can read it without importing a flow).
-HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
+HOUSE_VIEW = chart.HOUSE_VIEW
 
 
 def _repair_hp_ready(info):

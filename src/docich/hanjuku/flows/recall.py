@@ -18,6 +18,9 @@ RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
+MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
+MENU_REOPEN_LIMIT = 3          # presses again per recall
+DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -56,8 +59,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         cursor = _cursor(screen)
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
-        state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0}
-        _record(mem, 'camp_found', observed_metric={'camp': list(camp['target'])},
+        state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0,
+                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
+        _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
+                                                    **({'kind': camp['kind']} if camp.get('kind') else {})},
                 reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
@@ -69,7 +74,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         mem.pop('recall', None)
         mem['uncertain'] = True
         mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
-        return [pad('b')] if is_camp_menu(screen) else []
+        # A stuck recall must leave the screen it is on, not only a camp menu.
+        # map_target/world_map are the actual "return" screens; B closes them.
+        # A camp menu is closed with B as before; other screens keep the old
+        # no-input behaviour to avoid inventing inputs on text/battle frames.
+        if is_camp_menu(screen) or screen.kind in ('map_target', 'world_map'):
+            return [pad('b')]
+        return []
     stage = state.get('stage')
     if stage == 'hero_focus':
         if screen.kind != 'map':
@@ -88,7 +99,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if screen.kind != 'map':
             mem.pop('recall', None)
             mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
         # Re-detect every step: a tent clipped by the top edge is targeted
         # above the screen, and the cursor servo there scrolls the camera
         # until the flag shows and the real selecting cell is known.
@@ -102,12 +113,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['recall_verification'] = {**state, 'status': 'camp_unobserved'}
                 mem.pop('recall', None)
                 mem['uncertain'] = True
+                # g1075 2026-10-29 23:55-00:03: a tent at the top edge beside
+                # the order's source castle was found and lost 8 times in 8
+                # minutes, and the retake from that castle never left. Wait
+                # as after an aborted recall before chasing it again.
+                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
             return []  # an old screen coordinate never licenses a camp-opening A
         state.pop('camp_missing_reads', None)
         cursor = _cursor(screen)
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state['target'] = list(camp['target'])
+        if camp.get('kind'):
+            state['camp_kind'] = camp['kind']
+        else:
+            state.pop('camp_kind', None)
         cursor = _cursor(screen)
         if not cursor:
             return []
@@ -132,8 +152,45 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             _record(mem, 'hero_recall_skipped', observed_metric={'screen': screen.kind},
                     reason='主人公の部隊メニューが開かない（城内など）ため帰還指示を取り消す')
             return [pad('b')] if screen.kind != 'map' else []
+        if not is_camp_menu(screen) and screen.kind != 'map' and state.get('camp_kind') == 'dome':
+            # The dome (two or more generals, or the winter tent) may open
+            # another screen than the measured いどう/ステータス/キャンプ/きかん
+            # menu; it is not measured yet. Keep its frame and leave it.
+            others = state['menu_other'] = int(state.get('menu_other') or 0) + 1
+            if others < DOME_SCREEN_WAIT:
+                return []
+            mem.pop('recall', None)
+            mem['uncertain'] = True
+            mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'camp_group_screen', resulting_event='unclassified_screen_closed',
+                    observed_metric={'camp': state.get('target'), 'screen': screen.kind,
+                                     'text': (screen.text or '')[:80]},
+                    reason='ドーム型の野営で決定した後が野営メニューでないため、画面を記録してBで閉じる')
+            return [pad('b')]
         if not is_camp_menu(screen):
+            if screen.kind == 'map' and not state.get('hero'):
+                # Back on the bare map: the A on the tent opened nothing or
+                # an event swallowed it (g1075 2026-10-29 14:57:27: a defense
+                # message right after the A, then 61 silent map observations
+                # with the tent in view until 15:07). Go back onto the tent.
+                waits = state['menu_map_waits'] = int(state.get('menu_map_waits') or 0) + 1
+                if waits >= MENU_OPEN_WAIT:
+                    reopens = state['menu_reopens'] = int(state.get('menu_reopens') or 0) + 1
+                    state.pop('menu_map_waits', None)
+                    if reopens > MENU_REOPEN_LIMIT:
+                        mem.pop('recall', None)
+                        mem['uncertain'] = True
+                        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                        _record(mem, 'camp_recall_aborted', resulting_event='camp_menu_not_opened',
+                                observed_metric={'camp': state.get('target'), 'reopens': reopens - 1},
+                                reason='野営で決定し直しても野営メニューが開かないため帰還指示を断念する')
+                        return []
+                    state['stage'] = 'to_camp'
+                    _record(mem, 'camp_menu_not_opened', observed_metric={
+                                'camp': state.get('target'), 'map_observations': waits, 'reopen': reopens},
+                            reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
+        state.pop('menu_map_waits', None)
         move = menu_to(screen, 'きかん')
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
@@ -161,7 +218,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if screen.kind == 'map':
                 mem.pop('recall', None)
                 mem['uncertain'] = True
-            return []
+            return [pad('b')] if screen.kind == 'world_map' else []
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
@@ -207,8 +264,9 @@ def _observe_recall_origin(screen, mem, frame, state):
     origin = observed_cursor_cell(screen, mem, frame)
     if origin is None:
         state.pop('origin', None)
+        state.pop('origin_source', None)
     else:
-        state['origin'] = origin
+        state.update(origin=origin, origin_source='roofs')
 
 
 def _finish_hero_recall(mem, state, goal):

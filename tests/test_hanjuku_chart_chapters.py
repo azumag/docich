@@ -28,7 +28,8 @@ def test_chapter_one_orders_are_fully_measured():
 
 
 @pytest.mark.parametrize('chapter', list(range(3, 13)))   # 2 measured 2026-09-28
-def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter):
+def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter, monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, chapter, {})
     assert chart.castles(chapter) == {}
     assert chart.orders(chapter) == ()
     encoded = chart.all_orders(chapter)
@@ -53,16 +54,17 @@ def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter):
 
 
 def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypatch):
-    """Lock the chapter 3 gate independently of any real coordinate claim.
+    """Lock the chapter 3 gate independently of the measured coordinates.
 
     The planted cells are synthetic: this checks which orders the gate exposes
-    once home and the three initial targets exist, not that those coordinates
-    were measured. Until labeled native frames are recorded, chapter 3 must
-    stay empty and emit no orders.
+    once home and the three initial targets exist. The real cells (isolated
+    probe, 2026-10-28; boss from the live Y view, 2026-10-29) expose every
+    order, and 3-B1 still waits for ``all_captured``.
     """
     chapter = 3
-    assert chart.castles(chapter) == {}
-    assert chart.orders(chapter) == ()
+    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter])
+    assert [o['step'] for o in chart.orders(chapter)] == [
+        o['step'] for o in chart.all_orders(chapter)]
 
     home = chart.home_castle(chapter)
     # Home plus グリン alone unlocks only the first initial route.
@@ -109,15 +111,16 @@ def test_purchases_are_tuples_and_purchase_for_selects_month():
     assert chart.purchase_for(3, 1, 8) and chart.purchase_for(3, 1, 11)
 
 
-def test_policy_off_chart_reason_for_unmeasured_chapter():
+def test_policy_off_chart_reason_for_unmeasured_chapter(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 3, {})
     mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, None)
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'chart_adjust_request'
+    [rec] = [r for r in mem['_records'] if r['decision'] == 'chart_adjust_request']
     assert rec['off_chart_reason'] == 'chart_unavailable'
 
 
-def test_interim_candidates_empty_without_measured_castles():
+def test_interim_candidates_empty_without_measured_castles(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 3, {})
     assert policy.interim_candidates({'chapter': 3, 'captured': []}) == {}
 
 
@@ -254,3 +257,80 @@ def test_native_resumed_party_and_intro_reach_map_with_actions():
     actions, state = decide(read_png(fixtures / 'resume-chapter-2-map.png').resized(), state)
     assert actions, 'the actual post-party map must not remain chapterless and held'
     assert state['policy']['chapter'] == 2
+
+
+def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
+    # Isolated probe 2026-10-28 (g1067 savestate, 9ねん1のつき): enemy flag
+    # top-left pixels on the Y view; every cell is the free cursor on that
+    # castle's roof after a Y jump, confirmed by the castle's own name.
+    flags = {'グリン': (171, 85), 'コラダイン': (147, 97), 'イーピヨル': (161, 127),
+             'ドンダム': (135, 149), 'メガパタ': (121, 127), 'パタゴーヌ': (107, 99),
+             'アバロン': (93, 137), 'リグア': (81, 81)}
+    ox, oy = chart.WORLD_MAP_OFFSET[3]
+    for name, (fx, fy) in flags.items():
+        x, y = chart.CASTLES[3][name]
+        assert abs(round(x / 8 + ox) - fx) <= 1 and abs(round(y / 8 + oy) - fy) <= 1, name
+    assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
+
+
+def test_chapter_3_boss_cell_puts_the_marker_on_the_building_under_the_skull():
+    # Live g1075 2026-10-29 JST, every ordinary castle captured: the skull at
+    # Y view (101-107, 64-69) marks ❾完熟プリンス城, a tall building. The v293
+    # aim at the skull centre, G read at (104.5, 66.5), left the field marker
+    # centred at (138, 123), 6 px right of the building (98-125 x 82-142), and
+    # the general camped. The aim moves by the gap to the building centre.
+    # The first cell aimed at the cave inside the cliff ring, (137.5, 127.5).
+    # No A press confirmed the name (read-only runtime).
+    from docich.hanjuku.strategy.orders import _ready
+    ox, oy = chart.Y_JUMP_OFFSET[3]
+    bx, by = chart.CASTLES[3]['ボス']
+    assert (bx / 8 + ox, by / 8 + oy) == (101.25, 65.125)
+    landed = ((104.5 - ox) * 8, (66.5 - oy) * 8)        # the v293 jump's cell
+    gap = (111.5 - 138, 112 - 123)                      # marker centre -> building centre
+    assert abs(bx - (landed[0] + gap[0])) <= 0.5 and by == landed[1] + gap[1]
+    fx, fy = chart.WORLD_MAP_OFFSET[3]
+    boss_flag = (round(bx / 8 + fx), round(by / 8 + fy))
+    for name, (x, y) in chart.CASTLES[3].items():
+        if name != 'ボス':
+            # The owner-flag boxes (8x7 view px) of the boss and of every
+            # ordinary castle never overlap on the Y view.
+            assert max(abs(round(x / 8 + fx) - boss_flag[0]), abs(round(y / 8 + fy) - boss_flag[1])) >= 8, name
+    assert chart.castles(3)['ボス'] == (bx, by) and chart.boss_castle(3) == 'ボス'
+    boss_order = next(o for o in chart.orders(3) if o['step'] == '3-B1')
+    assert boss_order['target'] == 'ボス' and boss_order['after'] == ('all_captured',)
+    ordinary = [n for n in chart.CASTLE_NAMES[3] if n not in (chart.home_castle(3), 'ボス')]
+    assert len(ordinary) == 8
+    assert not _ready(boss_order, {'chapter': 3, 'captured': ordinary[:-1]})
+    assert _ready(boss_order, {'chapter': 3, 'captured': ordinary})
+
+
+# WRAM 0x1700 castle records ([id, x, y, ...], 16 bytes, 8 px tiles) read from
+# isolated probe savestates on 2026-10-28, in record order.
+WRAM_TILES = {
+    1: {'アルマムーン': (88, 96), 'ナキューメラ': (86, 76), 'キカンドン': (68, 86), 'ジョンリギ': (66, 68),
+        'カストーラ': (72, 44), 'スペンソニア': (46, 44), 'ゴーメン': (34, 72)},
+    2: {'アルマムーン': (62, 102), 'ハドリバーグ': (90, 88), 'フーリック': (42, 86), 'グロン': (92, 56),
+        'ドミノーラ': (58, 58), 'ウラノポリス': (32, 58), 'スペランザ': (78, 40), 'アウスパジア': (34, 32)},
+    3: {'アルマムーン': (86, 16), 'グリン': (104, 36), 'コラダイン': (80, 48), 'イーピヨル': (94, 78),
+        'ドンダム': (68, 100), 'メガパタ': (54, 78), 'パタゴーヌ': (40, 50), 'アバロン': (26, 88),
+        'リグア': (14, 32)},
+}
+
+
+def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
+    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    for chapter, tiles in WRAM_TILES.items():
+        assert {n: (x + 2, y + 1) for n, (x, y) in tiles.items()} == SOURCE_CASTLES[chapter]
+        for name, cell in chart.CASTLES[chapter].items():
+            if name in tiles:
+                approx = chart.CASTLES_APPROX.get(chapter, {}).get(name) or tuple(
+                    8 * (v + d) for v, d in zip(SOURCE_CASTLES[chapter][name], (1, 3)))
+                limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
+                assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
+    for chapter in range(4, 13):
+        assert chart.CASTLES[chapter] == {
+            n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
+        assert 'ボス' not in chart.CASTLES[chapter]
+        assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
+        assert chart.orders(chapter)
+        assert not any(o['target'] == 'ボス' for o in chart.orders(chapter))

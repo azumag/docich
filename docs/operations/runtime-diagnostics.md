@@ -187,6 +187,41 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   他の戦術情報と同じactive identity、30秒以内のbot記録、読取り前後の世代一致を確認する。
   第2〜12話でもこの札判断は返せるが、城一覧は第1話のみのため `status=unsupported_chapter`
   のままであり、後半の所有城を第1話の名前から推測しない。
+- `prediction` は予想王の read-only 観測を、hard ceiling で落ちない top-level
+  セクションとして持つ（#2805）。台帳・Soren handoff・半熟英雄の予想ラウンド・
+  yoso コーナー実行・予想境界はすべて `corners` の中にあり、`corners` は
+  hard ceiling の whole-section drop の先頭なので、envelope が予算を超えてからは
+  予想王の状態を実測できなかった。
+  これは `corners` の**移動ではなく二重投影**である: `corners.prediction_leaderboard`
+  / `corners.soren_predictions` / `corners.hanjuku_predictions` /
+  `corners.yoso_corner` / `corners.boundary` は従来どおりのキー・形・意味を保ち、
+  既存の読み手と回帰テストを壊さない。`prediction` は同じ bounded dict を参照する
+  exempt 側の写しで、1つの envelope 内で両者が食い違うことはなく、ファイルを
+  二度読むこともない。
+  `leaderboard` は counts-only（`schema` / `rounds` / `graded_rounds` / `viewers` /
+  `predictor_rows` / `canceled` / `soren_canceled` / `viewers_won_gt0` /
+  `viewers_used_gt0` / `viewers_hit_rate_eligible` / `last_round_ended_at` /
+  `last_round_age_sec` / `min_rounds` / `min_participations`）で、視聴者名・login・
+  title は出さない。判定に使う閾値は本番実値（`min_rounds=3` /
+  `min_participations=1`、yoso adapter は override を渡さない）を値として併記する。
+  `graded_rounds` は `RESOLVED` のラウンド数、`predictor_rows` は記録された参加行の
+  総数で、`rounds>0` かつ `graded_rounds=0` なら的中率・得pt・失pt の各部門が
+  契約上空になること、`rounds>0` かつ `predictor_rows=0` なら参加行そのものが
+  記録されていないことを区別できる。`viewers_hit_rate_eligible` は graded 3 回以上
+  の人数、`viewers_won_gt0` / `viewers_used_gt0` は得点・消費のある人数。
+  `last_round_ended_at` は台帳内で最も新しいラウンド終了時刻（ISO-8601 UTC、
+  40文字以内）とその経過秒で、報告時点の空と現在の空を1つの envelope で切り分ける。
+  `soren_handoff` / `hanjuku` / `corner` / `boundary` は `corners` 側と同じ
+  bounded 射影（handoff の件数、半熟の status/mode/health と last_ok 経過秒、
+  yoso コーナーの status/game/end_reason/recovery_required/完了時刻と経過秒、
+  予想境界の完了時刻と経過秒）だけを写す。
+  `state_dir_found` も `corners` から消えないよう `prediction.state_dir_found` として
+  併せて出す（「state dir が見つからない」と「台帳が空」を区別する唯一の信号）。
+  このセクションは soft/hard の予算縮退でも落とさない（`meta` と同じ扱い）。
+  変更は collector の投影のみで、streaming・worker・queue・model・音声の動作は
+  変えない。envelope 自体が 56KiB を超えて肥大している根因（`corners` が
+  whole-section drop の先頭に来るまでの他セクション増加）は #2756 の姉妹
+  follow-up として分離し、この投影では扱わない。
 - `corners` はコーナー/番組のライフサイクル観測。`retro_corner` が
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
@@ -307,6 +342,21 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `collection.status=unavailable` / `reason=projection_missing` を返し、worker等の
   未観測項目を健全と推測しない。`unmanaged` は親生成物への移行前で同期成功を
   意味しない。ソース本文・生成本文・SHAは返さない。詳細は [ops-brief.md](ops-brief.md)。
+
+### browser_processes（#970 follow-up）
+
+Chromium のCPU消費をサブシステム単位で見る固定ラベル集計。プロセスの
+cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトはプロセス内の分類にだけ使う。
+
+- `total` / `cpu_pct_total` / `rss_mb_total` / `oldest_age_sec`
+- `by_type`: `browser` / `gpu` / `renderer` / `utility` / `other` の件数
+- `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
+  `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct`。
+  `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
+- `type_sources`: `type_arg` / `no_type_arg` の件数。`cmdline_bytes_max` と
+  `max_type_arg_offset` は型判定の切り分け用（見つからない場合は後者を出さない）。
+- CPUは0.5秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
+  `status=unknown` / `scan_complete=0`。
 
 ## 収集元（すべて read-only）
 
@@ -600,7 +650,8 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   後に落とす優先順位）。omitted行数は `components_omitted`/`spawns_omitted`
   として累積し、既存 `components_truncated` は書き換えない。
   一方で1行要約はこの予算の全段階で削除対象外です: `cpu_top`（上位3
-  components＋others集計）と `spawn_top`（上位3 spawn経路）。合成fixtureでの
+  components＋others集計）、`spawn_top`（上位3 spawn経路）、`other_top`
+  （`other` の comm 上位5）。合成fixtureでの
   値部分は `cpu_top` が通常58B・長ラベル条件217B、`spawn_top` が通常75B・
   長ラベル条件375B（JSONキー等の増分は別）。これらはpayload全体の本番上限
   保証ではないため、lists が全削除されても上位消費と spawn 経路は読める

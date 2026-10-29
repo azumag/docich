@@ -160,7 +160,7 @@ def test_unreadable_cursor_and_missing_menu_are_bounded():
     mem = memory()
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert p.battle_step(battle(mem), mem)[0] == p.pad('a', 3)
     for _ in range(12):
@@ -200,10 +200,10 @@ def test_missing_retreat_menu_still_exhausts_its_original_three_openings():
                         start_enemy_hp=26, side='attack', planned_cards=[])
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-        for _ in range(2):
+        for _ in range(p.COMMAND_OPEN_WAITS):
             assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert mem['battle']['hero_retreat']['opens'] == 3
-    for _ in range(20):
+    for _ in range(40):
         p.battle_step(battle(mem), mem)
     assert mem['battle']['hero_retreat']['opens'] == 3
     assert not mem['battle'].get('command_open_pending')
@@ -223,7 +223,7 @@ def test_opening_fade_with_high_no_input_streak_never_blindly_confirms():
     p._human_menu_open(mem['battle'], 'survival')
     frame = Canvas().frame()
     state = {'policy': mem, 'no_input_streak': 999}
-    for _ in range(2):
+    for _ in range(p.COMMAND_OPEN_WAITS):
         actions, state = decide(frame, state)
         assert actions == [{'type': 'wait', 'ms': 50}]
     assert p.command_open_pending_step(parse(frame), state['policy']) is None
@@ -304,6 +304,35 @@ def disabled_box_frame(rows, knight_at=None):
 
 
 DEFENSE_BOX = ((192, 'たまごをつかう'), (208, 'きりふだ'))
+
+
+def test_mixed_defense_box_over_summon_menu_reads_disabled_cursor_without_selecting_card():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')  # retained background
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    for y in range(200, 216):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.kind == 'battle_menu' and screen.mixed_item_box
+    assert screen.menu_cursor == 208
+    assert 'きりふだ' not in screen.text
+    assert p._battle_menu_to(screen, 'たまごをつかう') == p.pad('up')
+
+
+def test_mixed_box_requires_a_knight_and_accepts_either_foreground_row():
+    c = Canvas()
+    c.text(176, 176, 'もうこうげき')
+    c.text(176, 192, 'たまごをつかう')
+    c.text(176, 208, 'きりふだ', color=(106, 105, 106))
+    assert not parse(c.frame()).mixed_item_box
+    for y in range(184, 200):
+        for x in range(152, 166):
+            c.put(x, y, (230, 105, 74))
+    screen = parse(c.frame())
+    assert screen.mixed_item_box and screen.menu_cursor == 192
+    assert p._battle_menu_to(screen, 'たまごをつかう') == 'here'
 
 
 def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_rows():
@@ -693,7 +722,7 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     mem = memory(34, 59)
     mem['battle']['ally_hp'] = hp
     mem['battle']['side'] = 'defense'
-    screen = menu(('おくのて',), kind='battle_menu')
+    screen = menu(('ヤケクソ',), kind='battle_menu')
     screen.hidden_battle_commands = hidden
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert mem['battle']['survival']['exhausted']
@@ -715,7 +744,7 @@ def test_unarmed_egg_enemy_checks_rescue_then_rechecks_hp_before_retreat(side):
                start_enemy_hp=18, side=side, planned_cards=[])
     assert p.battle_step(battle(mem), mem) == [p.pad('b')]
     assert not cur.get('melee_holds')
-    assert '衝突前' in mem['_records'][-1]['reason']
+    assert any('衝突前' in r.get('reason', '') for r in mem['_records'])
     assert p.battle_menu_step(menu(('こうげき', 'たいきゃく')), mem) == [p.pad('b')]
     assert cur['survival']['exhausted']
     if side == 'attack':
@@ -1049,3 +1078,13 @@ def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhau
     mem['battle']['survival']['exhausted'] = True
     assert not p._hero_retreat_needed(mem['battle'])
     assert mem['battle']['cards_selected'] == ['イッテツーン']
+
+
+def test_low_hp_opens_okunote_when_safe_candidate_visible():
+    mem = memory(34, 59)
+    mem['battle']['ally_hp'] = 34
+    mem['battle']['side'] = 'defense'
+    screen = menu(('おどす',), kind='battle_menu')
+    assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
+    assert not mem['battle'].get('survival', {}).get('exhausted')
+    assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 import time
 import tomllib
@@ -18,8 +19,11 @@ sys.path.insert(0,str(ROOT/'src'))
 from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
+from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
+from docich.hanjuku.decision_log import _record
+from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback
 from docich.retroarch_boundary import read_record
@@ -47,7 +51,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable','battle_egg_before_retreat',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
-    'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',
+    'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined','battle_okunote_risk_accepted',
     'battle_hero_retreat_open','battle_hero_retreat_select',
     'battle_hero_retreat_unavailable','battle_hero_retreat_cancel_card',
     'name_wait','name_confirm','name_delete','name_type','order_start',
@@ -58,6 +62,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+    'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
 })
 
 
@@ -95,6 +100,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     recall = policy.get('recall') or {}
     if recall.get('stage') == 'await_dispatch' and not recall.get('request_trace'):
         recall['request_trace'] = {**state['decision_trace'], 'planned_at': now}
+    boundary = policy.get('card_upper_boundary') or {}
+    if (boundary.get('await_input') is True and actions == [{'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}]):
+        boundary['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.
     try:
@@ -117,12 +125,18 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # battle_result is recorded after leaving combat and may already show
     # the map. Keep combat pixels in the same bounded ring, including holds
     # and enemy-owned menus, without claiming an input or a battle outcome.
-    capture=(menu_navigation_feedback(state, actions) or bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
+    capture=(menu_navigation_feedback(state, actions) or bool(card_flow)
+             or bool((policy.get('map_discovery') or {}).get('probe'))
+             or any(r.get('decision') in {'map_bootstrap_started', 'map_bootstrap_exhausted',
+                                         'map_search_candidate', 'map_castle_confirmed',
+                                         'map_registration_rejected', 'map_reanchored'} for r in records)
+             or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+                              'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
                               'recall_arrival_status_started','recall_in_castle_observed',
                               'battle_survival_critical_recheck',
                               'house_dispatch_requested','house_arrival_seen',
@@ -198,6 +212,22 @@ def chart_edition_setting():
         return value if isinstance(value,str) else None
     except (OSError,tomllib.TOMLDecodeError):
         return None
+
+
+def approx_map_setting():
+    """``[hanjuku].approx_map``; source-seeded cells for chapters 3–12.
+
+    Default true: the deployed bot entrypoint may run from a checkout whose
+    config predates this key (the docich package is current). An explicit
+    ``approx_map = false`` remains the rollback switch.
+    """
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        value=(raw.get('hanjuku') or {}).get('approx_map')
+        return value is not False
+    except (OSError,tomllib.TOMLDecodeError):
+        return True
 
 
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
@@ -312,6 +342,139 @@ def recall_input_receipts(runtime, state, meta):
     return {'request_trace': trace, 'a_inputs': count}
 
 
+def card_scroll_receipt(runtime, state, meta):
+    """Match the previous top-row Up to the sender journal and run identity."""
+    boundary = (state.get('policy') or {}).get('card_upper_boundary') or {}
+    trace = boundary.get('request_trace') or {}
+    identity = meta.get('hanjuku') or {}
+    if (boundary.get('await_input') is not True or not trace
+            or any(identity.get(k) is None or trace.get(k) != identity[k]
+                   for k in ('game', 'runtime_id', 'generation', 'lease_id'))
+            or not isinstance(trace.get('decision_id'), str)
+            or not isinstance(trace.get('frame_sha256'), str) or len(trace['frame_sha256']) != 64
+            or type(trace.get('planned_at')) not in (int, float)):
+        return None
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+        matches = set()
+        for raw in tail.splitlines():
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if (isinstance(row, dict) and row.get('event') == 'input_sent'
+                    and row.get('decision_id') == trace['decision_id']
+                    and row.get('decision_frame_sha256') == trace['frame_sha256']
+                    and type(row.get('at')) in (int, float)
+                    and trace['planned_at'] <= row['at'] < 10**12
+                    and row.get('type') == 'pad' and row.get('buttons') == ['up']
+                    and row.get('hold_ms') == 100):
+                matches.add(row['at'])
+    except OSError:
+        return None
+    return {'request_trace': trace, 'up_inputs': min(2, len(matches))}
+
+
+# The agent and the corner monitor both write screenshots/latest.png. A pad A
+# reaches the game about 0.5 s after the observation it was decided on (median
+# of 136 inputs, 2026-10-29). g1075 18:27:47.3: an A decided on a dialogue frame
+# was sent at 47.8, after the corner had already captured ラビットサタン's skill
+# menu at 47.6, and confirmed デスのカマ outside the skill-stall count.
+CONFIRM = {'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}
+
+
+def overtaken_confirm(path: Path, frame, state: dict, actions):
+    """The newest capture when it has left this text frame for a command screen."""
+    if actions != [CONFIRM] or state.get('screen_kind') not in ('text', 'unknown'):
+        return None
+    try:
+        fresh = read_png(path).resized()
+    except (OSError, ValueError):
+        return None
+    if fresh.digest() == frame.digest() or classify(frame) == 'event' or classify(fresh) != 'event':
+        return None
+    return fresh
+
+
+# g1075 18:58:48.87: an A decided on the dialogue 「ウッドボールは すばやく よけた!」
+# was sent after the corner had captured ガートルード's skill box sliding in. It
+# chose であい, and the agent's next frame was already the enemy's menu. The
+# sender journal records the frame each input reached; the phase change into a
+# menu leaves that frame among the hanjuku_frames snapshots.
+SNAPSHOT_NAME = re.compile(r'frame-\d{3}\.png')
+OVERTAKEN_FRAMES_MAX = 2
+
+
+def overtaken_frames(runtime, state, *, now=None):
+    """(sha256, Frame) of command screens a dialogue-decided A actually reached.
+
+    Reads a bounded tail of the existing journal; inputs are taken once, after
+    ``state['overtaken_input_at']`` (the first run only sets that mark).
+    """
+    now = time.time() if now is None else now
+    since = state.get('overtaken_input_at')
+    found = []
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return found
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+        phases, snapshots, inputs = {}, {}, []
+        for raw in tail.splitlines():
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(row, dict) or type(row.get('at')) not in (int, float):
+                continue
+            if row.get('event') == 'observation' and isinstance(row.get('frame_sha256'), str):
+                phases[row['frame_sha256']] = row.get('phase')
+                if isinstance(row.get('snapshot'), str) and SNAPSHOT_NAME.fullmatch(row['snapshot']):
+                    snapshots[row['frame_sha256']] = row['snapshot']
+            elif row.get('event') == 'input_sent' and row['at'] <= now + 1:
+                inputs.append(row)
+        if type(since) not in (int, float):
+            state['overtaken_input_at'] = max([row['at'] for row in inputs], default=now)
+            return found
+        for row in inputs:
+            if row['at'] <= since:
+                continue
+            state['overtaken_input_at'] = max(state['overtaken_input_at'], row['at'])
+            sent, decided = row.get('frame_sha256'), row.get('decision_frame_sha256')
+            if (row.get('type') != 'pad' or row.get('buttons') != ['a']
+                    or not isinstance(sent, str) or not isinstance(decided, str) or sent == decided
+                    or phases.get(decided) != 'dialogue' or phases.get(sent) not in ('field', 'event')
+                    or sent not in snapshots or len(found) >= OVERTAKEN_FRAMES_MAX):
+                continue
+            snapshot = runtime / 'hanjuku_frames' / snapshots[sent]
+            if snapshot.is_symlink() or not snapshot.is_file():
+                continue
+            try:
+                frame = read_png(snapshot).resized()
+            except (OSError, ValueError):
+                continue
+            if frame.digest() == sent:        # the 120-slot ring may have moved on
+                found.append((sent, frame))
+    except OSError:
+        return found
+    return found
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -330,14 +493,29 @@ def main():
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).
             state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
+            hanjuku_resume.inherit_running_chapter(runtime,state)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
+                                 card_scroll_input=card_scroll_receipt(runtime, state, meta),
+                                 overtaken_frames=overtaken_frames(runtime, state),
                                  run_identity=meta.get('hanjuku'),
-                                 chart_edition=chart_edition_setting())
+                                 chart_edition=chart_edition_setting(),
+                                 approx_map=approx_map_setting())
+            fresh=overtaken_confirm(Path(obs['screenshot']),frame,state,actions)
+            if fresh is not None:
+                actions=[]
+                policy=state.get('policy') or {}
+                state.setdefault('_records',[]).append(_record(
+                    {'active':policy.get('active'),'variant':policy.get('variant','chart'),
+                     'chapter':policy.get('chapter')},
+                    'confirm_overtaken',screen=state.get('screen_kind'),
+                    observed_metric={'decided_phase':classify(frame),'fresh_phase':'event',
+                                     'fresh_frame_sha256':fresh.digest()},
+                    reason='文字画面で決めたAの送信前に最新の画面がコマンド表示へ変わったため、未読の最上段を確定しないよう送らず次の観測で決め直す'))
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

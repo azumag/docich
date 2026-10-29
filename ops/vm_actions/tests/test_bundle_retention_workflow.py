@@ -31,6 +31,26 @@ class BundleRetentionWorkflowTests(unittest.TestCase):
         ssh_pos = text.index("Configure pinned SSH client")
         self.assertLess(gate_pos, ssh_pos)
 
+    def test_post_retention_status_retries_only_gateway_busy(self):
+        text = WORKFLOW.read_text()
+        step = text.split("- name: Verify production remains configured", 1)[1]
+        self.assertIn("for attempt in 1 2 3 4; do", step)
+        self.assertIn("grep -Fxq 'VM operation rejected: gateway_busy'", step)
+        self.assertIn("(( attempt == 4 ))", step)
+        self.assertIn("delay=$(( 1 << attempt ))", step)
+        self.assertIn("exit \"$rc\"", step)
+        self.assertIn("data.get('status')!='configured' or data.get('sha')!=expected", step)
+
+    def test_pre_retention_status_retries_only_gateway_busy(self):
+        text = WORKFLOW.read_text()
+        step = text.split("- name: Verify production is exactly current protected main", 1)[1]
+        step = step.split("- name: Rotate unreferenced Git bundles", 1)[0]
+        self.assertIn("for attempt in 1 2 3 4; do", step)
+        self.assertIn("grep -Fxq 'VM operation rejected: gateway_busy'", step)
+        self.assertIn("(( attempt == 4 ))", step)
+        self.assertIn("delay=$(( 1 << attempt ))", step)
+        self.assertIn('exit "$rc"', step)
+        self.assertIn("data.get('status')!='configured' or data.get('sha')!=expected", step)
     def test_does_not_add_privileged_or_direct_filesystem_mutation_path(self):
         text = WORKFLOW.read_text()
         self.assertNotIn("sudo ", text)

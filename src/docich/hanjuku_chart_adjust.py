@@ -33,11 +33,33 @@ CARD_NAMES = frozenset({
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
     'ハリケーン', 'キャトルミュー'})
+# Owner (2026-10-29): 主人公のいる城が手薄になるのはよくない -- the game ends
+# when the hero falls. An off-chart order leaves this many other generals
+# with the hero; the hero leaving is a separate decision. With a single
+# castle of ours the hero may be left alone, or nothing could ever attack.
+HERO_CASTLE_GUARD = 2
+
+
+def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bool:
+    """True when sending ``general`` from ``names`` thins the hero's castle.
+
+    ``names`` is one castle's general list; ``unavailable`` (marching, location
+    unknown) never guards. A general not in the list (a spare picked on the
+    real list) still takes one of the others. ``sole_castle`` (our only
+    castle) lifts the guard.
+    """
+    present = set(names or ()) - set(unavailable or ())
+    if sole_castle or chart.HERO not in present or general == chart.HERO:
+        return False
+    others = present - {chart.HERO}
+    left = len(others - {general}) if general in others else len(others) - 1
+    return left < HERO_CASTLE_GUARD
 
 
 def settings(raw) -> dict:
     """``[hanjuku.chart_adjust]``: a non-empty ``agents`` chain is consent to
-    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice."""
+    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice;
+    ``rate_limit_cooldown_s`` pauses generation after a provider rate limit (#2936)."""
     raw = raw if isinstance(raw, dict) else {}
     enabled = raw.get('enabled', False)
     agents = raw.get('agents', '')
@@ -47,6 +69,7 @@ def settings(raw) -> dict:
     attempts = raw.get('max_attempts', 2)
     interim = raw.get('interim_jev', False)
     interim_timeout = raw.get('interim_timeout_ms', 1500)
+    cooldown = raw.get('rate_limit_cooldown_s', 300)
     if type(enabled) is not bool or type(interim) is not bool or type(direct_enabled) is not bool:
         raise ValueError('hanjuku.chart_adjust enabled/interim_jev/direct_enabled must be boolean')
     if not isinstance(agents, str) or len(agents) > 1024:
@@ -70,9 +93,12 @@ def settings(raw) -> dict:
         raise ValueError('hanjuku.chart_adjust.max_attempts must be 1..3')
     if type(interim_timeout) is not int or not 50 <= interim_timeout <= 5000:
         raise ValueError('hanjuku.chart_adjust.interim_timeout_ms must be 50..5000')
+    if type(cooldown) is not int or not 30 <= cooldown <= 3600:
+        raise ValueError('hanjuku.chart_adjust.rate_limit_cooldown_s must be 30..3600')
     return {'enabled': enabled and bool(agents.strip()), 'agents': agents.strip(),
             'direct_enabled': direct_enabled,
             'timeout_s': timeout, 'max_attempts': attempts,
+            'rate_limit_cooldown_s': cooldown,
             'interim_jev': interim, 'interim_timeout_ms': interim_timeout}
 
 
@@ -128,13 +154,26 @@ def request_digest(record) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _sole_castle(request) -> bool:
+    """Whether the request shows a single castle of ours (unknown: False)."""
+    owned = request.get('owned')
+    if isinstance(owned, (list, tuple)):
+        return len(set(owned)) == 1
+    chapter, captured = request.get('chapter'), request.get('captured')
+    if type(chapter) is not int or not isinstance(captured, (list, tuple)):
+        return False
+    home = set() if request.get('home_lost') else {chart.home_castle(chapter)}
+    return len(set(captured) | home) == 1
+
+
 def startable(order, request) -> str | None:
     """Why ``order`` cannot start in the requested situation, or None.
 
     Allowed: the general is recorded in the source castle, or nothing is
     recorded about that general (unknown). Refused: a lost source, a
     general recorded in another castle or marching (g421 e7df88f1: F2/F3/F5
-    named generals absent from their sources and all failed).
+    named generals absent from their sources and all failed), or a general
+    whose departure would leave the hero's castle thin (``hero_guard_short``).
     """
     if not isinstance(request, dict):
         return None
@@ -147,6 +186,11 @@ def startable(order, request) -> str | None:
         return 'general_marching'
     garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
     if general in (garrison.get(source) or ()):
+        # An unrecorded general (a joiner, a spare picked on the list) is
+        # counted on the real list when the sortie opens it.
+        if not chart.is_boss_castle(order['target']) and hero_guard_short(
+                garrison.get(source), general, marching, sole_castle=_sole_castle(request)):
+            return 'hero_castle_guard'
         return None
     if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
         return 'general_elsewhere'

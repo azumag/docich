@@ -551,6 +551,11 @@ class NethackProgressResolver:
                 )
         if decision.actions:
             return decision
+        # prompt_decision requires LLM context and carries no reviewed action;
+        # do not invent a fallback rest/step keystroke (keeps brain in sync
+        # with the base policy's direct call).
+        if decision.intent == "prompt_decision":
+            return decision
         if not turn_ready(obs):
             return decision
 

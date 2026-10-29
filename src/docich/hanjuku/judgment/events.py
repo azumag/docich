@@ -107,3 +107,97 @@ def _monster_damage_first(owner, ally, enemy, skills) -> bool:
             and len(skills) == 2
             and [_fold_skill(s) for s in skills]
             == [_fold_skill(s) for s in reference.MONSTER_SKILLS['なると']])
+
+
+def _monster_display_name(name):
+    return _MONSTER_DISPLAY_ALIASES.get(name, name)
+
+
+def _is_monster_opponent(enemy):
+    """Egg monsters and chapter bosses both use the 対モ damage column."""
+    if enemy is None:
+        return False
+    name = _monster_display_name(enemy.name)
+    return (name in _MONSTER_SKILLS or name in reference.BOSS_GENERALS
+            or name in chart.BOSSES.values())
+
+
+def _is_self_damage_skill(skill):
+    """Whether a skill damages the user itself.
+
+    Primary source of truth is MONSTER_SELF_DAMAGE_SKILLS (wiki attack-data
+    table rows explicitly marked 自爆 / 自分にNダメージ).  The text
+    heuristics below are a conservative safety net for skills whose table
+    row has not yet been transcribed or whose OCR spelling drifts; they only
+    match obvious self-destruct wording and never turn a normal attack into
+    self-damage.  Upstream label matching is fail-closed, so this only ever
+    sees skill names actually read from the menu.
+    """
+    if not skill:
+        return False
+    if _fold_skill(skill) in {_fold_skill(s) for s in reference.MONSTER_SELF_DAMAGE_SKILLS}:
+        return True
+    text = skill
+    return ('ばくはつ' in text or 'じばく' in text or '自爆' in text
+            or '自滅' in text or '自己ダメージ' in text)
+
+
+def _score_monster_attack(entry, opponent_kind, multiple):
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return 0
+    _name, vs_monster, vs_general, hits = entry[0], entry[1], entry[2], entry[3]
+    is_all = entry[4] if len(entry) > 4 else False
+    self_damage = entry[5] if len(entry) > 5 else False
+    if self_damage:
+        return -1
+    base = vs_monster if opponent_kind == 'monster' else vs_general
+    if opponent_kind == 'general' and not multiple:
+        return base
+    score = base * (hits if isinstance(hits, int) and hits > 0 else 1)
+    if opponent_kind == 'general' and multiple and is_all:
+        score += 100000
+    return score
+
+
+def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, second,
+                                    ally_hp, enemy_hp, mem):
+    """Choose from verified attack data; unread/unknown menus keep old default."""
+    if (owner != 'ally' or ally is None or enemy is None or not second
+            or not (type(ally_hp) is int and ally_hp > 0
+                    and type(enemy_hp) is int and enemy_hp > 0)):
+        return None
+    attack_data = getattr(reference, 'MONSTER_ATTACK_DATA', None)
+    if not isinstance(attack_data, dict):
+        return None
+    data = attack_data.get(ally.name) or attack_data.get(_monster_display_name(ally.name))
+    if not (isinstance(data, dict) and 'skill1' in data and 'skill2' in data):
+        return None
+
+    # Fail closed unless both visible menu labels match the row we are about to
+    # score. OCR/read drift must never turn the reference table into a guessed
+    # button press.
+    expected_first = data['skill1'][0] if data['skill1'] else None
+    expected_second = data['skill2'][0] if data['skill2'] else None
+    if (_fold_skill(first) != _fold_skill(expected_first)
+            or _fold_skill(second) != _fold_skill(expected_second)):
+        return None
+
+    if 0 < enemy_hp <= 10:
+        return 'skill2' if _is_self_damage_skill(first) else 'skill1'
+
+    opponent_kind = 'monster' if _is_monster_opponent(enemy) else 'general'
+    multiple = False
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    if isinstance(battle, dict):
+        es = battle.get('enemy_soldiers')
+        multiple = type(es) is int and es > 0
+
+    s1 = _score_monster_attack(data['skill1'], opponent_kind, multiple)
+    s2 = _score_monster_attack(data['skill2'], opponent_kind, multiple)
+    if s1 < 0 and s2 >= 0:
+        return 'skill2'
+    if s2 < 0 and s1 >= 0:
+        return 'skill1'
+    if s1 != s2:
+        return 'skill1' if s1 > s2 else 'skill2'
+    return None

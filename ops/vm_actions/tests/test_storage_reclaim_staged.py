@@ -6,9 +6,11 @@ STAGES = ['journal_vacuum','apt_clean','snap_disabled','snapd_cache','docker_pru
 GRAMMAR = re.compile(r'^stage=(?:' + '|'.join(STAGES) + r') result=(?:ok|failed) reason=(?:none|sudo_denied|command_failed|not_present|skipped)$')
 
 class StagedTests(unittest.TestCase):
-    def run_helper(self, apply=False, stage=None, extra=None):
+    def run_helper(self, apply=False, stage=None, extra=None, env_override=None):
         env = dict(os.environ)
         env['APPLY'] = '1' if apply else '0'
+        if env_override:
+            env.update(env_override)
         argv = ['bash', str(HELPER)]
         if stage:
             argv += ['--stage', stage]
@@ -41,11 +43,19 @@ class StagedTests(unittest.TestCase):
         new.write_text('x')
         old_mtime = time.time() - 10 * 86400
         os.utime(old, (old_mtime, old_mtime))
-        r = self.run_helper(apply=True, extra=['--snap-cache-root', str(p)])
+        r = self.run_helper(apply=True, extra=['--snap-cache-root', str(p)], env_override={'STORAGE_RECLAIM_TEST_ALLOW_CUSTOM_SNAP_CACHE_ROOT': '1'})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(old.exists())
         self.assertTrue(new.exists())
 
+
+    def test_snap_cache_root_rejected_in_apply_mode(self):
+        d = tempfile.mkdtemp()
+        p = Path(d)
+        (p / 'old.blob').write_text('x')
+        r = self.run_helper(apply=True, extra=['--snap-cache-root', str(p)])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('refusing non-default snap cache root', r.stderr)
 
     def test_payload_size(self):
         preamble = b"APPLY=0\n"

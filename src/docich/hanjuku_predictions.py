@@ -318,6 +318,9 @@ def _resume_prediction_context(root, identity):
             or any(receipt.get(k) != identity[k] for k in progress.KEYS)):
         raise ValueError('invalid verified Hanjuku resume receipt')
     chapter = receipt.get('chapter')
+    if chapter is None:
+        from .hanjuku_resume import source_chapter
+        chapter = source_chapter(root, receipt)
     if chapter is not None and (type(chapter) is not int or not 1 <= chapter <= progress.MAX_CHAPTER):
         raise ValueError('invalid verified Hanjuku resume chapter')
     return {'chapter': chapter}
@@ -655,6 +658,10 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     if now < state['last_poll_at']:
         raise APIError('clock_regressed')
     if now < state['next_poll_at'] and not new_settlement:
+        return
+    if identity is None and (not row or row['status'] in DONE) and not new_settlement:
+        # g1067 2026-10-28: timer ticks carry no identity and can never create.
+        # Consuming the poll window here starved the owner's observe tick.
         return
     state.update(last_poll_at=now, next_poll_at=now + POLL_SECONDS, error=None)
     if not enabled:

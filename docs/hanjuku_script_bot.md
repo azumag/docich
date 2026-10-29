@@ -348,7 +348,10 @@ g747の2年4月は実兵0、70G、完全名簿の賃金6Gに対し、一覧に�
   （`arrival_unverified`。g403 23:04: 画面端のスクロール見積り誤差が約60px溜まり、ココットをジョンリギの北の野原へ出撃させた）。
   押しても画面上のカーソルも推定位置も3回続けて動かなければ推定を捨てて内陸探索に切り替え（`nav_stuck`）、
   探索中は屋根2つ以上でのみ再特定する（g401 21:31: 屋根1つの本城をジョンリギと取り違え、マップ右下隅の海で
-  「下」を16分押し続けた）。
+  「下」を16分押し続けた）。SELECTで主人公の城へ戻す復帰（`select_to_hero`）は order step ごとに
+  4回までとし、それを超えても屋根で再特定できないときはその移動 order を `failed` にして次の候補へ進む
+  （`nav_infeasible`。g1075 2026-10-29: 第3話の画面西端の海上でSELECT復帰と左押しを約6秒周期で繰り返し、
+  `nav_stuck` 266回・95分出撃0）。
   切り札選択で予定の札を5回続けて選べない（一覧に無い・在庫0・携行枠0）ときは、その札を外して出撃を続ける
   （`card_dropped`、ボス出撃は未確認の必須札を外さず、下記の有限取消へ進む）。外すのは未選択の分だけ（1エントリ=1枚）で、
   選択済みの分は計画に残す（g454 12:22: イッテツーン×2の1枚を選択済み・1枚を外した際に全枚を消して
@@ -508,6 +511,12 @@ g747の2年4月は実兵0、70G、完全名簿の賃金6Gに対し、一覧に�
     出力は `hanjuku_chart_adjust.save()` が城名・切り札名・unlock条件を実測済みチャート事実で検証し、
     正規化済みフィールドだけを `hanjuku_chart_adjusted.json`（schema 1: 独自order列＋月次purchases）へ保存する。
     request_id/章はモデル出力ではなく要求から付ける。1要求あたり最大 `max_attempts` 回、要求が更新済みなら破棄。
+    検証で落ちた回答は `adjust_worker status=invalid_output` に検証側の固定文（`invalid source/target castle` /
+    `no startable order` / `json_decode` など）を `detail` として残す（モデル本文は記録しない）。provider の
+    `rate_limit` は回答の誤りではないので attempts を消費せず、`rate_limit_cooldown_s`（既定300秒）の間は
+    revision が変わっても生成しない。同じ revision で rate_limit が3回続いたら、その revision では生成を止める（#2936）。
+    ワーカー状態 `hanjuku_chart_worker.json` は直近結果（`last_status` / `last_detail` / `last_at`）と
+    `rate_limited` / `cooldown_until` を持つ。
   - L1b 暫定JEV: 調整チャート未着の間、bot（main thread）が JEV（semantic_decision の choice API、既定1.5秒）に
     決定的候補からラベルを1つだけ選ばせる。候補は切り札なしで、順に
     `retake_N`（奪われた城の奪還）→ `move_N`（空と確認した自軍城へ、2人以上いる城から主人公以外の1人を

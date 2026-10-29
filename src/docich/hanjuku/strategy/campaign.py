@@ -19,7 +19,8 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
-    for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
+    for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+                'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'month_nav', 'house_nav', 'starter_party',
@@ -31,7 +32,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
+                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',

@@ -503,6 +503,76 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
                 break
 
 
+SOURCE_KEYS = ('game', 'generation', 'lease_id', 'runtime_id')
+
+
+STALLED_OUTCOMES = frozenset({'input_stalled', 'screen_stalled'})
+
+
+def source_chapter(state_dir, receipt):
+    """Chapter the stalled source run held at the exact checkpoint frame.
+
+    Owner rule (2026-10-28): keep the chapter across a stall and restore it.
+    The source bot's last decision must be on the boundary frame and carry
+    the boundary's run identity; anything else stays chapterless.
+    """
+    from .naming import runtime_directory
+    boundary = receipt.get('source_boundary') if isinstance(receipt, dict) else None
+    if not isinstance(boundary, dict) or not isinstance(boundary.get('frame_sha256'), str):
+        return None
+    try:
+        source = runtime_directory(Path(state_dir), boundary.get('runtime_id'))
+        record = read_record(source / 'hanjuku_bot.json', limit=256 * 1024)
+    except (AdapterError, ValueError, TypeError):
+        return None
+    trace = record.get('decision_trace') if isinstance(record.get('decision_trace'), dict) else {}
+    policy = record.get('policy') if isinstance(record.get('policy'), dict) else {}
+    owner = policy.get('_run_identity') if isinstance(policy.get('_run_identity'), dict) else {}
+    if any(trace.get(k) != boundary.get(k) or owner.get(k) != boundary.get(k)
+           for k in SOURCE_KEYS):
+        return None
+    if (trace.get('frame_sha256') != boundary['frame_sha256']
+            and boundary.get('outcome') not in STALLED_OUTCOMES):
+        # g1067 11:23: animated water gave the stall boundary a newer digest
+        # than the bot's last decision. A stalled run sent no input after it,
+        # so its chapter cannot have changed; other outcomes need the frame.
+        return None
+    chapter = policy.get('chapter')
+    return chapter if type(chapter) is int and 1 <= chapter <= 12 else None
+
+
+def inherit_running_chapter(runtime, state):
+    """Seed a verified chapterless restore with its source chapter (hot-loaded)."""
+    policy = state.get('policy') if isinstance(state, dict) else None
+    if (not isinstance(policy, dict) or policy.get('resume_chapter_pending') is not True
+            or policy.get('chapter') is not None):
+        return None
+    receipt = read_record(Path(runtime) / RECEIPT_FILE)
+    if (receipt.get('status') != 'verified' or receipt.get('runtime_id') != Path(runtime).name
+            or receipt.get('chapter') is not None):
+        return None
+    chapter = source_chapter(Path(runtime).parent.parent, receipt)
+    if chapter is None:
+        return None
+    from .hanjuku.strategy.campaign import _enter_chapter
+    policy.pop('resume_chapter_pending', None)
+    _enter_chapter(policy, chapter, evidence='resume_source_boundary',
+                   reason='停滞時の最終フレームで確定していた章を再開後に引き継ぐ')
+    return chapter
+
+
+def _castle_dialogue(screen):
+    """A castle-hall dialogue: text plus the native year/month header.
+
+    g1059 stalled on a seasonal 「メリ〜 クリスマ〜ス!」 event, which shows
+    neither a chapter nor a known panel; the restore waited for one until
+    its deadline on every retry (g1063, g1065).
+    """
+    header = screen.header or {}
+    return (screen.kind == 'text' and header.get('chapter') is None
+            and type(header.get('year')) is int and type(header.get('month')) is int)
+
+
 def restore(adapter, deadline, cancel):
     """Pause, load, then reserialize and compare before staging any agent."""
     from .adapters.retroarch import send_ra_cmd
@@ -544,7 +614,8 @@ def restore(adapter, deadline, cancel):
     from .xkit import XKit
     from .hanjuku_pixels import read_png
     from .hanjuku_screen import (fake_hero_announcement_chapter, parse, resume_sortie_panel,
-                                resume_egg_ritual_panel, resume_battle_menu_panel)
+                                resume_egg_ritual_panel, resume_battle_menu_panel,
+                                resume_bijin_gift_panel)
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
@@ -553,8 +624,14 @@ def restore(adapter, deadline, cancel):
     sortie_without_chapter = False
     ritual_without_chapter = False
     battle_menu_without_chapter = False
+    gift_without_chapter = False
+    dialogue_without_chapter = False
+    message_without_chapter = False
+    inherited = source_chapter(adapter.g.state_dir, request)
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
-           and not ritual_without_chapter and not battle_menu_without_chapter):
+           and not ritual_without_chapter and not battle_menu_without_chapter
+           and not gift_without_chapter and not dialogue_without_chapter
+           and not message_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -581,8 +658,19 @@ def restore(adapter, deadline, cancel):
             sortie_without_chapter = True
         elif observed is None and resume_battle_menu_panel(screen):
             battle_menu_without_chapter = True
+        elif observed is None and resume_bijin_gift_panel(screen):
+            gift_without_chapter = True
+        elif _castle_dialogue(screen):
+            dialogue_without_chapter = True
+        elif observed is None and inherited is not None and screen.kind == 'text' and screen.text:
+            # g1071 11:30: the stall checkpoint showed a headerless field
+            # notice (「かんじゅくプリンスじょうは…」) and the wait ran out the
+            # deadline. The source run still proves the chapter.
+            message_without_chapter = True
+    if chapter is None:
+        chapter = source_chapter(adapter.g.state_dir, request)
     # These verified chapterless panels seed only their measured foreground
-    # owner; chapter, route and any old transaction need fresh evidence.
+    # owner; route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}
     if chapter is not None:
         policy['chapter'] = chapter

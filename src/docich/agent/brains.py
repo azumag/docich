@@ -135,11 +135,11 @@ class NethackPolicyBrain:
     """Layered CLI NetHack brain with observational sidecars.
 
     Gameplay actions come from the reviewed deterministic policy and progress
-    resolver (one observed-context-checked key). When that path holds, one
-    strategist action from P3e advisory may be sent instead: an approved
-    proposal or the safe default answer to a blocking prompt. Such an action is
-    re-validated against the exact frame before sending. P4a observation shadow
-    and P5e candidate shadow stay observational only.
+    resolver (one observed-context-checked key). When that path holds and the
+    intent is not prompt_decision, one strategist action from P3e advisory may
+    be sent instead: an approved proposal. Such an action is re-validated
+    against the exact frame before sending. P4a observation shadow and P5e
+    candidate shadow stay observational only.
     """
 
     _STALL_HOLD_REPEAT_THRESHOLD = 10
@@ -315,7 +315,7 @@ class NethackPolicyBrain:
                 f"docich: 警告: NetHack candidate shadow をスキップしました: {str(exc)[:200]}",
                 file=sys.stderr,
             )
-        if not production_actions and self.last_advisory is not None and self.last_advisory.actions:
+        if not production_actions and decision.intent != "prompt_decision" and self.last_advisory is not None and self.last_advisory.actions:
             # Only a held production path may use advisory keys, and only after
             # validate_action has rechecked this exact frame.
             advisory_actions = list(self.last_advisory.actions)

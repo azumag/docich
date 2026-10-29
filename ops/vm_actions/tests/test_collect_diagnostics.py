@@ -165,6 +165,24 @@ def test_rotation_projection_reports_scheduled_manual_without_request_identity(t
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_compact_policy_projects_battle_hp_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 3,
+        'battle': {'enemy': 'ヴィーナス', 'ally': 'どうし', 'start_enemy_hp': 9999,
+                   'start_ally_hp': 90, 'egg_battle': True,
+                   'note': 'DO-NOT-PUBLISH'},
+        'monster_panel': {'ally': 'バルーンフィンチ', 'ally_hp': 120,
+                          'enemy': 'ヴィーナス', 'enemy_hp': 9999,
+                          'note': 'DO-NOT-PUBLISH'}})
+    assert policy['battle']['start_enemy_hp'] == 9999
+    assert policy['battle']['start_ally_hp'] == 90
+    assert policy['battle']['egg_battle'] is True
+    assert policy['monster_panel']['ally_hp'] == 120
+    assert policy['monster_panel']['enemy_hp'] == 9999
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+
+
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({
@@ -478,8 +496,11 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2,
-                    'canceled':1,'soren_canceled':0}
+    assert ledger=={'present':True,'readable':True,'schema':2,'rounds':2,
+                    'graded_rounds':1,'viewers':2,'predictor_rows':2,'canceled':1,
+                    'soren_canceled':0,'viewers_won_gt0':0,'viewers_used_gt0':0,
+                    'viewers_hit_rate_eligible':0,'last_round_ended_at':None,
+                    'last_round_age_sec':-1,'min_rounds':3,'min_participations':1}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
@@ -493,20 +514,29 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         encoding='utf-8')
     legacy=module._collect_programs(state_dir,soren,int(time.time()))
     assert legacy['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':1,'viewers':1,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':True,'schema':1,'rounds':1,'graded_rounds':1,
+        'viewers':1,'predictor_rows':1,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':False,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
@@ -518,8 +548,166 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         }}),encoding='utf-8')
     soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
     assert soren_canceled['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':2,'viewers':0,
-        'canceled':1,'soren_canceled':1}
+        'present':True,'readable':True,'schema':2,'rounds':2,'graded_rounds':1,
+        'viewers':0,'predictor_rows':0,'canceled':1,'soren_canceled':1,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
+
+def test_prediction_ledger_reports_last_round_end_without_names(tmp_path):
+    # #2805: telling "empty when the report was written" from "empty now" needs
+    # the ledger's own newest round end. It is a bounded ISO stamp plus an age,
+    # never a row body: the round title, login and user name stay inside the
+    # corner projection and are not repeated here.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=1792955569  # 2026-10-25T19:12:49Z
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED',
+                  'ended_at':'2026-10-25T18:12:49Z','predictors':[
+                      {'user_id':'u1','user_login':'secret','user_name':'SECRET-NAME',
+                       'used':100,'won':300,'hit':True}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'ended_at':'2026-10-25T19:02:49Z','predictors':[
+                      {'user_id':'u2','used':50,'refunded':50,'hit':None}]},
+        }}),encoding='utf-8')
+
+    entry=module._collect_prediction_leaderboard(state_dir,now)
+
+    assert entry['last_round_ended_at']=='2026-10-25T19:02:49Z'
+    assert entry['last_round_age_sec']==600
+    assert entry['graded_rounds']==1
+    assert entry['rounds']==2 and entry['canceled']==1
+    assert entry['viewers']==2 and entry['predictor_rows']==2
+    assert entry['viewers_won_gt0']==1 and entry['viewers_used_gt0']==2
+    assert entry['viewers_hit_rate_eligible']==0
+    assert entry['min_rounds']==3 and entry['min_participations']==1
+    rendered=json.dumps(entry,ensure_ascii=False)
+    assert 'SECRET' not in rendered and 'secret' not in rendered
+
+
+def test_parse_iso_utc_rounds_nanosecond_precision():
+    # #2925: a nanosecond-precision ledger stamp must not make last_round_age_sec
+    # stay -1.  The fractional part is rounded to microseconds.
+    module = load_collector()
+    nano = module._parse_iso_utc('2026-10-23T20:37:12.961559839Z')
+    micro = module._parse_iso_utc('2026-10-23T20:37:12.961560Z')
+    assert nano is not None
+    assert nano == micro
+
+
+def test_prediction_section_survives_the_hard_ceiling():
+    # #2805: ``corners`` is dropped whole against the collector ceiling and every
+    # 予想王 input (ledger, Soren handoff, HanJuku round, yoso corner run and the
+    # prediction boundary) lives inside it, so the ledger became unobservable
+    # exactly when a report needed it. The top-level ``prediction`` section keeps
+    # the same bounded counts and must never be dropped before the envelope fits.
+    # This covers the whole-section drop order; the largest-first fallback is
+    # covered separately below.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+        'soren_predictions':{'handoff_present':True,'handoff_bytes':2085,
+                             'handoff_rows':2,'handoff_oversized':False,
+                             'cursor_present':True},
+        'hanjuku_predictions':{'present':True,'readable':True,'status':'CANCELED',
+                               'mode':'canceled',
+                               'health':{'present':True,'readable':True,
+                                         'consecutive_errors':0,'last_error':None,
+                                         'last_ok_at':now-8}},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete',
+                       'recovery_required':False,'completed_at':now-2160},
+        'boundary':{'prediction':{'present':True,'readable':True,
+                                  'completed_at':now-1212324}},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    prediction=decoded['prediction']
+    assert prediction['state_dir_found'] is True
+    assert prediction['leaderboard']['rounds']==4
+    assert prediction['leaderboard']['graded_rounds']==0
+    assert prediction['leaderboard']['canceled']==4
+    assert prediction['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert prediction['leaderboard']['last_round_age_sec']==1239
+    assert prediction['leaderboard']['min_rounds']==3
+    assert prediction['leaderboard']['min_participations']==1
+    assert prediction['soren_handoff']['handoff_rows']==2
+    assert prediction['hanjuku']['status']=='CANCELED'
+    assert prediction['hanjuku']['health_ok'] is True
+    assert prediction['hanjuku']['last_ok_age_sec']==8
+    assert prediction['corner']['end_reason']=='audio-complete'
+    assert prediction['corner']['age_sec']==2160
+    assert prediction['boundary']['age_sec']==1212324
+
+
+def test_prediction_section_survives_the_pathological_fallback():
+    # The hard ceiling reduces twice: the whole-section drop order and, when the
+    # envelope is split into many medium sections, a largest-first fallback over
+    # every remaining top-level dict. ``prediction`` is exempt from both (#2805).
+    # Here the fallback is the only reduction that can help, and the prediction
+    # section is the largest remaining dict, so a fallback that ignored
+    # ``_HARD_KEEP`` would replace it first and the 予想王 counts would vanish.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+    }
+    for index in range(320):
+        payload['slice_%03d'%index]={'pad':'x'*180}
+
+    decoded=json.loads(module._diagnostics_budget(payload))
+
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['prediction']['leaderboard']['rounds']==4
+    assert decoded['prediction']['leaderboard']['canceled']==4
+    assert decoded['prediction']['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert decoded['prediction']['state_dir_found'] is True
+    omitted=sum(1 for key,value in decoded.items()
+                if key.startswith('slice_')
+                and isinstance(value,dict)
+                and value.get('status')=='output_omitted')
+    assert omitted>0
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
@@ -961,6 +1149,46 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v173-resume-sortie-menu",
                 "hanjuku-chart-v174-status-reuse-hero-guard",
                 "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety")
+    versions += ("hanjuku-chart-v275-battle-opening-dialogue",
+                 "hanjuku-chart-v276-chapter-three-relays",
+                 "hanjuku-chart-v277-nav-motion-continuity",
+                 "hanjuku-chart-v278-chapter-three-boss-cell",
+                 "hanjuku-chart-v280-approx-fallback-source-chapters",
+                 "hanjuku-chart-v286-recall-yields-month-scene",
+                 "hanjuku-chart-v287-retry-owned-target",
+                 "hanjuku-chart-v288-boss-jump-fresh-attempt",
+                 "hanjuku-chart-v289-monster-skill-no-progress",
+                 "hanjuku-chart-v290-monster-stall-faster",
+                 "hanjuku-chart-v291-defense-handoff-win",
+                 "hanjuku-chart-v293-boss-cell-not-cave",
+                 "hanjuku-chart-v295-boss-marker-on-building",
+                 "hanjuku-chart-v297-camp-menu-reopen",
+                 "hanjuku-chart-v298-okunote-effect-label",
+                 "hanjuku-chart-v300-recall-picker-stationary",
+                 "hanjuku-chart-v302-defense-loss-flag",
+                 "hanjuku-chart-v303-boss-flag-not-read",
+                 "hanjuku-chart-v304-boss-sortie-overdue",
+                 "hanjuku-chart-v305-hero-castle-guard",
+                 "hanjuku-chart-v306-dome-camp",
+                 "hanjuku-chart-v307-card-egg-reach",
+                 "hanjuku-chart-v308-snow-field",
+                 "hanjuku-chart-v309-card-stock-skip",
+                 "hanjuku-chart-v310-monster-menu-drawing",
+                 "hanjuku-chart-v311-overtaken-confirm",
+                 "hanjuku-chart-v312-monster-unchosen-turn",
+                 "hanjuku-chart-v313-monster-overtaken-turn",
+                 "hanjuku-chart-v314-summon-box-pace",
+                 "hanjuku-chart-v315-summon-entrance-pace",
+                 "hanjuku-chart-v316-summon-dialogue-wait",
+                 "hanjuku-chart-v317-partial-box-fold",
+                 "hanjuku-chart-v318-nav-recover-bound",
+                 "hanjuku-chart-v319-attack-defender-successor",
+                 "hanjuku-chart-v320-dispatch-not-empty",
+                 "hanjuku-chart-v321-camp-unobserved-skip",
+                 "hanjuku-chart-v322-defense-win-unread-list",
+                 "hanjuku-chart-v323-okunote-open-menu",
+                 "hanjuku-chart-v324-hold-gate-reload",
+                 "hanjuku-chart-v325-lost-chart-general",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

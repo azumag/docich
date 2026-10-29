@@ -38,6 +38,9 @@ Observed sources (all read-only):
     retention constants, the fixed unit-state mask and derived down-unit names
     only -- ring lines, paths and any other free text are never emitted, and
     unit names are never read from configuration.
+  - a fixed-label Chromium process inventory (owner / type / count / CPU /
+    RSS / age only; cmdline, URL, path and PID are never emitted) for #970
+    browser attribution.
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
     yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
@@ -206,6 +209,19 @@ HARD_JSON_BYTES = 56 * 1024
 # whole-section drop, so it yields only after every other section is gone.
 _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
                     "soren91_drop_profile", "host_metrics")
+# Sections that survive every ceiling reduction (#2805). ``corners`` is the
+# first whole section dropped and every 予想王 input lives inside it, so while
+# the production envelope stays above the ceiling the 予想王 ledger can only be
+# observed from a run that happened to fit. ``prediction`` duplicates the same
+# already-bounded dicts under a key the whole-section drops never take away.
+_HARD_KEEP = ("meta", "prediction")
+# Production thresholds of the 予想王 boards, kept in sync with
+# ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
+# ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
+# ``--min-participations`` override, so the defaults are the deployed values.
+# The collector runs against a fixed argv and does not import the docich package.
+_PREDICTION_MIN_ROUNDS = 3
+_PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -716,6 +732,296 @@ def _classify_sys_tmp_top_level(path, *, max_entries=STORAGE_MAX_ENTRIES):
             bucket["allocated_bytes"] += _storage_allocated_bytes(st)
     return result
 
+# Case A of azumag/docich#2735: dry-run evidence only. A top-level /tmp entry is
+# counted as a reclaim candidate when every gate passes; nothing is read for
+# write, deleted or changed here. Deletion is a separate, later decision.
+SYS_TMP_RECLAIM_MIN_BYTES = 100 * 1024 * 1024
+SYS_TMP_RECLAIM_IDLE_SEC = 24 * 3600
+SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC = 5
+SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES = 1024 * 1024
+
+
+def _sys_tmp_recently_touched(entry_path, *, now, idle_sec):
+    """Cheap pre-gate: the entry, its .git and .git/objects mtimes.
+
+    Returns ``(recent, complete)``. An unreadable entry is ``complete=False``
+    and is kept by the caller.
+    """
+    for candidate in (entry_path, entry_path / ".git", entry_path / ".git" / "objects"):
+        try:
+            st = os.lstat(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            return True, False
+        if now - st.st_mtime < idle_sec:
+            return True, True
+    return False, True
+
+
+def _sys_tmp_recent_activity(path, *, now, idle_sec, max_entries):
+    """Return ``(recent, complete)`` for regular files under ``path``.
+
+    Symlinks are never followed. Any file whose mtime is within ``idle_sec``
+    (a future mtime included) makes the tree recent. An unreadable or
+    over-bound walk returns ``complete=False`` so the caller keeps the entry.
+    """
+    seen = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries:
+                        return False, False
+                    st = entry.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+                    elif not stat.S_ISLNK(st.st_mode) and now - st.st_mtime < idle_sec:
+                        return True, True
+        except OSError:
+            return False, False
+    return False, True
+
+
+def _sys_tmp_git_clean(path):
+    """Tri-state git check: True clean work tree, False verified not-clean
+    (dirty, or a bare/non-work-tree repo), None when git could not verify.
+    """
+    base = [
+        "git", "-c", "core.fsmonitor=false", "--no-optional-locks", "-C", str(path),
+    ]
+    try:
+        inside = subprocess.run(
+            base + ["rev-parse", "--is-inside-work-tree"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+        if inside.returncode != 0:
+            return None
+        inside_out = inside.stdout.strip()
+        if inside_out == b"false":
+            return False
+        if inside_out != b"true":
+            return None
+        status = subprocess.run(
+            base + ["status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if status.returncode != 0:
+        return None
+    return status.stdout == b""
+
+
+def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid, euid):
+    """Return ``(referenced, complete)`` for the byte paths in ``roots``.
+
+    A root is referenced when any process cmdline contains it. cwd and fd are
+    read only for processes owned by ``euid`` (the same scope as the tmp .so
+    scanner and the reviewed shell helper's effective view); other users'
+    cwd/fd are not readable and must not make the whole scan incomplete.
+    Fd overflow and a missing proc root return ``complete=False``.
+    """
+    referenced = set()
+    complete = True
+    fds_seen = 0
+    try:
+        proc_entries = os.scandir(proc_root)
+    except OSError:
+        return referenced, False
+
+    def _mark(target):
+        for root in roots:
+            if target == root or target.startswith(root + b"/"):
+                referenced.add(root)
+
+    with proc_entries:
+        for proc_entry in proc_entries:
+            if not proc_entry.name.isdigit() or int(proc_entry.name) == own_pid:
+                continue
+            base = Path(proc_entry.path)
+            try:
+                with open(base / "cmdline", "rb") as handle:
+                    cmdline = handle.read(SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
+            for root in roots:
+                if root in cmdline:
+                    referenced.add(root)
+            try:
+                if proc_entry.stat(follow_symlinks=False).st_uid != euid:
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
+            try:
+                _mark(os.fsencode(os.readlink(base / "cwd")))
+            except FileNotFoundError:
+                pass
+            except OSError:
+                complete = False
+            try:
+                with os.scandir(base / "fd") as fds:
+                    for fd_entry in fds:
+                        fds_seen += 1
+                        if fds_seen > max_proc_fds:
+                            return referenced, False
+                        try:
+                            _mark(os.fsencode(os.readlink(fd_entry.path)))
+                        except FileNotFoundError:
+                            continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+    return referenced, complete
+
+
+def _sys_tmp_reclaim_gate(path, *, now, max_entries, min_bytes, idle_sec, result, passed):
+    """Append ``(root_bytes, allocated_bytes)`` for entries passing gates 1-5.
+
+    Gate order is fixed: form, idle pre-gate, size, full idle walk, clean tree.
+    Each doubt keeps the entry and clears ``result["scan_complete"]`` only when
+    the scan itself was partial; a single doubtful entry never adds a count.
+    """
+    try:
+        entries = os.scandir(path)
+    except OSError:
+        result["scan_complete"] = False
+        return
+    with entries:
+        seen = 0
+        for entry in entries:
+            seen += 1
+            if seen > max_entries:
+                result["scan_complete"] = False
+                break
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                continue
+            entry_path = Path(entry.path)
+            try:
+                if not (entry_path / ".git").exists():
+                    continue
+                recent, touch_complete = _sys_tmp_recently_touched(
+                    entry_path, now=now, idle_sec=idle_sec
+                )
+                if not touch_complete:
+                    result["scan_complete"] = False
+                if recent or not touch_complete:
+                    continue
+                usage = _storage_tree_usage(entry_path, max_entries=max_entries)
+                if not usage["scan_complete"]:
+                    result["scan_complete"] = False
+                    continue
+                if usage["allocated_bytes"] < min_bytes:
+                    continue
+                recent, walk_complete = _sys_tmp_recent_activity(
+                    entry_path, now=now, idle_sec=idle_sec, max_entries=max_entries
+                )
+                if not walk_complete:
+                    result["scan_complete"] = False
+                    continue
+                if recent:
+                    continue
+                clean = _sys_tmp_git_clean(entry_path)
+                if clean is None:
+                    result["scan_complete"] = False
+                    continue
+                if not clean:
+                    continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            passed.append((os.fsencode(entry.path), usage["allocated_bytes"]))
+
+
+def _sweep_sys_tmp_reclaim_candidates(
+    path,
+    *,
+    max_entries=STORAGE_MAX_ENTRIES,
+    now=None,
+    proc_root="/proc",
+    min_bytes=SYS_TMP_RECLAIM_MIN_BYTES,
+    idle_sec=SYS_TMP_RECLAIM_IDLE_SEC,
+    euid=None,
+):
+    """Identity-free dry-run count of /tmp entries a reclaim could consider.
+
+    Only top-level directories that contain ``.git`` (clone or linked worktree)
+    are considered, and an entry counts only when all of these hold: at least
+    ``min_bytes`` allocated, no file touched within ``idle_sec``, a clean git
+    work tree, and no running process whose cmdline, cwd or fd points at it.
+    Symlinks are never followed. Anything that cannot be proven yields
+    ``scan_complete=False`` and is not counted. Nothing is deleted or written.
+    """
+    now = time.time() if now is None else now
+    result = {"count": 0, "allocated_bytes": 0, "scan_complete": True}
+    passed = []
+    try:
+        path = Path(path)
+        try:
+            root_st = os.lstat(path)
+        except FileNotFoundError:
+            return result
+        except OSError:
+            result["scan_complete"] = False
+            return result
+        if not stat.S_ISDIR(root_st.st_mode):
+            result["scan_complete"] = False
+            return result
+        _sys_tmp_reclaim_gate(
+            path,
+            now=now,
+            max_entries=max_entries,
+            min_bytes=min_bytes,
+            idle_sec=idle_sec,
+            result=result,
+            passed=passed,
+        )
+        if passed:
+            referenced, refs_complete = _sys_tmp_reference_scan(
+                [root for root, _size in passed],
+                proc_root=Path(proc_root),
+                max_proc_fds=TMP_SO_MAX_PROC_FDS,
+                own_pid=os.getpid(),
+                euid=os.geteuid() if euid is None else int(euid),
+            )
+            if not refs_complete:
+                result["scan_complete"] = False
+            for root, allocated in passed:
+                if not refs_complete or root in referenced:
+                    continue
+                result["count"] += 1
+                result["allocated_bytes"] += allocated
+    except Exception:
+        # The collector must never raise; partial proven counts are kept.
+        result["scan_complete"] = False
+    return result
+
+
 def _collect_storage_breakdown(
     soren,
     prod_root,
@@ -794,6 +1100,9 @@ def _collect_storage_breakdown(
         "swapfile": _storage_file_usage(swap_file),
         "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
         "sys_tmp_top_level": _classify_sys_tmp_top_level(sys_tmp, max_entries=max_entries),
+        "sys_tmp_reclaim_candidates": _sweep_sys_tmp_reclaim_candidates(
+            sys_tmp, max_entries=max_entries
+        ),
         "docich_git_objects": _storage_tree_usage(
             prod_root / ".git" / "objects", max_entries=max_entries
         ),
@@ -1502,6 +1811,12 @@ def _cpu_profile_label(value):
     return None
 
 
+def _cpu_profile_comm_label(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", value):
+        return None
+    return value
+
+
 def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
     """Project one fixed profiler report without exposing arbitrary /tmp JSON."""
     result = {
@@ -1655,6 +1970,23 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
             spawn_top_parts.append(f"{component}<-{spawner}")
     spawn_top = " | ".join(spawn_top_parts)
 
+    # The residual `other` component is otherwise opaque. Expose only the
+    # profiler's sanitized comm labels (<=16 chars, lowercase) and their CPU,
+    # so the short-lived/generic consumers can be attributed without emitting
+    # argv, paths or PIDs.
+    other_top_parts = []
+    raw_other = data.get("other_comms")
+    if isinstance(raw_other, list):
+        for item in raw_other[:5]:
+            if not isinstance(item, dict):
+                continue
+            comm = _cpu_profile_comm_label(item.get("comm"))
+            pct = _cpu_profile_number(item.get("cpu_pct"), maximum=10**6)
+            if comm is None or pct is None:
+                continue
+            other_top_parts.append(f"{comm} {pct:.0f}%")
+    other_top = " | ".join(other_top_parts)
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -1669,6 +2001,7 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "spawns": spawns,
         "cpu_top": cpu_top,
         "spawn_top": spawn_top,
+        "other_top": other_top,
     }
 
 
@@ -2106,6 +2439,278 @@ def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
     if mirror["present"]:
         section["mirror"] = mirror
     return section
+
+
+BROWSER_OWNER_LABELS = (
+    "soren-shared-overlay",
+    "soren-game",
+    "twica",
+    "nethack-tiles",
+    "obs",
+    "webui",
+    "other",
+)
+BROWSER_TYPE_LABELS = ("browser", "gpu", "renderer", "utility", "other")
+BROWSER_CPU_SAMPLE_SEC = 0.5
+# The first production samples still classified every Chromium child as
+# "browser" even at 16 KiB. Read the full bounded line (64 KiB) and derive the
+# type from the raw NUL-separated bytes at an argv boundary.
+BROWSER_CMDLINE_BYTES = 65536
+_BROWSER_EXECUTABLES = frozenset({
+    "chrome",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "headless_shell",
+    "chrome-headless-shell",
+})
+_BROWSER_SKIPPED_EXECUTABLES = frozenset({"chrome_crashpad_handler"})
+
+
+def _browser_read_cmdline(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
+    """Read argv only to classify; the raw argv never leaves this module."""
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return None
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _browser_read_stat(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    rpar = text.rfind(")")
+    if rpar < 0:
+        return None
+    fields = text[rpar + 2:].split()
+    try:
+        return {
+            "ppid": int(fields[1]),
+            "ticks": int(fields[11]) + int(fields[12]),
+            "starttime": int(fields[19]),
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _browser_read_rss_kb(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        if line.startswith("VmRSS:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+    return 0
+
+
+def _browser_owner_label(argv):
+    """Map a process/ancestor argv to a fixed owner label; no raw text escapes."""
+    if not argv:
+        return None
+    joined = "\0".join(argv)
+    exe = os.path.basename(argv[0])
+    if ("shared_overlay.mjs" in joined
+            or "start_shared_overlay_service.sh" in joined
+            or "soren-shared-overlay" in joined):
+        return "soren-shared-overlay"
+    if "soviet_local" in joined:
+        return "soren-game"
+    if "twica" in joined:
+        return "twica"
+    if "nethack_tiles" in joined:
+        return "nethack-tiles"
+    if exe in {"obs", "obs-studio", "obs-browser-page"} or "obs-browser" in joined:
+        return "obs"
+    if "docich-webui" in joined or "webui" in joined:
+        return "webui"
+    return None
+
+
+def _browser_read_type(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
+    """Return (type, type_arg_offset, cmdline_bytes) from the raw cmdline.
+
+    The argv split is not enough: production classified every Chromium child
+    as "browser" even at 16 KiB, so the type is derived from the raw
+    NUL-separated bytes at an argv boundary. Only the fixed label, offset and
+    length leave this function; the bytes themselves never do.
+    """
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return "browser", None, 0
+    match = re.search(rb"(?:^|\x00)--type=([a-z-]+)", raw)
+    if match is None:
+        return "browser", None, len(raw)
+    value = match.group(1).decode("ascii", "ignore")
+    offset = match.start()
+    if value == "gpu-process":
+        return "gpu", offset, len(raw)
+    if "renderer" in value:
+        return "renderer", offset, len(raw)
+    if "utility" in value:
+        return "utility", offset, len(raw)
+    return "other", offset, len(raw)
+
+
+def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
+    # Ancestors win over the Chromium process' own argv: a URL in the page
+    # arguments must not re-label a browser launched by a known subsystem.
+    current = stat["ppid"]
+    for _ in range(6):
+        if current <= 1:
+            break
+        argv = cmdlines.get(current)
+        if argv is None:
+            argv = _browser_read_cmdline(proc_root, current)
+            cmdlines[current] = argv
+        owner = _browser_owner_label(argv)
+        if owner is not None:
+            return owner
+        parent_stat = _browser_read_stat(proc_root, current)
+        parent = parent_stat["ppid"] if parent_stat else 1
+        if parent == current:
+            break
+        current = parent
+    # Only an orphaned Chromium (or one launched directly by an unclassified
+    # parent) falls back to its own argv.
+    return _browser_owner_label(cmdlines.get(pid)) or "other"
+
+
+def _collect_browser_processes(proc_root=Path("/proc"), *,
+                               sample_sec=BROWSER_CPU_SAMPLE_SEC,
+                               sleep=time.sleep, clock=time.monotonic,
+                               clk_tck=None):
+    """Read-only Chromium inventory by fixed owner/type labels (#970 follow-up).
+
+    Answers "which browser/view is eating CPU" without exposing any cmdline,
+    URL, path or PID. Only fixed owner/type labels, counts, CPU percentages,
+    RSS and age are emitted. A short two-sample CPU delta separates an idle
+    helper from a busy renderer; an unavailable /proc fails open to
+    ``unknown`` instead of failing the whole diagnostics operation.
+    """
+    if clk_tck is None:
+        try:
+            clk_tck = int(os.sysconf("SC_CLK_TCK"))
+        except (AttributeError, ValueError, OSError):
+            clk_tck = 100
+    if clk_tck <= 0:
+        clk_tck = 100
+    try:
+        pids = [int(name) for name in os.listdir(proc_root) if name.isdigit()]
+    except OSError:
+        return {"schema_version": 1, "status": "unknown", "scan_complete": 0}
+
+    cmdlines = {}
+    rows = []
+    for pid in pids:
+        argv = _browser_read_cmdline(proc_root, pid)
+        cmdlines[pid] = argv
+        if not argv:
+            continue
+        exe = os.path.basename(argv[0])
+        if exe in _BROWSER_SKIPPED_EXECUTABLES:
+            continue
+        if exe not in _BROWSER_EXECUTABLES and "chrom" not in exe.lower():
+            continue
+        stat = _browser_read_stat(proc_root, pid)
+        if stat is None:
+            continue
+        btype, type_offset, cmdline_bytes = _browser_read_type(proc_root, pid)
+        rows.append({
+            "pid": pid,
+            "type": btype,
+            "type_offset": type_offset,
+            "cmdline_bytes": cmdline_bytes,
+            "owner": _browser_owner_for_pid(proc_root, pid, stat, cmdlines),
+            "ticks": stat["ticks"],
+            "starttime": stat["starttime"],
+            "rss_kb": _browser_read_rss_kb(proc_root, pid),
+        })
+
+    if not rows:
+        return {
+            "schema_version": 1,
+            "status": "empty",
+            "scan_complete": 1,
+            "total": 0,
+            "cpu_pct_total": 0.0,
+            "rss_mb_total": 0.0,
+            "by_type": {},
+            "by_owner": {},
+            "type_sources": {"type_arg": 0, "no_type_arg": 0},
+        }
+
+    start_clock = clock()
+    if sample_sec > 0:
+        sleep(sample_sec)
+    end_clock = clock()
+    elapsed = end_clock - start_clock
+    if elapsed <= 0:
+        elapsed = 0.001
+    cpu_cap = 100.0 * max(1, os.cpu_count() or 1)
+    for row in rows:
+        after = _browser_read_stat(proc_root, row["pid"])
+        delta = after["ticks"] - row["ticks"] if after else 0
+        row["cpu_pct"] = round(
+            min(max(delta, 0) / (elapsed * clk_tck) * 100.0, cpu_cap), 1)
+
+    uptime = None
+    try:
+        uptime = float((proc_root / "uptime").read_text(encoding="ascii").split()[0])
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+
+    by_type = {}
+    by_owner = {}
+    type_sources = {"type_arg": 0, "no_type_arg": 0}
+    for row in rows:
+        if row["type_offset"] is None:
+            type_sources["no_type_arg"] += 1
+        else:
+            type_sources["type_arg"] += 1
+        by_type[row["type"]] = by_type.get(row["type"], 0) + 1
+        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner["count"] += 1
+        owner["cpu_pct"] += row["cpu_pct"]
+        if row["type"] == "gpu":
+            owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
+        elif row["type"] == "renderer":
+            owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+
+    for owner in by_owner.values():
+        owner["cpu_pct"] = round(owner["cpu_pct"], 1)
+        for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
+            if key in owner:
+                owner[key] = round(owner[key], 1)
+
+    result = {
+        "schema_version": 1,
+        "status": "ok",
+        "scan_complete": 1,
+        "total": len(rows),
+        "cpu_pct_total": round(sum(row["cpu_pct"] for row in rows), 1),
+        "rss_mb_total": round(sum(row["rss_kb"] for row in rows) / 1024.0, 1),
+        "by_type": by_type,
+        "by_owner": by_owner,
+        "type_sources": type_sources,
+    }
+    if uptime is not None and rows:
+        ages = [max(0.0, uptime - row["starttime"] / clk_tck) for row in rows]
+        result["oldest_age_sec"] = int(max(ages))
+    if rows:
+        result["cmdline_bytes_max"] = max(row["cmdline_bytes"] for row in rows)
+        offsets = [row["type_offset"] for row in rows if row["type_offset"] is not None]
+        if offsets:
+            result["max_type_arg_offset"] = max(offsets)
+    return result
 
 
 def _empty_opencode_attribution_bucket():
@@ -5848,6 +6453,10 @@ def _project_corner_state(data):
             "hanjuku-chart-v235-boss-card-rebuy",
             "hanjuku-chart-v236-readable-prose-boundary",
             "hanjuku-chart-v237-clash-gauge-dropper-carry",
+            "hanjuku-chart-v238-native-map-registration",
+            "hanjuku-chart-v239-map-bootstrap-source-guard",
+            "hanjuku-chart-v240-map-identity-hold",
+            "hanjuku-chart-v241-deploy-endpoint-guard",
             "hanjuku-chart-v238-queen-command-window",
             "hanjuku-chart-v239-concert-picker-escape",
             "hanjuku-chart-v241-sortie-confirm-cancel",
@@ -5861,6 +6470,70 @@ def _project_corner_state(data):
             "hanjuku-chart-v252-current-roster-recruit",
             "hanjuku-chart-v253-bijin-monthly-owner",
             "hanjuku-chart-v254-bijin-stall-bound",
+            "hanjuku-chart-v255-native-map-registration",
+            "hanjuku-chart-v256-approx-source-map",
+            "hanjuku-chart-v257-approx-fallback",
+            "hanjuku-chart-v258-approx-default",
+            "hanjuku-chart-v259-known-reanchor",
+            "hanjuku-chart-v260-reanchor-restart",
+            "hanjuku-chart-v261-single-roof-reanchor",
+            "hanjuku-chart-v262-status-label-edges",
+            "hanjuku-chart-v263-probe-release-text",
+            "hanjuku-chart-v264-house-needs-chapter",
+            "hanjuku-chart-v265-resume-inherit-chapter",
+            "hanjuku-chart-v266-interim-before-search",
+            "hanjuku-chart-v267-chapter3-measured",
+            "hanjuku-chart-v268-all-chapter-castles",
+            "hanjuku-chart-v269-field-text-by-text",
+            "hanjuku-chart-v270-battle-menu-open-wait",
+            "hanjuku-chart-v271-y-jump-unreadable-bounded",
+            "hanjuku-chart-v272-y-jump-stationary-bounded",
+            "hanjuku-chart-v273-defense-break-execution",
+            "hanjuku-chart-v275-battle-opening-dialogue",
+            "hanjuku-chart-v276-chapter-three-relays",
+            "hanjuku-chart-v277-nav-motion-continuity",
+            "hanjuku-chart-v278-chapter-three-boss-cell",
+            "hanjuku-chart-v280-approx-fallback-source-chapters",
+            "hanjuku-chart-v281-probe-empty-relay",
+            "hanjuku-chart-v282-world-map-sea-cursor",
+            "hanjuku-chart-v283-ring-edge-align-half",
+            "hanjuku-chart-v284-long-march-bind",
+            "hanjuku-chart-v285-egg-drop-substitute",
+            "hanjuku-chart-v286-recall-yields-month-scene",
+            "hanjuku-chart-v287-retry-owned-target",
+            "hanjuku-chart-v288-boss-jump-fresh-attempt",
+            "hanjuku-chart-v289-monster-skill-no-progress",
+            "hanjuku-chart-v290-monster-stall-faster",
+            "hanjuku-chart-v291-defense-handoff-win",
+            "hanjuku-chart-v293-boss-cell-not-cave",
+            "hanjuku-chart-v295-boss-marker-on-building",
+            "hanjuku-chart-v297-camp-menu-reopen",
+            "hanjuku-chart-v298-okunote-effect-label",
+            "hanjuku-chart-v300-recall-picker-stationary",
+            "hanjuku-chart-v302-defense-loss-flag",
+            "hanjuku-chart-v303-boss-flag-not-read",
+            "hanjuku-chart-v304-boss-sortie-overdue",
+            "hanjuku-chart-v305-hero-castle-guard",
+            "hanjuku-chart-v306-dome-camp",
+            "hanjuku-chart-v307-card-egg-reach",
+            "hanjuku-chart-v308-snow-field",
+            "hanjuku-chart-v309-card-stock-skip",
+            "hanjuku-chart-v310-monster-menu-drawing",
+            "hanjuku-chart-v311-overtaken-confirm",
+            "hanjuku-chart-v312-monster-unchosen-turn",
+            "hanjuku-chart-v313-monster-overtaken-turn",
+            "hanjuku-chart-v314-summon-box-pace",
+            "hanjuku-chart-v315-summon-entrance-pace",
+            "hanjuku-chart-v316-summon-dialogue-wait",
+            "hanjuku-chart-v317-partial-box-fold",
+            "hanjuku-chart-v318-nav-recover-bound",
+            "hanjuku-chart-v319-attack-defender-successor",
+            "hanjuku-chart-v320-dispatch-not-empty",
+            "hanjuku-chart-v321-camp-unobserved-skip",
+            "hanjuku-chart-v322-defense-win-unread-list",
+            "hanjuku-chart-v323-okunote-open-menu",
+            "hanjuku-chart-v324-hold-gate-reload",
+            "hanjuku-chart-v325-lost-chart-general",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -7264,11 +7937,73 @@ def _collect_retro_program_queues(soren):
     return queues
 
 
-def _collect_prediction_leaderboard(state_dir):
-    """Counts only; the 予想王 ledger never exposes viewer names or titles."""
+def _parse_iso_utc(value):
+    """Epoch seconds for an ISO-8601 UTC stamp, else None (#2805, #2925).
+
+    Accepts second, microsecond and nanosecond (or any sub-microsecond)
+    precision.  Fractional seconds with more than six digits are rounded to
+    microseconds (with carry into the seconds field) so stamps such as
+    ``2026-10-23T20:37:12.961559839Z`` parse instead of being dropped.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z",
+        value,
+    )
+    if match is None:
+        return None
+    base, frac = match.group(1), match.group(2)
+    microsecond = 0
+    carry_seconds = 0
+    if frac:
+        if len(frac) <= 6:
+            microsecond = int(frac.ljust(6, "0"))
+        else:
+            denom = 10 ** (len(frac) - 6)
+            microsecond = (int(frac) + denom // 2) // denom
+            if microsecond >= 1000000:
+                microsecond -= 1000000
+                carry_seconds = 1
+    try:
+        parsed = dt.datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    parsed = parsed.replace(microsecond=microsecond, tzinfo=dt.timezone.utc)
+    if carry_seconds:
+        parsed = parsed + dt.timedelta(seconds=carry_seconds)
+    try:
+        return parsed.timestamp()
+    except (OverflowError, ValueError):
+        return None
+
+
+def _collect_prediction_leaderboard(state_dir, now=None):
+    """Counts only; the 予想王 ledger never exposes viewer names or titles.
+
+    The counts are chosen so one envelope can tell the three empty-ranking
+    states apart without reading the ledger again (#2805):
+
+    * ``rounds`` > 0 with ``graded_rounds`` 0 makes the hit-rate, won-points and
+      lost-points boards empty by contract.
+    * ``rounds`` > 0 with ``predictor_rows`` 0 means no participant row was
+      recorded at all, so every board is empty for a different reason.
+    * ``last_round_ended_at`` and ``last_round_age_sec`` say whether the ledger
+      advanced since the measured snapshot, which separates "empty when the
+      report was written" from "empty now".
+
+    ``viewers_*`` are per-viewer aggregate counts, never identities. The
+    thresholds are the production values recorded in ``min_rounds`` /
+    ``min_participations``.
+    """
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0,
-             "canceled": 0, "soren_canceled": 0}
+    entry = {"present": False, "readable": False, "schema": None, "rounds": 0,
+             "graded_rounds": 0, "viewers": 0, "predictor_rows": 0, "canceled": 0,
+             "soren_canceled": 0, "viewers_won_gt0": 0,
+             "viewers_used_gt0": 0, "viewers_hit_rate_eligible": 0,
+             "last_round_ended_at": None, "last_round_age_sec": -1,
+             "min_rounds": _PREDICTION_MIN_ROUNDS,
+             "min_participations": _PREDICTION_MIN_PARTICIPATIONS}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -7283,23 +8018,69 @@ def _collect_prediction_leaderboard(state_dir):
     if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
+    schema = data.get("schema")
     viewers = set()
-    canceled = soren_canceled = 0
+    totals = {}
+    ended = []
+    canceled = soren_canceled = graded = predictor_rows = 0
     for round_ in data["rounds"].values():
-        if isinstance(round_, dict) and round_.get("status") == "CANCELED":
+        if not isinstance(round_, dict):
+            continue
+        status = round_.get("status")
+        if status is None and schema == 1:
+            # A schema-1 ledger stored graded rounds only (``_upgrade_legacy``).
+            status = "RESOLVED"
+        if status == "CANCELED":
             # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
             canceled += 1
             if round_.get("corner") == "soren":
                 soren_canceled += 1
-        predictors = round_.get("predictors") if isinstance(round_, dict) else None
+        elif status == "RESOLVED":
+            graded += 1
+        round_ended = round_.get("ended_at")
+        if isinstance(round_ended, str) and round_ended:
+            # ISO-8601 UTC sorts lexicographically, so the max string is the
+            # newest round end; only the newest one leaves this projection.
+            ended.append(round_ended[:40])
+        predictors = round_.get("predictors")
         if not isinstance(predictors, list):
             continue
         for item in predictors:
-            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
-                viewers.add(item["user_id"])
-    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
+            if not isinstance(item, dict) or not isinstance(item.get("user_id"), str):
+                continue
+            viewers.add(item["user_id"])
+            predictor_rows += 1
+            row = totals.setdefault(item["user_id"],
+                                    {"rounds": 0, "used": 0, "won": 0})
+            if status == "RESOLVED":
+                row["rounds"] += 1
+            used = item.get("used")
+            if type(used) is int and used > 0:
+                row["used"] += used
+            won = item.get("won")
+            if type(won) is int and won > 0:
+                row["won"] += won
+    last_round_ended_at = max(ended) if ended else None
+    last_round_age_sec = -1
+    if last_round_ended_at is not None and now is not None:
+        parsed = _parse_iso_utc(last_round_ended_at)
+        if parsed is not None:
+            last_round_age_sec = _bounded_age(parsed, now)
+    entry.update(readable=True, schema=schema,
+                 rounds=min(len(data["rounds"]), 2000),
+                 graded_rounds=min(graded, 2000),
                  viewers=min(len(viewers), 100000),
-                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000))
+                 predictor_rows=min(predictor_rows, 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000),
+                 viewers_won_gt0=min(sum(1 for row in totals.values()
+                                        if row["won"] > 0), 100000),
+                 viewers_used_gt0=min(sum(1 for row in totals.values()
+                                         if row["used"] > 0), 100000),
+                 viewers_hit_rate_eligible=min(
+                     sum(1 for row in totals.values()
+                         if row["rounds"] >= _PREDICTION_MIN_ROUNDS), 100000),
+                 last_round_ended_at=last_round_ended_at,
+                 last_round_age_sec=last_round_age_sec)
     return entry
 
 
@@ -7331,6 +8112,96 @@ def _collect_soren_predictions(soren, state_dir):
         return entry
     entry["handoff_rows"] = min(sum(1 for line in lines if line.strip()), 1000)
     return entry
+
+
+def _bounded_age(value, now):
+    """Seconds since ``value`` for a plausible timestamp, else -1 (#2805)."""
+    if type(value) not in (int, float) or value <= 0:
+        return -1
+    age = int(now - value)
+    return age if 0 <= age <= 10 ** 9 else -1
+
+
+def _prediction_projection(corners, now):
+    """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
+
+    ``corners`` is dropped whole against the hard ceiling, and the ledger, the
+    Soren handoff, the HanJuku round state, the yoso corner run and the
+    prediction boundary all live inside it. When the production envelope grew
+    past the ceiling, every 予想王 report could only be answered from a run that
+    still fitted, so this re-projects the same already-bounded dicts under a key
+    that survives.
+
+    This is a *duplicate* projection, not a move: the ``corners.*`` keys keep
+    their existing shape and meaning so already documented consumers and the
+    regression tests stay honest, while ``prediction`` is the exempt copy. Both
+    read the same dict objects, so no file is read twice and the two cannot
+    disagree within one envelope. ``state_dir_found`` is repeated here for the
+    same reason: it is the only signal that separates "the 予想王 state dir was
+    never found" from "the ledger is empty", and it used to disappear with
+    ``corners``. No viewer name, login or title is added; the values are counts,
+    fixed enums, bounded timestamps and ages only.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+
+    def _section(name):
+        value = corners.get(name)
+        return value if isinstance(value, dict) else {}
+
+    leaderboard = _section("prediction_leaderboard")
+    handoff = _section("soren_predictions")
+    hanjuku = _section("hanjuku_predictions")
+    corner = _section("yoso_corner")
+    boundary = _section("boundary")
+    prediction = boundary.get("prediction")
+    prediction = prediction if isinstance(prediction, dict) else {}
+    health = hanjuku.get("health")
+    health = health if isinstance(health, dict) else {}
+    health_ok = None
+    if health:
+        health_ok = (health.get("present") is True
+                     and health.get("readable") is True
+                     and health.get("consecutive_errors") == 0
+                     and health.get("last_error") is None)
+
+    def _text(value):
+        return value if isinstance(value, str) else None
+
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "leaderboard": dict(leaderboard),
+        "soren_handoff": dict(handoff),
+        "hanjuku": {
+            "present": hanjuku.get("present") is True,
+            "readable": hanjuku.get("readable") is True,
+            "status": _text(hanjuku.get("status")),
+            "mode": _text(hanjuku.get("mode")),
+            "health_ok": health_ok,
+            "last_ok_age_sec": _bounded_age(health.get("last_ok_at"), now),
+        },
+        "corner": {
+            "present": corner.get("present") is True,
+            "readable": corner.get("readable") is True,
+            "status": _text(corner.get("status")),
+            "game": _text(corner.get("game")),
+            "end_reason": _text(corner.get("end_reason")),
+            "recovery_required": (corner.get("recovery_required")
+                                  if isinstance(corner.get("recovery_required"), bool)
+                                  else None),
+            "completed_at": (corner.get("completed_at")
+                             if type(corner.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(corner.get("completed_at"), now),
+        },
+        "boundary": {
+            "present": prediction.get("present") is True,
+            "readable": prediction.get("readable") is True,
+            "completed_at": (prediction.get("completed_at")
+                             if type(prediction.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(prediction.get("completed_at"), now),
+        },
+    }
 
 
 def _collect_programs(state_dir, soren, now):
@@ -7385,7 +8256,7 @@ def _collect_programs(state_dir, soren, now):
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
-    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir)
+    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir, now)
     payload["soren_predictions"] = _collect_soren_predictions(soren, state_dir)
     retro = payload.get("retro_corner")
     game_switch = payload.get("game_switch")
@@ -7821,7 +8692,7 @@ HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
-    "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
+    "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu",
     "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
     "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
     "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
@@ -8238,6 +9109,44 @@ def _collect_resolver_daemon():
             'scopes': scopes,
         }
     return {'schema_version': 2, 'units': units}
+
+
+CC_ADAPTER_DEFAULT_PORT = 4100
+
+
+def _probe_cc_adapter(port, timeout=1.0):
+    """Read-only loopback GET of the CC adapter ``/healthz`` (docich#2894).
+
+    Self-contained on purpose: the gateway copies only a fixed file set into
+    its collector checkout, so this must not import ``docich.cc_translation_adapter``.
+    Returns ``{"state": "ok", "upstream": ...}`` or a state in
+    {"unreachable", "invalid"}; the body is reduced to the upstream name.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=timeout) as response:
+            body = json.loads(response.read(4096).decode("utf-8"))
+    except Exception:
+        return {"state": "unreachable"}
+    if not isinstance(body, dict) or body.get("status") != "ok" or not isinstance(
+        body.get("upstream"), str
+    ):
+        return {"state": "invalid"}
+    return {"state": "ok", "upstream": body["upstream"]}
+
+
+def _collect_cc_translation_adapter():
+    """Read-only healthz of the CC translation adapter (docich#2894).
+
+    Reports the probe state and the upstream name the adapter advertises only;
+    no prompt, key, or response body is read into the envelope.
+    """
+    port = CC_ADAPTER_DEFAULT_PORT
+    raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
+    if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
+        port = int(raw_port)
+    health = _probe_cc_adapter(port)
+    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -8675,9 +9584,14 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None):
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None):
     if workers["required_down"] or workers["required_stale"]:
         return "critical"
+    # A detached resume claim is an actionable operational condition: raise it
+    # through the runtime health alert so the owner is notified within hours
+    # (#2870). Normal claimed/queued/verified transitions must not trigger.
+    if isinstance(hanjuku_resume, dict) and hanjuku_resume.get("status") == "detached_claim":
+        return "warn"
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     if isinstance(retro, dict) and retro.get("recovery_required") is True:
         return "warn"
@@ -10159,6 +11073,146 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log.
+
+    Only allowlisted tokens, fixed screen kinds and ages leave this reader.
+    Reasons, chart steps, general/castle names, frame hashes and identities
+    remain private; a malformed or unattributed line is skipped.
+    """
+    out = []
+    try:
+        fd = _open_hanjuku_scene_source(Path(runtime) / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return out
+            offset = max(0, info.st_size - 64 * 1024)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()[-256:]
+        finally:
+            os.close(fd)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    continue
+                event = row.get("event")
+                decision = row.get("decision")
+                if not isinstance(event, str) or not re.fullmatch(r"[a-z_]{1,48}", event):
+                    continue
+                if decision is not None and (
+                        not isinstance(decision, str)
+                        or not re.fullmatch(r"[a-z_]{1,64}", decision)):
+                    continue
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    continue
+                kind = row.get("screen_kind")
+                kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                out.append({"event": event, "decision": decision,
+                            "screen_kind": kind, "age_sec": age})
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                continue
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return []
+    return out[-limit:]
+
+
+def _compact_hanjuku_policy(mem, state=None):
+    """Small map/route summary that survives the tactical detail drop.
+
+    The full tactical section is dropped when the diagnostics envelope is
+    large, which hid chapter/active/orders exactly when a sortie had stopped.
+    Keep only fixed names, bounded counts and status tokens; no free text,
+    identities, frame hashes or decision reasons.
+    """
+    if not isinstance(mem, dict):
+        return None
+    def text(value, limit=64):
+        return value if isinstance(value, str) and len(value) <= limit else None
+    def names(value, limit=12):
+        return ([item for item in value if isinstance(item, str)][:limit]
+                if isinstance(value, list) else None)
+    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
+    registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
+    chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    monster = mem.get('monster_panel') if isinstance(mem.get('monster_panel'), dict) else {}
+    cursor = mem.get('cursor')
+    tick = mem.get('tick')
+    state = state if isinstance(state, dict) else {}
+    return {
+        'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'screen_kind': text(state.get('screen_kind'), 32),
+        'phase': text(state.get('phase'), 32),
+        'step': state.get('step') if type(state.get('step')) is int else None,
+        'no_input_streak': (state.get('no_input_streak')
+                            if type(state.get('no_input_streak')) is int else None),
+        'variant': text(mem.get('variant'), 32),
+        'active': text(mem.get('active'), 32),
+        'tick': tick if type(tick) is int and tick >= 0 else None,
+        'month': text(mem.get('month'), 16),
+        'orders': {text(step, 32) or '?': text(status, 32) or '?'
+                   for step, status in list(orders.items())[:20]
+                   if isinstance(step, str) and isinstance(status, str)},
+        'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
+                           and len(mem['captured']) <= 64 else None),
+        'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
+                     for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'sorties': {text(step, 32) or '?': {'status': text(value.get('status'), 32),
+                                            'target': text(value.get('target'), 32)}
+                    for step, value in list(sorties.items())[:12]
+                    if isinstance(value, dict)},
+        'cursor': ([item for item in cursor[:2] if type(item) is int]
+                   if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
+        'uncertain': mem.get('uncertain') is True,
+        'nav_search': mem.get('nav_search') is True,
+        'y_jump': ({'mode': text((mem.get('y_jump') or {}).get('mode'), 16),
+                    'goal': text((mem.get('y_jump') or {}).get('goal'), 32)}
+                   if isinstance(mem.get('y_jump'), dict) else None),
+        'approx_map': mem.get('approx_map') is True,
+        'approx_fallback': mem.get('approx_fallback') is True,
+        'approx_localize_miss': (mem.get('approx_localize_miss')
+                                 if type(mem.get('approx_localize_miss')) is int else None),
+        'map_discovery': ({'candidate': text(discovery.get('candidate'), 32),
+                           'attempts': discovery.get('attempts')
+                           if type(discovery.get('attempts')) is int else None}
+                          if discovery else None),
+        'map_registration_castles': (len(registration.get('castles'))
+                                     if isinstance(registration.get('castles'), dict) else None),
+        'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
+                          'has_plan': isinstance(mem.get('chart_plan'), dict)}
+                         if chart_adjust else None),
+        # A long battle looks like a frozen month/capture count. Project the
+        # bounded HP evidence so diagnostics can say whether it is progressing.
+        'battle': ({'enemy': text(battle.get('enemy'), 32),
+                    'ally': text(battle.get('ally'), 32),
+                    'start_enemy_hp': (battle.get('start_enemy_hp')
+                                       if type(battle.get('start_enemy_hp')) is int else None),
+                    'start_ally_hp': (battle.get('start_ally_hp')
+                                      if type(battle.get('start_ally_hp')) is int else None),
+                    'egg_battle': battle.get('egg_battle') is True}
+                   if battle else None),
+        'monster_panel': ({'ally': text(monster.get('ally'), 32),
+                           'ally_hp': (monster.get('ally_hp')
+                                       if type(monster.get('ally_hp')) is int else None),
+                           'enemy': text(monster.get('enemy'), 32),
+                           'enemy_hp': (monster.get('enemy_hp')
+                                        if type(monster.get('enemy_hp')) is int else None)}
+                          if monster else None),
+    }
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -10203,7 +11257,9 @@ def _collect_hanjuku_tactical(state_dir, now):
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
+                    'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
+                               'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                    'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -10236,6 +11292,8 @@ def _collect_hanjuku_tactical(state_dir, now):
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
+                   policy={**_compact_hanjuku_policy(mem, bot),
+                           'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
@@ -12398,7 +13456,17 @@ def _diagnostics_budget(payload):
         refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
         house_deferral = (payload['hanjuku_tactical'].get('last_house_deferral')
                           if isinstance(payload['hanjuku_tactical'], dict) else None)
+        summary = payload['hanjuku_tactical']
+        policy = summary.get('policy') if isinstance(summary, dict) else None
+        chapter = summary.get('chapter') if isinstance(summary, dict) else None
+        age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        if isinstance(policy, dict):
+            payload['hanjuku_tactical']['policy'] = policy
+        if type(chapter) is int:
+            payload['hanjuku_tactical']['chapter'] = chapter
+        if type(age_sec) is int:
+            payload['hanjuku_tactical']['age_sec'] = age_sec
         if house_deferral is not None:
             payload['hanjuku_tactical']['last_house_deferral'] = _compact_hanjuku_house_deferral(house_deferral)
         if refill is not None:
@@ -12501,12 +13569,13 @@ def _diagnostics_budget(payload):
     # Pathological fallback: a payload whose surviving sections are individually
     # small but numerous. Drop the remaining top-level sections largest-first,
     # keeping ``meta`` (the deployed SHA and collection status) so the envelope
-    # still identifies what it came from.
+    # still identifies what it came from, and ``prediction`` so the 予想王 counts
+    # stay observable (#2805).
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         for key, value in sorted(
                 payload.items(),
                 key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
-            if key == "meta" or not isinstance(value, dict):
+            if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
             payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
             text = _nethack_history_budget(payload)
@@ -12962,11 +14031,12 @@ def main(argv):
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
+    hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners),
+        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume),
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
@@ -12994,7 +14064,8 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
-        "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
+        "prediction": _prediction_projection(corners, now),
+        "hanjuku_resume": hanjuku_resume,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
@@ -13018,6 +14089,7 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "cpu_profile": _collect_cpu_profile(now),
+        "browser_processes": _collect_browser_processes(),
         "audio_priority": _collect_audio_priority(),
         "audio_gaps": _collect_audio_gaps(now),
         "shared_runtime_pids": _collect_shared_runtime_pids(soren),
@@ -13029,6 +14101,7 @@ def main(argv):
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
+        "cc_translation_adapter": _collect_cc_translation_adapter(),
     }
     retention = payload["opencode_retention"]
     attempt = retention["attempt"]

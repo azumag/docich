@@ -702,8 +702,10 @@ Soren の `twitch_predictions.sh` が追記する
 毎分の timer が台帳を読み直さない。symlink・oversize・契約違反の行は記録せず固定コードを返し、
 台帳の read/write に失敗した tick は cursor を進めないので同じ row を再試行する。
 この tick は best-effort で、失敗しても rotation の tick は止めない。
-診断は `prediction_leaderboard`（rounds/viewers/canceled/soren_canceled の件数のみ）と `soren_predictions`
+診断は `prediction_leaderboard`（件数のみ。キー一覧と閾値は
+`docs/operations/runtime-diagnostics.md` の `prediction` セクションが正本）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
+hard ceiling で `corners` が落ちても同じ bounded dict を top-level `prediction` から読める（#2805）。
 
 ### 半熟予想 round の owner-only 復旧（`cancel-prediction` / `sync-prediction`、#2216）
 

@@ -81,3 +81,33 @@ def test_unreadable_boss_panel_cancels_without_dropping_any_card():
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert not mem.get('card_drop') and mem['orders']['1-B1'] == 'pending'
+
+
+def test_top_boundary_requires_two_delivered_ups_and_unchanged_panel():
+    mem = memory()
+    mem['_run_identity'] = {'game': 'hanjuku-hero', 'runtime_id': 'synthetic',
+                            'generation': 1, 'lease_id': 'synthetic-lease'}
+    screen = panel(('ゼンマイン', 'バルムンク', 'ミックミー', 'グルミー'), selected=0)
+    assert policy.deploy_step(screen, mem) == [policy.pad('up')]
+    state = mem['card_upper_boundary']
+    trace = {'decision_id': 'synthetic-1'}
+    state['request_trace'] = trace
+    mem['_card_scroll_input'] = {'request_trace': trace, 'up_inputs': 1}
+    assert policy.deploy_step(screen, mem) == [policy.pad('up')]
+    assert state['confirmed'] == 1 and not mem.get('card_drop')
+    trace = {'decision_id': 'synthetic-2'}
+    state['request_trace'] = trace
+    mem['_card_scroll_input'] = {'request_trace': trace, 'up_inputs': 1}
+    for _ in range(policy.CARD_MISS_LIMIT):
+        assert policy.deploy_step(screen, mem) == []
+    assert mem['card_drop'] == {'1-B1': ['クースカン']}
+
+
+def test_no_input_receipt_never_proves_top_or_drops_required_card():
+    mem = memory()
+    mem['_run_identity'] = {'game': 'hanjuku-hero', 'runtime_id': 'synthetic',
+                            'generation': 1, 'lease_id': 'synthetic-lease'}
+    screen = panel(('ゼンマイン', 'バルムンク', 'ミックミー', 'グルミー'), selected=0)
+    for _ in range(policy.CARD_SCROLL_LIMIT + policy.CARD_UNREADABLE_LIMIT):
+        policy.deploy_step(screen, mem)
+    assert not mem.get('card_drop')

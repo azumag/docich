@@ -53,7 +53,7 @@ def test_successor_restarts_inputs_and_preserves_castle_without_inheriting_contr
     ({'enemy_hp': 0}, panel()), ({}, panel(enemy='ミント')),
     ({}, panel(ally='ダークエルフ', ally_hp=216)),
     ({}, panel(ally='未確認', ally_hp=30)), ({}, panel(ally_hp=83)),
-    ({}, panel(ally_hp=0)), ({}, panel(enemy_hp=0)),
+    ({}, panel(ally_hp=0)),
 ])
 def test_unsafe_name_changes_do_not_end_previous_battle(changes, observation):
     mem = memory()

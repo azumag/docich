@@ -638,7 +638,7 @@ def test_fresh_castle_recheck_does_not_allow_a_sole_defender_to_leave():
     with patch.object(p, '_present_generals', return_value=['どうし']), \
             patch.object(p, '_owned', return_value={'アルマムーン'}):
         actions = house.step(screen, mem, Canvas().frame())
-    assert actions != [p.pad('a')]
+    assert actions == []
     assert mem['house']['phase'] == 'close'
 
 

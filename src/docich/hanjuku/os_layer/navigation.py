@@ -10,7 +10,7 @@ from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from .commands import pad
-from .readers import _cursor, world_cursor, world_flags
+from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
 
 
@@ -20,6 +20,7 @@ ARRIVE_PX = 4
 
 UNVERIFIED_LIMIT = 3                  # unanchored arrivals held before confirming anyway
 NAV_STILL_LIMIT = 3                   # pressed frames with no motion before distrusting the cell
+NAV_RECOVER_LIMIT = 4                 # SELECT recoveries per order step before abandoning it
 
 
 def _nav_stuck(screen, mem, world, s):
@@ -51,6 +52,20 @@ def _nav_stuck(screen, mem, world, s):
     return True
 
 
+def _recoveries(mem, step) -> int:
+    """SELECT recoveries already spent on ``step`` (0 without a step)."""
+    if not step:
+        return 0
+    return int((mem.get('nav_recovers') or {}).get(step) or 0)
+
+
+def _note_recovery(mem, step) -> None:
+    if not step:
+        return
+    recovers = mem.setdefault('nav_recovers', {})
+    recovers[step] = int(recovers.get(step) or 0) + 1
+
+
 SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
 SEARCH_RINGS = 4
 
@@ -70,13 +85,18 @@ def _search_goal(mem):
     return (cx + ux * ring * SEARCH_RING_PX, cy + uy * ring * SEARCH_RING_PX)
 
 
-def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
+def nav_step(screen: Screen, mem, frame, goal, goal_name=None, step=None):
     """Holds toward ``goal`` (map cell); 'arrived' within ARRIVE_PX.
 
     After a failed castle menu (``nav_search``) the estimate is known to be
     wrong, typically pushed past the coast where no roof is visible (g358:
     the camera froze on open water for 140 s). Until roofs re-anchor, steer
     toward the castles' centroid instead of the goal so land comes into view.
+
+    ``step`` names the order being driven: SELECT recoveries are counted per
+    step and 'infeasible' is returned once ``NAV_RECOVER_LIMIT`` of them were
+    spent without an anchor, so the caller can abandon the step instead of
+    repeating the same recovery.
     """
     world = update_world(screen, mem, frame, goal_name)
     s = _cursor(screen)
@@ -98,6 +118,13 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         # camera on the hero; with the hero's castle known, the cursor is on
         # that castle's cell, so the lost cell is re-placed at once instead
         # of wandering (g421: 11 minutes of cursor walking in 2 hours).
+        if _recoveries(mem, step) >= NAV_RECOVER_LIMIT:
+            # g1075 2026-10-29 (chapter 3): the cursor sat on open sea at the
+            # screen's west edge, SELECT re-placed the estimate on アルマムーン
+            # and the same left hold walked back to the edge. 266 nav_stuck
+            # bursts, one every ~6 s, and 95 minutes without a sortie.
+            return 'infeasible'
+        _note_recovery(mem, step)
         mem['select_used'] = True
         mem['select_tick'] = tick
         mem['nav_last'] = None
@@ -116,6 +143,9 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         # a wrong cell (owner hint 2026-09-28, measured in the isolated
         # emulator: the cursor lands at the screen centre). The jump is not
         # our measured motion, so nothing is integrated for it.
+        if _recoveries(mem, step) >= NAV_RECOVER_LIMIT:
+            return 'infeasible'
+        _note_recovery(mem, step)
         mem['select_used'] = True
         mem['nav_last'] = None
         _record(mem, 'select_to_hero', screen=screen.kind,
@@ -156,7 +186,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
                     observed_metric={'cursor': list(world), 'screen_cursor': list(s),
                                      'roofs': mem.get('roofs_seen'), 'held': held + 1},
                     reason='屋根で位置を確認できないまま到着と推定したため、決定せず屋根で再特定する')
-            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search}
+            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search,
+                               'tick': int(mem.get('tick') or 0), 'kind': screen.kind}
             return [pad('up', 12)] if s[1] > 100 else [pad('down', 12)]
         mem.pop('unverified', None)
         mem['uncertain'] = False
@@ -167,7 +198,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
             frames = min(abs(d), MAX_HOLD_FRAMES)
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
-    mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
+    mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search,
+                       'tick': int(mem.get('tick') or 0), 'kind': screen.kind}
     mem['nav_pressed'] = bool(actions)
     return actions
 
@@ -181,7 +213,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
-Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
+Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
@@ -190,6 +222,32 @@ Y_JUMP_WAIT = 6                # frames without a readable cursor before closing
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
 Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
+Y_JUMP_STILL_LIMIT = 3         # readable observations unchanged after directional inputs
+
+
+def _note_failed_jump(mem, jump, why):
+    """Remember the closed jump so a view that never moved is not reopened.
+
+    Y is a toggle: reopening it after a close that moved nothing only toggles
+    the view again (g1075 2026-10-28: 69 closes at 0 moves, ~1 minute of Y
+    blinking per order while the ring cursor sat still on the sea).
+    """
+    mem['y_jump_last'] = {'step': jump.get('step'), 'mode': jump.get('mode'),
+                          'moves': int(jump.get('moves') or 0), 'why': why}
+
+
+def _forget_failed_jump(mem, step, mode=None):
+    """A new attempt of ``step`` may open the view again.
+
+    The toggle guard in ``_want_y_jump`` belongs to one attempt, like the jump
+    count. g1075 2026-10-29 13:31: the boss target view closed early, the
+    immediate second Y showed nothing (0 moves), and that record outlived the
+    cancel and the order restart: the 13:36 retry walked to ボス without a
+    jump, and a boss target is only confirmed by a Y jump.
+    """
+    last = mem.get('y_jump_last') or {}
+    if last.get('step') == step and (mode is None or last.get('mode') == mode):
+        mem.pop('y_jump_last', None)
 
 
 def _drop_stale_y_jump(screen, mem):
@@ -206,6 +264,7 @@ def _drop_stale_y_jump(screen, mem):
         return True                      # the view is still opening: press nothing
     mem.pop('y_jump', None)
     if jump:
+        _note_failed_jump(mem, jump, 'view_closed')
         _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                 screen=screen.kind, observed_metric={'moves': jump.get('moves')},
                 reason='全体マップが決定前に閉じたためジャンプを中断として扱う')
@@ -216,9 +275,21 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
         return False
+    last = mem.get('y_jump_last') or {}
+    if (last.get('step') == order['step'] and last.get('mode') == mode
+            and (not int(last.get('moves') or 0) or last.get('why') == 'cursor_stationary')):
+        # The last jump for this order closed without moving the cursor. The
+        # view is not opening or readable here, so walk instead of toggling Y.
+        return False
     key = f"{order['step']}:{mode}"
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
+    if (mode == 'target' and name == chart.boss_castle(chapter)
+            and (mem.get('y_jumped') or {}).get(order['step']) != name):
+        # A boss target is confirmed only by a jump (``_target_roof_under_marker``),
+        # so an estimate that already reads "near" must not skip it (g1075
+        # 2026-10-29 13:37: the retry walked onto its stale estimate and stopped).
+        return True
     world, goal = mem.get('cursor'), chart.castles(chapter)[name]
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 
@@ -245,19 +316,40 @@ def _y_jump_step(mem, frame):
         jump['owners'] = True
         _apply_world_flags(mem, flags)          # the same view also shows every owner
     if cursor is None:
+        jump.pop('last_cursor', None)
+        jump['still'] = 0
         jump['wait'] += 1
         if jump['wait'] < Y_JUMP_WAIT:
             return []
         mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return [pad('y')]
     gx, gy = chart.castles(chapter)[jump['goal']]
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
+    # A roof misread as the G stays fixed even while the real cursor moves
+    # (#2915). Count observations after issued inputs, not the initial read.
+    # Never turn that stationary detection into an arrival or a new cell.
+    previous = jump.get('last_cursor')
+    jump['still'] = (int(jump.get('still') or 0) + 1
+                     if previous == list(cursor) and jump['moves'] else 0)
+    jump['last_cursor'] = list(cursor)
+    if jump['still'] >= Y_JUMP_STILL_LIMIT:
+        mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'cursor_stationary')
+        # Another mode can overwrite y_jump_last. Keep this order/mode's
+        # budget exhausted until the normal order-start reset instead.
+        mem.setdefault('y_jumps', {})[f"{jump['step']}:{jump['mode']}"] = Y_JUMP_LIMIT
+        _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
+                observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
+                reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
+        return [pad('y')]
     if jump['moves'] >= Y_JUMP_MOVES and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
         mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'residual')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},
@@ -328,9 +420,18 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     steps = mem.setdefault('align_steps', {})
     steps[key] = steps.get(key, 0) + 1
     if steps[key] > ALIGN_LIMIT:
+        # The confirm check accepts a roof within UNDER_CURSOR_PX of the
+        # marker; never reopen the jump for a marker already that close.
+        if abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX:
+            return 'on'
         return None
+    # Half the offset per step. The sortie target marker moved about 2 px
+    # per held frame (g1075 2026-10-29 12:25: a 7-frame hold turned the
+    # roof offset (-7, +7) into (+7, -7) and back, ten times per jump, and
+    # the retake of リグア reopened Y three times). A 1 px/frame cursor
+    # undershoots instead and still converges within ALIGN_LIMIT.
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > ALIGN_TOL:
-            actions.append(pad(pos if d > 0 else neg, min(abs(d), MAX_HOLD_FRAMES)))
+            actions.append(pad(pos if d > 0 else neg, min(max(1, (abs(d) + 1) // 2), MAX_HOLD_FRAMES)))
     return actions

@@ -116,7 +116,7 @@ def test_production_catalog_enables_lawsim_auto_rotation():
     assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
     # duration_minutes 未指定 = lawsim_corner.DEFAULT_DURATION_MINUTES(3分) を使う。
-    assert row.duration_minutes is None and row.audio_enabled is False
+    assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 
@@ -139,8 +139,11 @@ def test_lawsim_catalog_row_requires_the_reviewed_identity_and_bounds(tmp_path):
             load(bad)
     with pytest.raises(CornerCatalogError, match="fetch_on_start"):
         load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",fetch_on_start=true}')
+    # audio_enabled is now a boolean opt-in (lawsim_narration, #2812): a reviewed
+    # True value is accepted, only non-boolean values are rejected.
+    assert load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled=true}')[0].audio_enabled is True
     with pytest.raises(CornerCatalogError, match="audio_enabled"):
-        load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled=true}')
+        load('{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",audio_enabled="yes"}')
     for duration in ("0", "15", "true", "1.5"):
         with pytest.raises(CornerCatalogError, match="1-14"):
             load(f'{{id="communist-law-simulator",adapter="lawsim",game="lawsim-view",duration_minutes={duration}}}')
@@ -170,8 +173,11 @@ def test_lawsim_adapter_rejects_an_unreviewed_identity_and_uses_the_catalog_dura
         LawSimCornerAdapter(g, Corner("communist-law-simulator", "lawsim", "other-view"))
     with pytest.raises(CornerExecutionError, match="identity"):
         LawSimCornerAdapter(g, _corner(live_eligible=True))
+    # audio_enabled is now a boolean opt-in (lawsim_narration, #2812): True is
+    # accepted and stored; only non-boolean values are rejected.
+    assert LawSimCornerAdapter(g, _corner(audio_enabled=True)).audio_enabled is True
     with pytest.raises(CornerExecutionError, match="audio"):
-        LawSimCornerAdapter(g, _corner(audio_enabled=True))
+        LawSimCornerAdapter(g, _corner(audio_enabled=1))
     with pytest.raises(LawSimCornerError, match="duration"):
         LawSimCornerManager(g, duration_minutes=MAX_DURATION_MINUTES + 1)
 
@@ -475,3 +481,108 @@ def test_program_adapter_rejects_a_generation_outside_the_engine(tmp_path, monke
     )
     with pytest.raises(AdapterError, match="不正"):
         adapter.build_session_payload()
+
+
+
+# --- #2812 revamp: display + audio contract tests ---------------------------
+
+
+def test_lawsim_view_uses_fullscreen_cover_fit():
+    assert "Math.max(innerWidth/960,innerHeight/540)" in HTML
+
+
+def test_lawsim_view_has_throttled_canvas_scene():
+    import re
+
+    assert '<canvas id="scene">' in HTML
+    assert "visibilitychange" in HTML
+    assert "setInterval(sceneTick,250)" in HTML
+    # canvas must sit behind header / #board (contract: never hides them)
+    assert re.search(r"canvas#scene\{[^}]*z-index:-1", HTML)
+
+
+def test_lawsim_narration_is_bounded_and_covers_session():
+    from docich.lawsim_narration import narration_text, MAX_SPEECH
+
+    text = narration_text({
+        "title": "t", "republic": "r", "finalStatusText": "done",
+        "frames": [{"text": "open"}],
+        "turns": [{"lawName": "L", "deltas": {"production": 5},
+                   "events": [{"text": "warn"}]}],
+    })
+    assert 0 < len(text) <= MAX_SPEECH
+    assert "L" in text
+
+
+def test_lawsim_speech_matches_real_enqueue_signature(monkeypatch):
+    # Pins the call shape: a stub with a drifted signature must fail here,
+    # not be swallowed by speech()'s broad except (which would return "failed").
+    import inspect
+    from types import SimpleNamespace
+    from docich import lawsim_narration
+    from docich.trading import soren_output
+
+    real_sig = inspect.signature(soren_output.enqueue_audio_text)
+    calls = []
+
+    def stub(*args, **kwargs):
+        real_sig.bind(*args, **kwargs)
+        calls.append(kwargs)
+
+    monkeypatch.setattr(lawsim_narration, "enqueue_audio_text", stub)
+    g = SimpleNamespace(state_dir=None)
+    assert lawsim_narration.speech(g, "text") == "sent"
+    assert calls == [{"context": lawsim_narration.CONTEXT, "speaker": "",
+                      "dedup_scope": lawsim_narration.CONTEXT}]
+
+
+def test_lawsim_narration_frame_timing_contract(tmp_path, monkeypatch):
+    # started_at + k*12s schedule; at most one bounded frame per due tick;
+    # stop at narration_frame_count; nothing enqueued past the end.
+    from types import SimpleNamespace
+
+    (tmp_path / "docich.toml").write_text("", encoding="utf-8")
+    g = SimpleNamespace(state_dir=tmp_path / "run")
+    now = [1000.0]
+    manager = LawSimCornerManager(g, audio_enabled=True, clock=lambda: now[0])
+
+    frames = []
+
+    def fake_announcement(g, *, audio_enabled=False, frame_index=None, **kwargs):
+        frames.append(frame_index)
+        return {"overlay": "skipped", "speech": "sent",
+                "frame_index": frame_index, "frame_count": 2}
+
+    monkeypatch.setattr("docich.lawsim_narration.announcement", fake_announcement)
+    state = {"started_at": 1000.0, "narration_next_at": 1000.0,
+             "narration_next_frame": 0, "narration_frame_count": 0}
+
+    manager._narrate_due(state)          # t=1000: frame 0
+    assert frames == [0]
+    assert state["narration_next_at"] == 1012.0
+
+    now[0] = 1005.0                      # not yet due: no enqueue
+    manager._narrate_due(state)
+    assert frames == [0]
+
+    now[0] = 1012.0                      # t=1012: frame 1, fixed 12s step
+    manager._narrate_due(state)
+    assert frames == [0, 1]
+    assert state["narration_next_at"] == 1024.0
+
+    now[0] = 1024.0                      # frame_count reached: no more enqueues
+    manager._narrate_due(state)
+    assert frames == [0, 1]
+    assert state["narration_next_frame"] == 2
+    assert state["narration"]["enqueued"] == 2
+
+
+def test_lawsim_corner_audio_enabled_stored(tmp_path):
+    (tmp_path / "docich.toml").write_text("", encoding="utf-8")
+    from types import SimpleNamespace
+
+    g = SimpleNamespace(state_dir=tmp_path / "run")
+    adapter = LawSimCornerAdapter(g, _corner(audio_enabled=True))
+    assert adapter.audio_enabled is True
+    assert adapter.manager.audio_enabled is True
+

@@ -28,6 +28,54 @@ def screen(gold=72, on='へいしほじゅう'):
     return parse(month_canvas(gold, month=8, on=on))
 
 
+def chapterless_quantity():
+    s = quantity(gold=72)
+    s.text += 'のさゆうでケタがじょうげですうちがかわりますぞ'
+    return s
+
+
+def chapterless_memory():
+    mem = memory()
+    mem.update(chapter=None, resume_chapter_pending=True)
+    mem['shop'].update(soldiers=21, soldiers_done=False, recruit='deferred_roster')
+    return mem
+
+
+def test_chapterless_resume_cancels_refill_without_payment_and_does_not_reopen():
+    mem = chapterless_memory()
+    for _ in range(3):
+        assert p.month_step(chapterless_quantity(), mem) == [p.pad('b')]
+        mem = json.loads(json.dumps(mem))
+    assert p.month_step(chapterless_quantity(), mem) == []
+    assert mem['shop']['soldiers_done'] is True
+    assert mem['shop']['refill_outcome'] == 'unverified'
+    assert not mem['shop'].get('soldier_receipt')
+    assert mem.get('soldiers_seen') is None and mem['chapter'] is None
+    assert p.month_step(screen(), mem) != [p.pad('a')]
+    assert mem['shop']['soldiers_done'] is True
+
+
+@pytest.mark.parametrize('block', ['header', 'wrong_month', 'identity', 'not_resume',
+                                  'receipt', 'sub', 'prompt', 'changed_run'])
+def test_chapterless_cancel_requires_current_unambiguous_unpaid_editor(block):
+    mem = chapterless_memory()
+    s = chapterless_quantity()
+    if block == 'header': s.header = None
+    elif block == 'wrong_month': mem['month'] = '1-7'
+    elif block == 'identity': mem['_run_identity']['lease_id'] = ''
+    elif block == 'not_resume': mem.pop('resume_chapter_pending')
+    elif block == 'receipt': mem['shop']['soldier_receipt'] = {'status': 'pending'}
+    elif block == 'sub': mem['month_sub'] = {'kind': 'egg'}
+    elif block == 'prompt': s.text = 'じゅうじキー'
+    elif block == 'changed_run':
+        mem['shop']['chapterless_refill_cancel'] = {
+            'identity': dict(IDENTITY, lease_id='different'), 'key': '1-8', 'presses': 0}
+    assert p.quantity_step(s, mem, soldiers=True) == []
+    assert not mem['shop'].get('refill_outcome')
+    if block != 'changed_run':
+        assert 'chapterless_refill_cancel' not in mem['shop']
+
+
 def observe_count(mem, count, gold=72):
     s=quantity(gold=gold);s.text+='へいしすうは'+str(count)+'めいです'
     p.observe_events(s,mem)
