@@ -16,7 +16,7 @@ from .tsuitate_beta_control import CAPABILITY_ENV_KEYS, ControlError, call_beta_
 
 FORBIDDEN_SECRET_KEYS = ("DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN")
 ENV_FILE = Path.home() / ".config" / "docich" / "webui.env"
-ACTIVE_STATES = {"queued", "playing", "draining", "paused"}
+ACTIVE_STATES = {"queued", "playing", "draining"}
 STARTED_STATES = ACTIVE_STATES | {"finished"}
 
 
@@ -78,13 +78,16 @@ def start_one_background_match(*, now: dt.datetime | None = None) -> str:
     """Start or confirm this hour's one background run.
 
     Returns the deterministic run id.  Another active run is never stopped,
-    reset, or replaced.
+    reset, or replaced.  A paused run is deliberately not reported as started:
+    it requires the existing explicit recovery path before any next run.
     """
     _install_control_environment()
     run_id = hourly_run_id(now)
     status = call_beta_control("status")
     if status.get("runId") == run_id and status.get("state") in STARTED_STATES:
         return run_id
+    if status.get("state") == "paused":
+        raise BackgroundStartError("control_state_requires_attention")
     if status.get("readyForNextRun") is not True or status.get("state") in ACTIVE_STATES:
         raise BackgroundStartError("background_busy")
     started = call_beta_control("start", run_id)
@@ -101,6 +104,7 @@ def main() -> int:
         code = str(exc).split(":", 1)[0]
         return {
             "background_busy": 70,
+            "control_state_requires_attention": 75,
             "control_env_unavailable": 76,
             "control_env_invalid": 76,
             "control_secret_reused": 76,
