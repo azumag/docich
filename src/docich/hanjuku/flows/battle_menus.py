@@ -492,8 +492,14 @@ def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
     skill box instead: the top skill ran past the two-turn switch, and
     あけまつ greeted twice. A page that is still there on the next look gets
     its A; one that leaves by itself never sends a press into the next box.
+    An egg monster's entrance page starts the scene: at 19:53:46 the bot's own
+    たまごをつかう brought あけまつ in, and its first box took the A decided on
+    the page before it because no box had been seen yet.
     """
     battle = mem.get('battle')
+    if (isinstance(battle, dict) and kind == 'text' and screen.text
+            and 'エッグモンスター' in screen.text.replace(' ', '')):
+        _summon_scene(mem)
     if (actions != [pad('a')] or phase != 'dialogue' or kind not in ('text', 'unknown')
             or not isinstance(battle, dict) or not battle.get('summon_scene')):
         mem.pop('summon_dialogue', None)
