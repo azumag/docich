@@ -19,7 +19,7 @@ jobs:
       github.event.comment.user.id == 9018513 &&
       github.event.comment.body == '/tsuitate-start production'
     concurrency:
-      group: retro-corner-operator-${{ github.repository }}
+      group: tsuitate-background-${{ github.repository }}
       cancel-in-progress: false
     environment: vm-operations
     runs-on: ubuntu-24.04
@@ -107,7 +107,7 @@ jobs:
               raise SystemExit("production is not exactly the event SHA")
           PY
 
-      - name: Queue only Tsuitate through the common coordinator
+      - name: Start one Tsuitate beta match directly in background
         id: start
         shell: bash
         env:
@@ -131,26 +131,14 @@ jobs:
           import json, pathlib, sys
           path, expected_sha = pathlib.Path(sys.argv[1]), sys.argv[2]
           fixed = {
-              70: "rotation_disabled",
-              71: "recovery_required",
-              72: "clock_regressed",
-              73: "tsuitate_not_eligible",
-              74: "manual_queue_conflict",
-              75: "state_unavailable",
-              76: "config_invalid",
-              77: "queue_rejected",
-              78: "rotation_adapter_state",
-              79: "rotation_adapter_timestamp",
-              80: "rotation_catalog_mismatch",
-              81: "rotation_execution_error",
-              82: "rotation_execution_unverified",
-              83: "rotation_invalid_state",
-              84: "rotation_unexpected",
-              85: "invalid_value",
-              86: "missing_key",
-              87: "type_mismatch",
-              88: "dependency_unavailable",
-              89: "adapter_failure",
+              70: "background_busy",
+              71: "control_not_configured",
+              72: "run_locked",
+              73: "control_authentication_failed",
+              74: "control_unavailable",
+              75: "control_state_requires_attention",
+              76: "control_env_invalid",
+              77: "start_unverified",
           }
           reason = "transport_failure"
           try:
@@ -160,17 +148,17 @@ jobs:
                       and data.get("sha") == expected_sha
                       and data.get("output") == "withheld"
                       and type(code) is int):
-                  reason = fixed.get(code, "queue_rejected")
+                  reason = fixed.get(code, "start_unverified")
           except (OSError, ValueError, TypeError):
               pass
           print(reason)
           PY
             )"
             printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
-            echo "::error::Tsuitate start request rejected: $reason"
+            echo "::error::Tsuitate background start rejected: $reason"
             exit 1
           fi
-          printf '%s\n' 'reason=queued' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'reason=background_started' >> "$GITHUB_OUTPUT"
           rm -f "$work/start.stdout" "$work/start.stderr"
 
       - name: Return fixed result metadata to the control Issue
@@ -197,14 +185,10 @@ jobs:
                   and outcome in {"success", "failure", "cancelled", "skipped"}):
               raise SystemExit("invalid fixed reply metadata")
           allowed_reasons = {
-              "queued", "rotation_disabled", "recovery_required", "clock_regressed",
-              "tsuitate_not_eligible", "manual_queue_conflict", "state_unavailable",
-              "config_invalid", "queue_rejected", "rotation_adapter_state",
-              "rotation_adapter_timestamp", "rotation_catalog_mismatch",
-              "rotation_execution_error", "rotation_execution_unverified",
-              "rotation_invalid_state", "rotation_unexpected", "invalid_value",
-              "missing_key", "type_mismatch", "dependency_unavailable",
-              "adapter_failure", "transport_failure", "not_run",
+              "background_started", "background_busy", "control_not_configured",
+              "run_locked", "control_authentication_failed", "control_unavailable",
+              "control_state_requires_attention", "control_env_invalid",
+              "start_unverified", "transport_failure", "not_run",
           }
           if not reason:
               reason = "not_run"
