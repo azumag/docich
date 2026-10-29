@@ -844,6 +844,19 @@ def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
     assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
     assert decoded['lawsim']['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
     assert decoded['lawsim']['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    # Unknown status/game values never leave the collector.
+    odd=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                                    'status':'SECRET-STATUS','game':'x'}},now)
+    assert odd['status'] is None and odd['game'] is None
+    # "state absent" (not run yet) is distinguishable from "counters all zero".
+    absent=module._lawsim_projection({'lawsim_corner':{'present':False,'readable':False}},now)
+    assert absent['present'] is False and absent['narration'] is None
+    zero=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                    'counters':{'narration':{'enqueued':0,'delivery_failed':0,
+                                                             'skipped':0,'frames':0},
+                                                'overlay_announcements':{'sent':0,'failed':0,
+                                                                         'skipped':0}}}},now)
+    assert zero['present'] is True and zero['narration']['frames']==0
 
 
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):

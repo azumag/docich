@@ -8222,6 +8222,11 @@ def _prediction_projection(corners, now):
     }
 
 
+# Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
+_LAWSIM_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "failed", "interrupted"})
+
+
 def _lawsim_projection(corners, now):
     """The 法案シミュレーター corner's run state and counters as a top-level section (#3054).
 
@@ -8236,12 +8241,14 @@ def _lawsim_projection(corners, now):
     corner = corner if isinstance(corner, dict) else {}
     counters = corner.get("counters")
     counters = counters if isinstance(counters, dict) else {}
+    status = corner.get("status")
+    game = corner.get("game")
     return {
         "state_dir_found": corners.get("state_dir_found") is True,
         "present": corner.get("present") is True,
         "readable": corner.get("readable") is True,
-        "status": corner.get("status"),
-        "game": corner.get("game"),
+        "status": status if status in _LAWSIM_STATUSES else None,
+        "game": game if game == "lawsim-view" else None,
         "end_reason": corner.get("end_reason"),
         "age_sec": _bounded_age(corner.get("completed_at"), now),
         "narration": counters.get("narration"),
