@@ -6495,6 +6495,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v278-chapter-three-boss-cell",
             "hanjuku-chart-v280-approx-fallback-source-chapters",
             "hanjuku-chart-v281-probe-empty-relay",
+            "hanjuku-chart-v282-world-map-sea-cursor",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
