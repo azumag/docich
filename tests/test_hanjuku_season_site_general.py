@@ -63,3 +63,19 @@ def test_other_chapters_keep_the_chart_source_first():
     mem = {'chapter': 3, 'captured': [c for c in chart.CASTLE_NAMES[3] if c not in ('アルマムーン', 'ボス')],
            'garrison': {boss['source']: ['カペリーニ'], 'グリン': ['ゼウス']}}
     assert orders._boss_companion_source(boss, mem) == boss['source']
+
+
+def test_an_unconfirmed_site_launch_binds_its_entry_after_a_long_march():
+    """g1075 08:34:57: 4-B2 was launched_unconfirmed at tick 131676 (a field
+    battle cut in after the target was chosen), so its record had target None
+    and planned_target 四季王城(南東); the entry 476 ticks later matched nothing."""
+    from docich import hanjuku_policy as policy
+    from docich.hanjuku_screen import Screen, classify_text
+    screen = Screen(lines=[], hand=None, text='カペリーニしょうぐんがボスじょうにせめこんだ!!')
+    screen.kind = classify_text(screen)
+    mem = {'chapter': 4, 'tick': 132152, 'orders': {'4-B2': 'launched'},
+           'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
+                                'target': None, 'planned_target': '四季王城(南東)', 'tick': 131676}}}
+    assert policy.message_step(screen, mem) == [policy.pad('a')]
+    assert mem['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
+                             'step': '4-B2', 'entry_evidence': 'measured_boss_entry'}
