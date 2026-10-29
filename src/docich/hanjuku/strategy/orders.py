@@ -464,7 +464,48 @@ def _boss_retry_due(order, mem) -> bool:
     return 0 < cancels < BOSS_TARGET_CANCEL_LIMIT
 
 
+BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
+BOSS_RELAUNCH_LIMIT = 2                      # boss sorties sent again per step after a march that never entered
+
+
+def _relaunch_overdue_boss(mem):
+    """Send a boss order again when its march never entered the boss castle.
+
+    Only an entry ends a launched boss march (``_bind_sortie`` marks it
+    arrived). g1075 2026-10-29: the v293 marker landed 6 px outside the boss
+    building, アポロン camped beside it at 15:00, and 3-B1 stayed launched and
+    en route for over 3000 observations with nothing left to start it. The
+    order goes back to pending like a lost boss battle: its unlock, source
+    and companion checks run again, and the old march stops counting.
+    """
+    boss = chart.boss_castle(mem.get('chapter') or 0)
+    now = int(mem.get('tick') or 0)
+    status = mem.setdefault('orders', {})
+    for step, sortie in (mem.get('sorties') or {}).items():
+        if (status.get(step) != 'launched' or sortie.get('target') != boss
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+            continue
+        sortie['status'] = 'overdue'
+        relaunches = mem.setdefault('boss_relaunch', {})
+        observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
+                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
+        if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
+            _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
+                    reason='ボス城へ入らない出撃の出し直しが上限に達したため保留')
+            continue
+        relaunches[step] = relaunches.get(step, 0) + 1
+        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
+                    'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss', 'launched_orders'):
+            (mem.get(key) or {}).pop(step, None)
+        status[step] = 'pending'
+        _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
+                observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
+                reason='ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す')
+
+
 def next_order(mem):
+    _relaunch_overdue_boss(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
