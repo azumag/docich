@@ -1767,7 +1767,7 @@ EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 
 DEFENDER_EGG_OPEN_LIMIT = 3
 
 
-def _defender_egg_window(mem, cur):
+def _defender_egg_window(mem, cur, *, menu_open=False):
     """A measured eggless defender's deadline before the next enemy summon.
 
     gcgx ai.html: every ordinary attacker of our castle uses thought 1,
@@ -1778,6 +1778,15 @@ def _defender_egg_window(mem, cur):
     bosses and unobserved resource availability do not get an invented rule.
     A known castle name and observed defense suffice here: no navigation uses
     this decision, so later chapters do not need guessed map coordinates.
+
+    menu_open: the rescue menu on screen now shows おくのて as the only usable
+    command (#2989). g1075 2026-10-29/30: that menu was open about 1-3 s
+    into defenses that waited for these deadlines; where measured, the enemy
+    summoned 10-28 s in, mostly far above the HP window. 8 such defenses
+    were lost, while all 6 that selected おくのて before any summon were
+    won. A non-hero defender takes it from the open menu; HP is then no
+    lower than at any later deadline, so the self-damage lottery is not
+    worse. The hero keeps the HP and position deadlines.
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_egg_preempt') or {}
@@ -1810,7 +1819,9 @@ def _defender_egg_window(mem, cur):
     position_guard_exhausted = (bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
                                 or start - hp >= hp_budget)
     reason = ('wall_hp_window' if enemy <= critical_hp + margin
-              else 'unmeasured_clash_guard_exhausted' if position_guard_exhausted else None)
+              else 'unmeasured_clash_guard_exhausted' if position_guard_exhausted
+              else 'menu_open_contact_unmeasured'
+              if menu_open and cur.get('ally') not in (NAME, 'しゅじんこう') else None)
     if guard.get('reason'):
         reason = guard['reason']  # a menu opening keeps its chosen rescue route
     return {'thought': 1, 'thought_basis': 'player_castle_defense',
