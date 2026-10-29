@@ -106,5 +106,6 @@ jobs:
               wanted.update(range(max(1, center - 3), min(len(moves), center + 3) + 1))
           for n in sorted(wanted):
               move = moves[n - 1]
-              print(f"Move-{n}: {move['side']} {move['usi']} {move['notation']} {move['ms']}ms")
+              captured = move.get("captured") or "-"
+              print(f"Move-{n}: {move['side']} {move['usi']} {move['notation']} captured={captured} {move['ms']}ms")
           PY
