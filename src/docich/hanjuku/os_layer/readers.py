@@ -232,7 +232,7 @@ def world_cursor(frame):
                 r2 = dx * dx + dy * dy
                 if 56 <= r2 <= 110 and _is_black_pixel(frame.pixel(x, y)):
                     ring += 1
-        if ring < 8:
+        if ring < 50:
             continue
         if ring > best_ring or (ring == best_ring and len(comp) > best_size):
             best_ring = ring
