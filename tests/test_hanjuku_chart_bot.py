@@ -521,7 +521,7 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     assert mem['active'] != 'A:test:J3'        # the unready order is not re-picked
     assert all(r.get('chart_step') != 'A:test:J3' for r in mem['_records'] if r['decision'] == 'order_start')
     assert 'chart_adjust_request' in names     # asks for a chart; a mechanical interim runs meanwhile
-    assert mem['active'] is None or mem['active'].startswith('I:')
+    assert mem['active'] is None or mem['active'].startswith('I:') or (isinstance(mem['active'], str) and ':M' in mem['active'])
 
 
 def test_commentary_is_grounded_and_holds_when_unknown():

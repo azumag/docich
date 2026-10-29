@@ -486,4 +486,7 @@ def _off_chart(mem):
         # Fall back to the single interim sortie for exhausted adopted plans.
         _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
         return
-    _mechanical_chart(mem, state, rid, digest)
+    if gate == 'break':
+        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+    else:
+        _mechanical_chart(mem, state, rid, digest)
