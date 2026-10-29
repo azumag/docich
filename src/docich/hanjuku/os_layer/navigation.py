@@ -20,6 +20,7 @@ ARRIVE_PX = 4
 
 UNVERIFIED_LIMIT = 3                  # unanchored arrivals held before confirming anyway
 NAV_STILL_LIMIT = 3                   # pressed frames with no motion before distrusting the cell
+NAV_RECOVER_LIMIT = 4                 # SELECT recoveries per order step before abandoning it
 
 
 def _nav_stuck(screen, mem, world, s):
@@ -51,6 +52,20 @@ def _nav_stuck(screen, mem, world, s):
     return True
 
 
+def _recoveries(mem, step) -> int:
+    """SELECT recoveries already spent on ``step`` (0 without a step)."""
+    if not step:
+        return 0
+    return int((mem.get('nav_recovers') or {}).get(step) or 0)
+
+
+def _note_recovery(mem, step) -> None:
+    if not step:
+        return
+    recovers = mem.setdefault('nav_recovers', {})
+    recovers[step] = int(recovers.get(step) or 0) + 1
+
+
 SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
 SEARCH_RINGS = 4
 
@@ -70,13 +85,18 @@ def _search_goal(mem):
     return (cx + ux * ring * SEARCH_RING_PX, cy + uy * ring * SEARCH_RING_PX)
 
 
-def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
+def nav_step(screen: Screen, mem, frame, goal, goal_name=None, step=None):
     """Holds toward ``goal`` (map cell); 'arrived' within ARRIVE_PX.
 
     After a failed castle menu (``nav_search``) the estimate is known to be
     wrong, typically pushed past the coast where no roof is visible (g358:
     the camera froze on open water for 140 s). Until roofs re-anchor, steer
     toward the castles' centroid instead of the goal so land comes into view.
+
+    ``step`` names the order being driven: SELECT recoveries are counted per
+    step and 'infeasible' is returned once ``NAV_RECOVER_LIMIT`` of them were
+    spent without an anchor, so the caller can abandon the step instead of
+    repeating the same recovery.
     """
     world = update_world(screen, mem, frame, goal_name)
     s = _cursor(screen)
@@ -98,6 +118,13 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         # camera on the hero; with the hero's castle known, the cursor is on
         # that castle's cell, so the lost cell is re-placed at once instead
         # of wandering (g421: 11 minutes of cursor walking in 2 hours).
+        if _recoveries(mem, step) >= NAV_RECOVER_LIMIT:
+            # g1075 2026-10-29 (chapter 3): the cursor sat on open sea at the
+            # screen's west edge, SELECT re-placed the estimate on アルマムーン
+            # and the same left hold walked back to the edge. 266 nav_stuck
+            # bursts, one every ~6 s, and 95 minutes without a sortie.
+            return 'infeasible'
+        _note_recovery(mem, step)
         mem['select_used'] = True
         mem['select_tick'] = tick
         mem['nav_last'] = None
@@ -116,6 +143,9 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         # a wrong cell (owner hint 2026-09-28, measured in the isolated
         # emulator: the cursor lands at the screen centre). The jump is not
         # our measured motion, so nothing is integrated for it.
+        if _recoveries(mem, step) >= NAV_RECOVER_LIMIT:
+            return 'infeasible'
+        _note_recovery(mem, step)
         mem['select_used'] = True
         mem['nav_last'] = None
         _record(mem, 'select_to_hero', screen=screen.kind,

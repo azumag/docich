@@ -280,6 +280,35 @@ def _measured_goal(mem, order, castle):
     return goal
 
 
+def _abandon_stuck_step(screen, mem, order):
+    """Give up an order whose map navigation keeps needing SELECT resets.
+
+    g1075 2026-10-29 (chapter 3): the cursor sat on open sea at the screen's
+    west edge; every ~6 s a SELECT re-placed the estimate and the same hold
+    walked it back, for 266 ``nav_stuck`` bursts and 95 minutes without a
+    sortie. ``navigation.NAV_RECOVER_LIMIT`` bounds that recovery per step, so
+    fail the step and let the picker choose another candidate instead.
+    """
+    step = order['step']
+    mem['uncertain'] = True
+    for key in ('anchor', 'nav_last', 'nav_prev', 'nav_still', 'unverified',
+                'nav_search', 'nav_search_leg', 'select_used', 'near_goal',
+                'menu_miss', 'menu_hold', 'off_castle'):
+        mem.pop(key, None)
+    observed = {'cursor': mem.get('cursor'),
+                'screen_cursor': list(_cursor(screen) or ()),
+                'roofs': mem.get('roofs_seen'),
+                'recoveries': (mem.get('nav_recovers') or {}).get(step)}
+    _finish_order(mem, 'failed', source=_source(order, mem), target=order['target'],
+                  observed_metric=observed,
+                  reason='画面端で位置を再特定できずSELECT復帰を上限まで繰り返したため、この移動orderを打ち切って次の候補へ進む')
+    _record(mem, 'nav_infeasible', chart_step=step, screen=screen.kind,
+            source=_source(order, mem), target=order['target'],
+            observed_metric=observed,
+            reason='画面端で位置を再特定できずSELECT復帰を上限まで繰り返したため、この移動orderを打ち切って次の候補へ進む')
+    return []
+
+
 def map_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -417,7 +446,9 @@ def map_step(screen: Screen, mem, frame):
                 reason='全体マップで選んだ出撃元の近くに屋根が無いため全体マップを開き直す')
     if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
         return _start_y_jump(mem, order, source, 'map')
-    result = nav_step(screen, mem, frame, goal, source)
+    result = nav_step(screen, mem, frame, goal, source, step=order['step'])
+    if result == 'infeasible':
+        return _abandon_stuck_step(screen, mem, order)
     if chart.approximate_map() and chart.approx_chapter(mem.get('chapter') or 0):
         # Only while this chapter navigates on the seed table. A measured
         # chapter gains nothing from the fallback and lost its order to it
