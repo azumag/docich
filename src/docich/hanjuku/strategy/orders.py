@@ -463,6 +463,21 @@ def next_order(mem):
     retries = [o for step, o in (mem.get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    # A lost attack's retry is pending until it runs again; another order may
+    # take the castle first. g1075 2026-10-29: レモン took リグア at 13:22, yet
+    # ポセイドン's I:b59ab6:3 retry (lost 13:07) sent ジェラート into our own
+    # リグア at 13:27, ahead of the boss sortie 3-B1 (started 13:30). Two older
+    # retakes of our own ドンダム were still pending. A retry whose target is
+    # ours has nothing left to win; moves aim at our own castles by design.
+    retired = mem.setdefault('retries_retired', [])
+    stale = [o for o in retries if o.get('target') in owned and o.get('purpose') != 'move']
+    for order in stale:
+        if order['step'] not in retired:
+            retired.append(order['step'])
+            _record(mem, 'order_retry_retired', chart_step=order['step'],
+                    general=order.get('general'), target=order.get('target'),
+                    reason='再試行の目標城は既に自軍のため再出撃せず、次の指示へ進む')
+    retries = [o for o in retries if o not in stale]
     garrison = mem.get('garrison') or {}
     # The base chart's remaining orders follow an adopted plan that cannot run
     # (g438 03:48: the plan's only order sent the dead ココット from an empty
