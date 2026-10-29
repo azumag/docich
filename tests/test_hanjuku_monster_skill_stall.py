@@ -40,26 +40,19 @@ def test_the_saved_frame_is_the_omedetori_menu_against_raspberry():
         'ally': ('おめでとり', 1000), 'enemy': ('ラズベリー', 45)}
 
 
-def test_the_other_skill_is_tried_after_the_bounded_turns_then_the_stall_is_recorded():
-    sc, mem = screen(), {'chapter': 3, 'tick': 1}
-    choices = [turn(sc, mem) for _ in range(2 * MONSTER_STALL_TURNS + 1)]
-    actions = [c for c, _ in choices]
-    assert actions == (['skill1'] * MONSTER_STALL_TURNS + ['skill2'] * MONSTER_STALL_TURNS + ['skill1'])
-    stalls = [i for i, (_, recs) in enumerate(choices) if 'monster_skill_stall' in recs]
-    assert stalls == [MONSTER_STALL_TURNS, 2 * MONSTER_STALL_TURNS]
-
-
-def test_a_redraw_of_the_same_turn_keeps_its_choice_and_is_not_counted():
-    # v289 live 14:13:28 and :29: one turn decided twice, counted twice.
-    sc, mem = screen(), {'chapter': 3, 'tick': 1}
-    for _ in range(MONSTER_STALL_TURNS):
-        turn(sc, mem)
-        assert turn(sc, mem, observations=1)[0] == 'skill1'        # redraw: still skill1
-    assert mem['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS}
-    choice, records = turn(sc, mem)
-    assert (choice, 'monster_skill_stall' in records) == ('skill2', True)
-    assert turn(sc, mem, observations=1) == ('skill2', ['monster_menu_choice'])
-    assert mem['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS, 'skill2': 1}
+def test_mikan_once_then_warm_is_the_omedetori_order_and_no_stall_is_counted():
+    # #2945 owner rule supersedes the #2979 count for おめでとり: ミカン once, then あたためる.
+    sc = screen()
+    mem = {'chapter': 3, 'tick': 1, 'battle': {'ally': 'ココット', 'enemy': 'ラズベリー'}}
+    sc.menu_cursor = sc.menu_rows[0].y
+    assert turn(sc, mem)[0] == 'skill1'
+    assert mem['battle']['omedetori_cycle']['mikan_submitted'] is True
+    sc.menu_cursor = sc.menu_rows[1].y
+    for _ in range(2 * MONSTER_STALL_TURNS):
+        choice, records = turn(sc, mem)
+        assert choice == 'skill2'
+        assert 'monster_skill_stall' not in records
+    assert 'monster_stall' not in mem
 
 
 def unit(name, hp):

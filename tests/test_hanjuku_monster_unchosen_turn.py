@@ -67,25 +67,26 @@ def test_a_box_that_left_without_our_choice_counts_skill_one():
     assert stall['turns'] == {'skill1': 1}
 
 
-def test_a_box_that_settles_is_our_own_turn_and_is_counted_once():
+def test_a_box_that_settles_is_our_own_turn_and_is_mikan_once():
     st, decisions, buttons = run(state(), *dialogue(), SLIDING, SETTLED, *dialogue())
-    assert buttons[len(dialogue()) + 1] == ['a']               # chosen on the settled box
+    assert buttons[len(dialogue()) + 1] == ['a']               # ミカンをおす on the settled box
     assert 'monster_turn_unchosen' not in decisions
-    assert turns(st) == {'skill1': 1}
+    assert st['policy']['battle']['omedetori_cycle']['mikan_submitted'] is True
+    assert turns(st) is None                                    # omedetori is not a stall count
 
 
 def test_the_box_leaving_after_our_choice_is_not_a_second_turn():
     st, decisions, _ = run(state(), *dialogue(), SETTLED, PANNING, *dialogue())
     assert 'monster_turn_unchosen' not in decisions
-    assert turns(st) == {'skill1': 1}
+    assert st['policy']['battle']['omedetori_cycle']['mikan_submitted'] is True
+    assert turns(st) is None
 
 
-def test_an_unchosen_turn_brings_the_switch_after_two_uses_in_all():
-    # Turn 1 taken by a stray press while the box slid in; turn 2 chosen on
-    # the settled box; turn 3 must already try あたためる.
-    st, decisions, buttons = run(state(), *dialogue(), SLIDING, *dialogue(),
-                                 SLIDING, SETTLED, *dialogue(), SLIDING, SETTLED)
-    assert decisions.count('monster_turn_unchosen') == 1
-    assert 'monster_skill_stall' in decisions
+def test_mikan_then_warm_on_the_next_settled_box_with_no_stall_count():
+    # A stray box slides in between; the next settled box must already try あたためる.
+    st, decisions, buttons = run(state(), *dialogue(), SETTLED, *dialogue(),
+                                 SLIDING, SETTLED)
+    assert buttons[len(dialogue())] == ['a']                    # ミカンをおす
     assert buttons[-1] == ['down']                              # toward あたためる
-    assert turns(st) == {'skill1': 2, 'skill2': 1}
+    assert 'monster_skill_stall' not in decisions
+    assert st['policy']['battle']['omedetori_cycle']['mikan_submitted'] is True
