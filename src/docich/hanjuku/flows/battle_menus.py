@@ -51,7 +51,7 @@ def orphan_battle_menu_step(screen, mem):
         return None
     if not parent and screen.kind not in {
             'unknown', 'text', 'battle_menu_pending', 'okunote_menu',
-            'monster_menu', 'egg_choice_menu', 'egg_battle_menu'}:
+            'monster_menu', 'monster_menu_pending', 'egg_choice_menu', 'egg_battle_menu'}:
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_menu_reobserved',
@@ -381,6 +381,26 @@ def _survival_card_list(screen, mem, cur, flow, names):
             reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
                     else 'HP低下に対処する切り札を選択。消費は未確定'))
     return [pad('a')]
+
+# The skill box settles within about a second of sliding or panning in. A box
+# still half drawn after this many observations goes back to the ordinary
+# default rather than holding the battle.
+MONSTER_MENU_PENDING_MAX = 8
+
+
+def monster_menu_pending_step(mem):
+    """Hold the confirm until the summon skill box settles; its own step decides."""
+    ticks = mem['monster_menu_pending_ticks'] = mem.get('monster_menu_pending_ticks', 0) + 1
+    if ticks == 1:
+        _record(mem, 'monster_menu_drawing',
+                reason='召喚獣の技メニューが表示途中のため、既定のAで最上段の技を確定せず表示を待つ')
+    if ticks <= MONSTER_MENU_PENDING_MAX:
+        return []
+    mem.pop('monster_menu_pending_ticks', None)
+    _record(mem, 'monster_menu_incomplete', observed_metric={'held': ticks - 1},
+            reason='召喚獣の技メニューが観測上限まで表示途中のままのため、既定の入力に戻す')
+    return None
+
 
 def battle_menu_pending_step(mem):
     if not mem.get('battle'):
