@@ -391,7 +391,7 @@ def _drop_card(screen, mem, order, card, inventory):
     return []
 
 
-def _card_proven_absent(card, inventory):
+def _card_proven_absent(card, inventory, *, bottom=False):
     """The readable panel proves this card is out of stock, not scrolled off.
 
     Rows are listed in card-ID order and depleted cards disappear. A card shown
@@ -411,7 +411,24 @@ def _card_proven_absent(card, inventory):
     target = CARD_IDS.get(card)
     if target is None or None in ids or ids != sorted(ids):
         return False
-    return len(rows) < 4 or min(ids) < target < max(ids)
+    return len(rows) < 4 or min(ids) < target < max(ids) or (bottom and target > max(ids))
+
+
+def _lower_card_boundary(mem, order, inventory):
+    """The panel shows the list's last row: Down twice left it unchanged.
+
+    The cursor sits on the fourth row, so each Down scrolls when more rows
+    exist. g1075 2026-10-29 17:43:00-03: three Downs kept クースカン..
+    バグストーム(24), yet マグネガキン(27) and ファバード(31) were never
+    proven gone, so every chapter 4 sortie searched for them again.
+    """
+    rows = inventory['rows']
+    last = mem.get('card_scroll_last') or {}
+    return (len(rows) == 4 and inventory['remaining'] > 0
+            and last.get('step') == order['step'] and last.get('direction') == 'down'
+            and last.get('rows') == [[r['card'], r['stock']] for r in rows]
+            and inventory['selected_y'] == rows[-1]['y'] == last.get('selected_y')
+            and int(last.get('unchanged') or 0) >= 2)
 
 
 def _upper_card_boundary(mem, order, card, inventory):
@@ -1293,8 +1310,10 @@ def deploy_step(screen: Screen, mem):
         card = next((c for c in planned if c in shown), planned[0])
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         upper_absent = row is None and _upper_card_boundary(mem, order, card, inventory)
+        bottom = (row is None and not _strict_boss_cards(order, mem)
+                  and _lower_card_boundary(mem, order, inventory))
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
-                and not upper_absent and not _card_proven_absent(card, inventory)
+                and not upper_absent and not _card_proven_absent(card, inventory, bottom=bottom)
                 and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
                    else CARD_SCROLL_LIMIT)):
             scrolls = mem.setdefault('card_scroll', {})
@@ -1305,13 +1324,21 @@ def deploy_step(screen: Screen, mem):
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
             direction = ('up' if CARD_IDS.get(card, 99) <
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
+            shown_rows = [[r['card'], r['stock']] for r in inventory['rows']]
+            last = mem.get('card_scroll_last') or {}
+            same = (last.get('step') == order['step'] and last.get('direction') == direction
+                    and last.get('rows') == shown_rows
+                    and last.get('selected_y') == inventory['selected_y'])
+            mem['card_scroll_last'] = {'step': order['step'], 'direction': direction,
+                                       'rows': shown_rows, 'selected_y': inventory['selected_y'],
+                                       'unchanged': int(last.get('unchanged') or 0) + 1 if same else 0}
             boundary = mem.get('card_upper_boundary')
             if direction == 'up' and isinstance(boundary, dict):
                 boundary['await_input'] = True
                 boundary.pop('request_trace', None)
             return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
-            proven = upper_absent or _card_proven_absent(card, inventory)
+            proven = upper_absent or _card_proven_absent(card, inventory, bottom=bottom)
             if proven:
                 # Measured, even for a card never listed before: a month plan
                 # buys a short boss card back (strategy.boss_cards).
