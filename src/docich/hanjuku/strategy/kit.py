@@ -36,9 +36,15 @@ def _cap_card_ids(cards):
 def _strict_boss_cards(order, mem) -> bool:
     """The base chart's boss sortie carries exactly its charted cards; an
     adjusted/interim boss order may leave an unavailable card behind (g438
-    04:03: J1 wanted ミックミー, none was owned, and card_select held for good)."""
-    return _is_boss_order(order, mem) and any(
-        o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0))
+    04:03: J1 wanted ミックミー, none was owned, and card_select held for good).
+
+    The strict kit relies on the month plan buying its cards back
+    (``strategy.boss_cards``), which covers the single boss order only. A
+    chapter 4 四季王 site has no such plan, so it leaves a missing card behind
+    (g1075 2026-10-30 08:14-08:16: 4-B1 waited for マグネガキン/ファバード past
+    the list's last row and restarted the sortie every ~30 s)."""
+    return (_is_boss_order(order, mem) and order.get('target') not in chart.boss_sites(4)
+            and any(o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0)))
 
 
 def _deploy_cards(order, mem):
