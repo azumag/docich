@@ -29,6 +29,7 @@ from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_e
                                _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
+from ..judgment.omedetori import omedetori_assessment, omedetori_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -1662,14 +1663,20 @@ def monster_menu_step(screen: Screen, mem):
                       and ally.name == 'あけまつ' and len(skill_lines) == 2
                       and (_fold_skill(skill_lines[0].known) == _fold_skill('ごあいさつ')
                            or _fold_skill(skill_lines[1].known) == _fold_skill('おもてなし')))
+    omedetori_cycle = (owner == 'ally' and ally is not None
+                       and ally.name == 'おめでとり' and len(skill_lines) == 2
+                       and (_fold_skill(skill_lines[0].known) == _fold_skill('ミカンをおす')
+                            or _fold_skill(skill_lines[1].known) == _fold_skill('あたためる')))
     akematsu = akematsu_assessment(mem, ally, enemy) if akematsu_cycle else None
-    special_cycle = balloon_cycle or akematsu_cycle
+    omedetori = omedetori_assessment(mem, ally, enemy) if omedetori_cycle else None
+    special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261016-balloon-akematsu-v2'
+    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
+            or (omedetori_cycle and mem.get('monster_menu_choice') != omedetori['action'])
             or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
             or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))):
@@ -1699,6 +1706,9 @@ def monster_menu_step(screen: Screen, mem):
             # Switching abilities a second time undoes the first exchange.
             # After issuing one observed ごあいさつ, summon with おもてなし.
             default = akematsu['action']
+        elif omedetori_cycle:
+            # One ミカンをおす, then the self-destruct あたためる at the next decision.
+            default = omedetori['action']
         elif heal_first:
             # Generic heal-first monsters still use the best HP observed in
             # this menu session as their recovery target.
@@ -1795,6 +1805,17 @@ def monster_menu_step(screen: Screen, mem):
                        '同じ技の無限試行を防ぎ「おもてなし」に切り替える')
             else:
                 why = '「ごあいさつ」を1回送信済みのため、以降は「おもてなし」で別の召喚獣を呼ぶ'
+        elif omedetori_cycle:
+            label = second if action == 'skill2' else first
+            if action == 'skill1':
+                why = '「ミカンをおす」はこの戦闘で1回だけ送信し、その後は「あたためる」へ進む'
+            elif omedetori['rule'] == 'unscoped_mikan_hold':
+                why = '戦闘の同一性が読めないため自爆の「あたためる」を選ばず「ミカンをおす」で待つ'
+            elif omedetori['rule'] == 'warm_after_unverified_attempt':
+                why = ('カーソル未読で「ミカンをおす」を1回試みたため、送信成功は未確認だが'
+                       '同じ技の無限試行を防ぎ「あたためる」に切り替える')
+            else:
+                why = '「ミカンをおす」を1回送信済みのため、次の選択で自爆の「あたためる」を選ぶ'
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -1821,6 +1842,7 @@ def monster_menu_step(screen: Screen, mem):
                                  'target_hp': balloon['target_hp'] if balloon_cycle else None,
                                  'balloon_survival': balloon if balloon_cycle else None,
                                  'akematsu_exchange': akematsu if akematsu_cycle else None,
+                                 'omedetori_cycle': omedetori if omedetori_cycle else None,
                                  'damage_first': damage_first,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
@@ -1858,6 +1880,11 @@ def monster_menu_step(screen: Screen, mem):
         # an attempted input, never evidence of a successful stat exchange.
         # Nevertheless, sending ごあいさつ on every frame is worse.
         akematsu_command_selected(
+            mem, ally, enemy, action,
+            cursor_confirmed=(screen.menu_cursor == target))
+    if omedetori_cycle and action == 'skill1':
+        # Same contract as ごあいさつ: a predicted cursor is only an attempt.
+        omedetori_command_selected(
             mem, ally, enemy, action,
             cursor_confirmed=(screen.menu_cursor == target))
     return [pad('a')]
