@@ -211,8 +211,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
                           **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+    # A castle that was sent a move after its list was last read is not known
+    # to be empty: past the busy window it was picked again and again (#3037).
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
-             if garrison.get(c) == [] and c not in heading]
+             if garrison.get(c) == [] and c not in heading
+             and not routes.unread_dispatches(mem, c)]
     for target in empty:
         # A castle whose list was never read may hold several generals: the
         # bot reads lists only when it sorties, so g407 knew one castle while
