@@ -113,6 +113,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['recall_verification'] = {**state, 'status': 'camp_unobserved'}
                 mem.pop('recall', None)
                 mem['uncertain'] = True
+                # g1075 2026-10-29 23:55-00:03: a tent at the top edge beside
+                # the order's source castle was found and lost 8 times in 8
+                # minutes, and the retake from that castle never left. Wait
+                # as after an aborted recall before chasing it again.
+                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
             return []  # an old screen coordinate never licenses a camp-opening A
         state.pop('camp_missing_reads', None)
         cursor = _cursor(screen)
