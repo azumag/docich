@@ -105,6 +105,11 @@ def world_flags(frame, chapter, cursor=None):
 
     A flag under the Y cursor is not read: the sortie cursor's G is the same
     blue as an enemy flag (isolated probe: the home flag read as enemy).
+
+    The boss castle is not read either. Chapter 3 draws it as a skull with no
+    flag, and g1075 15:10:55 read ボス as own from the face of アポロン, camped
+    beside it, whose (230,56,90) pixels fell into the box. Its owner is never
+    taken from flags (captures and losses skip it), so nothing is lost.
     """
     offset = WORLD_MAP_OFFSET.get(chapter)
     if not offset or frame is None:
@@ -211,6 +216,8 @@ def world_cursor(frame):
                     seen.add(nxt)
                     stack.append(nxt)
         components.append(comp)
+    # Blue-dotted black-ring candidates are normally single on a frame;
+    # when more than one appears, the largest ring is taken (g1075 has one).
     best_ring = 0
     best_center = None
     best_size = 0
@@ -247,6 +254,11 @@ def world_cursor(frame):
     # 2. gold G corners
     gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
             if _near_colour(frame.pixel(x, y), (255, 182, 0))]
+    # Only the compact G corners (~15 px box): the map's gold edge arrows are
+    # far apart and their joint box read as a cursor (g419 10:49), and chapter
+    # 2's gold camp triangle beside フーリック widened the box so no target
+    # jump there could read the G (isolated probe, g421 state). Take the
+    # G-sized window holding the most gold instead of the whole box.
     best = None
     for x0 in sorted({x for x, _ in gold}):
         for y0 in sorted({y for _, y in gold}):
@@ -265,6 +277,13 @@ def world_cursor(frame):
                 for dx, dy in _Y_RING:
                     key = (2 * x + dx, 2 * y + dy)
                     votes[key] = votes.get(key, 0) + 1
+    # The ring only appears inside the island view (sea 64-191 x 47-174);
+    # the ornate frame's highlights just outside voted as strongly (g419 10:49,
+    # a frame where the blinking ring was off). The window is the whole sea:
+    # the narrower 70-186 x 53-169 lost real rings at the sea's edge (g1075
+    # 2026-10-29 12:20: centre (65, 81.5) west of リグア, 24 votes, so the
+    # source jump closed as unreadable; a ring at (153, 50.5) likewise). On
+    # every saved Y view the added band held no other centre above 1 vote.
     votes = {k: v for k, v in votes.items() if 128 <= k[0] <= 382 and 94 <= k[1] <= 348}
     if not votes:
         return None
