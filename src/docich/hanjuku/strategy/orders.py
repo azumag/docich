@@ -174,6 +174,12 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
     return True
 
 
+def _gate_names(names):
+    # The policy is JSON between observations, so a stored tuple comes back
+    # as a list (g1075 01:20-01:29: A:6d0149e9:J1 was re-issued 11 times).
+    return tuple(names) if isinstance(names, list) else names
+
+
 def _source_defender_suppressed(order, mem) -> bool:
     step = order.get('step')
     gates, _ = _gate_dicts(mem, 'sortie_held_source_defender_gates', 'source_defender_cancel_gates',
@@ -196,7 +202,7 @@ def _source_defender_suppressed(order, mem) -> bool:
         return False
     current_present = (mem.get('garrison') or {}).get(source)
     current_present_tuple = tuple(sorted(current_present)) if isinstance(current_present, list) else None
-    if current_present_tuple != gate.get('present'):
+    if current_present_tuple != _gate_names(gate.get('present')):
         gates.pop(step, None)
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
@@ -207,7 +213,7 @@ def _source_defender_suppressed(order, mem) -> bool:
     current_available = None
     if isinstance(current_present, list):
         current_available = tuple(sorted(set(current_present) - unavailable))
-    if current_available != gate.get('available'):
+    if current_available != _gate_names(gate.get('available')):
         gates.pop(step, None)
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
@@ -220,7 +226,7 @@ def _source_defender_suppressed(order, mem) -> bool:
     return True
 
 
-def _record_source_defender_cancel(mem, order, present=None, available=None):
+def _record_source_defender_cancel(mem, order, present=None, available=None, gate=True):
     step = order.get('step')
     if not step:
         return
@@ -252,6 +258,8 @@ def _record_source_defender_cancel(mem, order, present=None, available=None):
     if count >= limit:
         gates.pop(step, None)
         mem.setdefault('orders', {})[step] = 'failed'
+    elif not gate:
+        gates.pop(step, None)     # a location recheck reopens the same list at once
     else:
         gates[step] = {'source': source, 'month': month, 'present': present_tuple,
                        'available': available, 'count': count}
