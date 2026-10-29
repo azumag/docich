@@ -67,12 +67,24 @@ def test_strong_retreats_earlier_when_outmatched_after_real_resource_exhaustion(
 
 @pytest.mark.parametrize('hp,expected', [(12, False), (8, False), (6, False), (5, True), (4, True), (1, True)])
 def test_weak_general_accepts_risk_but_has_an_explicit_lower_bound(hp, expected):
-    cur = duel(ally='キッシュ', enemy='ポワソン', hp=hp, enemy_hp=80,
+    # Enemy HP 2x ours keeps the melee score gap at 3.6x, under the #3042
+    # hopeless-attack retreat (4x).
+    cur = duel(ally='キッシュ', enemy='ポワソン', hp=hp, enemy_hp=2 * hp,
                ally_soldiers=0, enemy_soldiers=0)
     assert rules._default_retreat_needed(deepcopy(cur)) is True
     assert p._hero_retreat_needed(cur) is expected
     assert cur['retreat_assessment']['critical_hp'] == 4
     assert cur['retreat_assessment']['retreat_percent'] == 20
+
+
+@pytest.mark.parametrize('hp', [12, 8, 6])
+def test_weak_general_retreats_from_a_hopeless_attack_before_the_lower_bound(hp):
+    # Owner 2026-10-30 (#3042): a 4x melee gap after spent resources retreats
+    # even an expendable general (here 12x: 60 vs 720 at HP 12).
+    cur = duel(ally='キッシュ', enemy='ポワソン', hp=hp, enemy_hp=80,
+               ally_soldiers=0, enemy_soldiers=0)
+    assert p._hero_retreat_needed(cur) is True
+    assert cur['retreat_assessment']['reason'] == 'hopeless_attack_melee'
 
 
 def test_weak_general_with_small_enemy_pool_finishes_above_absolute_floor():
@@ -98,9 +110,6 @@ def test_risk_tolerance_never_skips_available_or_unclassified_resources(changes)
 
 
 @pytest.mark.parametrize('changes', [
-    {'card_soldiers_current': False}, {'card_soldiers_current': 1},
-    {'ally_soldiers': None}, {'enemy_soldiers': None},
-    {'ally_soldiers': True}, {'enemy_soldiers': 7},
     {'card_hp_unread': True}, {'card_context_unclassified': True},
     {'egg_battle': True}, {'card_summon_observed': True},
     {'side': 'defense'}, {'side': None},
@@ -110,6 +119,22 @@ def test_unknown_special_or_already_selected_state_preserves_default(changes):
     cur = duel(ally='キッシュ', enemy='ポワソン', hp=8, enemy_hp=80, **changes)
     assert p._hero_retreat_needed(cur) == rules._default_retreat_needed(deepcopy(cur))
     assert not cur['retreat_assessment']['threshold_active']
+
+
+@pytest.mark.parametrize('changes', [
+    {'card_soldiers_current': False}, {'card_soldiers_current': 1},
+    {'ally_soldiers': None}, {'enemy_soldiers': None},
+    {'ally_soldiers': True}, {'enemy_soldiers': 7},
+])
+def test_unknown_soldiers_keep_the_default_unless_the_hp_gap_is_hopeless(changes):
+    # Unread soldiers still skip the value thresholds. The #3042 rule reads
+    # the HP pools alone, as in the 00:57 ゼウス attack (soldiers unread).
+    cur = duel(ally='キッシュ', enemy='ポワソン', hp=8, enemy_hp=17, **changes)
+    assert p._hero_retreat_needed(cur) == rules._default_retreat_needed(deepcopy(cur))
+    assert not cur['retreat_assessment']['threshold_active']
+    cur = duel(ally='キッシュ', enemy='ポワソン', hp=8, enemy_hp=80, **changes)
+    assert p._hero_retreat_needed(cur) is True
+    assert cur['retreat_assessment']['reason'] == 'hopeless_attack_melee'
 
 
 @pytest.mark.parametrize('hp', [1, 4, 8, 12, 18, 45, 90])
