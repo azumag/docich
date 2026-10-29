@@ -679,6 +679,14 @@ def defender_egg_pending_step(screen, mem):
         # from accepting the still-unread command with A.
         return [{'type': 'wait', 'ms': 50}]
     guard.update(exhausted=True, stage='unavailable', close_pending=True)
+    from . import okunote
+    if okunote.candidate_chosen(mem, cur):
+        # g1075 14:35:52: リューキシもどき was chosen and its effect dialogue
+        # filled these frames (ビシソワーズ 13 -> 0, a win). The inputs stay;
+        # only the record no longer reports an unread menu.
+        _record(mem, 'battle_okunote_effect_text_limit', **_battle_labels(cur),
+                reason='奥の手の候補を選んだ後の演出テキストが観測上限まで続いたためBで送る。メニュー未読ではない')
+        return [pad('b')]
     _record(mem, 'battle_okunote_egg_menu_unread', **_battle_labels(cur),
             reason='召喚前の奥の手メニューを読み取れない観測が上限に達したため、未知の行を確定せず戻る')
     return [pad('b')]

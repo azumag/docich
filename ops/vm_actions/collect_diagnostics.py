@@ -6505,6 +6505,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v289-monster-skill-no-progress",
             "hanjuku-chart-v290-monster-stall-faster",
             "hanjuku-chart-v291-defense-handoff-win",
+            "hanjuku-chart-v292-okunote-effect-label",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
