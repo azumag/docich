@@ -6511,6 +6511,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v298-okunote-effect-label",
             "hanjuku-chart-v300-recall-picker-stationary",
             "hanjuku-chart-v302-defense-loss-flag",
+            "hanjuku-chart-v303-boss-flag-not-read",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
