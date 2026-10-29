@@ -192,8 +192,12 @@ def world_cursor(frame):
                     votes[key] = votes.get(key, 0) + 1
     # The ring only appears inside the island view (sea 64-191 x 47-174);
     # the ornate frame's highlights just outside voted as strongly (g419 10:49,
-    # a frame where the blinking ring was off).
-    votes = {k: v for k, v in votes.items() if 140 <= k[0] <= 372 and 106 <= k[1] <= 338}
+    # a frame where the blinking ring was off). The window is the whole sea:
+    # the narrower 70-186 x 53-169 lost real rings at the sea's edge (g1075
+    # 2026-10-29 12:20: centre (65, 81.5) west of リグア, 24 votes, so the
+    # source jump closed as unreadable; a ring at (153, 50.5) likewise). On
+    # every saved Y view the added band held no other centre above 1 vote.
+    votes = {k: v for k, v in votes.items() if 128 <= k[0] <= 382 and 94 <= k[1] <= 348}
     if not votes:
         return None
     key, count = max(votes.items(), key=lambda kv: kv[1])
