@@ -294,6 +294,44 @@ def _card_battle_reading(screen, cur, mem=None):
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
     if mem is not None:
         _remember_general_for_summon(mem, cur, b.ally, b.ally_hp)
+    # Trigger B: HP re-observation invalidates a stale conserve latch.
+    rescue = cur.get('survival') if isinstance(cur, dict) else None
+    if isinstance(rescue, dict) and rescue.get('conserving_melee'):
+        try:
+            from ..judgment.battle import _enemy_transformed as _et
+            _enemy_transformed = _et
+            if _enemy_transformed(mem, cur):
+                broken = True
+            elif _critical_survival_needed(cur):
+                broken = True
+            elif _own_egg_empty(mem, cur):
+                broken = True
+            elif cur.get('card_hp_unread') or cur.get('card_context_unclassified'):
+                broken = True
+            elif cur.get('card_soldiers_current') is not True:
+                broken = True
+            elif cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'):
+                broken = True
+            else:
+                enemy_name = cur.get('enemy')
+                if enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS:
+                    broken = True
+                else:
+                    hp = cur.get('ally_hp')
+                    start = cur.get('start_ally_hp')
+                    enemy_hp = cur.get('enemy_hp')
+                    enemy_start = cur.get('start_enemy_hp')
+                    if (type(hp) is int and type(start) is int and hp < start
+                          and type(enemy_hp) is int and type(enemy_start) is int
+                          and (enemy_hp >= enemy_start
+                               or (start - hp) * enemy_start > (enemy_start - enemy_hp) * start)):
+                        broken = True
+            if broken:
+                rescue.pop('conserving_melee', None)
+                rescue.pop('conserved_labels', None)
+                rescue.pop('conserved_army_recheck', None)
+        except Exception:
+            pass
     cur['hp_observed_at'] = time.time()
     counts = getattr(screen, 'field_soldiers', None)
     if not isinstance(counts, (tuple, list)) or len(counts) != 2:

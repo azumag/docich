@@ -1599,6 +1599,37 @@ def monster_menu_step(screen: Screen, mem):
     if mem.get('battle') and enemy and type(enemy.hp) is int and enemy.hp > 0:
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
+    cur = mem.get('battle')
+    if isinstance(cur, dict) and enemy is not None:
+        opening_scope = cur.get('melee_opening_scope')
+        opening_enemy = opening_scope[2] if isinstance(opening_scope, (list, tuple)) and len(opening_scope) >= 5 else None
+        opening_enemy_hp = opening_scope[4] if isinstance(opening_scope, (list, tuple)) and len(opening_scope) >= 5 else None
+        transformed = False
+        if isinstance(enemy.name, str) and isinstance(opening_enemy, str) and enemy.name != opening_enemy:
+            transformed = True
+        if (type(enemy.hp) is int and type(opening_enemy_hp) is int
+                and enemy.hp > opening_enemy_hp):
+            transformed = True
+        if any('たまごにもどれ' in str(t) for t in row_texts):
+            transformed = True
+        if transformed and not cur.get('enemy_transform_recorded'):
+            cur['enemy_transform_recorded'] = True
+            cur['enemy_transform_observed'] = True
+            try:
+                _record(mem, 'battle_enemy_transform_observed', **_battle_labels(cur),
+                        enemy=enemy.name, enemy_hp=enemy.hp,
+                        observed_metric={'opening_enemy': opening_enemy,
+                                        'opening_enemy_hp': opening_enemy_hp,
+                                        'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                        'transform_skill': any('たまごにもどれ' in str(t) for t in row_texts)},
+                        reason='敵が卵を使用して変身したため開幕の卵温存判断を無効化する')
+            except Exception:
+                pass
+            rescue = cur.get('survival')
+            if isinstance(rescue, dict):
+                rescue.pop('conserving_melee', None)
+                rescue.pop('conserved_labels', None)
+                rescue.pop('conserved_army_recheck', None)
     owner = _monster_owner(skill_lines, ally, enemy)
     _summon_scene(mem)
     if owner == 'ally':
