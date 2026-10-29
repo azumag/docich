@@ -166,7 +166,7 @@ _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
 
 def _is_blue_pixel(pixel) -> bool:
     r, g, b = pixel
-    return b >= 100 and b - r >= 50 and b - g >= 50
+    return b >= 80 and b - r >= 40 and b - g >= 40
 
 
 def _is_black_pixel(pixel) -> bool:
