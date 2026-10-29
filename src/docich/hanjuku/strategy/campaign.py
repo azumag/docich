@@ -35,7 +35,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs', 'hero_repair_deferral',
                 'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',

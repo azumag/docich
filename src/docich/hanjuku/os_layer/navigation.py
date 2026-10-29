@@ -360,6 +360,7 @@ def _y_jump_step(mem, frame):
         mem['y_jump_return'] = jump['mode']
         if jump['mode'] == 'target':
             mem.setdefault('y_jumped', {})[jump['step']] = jump['goal']
+            mem['y_jump_target_confirmed'] = {'step': jump['step'], 'tick': mem.get('tick')}
         mem['near_goal'] = {'step': jump['step'], 'goal': jump['goal'], 'mode': jump['mode']}
         (mem.get('align_steps') or {}).pop(f"{jump['step']}:{jump['mode']}", None)
         mem.pop('menu_miss', None)            # a fresh placement, not the missed cell

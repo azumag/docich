@@ -1188,7 +1188,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v322-defense-win-unread-list",
                  "hanjuku-chart-v323-okunote-open-menu",
                  "hanjuku-chart-v324-hold-gate-reload",
-                 "hanjuku-chart-v325-lost-chart-general",)
+                 "hanjuku-chart-v325-lost-chart-general",
+                 "hanjuku-chart-v326-target-jump-settle",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
