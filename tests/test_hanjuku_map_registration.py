@@ -121,7 +121,7 @@ def test_partial_chapter_three_registration_only_releases_three_initial_orders(m
 def test_measured_juaam_remains_an_interim_target_without_a_chart_order(monkeypatch):
     home = chart.home_castle(10)
     monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0), 'ジュアム': (64, 0)})
-    mem = {'chapter': 10, 'orders': {}, 'garrison': {home: ['どうし', 'ゼウス']}}
+    mem = {'chapter': 10, 'orders': {}, 'garrison': {home: ['どうし', 'ゼウス', 'クミン', 'タルタル']}}
     assert not any(o['target'] == 'ジュアム' for o in chart.orders(10))
     assert any(o['target'] == 'ジュアム' for o in policy.interim_candidates(mem).values())
     monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0)})

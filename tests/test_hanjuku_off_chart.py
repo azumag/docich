@@ -210,13 +210,17 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
 def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
-           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス'], 'キカンドン': [],
+           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
     assert list(candidates) == ['move_1']
     move = candidates['move_1']
     assert (move['general'], move['source'], move['target'], move['purpose']) == (
         'ゼウス', 'アルマムーン', 'キカンドン', 'move')
+    # v305: the hero keeps two others; with only two there nobody leaves him.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
+    moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+    assert all(c['source'] != 'アルマムーン' for c in moves)
     # A lone general is never pulled out of its castle; only an unread list
     # (opened and checked by the move itself) may be the donor then.
     mem['garrison']['アルマムーン'] = ['ゼウス']
@@ -415,10 +419,14 @@ def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
 
 
 def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
-    """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran."""
+    """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran.
+
+    v305: the hero keeps two others, so キカンドン holds two more spares here.
+    """
     mem = {'chapter': 1, 'orders': {}, '_records': [],
            'captured': ['キカンドン', 'ジョンリギ'], 'lost': ['ナキューメラ'],
-           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス'], 'ジョンリギ': ['ココット']}}
+           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス', 'クミン', 'タルタル'],
+                        'ジョンリギ': ['ココット']}}
     candidates = policy.interim_candidates(mem)
     purposes = [c['purpose'] for c in candidates.values()]
     assert purposes[0] == 'retake' and purposes[1] == 'move'
@@ -505,11 +513,22 @@ def _move_memory():
 
 def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
     mem = _move_memory()
-    actions = policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ']), mem)
+    names = [chart.HERO, 'キャラウェイ', 'ココット', 'クミン']
+    actions = policy.deploy_step(_move_list(names), mem)
     assert mem['general_override']['I:m:1'] == 'キャラウェイ'
-    assert mem['garrison']['ジョンリギ'] == [chart.HERO, 'キャラウェイ']
+    assert mem['garrison']['ジョンリギ'] == names
     assert decisions(mem, 'move_general_picked')
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
+
+
+def test_a_move_never_leaves_the_hero_with_fewer_than_two_others():
+    """v305 (owner 2026-10-29): the game ends when the hero's castle falls on him."""
+    mem = _move_memory()
+    assert policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ', 'ココット']), mem) == [
+        policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['I:m:1'] == 'failed'
+    assert decisions(mem, 'sortie_held_hero_guard')
+    assert not mem.get('general_override', {}).get('I:m:1')
 
 
 def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():

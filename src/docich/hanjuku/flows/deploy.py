@@ -11,7 +11,7 @@ import time
 
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
-from ... import hanjuku_chart as chart, hanjuku_reference as reference
+from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
 from ..os_layer.commands import menu_to, pad
@@ -717,6 +717,19 @@ def _hold_unrouted_sortie(mem, order):
             {'source': _source(order, mem), 'target': order.get('target')})
 
 
+def _refute_unplaced(mem, order):
+    """The read list refutes "unplaced joiners stand here" for this castle
+    until the unplaced set changes (g684 3-1 16:09-16:10: the same order
+    was re-issued and cancelled every 10 s)."""
+    refuted = mem.setdefault('unplaced_refuted_castles', {})
+    previous = mem.get('unplaced_refuted') or {}
+    if previous.get('castle'):
+        refuted[previous['castle']] = dict(previous)
+    mem['unplaced_refuted'] = {'castle': _source(order, mem), 'month': mem.get('month'),
+                               'names': _unplaced_castle_generals(mem)}
+    refuted[_source(order, mem)] = dict(mem['unplaced_refuted'])
+
+
 def _keep_sortie_defender(screen, mem, order):
     if not _reserve_source_guard(order, mem):
         return None
@@ -739,20 +752,43 @@ def _keep_sortie_defender(screen, mem, order):
             {'present': present[:8], 'available': sorted(available),
              'location_recheck_attempts': recheck['attempts']})
     (mem.get('source_location_rechecks') or {}).pop(source, None)
-    # The read list refutes "unplaced joiners stand here" for this castle
-    # until the unplaced set changes (g684 3-1 16:09-16:10: the same order
-    # was re-issued and cancelled every 10 s).
-    refuted = mem.setdefault('unplaced_refuted_castles', {})
-    previous = mem.get('unplaced_refuted') or {}
-    if previous.get('castle'):
-        refuted[previous['castle']] = dict(previous)
-    mem['unplaced_refuted'] = {'castle': _source(order, mem), 'month': mem.get('month'),
-                               'names': _unplaced_castle_generals(mem)}
-    refuted[_source(order, mem)] = dict(mem['unplaced_refuted'])
+    _refute_unplaced(mem, order)
     _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
         '奪還・暫定攻撃の出撃元に待機将軍を1人残せないため出撃を取り消す',
         {'present': present[:8], 'available': sorted(available)})
+
+
+def _keep_hero_guard(screen, mem, order):
+    """An off-chart order never leaves the hero's castle thin (owner 2026-10-29).
+
+    The real list is the evidence: with the hero present, the general who
+    would leave must keep ``HERO_CASTLE_GUARD`` others beside him. A planned
+    hero or a spare picked on this list counts as one companion leaving; the
+    hero alone still goes as planned. Base chart and boss orders keep their
+    own sequences.
+    """
+    if (_is_boss_order(order, mem)
+            or not order['step'].startswith((chart_adjust.INTERIM_PREFIX, chart_adjust.PLAN_PREFIX))):
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_deploy(screen, mem, order, '主人公の城の守備人数を数える将軍一覧を読めないため出撃を保留')
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    available = set(present) - unavailable
+    general = order['general']
+    if general == NAME or order.get('source_probe') is True:
+        if not available - {NAME}:
+            return None
+        general = None
+    if not chart_adjust.hero_guard_short(available, general):
+        return None
+    _refute_unplaced(mem, order)
+    _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
+    return _hold_guarded_sortie(mem, order, 'sortie_held_hero_guard',
+        f'主人公の城に主人公以外の将軍を{chart_adjust.HERO_CASTLE_GUARD}人残せないため出撃を取り消す',
+        {'present': present[:8], 'available': sorted(available), 'general': order['general'],
+         'guard': chart_adjust.HERO_CASTLE_GUARD})
 
 
 def resume_sortie_step(screen: Screen, mem):
@@ -1052,6 +1088,9 @@ def deploy_step(screen: Screen, mem):
         if guard is not None:
             return guard
         guard = _keep_last_castle(screen, mem, order)
+        if guard is not None:
+            return guard
+        guard = _keep_hero_guard(screen, mem, order)
         if guard is not None:
             return guard
         if order.get('purpose') == 'move':

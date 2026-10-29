@@ -33,6 +33,25 @@ CARD_NAMES = frozenset({
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
     'ハリケーン', 'キャトルミュー'})
+# Owner (2026-10-29): 主人公のいる城が手薄になるのはよくない -- the game ends
+# when the hero falls. An off-chart order leaves this many other generals
+# with the hero; the hero leaving is a separate decision.
+HERO_CASTLE_GUARD = 2
+
+
+def hero_guard_short(names, general, unavailable=()) -> bool:
+    """True when sending ``general`` from ``names`` thins the hero's castle.
+
+    ``names`` is one castle's general list; ``unavailable`` (marching, location
+    unknown) never guards. A general not in the list (a spare picked on the
+    real list) still takes one of the others.
+    """
+    present = set(names or ()) - set(unavailable or ())
+    if chart.HERO not in present or general == chart.HERO:
+        return False
+    others = present - {chart.HERO}
+    left = len(others - {general}) if general in others else len(others) - 1
+    return left < HERO_CASTLE_GUARD
 
 
 def settings(raw) -> dict:
@@ -139,7 +158,8 @@ def startable(order, request) -> str | None:
     Allowed: the general is recorded in the source castle, or nothing is
     recorded about that general (unknown). Refused: a lost source, a
     general recorded in another castle or marching (g421 e7df88f1: F2/F3/F5
-    named generals absent from their sources and all failed).
+    named generals absent from their sources and all failed), or a general
+    whose departure would leave the hero's castle thin (``hero_guard_short``).
     """
     if not isinstance(request, dict):
         return None
@@ -152,6 +172,11 @@ def startable(order, request) -> str | None:
         return 'general_marching'
     garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
     if general in (garrison.get(source) or ()):
+        # An unrecorded general (a joiner, a spare picked on the list) is
+        # counted on the real list when the sortie opens it.
+        if not chart.is_boss_castle(order['target']) and hero_guard_short(
+                garrison.get(source), general, marching):
+            return 'hero_castle_guard'
         return None
     if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
         return 'general_elsewhere'

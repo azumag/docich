@@ -752,13 +752,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v304-boss-sortie-overdue'
+    assert state['bot_version'] == 'hanjuku-chart-v305-hero-castle-guard'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_native_map_registration_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v304-boss-sortie-overdue'
+    assert BOT_VERSION == 'hanjuku-chart-v305-hero-castle-guard'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -3965,7 +3965,11 @@ def test_broken_hero_allows_other_general_and_friendly_staffing_move():
 
 def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
+    # v305: the hero keeps two others, so the spare comes from a list of four.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'クミン', 'タルタル']
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス']
+    assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
     mem['garrison']['アルマムーン'] = ['どうし']
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 

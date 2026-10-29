@@ -23,7 +23,8 @@ def state():
 
 def test_route_uses_owned_castles_and_never_the_home_to_dondam_diagonal():
     mem = state()
-    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ']
+    # v305: the hero keeps two others, so one of three spares moves.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート']
     owned = set(mem['garrison'])
     assert not routes.allowed(mem, 'アルマムーン', 'ドンダム')
     assert routes.path(mem, 'アルマムーン', 'ドンダム', owned) == (
@@ -248,7 +249,7 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
     # ... and it no longer holds a startable replacement: a spare at home
     # stages the next general toward グリン instead of waiting on the old probe.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス']
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート']   # v305: two stay
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
     new = state_['interim_order']
     assert new['step'] != 'I:b59ab6:2'

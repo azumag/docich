@@ -123,7 +123,8 @@ def caller_adopted_interim():
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': list(p)} for n, p in positions.items()}
     mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    # v305: the hero keeps two others, so the spare leaves a list of four.
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'ミルフィーユ', 'ジェラート']}
     assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = state['policy']['active']
@@ -816,7 +817,8 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     assert set(survey.verified_castles(mem, 3)) == {'アルマムーン', 'グリン'}
     mem['lost'] = ['グリン']
     mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    # v305: the hero keeps two others, so the spare leaves a list of four.
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'ミルフィーユ', 'ジェラート']}
     with chart.map_context(mem):
         assert survey.step(parse(field()), mem, field()) is None
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
