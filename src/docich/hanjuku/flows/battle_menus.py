@@ -877,7 +877,7 @@ def okunote_step(screen, mem):
             # A real menu can arrive after the bounded B opening expired.
             # It authorizes a current cursor check, never another blind B loop.
             guard.update(exhausted=False, stage='menu', unread_ticks=0)
-        egg_window = _defender_egg_window(mem, cur)
+        egg_window = _defender_egg_window(mem, cur, menu_open=cur['okunote_only_observed'])
         egg_preempt = bool(egg_window and egg_window['due'])
         if egg_window and not egg_preempt:
             rescue = _survival_state(mem, cur)
@@ -896,7 +896,9 @@ def okunote_step(screen, mem):
                 _record(mem, 'battle_okunote_egg_preempt', **_battle_labels(cur),
                         observed_metric={**egg_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                         resulting_event='irreversible_risk_accepted',
-                        reason='敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る')
+                        reason=('敵卵あり・味方卵と札は実メニューで使用不能・接触召喚の位置は未校正のため、開いている救済メニューで奥の手を選ぶ。自傷リスクは残る'
+                                if egg_window['reason'] == 'menu_open_contact_unmeasured' else
+                                '敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る'))
         last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
                        else _defender_last_resort(mem, cur))
         if last_resort and not cur.get('okunote_last_resort_recorded'):
