@@ -140,3 +140,48 @@ class CcAdapterHealthProbeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CcTranslationDispatchIntegrationTest(unittest.TestCase):
+    """Real dispatch_translator -> real call_agent -> real _direct_chat gate.
+
+    Only the transport (answer_once) is replaced, so a label or gate regression
+    surfaces here instead of being hidden behind a stub translator.
+    """
+
+    ENV = {
+        "AI_GATEWAY_API_KEY": "SYNTHETIC_KEY",
+        "DOCICH_CHAT_VERCEL_UPSTREAM": "openai",
+        "DOCICH_CHAT_VERCEL_BILLING_MODE": "credits_only",
+    }
+
+    def _serve(self, translate):
+        server = make_server(translate, port=0, timeout=7.0, upstream="vercel-api:openai/gpt-4.1-nano")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+
+    def test_adapter_request_passes_real_gate_and_returns_transport_output(self):
+        from docich.cc_translation_adapter import dispatch_translator
+        spec = parse_upstream("vercel-api:openai/gpt-4.1-nano")
+        translate = dispatch_translator(spec, self.ENV)
+        with unittest.mock.patch(
+            "docich.reply_research_api.answer_once", return_value='{"translations":["hi"]}'
+        ) as answer:
+            output, failure = translate("ja", 5.0)
+        self.assertEqual((output, failure), ('{"translations":["hi"]}', ""))
+        self.assertEqual(answer.call_count, 1)
+
+    def test_gate_rejection_surfaces_as_502_kind_without_prompt_leak(self):
+        from docich.cc_translation_adapter import dispatch_translator
+        spec = parse_upstream("vercel-api:openai/gpt-4.1-nano")
+        translate = dispatch_translator(spec, {})  # no key: gate must fail before transport
+        url = self._serve(translate)
+        with unittest.mock.patch("docich.reply_research_api.answer_once") as answer:
+            status, body = _post(url, {"messages": [{"role": "user", "content": "secret prompt text"}]})
+        self.assertEqual(status, 502)
+        self.assertNotIn("secret prompt text", json.dumps(body))
+        self.assertIn(body["error"]["type"], {"invalid_provider", "provider_failed"})
+        answer.assert_not_called()

@@ -384,7 +384,12 @@ def map_step(screen: Screen, mem, frame):
     if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
         return _start_y_jump(mem, order, source, 'map')
     result = nav_step(screen, mem, frame, goal, source)
-    if chart.approximate_map():
+    if chart.approximate_map() and chart.approx_chapter(mem.get('chapter') or 0):
+        # Only while this chapter navigates on the seed table. A measured
+        # chapter gains nothing from the fallback and lost its order to it
+        # (g1075 2026-10-29 09:14:55-09:15:56 JST, chapter 3: four roof-less
+        # map frames -> ``approx_map_fallback`` -> the same interim order
+        # re-picked -> held ~1 min until the periodic SELECT).
         cursor_before = mem.get('cursor')
         if mem.get('anchor') or result == 'arrived':
             mem.pop('approx_localize_miss', None)
@@ -405,6 +410,8 @@ def map_step(screen: Screen, mem, frame):
                                          'screen_cursor': list(_cursor(screen) or ())},
                         reason='近似座標で屋根に再アンカーできないため近似を止め、実測地図探索へ切り替える')
                 return []
+    else:
+        mem.pop('approx_localize_miss', None)     # a count left from before the chapter was measured
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
             mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again

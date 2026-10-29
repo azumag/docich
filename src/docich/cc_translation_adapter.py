@@ -76,7 +76,9 @@ def dispatch_translator(spec: AgentSpec, env: Mapping[str, str]) -> Translator:
     snapshot = dict(env)
 
     def translate(prompt: str, timeout: float) -> tuple[str, str]:
-        request = DispatchRequest(label="cc-translation", prompt=prompt, agents=(spec,))
+        # Dedicated label: _direct_chat admits CC_TRANSLATION explicitly. It is
+        # not a COMMENT/RADIO lane and never reaches validate_label or dispatch().
+        request = DispatchRequest(label="CC_TRANSLATION", prompt=prompt, agents=(spec,))
         result = call_agent(spec, request, timeout=timeout, env=snapshot)
         if result.returncode == 0:
             return result.output, ""

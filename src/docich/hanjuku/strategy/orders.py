@@ -424,10 +424,26 @@ def _plan_pending(mem) -> bool:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
         return (_ready(o, mem) and _source(o, mem) in owned
-                and garrison.get(_source(o, mem)) != []
+                and _source_list_open(o, mem)
                 and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
+
+
+def _source_list_open(order, mem) -> bool:
+    """The order's source list may be opened.
+
+    A list last read empty is never opened (g407: the plan's どうし/ヴィーナス
+    from an empty home; g438: dead ココット's J1), except by a probe order for
+    a castle a transfer was sent into (chapter 3 ``routes.probe_due``): that
+    list is the only receipt of the arrival. g1075 2026-10-29 11:38: the
+    interim retake of リグア from グリン (recorded empty, two moves just sent
+    there) was built as a probe but never started.
+    """
+    source = _source(order, mem)
+    if (mem.get('garrison') or {}).get(source) != []:
+        return True
+    return order.get('source_probe') is True and routes.probe_due(mem, source)
 
 
 def _boss_retry_due(order, mem) -> bool:
@@ -464,8 +480,9 @@ def next_order(mem):
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
-                # the order (g407: the plan's どうし/ヴィーナス from an empty home).
-                and garrison.get(_source(order, mem)) != []
+                # the order (g407: the plan's どうし/ヴィーナス from an empty home),
+                # unless a transfer into it is due to be read (probe).
+                and _source_list_open(order, mem)
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and not _retake_reserved(order, mem)
                 and not _source_spare_missing(order, mem, allow_probe=True)

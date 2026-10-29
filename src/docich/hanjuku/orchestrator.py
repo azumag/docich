@@ -73,6 +73,44 @@ def _battle_draw_scope(mem):
             cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
 
 
+# A Y jump still open while the frame reads 'unknown' (the fade into the view,
+# or a view misread): the scene-confirm A there decides the jump wherever the
+# cursor happens to be. g1075 2026-10-29: 5 of 26 jumps in 2 h were confirmed
+# that way (4 on the first frame after Y, one mid-move), the field cursor
+# landed on the sea and the order walked for minutes before cancelling the
+# sortie. Hold the A a bounded number of observations; after that the jump is
+# dropped and the ordinary default applies again.
+Y_JUMP_UNKNOWN_HOLD_MAX = 6
+
+
+def y_jump_unknown_hold_step(screen, mem, generic):
+    """Withhold the generic confirm while a Y jump is open, boundedly."""
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    jump = mem.get('y_jump')
+    if not confirms or screen.kind != 'unknown' or not isinstance(jump, dict):
+        return None
+    held = jump.get('unknown_holds')
+    held = held if type(held) is int and held >= 0 else 0
+    if held >= Y_JUMP_UNKNOWN_HOLD_MAX:
+        from .os_layer.navigation import _note_failed_jump
+        mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'view_unreadable')
+        decision_log._record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
+                             screen=screen.kind,
+                             observed_metric={'moves': jump.get('moves'), 'unknown_holds': held},
+                             reason='全体マップのジャンプ中に読めない画面が続いたため、ジャンプを中断して既定の入力に戻す')
+        return None
+    jump['unknown_holds'] = held + 1
+    decision_log._record(mem, 'y_jump_unknown_hold', chart_step=jump.get('step'), target=jump.get('goal'),
+                         screen=screen.kind,
+                         observed_metric={'held': held + 1, 'limit': Y_JUMP_UNKNOWN_HOLD_MAX,
+                                          'moves': jump.get('moves')},
+                         reason='全体マップのジャンプ中に読めない画面で既定のAを押すと現在地で決定してしまうため保留する')
+    return []
+
+
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
     """Withhold a generic confirm on an unreadable battle draw, boundedly.
 
@@ -491,6 +529,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
         if draw_hold is not None:
             actions = draw_hold
+        jump_hold = y_jump_unknown_hold_step(screen, mem, actions)
+        if jump_hold is not None:
+            actions = jump_hold
         if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase

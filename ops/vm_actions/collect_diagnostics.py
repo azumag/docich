@@ -6492,6 +6492,11 @@ def _project_corner_state(data):
             "hanjuku-chart-v275-battle-opening-dialogue",
             "hanjuku-chart-v276-chapter-three-relays",
             "hanjuku-chart-v277-nav-motion-continuity",
+            "hanjuku-chart-v278-chapter-three-boss-cell",
+            "hanjuku-chart-v280-approx-fallback-source-chapters",
+            "hanjuku-chart-v281-probe-empty-relay",
+            "hanjuku-chart-v282-world-map-sea-cursor",
+            "hanjuku-chart-v283-ring-edge-align-half",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -11074,6 +11079,8 @@ def _compact_hanjuku_policy(mem, state=None):
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    monster = mem.get('monster_panel') if isinstance(mem.get('monster_panel'), dict) else {}
     cursor = mem.get('cursor')
     tick = mem.get('tick')
     state = state if isinstance(state, dict) else {}
@@ -11119,6 +11126,23 @@ def _compact_hanjuku_policy(mem, state=None):
         'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
                           'has_plan': isinstance(mem.get('chart_plan'), dict)}
                          if chart_adjust else None),
+        # A long battle looks like a frozen month/capture count. Project the
+        # bounded HP evidence so diagnostics can say whether it is progressing.
+        'battle': ({'enemy': text(battle.get('enemy'), 32),
+                    'ally': text(battle.get('ally'), 32),
+                    'start_enemy_hp': (battle.get('start_enemy_hp')
+                                       if type(battle.get('start_enemy_hp')) is int else None),
+                    'start_ally_hp': (battle.get('start_ally_hp')
+                                      if type(battle.get('start_ally_hp')) is int else None),
+                    'egg_battle': battle.get('egg_battle') is True}
+                   if battle else None),
+        'monster_panel': ({'ally': text(monster.get('ally'), 32),
+                           'ally_hp': (monster.get('ally_hp')
+                                       if type(monster.get('ally_hp')) is int else None),
+                           'enemy': text(monster.get('enemy'), 32),
+                           'enemy_hp': (monster.get('enemy_hp')
+                                        if type(monster.get('enemy_hp')) is int else None)}
+                          if monster else None),
     }
 
 

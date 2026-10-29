@@ -54,26 +54,50 @@ def path(mem, source, target, owned):
     return None
 
 
-def incoming(mem, castle):
+def _moves_into(mem, castle):
+    """Unconfirmed transfers sent into ``castle`` along a chart leg."""
     now = int(mem.get('tick') or 0)
-    result = []
     for step, sortie in (mem.get('sorties') or {}).items():
+        if not isinstance(sortie, dict):
+            continue
         order = (mem.get('launched_orders') or {}).get(step) or {}
         tick = sortie.get('tick')
         if (order.get('purpose') == 'move' and sortie.get('status') == 'en_route'
                 and all(order.get(k) == sortie.get(k) for k in ('source', 'target', 'general'))
                 and sortie.get('target') == castle and sortie.get('source') != castle
                 and allowed(mem, sortie.get('source'), castle)
-                and type(tick) is int and 0 <= now - tick < SORTIE_BUSY_TICKS):
-            result.append((step, sortie))
-    return result
+                and type(tick) is int and 0 <= now - tick):
+            yield step, sortie
+
+
+def incoming(mem, castle):
+    """Transfers whose general still counts as marching (the busy window)."""
+    now = int(mem.get('tick') or 0)
+    return [(step, sortie) for step, sortie in _moves_into(mem, castle)
+            if now - sortie['tick'] < SORTIE_BUSY_TICKS]
+
+
+def unread_dispatches(mem, castle):
+    """Transfers sent into ``castle`` after its list was last read, of any age.
+
+    The busy window bounds how long a *general* counts as marching; it must
+    not bound whether the castle's list may be opened. No screen reports a
+    transfer's arrival, so a castle recorded empty stays empty until its own
+    list is read (g1075 2026-10-29: moves kept going to グリン, recorded
+    empty and never reread once each move left the busy window, so the only
+    leg to the lost リグア stayed closed with the interim retake waiting).
+    """
+    last = (mem.get('route_probe_read_tick') or {}).get(castle)
+    return [(step, sortie) for step, sortie in _moves_into(mem, castle)
+            if last is None or sortie['tick'] > int(last)]
 
 
 def probe_due(mem, castle):
     """A dispatched transfer permits opening a list, never guessing arrival."""
     now = int(mem.get('tick') or 0)
     last = (mem.get('route_probe_read_tick') or {}).get(castle)
-    return (mem.get('chapter') == 3 and bool(incoming(mem, castle))
+    return (mem.get('chapter') == 3
+            and bool(incoming(mem, castle) or unread_dispatches(mem, castle))
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 

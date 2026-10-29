@@ -10,7 +10,7 @@ from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from .commands import pad
-from .readers import _cursor, world_cursor, world_flags
+from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
 
 
@@ -370,9 +370,18 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     steps = mem.setdefault('align_steps', {})
     steps[key] = steps.get(key, 0) + 1
     if steps[key] > ALIGN_LIMIT:
+        # The confirm check accepts a roof within UNDER_CURSOR_PX of the
+        # marker; never reopen the jump for a marker already that close.
+        if abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX:
+            return 'on'
         return None
+    # Half the offset per step. The sortie target marker moved about 2 px
+    # per held frame (g1075 2026-10-29 12:25: a 7-frame hold turned the
+    # roof offset (-7, +7) into (+7, -7) and back, ten times per jump, and
+    # the retake of リグア reopened Y three times). A 1 px/frame cursor
+    # undershoots instead and still converges within ALIGN_LIMIT.
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > ALIGN_TOL:
-            actions.append(pad(pos if d > 0 else neg, min(abs(d), MAX_HOLD_FRAMES)))
+            actions.append(pad(pos if d > 0 else neg, min(max(1, (abs(d) + 1) // 2), MAX_HOLD_FRAMES)))
     return actions

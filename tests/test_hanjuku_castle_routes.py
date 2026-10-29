@@ -190,3 +190,84 @@ def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     new = pending['interim_order']
     assert new['step'] != old['step']
     assert (new['source'], new['target'], new['purpose']) == ('リグア', 'グリン', 'move')
+
+
+def rigua_stall():
+    """g1075 2026-10-29 11:38 JST: every castle but リグア is ours, グリン (the
+    only leg to リグア) is recorded empty, and the two moves sent there have
+    left the busy window without their arrival being read."""
+    mem = state()
+    mem['tick'] = 66558
+    mem['captured'] = sorted(set(chart.castles(3)) - {'リグア', chart.boss_castle(3)})
+    mem['lost'] = ['リグア']
+    mem['garrison'] = {'アバロン': ['ソーピニヨン'], 'アルマムーン': ['どうし'], 'イーピヨル': [],
+                       'グリン': [], 'コラダイン': ['ミュスカデ'], 'ドンダム': ['ピオーネ'],
+                       'パタゴーヌ': ['アポロン'], 'メガパタ': ['デュオニソス']}
+    for step, general, tick in (('I:380571:2', 'アテナ', 65575), ('I:b59ab6:1', 'ポワソン', 66126)):
+        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'グリン', 'general': general,
+                                'status': 'en_route', 'tick': tick}
+        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+                                        'target': 'グリン', 'general': general, 'step': step}
+        mem['orders'][step] = 'launched'
+    retake = {'step': 'I:b59ab6:2', 'general': 'しょうぐん', 'source': 'グリン', 'target': 'リグア',
+              'cards': ['イッテツーン', 'グリンボー', 'グリンボー'], 'after': None,
+              'purpose': 'retake', 'source_probe': True,
+              'note': '暫定: しょうぐんで奪われたリグアを奪還'}
+    mem['chart_adjust'] = {'interim_order': retake}
+    return mem, retake
+
+
+def test_a_castle_recorded_empty_is_probed_after_its_transfers_left_the_busy_window():
+    mem, retake = rigua_stall()
+    assert routes.incoming(mem, 'グリン') == []            # both moves are past the busy window
+    assert {s for s, _ in routes.unread_dispatches(mem, 'グリン')} == {'I:380571:2', 'I:b59ab6:1'}
+    assert routes.probe_due(mem, 'グリン')
+    assert orders._source_list_open(retake, mem)
+    assert orders.next_order(mem)['step'] == 'I:b59ab6:2'
+    # The probe opens the real list; the reading decides, never a guess.
+    candidates = list(replan.interim_candidates(mem).values())
+    assert (candidates[0]['source'], candidates[0]['target'], candidates[0]['purpose']) == (
+        'グリン', 'リグア', 'retake')
+    assert candidates[0]['source_probe'] is True
+
+
+def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
+    mem, retake = rigua_stall()
+    # The list read after both moves shows nobody: no unread dispatch remains,
+    # old transfers are not confirmed, and the source stays closed.
+    routes.observed_roster(mem, 'グリン', [])
+    mem['tick'] += routes.PROBE_INTERVAL
+    assert routes.unread_dispatches(mem, 'グリン') == []
+    assert not routes.probe_due(mem, 'グリン')
+    assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
+    assert not orders._source_list_open(retake, mem)
+    assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
+    # With no other candidate it is left unstarted (a hold is recorded) ...
+    state_ = {'interim_order': retake}
+    replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
+    assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
+    # ... and it no longer holds a startable replacement: a spare at home
+    # stages the next general toward グリン instead of waiting on the old probe.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス']
+    replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
+    new = state_['interim_order']
+    assert new['step'] != 'I:b59ab6:2'
+    assert (new['general'], new['source'], new['target'], new['purpose']) == (
+        'ゼウス', 'アルマムーン', 'グリン', 'move')
+    # A new transfer sent after that reading reopens the list once due.
+    mem['tick'] += 5
+    step = add_transfer(mem, 'アルマムーン', 'グリン', general='ゼウス')
+    assert routes.probe_due(mem, 'グリン')
+    assert {s for s, _ in routes.unread_dispatches(mem, 'グリン')} == {step}
+
+
+def test_probe_never_opens_a_castle_whose_list_was_read_after_the_last_dispatch():
+    mem, retake = rigua_stall()
+    mem['route_probe_read_tick'] = {'グリン': 66300}     # read after both moves were sent
+    assert routes.unread_dispatches(mem, 'グリン') == []
+    assert not routes.probe_due(mem, 'グリン')
+    assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
+    # Other chapters never probe, and a non-probe order never opens an empty list.
+    assert not routes.probe_due({**mem, 'chapter': 2}, 'グリン')
+    mem.pop('route_probe_read_tick')
+    assert not orders._source_list_open({**retake, 'source_probe': False}, mem)

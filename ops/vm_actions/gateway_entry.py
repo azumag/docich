@@ -232,6 +232,9 @@ def main():
     if len(sys.argv) != 2:
         gateway.die()
     command = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    if command.split()[:1] == ["tsuitate_status_query"]:
+        import tsuitate_status_gateway
+        return tsuitate_status_gateway.main(gateway, sys.argv[1])
     if command.split()[:1] in (["hanjuku_evidence"], ["hanjuku_evidence_query"]):
         import hanjuku_evidence_gateway
         return hanjuku_evidence_gateway.main(gateway, sys.argv[1])

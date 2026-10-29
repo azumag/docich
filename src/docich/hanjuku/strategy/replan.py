@@ -12,7 +12,8 @@ from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
-                               _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
+                               _source_list_open, _source_location_recheck, _source_location_recheck_due,
+                               _unplaced_castle_generals)
 
 
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
@@ -318,7 +319,11 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     status = mem.get('orders') or {}
     busy = (interim and status.get(interim['step']) in (None, 'pending')
             and _source(interim, mem) in _owned(mem)
-            and routes.order_allowed(mem, interim, _source(interim, mem)))
+            and routes.order_allowed(mem, interim, _source(interim, mem))
+            # ``next_order`` never starts an order whose source list is closed
+            # (read empty, no probe due); waiting on it held every other
+            # candidate (g1075 2026-10-29 11:38-11:47, リグア retake).
+            and _source_list_open(interim, mem))
     if busy:
         return
     candidates = interim_candidates(mem, allow_sole)
