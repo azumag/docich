@@ -11,7 +11,7 @@ def memory():
          'target': 'ジョンリギ', 'purpose': 'retake', 'cards': [], 'after': None, 'note': 't'}
     return {'chapter': 1, 'tick': 100, 'captured': ['カストーラ', 'キカンドン'],
             'lost': ['ジョンリギ'], 'active': o['step'], 'picked': [], '_records': [],
-            'garrison': {'アルマムーン': ['ゼウス', 'どうし'], 'カストーラ': ['ヴィーナス'],
+            'garrison': {'アルマムーン': ['ゼウス', 'アルテミス'], 'カストーラ': ['ヴィーナス'],
                          'キカンドン': ['ココット']}, 'orders': {},
             'launched_orders': {o['step']: o}}
 
@@ -65,11 +65,11 @@ def test_live_retake_list_cannot_send_the_last_defender(names):
 
 
 def test_live_spare_can_leave_and_then_no_further_attack_drains_source():
-    m=memory();assert p.deploy_step(generals(['ゼウス','どうし']),m)==[p.pad('a')]
+    m=memory();assert p.deploy_step(generals(['ゼウス','アルテミス']),m)==[p.pad('a')]
     p._garrison_move(m,'ゼウス',source='アルマムーン')
     m['sorties']={'I:retake:1':{'general':'ゼウス','target':'ジョンリギ','status':'en_route','tick':100}}
     assert not any(o['source']=='アルマムーン' for o in p.interim_candidates(m).values())
-    assert m['garrison']['アルマムーン']==['どうし']
+    assert m['garrison']['アルマムーン']==['アルテミス']
 
 
 def test_busy_or_unclassified_general_is_not_a_remaining_defender():

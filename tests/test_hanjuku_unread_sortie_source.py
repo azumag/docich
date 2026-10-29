@@ -51,14 +51,28 @@ def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
     order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
                  step='I:probe-actor:1')
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
-    screen = generals(['ゼウス', 'どうし'])
+    screen = generals(['ゼウス', 'どうし', 'クミン', 'タルタル'])
     assert p.deploy_step(screen, mem) == [p.pad('a')]
-    assert mem['garrison']['ジョンリギ'] == ['ゼウス', 'どうし']
+    assert mem['garrison']['ジョンリギ'] == ['ゼウス', 'どうし', 'クミン', 'タルタル']
     assert mem['general_override'][order['step']] == 'ゼウス'
     assert mem['sortie_general'][order['step']] == 'ゼウス'
     assert not mem.get('sorties')  # selecting is not a dispatch/arrival receipt
     p._garrison_move(mem, 'ゼウス', source='ジョンリギ')
-    assert mem['garrison']['ジョンリギ'] == ['どうし']
+    assert mem['garrison']['ジョンリギ'] == ['どうし', 'クミン', 'タルタル']
+
+
+@pytest.mark.parametrize('names', [['ゼウス', 'どうし'], ['ゼウス', 'どうし', 'クミン']])
+def test_probe_never_leaves_the_hero_with_fewer_than_two_others(names):
+    """v305 (owner 2026-10-29): 主人公のいる城が手薄になるのはよくない."""
+    mem = stalled()
+    order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
+                 step='I:probe-hero:1')
+    mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
+    assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_held_hero_guard'
+    assert mem['orders'][order['step']] == 'failed'
+    assert mem['garrison']['ジョンリギ'] == names
+    assert all(o['source'] != 'ジョンリギ' for o in p.interim_candidates(mem).values())
 
 
 def test_a_lost_or_known_empty_castle_is_never_a_probe_source():
@@ -145,7 +159,7 @@ def test_probe_selection_must_match_the_actual_departure_panel(kind):
     order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
                  step='I:probe-actor:1')
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
-    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
+    assert p.deploy_step(generals(['ゼウス', 'クミン']), mem) == [p.pad('a')]
     screen = (measured_card_select() if kind == 'card_select'
               else measured_loaded_sortie(('クースカン', 'ノリウツール')))
     assert p.deploy_step(actor_panel(screen, 'どうし'), mem) == [p.pad('b'), p.pad('b')]
@@ -163,10 +177,10 @@ def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor
     order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
                  step='I:probe-reobserved:1')
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
-    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
+    assert p.deploy_step(generals(['ゼウス', 'クミン']), mem) == [p.pad('a')]
     # A later incomplete observation clears the list selection. The stale
     # override remains a plan, even if the next panel happens to match it.
-    p.deploy_step(generals(['ゼウス', 'どうし' + UNKNOWN]), mem)
+    p.deploy_step(generals(['ゼウス', 'クミン' + UNKNOWN]), mem)
     assert order['step'] not in mem['sortie_general']
     assert mem['general_override'][order['step']] == 'ゼウス'
     mem = json.loads(json.dumps(mem))

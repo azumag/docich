@@ -33,6 +33,7 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     garrison = mem.get('garrison') or {}
     busy = busy | set(mem.get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
+    sole = len(owned) == 1          # owner: a single castle may leave the hero alone
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
     if chapter == 3:
         owned = {c for c in owned if routes.allowed(mem, c, target)}
@@ -42,12 +43,10 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
                 if allow_sole else set())
     staffed = sorted((c for c in owned if len(set(free[c])) >= need
-                      and set(free[c]) - unavailable_for_attack and c not in excluded),
+                      and _spares(free[c], unavailable_for_attack, sole) and c not in excluded),
                      key=lambda c: _distance(chapter, c, target))
     if staffed:
-        present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
-        present.sort(key=lambda g: g == NAME)          # risk the hero last
-        return staffed[0], present[0]
+        return staffed[0], _spares(free[staffed[0]], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
         return probes[0], MOVE_ANY_GENERAL
@@ -58,7 +57,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     unplaced = [g for g in _unplaced_castle_generals(mem)
                 if g not in busy and g not in unavailable_for_attack]
     arrival = _arrival_castle(mem, owned)
-    if unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None:
+    if (unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None
+            and not chart_adjust.hero_guard_short([*(garrison.get(arrival) or ()), *unplaced],
+                                                  unplaced[0], busy, sole_castle=sole)):
         # Joiners stand in the hero's castle; the sortie list is the reading
         # and still cancels if fewer than two are really there.
         return arrival, unplaced[0]
@@ -96,6 +97,20 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
+
+
+def _spares(free, unavailable=(), sole=False):
+    """Generals a castle may send, the hero last and only when alone.
+
+    The hero's castle keeps ``HERO_CASTLE_GUARD`` other generals (owner
+    2026-10-29) unless it is our only castle (``sole``); when they would leave
+    it thin, the hero is not sent instead.
+    """
+    others = [g for g in free if g != NAME and g not in unavailable
+              and not chart_adjust.hero_guard_short(free, g, sole_castle=sole)]
+    if others:
+        return others
+    return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
 
 
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
@@ -179,6 +194,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 probe = routes.probe_due(mem, donor)
                 if len(free) < 2 and not probe:
                     continue
+                if len(free) >= 2 and not [g for g in _spares(free) if g != NAME]:
+                    continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
                     options.append((len(route), donor, route, free, probe))
@@ -189,7 +206,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             if leg in seen_legs:
                 continue
             seen_legs.add(leg)
-            general = MOVE_ANY_GENERAL if len(free) < 2 else sorted(free, key=lambda g: g == NAME)[0]
+            general = MOVE_ANY_GENERAL if len(free) < 2 else _spares(free)[0]
             moves.append({'general': general, 'source': donor, 'target': route[1],
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
@@ -204,7 +221,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # (deploy_step), which records the list and drops the donor.
         known = [c for c in owned if c != target
                  and routes.allowed(mem, c, target)
-                 and len([g for g in garrison.get(c) or () if g not in busy]) >= 2]
+                 and len(spare := [g for g in garrison.get(c) or () if g not in busy]) >= 2
+                 and [g for g in _spares(spare) if g != NAME]]
         unread = [c for c in owned if c != target and garrison.get(c) is None
                   and routes.allowed(mem, c, target)]
         donors = (sorted(known, key=lambda c: _distance(chapter, c, target))
@@ -212,7 +230,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if not donors:
             continue
         spare = [g for g in garrison.get(donors[0]) or () if g not in busy]
-        spare.sort(key=lambda g: g == NAME)
+        spare = _spares(spare) if len(spare) >= 2 else []
         general = spare[0] if spare else MOVE_ANY_GENERAL
         moves.append({
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
@@ -376,6 +394,7 @@ def _adjust_situation(mem):
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)
     return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+            'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],
             'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
