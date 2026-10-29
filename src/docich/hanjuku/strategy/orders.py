@@ -931,9 +931,42 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (mem.get('launched') or {}).get(castle) or {}
+    step = _long_march(sorties, castle, general, now)
+    if step is not None:
+        return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
         return launched.get('step'), 'legacy'
     return None, 'none'
+
+
+LONG_MARCH_TICKS = 4 * SORTIE_BUSY_TICKS   # ~35 min; chapter 3 marches measured up to 677
+
+
+def _long_march(sorties, castle, general, now):
+    """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
+
+    g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
+    The entry fell outside the bound, so the battle had no step: it ran as
+    side 'enemy' without the carried egg-drop cards, ヴィーナス summoned and
+    ポセイドン retreated at 43/85 HP. A general is one unit, so only his newest
+    sortie can still be marching; older unread records never compete here.
+    A sortie whose target was left unconfirmed counts by its planned target.
+    """
+    mine = [(key, other) for key, other in sorties.items()
+            if isinstance(other, dict) and other.get('general') == general]
+    if not mine or any(type(other.get('tick')) is not int for _, other in mine):
+        return None
+    newest = max(other['tick'] for _, other in mine)
+    latest = [(key, other) for key, other in mine if other['tick'] == newest]
+    if len(latest) != 1:
+        return None
+    step, sortie = latest[0]
+    target = sortie.get('target')
+    if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+            or not (target == castle or (target is None and sortie.get('planned_target') == castle))
+            or not 0 <= now - newest < LONG_MARCH_TICKS):
+        return None
+    return step
 
 
 def _bind_sortie(mem, step, castle):
