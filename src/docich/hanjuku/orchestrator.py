@@ -611,6 +611,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
     # A concert picker that B cannot close must not consume the whole stall
     # window. Count unchanged observations that produced the same picker B;
     # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real

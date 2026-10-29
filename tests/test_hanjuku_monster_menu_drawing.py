@@ -62,9 +62,11 @@ def test_each_turn_is_decided_on_the_settled_box_so_the_stall_switch_comes_after
             assert 'a' not in buttons(actions)
         actions, state = hanjuku_bot.decide(read_png(SETTLED), state)
         picks.append(buttons(actions))
+        acks = []
         for _ in range(6):
             actions, state = hanjuku_bot.decide(read_png(DIALOGUE), state)
-            assert buttons(actions) == ['a']           # the message itself is still acknowledged
+            acks.append(buttons(actions))
+        assert acks == [[], ['a']] * 3                 # the message is acknowledged on its second look
     assert picks[:MONSTER_STALL_TURNS] == [['a']] * MONSTER_STALL_TURNS
     assert picks[MONSTER_STALL_TURNS] == ['down']       # toward あたためる
     assert state['policy']['monster_stall']['turns'] == {'skill1': MONSTER_STALL_TURNS, 'skill2': 1}
