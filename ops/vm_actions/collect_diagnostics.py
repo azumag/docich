@@ -6530,6 +6530,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v319-attack-defender-successor",
             "hanjuku-chart-v320-dispatch-not-empty",
             "hanjuku-chart-v321-camp-unobserved-skip",
+            "hanjuku-chart-v322-defense-win-unread-list",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
