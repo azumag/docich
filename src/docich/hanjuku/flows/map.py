@@ -381,6 +381,11 @@ def map_step(screen: Screen, mem, frame):
         # order forever. A cancelled attempt must not exhaust every retry.
         (mem.get('card_scroll') or {}).pop(order['step'], None)
         mem.pop('card_upper_boundary', None)
+        mem.pop('card_scroll_last', None)
+        stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+        unseen = mem.get('card_bought_unseen') if isinstance(mem.get('card_bought_unseen'), dict) else {}
+        mem['card_zero_at_start'] = {'step': order['step'], 'cards': sorted(
+            card for card, count in stock.items() if count == 0 and card not in unseen)}
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
         mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
         mem.setdefault('dropper_card_kit', {}).pop(order['step'], None)

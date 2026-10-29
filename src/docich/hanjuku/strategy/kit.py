@@ -77,6 +77,13 @@ def _deploy_cards(order, mem):
     for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
         if card in cards:
             cards.remove(card)
+    # A card measured out of stock before this attempt began is not searched
+    # for again: every chapter 4 sortie of g1075 (2026-10-29 17:40-17:50)
+    # scrolled and waited 5 readings for エンジェリン at stock 0. A zero read
+    # during the attempt keeps its bounded readings (flows.deploy._drop_card).
+    zero = mem.get('card_zero_at_start')
+    if isinstance(zero, dict) and zero.get('step') == order['step']:
+        cards = [card for card in cards if card not in (zero.get('cards') or ())]
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped
