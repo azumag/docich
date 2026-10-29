@@ -1252,7 +1252,33 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "disable_jev_route docich production $SHA"
 
+      - name: Run staged general storage maintenance (reclaim, per-stage enum)
+        if: ${{ steps.auth.outputs.operation == 'reclaim' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          # Same fixed-script trust model as the legacy step below. Each stage
+          # reports one fixed enum line (stage=... result=... reason=...), so a
+          # single failing stage is visible without stopping the other stages.
+          apply_flag=0
+          if [[ "${APPLY:-false}" == "true" ]]; then apply_flag=1; fi
+          echo "staged storage maintenance apply=${apply_flag}"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          out="$RUNNER_TEMP/staged-reclaim.out"
+          { printf 'APPLY=%s\n' "$apply_flag"; cat control/ops/vm_actions/storage_reclaim_staged.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" | tee "$out"
+          grep -E '^stage=(journal_vacuum|apt_clean|snap_disabled|snapd_cache|docker_prune|logrotate_install|logrotate_run) result=(ok|failed) reason=(none|sudo_denied|command_failed|not_present|skipped)$' "$out" >> "$GITHUB_STEP_SUMMARY" || true
+
       - name: Run reviewed storage reclaim
+        id: legacy_reclaim
+        # Non-system parts (stale tmp/clones, soren tmp, opt-in TTS archives)
+        # still live only in the legacy helper; its system section can fail
+        # (#2769). The outcome is recorded in the summary below, not hidden.
+        continue-on-error: true
         if: ${{ steps.auth.outputs.operation == 'reclaim' }}
         shell: bash
         env:
@@ -1275,6 +1301,17 @@ jobs:
           echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag} aivis_engine=${aivis_flag}"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\nAIVIS_ENGINE=%s\n' "$apply_flag" "$voicevox_flag" "$aivis_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Record legacy reclaim outcome
+        if: ${{ always() && steps.auth.outputs.operation == 'reclaim' }}
+        shell: bash
+        env:
+          LEGACY_OUTCOME: ${{ steps.legacy_reclaim.outcome }}
+        run: |
+          echo "legacy_storage_reclaim outcome=${LEGACY_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${LEGACY_OUTCOME}" == "failure" ]]; then
+            echo "::warning::legacy storage_reclaim.sh failed; see staged stage= lines above for per-stage results"
+          fi
 
       - name: Manage market-paper systemd units (opt-in stocks/FX paper corners)
         if: ${{ steps.auth.outputs.operation == 'market_paper' }}
