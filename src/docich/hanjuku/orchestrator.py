@@ -224,6 +224,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
+           overtaken_frames: list | None = None,
            run_identity: dict | None = None,
            chart_edition: str | None = None,
            approx_map: bool = False) -> tuple[list[dict], dict]:
@@ -235,14 +236,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,
-                            card_scroll_input=card_scroll_input,
+                            card_scroll_input=card_scroll_input, overtaken_frames=overtaken_frames,
                             run_identity=run_identity, chart_edition=chart_edition,
                             _memory=memory)
 
 
 def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
-                 experience=None, recall_inputs=None, card_scroll_input=None, run_identity=None,
-                 chart_edition=None, _memory):
+                 experience=None, recall_inputs=None, card_scroll_input=None, overtaken_frames=None,
+                 run_identity=None, chart_edition=None, _memory):
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -297,6 +298,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
+    for sent in overtaken_frames or ():
+        # (sha256, Frame): an earlier A reached this frame, not the one it was decided on.
+        battle_menus_flow.count_overtaken_monster_turn(parse(sent[1], phase=classify(sent[1])), mem, sent[0])
     if prompts_flow.summer_bonus_continue(screen,mem):
         screen.kind='summer_bonus'
     prompts_flow.observe_events(screen,mem)
