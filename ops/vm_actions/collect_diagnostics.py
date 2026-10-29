@@ -214,7 +214,7 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction")
+_HARD_KEEP = ("meta", "prediction", "lawsim")
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -6777,6 +6777,21 @@ def _project_counts(value, keys):
     return {key: _bounded_int(value.get(key)) for key in keys}
 
 
+def _project_lawsim_counters(data):
+    """法案シミュレーター run counters, integers only (#3054).
+
+    ``narration.frames`` is the per-frame scheduling index; the other fields are
+    enqueue / delivery / skip / overlay outcome counts. No narration text, bill
+    names or other lawsim state leave the state file through this projection.
+    """
+    return {
+        "narration": _project_counts(data.get("narration"),
+                                     ("enqueued", "delivery_failed", "skipped", "frames")),
+        "overlay_announcements": _project_counts(data.get("overlay_announcements"),
+                                                 ("sent", "failed", "skipped")),
+    }
+
+
 _GAME_OUTCOMES = frozenset({"win", "loss", "draw", "unknown"})
 _GAME_REASONS = frozenset({
     "normal", "checkmate", "stalemate", "resign", "timeout", "foul_limit", "repetition",
@@ -7511,6 +7526,8 @@ def _collect_corner_files(state_dir, payload, now):
                 entry.update(_project_tsuitate_corner(data))
             else:
                 entry.update(_project_corner_state(data))
+            if name == "lawsim_corner":
+                entry["counters"] = _project_lawsim_counters(data)
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
@@ -8203,6 +8220,40 @@ def _prediction_projection(corners, now):
                              else None),
             "age_sec": _bounded_age(prediction.get("completed_at"), now),
         },
+    }
+
+
+# Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
+_LAWSIM_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "failed", "interrupted"})
+
+
+def _lawsim_projection(corners, now):
+    """The 法案シミュレーター corner's run state and counters as a top-level section (#3054).
+
+    Same reason as ``_prediction_projection`` (#2805): ``corners`` is dropped whole
+    against the hard ceiling, which made the narration and overlay counters
+    unobservable in every production run. This duplicates the already-bounded
+    ``corners.lawsim_corner`` fields under a key the ceiling never takes away.
+    Only enums, counts, timestamps as ages and the fixed game id are emitted.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+    corner = corners.get("lawsim_corner")
+    corner = corner if isinstance(corner, dict) else {}
+    counters = corner.get("counters")
+    counters = counters if isinstance(counters, dict) else {}
+    status = corner.get("status")
+    game = corner.get("game")
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "present": corner.get("present") is True,
+        "readable": corner.get("readable") is True,
+        "status": status if status in _LAWSIM_STATUSES else None,
+        "game": game if game == "lawsim-view" else None,
+        "end_reason": corner.get("end_reason"),
+        "age_sec": _bounded_age(corner.get("completed_at"), now),
+        "narration": counters.get("narration"),
+        "overlay_announcements": counters.get("overlay_announcements"),
     }
 
 
@@ -14067,6 +14118,7 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "prediction": _prediction_projection(corners, now),
+        "lawsim": _lawsim_projection(corners, now),
         "hanjuku_resume": hanjuku_resume,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
