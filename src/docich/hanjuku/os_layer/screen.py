@@ -864,6 +864,22 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
 
 WORLD_SEA = (106, 165, 205)
 WORLD_BORDER = (57, 40, 16)
+WORLD_BACKDROP = (0, 40, 0)
+WORLD_SEA_MIN = 1500           # chapter 1/2 views: 2106-2470 sampled sea pixels
+# Chapter 3's island fills more of the view: 1519-1526 with the cursor on land
+# and 1479 with the gold G over the sea (g1075 2026-10-29 12:11:41). That view
+# read 'unknown', the scene-confirm A fired and the target jump landed on the
+# sea (5 of 26 jumps in 2 h closed before confirming). Below WORLD_SEA_MIN the
+# view still counts when the dark green backdrop beside the gold frame is
+# intact: 1008/1008 samples on every Y view of chapters 1-3, at most 10 on any
+# other saved frame.
+WORLD_SEA_FRAMED_MIN = 1000
+WORLD_BACKDROP_MIN = 900       # of 1008 samples
+
+
+def _world_backdrop(frame: Frame) -> int:
+    return sum(1 for y in range(0, 224, 4) for x in (*range(0, 40, 4), *range(216, 248, 4))
+               if frame.pixel(x, y) == WORLD_BACKDROP)
 
 
 def is_world_map(frame: Frame) -> bool:
@@ -871,7 +887,9 @@ def is_world_map(frame: Frame) -> bool:
     if frame.pixel(128, 10) != WORLD_BORDER:
         return False
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
-    return sea >= 1500
+    if sea >= WORLD_SEA_MIN:
+        return True
+    return sea >= WORLD_SEA_FRAMED_MIN and _world_backdrop(frame) >= WORLD_BACKDROP_MIN
 
 
 # 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
