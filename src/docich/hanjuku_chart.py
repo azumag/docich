@@ -48,6 +48,17 @@ def approximate_map() -> bool:
     """Whether the current policy call may use the source seed table."""
     return bool(_MAP_APPROX.get())
 
+
+def approx_chapter(chapter) -> bool:
+    """Whether ``chapter`` navigates on the source seed table.
+
+    A measured chapter leaves ``CASTLES_APPROX`` (chapter 3 since
+    2026-10-28), so ``approx_map`` alone does not say which table a chapter
+    runs on. The seed-localization fallback in ``flows.map`` is only for
+    chapters that are still on the seed.
+    """
+    return chapter in CASTLES_APPROX
+
 HERO = 'どうし'
 
 # Optional chapter-specific role overrides; no fixed total headcount.
