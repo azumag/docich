@@ -572,6 +572,16 @@ def test_prediction_ledger_reports_last_round_end_without_names(tmp_path):
     assert 'SECRET' not in rendered and 'secret' not in rendered
 
 
+def test_parse_iso_utc_rounds_nanosecond_precision():
+    # #2925: a nanosecond-precision ledger stamp must not make last_round_age_sec
+    # stay -1.  The fractional part is rounded to microseconds.
+    module = load_collector()
+    nano = module._parse_iso_utc('2026-10-23T20:37:12.961559839Z')
+    micro = module._parse_iso_utc('2026-10-23T20:37:12.961560Z')
+    assert nano is not None
+    assert nano == micro
+
+
 def test_prediction_section_survives_the_hard_ceiling():
     # #2805: ``corners`` is dropped whole against the collector ceiling and every
     # 予想王 input (ledger, Soren handoff, HanJuku round, yoso corner run and the

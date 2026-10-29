@@ -7894,14 +7894,44 @@ def _collect_retro_program_queues(soren):
 
 
 def _parse_iso_utc(value):
-    """Epoch seconds for a Twitch ISO-8601 UTC stamp, else None (#2805)."""
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            parsed = dt.datetime.strptime(value, fmt)
-        except (TypeError, ValueError):
-            continue
-        return parsed.replace(tzinfo=dt.timezone.utc).timestamp()
-    return None
+    """Epoch seconds for an ISO-8601 UTC stamp, else None (#2805, #2925).
+
+    Accepts second, microsecond and nanosecond (or any sub-microsecond)
+    precision.  Fractional seconds with more than six digits are rounded to
+    microseconds (with carry into the seconds field) so stamps such as
+    ``2026-10-23T20:37:12.961559839Z`` parse instead of being dropped.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z",
+        value,
+    )
+    if match is None:
+        return None
+    base, frac = match.group(1), match.group(2)
+    microsecond = 0
+    carry_seconds = 0
+    if frac:
+        if len(frac) <= 6:
+            microsecond = int(frac.ljust(6, "0"))
+        else:
+            denom = 10 ** (len(frac) - 6)
+            microsecond = (int(frac) + denom // 2) // denom
+            if microsecond >= 1000000:
+                microsecond -= 1000000
+                carry_seconds = 1
+    try:
+        parsed = dt.datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    parsed = parsed.replace(microsecond=microsecond, tzinfo=dt.timezone.utc)
+    if carry_seconds:
+        parsed = parsed + dt.timedelta(seconds=carry_seconds)
+    try:
+        return parsed.timestamp()
+    except (OverflowError, ValueError):
+        return None
 
 
 def _collect_prediction_leaderboard(state_dir, now=None):
