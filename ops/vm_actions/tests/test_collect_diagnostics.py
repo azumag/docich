@@ -165,6 +165,24 @@ def test_rotation_projection_reports_scheduled_manual_without_request_identity(t
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_compact_policy_projects_battle_hp_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 3,
+        'battle': {'enemy': 'ヴィーナス', 'ally': 'どうし', 'start_enemy_hp': 9999,
+                   'start_ally_hp': 90, 'egg_battle': True,
+                   'note': 'DO-NOT-PUBLISH'},
+        'monster_panel': {'ally': 'バルーンフィンチ', 'ally_hp': 120,
+                          'enemy': 'ヴィーナス', 'enemy_hp': 9999,
+                          'note': 'DO-NOT-PUBLISH'}})
+    assert policy['battle']['start_enemy_hp'] == 9999
+    assert policy['battle']['start_ally_hp'] == 90
+    assert policy['battle']['egg_battle'] is True
+    assert policy['monster_panel']['ally_hp'] == 120
+    assert policy['monster_panel']['enemy_hp'] == 9999
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+
+
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({
