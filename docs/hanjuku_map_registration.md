@@ -89,6 +89,10 @@
   `approx_fallback` を立てて近似を隠し、`map_registration` の実測探索へ戻す。
   近似の誤差で注文が動かない場合の有界な退避であり、実測が成立すればその章の
   出撃は再開する。`approx_map` の設定自体は変更しない。
+  この退避は近似表で動いている章（`CASTLES_APPROX` にある章、`approx_chapter()`）に限る。
+  実測済みの章では `approx_map = true` でも走らない（g1075 2026-10-29 09:14:55〜09:15:56 JST:
+  第3話で退避が暫定 order を落とし、同じ order を選び直して `situation_held` を繰り返す
+  6 秒周期の停滞が定期 SELECT まで約 1 分続いた）。
 
 ### 近似を実測へ置き換える手順（C）
 
