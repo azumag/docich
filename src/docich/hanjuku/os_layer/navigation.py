@@ -223,6 +223,7 @@ Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
 Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
 Y_JUMP_STILL_LIMIT = 3         # readable observations unchanged after directional inputs
+Y_JUMP_INTERRUPTED_TICKS = 30  # an unseen jump this old was cut by other screens, not refused
 
 
 def _note_failed_jump(mem, jump, why):
@@ -263,6 +264,20 @@ def _drop_stale_y_jump(screen, mem):
     if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) < Y_JUMP_OPEN_GRACE:
         return True                      # the view is still opening: press nothing
     mem.pop('y_jump', None)
+    if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) >= Y_JUMP_INTERRUPTED_TICKS:
+        # g1075 2026-10-30 08:51-08:55: the target Y at 08:51:09 was cut by the
+        # month turnover and a defense. Back on the target map 4 minutes later
+        # it was noted as a 0-move close, so the retake walked from a stale
+        # estimate and was cancelled. Nothing refused Y here: let it open
+        # again, and drop the estimate the other screens made stale.
+        mem.pop('cursor', None)
+        mem['uncertain'] = True
+        _record(mem, 'y_jump_interrupted', chart_step=jump.get('step'), target=jump.get('goal'),
+                screen=screen.kind,
+                observed_metric={'moves': jump.get('moves'),
+                                 'waited': int(mem.get('tick') or 0) - int(jump.get('tick') or 0)},
+                reason='全体マップが一度も出ないまま他の画面が続いたため、ジャンプを開き直す')
+        return False
     if jump:
         _note_failed_jump(mem, jump, 'view_closed')
         _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
