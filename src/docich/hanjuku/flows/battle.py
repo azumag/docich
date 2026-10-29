@@ -94,6 +94,43 @@ def _defender_successor(mem, cur, b):
     return True
 
 
+def _attack_defender_successor(mem, cur, b):
+    """The castle's next defender meets the same attacker after a won fight.
+
+    g1075 18:12:58 (#3028): ココット beat フヌイヌム's リースリング (37) and
+    バーミセリ (89) came out next. No new battle was opened, so the loss to
+    バーミセリ was judged from the old panel (24 vs 0) and recorded as
+    captured:フヌイヌム. The new defender stands at HP above 0 where the
+    beaten one read 0, so a misread of the old name cannot qualify.
+    """
+    maximum = general_max_hp(b.enemy)
+    eligible = (cur.get('side') == 'attack' and bool(cur.get('castle'))
+                and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] == 0
+                and type(cur.get('ally_hp')) is int and cur['ally_hp'] > 0
+                and b.ally == cur.get('ally') and b.enemy != cur.get('enemy')
+                and maximum is not None and 0 < b.enemy_hp <= maximum
+                and b.ally_hp <= cur['ally_hp'])
+    reading = [b.enemy, b.ally]
+    if not eligible:
+        cur.pop('attack_successor_seen', None)
+        return False
+    if cur.get('attack_successor_seen') != reading:
+        cur['attack_successor_seen'] = reading
+        return False
+    context = {'castle': cur['castle'], 'side': 'attack', 'general': cur['ally'],
+               'step': cur.get('step'), 'entry_evidence': cur.get('entry_evidence')}
+    beaten = cur['enemy']
+    battle_end(mem, 'attack_defender_successor', attack_continues=True)
+    reset_battle_controls(mem)
+    mem['attack'] = context
+    mem['battle_seen'] = reading
+    _record(mem, 'attack_defender_successor', ally=b.ally, enemy=b.enemy,
+            castle=context['castle'], previous_enemy=beaten,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='守備将軍を倒した直後に同じ城の次の守備将軍が出たため、城は奪っていないとして次の戦闘へ移行')
+    return True
+
+
 def _unlocated_scope(mem, cur):
     """Only this run's measured ordinary opening can bind a neutral handoff."""
     from ..os_layer.roster import run_identity
@@ -349,6 +386,7 @@ def battle_step(screen: Screen, mem):
             _card_battle_reading(screen, mem['battle'], mem)
             mem['battle'].pop('successor_seen', None)
             mem['battle'].pop('entry_successor_seen', None)
+            mem['battle'].pop('attack_successor_seen', None)
             mem['battle'].pop('unlocated_successor_seen', None)
             mem['battle'].pop('unlocated_zero_candidate', None)
         return []  # partial panel must not replace the last clear HP/context
@@ -358,13 +396,14 @@ def battle_step(screen: Screen, mem):
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)
-                or _unlocated_successor(mem, cur, b)):
+                or _attack_defender_successor(mem, cur, b) or _unlocated_successor(mem, cur, b)):
             _card_battle_reading(screen, cur, mem)
             return []
         cur = None
     elif cur:
         cur.pop('successor_seen', None)
         cur.pop('entry_successor_seen', None)
+        cur.pop('attack_successor_seen', None)
         cur.pop('unlocated_successor_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
@@ -901,7 +940,8 @@ def _defender_egg_open(mem, cur):
     return _human_menu_open(cur, 'defender_egg', mem)
 
 
-def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False):
+def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
+               attack_continues=False):
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -910,7 +950,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     # A panel can blink during the melee; end only on the second
     # consecutive observation without it.
     cur['away'] = cur.get('away', 0) + 1
-    if cur['away'] < 2 and not (defense_continues or actor_continues):
+    if cur['away'] < 2 and not (defense_continues or actor_continues or attack_continues):
         return
     from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
@@ -946,7 +986,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                       and type(ally_hp) is int and type(enemy_hp) is int
                       and cur.get('side') == 'defense' and outcome == 'loss' else None)
     defense_retained = observed_owner == 'own'
-    if outcome == 'win' and castle and cur.get('side') == 'attack' and not seasonal_boss:
+    if (outcome == 'win' and castle and cur.get('side') == 'attack' and not seasonal_boss
+            and not attack_continues):
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         captured = mem.setdefault('captured', [])
         if castle not in captured:
@@ -1093,6 +1134,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         resulting = f'lost:{castle}'
     if defense_continues:
         resulting = f'defense_continues:{castle}'
+    elif attack_continues:
+        resulting = f'attack_continues:{castle}'
     elif defense_retained:
         resulting = f'defense_retained:{castle}'
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
