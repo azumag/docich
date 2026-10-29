@@ -47,6 +47,11 @@ def _order_hero_alternatives(order, mem, names):
     candidates = _hero_alternatives(mem, names)
     if not _is_boss_order(order, mem):
         return candidates
+    if order.get('target') in chart.boss_sites(4):
+        # Owner 2026-10-30: a 四季王 sortie still leaves HERO_CASTLE_GUARD
+        # generals beside the hero when it leaves the hero's castle.
+        unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+        candidates = [g for g in candidates if not chart_adjust.hero_guard_short(names, g, unavailable)]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
@@ -331,9 +336,20 @@ def _boss_target_unlocked(order, mem):
     if not chart.is_boss_castle(order.get('target')):
         return True
     chapter = mem.get('chapter')
-    if chapter == 9 or (chapter == 4 and order.get('target') not in chart.boss_sites(4)):
+    if chapter == 9 or (chapter == 4 and (order.get('target') not in chart.boss_sites(4)
+                                          or _season_site_held(order, mem))):
         return False
     return _is_boss_order(order, mem) and _all_normal_captured(mem)
+
+
+def _season_site_held(order, mem):
+    """A 四季王 site waits for every retake and is not attacked again once won.
+
+    Owner 2026-10-30: 奪還を先 - a lost castle is taken back before the next
+    site sortie starts; one already marching goes on.
+    """
+    won = {v.get('site') for v in (mem.get('boss_victories') or {}).values() if isinstance(v, dict)}
+    return bool(mem.get('lost')) or order.get('target') in won
 
 
 def _ready(order, mem) -> bool:
@@ -463,7 +479,7 @@ def _boss_retry_due(order, mem) -> bool:
     current cell untried (g1075 2026-10-29: four cancels at the cave)."""
     chapter = mem.get('chapter') or 0
     if ((mem.get('orders') or {}).get(order['step']) != 'failed'
-            or order.get('target') != chart.boss_castle(chapter)):
+            or not chart.is_boss_castle(order.get('target'))):
         return False
     cancels = (mem.get('target_cancel') or {}).get(order['step'], 0)
     cell = list(chart.castles(chapter).get(order['target']) or ())
@@ -486,11 +502,10 @@ def _relaunch_overdue_boss(mem):
     order goes back to pending like a lost boss battle: its unlock, source
     and companion checks run again, and the old march stops counting.
     """
-    boss = chart.boss_castle(mem.get('chapter') or 0)
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
     for step, sortie in (mem.get('sorties') or {}).items():
-        if (status.get(step) != 'launched' or sortie.get('target') != boss
+        if (status.get(step) != 'launched' or not chart.is_boss_castle(sortie.get('target'))
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue

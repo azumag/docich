@@ -328,8 +328,11 @@ def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them(
                 limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
                 assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
     for chapter in range(4, 13):
-        assert chart.CASTLES[chapter] == {
+        # Chapter 4's 四季王 sites come from the live Y view, not the table.
+        ordinary = {n: c for n, c in chart.CASTLES[chapter].items() if n not in chart.SEASON_SITE_CELLS}
+        assert ordinary == {
             n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
+        assert set(chart.CASTLES[chapter]) - set(ordinary) == (set(chart.boss_sites(4)) if chapter == 4 else set())
         assert 'ボス' not in chart.CASTLES[chapter]
         assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
         assert chart.orders(chapter)

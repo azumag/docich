@@ -551,7 +551,7 @@ def target_step(screen: Screen, mem, frame):
         return routed
     result = None
     if screen.marker and _near_goal(mem, order, order['target'], 'target'):
-        if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
+        if chart.is_boss_castle(order['target']):
             aligned = 'on'                        # the tower has no own/enemy roof
         else:
             kinds = ('own',) if order['target'] in _owned(mem) else ('enemy',)
@@ -577,7 +577,7 @@ def target_step(screen: Screen, mem, frame):
             # arrival so the sortie is cancelled and retried within its bounds.
             return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
-        if screen.marker and order['target'] != chart.boss_castle(mem.get('chapter') or 0):
+        if screen.marker and not chart.is_boss_castle(order['target']):
             # g1067 09:49-10:19: dead reckoning stopped the marker 10 px right
             # of Grin's roof, and the up/down nudges never corrected x; every
             # retake was cancelled twice. A roof of the expected owner beside
@@ -640,7 +640,7 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
     s = _cursor(screen)
     if not s or frame is None:
         return True
-    if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
+    if chart.is_boss_castle(order['target']):
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
         # Accept it only when a Y jump placed the marker on it.
         return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
@@ -674,7 +674,7 @@ def _unverified_target(screen, mem, order):
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
     cancels = mem.setdefault('target_cancel', {})
-    boss = order['target'] == chart.boss_castle(mem.get('chapter') or 0)
+    boss = chart.is_boss_castle(order['target'])
     if boss:
         # Boss cancels count per cell: the ones at a withdrawn cell say
         # nothing about the new one (g1075 2026-10-29: 3-B1 failed after four

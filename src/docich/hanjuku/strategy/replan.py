@@ -274,9 +274,8 @@ def _sole_starved(mem):
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
-    boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
-    if not owned or not [c for c in castles if c not in owned and c != boss]:
+    if not owned or not [c for c in castles if c not in owned and not chart.is_boss_castle(c)]:
         return False
     busy, _ = _en_route(mem)
     busy = busy | set(mem.get('general_location_unknown') or ())

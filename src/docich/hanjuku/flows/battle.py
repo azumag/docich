@@ -1096,8 +1096,11 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     boss_name = chart.BOSSES.get(chapter)
     boss_cell = chart.boss_castle(chapter)
     boss_attempt = (_is_boss_order(boss_order, mem)
-                    and cur.get('enemy') == boss_name
-                    and cur.get('castle') == boss_cell and cur.get('side') == 'attack'
+                    and ((cur.get('enemy') == boss_name and cur.get('castle') == boss_cell)
+                         # a 四季王 site lost is sent again like any boss
+                         or (chapter == 4 and cur.get('enemy') in SEASON_KINGS
+                             and cur.get('castle') in chart.boss_sites(4)))
+                    and cur.get('side') == 'attack'
                     and cur.get('entry_evidence') == 'measured_boss_entry')
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
@@ -1235,6 +1238,20 @@ BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is
 OPENING_DIALOGUE_WAIT_LIMIT = 12   # consecutive taunt-visible panels before the existing judgment resumes (chosen bound, not measured)
 
 
+def _boss_entry_cell(mem, general):
+    """The boss castle an entry text names: chapter 4's 「ボスじょう」 is one of
+    four 四季王 sites, the one this general is marching on (no site, no guess)."""
+    chapter = mem.get('chapter') or 0
+    if chapter == 4:
+        sites = {s.get('target') for s in (mem.get('sorties') or {}).values()
+                 if isinstance(s, dict) and s.get('general') == general
+                 and s.get('target') in chart.boss_sites(4)
+                 and s.get('status') in ('en_route', 'launched_unconfirmed')}
+        if len(sites) == 1:
+            return sites.pop()
+    return chart.boss_castle(chapter)
+
+
 def message_step(screen: Screen, mem):
     text = screen.text
     encounter = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがてきとそうぐうしました!!', text)
@@ -1249,7 +1266,7 @@ def message_step(screen: Screen, mem):
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
-        boss_cell = chart.boss_castle(mem.get('chapter') or 0)
+        boss_cell = _boss_entry_cell(mem, general)
         current = mem.get('attack') or {}
         step, match = _match_sortie(mem, boss_cell, general)
         if (match != 'matched' and current.get('castle') == boss_cell

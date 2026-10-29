@@ -115,9 +115,8 @@ def world_flags(frame, chapter, cursor=None):
     if not offset or frame is None:
         return {}
     out = {}
-    boss = chart.boss_castle(chapter)
     for name, (wx, wy) in chart.castles(chapter).items():
-        if name == boss:
+        if chart.is_boss_castle(name):      # chapter 4's four sites are skulls too
             continue
         mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
         if cursor and abs(mx + 2 - cursor[0]) <= 10 and abs(my + 1 - cursor[1]) <= 10:
