@@ -64,8 +64,19 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         # and still cancels if fewer than two are really there.
         return arrival, unplaced[0]
     general = chart_order['general'] if chart_order else NAME
-    if general in busy or general in unavailable_for_attack:
+    if general in unavailable_for_attack:
         return None
+    if general in busy:
+        # A marching or unlocated general is waited for. One missing from this
+        # month's complete roster has left the army: g1075 02:34-02:43, 4-C1's
+        # ココット kept the retake of アルカ off the unread hero castle and a
+        # sole defender left マラコビア instead. The read list picks a spare.
+        roster = mem.get('recruit_roster') or {}
+        if not (roster.get('complete') is True and roster.get('chapter') == chapter
+                and roster.get('month') == mem.get('month')
+                and general not in (roster.get('names') or ())):
+            return None
+        general = MOVE_ANY_GENERAL
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
             return source, general
