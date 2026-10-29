@@ -752,6 +752,13 @@ def _partial_human_commands(screen):
 # x240). Both read 'text', and the generic A confirmed the top skill: of 9
 # おめでとり turns, 7 were taken that way. Those turns never reached the
 # skill-stall count (it saw 2), so ミカンをおす ran 9 times before あたためる.
+# Our general's own box against an enemy summon pans in the same way
+# (19:16:33 こ/も/た at x248, 19:16:47 こうげき/もうこうげ/たまごをつ at x216):
+# both A's confirmed こうげき, and デュオニソス (54, egg in hand) fell to
+# マシンナイト (479) without the egg battle ever seeing its menu.
+EGG_BATTLE_COMMANDS = ('こうげき', 'もうこうげき', 'たまごをつかう')
+
+
 def _partial_monster_menu(frame, screen):
     if screen.battle is not None:
         return False
@@ -761,11 +768,12 @@ def _partial_monster_menu(frame, screen):
     if (rows and rows[0].y > 176 and len(first) == 1 and first[0][0] == 176
             and any(first[0][1] in skills for skills in MONSTER_SKILLS.values())):
         return any(row.y == rows[0].y for row in screen.egg_rows or _egg_rows(frame))
+    # Only a box's first letter shows at the right edge when it starts to pan.
     fragments = [word for line in screen.lines if line.y in (176, 192, 208)
-                 for x, word in line.spans() if x > 176 and len(word) >= 2]
-    return any(sum(any(label.startswith(word) for label in (*skills, 'たまごに'))
-                   for word in fragments) >= 2
-               for skills in MONSTER_SKILLS.values()) and bool(screen.egg_rows or _egg_rows(frame))
+                 for x, word in line.spans() if x > 176 and (len(word) >= 2 or x >= 240)]
+    boxes = [(*skills, 'たまごに') for skills in MONSTER_SKILLS.values()] + [EGG_BATTLE_COMMANDS]
+    return any(sum(any(label.startswith(word) for label in labels) for word in fragments) >= 2
+               for labels in boxes) and bool(screen.egg_rows or _egg_rows(frame))
 
 
 def egg_choice_names(screen):

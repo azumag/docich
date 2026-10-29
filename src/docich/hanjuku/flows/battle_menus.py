@@ -5,6 +5,8 @@ selects the option the judgment layer chose.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
@@ -428,6 +430,11 @@ def count_unchosen_monster_turn(mem, *, sent_frame=None):
         stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy_hp, 'turns': {}}
     turns = stall.setdefault('turns', {})
     turns['skill1'] = turns.get('skill1', 0) + 1
+    if seen['ally'] == 'あけまつ':
+        # g1075 19:24:41: a stray A sent ごあいさつ and the next own turn sent
+        # it again; a second exchange undoes the first.
+        akematsu_command_selected(mem, SimpleNamespace(name=seen['ally']), SimpleNamespace(name=enemy),
+                                  'skill1', cursor_confirmed=False)
     observed = {'ally': seen['ally'], 'enemy': enemy, 'enemy_hp': enemy_hp, 'turns': dict(turns)}
     if sent_frame:
         observed['sent_frame_sha256'] = sent_frame
@@ -454,18 +461,52 @@ def count_overtaken_monster_turn(screen, mem, sent_frame):
 
 
 def monster_menu_pending_step(screen, mem):
-    """Hold the confirm until the summon skill box settles; its own step decides."""
+    """Hold the confirm until a summon battle's box settles; its own step decides."""
+    _summon_scene(mem)
     _unchosen_turn_candidate(screen, mem)
     ticks = mem['monster_menu_pending_ticks'] = mem.get('monster_menu_pending_ticks', 0) + 1
     if ticks == 1:
         _record(mem, 'monster_menu_drawing',
-                reason='召喚獣の技メニューが表示途中のため、既定のAで最上段の技を確定せず表示を待つ')
+                reason='召喚戦の技・コマンド欄が表示途中のため、既定のAで最上段を確定せず表示を待つ')
     if ticks <= MONSTER_MENU_PENDING_MAX:
         return []
     mem.pop('monster_menu_pending_ticks', None)
     _record(mem, 'monster_menu_incomplete', observed_metric={'held': ticks - 1},
             reason='召喚獣の技メニューが観測上限まで表示途中のままのため、既定の入力に戻す')
     return None
+
+
+def _summon_scene(mem):
+    """Mark this battle as one with a summon on the field."""
+    if isinstance(mem.get('battle'), dict):
+        mem['battle']['summon_scene'] = True
+
+
+def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
+    """Send a summon battle's dialogue A only on the second look at a page.
+
+    g1075 2026-10-29: every stray A that confirmed a box's top row in a summon
+    battle was decided on the first look at the page before that box (18:43:30,
+    18:58:48, 19:07:16, 19:22:38, 19:24:40, 19:25:59, 19:26:11). Those last pages
+    stayed 0.3-0.7 s, and the A sent about 0.3 s after the look reached the
+    skill box instead: the top skill ran past the two-turn switch, and
+    あけまつ greeted twice. A page that is still there on the next look gets
+    its A; one that leaves by itself never sends a press into the next box.
+    """
+    battle = mem.get('battle')
+    if (actions != [pad('a')] or phase != 'dialogue' or kind not in ('text', 'unknown')
+            or not isinstance(battle, dict) or not battle.get('summon_scene')):
+        mem.pop('summon_dialogue', None)
+        return actions
+    key = f'text:{screen.text}' if kind == 'text' and screen.text else digest
+    if mem.pop('summon_dialogue', None) == key:
+        return actions
+    mem['summon_dialogue'] = key
+    if not battle.get('summon_dialogue_paced'):
+        battle['summon_dialogue_paced'] = True
+        _record(mem, 'summon_dialogue_paced',
+                reason='召喚戦の会話は同じページを2回見てからAを送り、最後のページで決めたAが次の技・コマンド欄を確定しないようにする')
+    return []
 
 
 def battle_menu_pending_step(mem):
@@ -1044,6 +1085,7 @@ def egg_choice_step(screen: Screen, mem):
     names = egg_choice_names(screen)
     if not names or screen.menu_cursor not in (176, 192, 208):
         return []
+    _summon_scene(mem)
     key = tuple(names)
     flow = mem.get('egg_choice')
     if not flow or tuple(flow.get('names') or ()) != key:
@@ -1244,6 +1286,7 @@ def egg_battle_step(screen: Screen, mem):
                             '敵コマンド表示の再観測上限。味方の卵や攻撃を推測入力せず、既存の画面停滞検出へ委ねる'))
         return []
     mem.pop('enemy_general_menu', None)
+    _summon_scene(mem)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
     from . import okunote
@@ -1536,6 +1579,7 @@ def monster_menu_step(screen: Screen, mem):
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
+    _summon_scene(mem)
     if owner == 'ally':
         mem.pop('monster_unchosen', None)       # our own turn: this step decides it
     else:
