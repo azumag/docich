@@ -99,6 +99,9 @@ def kashu_opening():
 
 
 def unread_after(mem, screens):
+    guard = mem['battle'].get('okunote_egg_preempt')
+    if guard is not None:
+        guard['opens'] = p.DEFENDER_EGG_OPEN_LIMIT  # terminal unread: no reopen budget left (#2953)
     actions = text_frames(mem, screens)
     assert actions == [[WAIT]] * 8 + [[p.pad('b')]]
     assert len(decisions(mem, UNREAD)) == 1 and not decisions(mem, EFFECT)
