@@ -434,7 +434,8 @@ def test_worker_launch_transfers_lock_and_returns_without_waiting(live):
     calls = []
     def popen(*args, **kwargs):
         calls.append((args, kwargs))
-        assert kwargs['stdin'] == kwargs['stdout'] == kwargs['stderr'] == subprocess.DEVNULL
+        assert kwargs['stdin'] == kwargs['stdout'] == subprocess.DEVNULL
+        assert isinstance(kwargs['stderr'], int)  # Launch traceback lands in the runtime err file.
         assert kwargs['start_new_session'] is True
         fd = kwargs['pass_fds'][0]
         other = os.open(live.runtime / scene.LOCK_FILE, os.O_RDONLY)
