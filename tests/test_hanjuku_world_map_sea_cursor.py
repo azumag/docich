@@ -124,3 +124,35 @@ def test_without_an_open_jump_the_unreadable_frame_keeps_its_default():
 def test_the_hold_never_applies_to_a_readable_world_map(kind_frame):
     _, state = decide(read_png(kind_frame), jump_state())
     assert 'y_jump_unknown_hold' not in decisions(state)
+
+
+# #2971: g1075 13:12:29-13:13:08, an arrival battle opened mid-jump and holds
+# 2-4 landed on its draws. Only a run that starts at the map or the view holds.
+@pytest.mark.parametrize('previous', ['attack_started', 'battle', 'battle_menu', 'text'])
+def test_an_unreadable_frame_after_an_interrupting_screen_keeps_its_default(previous):
+    state = jump_state()
+    state['screen_kind'] = previous
+    actions, state = decide(read_png(FADE), state)
+    assert actions == [pad('a')]
+    assert 'y_jump_unknown_hold' not in decisions(state)
+    assert 'unknown_holds' not in state['policy']['y_jump']
+
+
+def test_an_unreadable_run_that_began_after_a_battle_is_not_held():
+    state = jump_state()
+    state['screen_kind'] = 'unknown'          # previous unknown was not held
+    actions, state = decide(read_png(FADE), state)
+    assert actions == [pad('a')]
+    assert 'y_jump_unknown_hold' not in decisions(state)
+
+
+def test_a_battle_between_two_view_runs_does_not_carry_the_episode():
+    frame = read_png(FADE)
+    _, state = decide(frame, jump_state())
+    assert decisions(state) == ['y_jump_unknown_hold']
+    state['screen_kind'] = 'battle'
+    state['policy']['tick'] += 1               # one battle observation in between
+    actions, state = decide(frame, state)
+    assert actions == [pad('a')]
+    assert 'y_jump_unknown_hold' not in decisions(state)
+    assert state['policy']['y_jump']['unknown_holds'] == 1
