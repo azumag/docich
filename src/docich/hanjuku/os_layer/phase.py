@@ -77,6 +77,18 @@ def is_squaresoft_splash(frame: Frame) -> bool:
     return frame.fraction((0,0,256,224), neutral) > .985
 
 
+def _battle_panel_border(frame: Frame) -> bool:
+    """The left battle panel's dark left edge (x 8 on every saved battle).
+
+    Snow fields are paper-bright under the panels too: the chapter 4 map
+    (g1075 2026-10-29 17:29-17:31) read 'battle', so no map cursor was
+    parsed and the field sat 'unknown' with no sortie for minutes. Saved
+    battles keep at least 0.67 of this edge dark; snow keeps 0.03.
+    """
+    dark = lambda r, g, b: max(r, g, b) < 70
+    return any(frame.fraction((x, 170, x + 1, 206), dark) > .5 for x in range(4, 13))
+
+
 def classify(frame: Frame) -> str:
     f=frame
     if is_title(f):
@@ -88,7 +100,8 @@ def classify(frame: Frame) -> str:
         return 'transition'
     paper=lambda r,g,b:r>185 and g>185 and b>155
     if (f.fraction((16,174,113,191),paper)>.65
-            and f.fraction((146,174,234,191),paper)>.55):
+            and f.fraction((146,174,234,191),paper)>.55
+            and _battle_panel_border(f)):
         return 'battle'
     # Name grid and two independent bordered top panels: never type endlessly.
     if (f.fraction((80,85,235,210),green)>.55
