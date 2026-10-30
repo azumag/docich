@@ -4754,3 +4754,58 @@ def test_encoder_survives_the_size_budget():
     with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
         module._diagnostics_budget(payload)
     assert payload['encoder']['frames_sent'] == 1
+
+
+def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
+    # #2936: the worker claim record and history tail must project fixed
+    # classifications only -- request ids, digests and prompt text stay in
+    # the runtime.
+    module=load_collector()
+    runtime=tmp_path/'runtimes'/'g1075-1d5f65e9'
+    runtime.mkdir(parents=True)
+    now=int(time.time())
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'request_id':'SECRET-REQUEST','request_digest':'SECRET-DIGEST',
+        'attempts':2,'rate_limited':1,'at':now-120,
+        'last_status':'invalid_output','last_detail':'invalid source/target castle',
+        'last_at':now-30,'cooldown_until':now+240}),encoding='utf-8')
+    rows=[
+        {'event':'adjust_worker','at':now-400,'status':'invalid_output',
+         'detail':'invalid source/target castle','elapsed_s':171.2,
+         'request_id':'SECRET-REQUEST','prompt':'DO-NOT-PUBLISH'},
+        {'event':'adjust_worker','at':now-200,'status':'generate_failed',
+         'detail':'rc-1:rate_limit','elapsed_s':0.005,'cooldown_s':300,
+         'request_id':'SECRET-REQUEST'},
+        {'event':'adjust_requested','at':now-100,'request_id':'SECRET-REQUEST'},
+        {'event':'not_a_chart_event','at':now-50,'status':'invalid_output'},
+        {'event':'adjust_worker','at':'not-a-time','status':'invalid_output'},
+    ]
+    (runtime/'hanjuku_chart_history.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows)+'\n',encoding='utf-8')
+
+    out=module._project_hanjuku_chart_worker(runtime,now)
+    assert out['present'] is True and out['readable'] is True
+    assert out['attempts']==2 and out['rate_limited']==1
+    assert out['last_status']=='invalid_output'
+    assert out['last_detail']=='invalid source/target castle'
+    assert out['last_age_sec']==30 and out['claim_age_sec']==120
+    assert out['cooldown_remaining_sec']==240
+    assert [e['event'] for e in out['recent']]==[
+        'adjust_worker','adjust_worker','adjust_requested']
+    assert out['recent'][0]['detail']=='invalid source/target castle'
+    assert out['recent'][0]['elapsed_s']==171.2
+    assert out['recent'][1]['status']=='generate_failed'
+    assert out['recent'][1]['cooldown_s']==300
+    rendered=json.dumps(out,ensure_ascii=False)
+    assert 'SECRET-REQUEST' not in rendered and 'SECRET-DIGEST' not in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+    # Unknown statuses/details and a missing file stay distinguishable.
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'last_status':'WEIRD','last_detail':'provider said: DO-NOT-PUBLISH ok?',
+        'attempts':'many'}),encoding='utf-8')
+    odd=module._project_hanjuku_chart_worker(runtime,now)
+    assert odd['last_status'] is None and odd['last_detail'] is None
+    assert odd['attempts'] is None
+    empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
+    assert empty=={'present':False,'readable':False}
