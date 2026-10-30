@@ -11231,6 +11231,13 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
     return out[-limit:]
 
 
+# Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
+# sortie this many times before parking it. The collector runs as a standalone
+# file on the VM, so a test pins the two values together instead of importing
+# game code at runtime.
+HANJUKU_MARCH_RELAUNCH_LIMIT = 2
+
+
 def _compact_hanjuku_policy(mem, state=None):
     """Small map/route summary that survives the tactical detail drop.
 
@@ -11246,9 +11253,13 @@ def _compact_hanjuku_policy(mem, state=None):
     def names(value, limit=12):
         return ([item for item in value if isinstance(item, str)][:limit]
                 if isinstance(value, list) else None)
+    def count(value, maximum=1_000_000):
+        return value if type(value) is int and 0 <= value <= maximum else None
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
     sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
+    victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11257,6 +11268,38 @@ def _compact_hanjuku_policy(mem, state=None):
     cursor = mem.get('cursor')
     tick = mem.get('tick')
     state = state if isinstance(state, dict) else {}
+    def sortie_row(step, value):
+        # A stalled march is an age, not only a status: the same overdue row
+        # may be waiting for its bounded retry or parked after exhaustion.
+        started = value.get('tick')
+        age = (tick - started if type(tick) is int and type(started) is int
+               and 0 <= tick - started <= 10_000_000 else None)
+        return {'status': text(value.get('status'), 32),
+                'target': text(value.get('target'), 32),
+                'age_ticks': age,
+                'relaunch': count(relaunches.get(step), 1000)}
+    rows = [(text(step, 32) or '?', sortie_row(step, value))
+            for step, value in sorties.items() if isinstance(value, dict)]
+    # Keep overdue marches in the bounded view even when many sorties exist.
+    rows.sort(key=lambda row: (row[1]['status'] != 'overdue', row[0]))
+    overdue = [step for step, row in rows if row['status'] == 'overdue']
+    exhausted = [step for step, row in rows
+                 if row['status'] == 'overdue'
+                 and (row['relaunch'] or 0) >= HANJUKU_MARCH_RELAUNCH_LIMIT]
+    active = text(mem.get('active'), 32)
+    if active:
+        march_state = 'active'
+    elif not rows and not orders:
+        march_state = 'idle'
+    elif [step for step in overdue if orders.get(step) == 'launched']:
+        # Launched with nothing measurable arriving: distinguish a retry
+        # still inside its budget from one parked at the relaunch limit.
+        march_state = 'parked' if exhausted else 'overdue'
+    else:
+        march_state = 'idle'
+    won_sites = sorted({str(value.get('site')) for value in victories.values()
+                        if isinstance(value, dict) and isinstance(value.get('site'), str)
+                        and len(value['site']) <= 32})
     return {
         'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
         'screen_kind': text(state.get('screen_kind'), 32),
@@ -11275,10 +11318,18 @@ def _compact_hanjuku_policy(mem, state=None):
                            and len(mem['captured']) <= 64 else None),
         'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
                      for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
-        'sorties': {text(step, 32) or '?': {'status': text(value.get('status'), 32),
-                                            'target': text(value.get('target'), 32)}
-                    for step, value in list(sorties.items())[:12]
-                    if isinstance(value, dict)},
+        'sorties': dict(rows[:12]),
+        # Direct march-stall evidence: whether a launched sortie is overdue,
+        # how long it has gone unmeasured and whether its bounded relaunch
+        # budget is exhausted. Only fixed status tokens, castle labels and
+        # counts leave this reader.
+        'march': {'state': march_state,
+                  'overdue': overdue[:12],
+                  'exhausted': exhausted[:12],
+                  'oldest_age_ticks': max((row['age_ticks'] for _, row in rows
+                                            if row['status'] == 'overdue'
+                                            and row['age_ticks'] is not None), default=None)},
+        'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,
