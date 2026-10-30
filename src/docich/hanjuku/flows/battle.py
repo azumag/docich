@@ -61,6 +61,80 @@ def observe_entry_return(screen, mem):
     mem.pop('battle_seen', None)
 
 
+# The fight's own dialogue (the king's lines, the end message) is the only
+# measured trace between the last stacked panel and the map; keep a few pages.
+SEASON_KING_TEXT_LIMIT = 12
+
+
+def _season_king_rows(screen):
+    """The general's and the 四季王's rows of one stacked summon panel."""
+    from ...hanjuku_map_sources import SEASON_KINGS
+    kings = [r for r in screen.egg_rows if r.side == 'enemy' and r.name in SEASON_KINGS]
+    allies = [r for r in screen.egg_rows if r.side == 'ally']
+    if len(kings) != 1 or len(allies) != 1 or len(screen.egg_rows) != 2:
+        return None
+    return allies[0], kings[0]
+
+
+def observe_season_king_panel(screen, mem):
+    """#3063: a 四季王 fight never shows the two-general panel battle_step reads.
+
+    g1075 2026-10-30 08:27:56 opened straight on the stacked summon panel
+    (アルテミス 49 / サマカンテ 614) and 08:44-08:45 went ヴィーナス 82→26 /
+    スプリミョーネ 425→382 on it; neither fight left battle_start or
+    battle_result, so no 四季王 win could ever reach boss_victories. Only a
+    measured boss entry of the same general opens the record, after two equal
+    readings. The general's and the king's rows then keep its HP for
+    battle_end's rule; an end that never draws a 0 stays unclassified. The
+    fight's dialogue pages are recorded so its end message can be measured.
+    """
+    cur = mem.get('battle')
+    if cur and cur.get('panel') == 'season_king_stack':
+        if screen.kind == 'text' and screen.text:
+            texts = cur.setdefault('texts', [])
+            if screen.text not in texts and len(texts) < SEASON_KING_TEXT_LIMIT:
+                texts.append(screen.text)
+                _record(mem, 'season_king_battle_text', **_battle_labels(cur), enemy=cur['enemy'],
+                        ally=cur['ally'], castle=cur.get('castle'),
+                        observed_metric={'text': screen.text, 'ally_hp': cur.get('ally_hp'),
+                                         'enemy_hp': cur.get('enemy_hp')},
+                        reason='四季王戦の台詞を勝敗の実測証拠として記録')
+        rows = _season_king_rows(screen)
+        if rows:
+            ally, king = rows
+            if king.name == cur['enemy']:
+                cur['enemy_hp'] = king.hp
+                cur['away'] = 0
+                if ally.name == cur['ally']:
+                    cur['ally_hp'] = ally.hp
+        return
+    attack = mem.get('attack') or {}
+    rows = _season_king_rows(screen) if not cur and mem.get('chapter') == 4 else None
+    if (not rows or attack.get('side') != 'attack' or attack.get('entry_evidence') != 'measured_boss_entry'
+            or rows[0].name != attack.get('general')):
+        mem.pop('season_king_seen', None)
+        return
+    ally, king = rows
+    reading = [king.name, ally.name]
+    if mem.get('season_king_seen') != reading:
+        mem['season_king_seen'] = reading
+        return
+    mem.pop('season_king_seen', None)
+    cur = mem['battle'] = {'enemy': king.name, 'ally': ally.name, 'start_enemy_hp': king.hp,
+                           'start_ally_hp': ally.hp, 'enemy_hp': king.hp, 'ally_hp': ally.hp,
+                           'cards_used': [], 'plan': None, 'cards_selected': [], 'cards_missing': [],
+                           'cards_unclassified': [], 'card_consumption_complete': True,
+                           'card_evidence_version': 1, 'panel': 'season_king_stack', 'away': 0,
+                           **_battle_context(mem, ally.name)}
+    _bind_battle_strategy(mem, cur)
+    _record(mem, 'battle_start', **_battle_labels(cur), enemy=king.name, ally=ally.name,
+            expected_metric=cur.get('strategy_expected'),
+            observed_metric={'enemy_hp': king.hp, 'ally_hp': ally.hp, 'panel': 'season_king_stack'},
+            context=cur.get('context', 'message'), enemy_hp=king.hp, ally_hp=ally.hp,
+            castle=cur.get('castle'), reason='四季王戦の召喚獣戦パネルで将軍名と四季王のHPを確認')
+    _tally(mem, 'battles_started')
+
+
 def _defender_successor(mem, cur, b):
     """Two stable living-general panels can continue a known castle defense.
 
