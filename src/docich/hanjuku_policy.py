@@ -37,6 +37,7 @@ from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
 from .hanjuku import _compat
 from .hanjuku import decision_log as _decision_log, reporting as _reporting
 from .hanjuku.flows import (battle as _flow_battle, battle_menus as _flow_battle_menus,
+                            camp_recheck as _flow_camp_recheck,
                             deploy as _flow_deploy, egg_recovery as _flow_egg_recovery, map as _flow_map,
                             month as _flow_month, name as _flow_name, prompts as _flow_prompts,
                             recall as _flow_recall, shop as _flow_shop)
@@ -59,6 +60,54 @@ _LAYER_MODULES = (
 )
 
 _compat.install(__name__, _LAYER_MODULES)
+
+
+# A named retreat recheck intentionally has a finite UI budget.  Before this
+# guard, exhausting that budget left the queue row alive forever; _visible_camps
+# then suppressed the same tent forever as well.  Release only pre-dispatch
+# exhausted rows once their final retry cooldown has elapsed.  The ordinary
+# anonymous camp flow still re-opens the *current* visible tent and reads its
+# actual status before it can send a return command.  Rows with an uncertain or
+# confirmed dispatch are never released here, avoiding a duplicate return A.
+_camp_recheck_step_without_exhausted_release = _flow_camp_recheck.step
+
+
+def _release_exhausted_predispatch_camp_rechecks(mem):
+    if mem.get('recall'):
+        return []
+    now = mem.get('tick')
+    if type(now) is not int or now < 0:
+        return []
+    queue = _flow_camp_recheck._scope(mem)
+    released = []
+    for actor, row in list(queue.items()):
+        if (row.get('status') not in ('needs_observation', 'anonymous_recheck_exhausted')
+                or row.get('attempts') != _flow_camp_recheck.ATTEMPT_LIMIT
+                or type(row.get('retry_after')) is not int or now < row['retry_after']
+                or _flow_camp_recheck._arrival_request(mem, actor, row) is not None):
+            continue
+        queue.pop(actor, None)
+        released.append(actor)
+        _decision_log._record(
+            mem, 'retreat_recheck_budget_released', chart_step=None, general=actor,
+            observed_metric={'attempts': row['attempts'], 'retry_after': row['retry_after']},
+            resulting_event='anonymous_camp_recheck_allowed',
+            reason='本人再確認を有限回数使い切ったため永続抑止を解除し、現在見えている野営を実画面から再確認する',
+        )
+    if released and not queue:
+        mem.pop('retreat_rechecks', None)
+        mem.pop('retreat_anonymous_budget', None)
+    return released
+
+
+def _camp_recheck_step_with_exhausted_release(screen, mem, frame, existing):
+    if (screen.kind == 'map' and frame is not None and not any(
+            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack'))):
+        _release_exhausted_predispatch_camp_rechecks(mem)
+    return _camp_recheck_step_without_exhausted_release(screen, mem, frame, existing)
+
+
+_flow_camp_recheck.step = _camp_recheck_step_with_exhausted_release
 
 
 # v350 can re-arm a 四季王 step after its march/entry goes stale, but a retry
