@@ -94,11 +94,14 @@ def kashu_opening():
         'start_enemy_hp': 39, 'enemy_hp': 37, 'start_ally_hp': 27, 'ally_hp': 27,
         'step': None, 'cards_used': [], 'cards_selected': [], 'cards_unclassified': [],
         'card_evidence_version': 1, 'planned_cards': [], 'okunote_only_observed': True,
-        'okunote_egg_preempt': {'opens': 1, 'stage': 'opening', 'reason': 'unmeasured_clash_guard_exhausted'}}}
+        'okunote_egg_preempt': {'opens': p.DEFENDER_EGG_OPEN_LIMIT, 'stage': 'opening', 'reason': 'unmeasured_clash_guard_exhausted'}}}
     return mem
 
 
 def unread_after(mem, screens):
+    guard = mem['battle'].get('okunote_egg_preempt')
+    if guard is not None:
+        guard['opens'] = p.DEFENDER_EGG_OPEN_LIMIT  # terminal unread: no reopen budget left (#2953)
     actions = text_frames(mem, screens)
     assert actions == [[WAIT]] * 8 + [[p.pad('b')]]
     assert len(decisions(mem, UNREAD)) == 1 and not decisions(mem, EFFECT)

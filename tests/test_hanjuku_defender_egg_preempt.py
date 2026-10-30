@@ -240,6 +240,7 @@ def test_parent_navigation_budget_cannot_block_the_irreversible_candidate_choice
 def test_pending_unknown_frames_do_not_escape_to_generic_a_or_old_month_transaction(monkeypatch):
     mem = memory(enemy_hp=10)
     opening(mem)
+    mem['battle']['okunote_egg_preempt']['opens'] = p.DEFENDER_EGG_OPEN_LIMIT  # no retry budget left
     mem['month_sub'] = {'kind': 'soldiers'}  # a stale transaction is not the active battle
     monkeypatch.setattr(p, 'month_sub_step', lambda *args: (_ for _ in ()).throw(AssertionError('old transaction ran')))
     c = Canvas((120, 120, 120))
@@ -318,3 +319,44 @@ def test_pending_close_does_not_override_resolved_or_other_battle_modes(changes)
     mem['battle']['okunote_egg_preempt'].update(exhausted=True, close_pending=True)
     mem['battle'].update(changes)
     assert p.defender_egg_pending_step(Screen([], None, '', kind='unknown'), mem) is None
+
+
+def test_unread_okunote_menu_reopens_within_the_open_budget():
+    # #2953 実例A: an unreadable menu at the observation limit is retried
+    # through the same bounded opening budget, not abandoned on the first try.
+    mem = memory(enemy_hp=10)
+    opening(mem)
+    unknown = Screen([], None, '', kind='unknown')
+    for _ in range(8):
+        assert p.defender_egg_pending_step(unknown, mem) == [{'type': 'wait', 'ms': 50}]
+    assert p.defender_egg_pending_step(unknown, mem) == [p.pad('b')]
+    guard = mem['battle']['okunote_egg_preempt']
+    assert guard['stage'] is None and not guard.get('exhausted')
+    assert last_decision(mem, 'battle_okunote_egg_menu_retry')
+    assert p._defender_egg_open(mem, mem['battle']) is not None
+    assert guard['opens'] == 2 and guard['stage'] == 'opening'
+
+
+def test_unread_menu_after_the_last_open_is_recorded_as_unread():
+    mem = memory(enemy_hp=10)
+    opening(mem)
+    mem['battle']['okunote_egg_preempt']['opens'] = p.DEFENDER_EGG_OPEN_LIMIT
+    unknown = Screen([], None, '', kind='unknown')
+    for _ in range(8):
+        p.defender_egg_pending_step(unknown, mem)
+    assert p.defender_egg_pending_step(unknown, mem) == [p.pad('b')]
+    guard = mem['battle']['okunote_egg_preempt']
+    assert guard['exhausted'] and guard['stage'] == 'unavailable'
+    assert last_decision(mem, 'battle_okunote_egg_menu_unread')
+
+
+def test_egg_wait_marks_its_latch_for_the_summon_onset():
+    # #2953 実例B: the non-due wait exhausts the rescue; the marker lets the
+    # summon onset re-arm exactly that latch once.
+    # Same confirmed no-resource setup as test_confirmed_no_resource_menu_arms_deadline...
+    mem = memory(ally='どうし', ally_hp=90)
+    mem['battle'].pop('okunote_only_observed')
+    cur = mem['battle']
+    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    assert cur['survival']['exhausted'] and cur['survival']['egg_window_latch']
+    assert last_decision(mem, 'battle_okunote_egg_wait')

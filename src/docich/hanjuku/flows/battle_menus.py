@@ -17,7 +17,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
-                               _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               DEFENDER_EGG_OPEN_LIMIT, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
@@ -825,17 +825,27 @@ def defender_egg_pending_step(screen, mem):
         # An explicit short wait also prevents the generic no-input fallback
         # from accepting the still-unread command with A.
         return [{'type': 'wait', 'ms': 50}]
-    guard.update(exhausted=True, stage='unavailable', close_pending=True)
     from . import okunote
     if okunote.candidate_chosen(mem, cur):
         # g1075 14:35:52: リューキシもどき was chosen and its effect dialogue
         # filled these frames (ビシソワーズ 13 -> 0, a win). The inputs stay;
         # only the record no longer reports an unread menu.
+        guard.update(exhausted=True, stage='unavailable', close_pending=True)
         _record(mem, 'battle_okunote_effect_text_limit', **_battle_labels(cur),
                 reason='奥の手の候補を選んだ後の演出テキストが観測上限まで続いたためBで送る。メニュー未読ではない')
         return [pad('b')]
+    # #2953 実例A: an unread menu is not a refusal of the rescue. Close the
+    # unread box and reopen it through the same bounded opening budget.
+    if guard.get('opens', 0) < DEFENDER_EGG_OPEN_LIMIT:
+        guard.update(stage=None, unread_ticks=0, close_pending=True)
+        _record(mem, 'battle_okunote_egg_menu_retry', **_battle_labels(cur),
+                observed_metric={'open_attempt': guard.get('opens', 0), 'limit': DEFENDER_EGG_OPEN_LIMIT},
+                reason='召喚前の奥の手メニューを読み取れなかったため、Bで閉じて同じ開く回数の範囲内で再度開く')
+        return [pad('b')]
+    guard.update(exhausted=True, stage='unavailable', close_pending=True)
     _record(mem, 'battle_okunote_egg_menu_unread', **_battle_labels(cur),
-            reason='召喚前の奥の手メニューを読み取れない観測が上限に達したため、未知の行を確定せず戻る')
+            observed_metric={'open_attempt': guard.get('opens', 0), 'limit': DEFENDER_EGG_OPEN_LIMIT},
+            reason='召喚前の奥の手メニューを読み取れない観測が上限に達し、再度開く回数も使い切ったため、未知の行を確定せず戻る')
     return [pad('b')]
 
 
@@ -883,6 +893,9 @@ def okunote_step(screen, mem):
         if egg_window and not egg_preempt:
             rescue = _survival_state(mem, cur)
             rescue['exhausted'] = True
+            # #2953 実例B: this latch waits for the enemy's summon. The summon
+            # onset re-arms it once so the egg battle can judge the rescue again.
+            rescue['egg_window_latch'] = True
             if not flow.get('egg_window_waited'):
                 flow['egg_window_waited'] = True
                 _record(mem, 'battle_okunote_egg_wait', **_battle_labels(cur),
@@ -1369,6 +1382,12 @@ def egg_battle_step(screen: Screen, mem):
                          <= egg_evidence['enemy_melee_score'] * BEHIND_EGG_RATIO_TENTHS))
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
+        rescue = battle.get('survival') or {}
+        if rescue.pop('egg_window_latch', False):
+            rescue['exhausted'] = False
+            _record(mem, 'battle_survival_rearm', **_battle_labels(battle),
+                    observed_metric={'ally_hp': battle.get('ally_hp'), 'enemy_hp': battle.get('enemy_hp')},
+                    reason='召喚前の期限待ちで止めた救済を、召喚の発生を契機に再評価する（#2953）')
         exp = mem.get('_experience')
         key = experience.situation_key('egg_summon', mem)
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
