@@ -413,11 +413,75 @@ class GameSwitchLock:
         try:
             fcntl.flock(lock_file.fileno(), operation)
         except BlockingIOError as exc:
+            holder = self._read_holder(lock_file)
             lock_file.close()
-            raise GameSwitchBusyError("ゲーム切替が進行中です") from exc
+            detail = "ゲーム切替が進行中です"
+            if holder:
+                detail += f"（直近の排他保持: {holder}）"
+            raise GameSwitchBusyError(detail) from exc
         self._file = lock_file
         self.exclusive = exclusive
+        if exclusive:
+            self._record_holder()
         return self
+
+    def _record_holder(self) -> None:
+        """Leave the last exclusive holder's identity in the lock file.
+
+        ``flock`` alone cannot answer "who is busy"; recording the holder
+        here lets a failed acquisition say which process held the lock
+        (#2937).  Best-effort only — the lock itself is unchanged.
+        """
+
+        if self._file is None:
+            return
+        try:
+            self._file.seek(0)
+            existing = self._file.read().strip()
+            if existing:
+                try:
+                    holder = json.loads(existing)
+                except ValueError:
+                    holder = None
+                if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+                    # Same process re-acquiring keeps its first sighting; a
+                    # rewrite would only churn the timestamp and make the
+                    # record look like a fresh contention point.
+                    return
+            self._file.seek(0)
+            self._file.truncate()
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "acquired_at": _utc_now(),
+                },
+                self._file,
+                sort_keys=True,
+            )
+            self._file.flush()
+            os.fsync(self._file.fileno())
+        except OSError:
+            pass
+
+    def _read_holder(self, lock_file) -> str | None:
+        try:
+            lock_file.seek(0)
+            raw = lock_file.read().strip()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        try:
+            holder = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(holder, dict):
+            return None
+        pid = holder.get("pid")
+        acquired_at = holder.get("acquired_at")
+        if not isinstance(pid, int):
+            return None
+        return f"pid={pid} acquired_at={acquired_at}"
 
     def release(self) -> None:
         if self._file is None:
@@ -1476,6 +1540,13 @@ AGENT_START_TIMEOUT_S = 60.0
 CLEANUP_TIMEOUT_S = 120.0
 PROBE_TIMEOUT_S = 5.0
 AGENT_REPAIR_TIMEOUT_S = 30.0
+# Identical agent-watchdog probe outcomes are emitted once and then
+# suppressed for this window; a changed outcome re-emits immediately and a
+# repeated outcome re-emits when the window elapses.  The 30s maintenance
+# tick would otherwise append the same line ~115 times/hour to the
+# append-only event log (#2937).
+WATCHDOG_PROBE_REPEAT_S = 600.0
+WATCHDOG_PROBE_STATE_FILE = "agent_watchdog_probe.json"
 CANCEL_GRACE_S = 0.5
 ROLLBACK_TIMEOUT_S = 120.0
 # A single non-blocking writer acquisition at request entry is enough to
@@ -2391,6 +2462,64 @@ class GameSwitchCoordinator:
             return recovered
         return resumed
 
+    def _watchdog_probe_suppression(self, signature: str) -> int | None:
+        """Persisted dedup for repeated agent-watchdog probe outcomes.
+
+        The 30s maintenance tick and the corner loops call
+        :meth:`repair_active_agent` from fresh processes, so repeat
+        suppression is kept in a small state file rather than memory.
+        Returns ``None`` when this outcome is a repeat still inside the
+        suppression window (nothing should be logged).  Otherwise records
+        the emission and returns how many repeats of the same outcome were
+        suppressed since it was last emitted (0 for a new outcome).
+        """
+
+        path = Path(self.store.state_dir) / WATCHDOG_PROBE_STATE_FILE
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        now = dt.datetime.now(dt.timezone.utc)
+        emitted_at: dt.datetime | None = None
+        if previous.get("signature") == signature:
+            try:
+                emitted_at = dt.datetime.fromisoformat(
+                    str(previous.get("emitted_at") or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                emitted_at = None
+            if emitted_at is not None and emitted_at.tzinfo is None:
+                emitted_at = emitted_at.replace(tzinfo=dt.timezone.utc)
+        try:
+            suppressed = int(previous.get("suppressed") or 0)
+        except (TypeError, ValueError):
+            suppressed = 0
+        if emitted_at is not None and (now - emitted_at).total_seconds() < WATCHDOG_PROBE_REPEAT_S:
+            self._write_watchdog_probe_state(
+                path,
+                {
+                    "signature": signature,
+                    "emitted_at": str(previous.get("emitted_at")),
+                    "suppressed": suppressed + 1,
+                },
+            )
+            return None
+        self._write_watchdog_probe_state(
+            path,
+            {"signature": signature, "emitted_at": _utc_now(), "suppressed": 0},
+        )
+        return suppressed if emitted_at is not None else 0
+
+    def _write_watchdog_probe_state(self, path: Path, record: dict[str, object]) -> None:
+        try:
+            atomic_write_json(path, record)
+        except OSError:
+            # Probe logging is best-effort; a lost dedup marker only means
+            # the next identical outcome is logged again.
+            pass
+
     def repair_active_agent(
         self,
         *,
@@ -2431,6 +2560,25 @@ class GameSwitchCoordinator:
             error_code: str | None = None,
             detail: str | None = None,
         ) -> None:
+            ctx = _log_ctx_get()
+            signature = json.dumps(
+                {
+                    "result": result,
+                    "error_code": error_code,
+                    "detail": detail,
+                    "from_game": ctx.get("from_game"),
+                    "generation": ctx.get("generation"),
+                    "runtime_id": ctx.get("runtime_id"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            suppressed = self._watchdog_probe_suppression(signature)
+            if suppressed is None:
+                return
+            if suppressed:
+                note = f"同一結果を{suppressed}回分間引きました"
+                detail = f"{detail}（{note}）" if detail else note
             self._log(
                 "agent_watchdog",
                 phase="ready",
