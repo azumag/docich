@@ -402,6 +402,8 @@ def month_step(screen: Screen, mem):
         return extra
     if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
         return []
+    if shop and not shop.get('closed') and _await_level_scan(mem, shop):
+        return []
     if shop and not shop.get('closed'):
         shop['closed'] = True
         soldiers = _refill_month_outcome(mem, shop, screen.header)
@@ -601,6 +603,7 @@ CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame pe
 
 
 MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
+LEVEL_SCAN_WAIT = 4     # menu observations held for the country-status visit to start
 
 
 def _await_month_roster_scan(mem, shop):
@@ -624,6 +627,32 @@ def _await_month_roster_scan(mem, shop):
     if waits == 0:
         _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
                 reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
+    return True
+
+
+def _await_level_scan(mem, shop):
+    """Hold the month open briefly so the country-status level can be read.
+
+    Issue #3011 (owner): 半熟レベル14以上では半熟値を稼ぐ行為を控える。その
+    判定には当月の観測値が要るため、購入を終えた月イチメニューは国の
+    ステータス確認（house.step の月次訪問）の開始を有限回だけ待つ。訪問が
+    既に走った月は再待機しない。
+    """
+    if mem.get('month_sub') or mem.get('house'):
+        return False
+    scope = [mem.get('chapter'), mem.get('month')]
+    if (mem.get('hanjuku_level_seen') or {}).get('scope') == scope:
+        return False
+    attempts = mem.get('recruit_month_scan_attempts') or {}
+    if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
+        return False   # the month's visit budget is already spent
+    waits = int(shop.get('level_scan_wait') or 0)
+    if waits >= LEVEL_SCAN_WAIT:
+        return False
+    shop['level_scan_wait'] = waits + 1
+    if waits == 0:
+        _record(mem, 'month_level_scan_wait', month=shop.get('key'),
+                reason='半熟レベル未読のため、月一メニューを閉じる前に国のステータス確認の開始を短く待つ')
     return True
 
 
