@@ -552,7 +552,10 @@ def _relaunch_overdue_boss(mem):
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
     for step, sortie in (mem.get('sorties') or {}).items():
-        if (status.get(step) != 'launched' or not chart.is_boss_castle(sortie.get('target'))
+        # An unconfirmed launch keeps its cell in planned_target only; g1075
+        # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
+        target = sortie.get('target') or sortie.get('planned_target')
+        if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue

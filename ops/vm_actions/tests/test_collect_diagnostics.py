@@ -1259,7 +1259,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v335-y-jump-interrupted",
                  "hanjuku-chart-v337-site-egg-stays",
                  "hanjuku-chart-v338-season-king-panel",
-                 "hanjuku-chart-v339-okunote-redraw",)
+                 "hanjuku-chart-v339-okunote-redraw",
+                 "hanjuku-chart-v340-site-overdue-planned",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

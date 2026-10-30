@@ -118,3 +118,29 @@ def test_a_new_chapter_resets_the_budget():
     O.next_order(mem)
     _enter_chapter(mem, 4, reason='test')
     assert 'boss_relaunch' not in mem
+
+
+def site_memory(planned_target):
+    """g1075 2026-10-30 09:28: 4-B2 カペリーニ left ネクスドリア for 四季王城(南東)
+    at tick 131676 unconfirmed, so the cell sat in planned_target only. His
+    08:34:57 entry came before v330 bound such entries, and the sortie stayed
+    en route for 3066 ticks while 4-B3, launched confirmed, went overdue."""
+    return {'chapter': 4, 'tick': 134742,
+            'orders': {o['step']: 'launched' for o in chart.orders(4)},
+            'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'target': None,
+                                 'planned_target': planned_target, 'status': 'en_route',
+                                 'tick': 131676, 'confirmation_tick': 131418}},
+            'lost': ['ミヒラギアン', 'アルカ']}
+
+
+def test_an_unconfirmed_site_launch_goes_overdue_by_its_planned_target():
+    mem = site_memory('四季王城(南東)')
+    O._relaunch_overdue_boss(mem)
+    assert mem['sorties']['4-B2']['status'] == 'overdue'
+    assert mem['orders']['4-B2'] == 'pending'
+    (record,) = decisions(mem, 'boss_sortie_overdue')
+    assert record['chart_step'] == '4-B2' and record['general'] == 'カペリーニ'
+    # An unconfirmed march to a normal castle is still left alone.
+    mem = site_memory('マラコビア')
+    O._relaunch_overdue_boss(mem)
+    assert mem['sorties']['4-B2']['status'] == 'en_route'
