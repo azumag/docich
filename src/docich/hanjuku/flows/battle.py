@@ -1284,7 +1284,9 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             'site': castle if castle in chart.boss_sites(4) else None,
             'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
         resulting = f"season_king_defeated:{cur['enemy']}"
-        if SEASON_KINGS <= set(victories):
+        if (SEASON_KINGS <= set(victories)
+                or {v.get('site') for v in victories.values() if isinstance(v, dict)}
+                   >= set(chart.boss_sites(4))):
             mem['boss_defeated'] = 4
             resulting = 'chapter_4_boss_defeated'
     elif outcome == 'win' and boss and cur.get('enemy') == boss and mem.get('chapter') != 4:

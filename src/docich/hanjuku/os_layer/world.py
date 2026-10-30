@@ -222,6 +222,18 @@ def observe_owners(mem, roofs, cam):
             continue
         from .roster import owner
         owner(mem, STATUS_NAMES.get(castle, castle), kind)
+        if castle in chart.boss_sites(chapter) and kind == 'own':
+            # A 四季王 site's roof turning our colour is a measured king
+            # defeat: g1075 2026-10-30 had 南東 go 'own' while its fight left
+            # no battle record, so the win never reached boss_victories.
+            victories = mem.setdefault('boss_victories', {})
+            if not any(isinstance(v, dict) and v.get('site') == castle
+                       for v in victories.values()):
+                victories[f'flag:{castle}'] = {'site': castle, 'chapter': chapter,
+                                               'evidence': 'roof_own',
+                                               'tick': mem.get('tick')}
+            if {v.get('site') for v in victories.values() if isinstance(v, dict)} >= set(chart.boss_sites(chapter)):
+                mem['boss_defeated'] = chapter
         if castle in fixed:
             continue
         captured = mem.setdefault('captured', [])

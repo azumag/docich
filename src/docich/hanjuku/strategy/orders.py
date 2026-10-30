@@ -432,6 +432,8 @@ def _season_site_held(order, mem):
     条件は厳しい), two or more still waits for retakes.
     """
     won = {v.get('site') for v in (mem.get('boss_victories') or {}).values() if isinstance(v, dict)}
+    won |= {name for name, proof in (mem.get('castle_ownership') or {}).items()
+            if isinstance(proof, dict) and proof.get('owner') == 'own'}
     lost = mem.get('lost') or ()
     return (chart.home_castle(mem.get('chapter') or 0) in lost
             or len(lost) > SEASON_SITE_MISSING_LIMIT or order.get('target') in won)
@@ -580,7 +582,15 @@ BOSS_RELAUNCH_LIMIT = 2                      # boss sorties sent again per step 
 
 
 def _site_king_down(mem, target):
-    """A 四季王 site whose king's defeat is already measured."""
+    """A 四季王 site whose king's defeat is already measured.
+
+    A roof read of the site's own flag is measured proof too: g1075 2026-10-30
+    had 四季王城(南東) turn 'own' with no recorded fight - the panel entry was
+    missed, so battle_end could never credit the win into boss_victories.
+    """
+    proof = (mem.get('castle_ownership') or {}).get(target) or {}
+    if proof.get('owner') == 'own':
+        return True
     return any(isinstance(victory, dict) and victory.get('site') == target
                for victory in (mem.get('boss_victories') or {}).values())
 
