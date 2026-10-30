@@ -44,6 +44,10 @@ def _hero_alternatives(mem, names):
 
 
 def _order_hero_alternatives(order, mem, names, relaxed=True):
+    # Duplicate names are ambiguous for a selection receipt. The unmeasured
+    # egg-holder seat below iterates ``names`` directly, so reject here too.
+    if not names or len(names) != len(set(names)):
+        return []
     candidates = _hero_alternatives(mem, names)
     if not _is_boss_order(order, mem):
         return candidates
