@@ -92,16 +92,22 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return None
         camps = own_camps(frame) if observed_camps is None else observed_camps
         skip = mem.get('recall_skip')
-        active_skip = (isinstance(skip, dict)
-                       and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS)
+        age = (int(mem.get('tick') or 0) - int(skip.get('tick') or 0)
+               if isinstance(skip, dict) else RECALL_SKIP_TICKS)
+        active_skip = 0 <= age < RECALL_SKIP_TICKS
         if active_skip:
             scoped = mem.get('recall_skip_target')
-            if (isinstance(scoped, dict) and scoped.get('chapter') == mem.get('chapter')
-                    and _camp_target(scoped.get('target'))):
-                # The old global backoff left every other camp untouched for
-                # ~10 minutes after one camp failed. Cool down only that camp;
-                # another visible camp may be recalled immediately.
-                camps = [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
+            if isinstance(scoped, dict) and _camp_target(scoped.get('target')):
+                if scoped.get('chapter') == mem.get('chapter'):
+                    # The old global backoff left every other camp untouched for
+                    # ~10 minutes after one camp failed. Cool down only that camp;
+                    # another visible camp may be recalled immediately.
+                    camps = [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
+                else:
+                    # Screen coordinates are chapter-local. Never carry a
+                    # scoped cooldown into a new chapter.
+                    mem.pop('recall_skip', None)
+                    mem.pop('recall_skip_target', None)
             else:
                 # Hotloaded/legacy state has no safe camp identity. Keep the
                 # historical fail-closed global cooldown for that one window.
