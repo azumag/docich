@@ -199,6 +199,9 @@ def _adopt_interim(mem, state, rid):
                 request_id=rid, choice=None, confidence=None, jev_status=answer.get('status') or 'no_candidates',
                 deviation_reason='interim_no_candidates',
                 reason='奪還・攻撃・移動できる候補が無いため暫定出撃を作らず調整チャートを待つ')
+        from . import goals
+        for goal in goals.pending(mem, {'retake', 'move'}):
+            goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     choice, order, confidence, fallback = _pick_interim_order(candidates, answer)
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
@@ -358,6 +361,9 @@ def _off_chart(mem):
                     jev_status='no_candidates',
                     deviation_reason='interim_no_candidates',
                     reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
+            from . import goals
+            for goal in goals.pending(mem, {'retake', 'move'}):
+                goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         state['interim_wanted'] = False
     elif state.get('interim_count', 0) < INTERIM_LIMIT:
         state['interim_wanted'] = True

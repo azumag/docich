@@ -19,6 +19,7 @@ from ..os_layer.commands import MENU_NAV_PRESS_LIMIT, guarded_menu_to, menu_to, 
 from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _current, _month_dialog_body,
                                 _month_dialog_unread, _month_menu_quiet, _options, month_menu_ready)
 from ..os_layer.world import NAME
+from ..strategy import goals
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
                                 WAGE_SPEND_HOLD, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
@@ -501,6 +502,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'cost': cost, 'gold': gold},
                         reason='兵士補充の後の残金が卵の回復費と修理予約に足りないため見送る')
+                goals.note_attempt(mem, 'egg_recover', 'skipped')
                 continue
         elif sub == 'recruit':
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
@@ -530,12 +532,14 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                         reason=('募集費と卵回復・修理の予約が足りないため資金を温存して次月へ待つ'
                                 if shop.get('recruit_priority') else
                                 '必要な兵士の補充と他の必要予約の後に募集費が残っていないため将軍を募集しない'))
+                goals.note_attempt(mem, 'recruit', 'skipped')
                 continue
         elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
               + 0):
             shop[sub] = 'skipped'
             _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                     reason='所持金が卵の回復費に足りないため見送る')
+            goals.note_attempt(mem, 'egg_recover', 'skipped')
             continue
         move = _month_menu_move(screen, mem, label)
         if isinstance(move, list):
@@ -1293,6 +1297,25 @@ def month_sub_step(screen: Screen, mem):
     if kind != 'month_menu':
         sub['left_menu'] = True     # the flow really left the month menu
     if kind in MONTH_SUB_EXIT_KINDS:
+        # An interrupted purchase is not abandoned for the month when no
+        # payment could have happened: it re-queues at 'pending' instead of
+        # staying 'opened' unreachable (the queue ledger keeps the intent
+        # and the attempt count either way).
+        shop = mem.get('shop') or {}
+        unpaid = not (sub.get('stage') == 'recovering' or sub.get('confirm_sent')
+                      or sub.get('paid_candidates') or sub.get('recruit_paid_gold') is not None
+                      or sub.get('payment_interrupted'))
+        if (unpaid and sub.get('kind') in ('egg', 'recruit')
+                and shop.get('key') == sub.get('key')
+                and shop.get(sub['kind']) == 'opened'):
+            shop[sub['kind']] = 'pending'
+            _record(mem, 'month_sub_requeued', month=sub.get('key'),
+                    observed_metric={'kind': sub['kind'], 'screen': kind,
+                                     'presses': sub.get('presses')},
+                    reason='月一の実行中に別画面へ移ったが支払い確定前のため、当月の再試行待ちへ戻す')
+        goal_kind = {'egg': 'egg_recover', 'recruit': 'recruit'}.get(sub.get('kind'))
+        if goal_kind:
+            goals.note_attempt(mem, goal_kind, 'interrupted')
         mem.pop('month_sub')
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')

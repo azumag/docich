@@ -512,6 +512,12 @@ def _finish_order(mem, state, **fields):
             (mem.get('kit_spent') or {}).pop(step, None)
             (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
+        if state == 'failed':
+            from . import goals
+            order = _order_for_step(mem, step) or {}
+            goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
+            if goal_kind:
+                goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
     mem['active'] = None
     mem['picked'] = []
 

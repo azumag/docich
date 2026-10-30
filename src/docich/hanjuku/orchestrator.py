@@ -15,7 +15,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     month as month_flow, name as name_flow, prompts as prompts_flow,
                     recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
-from .strategy import campaign, edition
+from .strategy import campaign, edition, goals
 from .os_layer import readers
 from .os_layer.phase import classify, shop_exit_confirmation
 from .version import BOT_VERSION
@@ -201,6 +201,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         screen.kind='summer_bonus'
     prompts_flow.observe_events(screen,mem)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
+    # Reconcile the deferred-goal ledger with the facts this observation just
+    # updated, before any owner runs: an interrupted or deferred want must be
+    # visible to this observation's idle-time scheduling.
+    goals.refresh(mem)
     kind=screen.kind
     from .os_layer.commands import menu_navigation_reading
     navigation = menu_navigation_reading(screen)

@@ -454,6 +454,8 @@ def _defer_recruit_for_egg(mem, shop):
         _record(mem, 'recruit_deferred_egg', month=shop.get('key'),
                 observed_metric={'egg_status': shop.get('egg'), 'gold': mem.get('gold')},
                 reason='当月の卵回復完了・回復不要を確認できないため募集を行わず次月へ持ち越す')
+        from . import goals
+        goals.note_attempt(mem, 'recruit', 'deferred')
 
 
 def _recruit_spare_after_necessities(mem, shop, gold):
@@ -525,6 +527,8 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
     shop.update(recruit='deferred_cash', recruit_priority=False, recruit_reserve=0)
     _record(mem, 'recruit_cash_held', month=shop.get('key'), observed_metric=evidence,
             reason='募集費・卵・修理の予約を支払い直前にも確認し、城を守る人数がいる場合は必要兵士の予算も温存する')
+    from . import goals
+    goals.note_attempt(mem, 'recruit', 'deferred')
 
 
 def _recruit_target(mem):
