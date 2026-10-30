@@ -859,6 +859,76 @@ def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
     assert zero['present'] is True and zero['narration']['frames']==0
 
 
+def test_corners_fat_entry_stubs_before_whole_section_drop():
+    # #2884: one heavy corners entry must not take the whole section down
+    # with it. The largest entry yields to a lifecycle skeleton first; the
+    # whole-section drop stays the last resort.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','pad':'y'*9000},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting'},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    retro=dec['retro_corner']
+    assert retro['output_omitted']=='hard_ceiling'
+    assert retro['status']=='active' and retro['game']=='hanjuku-hero'
+    assert retro['omitted_bytes']>8000
+    assert 'x'*1000 not in json.dumps(retro)
+    assert dec['yoso_corner']['end_reason']=='audio-complete'
+    assert dec['corner_rotation']['status']=='waiting'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
+
+
+def test_corners_hard_keep_entries_never_stub():
+    # #2884: ``game_switch`` (what is actually on screen) and
+    # ``corner_rotation`` (the ledger read when the rotation wedges) keep
+    # their full projection while other entries stub around them.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero'},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'pad':'c'*8000},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*6000},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    assert dec['corner_rotation']['pad']=='c'*8000
+    assert dec['retro_corner']['output_omitted']=='hard_ceiling'
+
+
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
     # docich#1221: the presenter pane dies with its tmux window, so the
     # corner's own record is the only durable evidence of *why* a
