@@ -54,19 +54,26 @@ def test_soren_game_projection_separates_a_stale_founding_marker(tmp_path):
     marker = tmp_path / "tmp/markers/.soviet_created"
     marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
     observation = tmp_path / "tmp/state/game_observation.json"
-    observation.write_text(json.dumps({
-        "schema": 1, "game_id": "22222222-2222-4222-8222-222222222222"}))
+
+    def live_observation(game_id):
+        # Only a schema-valid, fresh observation describing this same board
+        # counts as live evidence (soviet_now#714).
+        observation.write_text(json.dumps({
+            "schema": 1, "game_id": game_id, "stop_id": None,
+            "board": {"state": "STOP", "score": 1976,
+                      "makeSorenCount": 0, "pieces": None},
+            "observed_epoch": time.time()}))
 
     # The marker belongs to an earlier match: it is present but not evidence
     # for this board (#2345).
+    live_observation("22222222-2222-4222-8222-222222222222")
     output = module._collect_soren_game(tmp_path, 1100)
     assert output["founding_seen"] is True
     assert output["founding_marker_current"] is False
     assert output["founding_marker_stale"] is True
 
     # The same match is still holding its founding board: not stale.
-    observation.write_text(json.dumps({
-        "schema": 1, "game_id": "11111111-1111-4111-8111-111111111111"}))
+    live_observation("11111111-1111-4111-8111-111111111111")
     output = module._collect_soren_game(tmp_path, 1100)
     assert output["founding_marker_current"] is True
     assert output["founding_marker_stale"] is False
