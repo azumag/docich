@@ -573,7 +573,7 @@ def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
 
 def _move_general_pick(screen, mem, order):
     """Pick the general a move sends: never the donor's last one."""
-    present = _present_generals(screen)
+    present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
     busy = _en_route(mem)[0]
@@ -590,24 +590,106 @@ def _move_general_pick(screen, mem, order):
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
                 reason='移動元に1人以上残して主人公以外の将軍を空の城へ送る')
-    move = menu_to(screen, general)
+    move = _list_menu_to(screen, mem, order, general)
     if move is None:
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
     return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                          '移動させる将軍を選択')
 
 
+# g1075 2026-10-30 (#3077): every read of アルマムーン's list held exactly four
+# names while recruits joined there; the window size of this list is
+# unmeasured, so a list of four or more is walked down to its end.
+GENERAL_LIST_FULL = 4
+GENERAL_LIST_SCAN_PRESSES = 16
+GENERAL_LIST_SCAN_STALLS = 3
+GENERAL_LIST_SCAN_TICKS = 60
+
+
+def _general_list_scan(screen, mem, order):
+    """Down presses that walk this general list once, or None once it is read.
+
+    The walk ends when the cursor returns to the row it started on (a wrapped
+    list), stops moving for GENERAL_LIST_SCAN_STALLS frames after a press, or
+    after GENERAL_LIST_SCAN_PRESSES presses. An unreadable frame leaves the
+    walk where it was and lets the callers hold as before.
+    """
+    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return None
+    castle, now = _source(order, mem), int(mem.get('tick') or 0)
+    scan = mem.get('general_list_scan')
+    fresh = (isinstance(scan, dict) and scan.get('step') == order['step'] and scan.get('castle') == castle
+             and 0 <= now - int(scan.get('tick') or 0) <= GENERAL_LIST_SCAN_TICKS)
+    if not fresh and len(present) < GENERAL_LIST_FULL:
+        mem.pop('general_list_scan', None)
+        return None
+    cur = _current(screen)
+    if not cur or cur[2] not in present:
+        return None
+    if not fresh:
+        scan = mem['general_list_scan'] = {'step': order['step'], 'castle': castle, 'anchor': cur[2],
+                                           'last': cur[2], 'names': [], 'presses': 0, 'stalls': 0,
+                                           'end': None}
+    scan['tick'] = now
+    if scan['end']:
+        return None
+    scan['names'] += [g for g in present if g not in scan['names']]
+    if cur[2] != scan['last']:
+        scan['last'], scan['stalls'] = cur[2], 0
+        if cur[2] == scan['anchor']:
+            scan['end'] = 'wrapped'
+    elif scan['presses']:
+        scan['stalls'] += 1
+        if scan['stalls'] >= GENERAL_LIST_SCAN_STALLS:
+            scan['end'] = 'stalled'
+    if not scan['end'] and scan['presses'] >= GENERAL_LIST_SCAN_PRESSES:
+        scan['end'] = 'limit'
+    if scan['end']:
+        _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
+                observed_metric={'generals': list(scan['names']), 'end': scan['end'],
+                                 'presses': scan['presses']},
+                reason='出撃元の将軍一覧を下へ送り、画面外の将軍も含めて全員を読んだ')
+        return None
+    scan['presses'] += 1
+    return [pad('down')]
+
+
+def _listed_generals(screen, mem, order):
+    """The walked list when this screen belongs to it, else the visible rows."""
+    present = _present_generals(screen)
+    scan = mem.get('general_list_scan')
+    if (present is not None and isinstance(scan, dict) and scan.get('end')
+            and scan.get('step') == order['step'] and scan.get('castle') == _source(order, mem)
+            and set(present) <= set(scan['names'])):
+        return list(scan['names'])
+    return present
+
+
+def _list_menu_to(screen, mem, order, general):
+    """``menu_to``, or one press toward a walked name outside the window."""
+    move = menu_to(screen, general)
+    names, cur = _listed_generals(screen, mem, order), _current(screen)
+    if move is not None or not names or not cur or general not in names or cur[2] not in names:
+        return move
+    return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
+
+
 def _observe_garrison(screen, mem, order):
     """Remember who a castle's general list showed (``interim_candidates``)."""
-    present = _present_generals(screen)
+    present = _listed_generals(screen, mem, order)
     castle = _source(order, mem)
     if present is None or not castle:
         return
     garrison = mem.setdefault('garrison', {})
     # Display-only evidence: decisions never consult this wall-clock field.
     mem.setdefault('garrison_observed_at', {})[castle] = time.time()
+    visible = set(_present_generals(screen) or ())
     mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
-                                       if g not in present or not _general_visible(screen, g)]
+                                       if g not in present
+                                       or (g in visible and not _general_visible(screen, g))]
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())
@@ -684,7 +766,7 @@ def _keep_last_castle(screen, mem, order):
     if _is_boss_order(order, mem) or order.get('purpose') == 'move':
         return None                        # the boss battle ends the chapter; a move keeps one (_move_general_pick)
     source = _source(order, mem)
-    present = _present_generals(screen)
+    present = _listed_generals(screen, mem, order)
     if (present is None or len(present) != 1 or source not in _owned(mem)
             or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
         return None
@@ -753,7 +835,7 @@ def _refute_unplaced(mem, order):
 def _keep_sortie_defender(screen, mem, order):
     if not _reserve_source_guard(order, mem):
         return None
-    present = _present_generals(screen)
+    present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
@@ -793,7 +875,7 @@ def _keep_hero_guard(screen, mem, order):
     if (_is_boss_order(order, mem) or len(_owned(mem)) == 1
             or not order['step'].startswith((chart_adjust.INTERIM_PREFIX, chart_adjust.PLAN_PREFIX))):
         return None
-    present = _present_generals(screen)
+    present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '主人公の城の守備人数を数える将軍一覧を読めないため出撃を保留')
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
@@ -1103,6 +1185,9 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list':
+        walk = _general_list_scan(screen, mem, order)
+        if walk is not None:
+            return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
         _observe_garrison(screen, mem, order)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
@@ -1125,9 +1210,10 @@ def deploy_step(screen: Screen, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
-            present = _present_generals(screen)
+            present = _listed_generals(screen, mem, order)
+            visible = set(_present_generals(screen) or ())
             if (present is None or len(present) != len(set(present))
-                    or any(not _general_visible(screen, g) or general_max_hp(
+                    or any((g in visible and not _general_visible(screen, g)) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
                 return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
             candidates = (_order_hero_alternatives(order, mem, present)
@@ -1160,7 +1246,7 @@ def deploy_step(screen: Screen, mem):
                 return _hold_guarded_sortie(mem, order, 'boss_sortie_cancelled_for_egg',
                     '代役がいないため主人公の卵回復を待つ', {'general': NAME, 'egg_uses': mem['egg_uses'][NAME]})
             (mem.get('boss_absent') or {}).pop(order['step'], None)
-            move = menu_to(screen, general)
+            move = _list_menu_to(screen, mem, order, general)
             if move is None:
                 return _hold_deploy(screen, mem, order, '選択本人へカーソルを合わせられないため保留')
             if move == 'here':
@@ -1175,7 +1261,7 @@ def deploy_step(screen: Screen, mem):
         if not screen.hand and not empty_list:
             return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
         general = mem.get('general_override', {}).get(order['step'], order['general'])
-        move = menu_to(screen, general) if screen.hand else None
+        move = _list_menu_to(screen, mem, order, general) if screen.hand else None
         if move is None:
             # The chart's general is not at this castle (routed or lost).
             # Whoever is actually here goes instead, so the castle, later
