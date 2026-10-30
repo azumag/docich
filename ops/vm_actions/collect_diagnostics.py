@@ -2516,19 +2516,33 @@ def _browser_owner_label(argv):
         return None
     joined = "\0".join(argv)
     exe = os.path.basename(argv[0])
+    normalized = joined.lower().replace("-", "_")
     if ("shared_overlay.mjs" in joined
             or "start_shared_overlay_service.sh" in joined
-            or "soren-shared-overlay" in joined):
+            or "soren-shared-overlay" in joined
+            or "shared_overlay" in normalized
+            or "soren_shared_overlay" in normalized):
         return "soren-shared-overlay"
-    if "soviet_local" in joined:
+    if ("soviet_local" in joined
+            or "soviet_local" in normalized
+            or "soren_game" in normalized
+            or "soren-game" in joined
+            or "soren game" in joined.lower()):
         return "soren-game"
-    if "twica" in joined:
+    if "twica" in normalized:
         return "twica"
-    if "nethack_tiles" in joined:
+    if ("nethack_tiles" in normalized
+            or "nethack-tiles" in joined
+            or "nethack tiles" in joined.lower()):
         return "nethack-tiles"
-    if exe in {"obs", "obs-studio", "obs-browser-page"} or "obs-browser" in joined:
+    if (exe in {"obs", "obs-studio", "obs-browser-page", "obs64"}
+            or "obs_browser" in normalized
+            or "obs-browser" in joined
+            or "obs browser" in joined.lower()):
         return "obs"
-    if "docich-webui" in joined or "webui" in joined:
+    if ("docich_webui" in normalized
+            or "docich-webui" in joined
+            or "webui" in normalized):
         return "webui"
     return None
 
@@ -2564,7 +2578,7 @@ def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
     # Ancestors win over the Chromium process' own argv: a URL in the page
     # arguments must not re-label a browser launched by a known subsystem.
     current = stat["ppid"]
-    for _ in range(6):
+    for _ in range(10):
         if current <= 1:
             break
         argv = cmdlines.get(current)
