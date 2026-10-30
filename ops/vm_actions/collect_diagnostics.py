@@ -6577,6 +6577,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v345-roster-unplaced",
             "hanjuku-chart-v346-thin-flag-camp",
             "hanjuku-chart-v347-late-boss-entry",
+            "hanjuku-chart-v348-goals-ledger",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

@@ -13,6 +13,7 @@ from ...hanjuku_egg_stock import observed_uses
 from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
+from ..strategy import goals
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -34,6 +35,9 @@ STEP_LIMIT = 24
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
+# A queued repair goal may spend this many extra field sessions per
+# (chapter, month) scope beyond the two a free survey already allows.
+GOAL_FIELD_EXTRA = 2
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 INTERRUPTION_RETRIES = 2
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
@@ -197,6 +201,18 @@ def _choose(screen, label, *, mem=None):
     return [pad('a')] if move == 'here' else [move] if move else []
 
 
+def _goal_note(mem, state, outcome, name):
+    """One attempt count per (session, actor): a deferral and the close that
+    follows it are a single outcome for the ledger."""
+    if not isinstance(name, str) or not name:
+        return
+    noted = state.setdefault('_goals_noted', {})
+    if name in noted:
+        return
+    noted[name] = True
+    goals.note_attempt(mem, 'repair', outcome, actor=name)
+
+
 def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
     state = mem['house']
     # A single diagnostic receipt survives close/finish; it never authorizes input.
@@ -213,6 +229,7 @@ def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
     _record(mem, 'deferred', reason=reason, observed_metric={
         'phase': state['phase'], 'age': state.get('age'), 'total': state.get('total'),
         'limit': limit})
+    _goal_note(mem, state, 'interrupted', state.get('general'))
     _phase(state, 'close')
     return []
 
@@ -232,6 +249,12 @@ def _finish(mem):
         _record(mem, 'sortie_closed', observed_metric={'sorties': stale},
                 reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
+    # A session that ends before its repairs leaves every still-broken target
+    # queued; the ledger keeps it until a later status proves it fixed.
+    interrupted = {name for name in (state.get('pending') or ())} | (
+        {state['general']} if state.get('general') and not state.get('purchased') else set())
+    for name in sorted(interrupted):
+        _goal_note(mem, state, 'interrupted', name)
     # The free monthly roster check never completes or delays field repair.
     # Only a field transaction in its original chapter/month owns this marker.
     scope = [mem.get('chapter'), mem.get('month')]
@@ -455,6 +478,7 @@ def _defer_unsafe_house_route(mem):
                              'target': HOUSE_TARGET.get(mem.get('chapter')),
                              'clearance_view_pixels': HOUSE_ROUTE_CLEARANCE},
             reason=reason)
+    _goal_note(mem, state, 'deferred', state.get('general'))
     _exit(mem, reason, diagnostic_code='route_unverified')
     return True
 
@@ -476,6 +500,8 @@ def _next_general(mem):
                 observed_metric={'gold': mem.get('gold'), 'pending': list(pending),
                                  'need': min(cost for _, cost in GIFTS) + WAGE_SPEND_HOLD},
                 reason='所持金では破損卵の修理費（家の贈り物）を賄えないため派遣せず保留（次スキャンで再判定）')
+        for pending_name in pending:
+            _goal_note(mem, state, 'deferred', pending_name)
         _phase(state, 'close')
         return
     name = pending.pop(0)
@@ -498,6 +524,7 @@ def _next_general(mem):
                 observed_metric={'status': marching.get('status'),
                                  'target': marching.get('target')},
                 reason='行軍中の将軍はいどう先を到着まで確定できないため派遣を保留')
+        _goal_note(mem, state, 'deferred', name)
         _next_general(mem)
         return
     if info.get('location') == 'castle':
@@ -597,8 +624,15 @@ def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
                if _recruit_shortage(mem) and not mem.get('recruit_payroll_pending') else [])
     if not dirty and not pending and not missing:
         return True, None  # returning to the field is not a status change
-    if field_count >= 2 or int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL:
+    goal_due = goals.repair_due(mem)
+    recent = int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL
+    if field_count >= (2 + GOAL_FIELD_EXTRA if goal_due else 2) or (recent and not goal_due):
         return True, None
+    if goal_due and (field_count >= 2 or recent):
+        _record(mem, 'goal_dispatch',
+                observed_metric={'goals': [goals._summary(g) for g in goals.pending(mem, 'repair')],
+                                 'field_count': field_count, 'since_field_tick': int(mem.get('tick') or 0) - int(field_tick)},
+                reason='延期されていた卵修理を、出撃・月一の無い空き時間に台帳から再開する')
     state = mem['house'] = {'phase': 'open_roster' if dirty else 'income_next' if missing else 'close',
         'chapter': mem['chapter'], 'roster_month': scope[1], 'month_scan': False,
         'age': 0, 'total': 0, 'seen': [], 'pending': pending, 'from_survey': True,
@@ -763,6 +797,11 @@ def step(screen, mem, frame):
                 return actions
         # Monthly roster/status reads return to the monthly menu and never
         # dispatch a repair trip. Only the field route needs a measured house.
+        goal_due = goals.repair_due(mem)
+        field_cap = 2 + (GOAL_FIELD_EXTRA if goal_due else 0)
+        recent = tick - int(field_tick) < SCAN_INTERVAL
+        bypassed = (goal_due and not monthly
+                    and (field_count >= 2 or recent or field_month == mem.get('month')))
         if ((screen.kind != 'map' and not monthly)
                 # g1067 08:40: a chapterless checkpoint restore reached the
                 # monthly menu; the scan's chapter scope raised KeyError on
@@ -770,12 +809,19 @@ def step(screen, mem, frame):
                 or mem.get('chapter') is None
                 or (not monthly and mem.get('chapter') not in HOUSE_VIEW)
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
-                or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)
-                or (not monthly and field_count >= 2)
-                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck'))
+                or (not monthly and not goal_due and recent)
+                or (not monthly and field_count >= field_cap)
+                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck')
+                    and not goal_due)
                 or (not monthly and receipts.surveyed(mem) and not _survey_work(mem)
                     and not mem.get('recruit_roster_recheck'))):
             return None
+        if bypassed:
+            _record(mem, 'goal_dispatch',
+                    observed_metric={'goals': [goals._summary(g) for g in goals.pending(mem, 'repair')],
+                                     'field_count': field_count, 'field_cap': field_cap,
+                                     'since_field_tick': tick - int(field_tick)},
+                    reason='延期されていた卵修理を、出撃・月一の無い空き時間に台帳から再開する')
         state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
