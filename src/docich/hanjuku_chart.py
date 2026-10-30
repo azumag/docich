@@ -185,7 +185,16 @@ del _chapter
 # integer cell; a roster read from the monthly menu needs neither coordinate.
 # Chapter 4's heart was measured on the live g1075 map (2026-10-30 savestate
 # probe): the red heart sprite centres at (134.0, 87.5) on the native Y view.
-HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 4: (134.0, 87.5)}
+# Chapters 3 and 5-12 come from the house heart on GCGX's 130x130 source
+# maps (same catalog as SOURCE_CASTLES): heart top-left + (66.5, 48.5) =
+# the native Y-view heart centre, exact on the measured chapters 1/2 and
+# within 1 px on measured chapter 4. Chapter 9 draws a second heart at
+# source (16, 20) -> view (82.5, 68.5); the registered one is the central
+# heart, re-measure before swapping if dispatches starve on it.
+HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
+              4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
+              7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
+              10: (130.5, 116.5), 11: (144.5, 88.5), 12: (128.5, 96.5)}
 
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
