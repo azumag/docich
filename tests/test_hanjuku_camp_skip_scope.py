@@ -58,3 +58,14 @@ def test_expired_scoped_cooldown_allows_the_same_camp_again(monkeypatch):
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
     assert mem['recall']['stage'] == 'menu'
     assert 'recall_skip' not in mem
+
+
+def test_scoped_cooldown_never_crosses_chapters(monkeypatch):
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (120, 100)}])
+    mem = {'chapter': 2, 'tick': 101,
+           'recall_skip': {'tick': 100},
+           'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
+
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
+    assert mem['recall']['stage'] == 'menu'
+    assert 'recall_skip' not in mem
