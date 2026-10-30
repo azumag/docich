@@ -164,7 +164,10 @@ def test_failed_generation_is_consumed_once_with_no_fixed_fallback(live):
     assert consume(live, lambda *a: pytest.fail('retry of the same scene')) == 'duplicate'
     assert not (live.runtime / 'hanjuku_commentary.jsonl').exists()
     rows = [json.loads(line) for line in (live.runtime / f'{scene.LOG_NAME}.jsonl').read_text().splitlines()]
-    assert rows[-1]['reason'] == 'rate_limit'
+    # #2951: the silent duplicate gate leaves a bounded marker, so a stuck
+    # consume loop is diagnosable from the worker log and counters.
+    assert rows[-2]['reason'] == 'rate_limit'
+    assert rows[-1]['event'] == 'skipped' and rows[-1]['reason'] == 'duplicate'
     assert not any('text' in row or 'prompt' in row for row in rows)
 
 
@@ -552,3 +555,27 @@ def test_shell_honors_existing_runtime_stop_guards(tmp_path, guard):
     assert paths[3].read_text().strip() == 'disabled'
     if marker is not None:
         assert marker.read_text() == 'operator-fixture\n'
+
+
+def test_unavailable_scene_identity_leaves_a_bounded_marker(live):
+    # #2951: a scene file that fails identity must not stay silent -- every
+    # launch leaves 'unavailable' evidence in the worker record and log.
+    (live.runtime / scene.SCENE_FILE).write_text('{"bogus": 1}', encoding='utf-8')
+    assert worker.consume(live.g, live.runtime) == 'unavailable'
+    state = json.loads((live.runtime / scene.WORKER_FILE).read_text())
+    assert state['status'] == 'skipped' and state['reason'] == 'unavailable'
+    assert state['counters']['skipped'] == 1
+    rows = [json.loads(line) for line in (live.runtime / f'{scene.LOG_NAME}.jsonl').read_text().splitlines()]
+    assert rows[-1]['event'] == 'skipped' and rows[-1]['reason'] == 'unavailable'
+
+
+def test_cooldown_gate_is_recorded_not_silent(live):
+    # Same seq already consumed once -> the cooldown gate also leaves a row.
+    assert consume(live) == 'enqueued'
+    live.cfg['cooldown_s'] = 300
+    state = json.loads((live.runtime / scene.WORKER_FILE).read_text())
+    state['last_request_seq'] = 0
+    atomic_write_json(live.runtime / scene.WORKER_FILE, state)
+    assert worker.consume(live.g, live.runtime) == 'cooldown'
+    rows = [json.loads(line) for line in (live.runtime / f'{scene.LOG_NAME}.jsonl').read_text().splitlines()]
+    assert rows[-1]['event'] == 'skipped' and rows[-1]['reason'] == 'cooldown'
