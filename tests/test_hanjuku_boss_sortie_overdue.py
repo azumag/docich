@@ -79,9 +79,49 @@ def test_the_limit_is_above_the_longest_measured_march():
     assert O.BOSS_ARRIVAL_LIMIT > 677
 
 
-@pytest.mark.parametrize('status', ['arrived', 'cancelled'])
-def test_a_march_that_entered_or_was_cancelled_is_not_sent_again(status):
-    mem = memory(79599, status=status)
+def test_a_march_that_was_cancelled_is_not_sent_again():
+    mem = memory(79599, status='cancelled')
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'launched'
+    assert not decisions(mem, 'boss_sortie_overdue')
+
+
+def test_an_entry_whose_fight_left_no_result_is_sent_again():
+    """g1075 2026-10-30: 4-B1/4-B4 stayed 'launched' for hours after their site
+    fights closed without a measured result; nothing else could reset them."""
+    mem = memory(79599, status='arrived')
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'pending'
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert mem['boss_relaunch'] == {'3-B1': 1}
+    (record,) = decisions(mem, 'boss_sortie_overdue')
+    assert record['resulting_event'] == 'relaunch:1'
+    for key in ('general_override', 'launched_orders'):
+        assert '3-B1' not in mem[key]
+
+
+def test_an_entry_with_a_live_fight_is_not_sent_again():
+    mem = memory(79599, status='arrived')
+    mem['battle'] = {'step': '3-B1', 'ally': 'アポロン', 'enemy': 'プリンス'}
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'launched'
+    assert mem['sorties']['3-B1']['status'] == 'arrived'
+    mem['battle'] = {'step': 'other', 'ally': 'アポロン', 'enemy': 'プリンス'}
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'pending'           # another step's fight is not ours
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+
+
+def test_an_entry_to_a_site_already_won_is_not_sent_again():
+    mem = memory(79599, status='arrived')
+    mem['boss_victories'] = {'プリンス': {'site': 'ボス'}}
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'launched'
+    assert not decisions(mem, 'boss_sortie_overdue')
+
+
+def test_an_entry_inside_the_limit_is_not_sent_again():
+    mem = memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT - 1, status='arrived')
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
     assert not decisions(mem, 'boss_sortie_overdue')
