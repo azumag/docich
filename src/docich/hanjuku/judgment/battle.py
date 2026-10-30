@@ -1368,6 +1368,8 @@ def _healthy_melee_margin_evidence(mem, cur):
     """
     from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
+    if _enemy_transformed(mem, cur):
+        return None
     ally, enemy_name = cur.get('ally'), cur.get('enemy')
     if identity is None or not all(isinstance(n, str) for n in (ally, enemy_name)):
         return None
@@ -1415,13 +1417,41 @@ def _healthy_melee_margin_evidence(mem, cur):
             'army_basis': 'observed' if ours is not None and theirs is not None else 'pessimistic_bounds'}
 
 
+def _enemy_transformed(mem, cur):
+    """Detect that the enemy used an egg / transformed during this battle.
+
+    The opening melee scope pins the enemy name and HP. A different enemy
+    name, an enemy HP that recovered above its opening watermark, or a
+    recorded transform observation means the opening conservation premise no
+    longer applies.
+    """
+    if not isinstance(cur, dict):
+        return False
+    if cur.get('enemy_transform_observed') is True:
+        return True
+    scope = cur.get('melee_opening_scope')
+    if isinstance(scope, (list, tuple)) and len(scope) >= 5:
+        opening_enemy = scope[2]
+        opening_enemy_hp = scope[4]
+        enemy = cur.get('enemy')
+        enemy_hp = cur.get('enemy_hp')
+        if (isinstance(enemy, str) and isinstance(opening_enemy, str)
+                and enemy != opening_enemy):
+            return True
+        if (type(enemy_hp) is int and type(opening_enemy_hp) is int
+                and enemy_hp > opening_enemy_hp):
+            return True
+    return False
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
     Compare current HP pools weighted by each named general's combat stat.
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
     """
-    if (_critical_survival_needed(cur)
+    if (_enemy_transformed(mem, cur)
+            or _critical_survival_needed(cur)
             or _own_egg_empty(mem, cur)
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True
