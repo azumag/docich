@@ -1104,8 +1104,16 @@ def _survival_needed(cur):
     # 22 -> 10 in one observation of melee before any card was used, then
     # died). The rescue (cards first, then the egg) opens before the melee.
     # Not for boss fights or battles with charted cards: their plan runs.
+    # A start gap within 10% is no rescue signal for a general whose combat-
+    # weighted melee is ahead (g1075 2026-10-30 08:56: ゼウス 85x13 vs the
+    # eggless バーミセリ 89x12 spent ちきゅうちゃん; owner: no egg was
+    # needed). g438 ココット 22 vs キッシュ 26 (85%) still opens.
+    balance = _melee_balance(cur)
+    ours, theirs = balance['ally_melee_score'], balance['enemy_melee_score']
     behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
-                    and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
+                    and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values()
+                    and not (ours is not None and theirs is not None and ours >= theirs
+                             and start * 10 > cur['start_enemy_hp'] * 9))
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
@@ -1763,6 +1771,11 @@ def _available_rare_tactic(mem, cur):
 
 
 OKUNOTE_MAX_SELF_DAMAGE = 88  # gcgx: ヤケクソ at castle Lv1; higher levels reduce it
+# A non-finishing okunote is drawn again before the enemy summons (owner
+# 2026-10-30). gcgx okunote.html: each draw shows 3 of 16 random choices and
+# only the もどき (10..125) or だいじんアタック reliably damage the general.
+OKUNOTE_REDRAW_LIMIT = 4         # draws per fight, the first one included
+OKUNOTE_REDRAW_HP_FLOOR = 48     # しんだフリ at Lv1: a best-of-3 this bad is ~5%
 EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 HP
 DEFENDER_EGG_OPEN_LIMIT = 3
 
@@ -1818,7 +1831,15 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
     hp_budget = max(MELEE_HP_HOLD_FLOOR, start // MELEE_HP_HOLD_DIVISOR)
     position_guard_exhausted = (bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
                                 or start - hp >= hp_budget)
+    # g1075 2026-10-30 08:59 アルカ: キール's first draw (いあつする/うそなき/
+    # しんだフリ) left リーキ at 30; back in melee it fell 30→24→14→8 in 5 s
+    # and the window's reopening lost the race to its egg. A drawn,
+    # non-finishing okunote is drawn again at once while HP allows.
+    draws = cur.get('okunote_draws') or 0
+    redraw = (0 < draws < OKUNOTE_REDRAW_LIMIT and hp > OKUNOTE_REDRAW_HP_FLOOR
+              and cur.get('ally') not in (NAME, 'しゅじんこう'))
     reason = ('wall_hp_window' if enemy <= critical_hp + margin
+              else 'okunote_redraw' if redraw
               else 'unmeasured_clash_guard_exhausted' if position_guard_exhausted
               else 'menu_open_contact_unmeasured'
               if menu_open and cur.get('ally') not in (NAME, 'しゅじんこう') else None)
@@ -1832,7 +1853,7 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             'open_at_hp': critical_hp + margin,
             'clash_internal_x_threshold': chapter * 4 + 32, 'clash_position_measured': False,
             'hold_count': holds, 'hold_hp_bled': start - hp, 'hold_hp_budget': hp_budget,
-            'reason': reason, 'due': reason is not None,
+            'okunote_draws': draws, 'reason': reason, 'due': reason is not None,
             'short_burst': enemy <= critical_hp + 2 * margin}
 
 
