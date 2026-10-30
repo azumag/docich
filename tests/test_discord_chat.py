@@ -594,3 +594,24 @@ class DirectProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(chat.ChatRateLimit, "^LLM rate limited$"):
                 chat.ChatBackend(self.profile())._complete_api([])
         self.assertTrue(error.fp.closed)
+
+
+class SarashinaRelayProfileTest(unittest.TestCase):
+    """Relay profile: no upstream/billing, https-only relay base, registered model."""
+
+    def _settings(self, **changes):
+        values = dict(provider="sarashina", model="sarashina3-translate", upstream="", billing_mode="",
+                      api_key="SYNTHETIC_KEY", base_url="https://relay.example.test", token="")
+        return chat.Settings(**{**values, **changes})
+
+    def test_valid_relay_profile_adds_no_provider_options(self):
+        self.assertEqual(chat.direct_chat_options(self._settings()), {})
+
+    def test_invalid_relay_profiles_fail_before_post(self):
+        invalid = [dict(base_url=""), dict(base_url="http://relay.example.test"),
+                   dict(base_url="https://u:p@relay.example.test"), dict(base_url="https://relay.example.test/?x=1"),
+                   dict(base_url="https://relay.example.test#frag"), dict(upstream="openai"),
+                   dict(billing_mode="credits_only"), dict(model="sarashina-other"), dict(api_key="")]
+        for change in invalid:
+            with self.assertRaises(chat.ChatError, msg=str(change)):
+                chat.direct_chat_options(self._settings(**change))

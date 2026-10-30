@@ -276,3 +276,39 @@ def test_cc_translation_label_reaches_transport_and_only_exact_prefix_is_admitte
             result = call_agent(spec, request(label), timeout=5, env=env)
             assert (result.returncode, result.failure_kind) == (2, "invalid_provider"), label
             answer.assert_not_called()
+
+
+def test_sarashina_relay_profile_routes_only_to_relay_and_fails_fast_otherwise():
+    from docich.llm.contracts import DispatchRequest, LlmError
+    spec = parse_agents("sarashina-api:sarashina3-translate")[0]
+    good = {"SARASHINA_RELAY_TOKEN": "SYNTHETIC_KEY",
+            "DOCICH_CHAT_SARASHINA_RELAY_URL": "https://relay.example.test/"}
+    request = DispatchRequest(label="CC_TRANSLATION", prompt="synthetic chunk", agents=(spec,))
+    with mock.patch("docich.reply_research_api.answer_once", return_value="translated") as answer:
+        result = call_agent(spec, request, timeout=5, env=good)
+        assert result.returncode == 0 and result.output == "translated"
+        settings = answer.call_args.args[0]
+        assert (settings.base_url, settings.provider, settings.api_key) == (
+            "https://relay.example.test", "sarashina", "SYNTHETIC_KEY")
+        assert (settings.upstream, settings.billing_mode) == ("", "")
+    bad_envs = (
+        {**good, "DOCICH_CHAT_SARASHINA_RELAY_URL": ""},
+        {**good, "SARASHINA_RELAY_TOKEN": ""},
+        {**good, "DOCICH_CHAT_SARASHINA_RELAY_URL": "http://relay.example.test"},
+        {**good, "DOCICH_CHAT_SARASHINA_RELAY_URL": "https://user:pw@relay.example.test"},
+        {**good, "DOCICH_CHAT_SARASHINA_RELAY_URL": "https://relay.example.test/?x=1"},
+    )
+    for env in bad_envs:
+        with mock.patch("docich.reply_research_api.answer_once") as answer, mock.patch("docich.llm.providers._process") as cli:
+            assert call_agent(spec, request, timeout=5, env=env).returncode != 0
+            answer.assert_not_called(); cli.assert_not_called()
+    unregistered = parse_agents("sarashina-api:sarashina-other")[0]
+    with mock.patch("docich.reply_research_api.answer_once") as answer:
+        assert call_agent(unregistered, DispatchRequest(label="CC_TRANSLATION", prompt="x", agents=(unregistered,)),
+                          timeout=5, env=good).returncode != 0
+        answer.assert_not_called()
+    import pytest
+    with pytest.raises(LlmError):
+        parse_agents("sarashina-api:sarashina3-translate,opencode:fixture")
+    from docich.cc_translation_adapter import parse_upstream
+    assert parse_upstream("sarashina-api:sarashina3-translate").provider == "sarashina-api"

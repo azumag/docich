@@ -36,6 +36,7 @@ DIRECT_CHAT_MODELS = {
     "vercel": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
     "cloudflare": frozenset({"@cf/qwen/qwen3-30b-a3b-fp8",
                              "@cf/meta/llama-3.1-8b-instruct-fp8-fast"}),
+    "sarashina": frozenset({"sarashina3-translate"}),
 }
 PERSONA_PATH = Path(__file__).with_name("comment") / "prompts" / "comment_persona_main.md"
 DISCORD_CONTEXT = """以下は今回の接続環境です。上のペルソナの人格・一人称・ユーモアに従い、
@@ -179,7 +180,7 @@ def direct_chat_options(settings: Settings) -> dict:
         if upstream or settings.billing_mode:
             raise ChatError("invalid direct chat profile")
         return {}
-    if (provider not in {"openrouter", "vercel", "cloudflare"}
+    if (provider not in {"openrouter", "vercel", "cloudflare", "sarashina"}
             or not isinstance(settings.api_key, str) or not 0 < len(settings.api_key) <= 4096
             or any(not 33 <= ord(c) <= 126 for c in settings.api_key)
             or not isinstance(settings.model, str)):
@@ -192,6 +193,14 @@ def direct_chat_options(settings: Settings) -> dict:
                 or not re.fullmatch(r"@cf/[A-Za-z0-9._/-]{1,240}", settings.model)):
             raise ChatError("invalid direct chat profile")
         return {"options": {"rejectIfBusy": True}}
+    if provider == "sarashina":
+        # Operator-owned relay (Japan egress) in front of Sarashina. The relay
+        # URL is env-supplied and must be https with no userinfo/query; the
+        # Sarashina key lives only on the relay side, never on this host.
+        if (upstream or settings.billing_mode
+                or not re.fullmatch(r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]{0,256})?", settings.base_url)):
+            raise ChatError("invalid direct chat profile")
+        return {}
     base = {"openrouter": "https://openrouter.ai/api/v1",
             "vercel": "https://ai-gateway.vercel.sh/v1"}[provider]
     if (settings.base_url != base

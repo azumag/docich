@@ -262,11 +262,18 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout")
         key_name = {"openrouter": "OPENROUTER_API_KEY", "vercel": "AI_GATEWAY_API_KEY",
-                    "cloudflare": "CLOUDFLARE_API_TOKEN"}[profile]
+                    "cloudflare": "CLOUDFLARE_API_TOKEN",
+                    "sarashina": "SARASHINA_RELAY_TOKEN"}[profile]
         if profile == "cloudflare":
             account = env.get("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "")
             base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
             model = "@" + spec.model if spec.model and spec.model.startswith("cf/") else ""
+            upstream = billing = ""
+        elif profile == "sarashina":
+            # Relay endpoint is operator env only; direct_chat_options validates it
+            # (https, no userinfo/query) and fails before any transport if absent.
+            base = env.get("DOCICH_CHAT_SARASHINA_RELAY_URL", "").strip().rstrip("/")
+            model = spec.model or ""
             upstream = billing = ""
         else:
             base = {"openrouter": "https://openrouter.ai/api/v1",
