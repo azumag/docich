@@ -91,7 +91,22 @@ def _order_hero_alternatives(order, mem, names, relaxed=True):
     # castles. A fit but weaker substitute still attacks, strongest first.
     # The hero is never sent (owner: 主人公boss禁止), and an injured or
     # egg-depleted substitute is still left to recover.
-    return sorted(fit, key=_strength, reverse=True)
+    weak = sorted(fit, key=_strength, reverse=True)
+    # Owner (2026-10-30): 弱い将軍をたくさん送って少しずつ削る選択肢も狭めない.
+    # An egg-holder absent from the strength table is a valid last seat on an
+    # attrition sortie; it only goes after every measured general and still
+    # honours the site egg rule, the hero-castle guard and the unfit list.
+    # A broken/depleted egg or a heavy injury keeps recovering as before —
+    # a dead sortie chips nothing and can feed the enemy a defector.
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    present = set(names or ()) - unavailable
+    unknown = [g for g in names or ()
+               if g not in weak and g != NAME and g not in unavailable
+               and _holds_egg(mem, g) and not _boss_companion_unfit(mem, g)
+               and (not site or (not chart_adjust.hero_guard_short(names, g, unavailable)
+                                 and (NAME in present
+                                      or any(_holds_egg(mem, o) for o in present - {g}))))]
+    return weak + unknown
 
 
 def _strength(name):
