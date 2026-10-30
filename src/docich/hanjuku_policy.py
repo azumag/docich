@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import random
 import re
+import sys
 import time
 from dataclasses import asdict
 
@@ -58,3 +59,67 @@ _LAYER_MODULES = (
 )
 
 _compat.install(__name__, _LAYER_MODULES)
+
+
+# v350 can re-arm a 四季王 step after its march/entry goes stale, but a retry
+# can still park when every cached garrison list says there is no legal
+# companion.  Returning/recruited generals may have changed the real home
+# roster since that receipt.  Force one bounded re-read of the home list so a
+# stale retry cannot be abandoned solely because of old roster evidence.
+BOSS_ROSTER_REPROBE_TICKS = 100
+_next_order_without_boss_roster_reprobe = next_order
+
+
+def _reprobe_stalled_season_boss_roster(mem) -> bool:
+    if mem.get('chapter') != 4:
+        return False
+    states = mem.get('orders') or {}
+    sorties = mem.get('sorties') or {}
+    sites = set(chart.boss_sites(4))
+    stalled = [order for order in chart.orders(4)
+               if order.get('target') in sites
+               and states.get(order['step']) == 'pending'
+               and (sorties.get(order['step']) or {}).get('status') == 'overdue'
+               and not _strategy_orders._site_king_down(mem, order['target'])]
+    if not stalled:
+        return False
+    if any(_strategy_orders._boss_companion_source(order, mem) is not None
+           for order in stalled):
+        return False
+
+    home = chart.home_castle(4)
+    if home not in _os_world._owned(mem):
+        return False
+    garrison = mem.setdefault('garrison', {})
+    if home not in garrison or garrison.get(home) is None:
+        return False
+
+    now = int(mem.get('tick') or 0)
+    last = mem.get('boss_roster_reprobe_tick')
+    if type(last) is int and now - last < BOSS_ROSTER_REPROBE_TICKS:
+        return False
+
+    previous = list(garrison.get(home) or ())
+    garrison.pop(home, None)
+    (mem.get('garrison_observed_at') or {}).pop(home, None)
+    mem['boss_roster_reprobe_tick'] = now
+    _decision_log._record(
+        mem, 'boss_roster_reprobe',
+        observed_metric={'home': home, 'cached_generals': previous,
+                         'stalled_steps': [order['step'] for order in stalled]},
+        reason='長時間停滞した四季王の再出撃候補が見つからないため、本城の将軍一覧を再確認する',
+    )
+    return True
+
+
+def _next_order_with_boss_roster_reprobe(mem):
+    order = _next_order_without_boss_roster_reprobe(mem)
+    if order is None and _reprobe_stalled_season_boss_roster(mem):
+        return _next_order_without_boss_roster_reprobe(mem)
+    return order
+
+
+# The compatibility facade deliberately forwards a rebinding to every layered
+# module still holding the old function object.  Use that contract here so the
+# map flow and late imports both see the guarded next_order.
+setattr(sys.modules[__name__], 'next_order', _next_order_with_boss_roster_reprobe)
