@@ -169,9 +169,19 @@ def make_server(
     return ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
 
 
+def check_sarashina_startup(env: Mapping[str, str]) -> None:
+    """Fail before listening: valid pinned endpoint and a present API key (value never logged)."""
+    from .discord_chat import read_secret, sarashina_pin
+    sarashina_pin(env)
+    if not read_secret(env, "DOCICH_CHAT_SARASHINA_API_KEY"):
+        raise ValueError("sarashina API key is required")
+
+
 def main(env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     upstream = parse_upstream(env.get("DOCICH_CC_ADAPTER_UPSTREAM", ""))
+    if upstream.provider == "sarashina-api":
+        check_sarashina_startup(env)
     try:
         port = int(env.get("DOCICH_CC_ADAPTER_PORT", str(DEFAULT_PORT)))
         timeout = float(env.get("DOCICH_CC_ADAPTER_TIMEOUT_SEC", str(DEFAULT_TIMEOUT_SEC)))

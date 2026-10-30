@@ -185,3 +185,20 @@ class CcTranslationDispatchIntegrationTest(unittest.TestCase):
         self.assertNotIn("secret prompt text", json.dumps(body))
         self.assertIn(body["error"]["type"], {"invalid_provider", "provider_failed"})
         answer.assert_not_called()
+
+
+class CcAdapterSarashinaStartupTest(unittest.TestCase):
+    """Startup fails before listening when the pinned endpoint or key is missing."""
+
+    def test_missing_pin_or_key_fails_before_make_server(self):
+        from docich import cc_translation_adapter as adapter
+        from docich.discord_chat import ChatError
+        base = {"DOCICH_CC_ADAPTER_UPSTREAM": "sarashina-api:sarashina3-nano",
+                "DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test",
+                "DOCICH_CHAT_SARASHINA_API_KEY": "SYNTHETIC_KEY"}
+        adapter.check_sarashina_startup(base)
+        with unittest.mock.patch.object(adapter, "make_server") as serve:
+            for change in ({"DOCICH_CHAT_SARASHINA_UPSTREAM": ""}, {"DOCICH_CHAT_SARASHINA_API_KEY": ""}):
+                with self.assertRaises((ValueError, ChatError)):
+                    adapter.main({**base, **change})
+            serve.assert_not_called()

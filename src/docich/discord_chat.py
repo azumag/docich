@@ -185,6 +185,18 @@ def _sarashina_base_ok(base_url: str) -> bool:
             and not any(segment in {".", ".."} for segment in segments))
 
 
+def sarashina_pin(env: Mapping[str, str]) -> str:
+    """Startup pin: the only scheme+host+port+path this profile may call.
+
+    Redirects are never followed (_NoRedirect), so a request cannot leave the pin.
+    """
+    base = env.get("DOCICH_CHAT_SARASHINA_UPSTREAM", "").strip().rstrip("/")
+    if not _sarashina_base_ok(base):
+        raise ChatError("invalid sarashina upstream")
+    url = urlsplit(base)
+    return f"{url.scheme}://{url.netloc}{url.path}"
+
+
 def direct_chat_options(settings: Settings) -> dict:
     """Operator-only direct chat profiles; no provider/model fallback list.
 

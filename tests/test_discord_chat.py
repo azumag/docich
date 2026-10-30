@@ -620,3 +620,36 @@ class SarashinaProfileTest(unittest.TestCase):
         for change in invalid:
             with self.assertRaises(chat.ChatError, msg=str(change)):
                 chat.direct_chat_options(self._settings(**change))
+
+    def test_startup_pin_is_canonical_and_rejects_invalid_endpoints(self):
+        env = {"DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test:8443/relay/"}
+        self.assertEqual(chat.sarashina_pin(env), "https://sarashina.example.test:8443/relay")
+        for bad in ("", "http://sarashina.example.test", "https://u@sarashina.example.test"):
+            with self.assertRaises(chat.ChatError, msg=bad):
+                chat.sarashina_pin({"DOCICH_CHAT_SARASHINA_UPSTREAM": bad})
+
+    def test_redirect_to_another_host_is_refused_not_followed(self):
+        import http.server
+        import urllib.error
+        import urllib.request
+
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.2:9/chat/completions")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        opener = urllib.request.build_opener(chat._NoRedirect())
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/chat/completions",
+                                         data=b"{}", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(request, timeout=5)
+        self.assertEqual(caught.exception.code, 302)
