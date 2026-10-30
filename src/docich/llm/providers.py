@@ -270,9 +270,9 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
             model = "@" + spec.model if spec.model and spec.model.startswith("cf/") else ""
             upstream = billing = ""
         elif profile == "sarashina":
-            # Relay endpoint is operator env only; direct_chat_options validates it
-            # (https, no userinfo/query) and fails before any transport if absent.
-            base = env.get("DOCICH_CHAT_SARASHINA_RELAY_URL", "").strip().rstrip("/")
+            # Endpoint is operator env only; direct_chat_options validates it and
+            # fails before any transport if absent or invalid.
+            base = env.get("DOCICH_CHAT_SARASHINA_UPSTREAM", "").strip().rstrip("/")
             model = spec.model or ""
             upstream = billing = ""
         else:

@@ -36,7 +36,7 @@ DIRECT_CHAT_MODELS = {
     "vercel": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
     "cloudflare": frozenset({"@cf/qwen/qwen3-30b-a3b-fp8",
                              "@cf/meta/llama-3.1-8b-instruct-fp8-fast"}),
-    "sarashina": frozenset({"sarashina3-translate"}),
+    "sarashina": frozenset({"sarashina3-nano", "sarashina3-mini"}),
 }
 PERSONA_PATH = Path(__file__).with_name("comment") / "prompts" / "comment_persona_main.md"
 DISCORD_CONTEXT = """以下は今回の接続環境です。上のペルソナの人格・一人称・ユーモアに従い、
@@ -168,6 +168,35 @@ class Settings:
         return settings
 
 
+def _sarashina_base_ok(base_url: str) -> bool:
+    """Single fixed endpoint: https (or loopback http), no userinfo/query/fragment."""
+    try:
+        url = urlsplit(base_url)
+        _ = url.port
+    except ValueError:
+        return False
+    if (url.scheme not in {"https", "http"} or url.username is not None or url.password is not None
+            or url.query or url.fragment or not url.hostname or any(ord(c) <= 32 for c in base_url)):
+        return False
+    if url.scheme == "http" and url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    segments = url.path.split("/")[1:]
+    return (bool(re.fullmatch(r"(/[A-Za-z0-9._~-]{1,128})*", url.path))
+            and not any(segment in {".", ".."} for segment in segments))
+
+
+def sarashina_pin(env: Mapping[str, str]) -> str:
+    """Startup pin: the only scheme+host+port+path this profile may call.
+
+    Redirects are never followed (_NoRedirect), so a request cannot leave the pin.
+    """
+    base = env.get("DOCICH_CHAT_SARASHINA_UPSTREAM", "").strip().rstrip("/")
+    if not _sarashina_base_ok(base):
+        raise ChatError("invalid sarashina upstream")
+    url = urlsplit(base)
+    return f"{url.scheme}://{url.netloc}{url.path}"
+
+
 def direct_chat_options(settings: Settings) -> dict:
     """Operator-only direct chat profiles; no provider/model fallback list.
 
@@ -194,11 +223,10 @@ def direct_chat_options(settings: Settings) -> dict:
             raise ChatError("invalid direct chat profile")
         return {"options": {"rejectIfBusy": True}}
     if provider == "sarashina":
-        # Operator-owned relay (Japan egress) in front of Sarashina. The relay
-        # URL is env-supplied and must be https with no userinfo/query; the
-        # Sarashina key lives only on the relay side, never on this host.
-        if (upstream or settings.billing_mode
-                or not re.fullmatch(r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]{0,256})?", settings.base_url)):
+        # Single operator-owned endpoint from DOCICH_CHAT_SARASHINA_UPSTREAM.
+        # https only, except loopback http for a local relay; no userinfo,
+        # query, or fragment; no billing mode or upstream routing.
+        if upstream or settings.billing_mode or not _sarashina_base_ok(settings.base_url):
             raise ChatError("invalid direct chat profile")
         return {}
     base = {"openrouter": "https://openrouter.ai/api/v1",
