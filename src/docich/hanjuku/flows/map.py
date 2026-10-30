@@ -24,7 +24,8 @@ from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
-                               _recall_goal, _sortie_general, _source, next_order)
+                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
+                               next_order, parked_boss_steps)
 from ..strategy.replan import _off_chart
 
 
@@ -87,6 +88,9 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
     mem.setdefault('launched_orders', {})[step] = snapshot
+    previous = (mem.get('sorties') or {}).get(step)
+    if previous:
+        _retire_unentered_sortie(mem, step, previous)
     mem.setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
@@ -113,6 +117,83 @@ def _world_map_wanted(mem) -> bool:
     tick = int(mem.get('tick') or 0)
     return (last is None or bool(mem.get('world_map_due'))
             or tick - int(last) >= WORLD_SURVEY_TICKS)
+
+
+BOSS_STALL_ESCAPE_TICKS = 400   # one bounded back-out per ~10 min while parked
+BOSS_STALL_ESCAPE_KINDS = frozenset({
+    'month_menu', 'shop_list', 'shop_quantity_prompt', 'shop_quantity',
+    'shop_exit_confirm', 'castle_menu', 'general_list', 'main_menu', 'castle_info'})
+
+
+def boss_stall_escape_step(mem, kind, phase):
+    """Back out of a menu when a boss march is parked on the field map.
+
+    g1075 kept four site steps overdue with boss_relaunch=2 for 11-16
+    hours. The sorties were correct; the bot never returned to the field map
+    where next_order can re-arm them, because month/shop text kept owning
+    the observation. This is a bounded escape, not a new order: one B per
+    cooldown, only with no active order/battle and only on menu/text screens.
+    """
+    parked = parked_boss_steps(mem)
+    if (not parked or mem.get('active') or mem.get('battle') or mem.get('attack')
+            or mem.get('recall')):
+        return None
+    if kind == 'text':
+        if phase not in ('shop', 'month'):
+            return None
+    elif kind not in BOSS_STALL_ESCAPE_KINDS:
+        return None
+    tick = int(mem.get('tick') or 0)
+    last = mem.get('boss_stall_escape_tick')
+    if type(last) is int and 0 <= tick - last < BOSS_STALL_ESCAPE_TICKS:
+        return None
+    mem['boss_stall_escape_tick'] = tick
+    mem['world_map_due'] = True
+    mem['uncertain'] = True
+    _record(mem, 'boss_stall_escape',
+            observed_metric={'steps': parked[:4], 'kind': kind, 'phase': phase},
+            reason='ボス出撃が長期間入城しないまま駐車しているため、メニューを閉じて全体マップへ戻る')
+    return [pad('b')]
+
+
+BOSS_SORTIE_MENU_HOLD_TICKS = 60   # ~90 s at 1.5 s, safely inside the 300 s stall terminal
+BOSS_SORTIE_MENU_KINDS = frozenset({'general_list', 'castle_menu', 'card_select', 'sortie_confirm'})
+
+
+def boss_sortie_menu_escape_step(mem, kind, actions):
+    """Cancel a boss sortie menu that produced no input for too long.
+
+    g1075 2026-10-31 08:27-08:33: 4-B1 was active but every observation in
+    general_list returned [] (situation_held), so the corner hit
+    input_stalled after 300 s and the run ended. The menu owner has no
+    unlimited hold: after BOSS_SORTIE_MENU_HOLD_TICKS with no action for the
+    same step/screen, press B once and let the order be retried. Normal
+    castle orders and screens with an action are untouched.
+    """
+    active = mem.get('active')
+    if (not active or kind not in BOSS_SORTIE_MENU_KINDS or actions != []
+            or mem.get('battle') or mem.get('attack') or mem.get('recall')):
+        mem.pop('boss_sortie_menu_hold', None)
+        return None
+    order = _order_for_step(mem, active)
+    if not _is_boss_order(order, mem):
+        mem.pop('boss_sortie_menu_hold', None)
+        return None
+    tick = int(mem.get('tick') or 0)
+    hold = mem.get('boss_sortie_menu_hold') or {}
+    if hold.get('step') != active or hold.get('kind') != kind:
+        mem['boss_sortie_menu_hold'] = {'step': active, 'kind': kind, 'tick': tick}
+        return None
+    since = hold.get('tick')
+    if type(since) is not int or tick - since < BOSS_SORTIE_MENU_HOLD_TICKS:
+        return None
+    mem.pop('boss_sortie_menu_hold', None)
+    mem['world_map_due'] = True
+    mem['uncertain'] = True
+    _record(mem, 'boss_sortie_menu_escape', chart_step=active, screen=kind,
+            observed_metric={'held_ticks': tick - since},
+            reason='ボス出撃メニューで有限時間入力が決まらないため、Bで取り消して出撃をやり直す')
+    return [pad('b')]
 
 
 def _picker_origin(chapter, frame):
@@ -611,6 +692,9 @@ def target_step(screen: Screen, mem, frame):
         mem.setdefault('launched_orders', {})[order['step']] = snapshot
         # Per execution id: ``launched`` keeps one sortie per castle, so a later
         # sortie to the same castle must not unbind an earlier unit en route.
+        previous = (mem.get('sorties') or {}).get(order['step'])
+        if previous:
+            _retire_unentered_sortie(mem, order['step'], previous)
         mem.setdefault('sorties', {})[order['step']] = {
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'status': 'en_route',

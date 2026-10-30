@@ -6,6 +6,8 @@ last-castle guard. Returns plans and records; never pad input.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
 from ..decision_log import _record
@@ -597,6 +599,33 @@ def _boss_retry_due(order, mem) -> bool:
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
 BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
 BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
+# A site march starts from a corner castle and can outlive two relaunch
+# cycles. Keep an unentered attempt bindable after its step is sent again, so
+# a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
+SITE_LATE_ENTRY_TICKS = 8 * SORTIE_BUSY_TICKS
+RETIRED_SORTIES_PER_STEP = 3
+
+
+def _retire_unentered_sortie(mem, step, sortie):
+    """Archive an unentered boss march before its sortie record is replaced.
+
+    The sorties map holds one record per step. Re-sending an overdue march
+    used to overwrite the old general, so his late entry matched nothing and
+    the site fight never reached boss_victories (g1075: four 4-B steps cycled
+    overdue for hours). Only boss targets are archived; normal castle entries
+    are already bounded by the short march window.
+    """
+    target = sortie.get('target') or sortie.get('planned_target')
+    if not chart.is_boss_castle(target) or sortie.get('status') == 'arrived':
+        return
+    retired = mem.get('retired_sorties')
+    if not isinstance(retired, dict):
+        retired = mem['retired_sorties'] = {}
+    rows = retired.setdefault(step, [])
+    if not isinstance(rows, list):
+        rows = retired[step] = []
+    rows.append(deepcopy(sortie))
+    del rows[:-RETIRED_SORTIES_PER_STEP]
 
 
 def _site_king_down(mem, target):
@@ -609,6 +638,35 @@ def _boss_fight_live(mem, step):
     """The boss order's entry still has an attack or battle record running."""
     return any(isinstance(record, dict) and record.get('step') == step
                for record in (mem.get('attack'), mem.get('battle')))
+
+
+def parked_boss_steps(mem):
+    """Boss steps whose march has been overdue past the stale cooldown.
+
+    A step is parked when its order still says launched, its sortie is
+    overdue (or an entered fight left no result), its bounded relaunch budget
+    is spent, and the stale cooldown has elapsed. At that point only
+    _relaunch_overdue_boss can restart it, so a caller stuck in a menu can
+    prioritize returning to the field map.
+    """
+    now = int(mem.get('tick') or 0)
+    orders_status = mem.get('orders') or {}
+    relaunches = mem.get('boss_relaunch') or {}
+    out = []
+    for step, sortie in (mem.get('sorties') or {}).items():
+        if not isinstance(sortie, dict):
+            continue
+        target = sortie.get('target') or sortie.get('planned_target')
+        status = sortie.get('status')
+        if (orders_status.get(step) != 'launched' or not chart.is_boss_castle(target)
+                or status not in ('overdue', 'arrived')
+                or (status == 'arrived' and _boss_fight_live(mem, step))
+                or type(sortie.get('tick')) is not int
+                or relaunches.get(step, 0) < BOSS_RELAUNCH_LIMIT
+                or now - sortie['tick'] < BOSS_STALE_COOLDOWN):
+            continue
+        out.append(step)
+    return sorted(out)
 
 
 def _relaunch_overdue_boss(mem):
@@ -1195,6 +1253,8 @@ def _match_sortie(mem, castle, general):
     arrived, and no further sortie could start.
     """
     sorties = mem.get('sorties') or {}
+    retired = mem.get('retired_sorties')
+    retired = retired if isinstance(retired, dict) else {}
     now = int(mem.get('tick') or 0)
     candidates = [step for step, sortie in sorties.items()
                   if sortie.get('status') in ('en_route', 'launched_unconfirmed')
@@ -1209,7 +1269,7 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (mem.get('launched') or {}).get(castle) or {}
-    step = _long_march(sorties, castle, general, now)
+    step = _long_march(sorties, castle, general, now, retired)
     if step is not None:
         return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
@@ -1220,7 +1280,7 @@ def _match_sortie(mem, castle, general):
 LONG_MARCH_TICKS = 4 * SORTIE_BUSY_TICKS   # ~35 min; chapter 3 marches measured up to 677
 
 
-def _long_march(sorties, castle, general, now):
+def _long_march(sorties, castle, general, now, retired=None):
     """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
 
     g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
@@ -1229,9 +1289,14 @@ def _long_march(sorties, castle, general, now):
     ポセイドン retreated at 43/85 HP. A general is one unit, so only his newest
     sortie can still be marching; older unread records never compete here.
     A sortie whose target was left unconfirmed counts by its planned target.
+    A retired boss attempt stays here for the longer site window, so the
+    general who enters after the step was sent again still matches its site.
     """
     mine = [(key, other) for key, other in sorties.items()
             if isinstance(other, dict) and other.get('general') == general]
+    for key, rows in (retired or {}).items():
+        mine.extend((key, other) for other in rows or ()
+                    if isinstance(other, dict) and other.get('general') == general)
     if not mine or any(type(other.get('tick')) is not int for _, other in mine):
         return None
     newest = max(other['tick'] for _, other in mine)
@@ -1240,16 +1305,49 @@ def _long_march(sorties, castle, general, now):
         return None
     step, sortie = latest[0]
     target = sortie.get('target')
-    statuses = ('en_route', 'launched_unconfirmed', 'overdue') if chart.is_boss_castle(castle) else ('en_route', 'launched_unconfirmed')
+    boss = chart.is_boss_castle(castle)
+    site = castle in chart.boss_sites(4)
+    statuses = ('en_route', 'launched_unconfirmed', 'overdue') if boss else ('en_route', 'launched_unconfirmed')
+    limit = SITE_LATE_ENTRY_TICKS if site else LONG_MARCH_TICKS
     if (sortie.get('status') not in statuses
             or not (target == castle or (target is None and sortie.get('planned_target') == castle))
-            or not 0 <= now - newest < LONG_MARCH_TICKS):
+            or not 0 <= now - newest < limit):
         return None
     return step
 
 
-def _bind_sortie(mem, step, castle):
+def _promote_retired_sortie(mem, step, castle, general):
+    """Make a retired attempt the step's current record before binding it.
+
+    The newest launch may still be marching while an older shot at the same
+    site enters. Promoting the retired record keeps the arriving general, his
+    source and his site together; the replaced attempt stays retired so its
+    own late entry can still bind.
+    """
+    retired = mem.get('retired_sorties')
+    rows = retired.get(step) if isinstance(retired, dict) else None
+    if not isinstance(rows, list):
+        return None
+    for index, old in enumerate(rows):
+        if not isinstance(old, dict) or old.get('general') != general:
+            continue
+        target = old.get('target') or old.get('planned_target')
+        if target not in (None, castle):
+            continue
+        current = (mem.setdefault('sorties', {})).pop(step, None)
+        rows.pop(index)
+        if isinstance(current, dict):
+            rows.append(current)
+            del rows[:-RETIRED_SORTIES_PER_STEP]
+        mem['sorties'][step] = old
+        return old
+    return None
+
+
+def _bind_sortie(mem, step, castle, general=None):
     sortie = (mem.get('sorties') or {}).get(step)
+    if general and (sortie is None or sortie.get('general') != general):
+        sortie = _promote_retired_sortie(mem, step, castle, general) or sortie
     if sortie:
         if sortie.get('target') is None:
             _record(mem, 'sortie_arrival_confirmed', chart_step=step, general=sortie['general'],

@@ -6589,6 +6589,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v348-goals-ledger",
             "hanjuku-chart-v349-boss-attrition-pool",
             "hanjuku-chart-v350-boss-stale-retry",
+            "hanjuku-chart-v351-boss-stall-recovery",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
