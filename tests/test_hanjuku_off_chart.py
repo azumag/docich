@@ -560,6 +560,9 @@ def _move_memory():
 def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
     mem = _move_memory()
     names = [chart.HERO, 'キャラウェイ', 'ココット', 'クミン']
+    # A four-name list is walked to its end first (#3077); this one already was.
+    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': names, 'tick': mem.get('tick') or 0}
     actions = policy.deploy_step(_move_list(names), mem)
     assert mem['general_override']['I:m:1'] == 'キャラウェイ'
     assert mem['garrison']['ジョンリギ'] == names

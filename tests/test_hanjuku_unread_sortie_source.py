@@ -52,6 +52,9 @@ def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
                  step='I:probe-actor:1')
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
     screen = generals(['ゼウス', 'どうし', 'クミン', 'タルタル'])
+    # A four-name list is walked to its end first (#3077); this one already was.
+    mem['general_list_scan'] = {'step': order['step'], 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': ['ゼウス', 'どうし', 'クミン', 'タルタル'], 'tick': mem.get('tick') or 0}
     assert p.deploy_step(screen, mem) == [p.pad('a')]
     assert mem['garrison']['ジョンリギ'] == ['ゼウス', 'どうし', 'クミン', 'タルタル']
     assert mem['general_override'][order['step']] == 'ゼウス'
