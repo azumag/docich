@@ -1,0 +1,22 @@
+# Inventory schema (no secrets). Copy to inventory/<host>.toml and fill.
+
+[windows]
+hostname = ""
+os_version = ""
+kabu_installed = false
+mt5_installed = false
+kabu_clients_other = []
+tailscale_installed = false
+tailscale_serve_status = ""
+tailscale_acl_notes = ""
+terminal_paths = []
+session_type = ""
+
+[linux]
+hostname = ""
+vm_memory_mb = 0
+vm_disk_free_gb = 0
+linger_enabled = false
+external_backup_target = ""
+market_units = []
+opend_status = ""
