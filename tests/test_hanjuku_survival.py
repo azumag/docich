@@ -1088,3 +1088,44 @@ def test_low_hp_opens_okunote_when_safe_candidate_visible():
     assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
     assert not mem['battle'].get('survival', {}).get('exhausted')
     assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])
+
+
+def test_low_hp_conerves_okunote_when_healthy_melee_advantage():
+    mem = memory(80, 10)
+    cur = mem['battle']
+    cur['ally_hp'] = 80
+    cur['side'] = 'defense'
+    cur['ally'] = 'どうし'
+    cur['ally_soldiers'] = 5
+    cur['enemy_soldiers'] = 0
+    cur['card_soldiers_current'] = True
+    cur['start_ally_hp'] = 90
+    cur['start_enemy_hp'] = 60
+    screen = menu(('おどす',), kind='battle_menu')
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['exhausted']
+    assert any(r.get('decision') == 'battle_okunote_risk_conserved'
+               for r in mem['_records'])
+    # Repeated observations do not duplicate the record.
+    records = len(mem['_records'])
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert len(mem['_records']) == records
+
+
+def test_low_hp_does_not_conserve_okunote_when_soldiers_unobserved():
+    mem = memory(80, 10)
+    cur = mem['battle']
+    cur['ally_hp'] = 80
+    cur['side'] = 'defense'
+    cur['ally'] = 'どうし'
+    cur['ally_soldiers'] = 5
+    cur['enemy_soldiers'] = 0
+    cur['card_soldiers_current'] = False
+    cur['start_ally_hp'] = 90
+    cur['start_enemy_hp'] = 60
+    screen = menu(('おどす',), kind='battle_menu')
+    p.okunote_step(screen, mem)
+    assert not any(r.get('decision') == 'battle_okunote_risk_conserved'
+                   for r in mem['_records'])
+    assert any(r.get('decision') == 'battle_okunote_risk_accepted'
+               for r in mem['_records'])
