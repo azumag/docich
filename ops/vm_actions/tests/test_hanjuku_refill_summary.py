@@ -248,7 +248,8 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         with mock.patch.object(self.module, '_read_hanjuku_record', wraps=original) as read:
             self.assertEqual(self.collect(now=1030)['refill']['scope'], 'current')
         self.assertEqual([Path(call.args[0]).name for call in read.call_args_list],
-                         ['game_switch.json', 'hanjuku_bot.json', 'hanjuku_run.json', 'game_switch.json'])
+                         ['game_switch.json', 'hanjuku_chart_worker.json', 'hanjuku_bot.json',
+                          'hanjuku_run.json', 'game_switch.json'])
         self.assertNotIn('refill', self.collect(now=1030.001))
 
     def test_count_thresholds_and_missing_freshness_are_not_confused(self):
