@@ -127,6 +127,11 @@ EXECUTABLES = {
     "sleep": "sleep",
     "inotifywait": "inotifywait",
     "jq": "jq",
+    # Common VM processes previously falling into the opaque `other` bucket.
+    "opencode": "opencode",
+    "radio_worker": "worker:radio_worker",
+    "chrome_crashpad_handler": "browser",
+    "crashpad_handler": "browser",
     # Fixed, non-sensitive process labels used to break down short-lived
     # shell/status pipelines without ever exposing argv or paths.
     "cat": "cat",
