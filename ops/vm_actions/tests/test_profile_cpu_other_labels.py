@@ -21,7 +21,11 @@ class OtherCommLabelTests(unittest.TestCase):
         }
         for comm, expected in cases.items():
             with self.subTest(comm=comm):
-                self.assertEqual(mod.other_comm_label(comm), expected)
+                # These are executable/comm classification mappings.  Exercise
+                # the public classifier rather than the residual `other`
+                # sanitizer, which intentionally preserves safe unknown comms.
+                self.assertEqual(mod.classify([comm], comm), expected)
+                self.assertEqual(mod.classify(None, comm), expected)
 
 
 if __name__ == "__main__":
