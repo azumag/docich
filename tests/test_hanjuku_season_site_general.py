@@ -155,3 +155,25 @@ def test_an_overdue_site_march_still_binds_its_late_entry():
     assert mem['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
                              'step': '4-B3', 'entry_evidence': 'measured_boss_entry'}
     assert mem['sorties']['4-B3']['status'] == 'arrived'
+
+
+def test_an_unmeasured_egg_holder_is_a_valid_attrition_last_seat():
+    """Owner (2026-10-30): 弱い将軍をたくさん送って少しずつ削る選択肢も狭めない.
+    A general with an observed egg but no reference-table entry was dropped by
+    _hero_alternatives' max_hp gate and could never join a boss sortie. It now
+    goes after every measured general."""
+    order = site_order()
+    mem = memory()
+    mem['egg_types']['ランダム将軍'] = 'どうし'      # observed egg, no table entry
+    mem['egg_uses']['ランダム将軍'] = 3
+    # The site rule still keeps an egg-holder behind: sending ランダム将軍
+    # would leave eggless カペリーニ alone, so nobody goes.
+    assert orders._order_hero_alternatives(order, mem, ['ランダム将軍', 'カペリーニ']) == []
+    # With an egg-holder guard the unmeasured general is the attrition seat
+    # behind the measured (weaker-than-boss) ブカティーニ.
+    assert orders._order_hero_alternatives(order, mem, ['ランダム将軍', 'ブカティーニ']) == ['ブカティーニ', 'ランダム将軍']
+    # A strong general still leads alone.
+    assert orders._order_hero_alternatives(order, mem, ['ゼウス', 'ランダム将軍']) == ['ゼウス']
+    # A spent egg does not go — and cannot guard either, so nobody leaves.
+    mem['egg_uses']['ランダム将軍'] = 0
+    assert orders._order_hero_alternatives(order, mem, ['ランダム将軍', 'ブカティーニ']) == []
