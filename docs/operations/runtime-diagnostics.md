@@ -186,7 +186,8 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   出撃ごとの `sorties.<step>.age_ticks` / `relaunch`、実測済みの四季王サイト
   `boss_victories.count` / `sites` を返します。`parked` は「いま進軍が止まっている」
   候補であり、戦闘中・月次処理中・単なる到着待ちを区別しないため、`active` と
-  `screen_kind` / `phase` を併読します。自由文・理由・identityは出しません。
+  `screen_kind` / `phase` を併読します。`bot_version` は観測時点のbot記録が名乗る
+  版で、deploy済みコードとの一致を単独では保証しません。自由文・理由・identityは出しません。
 - `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
   `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
   総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`

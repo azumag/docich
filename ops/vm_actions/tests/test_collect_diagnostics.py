@@ -190,6 +190,15 @@ def test_compact_policy_projects_battle_hp_without_free_text():
     assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
 
 
+def test_compact_policy_exposes_the_observing_bot_version():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy(
+        {'chapter': 4}, {'bot_version': 'hanjuku-chart-v350-stale-retry'})
+    assert policy['bot_version'] == 'hanjuku-chart-v350-stale-retry'
+    assert module._compact_hanjuku_policy(
+        {'chapter': 4, 'bot_version': 'x' * 500})['bot_version'] is None
+
+
 def test_march_projection_relaunch_limit_matches_the_policy():
     from docich.hanjuku.strategy import orders
 

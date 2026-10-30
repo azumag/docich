@@ -11302,6 +11302,7 @@ def _compact_hanjuku_policy(mem, state=None):
                         and len(value['site']) <= 32})
     return {
         'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'bot_version': text(state.get('bot_version') or mem.get('bot_version'), 64),
         'screen_kind': text(state.get('screen_kind'), 32),
         'phase': text(state.get('phase'), 32),
         'step': state.get('step') if type(state.get('step')) is int else None,
