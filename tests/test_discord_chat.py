@@ -596,22 +596,27 @@ class DirectProfileTests(unittest.TestCase):
         self.assertTrue(error.fp.closed)
 
 
-class SarashinaRelayProfileTest(unittest.TestCase):
-    """Relay profile: no upstream/billing, https-only relay base, registered model."""
+class SarashinaProfileTest(unittest.TestCase):
+    """Sarashina profile: one fixed endpoint, no upstream/billing, registered models only."""
 
     def _settings(self, **changes):
-        values = dict(provider="sarashina", model="sarashina3-translate", upstream="", billing_mode="",
-                      api_key="SYNTHETIC_KEY", base_url="https://relay.example.test", token="")
+        values = dict(provider="sarashina", model="sarashina3-nano", upstream="", billing_mode="",
+                      api_key="SYNTHETIC_KEY", base_url="https://sarashina.example.test", token="")
         return chat.Settings(**{**values, **changes})
 
-    def test_valid_relay_profile_adds_no_provider_options(self):
-        self.assertEqual(chat.direct_chat_options(self._settings()), {})
+    def test_valid_profiles_add_no_provider_options(self):
+        for change in (dict(), dict(model="sarashina3-mini"), dict(base_url="http://127.0.0.1:8080/v1")):
+            self.assertEqual(chat.direct_chat_options(self._settings(**change)), {}, msg=str(change))
 
-    def test_invalid_relay_profiles_fail_before_post(self):
-        invalid = [dict(base_url=""), dict(base_url="http://relay.example.test"),
-                   dict(base_url="https://u:p@relay.example.test"), dict(base_url="https://relay.example.test/?x=1"),
-                   dict(base_url="https://relay.example.test#frag"), dict(upstream="openai"),
-                   dict(billing_mode="credits_only"), dict(model="sarashina-other"), dict(api_key="")]
+    def test_invalid_profiles_fail_before_post(self):
+        invalid = [dict(base_url=""), dict(base_url="http://sarashina.example.test"),
+                   dict(base_url="https://u:p@sarashina.example.test"),
+                   dict(base_url="https://sarashina.example.test/?x=1"),
+                   dict(base_url="https://sarashina.example.test#frag"),
+                   dict(base_url="https://sarashina.example.test/v1/../x"),
+                   dict(base_url="ftp://sarashina.example.test"),
+                   dict(upstream="openai"), dict(billing_mode="credits_only"),
+                   dict(model="sarashina3-translate"), dict(model="sarashina-other"), dict(api_key="")]
         for change in invalid:
             with self.assertRaises(chat.ChatError, msg=str(change)):
                 chat.direct_chat_options(self._settings(**change))
