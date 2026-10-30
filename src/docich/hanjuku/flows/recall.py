@@ -17,10 +17,52 @@ MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed cas
 RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
-RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
+RECALL_SKIP_TICKS = 400        # observations before retrying the same failed camp
+RECALL_SKIP_RADIUS = 24        # screen pixels: tolerate camera/sprite jitter for that camp only
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+
+
+def _camp_target(value):
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(axis) is int for axis in value))
+
+
+def _remember_recall_target(mem, state):
+    """Remember which visible camp owns a future retry cooldown.
+
+    ``recall_skip`` remains the old tick-only shape for compatibility.  This
+    companion scope prevents one troublesome camp from suppressing every other
+    visible camp for the whole cooldown.
+    """
+    target = state.get('target') if isinstance(state, dict) else None
+    chapter = mem.get('chapter')
+    if not _camp_target(target) or type(chapter) is not int or chapter <= 0:
+        mem.pop('recall_skip_target', None)
+        return
+    scoped = {'chapter': chapter, 'target': list(target)}
+    if isinstance(state.get('camp_kind'), str):
+        scoped['kind'] = state['camp_kind']
+    mem['recall_skip_target'] = scoped
+
+
+def _arm_recall_skip(mem, state):
+    mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+    _remember_recall_target(mem, state)
+
+
+def _same_skipped_camp(camp, scoped):
+    if not isinstance(camp, dict) or not isinstance(scoped, dict):
+        return False
+    target, old = camp.get('target'), scoped.get('target')
+    if not _camp_target(target) or not _camp_target(old):
+        return False
+    old_kind = scoped.get('kind')
+    if old_kind is not None and camp.get('kind') != old_kind:
+        return False
+    return (abs(target[0] - old[0]) <= RECALL_SKIP_RADIUS
+            and abs(target[1] - old[1]) <= RECALL_SKIP_RADIUS)
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -50,10 +92,23 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return None
         camps = own_camps(frame) if observed_camps is None else observed_camps
         skip = mem.get('recall_skip')
-        if skip and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS:
-            # A skipped camp would reopen the same picker on every map frame.
-            # The cursor moves with the camera, so skip every camp meanwhile.
-            camps = []
+        active_skip = (isinstance(skip, dict)
+                       and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS)
+        if active_skip:
+            scoped = mem.get('recall_skip_target')
+            if (isinstance(scoped, dict) and scoped.get('chapter') == mem.get('chapter')
+                    and _camp_target(scoped.get('target'))):
+                # The old global backoff left every other camp untouched for
+                # ~10 minutes after one camp failed. Cool down only that camp;
+                # another visible camp may be recalled immediately.
+                camps = [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
+            else:
+                # Hotloaded/legacy state has no safe camp identity. Keep the
+                # historical fail-closed global cooldown for that one window.
+                camps = []
+        else:
+            mem.pop('recall_skip', None)
+            mem.pop('recall_skip_target', None)
         if not camps:
             return None
         cursor = _cursor(screen)
@@ -61,6 +116,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0,
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
+        _remember_recall_target(mem, state)
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {})},
                 reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
@@ -73,7 +129,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
         mem.pop('recall', None)
         mem['uncertain'] = True
-        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+        _arm_recall_skip(mem, state)
         # A stuck recall must leave the screen it is on, not only a camp menu.
         # map_target/world_map are the actual "return" screens; B closes them.
         # A camp menu is closed with B as before; other screens keep the old
@@ -117,7 +173,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 # the order's source castle was found and lost 8 times in 8
                 # minutes, and the retake from that castle never left. Wait
                 # as after an aborted recall before chasing it again.
-                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                _arm_recall_skip(mem, state)
             return []  # an old screen coordinate never licenses a camp-opening A
         state.pop('camp_missing_reads', None)
         cursor = _cursor(screen)
@@ -128,6 +184,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             state['camp_kind'] = camp['kind']
         else:
             state.pop('camp_kind', None)
+        _remember_recall_target(mem, state)
         cursor = _cursor(screen)
         if not cursor:
             return []
@@ -161,7 +218,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 return []
             mem.pop('recall', None)
             mem['uncertain'] = True
-            mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+            _arm_recall_skip(mem, state)
             _record(mem, 'camp_group_screen', resulting_event='unclassified_screen_closed',
                     observed_metric={'camp': state.get('target'), 'screen': screen.kind,
                                      'text': (screen.text or '')[:80]},
@@ -180,7 +237,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                     if reopens > MENU_REOPEN_LIMIT:
                         mem.pop('recall', None)
                         mem['uncertain'] = True
-                        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                        _arm_recall_skip(mem, state)
                         _record(mem, 'camp_recall_aborted', resulting_event='camp_menu_not_opened',
                                 observed_metric={'camp': state.get('target'), 'reopens': reopens - 1},
                                 reason='野営で決定し直しても野営メニューが開かないため帰還指示を断念する')
@@ -200,7 +257,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if misses >= 3:
                 mem.pop('recall', None)
                 mem['uncertain'] = True
-                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                _arm_recall_skip(mem, state)
                 _record(mem, 'camp_recall_aborted', resulting_event='cursor_unconfirmed',
                         reason='実カーソルを3回で確認できず野営メニューを閉じる')
                 return [pad('b')]
@@ -309,7 +366,7 @@ def _recall_dispatch_step(screen, mem, state):
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         mem['recall_verification'] = {**state, 'status': status}
         mem.pop('recall', None)
-        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+        _arm_recall_skip(mem, state)
         mem['uncertain'] = True
         _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
