@@ -34,9 +34,10 @@ def test_home_cursor_does_not_confirm_when_unit_is_near_kikandon(monkeypatch):
     assert mem['recall']['goal'] == 'キカンドン'
     assert not any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
     at(monkeypatch, 'キカンドン')
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a')]
     assert mem['recall']['stage'] == 'await_dispatch'
     assert mem['recall']['goal'] == 'キカンドン'
+    assert mem['recall']['confirm_after_zoom']  # confirming A is deferred to dispatch
 
 
 def test_unknown_origin_can_join_observed_hero_castle(monkeypatch):
@@ -84,9 +85,10 @@ def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(m
     assert mem['recall']['goal'] == 'キカンドン'
     mem = json.loads(json.dumps(mem))
     at(monkeypatch, 'キカンドン')
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a')]
     assert mem['recall']['stage'] == 'await_dispatch'
     assert mem['recall']['goal'] == 'キカンドン'
+    assert mem['recall']['confirm_after_zoom']  # confirming A is deferred to dispatch
     assert not mem['recall'].get('input_sent')  # planned A is not a sent receipt
 
 
@@ -245,7 +247,8 @@ def test_native_r_home_fixture_only_owned_castle_preserves_dispatch():
     frame = picker(); mem = {'chapter': 2, 'tick': 100, '_records': [],
                               'recall': {'stage': 'dest', 'steps': 0}}
     before = deepcopy(mem)
-    assert p.world_map_step(VIEW, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.world_map_step(VIEW, mem, frame) == [p.pad('a')]
+    assert mem['recall']['confirm_after_zoom']
     assert mem['recall']['goal'] == 'アルマムーン'
     assert before['recall']['stage'] == 'dest'
 

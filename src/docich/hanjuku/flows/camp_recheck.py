@@ -29,7 +29,8 @@ _ALLOWED_KINDS = {
     'recheck_close': {'text', 'unknown'},
     'menu': {'text', 'unknown'},
     'dest': {'world_map', 'map_target', 'map', 'text', 'unknown'},
-    'await_dispatch': {'world_map', 'map_target', 'map', 'text', 'unknown'},
+    'await_dispatch': {'world_map', 'map_target', 'map', 'text', 'unknown',
+                       'yes_no', 'castle_menu', 'general_list'},
 }
 
 

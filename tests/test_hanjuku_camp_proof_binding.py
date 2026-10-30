@@ -260,8 +260,9 @@ def test_an_unrelated_queue_never_adopts_or_delays_the_existing_weak_hero_return
     assert not mem['recall'].get('anonymous_recheck') and 'target' not in mem['recall']
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
     frame = picker(); screen = parse(frame, phase='field')
-    assert p.camp_recall_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.camp_recall_step(screen, mem, frame) == [p.pad('a')]
     assert mem['recall']['stage'] == 'await_dispatch' and mem['recall']['goal'] == 'アルマムーン'
+    assert mem['recall']['confirm_after_zoom'] and not mem['recall'].get('confirm_sent')
     assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     assert not mem['recall'].get('retreat_recheck') and not mem['recall'].get('anonymous_recheck')
 

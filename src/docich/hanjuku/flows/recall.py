@@ -21,6 +21,12 @@ RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped pi
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+ZOOM_SETTLE_READS = 2          # unchanged-cursor map observations before the confirming A
+ZOOM_WAIT_LIMIT = 30           # dispatch observations waiting for the zoom to settle
+PICKER_LOST_READS = 3          # surviving-picker reads before treating the selecting A as absorbed
+SELECT_RETRY_LIMIT = 2         # re-selections of the goal castle per recall
+CONFIRM_IDLE_READS = 10        # settled-map reads before resending the confirming A
+CONFIRM_RETRY_LIMIT = 2        # extra confirming A presses on a persistent zoomed map
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -275,12 +281,19 @@ def _finish_hero_recall(mem, state, goal):
 
 def _request_recall(mem, state, goal, actions, **fields):
     """A proposal remains pending; neither an input nor an arrival receipt."""
+    fields.setdefault('confirm_after_zoom', False)
     state.update(stage='await_dispatch', steps=0, goal=goal,
                  a_inputs=sum(a.get('buttons') == ['a'] for a in actions),
                  requested_tick=int(mem.get('tick') or 0), **fields)
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
+    state.pop('confirm_sent', None)
+    state.pop('zoom_settled', None)
+    state.pop('zoom_cursor', None)
+    state.pop('picker_lost_reads', None)
+    state.pop('confirm_idle', None)
+    state.pop('confirm_retries', None)
     _record(mem, 'camp_recall_requested', chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
                              'hero_intended': bool(state.get('hero')), **fields},
@@ -303,6 +316,89 @@ def _recall_dispatch_step(screen, mem, state):
             _record(mem, 'camp_recall_input_sent', observed_metric={'castle': state.get('goal'),
                     'request_trace': trace}, resulting_event='sent_not_yet_accepted',
                     reason='同じラン・判断ID・実画面の帰還A送信記録を確認、受理と到着は未確認')
+    # g1075 2026-10-30 22:21:57-22:22:10: on the whole-island picker the
+    # selecting A only starts a multi-second zoom to the chosen castle; a
+    # confirming A sent 700 ms later was absorbed mid-fade, the zoomed map
+    # stayed open >8 s, and the general never moved. The picker path now
+    # sends a single A (confirm_after_zoom) and the confirming A goes out
+    # only after the zoomed map has settled.
+    if (state.get('input_sent')
+            and (screen.kind in ('castle_menu', 'general_list') or is_camp_menu(screen))):
+        # An A sent while dispatching opened an ordinary menu: the pending
+        # destination was already gone, so the recall was not accepted.
+        mem['recall_verification'] = {**state, 'status': 'confirm_not_pending'}
+        mem.pop('recall', None)
+        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+        mem['uncertain'] = True
+        _record(mem, 'camp_recall_unconfirmed', chart_step=None,
+                observed_metric={'castle': state.get('goal'), 'input_sent': True,
+                                 'confirm_sent': bool(state.get('confirm_sent')),
+                                 'screen': screen.kind},
+                resulting_event='confirm_opened_menu',
+                reason='確定Aが通常のメニューを開いたため帰還の受付状態が既に無いと判断して閉じる')
+        return [pad('b')]
+    if state.get('input_sent') and state.get('confirm_after_zoom') and not state.get('confirm_sent'):
+        if screen.kind in ('world_map', 'map_target'):
+            # the selecting A was absorbed and the picker is still open
+            lost = state['picker_lost_reads'] = int(state.get('picker_lost_reads') or 0) + 1
+            if lost < PICKER_LOST_READS:
+                return []
+            state.pop('picker_lost_reads', None)
+            if int(state.get('select_retries') or 0) < SELECT_RETRY_LIMIT:
+                state['select_retries'] = int(state.get('select_retries') or 0) + 1
+                state.update(stage='dest', steps=0)
+                _record(mem, 'camp_recall_reselect', chart_step=None,
+                        observed_metric={'castle': state.get('goal'),
+                                         'select_retries': state['select_retries']},
+                        resulting_event='planned_not_yet_sent',
+                        reason='選択Aが吸収され帰還先pickerが残存していたため、帰還先の再選択を行う')
+                return []
+            state.pop('confirm_after_zoom', None)  # retries exhausted: fall through
+        elif screen.kind == 'map' and state['steps'] < ZOOM_WAIT_LIMIT:
+            cursor = _cursor(screen)
+            if cursor is not None and cursor == state.get('zoom_cursor'):
+                settled = int(state.get('zoom_settled') or 0) + 1
+            else:
+                settled = 0
+            state['zoom_settled'] = settled
+            if cursor is not None:
+                state['zoom_cursor'] = cursor
+            if settled < ZOOM_SETTLE_READS:
+                return []
+            state['confirm_sent'] = True
+            state['steps'] = 0
+            _record(mem, 'camp_recall_confirm', chart_step=None,
+                    observed_metric={'castle': state.get('goal'), 'zoom_cursor': cursor},
+                    resulting_event='planned_not_yet_sent',
+                    reason='帰還先へのズーム後マップでカーソルが安定したため確定のAを送る')
+            return [pad('a')]
+        elif screen.kind in ('unknown', 'text', 'yes_no') and state['steps'] < ZOOM_WAIT_LIMIT:
+            return []                      # zoom/transition still running
+        else:
+            state.pop('confirm_after_zoom', None)  # zoom wait exceeded: give up confirming
+    if (state.get('confirm_sent') and not state.get('picker_closed')
+            and screen.kind == 'map'):
+        # the confirming A can also be absorbed; resend it while the zoomed
+        # map persists unchanged, with a bound
+        cursor = _cursor(screen)
+        if (cursor is not None and state.get('zoom_cursor') is not None
+                and cursor != state['zoom_cursor']):
+            state['picker_closed'] = True   # the view moved on; stop resending
+        else:
+            idle = state['confirm_idle'] = int(state.get('confirm_idle') or 0) + 1
+            if idle < CONFIRM_IDLE_READS:
+                return []
+            state['confirm_idle'] = 0
+            if int(state.get('confirm_retries') or 0) < CONFIRM_RETRY_LIMIT:
+                state['confirm_retries'] = int(state.get('confirm_retries') or 0) + 1
+                state['steps'] = 0
+                _record(mem, 'camp_recall_confirm_retry', chart_step=None,
+                        observed_metric={'castle': state.get('goal'),
+                                         'confirm_retries': state['confirm_retries']},
+                        resulting_event='planned_not_yet_sent',
+                        reason='確定A送信後もズーム済みマップが滞留するため確定のAを再度送る')
+                return [pad('a')]
+            state['picker_closed'] = True   # persistent zoomed map: stop waiting
     if state.get('input_sent') and screen.kind == 'map':
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
@@ -313,6 +409,7 @@ def _recall_dispatch_step(screen, mem, state):
         mem['uncertain'] = True
         _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
+                'confirm_sent': bool(state.get('confirm_sent')),
                 'general': None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
         return [pad('b')] if screen.kind in ('world_map', 'map_target') else []

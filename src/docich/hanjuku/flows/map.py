@@ -152,6 +152,12 @@ def world_map_step(screen, mem, frame):
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
         # second A confirms; the general then walks back home (measured: the
         # hero turned from キカンドン towards アルマムーン). Y does not close it.
+        # g1075 2026-10-30 22:21:57-22:22:10: the selecting A starts a
+        # multi-second zoom to the chosen castle; a blind confirming A 700 ms
+        # later was absorbed mid-fade, the zoomed map then stayed open >8 s
+        # and the general never moved (his ▲ marker sat on the camp an hour
+        # later). The first A is sent here; the confirming A is deferred to
+        # _recall_dispatch_step, which waits for the zoomed map to settle.
         chapter = mem.get('chapter') or 0
         cursor = world_cursor(frame) if frame is not None else None
         flags = world_flags(frame, chapter)
@@ -215,8 +221,8 @@ def world_map_step(screen, mem, frame):
                 mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 return [pad('b')]
             return [pad(press)]
-        return _request_recall(mem, recall, goal,
-                               [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
+        return _request_recall(mem, recall, goal, [pad('a')],
+                               confirm_after_zoom=True)
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1

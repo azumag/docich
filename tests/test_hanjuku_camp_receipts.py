@@ -38,8 +38,9 @@ def pending():
     frame = picker()
     state = {'policy': {'chapter': 2, 'tick': 50, 'recall': {'stage': 'dest', 'steps': 0}}}
     actions, state = decide(frame, state)
-    assert actions == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert actions == [p.pad('a')]
     assert state['policy']['recall']['goal'] == 'アルマムーン'
+    assert state['policy']['recall']['confirm_after_zoom']
     return actions, state
 
 
@@ -77,8 +78,9 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
     mem = {'chapter': 2, 'tick': 50, '_records': [],
            'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}},
            'recall': {'stage': 'dest', 'steps': 0, 'hero': True, 'sorties': ['old']}}
-    assert p.world_map_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.world_map_step(screen, mem, frame) == [p.pad('a')]
     assert mem['recall']['stage'] == 'await_dispatch'
+    assert mem['recall']['confirm_after_zoom']
     assert mem['sorties']['old']['status'] == 'en_route'
     assert not any(r['decision'] in ('hero_recalled', 'camp_recall') for r in mem['_records'])
     # Same picker after the proposal must not get another pair of A's or Y.
@@ -96,16 +98,25 @@ def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_
     one = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert one['a_inputs'] == 1
     _, first = decide(frame, state, recall_inputs=one)
-    assert not first['policy']['recall'].get('input_sent')
+    assert first['policy']['recall'].get('input_sent')
     hanjuku_run.action_sent(tmp_path, ID, action)
     receipt = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert receipt['a_inputs'] == 2
     mem = state['policy']; mem['_records'] = []; mem['_recall_inputs'] = receipt
-    assert p.camp_recall_step(Screen([], None, '', kind='map'), mem, None) == []
+    zoomed = Screen([], None, '', kind='map', cursor=(136, 120))
+    # The confirming A goes out only after the zoomed-map cursor settles.
+    for _ in range(p.ZOOM_SETTLE_READS):
+        assert p.camp_recall_step(zoomed, mem, None) == []
+    assert p.camp_recall_step(zoomed, mem, None) == [p.pad('a')]
+    assert mem['recall']['confirm_sent']
+    # Once the cursor moves the view has moved on; no extra A is sent.
+    assert p.camp_recall_step(Screen([], None, '', kind='map', cursor=(140, 120)), mem, None) == []
     assert not mem.get('recall')
-    assert mem['recall_verification']['input_sent'] and mem['recall_verification']['picker_closed']
-    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
-    assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_unconfirmed']
+    verification = mem['recall_verification']
+    assert verification['input_sent'] and verification['confirm_sent']
+    assert verification['picker_closed']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert [r['decision'] for r in mem['_records']] == ['camp_recall_confirm', 'camp_recall_unconfirmed']
 
 
 def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_context(tmp_path):
@@ -181,3 +192,100 @@ def test_recall_target_screen_never_confirms_a_different_chart_sortie(stage):
     p.observe_sortie_transition(Screen([],None,'',kind='world_map'),mem,'map_target')
     assert mem['orders']['1-A2']=='pending' and not mem.get('sorties')
     assert not mem['_records']
+
+
+def _dispatched_recall():
+    # Recall input was emitted and receipt-bound; acceptance is unproven.
+    _, state = pending()
+    mem = state['policy']; mem['_records'] = []
+    mem['recall']['input_sent'] = True
+    return mem
+
+
+def test_confirm_a_requires_consecutive_settled_zoom_reads():
+    mem = _dispatched_recall()
+    zoomed = Screen([], None, '', kind='map', cursor=(136, 120))
+    assert p.camp_recall_step(zoomed, mem, None) == []
+    assert p.camp_recall_step(Screen([], None, '', kind='yes_no'), mem, None) == []
+    assert p.camp_recall_step(zoomed, mem, None) == []
+    assert not mem['recall'].get('confirm_sent')
+    moved = Screen([], None, '', kind='map', cursor=(150, 120))
+    assert p.camp_recall_step(moved, mem, None) == []
+    assert mem['recall']['zoom_settled'] == 0
+    assert p.camp_recall_step(moved, mem, None) == []
+    assert p.camp_recall_step(moved, mem, None) == [p.pad('a')]
+    assert mem['recall']['confirm_sent']
+
+
+@pytest.mark.parametrize('kind', ['unknown', 'text', 'yes_no'])
+def test_unclassified_screen_during_zoom_wait_never_confirms_and_stays_bounded(kind):
+    mem = _dispatched_recall()
+    screen = Screen([], None, '', kind=kind)
+    for _ in range(p.ZOOM_WAIT_LIMIT):
+        assert p.camp_recall_step(screen, mem, None) == []
+    assert not mem.get('recall')
+    verification = mem['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['input_sent'] and not verification.get('confirm_sent')
+
+
+def test_absorbed_confirm_a_is_resent_only_within_retry_limit():
+    mem = _dispatched_recall()
+    zoomed = Screen([], None, '', kind='map', cursor=(136, 120))
+    for _ in range(p.ZOOM_SETTLE_READS):
+        assert p.camp_recall_step(zoomed, mem, None) == []
+    assert p.camp_recall_step(zoomed, mem, None) == [p.pad('a')]
+    assert mem['recall']['confirm_sent']
+    for _ in range(p.CONFIRM_RETRY_LIMIT):
+        for _ in range(p.CONFIRM_IDLE_READS - 1):
+            assert p.camp_recall_step(zoomed, mem, None) == []
+        assert p.camp_recall_step(zoomed, mem, None) == [p.pad('a')]
+    for _ in range(p.CONFIRM_IDLE_READS):
+        assert p.camp_recall_step(zoomed, mem, None) == []
+    assert not mem.get('recall')
+    verification = mem['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['input_sent'] and verification['confirm_sent']
+    assert verification['picker_closed'] and mem['uncertain']
+
+
+@pytest.mark.parametrize('kind', ['castle_menu', 'general_list'])
+def test_confirm_a_opening_an_ordinary_menu_closes_as_not_pending(kind):
+    mem = _dispatched_recall()
+    assert p.camp_recall_step(Screen([], None, '', kind=kind), mem, None) == [p.pad('b')]
+    assert not mem.get('recall')
+    verification = mem['recall_verification']
+    assert verification['status'] == 'confirm_not_pending'
+    assert verification['input_sent'] and not verification.get('confirm_sent')
+    assert mem['uncertain']
+
+
+def test_confirm_a_opening_camp_menu_closes_as_not_pending():
+    mem = _dispatched_recall()
+    assert p.camp_recall_step(camp_menu(0), mem, None) == [p.pad('b')]
+    assert not mem.get('recall')
+    assert mem['recall_verification']['status'] == 'confirm_not_pending'
+
+
+def test_surviving_picker_reselects_destination_within_retry_limit():
+    mem = _dispatched_recall()
+    frame = picker()
+    view = parse(frame, phase=classify(frame))
+    for _ in range(p.SELECT_RETRY_LIMIT):
+        for _ in range(p.PICKER_LOST_READS):
+            assert p.world_map_step(view, mem, frame) == []
+        assert mem['recall']['stage'] == 'dest'
+        assert p.world_map_step(view, mem, frame) == [p.pad('a')]
+        assert mem['recall']['stage'] == 'await_dispatch'
+        mem['recall']['input_sent'] = True  # receipt for the new request
+    for _ in range(p.PICKER_LOST_READS):
+        assert p.world_map_step(view, mem, frame) == []
+    assert 'confirm_after_zoom' not in mem['recall']
+    for _ in range(6 - p.PICKER_LOST_READS - 1):
+        assert p.world_map_step(view, mem, frame) == []
+    assert p.world_map_step(view, mem, frame) == [p.pad('b')]
+    assert not mem.get('recall')
+    verification = mem['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['select_retries'] == p.SELECT_RETRY_LIMIT
+    assert not verification.get('confirm_sent')
