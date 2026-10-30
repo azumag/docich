@@ -9,7 +9,8 @@ from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
-                               _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
+                               _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets,
+                               _route_frontier, _route_nodes, _source,
                                _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
 
 
@@ -17,13 +18,19 @@ INTERIM_LIMIT = 2             # JEV answers per off-chart situation
 INTERIM_MIN_CONFIDENCE = 0.7
 
 
-def _interim_source(mem, target, chart_order, owned, busy):
+def _interim_source(mem, target, chart_order, owned, busy, route_pred=None):
     """(source, general) for an interim sortie to ``target``, or None.
 
     A castle whose general list we last read is used as measured: an empty one
     is never a source (g401: the chart general had already left キカンドン and
     the bot pressed A there for 14 minutes). Without a reading, fall back to
     the chart's source, then the home castle, as before.
+
+    ``route_pred`` is the owned route predecessor of a frontier target
+    (#2930): the sortie must launch from that castle so the unit marches a
+    chart hop instead of a direct line across impassable terrain. When the
+    predecessor cannot supply a general the sortie waits for staffing rather
+    than launching off-route.
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
@@ -31,23 +38,27 @@ def _interim_source(mem, target, chart_order, owned, busy):
     busy = busy | set(mem.get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
+    route_ok = (lambda c: route_pred is None or c == route_pred)
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
     # castle that keeps somebody behind is required, then the nearest goes.
-    staffed = sorted((c for c in owned if len(set(free[c])) >= 2
+    staffed = sorted((c for c in owned if route_ok(c)
+                      and len(set(free[c])) >= 2
                       and set(free[c]) - unavailable_for_attack),
                      key=lambda c: _distance(chapter, c, target))
     if staffed:
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
-    recheck = sorted((c for c in owned if _source_location_recheck_due(mem, c)),
+    recheck = sorted((c for c in owned if route_ok(c)
+                      and _source_location_recheck_due(mem, c)),
                      key=lambda c: (_distance(chapter, c, target), c))
     if recheck:
         return recheck[0], MOVE_ANY_GENERAL
     unplaced = [g for g in _unplaced_castle_generals(mem)
                 if g not in busy and g not in unavailable_for_attack]
     arrival = _arrival_castle(mem, owned)
-    if unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None:
+    if (unplaced and arrival in owned and route_ok(arrival)
+            and _source_location_recheck(mem, arrival) is None):
         # Joiners stand in the hero's castle; the sortie list is the reading
         # and still cancels if fewer than two are really there.
         return arrival, unplaced[0]
@@ -55,7 +66,7 @@ def _interim_source(mem, target, chart_order, owned, busy):
     if general in busy or general in unavailable_for_attack:
         return None
     for source in ((chart_order or {}).get('source'), home):
-        if source in owned and garrison.get(source) is None:
+        if source in owned and route_ok(source) and garrison.get(source) is None:
             return source, general
     # Refuting home does not refute every other owned castle. g684 4-2:
     # four known lists each held one defender, while ジョンリギ's list was
@@ -77,7 +88,7 @@ def _interim_source(mem, target, chart_order, owned, busy):
         # A defender/arrival updates garrison with one known name, which
         # does not prove that the castle's complete list contains only one.
         return bool(unplaced_names) and not disproved and len(set(free[c])) < 2
-    unread = sorted((c for c in owned if probe_due(c)),
+    unread = sorted((c for c in owned if route_ok(c) and probe_due(c)),
                     key=lambda c: (_distance(chapter, c, target), c))
     if unread:
         return unread[0], MOVE_ANY_GENERAL
@@ -123,9 +134,16 @@ def interim_candidates(mem) -> dict:
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
+    # 中継ルートを制約にする（#2930）: 第3話では、チャートの有向区間で
+    # 自軍城から伸びる最前線の未占領城だけを攻撃対象にし、崖を挟む奥の
+    # 敵城へ直行しない。ルート未収載の城は従来どおり距離基準で対象に残す。
+    frontier = _route_frontier(chapter, owned) if chapter == 3 else {}
+    route = _route_nodes(chapter) if chapter == 3 else set()
+    targets = [c for c in targets if chapter != 3 or c in frontier or c not in route]
     sorties = {'retake': [], 'attack': []}
     for target in targets:
-        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
+        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy,
+                                 route_pred=frontier.get(target))
         if picked is None:
             continue
         source, general = picked

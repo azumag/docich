@@ -168,10 +168,70 @@ def _orders(mem):
     """
     plan = mem.get('chart_plan') or {}
     interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    # 未送信の直行暫定注文は実行時に取り消す（#2930）。チャートの有向区間
+    # を逸脱する旧注文・調整注文が残っていても、ここで必ず遮断する。
+    if interim is not None and not _interim_route_valid(mem, interim):
+        _record(mem, 'interim_route_cancelled', chart_step=interim.get('step'),
+                strategy_variant='chart_adjust_pending',
+                observed_metric={'target': interim.get('target'),
+                                 'source': interim.get('source')},
+                reason='中継ルート上の最前線でない城への直行暫定注文を実行前に取り消す')
+        mem['chart_adjust'].pop('interim_order', None)
+        interim = None
     # An interim order only exists when no plan order is waiting (see
     # ``_off_chart``), so it may follow an exhausted plan as well as the base.
     base = plan['orders'] if plan.get('orders') else chart.orders(mem.get('chapter') or 0)
     return (*base, *((interim,) if interim else ()))
+
+
+def _route_dispatch_ok(order, mem):
+    """第3話の通常城への進軍は、チャートの有向区間上の最前線だけを対象に
+    し、出撃元はそのルート前任城に限る（#2930）。
+
+    他章・守備移動 (purpose=move)・自軍城宛・ボス城・ルート未収載の城は
+    制約外とする。出撃元は ``_source`` で source_override まで反映した
+    実効値を見る。
+    """
+    if (mem.get('chapter') or 0) != 3:
+        return True
+    if order.get('purpose') == 'move':
+        return True
+    target = order.get('target')
+    owned = _owned(mem)
+    if not target or target in owned or target == chart.boss_castle(3):
+        return True
+    frontier = _route_frontier(3, owned)
+    if target not in frontier:
+        return target not in _route_nodes(3)
+    return _source(order, mem) == frontier[target]
+
+
+def _interim_route_valid(mem, order):
+    """Whether a still-pending interim sortie marches on a chart route hop.
+
+    Attack/retake orders must aim at the route frontier (the first un-owned
+    hop) from its owned route predecessor; a stale direct order to a deeper
+    castle — or from a castle off the route — is invalid and gets cancelled
+    before dispatch (#2930). Launched orders and owned-castle staffing moves
+    are left to their own execution paths.
+    """
+    status = (mem.get('orders') or {}).get(order.get('step'))
+    if status in ('launched', 'launched_unconfirmed'):
+        return True                       # already in motion; execution owns it
+    if order.get('purpose') == 'move':
+        return True                       # staffing moves stay unrestricted
+    chapter = mem.get('chapter') or 0
+    if chapter != 3:
+        return True                       # 崖の実害が観測された第3話のみ制約する（#2930）
+    target = order.get('target')
+    owned = _owned(mem)
+    if not target or target in owned:
+        return True
+    frontier = _route_frontier(chapter, owned)
+    if target not in frontier:
+        # Route-unknown castles keep the old distance-based allowance.
+        return target not in _route_nodes(chapter)
+    return order.get('source') == frontier[target]
 
 
 def _order_for_step(mem, step):
@@ -251,6 +311,17 @@ def next_order(mem):
                 and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
+        if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and _ready(order, mem) and not _route_dispatch_ok(order, mem)):
+            # 古い未送信の直行注文は実行時に取り消す（#2930）。発行後は
+            # launched の実行経路に委ねる。
+            status[order['step']] = 'failed'
+            _record(mem, 'order_failed', chart_step=order['step'],
+                    deviation_reason='route_invalid',
+                    observed_metric={'source': _source(order, mem),
+                                     'target': order.get('target')},
+                    reason='中継ルート上の最前線でない城への直行注文を実行時に取り消す')
+            continue
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)
                 and _source(order, mem) in owned
@@ -377,6 +448,53 @@ def _distance(chapter, a, b) -> int:
     castles = chart.castles(chapter)
     (ax, ay), (bx, by) = castles[a], castles[b]
     return abs(ax - bx) + abs(ay - by)
+
+
+def _route_edges(chapter):
+    """Directed castle-to-castle hops implied by the chart's own orders.
+
+    Each chart order's ``source``→``target`` pair is one marchable hop; the
+    bot never invents hops of its own, so crossing terrain like the chapter-3
+    cliff stays impossible (#2930).
+    """
+    edges = {}
+    # 未測定章でもルート構造はチャート定義済みなので、測定フィルタ済みの
+    # chart.orders ではなく _ORDERS（全注文）から有向区間を取る。
+    for order in chart._ORDERS.get(chapter, ()):
+        src, tgt = order.get('source'), order.get('target')
+        if src and tgt and src != tgt:
+            edges.setdefault(src, set()).add(tgt)
+    return edges
+
+
+def _route_nodes(chapter):
+    return {n for src, dsts in _route_edges(chapter).items()
+            for n in (src, *dsts)}
+
+
+def _route_frontier(chapter, owned):
+    """{un-owned castle: owned route predecessor} — the first un-owned hop on
+    each directed route out of the owned castles.
+
+    A deeper enemy castle is unreachable until the frontier hop on its route
+    is captured; interim orders must aim at the frontier, never at the deeper
+    castle across impassable terrain (#2930).
+    """
+    edges = _route_edges(chapter)
+    frontier = {}
+    queue = sorted(owned)
+    seen = set(owned)
+    while queue:
+        node = queue.pop(0)
+        for nxt in sorted(edges.get(node) or ()):
+            if nxt in seen:
+                continue
+            if nxt in owned:
+                seen.add(nxt)
+                queue.append(nxt)
+            elif nxt not in frontier:
+                frontier[nxt] = node
+    return frontier
 
 
 def _sortie_reserved_target(mem, step, sortie):
