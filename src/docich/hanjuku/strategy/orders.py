@@ -836,9 +836,18 @@ def _unplaced_castle_generals(mem):
     month = mem.get('month')
     placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
     busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
-    return sorted(name for name, info in (mem.get('house_eggs') or {}).items()
-                  if isinstance(info, dict) and info.get('location') == 'castle'
-                  and info.get('month') == month and name not in placed and name not in busy)
+    names = {name for name, info in (mem.get('house_eggs') or {}).items()
+             if isinstance(info, dict) and info.get('location') == 'castle' and info.get('month') == month}
+    # g1075 2026-10-30 11:48 (#3077): chapter 4 recorded no house statuses,
+    # while this month's roster named six generals no read castle list held.
+    # An unread list is opened by its own probe, so the roster counts only
+    # once every owned castle's list has been read.
+    roster = mem.get('recruit_roster') or {}
+    garrison = mem.get('garrison') or {}
+    if (roster.get('chapter') == mem.get('chapter') and roster.get('month') == month
+            and all(garrison.get(c) is not None for c in _owned(mem))):
+        names |= {name for name in roster.get('names') or () if name != NAME}
+    return sorted(name for name in names if name not in placed and name not in busy)
 
 
 def _arrival_castle(mem, owned):
