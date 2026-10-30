@@ -139,3 +139,19 @@ def test_the_general_kept_behind_holds_an_egg():
     assert orders._order_hero_alternatives(north_west, mem, ['ヴィーナス', 'ブカティーニ']) == []
     # The hero's castle keeps its two guards as before, with or without eggs.
     assert orders._order_hero_alternatives(north_west, mem, [chart.HERO, 'ゼウス', 'キール', 'カペリーニ']) == ['ゼウス']
+
+
+def test_an_overdue_site_march_still_binds_its_late_entry():
+    """g1075: ソーピニヨン went overdue while still marching to 北東; the later
+    「ボスじょう」 entry must recover the site/step or its win cannot record."""
+    from docich import hanjuku_policy as policy
+    from docich.hanjuku_screen import Screen, classify_text
+    screen = Screen(lines=[], hand=None, text='ソーピニヨンしょうぐんがボスじょうにせめこんだ!!')
+    screen.kind = classify_text(screen)
+    mem = {'chapter': 4, 'tick': 155900, 'orders': {'4-B3': 'launched'},
+           'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
+                                'target': '四季王城(北東)', 'status': 'overdue', 'tick': 155587}}}
+    assert policy.message_step(screen, mem) == [policy.pad('a')]
+    assert mem['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
+                             'step': '4-B3', 'entry_evidence': 'measured_boss_entry'}
+    assert mem['sorties']['4-B3']['status'] == 'arrived'

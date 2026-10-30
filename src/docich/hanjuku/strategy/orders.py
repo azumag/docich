@@ -1188,7 +1188,8 @@ def _long_march(sorties, castle, general, now):
         return None
     step, sortie = latest[0]
     target = sortie.get('target')
-    if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+    statuses = ('en_route', 'launched_unconfirmed', 'overdue') if chart.is_boss_castle(castle) else ('en_route', 'launched_unconfirmed')
+    if (sortie.get('status') not in statuses
             or not (target == castle or (target is None and sortie.get('planned_target') == castle))
             or not 0 <= now - newest < LONG_MARCH_TICKS):
         return None

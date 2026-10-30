@@ -17,7 +17,7 @@ from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import (WORLD_FLAG_OWN, WORLD_MAP_OFFSET, _near_colour,
                                              world_cursor, world_flags)
 from docich.hanjuku.os_layer.screen import is_world_map
-from docich.hanjuku.os_layer.world import _apply_world_flags
+from docich.hanjuku.os_layer.world import _apply_world_flags, observe_owners
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'hanjuku'
@@ -75,3 +75,17 @@ def test_no_saved_y_view_reads_a_boss_flag_in_any_measured_chapter(chapter):
         views += 1
         assert boss not in world_flags(frame, chapter), path.name
     assert views >= 8
+
+
+def test_a_season_site_roof_is_not_recorded_as_ownership():
+    """g1075: a unit by 四季王城(南東) produced a false 'own' roof receipt."""
+    site = '四季王城(南東)'
+    x, y = chart.castles(4)[site]
+    other = 'ネクスドリア'
+    ox, oy = chart.castles(4)[other]
+    roofs = [{'target': (x, y), 'kind': 'own'}, {'target': (ox, oy), 'kind': 'own'}]
+    mem = {'chapter': 4, 'tick': 100, 'captured': []}
+    observe_owners(mem, roofs, (0, 0))
+    observe_owners(mem, roofs, (0, 0))
+    assert site not in (mem.get('castle_ownership') or {})
+    assert (mem.get('castle_ownership') or {}).get(other, {}).get('owner') == 'own'

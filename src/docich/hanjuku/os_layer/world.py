@@ -218,12 +218,10 @@ def observe_owners(mem, roofs, cam):
         streak[castle] = {'kind': kind, 'count': count,
                           **({'world_flag_vetoed': True} if prev.get('world_flag_vetoed')
                              and prev.get('kind') == kind else {})}
-        if count < OWNER_CONFIRM:
+        if count < OWNER_CONFIRM or castle in fixed:
             continue
         from .roster import owner
         owner(mem, STATUS_NAMES.get(castle, castle), kind)
-        if castle in fixed:
-            continue
         captured = mem.setdefault('captured', [])
         if kind == 'enemy' and castle in captured:
             (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)

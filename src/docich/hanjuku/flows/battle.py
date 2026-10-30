@@ -38,7 +38,8 @@ from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
-from ..strategy.orders import _bind_sortie, _garrison_move, _match_sortie, _order_for_step, _tactics
+from ..strategy.orders import (LONG_MARCH_TICKS, _bind_sortie, _garrison_move, _match_sortie,
+                                _order_for_step, _tactics)
 
 
 def observe_entry_return(screen, mem):
@@ -1373,12 +1374,22 @@ def _boss_entry_cell(mem, general):
     if chapter == 4:
         # An unconfirmed launch keeps its site as planned_target only (g1075
         # 08:34:57: カペリーニ's 4-B2 entry matched nothing and was held 7 times).
-        sites = {s.get('target') or s.get('planned_target') for s in (mem.get('sorties') or {}).values()
-                 if isinstance(s, dict) and s.get('general') == general
-                 and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)
-                 and s.get('status') in ('en_route', 'launched_unconfirmed')}
+        now = int(mem.get('tick') or 0)
+        sorties = [s for s in (mem.get('sorties') or {}).values()
+                   if isinstance(s, dict) and s.get('general') == general
+                   and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)]
+        active = [s for s in sorties if s.get('status') in ('en_route', 'launched_unconfirmed')]
+        sites = {s.get('target') or s.get('planned_target') for s in active}
         if len(sites) == 1:
             return sites.pop()
+        if not active:
+            overdue = [s for s in sorties if s.get('status') == 'overdue'
+                       and type(s.get('tick')) is int and 0 <= now - s['tick'] < LONG_MARCH_TICKS]
+            if overdue:
+                newest = max(s['tick'] for s in overdue)
+                sites = {s.get('target') or s.get('planned_target') for s in overdue if s['tick'] == newest}
+                if len(sites) == 1:
+                    return sites.pop()
     return chart.boss_castle(chapter)
 
 
