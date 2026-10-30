@@ -65,6 +65,35 @@ def _same_skipped_camp(camp, scoped):
             and abs(target[1] - old[1]) <= RECALL_SKIP_RADIUS)
 
 
+def _filter_recall_skip(mem, camps):
+    """Apply a retry cooldown to only the camp that actually failed.
+
+    This is deliberately reused both when choosing a camp and while tracking it:
+    otherwise the next ``to_camp`` re-detection can immediately switch back to
+    the nearer failed camp and defeat the scoped cooldown.
+    """
+    camps = list(camps or [])
+    skip = mem.get('recall_skip')
+    age = (int(mem.get('tick') or 0) - int(skip.get('tick') or 0)
+           if isinstance(skip, dict) else RECALL_SKIP_TICKS)
+    if not 0 <= age < RECALL_SKIP_TICKS:
+        mem.pop('recall_skip', None)
+        mem.pop('recall_skip_target', None)
+        return camps
+    scoped = mem.get('recall_skip_target')
+    if not isinstance(scoped, dict) or not _camp_target(scoped.get('target')):
+        # Hotloaded/legacy state has no safe camp identity. Keep the historical
+        # fail-closed global cooldown for that one window.
+        return []
+    if scoped.get('chapter') != mem.get('chapter'):
+        # Screen coordinates are chapter-local. Never carry a scoped cooldown
+        # into a new chapter.
+        mem.pop('recall_skip', None)
+        mem.pop('recall_skip_target', None)
+        return camps
+    return [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
+
+
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
     from . import camp_recheck as hanjuku_camp_recheck
@@ -91,30 +120,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if screen.kind != 'map' or frame is None:
             return None
         camps = own_camps(frame) if observed_camps is None else observed_camps
-        skip = mem.get('recall_skip')
-        age = (int(mem.get('tick') or 0) - int(skip.get('tick') or 0)
-               if isinstance(skip, dict) else RECALL_SKIP_TICKS)
-        active_skip = 0 <= age < RECALL_SKIP_TICKS
-        if active_skip:
-            scoped = mem.get('recall_skip_target')
-            if isinstance(scoped, dict) and _camp_target(scoped.get('target')):
-                if scoped.get('chapter') == mem.get('chapter'):
-                    # The old global backoff left every other camp untouched for
-                    # ~10 minutes after one camp failed. Cool down only that camp;
-                    # another visible camp may be recalled immediately.
-                    camps = [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
-                else:
-                    # Screen coordinates are chapter-local. Never carry a
-                    # scoped cooldown into a new chapter.
-                    mem.pop('recall_skip', None)
-                    mem.pop('recall_skip_target', None)
-            else:
-                # Hotloaded/legacy state has no safe camp identity. Keep the
-                # historical fail-closed global cooldown for that one window.
-                camps = []
-        else:
-            mem.pop('recall_skip', None)
-            mem.pop('recall_skip_target', None)
+        camps = _filter_recall_skip(mem, camps)
         if not camps:
             return None
         cursor = _cursor(screen)
@@ -122,7 +128,6 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0,
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
-        _remember_recall_target(mem, state)
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {})},
                 reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
@@ -164,8 +169,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
         # Re-detect every step: a tent clipped by the top edge is targeted
         # above the screen, and the cursor servo there scrolls the camera
-        # until the flag shows and the real selecting cell is known.
+        # until the flag shows and the real selecting cell is known. Keep the
+        # failed-camp cooldown applied here too, not only at initial selection.
         camps = (own_camps(frame) if frame is not None else []) if observed_camps is None else observed_camps
+        camps = _filter_recall_skip(mem, camps)
         if not camps:
             missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
             if missing == 1:
@@ -190,7 +197,6 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             state['camp_kind'] = camp['kind']
         else:
             state.pop('camp_kind', None)
-        _remember_recall_target(mem, state)
         cursor = _cursor(screen)
         if not cursor:
             return []
