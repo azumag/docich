@@ -184,7 +184,9 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `parked`（到着未実測のまま出し直し上限に達して待機）/ `idle` のいずれかです。
   併せて `overdue` / `exhausted` の step、最も古い到着未実測の `oldest_age_ticks`、
   出撃ごとの `sorties.<step>.age_ticks` / `relaunch`、実測済みの四季王サイト
-  `boss_victories.count` / `sites` を返します。`parked` は「いま進軍が止まっている」
+  `boss_victories.count` / `sites` を返します。あわせて章の `captured` / `lost`、
+  `boss_defeated`、注文ごとの再試行回数 `retries` を返し、サイト出撃が
+  出ていないのか、敗戦後に再試行中なのか、城を失って前提が崩れているのかを切り分けます。`parked` は「いま進軍が止まっている」
   候補であり、戦闘中・月次処理中・単なる到着待ちを区別しないため、`active` と
   `screen_kind` / `phase` を併読します。`bot_version` は観測時点のbot記録が名乗る
   版で、deploy済みコードとの一致を単独では保証しません。自由文・理由・identityは出しません。

@@ -214,8 +214,10 @@ def test_compact_policy_projects_a_parked_march_without_free_text():
         'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(南西)',
                              'tick': 7000, 'note': 'DO-NOT-PUBLISH'}},
         'boss_relaunch': {'4-B1': 2},
+        'retries': {'4-B1': 1},
         'boss_victories': {'サマカンテ': {'site': '四季王城(南西)',
                                       'note': 'DO-NOT-PUBLISH'}},
+        'captured': ['アルカ'], 'lost': ['マラコビア'], 'boss_defeated': None,
     })
     assert policy['sorties']['4-B1'] == {
         'status': 'overdue', 'target': '四季王城(南西)',
@@ -224,6 +226,9 @@ def test_compact_policy_projects_a_parked_march_without_free_text():
         'state': 'parked', 'overdue': ['4-B1'], 'exhausted': ['4-B1'],
         'oldest_age_ticks': 3000}
     assert policy['boss_victories'] == {'count': 1, 'sites': ['四季王城(南西)']}
+    assert policy['retries'] == {'4-B1': 1}
+    assert policy['captured'] == ['アルカ'] and policy['lost'] == ['マラコビア']
+    assert policy['boss_defeated'] is None
     assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
 
 
@@ -255,12 +260,18 @@ def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
                              'tick': 'yesterday'}},
         'boss_relaunch': {'4-B1': -1},
         'boss_victories': {'x': {'site': 'x' * 500}},
+        'retries': {'4-B1': -1},
+        'captured': ['x' * 500, 7], 'lost': ['マラコビア'],
+        'boss_defeated': 'chapter_4',
     })
     assert policy['sorties']['4-B1'] == {
         'status': 'overdue', 'target': None, 'age_ticks': None, 'relaunch': None}
     assert policy['march']['state'] == 'overdue'
     assert policy['march']['oldest_age_ticks'] is None
     assert policy['boss_victories'] == {'count': 1, 'sites': []}
+    assert policy['retries'] == {'4-B1': None}
+    assert policy['captured'] == [] and policy['lost'] == ['マラコビア']
+    assert policy['boss_defeated'] is None
 
 
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
