@@ -596,22 +596,60 @@ class DirectProfileTests(unittest.TestCase):
         self.assertTrue(error.fp.closed)
 
 
-class SarashinaRelayProfileTest(unittest.TestCase):
-    """Relay profile: no upstream/billing, https-only relay base, registered model."""
+class SarashinaProfileTest(unittest.TestCase):
+    """Sarashina profile: one fixed endpoint, no upstream/billing, registered models only."""
 
     def _settings(self, **changes):
-        values = dict(provider="sarashina", model="sarashina3-translate", upstream="", billing_mode="",
-                      api_key="SYNTHETIC_KEY", base_url="https://relay.example.test", token="")
+        values = dict(provider="sarashina", model="sarashina3-nano", upstream="", billing_mode="",
+                      api_key="SYNTHETIC_KEY", base_url="https://sarashina.example.test", token="")
         return chat.Settings(**{**values, **changes})
 
-    def test_valid_relay_profile_adds_no_provider_options(self):
-        self.assertEqual(chat.direct_chat_options(self._settings()), {})
+    def test_valid_profiles_add_no_provider_options(self):
+        for change in (dict(), dict(model="sarashina3-mini"), dict(base_url="http://127.0.0.1:8080/v1")):
+            self.assertEqual(chat.direct_chat_options(self._settings(**change)), {}, msg=str(change))
 
-    def test_invalid_relay_profiles_fail_before_post(self):
-        invalid = [dict(base_url=""), dict(base_url="http://relay.example.test"),
-                   dict(base_url="https://u:p@relay.example.test"), dict(base_url="https://relay.example.test/?x=1"),
-                   dict(base_url="https://relay.example.test#frag"), dict(upstream="openai"),
-                   dict(billing_mode="credits_only"), dict(model="sarashina-other"), dict(api_key="")]
+    def test_invalid_profiles_fail_before_post(self):
+        invalid = [dict(base_url=""), dict(base_url="http://sarashina.example.test"),
+                   dict(base_url="https://u:p@sarashina.example.test"),
+                   dict(base_url="https://sarashina.example.test/?x=1"),
+                   dict(base_url="https://sarashina.example.test#frag"),
+                   dict(base_url="https://sarashina.example.test/v1/../x"),
+                   dict(base_url="ftp://sarashina.example.test"),
+                   dict(upstream="openai"), dict(billing_mode="credits_only"),
+                   dict(model="sarashina3-translate"), dict(model="sarashina-other"), dict(api_key="")]
         for change in invalid:
             with self.assertRaises(chat.ChatError, msg=str(change)):
                 chat.direct_chat_options(self._settings(**change))
+
+    def test_startup_pin_is_canonical_and_rejects_invalid_endpoints(self):
+        env = {"DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test:8443/relay/"}
+        self.assertEqual(chat.sarashina_pin(env), "https://sarashina.example.test:8443/relay")
+        for bad in ("", "http://sarashina.example.test", "https://u@sarashina.example.test"):
+            with self.assertRaises(chat.ChatError, msg=bad):
+                chat.sarashina_pin({"DOCICH_CHAT_SARASHINA_UPSTREAM": bad})
+
+    def test_redirect_to_another_host_is_refused_not_followed(self):
+        import http.server
+        import urllib.error
+        import urllib.request
+
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.2:9/chat/completions")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        opener = urllib.request.build_opener(chat._NoRedirect())
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/chat/completions",
+                                         data=b"{}", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(request, timeout=5)
+        self.assertEqual(caught.exception.code, 302)
