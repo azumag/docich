@@ -121,7 +121,8 @@ def request_id(mem) -> str:
     # about; otherwise every interim sortie would discard a pending answer.
     basis = {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or []),
              'orders': dict(sorted((k, v) for k, v in (mem.get('orders') or {}).items()
-                                   if not str(k).startswith(INTERIM_PREFIX)))}
+                                   if not str(k).startswith(INTERIM_PREFIX)
+                                   and ':M' not in str(k)))}
     raw = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 

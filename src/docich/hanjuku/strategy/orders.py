@@ -658,6 +658,17 @@ def _follow_general(mem, order, garrison, owned):
 
 
 def _order(mem):
+    # A mechanical chart is a stand-in while the LLM answer is pending; once a
+    # normal chart order becomes ready, discard it so the base chart resumes.
+    if mem.get('active') is None:
+        plan = mem.get('chart_plan') or {}
+        if plan.get('source') == 'mechanical':
+            chapter = mem.get('chapter') or 0
+            try:
+                if any(_ready(o, mem) for o in chart.orders(chapter)):
+                    mem['chart_plan'] = None
+            except Exception:
+                pass
     return _order_for_step(mem, mem.get('active'))
 
 
