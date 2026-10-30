@@ -183,7 +183,9 @@ for _chapter in sorted(SOURCE_CHAPTERS):
 del _chapter
 # Heart centres on the native Y view. HOUSE_TARGET separately selects the
 # integer cell; a roster read from the monthly menu needs neither coordinate.
-HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
+# Chapter 4's heart was measured on the live g1075 map (2026-10-30 savestate
+# probe): the red heart sprite centres at (134.0, 87.5) on the native Y view.
+HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 4: (134.0, 87.5)}
 
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
