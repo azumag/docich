@@ -92,10 +92,20 @@ def test_g1075_after_the_seventh_castle_has_a_site_sortie_ready():
     assert policy.next_order(mem)['step'] == '4-B1'
 
 
-def test_a_lost_castle_is_taken_back_before_the_next_site():
+def test_a_single_lost_castle_still_lets_a_site_sortie_start():
+    # Owner 2026-10-30 (全城条件は厳しいため緩和): one missing castle no
+    # longer holds the sites; retakes run alongside the site march.
     mem = all_captured()
     mem['captured'].remove('アルカ')
     mem['lost'] = ['アルカ']
+    assert orders._ready(site_order(), mem)
+
+
+def test_two_lost_castles_are_taken_back_before_the_next_site():
+    mem = all_captured()
+    mem['captured'].remove('アルカ')
+    mem['captured'].remove('ミヒラギアン')
+    mem['lost'] = ['アルカ', 'ミヒラギアン']
     assert not orders._ready(site_order(), mem)
     # A lost hero castle holds the sites too.
     assert not orders._ready(site_order(), all_captured(lost=[chart.home_castle(4)]))
