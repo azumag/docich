@@ -24,7 +24,8 @@ from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
-                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source, next_order)
+                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
+                               next_order, parked_boss_steps)
 from ..strategy.replan import _off_chart
 
 
@@ -116,6 +117,43 @@ def _world_map_wanted(mem) -> bool:
     tick = int(mem.get('tick') or 0)
     return (last is None or bool(mem.get('world_map_due'))
             or tick - int(last) >= WORLD_SURVEY_TICKS)
+
+
+BOSS_STALL_ESCAPE_TICKS = 400   # one bounded back-out per ~10 min while parked
+BOSS_STALL_ESCAPE_KINDS = frozenset({
+    'month_menu', 'shop_list', 'shop_quantity_prompt', 'shop_quantity',
+    'shop_exit_confirm', 'castle_menu', 'general_list', 'main_menu', 'castle_info'})
+
+
+def boss_stall_escape_step(mem, kind, phase):
+    """Back out of a menu when a boss march is parked on the field map.
+
+    g1075 kept four site steps overdue with boss_relaunch=2 for 11-16
+    hours. The sorties were correct; the bot never returned to the field map
+    where next_order can re-arm them, because month/shop text kept owning
+    the observation. This is a bounded escape, not a new order: one B per
+    cooldown, only with no active order/battle and only on menu/text screens.
+    """
+    parked = parked_boss_steps(mem)
+    if (not parked or mem.get('active') or mem.get('battle') or mem.get('attack')
+            or mem.get('recall')):
+        return None
+    if kind == 'text':
+        if phase not in ('shop', 'month'):
+            return None
+    elif kind not in BOSS_STALL_ESCAPE_KINDS:
+        return None
+    tick = int(mem.get('tick') or 0)
+    last = mem.get('boss_stall_escape_tick')
+    if type(last) is int and 0 <= tick - last < BOSS_STALL_ESCAPE_TICKS:
+        return None
+    mem['boss_stall_escape_tick'] = tick
+    mem['world_map_due'] = True
+    mem['uncertain'] = True
+    _record(mem, 'boss_stall_escape',
+            observed_metric={'steps': parked[:4], 'kind': kind, 'phase': phase},
+            reason='ボス出撃が長期間入城しないまま駐車しているため、メニューを閉じて全体マップへ戻る')
+    return [pad('b')]
 
 
 def _picker_origin(chapter, frame):

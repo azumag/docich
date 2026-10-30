@@ -640,6 +640,35 @@ def _boss_fight_live(mem, step):
                for record in (mem.get('attack'), mem.get('battle')))
 
 
+def parked_boss_steps(mem):
+    """Boss steps whose march has been overdue past the stale cooldown.
+
+    A step is parked when its order still says launched, its sortie is
+    overdue (or an entered fight left no result), its bounded relaunch budget
+    is spent, and the stale cooldown has elapsed. At that point only
+    _relaunch_overdue_boss can restart it, so a caller stuck in a menu can
+    prioritize returning to the field map.
+    """
+    now = int(mem.get('tick') or 0)
+    orders_status = mem.get('orders') or {}
+    relaunches = mem.get('boss_relaunch') or {}
+    out = []
+    for step, sortie in (mem.get('sorties') or {}).items():
+        if not isinstance(sortie, dict):
+            continue
+        target = sortie.get('target') or sortie.get('planned_target')
+        status = sortie.get('status')
+        if (orders_status.get(step) != 'launched' or not chart.is_boss_castle(target)
+                or status not in ('overdue', 'arrived')
+                or (status == 'arrived' and _boss_fight_live(mem, step))
+                or type(sortie.get('tick')) is not int
+                or relaunches.get(step, 0) < BOSS_RELAUNCH_LIMIT
+                or now - sortie['tick'] < BOSS_STALE_COOLDOWN):
+            continue
+        out.append(step)
+    return sorted(out)
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.

@@ -377,6 +377,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     from .flows import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
     hanjuku_camp_recheck.observe_camp_status(screen, mem)
+    stall_actions = map_flow.boss_stall_escape_step(mem, kind, phase)
+    if stall_actions is not None:
+        # A parked boss march must not stay behind month/shop/house text for
+        # hours. One bounded B returns to the field map, where next_order can
+        # re-arm the stale step; normal flows resume if no step is parked.
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+            mem.pop(key, None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return stall_actions, updated
     if state.get('screen_kind') != kind:
         # A shop/information/confirmation round trip starts a new navigation
         # episode. No movement failure belongs to a different visible screen.
