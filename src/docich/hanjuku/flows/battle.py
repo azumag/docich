@@ -38,8 +38,8 @@ from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
-from ..strategy.orders import (LONG_MARCH_TICKS, _bind_sortie, _garrison_move, _match_sortie,
-                                _order_for_step, _tactics)
+from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
+                                _garrison_move, _match_sortie, _order_for_step, _tactics)
 
 
 def observe_entry_return(screen, mem):
@@ -1378,13 +1378,21 @@ def _boss_entry_cell(mem, general):
         sorties = [s for s in (mem.get('sorties') or {}).values()
                    if isinstance(s, dict) and s.get('general') == general
                    and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)]
+        # A re-sent step replaces its sortie; the retired attempt still names
+        # the site this general is marching to.
+        retired = mem.get('retired_sorties')
+        for rows in (retired.values() if isinstance(retired, dict) else ()):
+            sorties.extend(s for s in rows or ()
+                           if isinstance(s, dict) and s.get('general') == general
+                           and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4))
         active = [s for s in sorties if s.get('status') in ('en_route', 'launched_unconfirmed')]
         sites = {s.get('target') or s.get('planned_target') for s in active}
         if len(sites) == 1:
             return sites.pop()
         if not active:
             overdue = [s for s in sorties if s.get('status') == 'overdue'
-                       and type(s.get('tick')) is int and 0 <= now - s['tick'] < LONG_MARCH_TICKS]
+                       and type(s.get('tick')) is int
+                       and 0 <= now - s['tick'] < SITE_LATE_ENTRY_TICKS]
             if overdue:
                 newest = max(s['tick'] for s in overdue)
                 sites = {s.get('target') or s.get('planned_target') for s in overdue if s['tick'] == newest}
@@ -1451,7 +1459,7 @@ def message_step(screen: Screen, mem):
             mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
                              'step': step, 'entry_evidence': 'measured_boss_entry'}
             return [pad('a')]
-        _bind_sortie(mem, step, boss_cell)
+        _bind_sortie(mem, step, boss_cell, general)
         mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
@@ -1474,7 +1482,7 @@ def message_step(screen: Screen, mem):
         ours = (step is not None or match in ('ambiguous', 'legacy')
                 or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス'))
         side = 'attack' if ours else 'enemy'
-        _bind_sortie(mem, step, castle)
+        _bind_sortie(mem, step, castle, general)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
                 expected_metric=launched.get('general'), observed_metric=general,
                 deviation_reason=(None if step or not ours

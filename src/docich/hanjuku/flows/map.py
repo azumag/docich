@@ -24,7 +24,7 @@ from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
-                               _recall_goal, _sortie_general, _source, next_order)
+                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source, next_order)
 from ..strategy.replan import _off_chart
 
 
@@ -87,6 +87,9 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
     mem.setdefault('launched_orders', {})[step] = snapshot
+    previous = (mem.get('sorties') or {}).get(step)
+    if previous:
+        _retire_unentered_sortie(mem, step, previous)
     mem.setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
@@ -611,6 +614,9 @@ def target_step(screen: Screen, mem, frame):
         mem.setdefault('launched_orders', {})[order['step']] = snapshot
         # Per execution id: ``launched`` keeps one sortie per castle, so a later
         # sortie to the same castle must not unbind an earlier unit en route.
+        previous = (mem.get('sorties') or {}).get(order['step'])
+        if previous:
+            _retire_unentered_sortie(mem, order['step'], previous)
         mem.setdefault('sorties', {})[order['step']] = {
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'status': 'en_route',
