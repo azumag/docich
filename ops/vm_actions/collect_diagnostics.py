@@ -11280,6 +11280,112 @@ def _compact_hanjuku_policy(mem, state=None):
     }
 
 
+HANJUKU_CHART_WORKER_STATUSES = frozenset(
+    {'saved', 'invalid_output', 'generate_failed', 'worker_error', 'superseded'})
+# Same allowlist as the worker's own _DETAIL contract: fixed classifications
+# only (validator constant strings, ``rc-N:kind`` dispatcher kinds), never
+# provider or model text.
+_HANJUKU_WORKER_DETAIL = re.compile(r'[A-Za-z0-9 _/:.\-]{1,80}\Z')
+HANJUKU_CHART_HISTORY_EVENTS = frozenset(
+    {'adjust_worker', 'adjust_requested', 'adjusted_chart_saved',
+     'adjusted_orders_dropped'})
+
+
+def _project_hanjuku_chart_worker(runtime, now):
+    """Bounded view of the LLM chart-adjust worker for the active runtime.
+
+    g1075 recorded ``invalid_output`` 13 times in a row with no readable
+    reason and re-claimed a rate-limited request in 5 ms (#2936): the
+    runtime files held all of it but diagnostics projected none. Keep only
+    the claim counters, the last fixed status/detail classification, and a
+    few recent history rows (event/status/detail/age) -- request ids,
+    digests, prompts and payloads never leave the runtime.
+    """
+    out = {'present': False, 'readable': False}
+    runtime = Path(runtime)
+    try:
+        data, _modified = _read_hanjuku_record(runtime / 'hanjuku_chart_worker.json')
+    except FileNotFoundError:
+        return out
+    except (OSError, ValueError):
+        out['present'] = True
+        return out
+    out['present'] = True
+    out['readable'] = True
+
+    def _enum(value):
+        return value if value in HANJUKU_CHART_WORKER_STATUSES else None
+
+    def _detail(value):
+        return (value if isinstance(value, str)
+                and _HANJUKU_WORKER_DETAIL.fullmatch(value) else None)
+
+    def _count(value):
+        return value if type(value) is int and 0 <= value <= 100000 else None
+
+    def _age(value):
+        return (int(now - value) if type(value) in (int, float)
+                and math.isfinite(value) and 0 <= now - value <= 30 * 86400
+                else None)
+
+    cooldown_until = data.get('cooldown_until')
+    out.update(
+        attempts=_count(data.get('attempts')),
+        rate_limited=_count(data.get('rate_limited')),
+        last_status=_enum(data.get('last_status')),
+        last_detail=_detail(data.get('last_detail')),
+        last_age_sec=_age(data.get('last_at')),
+        claim_age_sec=_age(data.get('at')),
+        cooldown_remaining_sec=(
+            int(cooldown_until - now)
+            if type(cooldown_until) in (int, float)
+            and math.isfinite(cooldown_until)
+            and 0 < cooldown_until - now <= 86400 else None),
+        recent=[],
+    )
+
+    try:
+        fd = _open_hanjuku_scene_source(runtime / 'hanjuku_chart_history.jsonl')
+    except OSError:
+        return out
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return out
+        offset = max(0, info.st_size - 64 * 1024)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+        if offset:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()[-128:]
+    finally:
+        os.close(fd)
+    recent = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (not isinstance(row, dict)
+                or row.get('event') not in HANJUKU_CHART_HISTORY_EVENTS):
+            continue
+        age = _age(row.get('at'))
+        if age is None:
+            continue
+        entry = {'event': row['event'], 'age_sec': age,
+                 'status': _enum(row.get('status')),
+                 'detail': _detail(row.get('detail'))}
+        for key in ('elapsed_s', 'cooldown_s'):
+            value = row.get(key)
+            if (type(value) in (int, float) and math.isfinite(value)
+                    and 0 <= value <= 86400):
+                entry[key] = round(value, 3)
+        recent.append(entry)
+    out['recent'] = recent[-4:]
+    return out
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -11302,6 +11408,7 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
             return out
         runtime = root / 'runtimes' / active['runtime_id']
+        out['chart_worker'] = _project_hanjuku_chart_worker(runtime, now)
         bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
         run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
         trace = bot.get('decision_trace')
@@ -13530,6 +13637,9 @@ def _diagnostics_budget(payload):
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
         if isinstance(policy, dict):
             payload['hanjuku_tactical']['policy'] = policy
+        worker = summary.get('chart_worker') if isinstance(summary, dict) else None
+        if isinstance(worker, dict):
+            payload['hanjuku_tactical']['chart_worker'] = worker
         if type(chapter) is int:
             payload['hanjuku_tactical']['chapter'] = chapter
         if type(age_sec) is int:
