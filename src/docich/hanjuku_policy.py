@@ -38,8 +38,7 @@ from .hanjuku import _compat
 from .hanjuku import decision_log as _decision_log, reporting as _reporting
 from .hanjuku.flows import (battle as _flow_battle, battle_menus as _flow_battle_menus,
                             camp_recheck as _flow_camp_recheck,
-                            deploy as _flow_deploy, egg_recovery as _flow_egg_recovery,
-                            house as _flow_house, map as _flow_map,
+                            deploy as _flow_deploy, egg_recovery as _flow_egg_recovery, map as _flow_map,
                             month as _flow_month, name as _flow_name, prompts as _flow_prompts,
                             recall as _flow_recall, shop as _flow_shop)
 from .hanjuku.judgment import battle as _judgment_battle, events as _judgment_events
@@ -63,76 +62,52 @@ _LAYER_MODULES = (
 _compat.install(__name__, _LAYER_MODULES)
 
 
-# A named retreat recheck intentionally has a finite UI budget. Before this
-# guard, exhausting that budget left the queue row alive forever and
-# ``_visible_camps`` hid the same tent forever as well. Do not discard the row
-# before opening the camp: the anonymous path must still read the current
-# occupant's real status (including egg quantity). Once that status identifies
-# the same exhausted actor, release only the pre-dispatch row. Rows with an
-# uncertain or confirmed dispatch stay protected so another return A cannot be
-# sent accidentally.
-_camp_recheck_step_without_exhausted_release = _flow_camp_recheck.step
-_visible_camps_without_exhausted_release = _flow_camp_recheck._visible_camps
+# A named retreat recheck deliberately stops after three UI attempts so a bad
+# roster/cursor cannot loop forever.  Previously that finite budget became a
+# permanent camp ban: the queue row remained at ATTEMPT_LIMIT and the same camp
+# could never be reconsidered until an unrelated new departure was observed.
+# Re-arm only pre-dispatch rows after a longer stale wait.  This starts the
+# measured named roster/SELECT/status flow again; it does not infer camp identity
+# from a screen coordinate and it never re-arms a sent/possibly-sent return A.
+EXHAUSTED_CAMP_RECHECK_REARM_TICKS = 120
+_camp_recheck_step_without_stale_rearm = _flow_camp_recheck.step
 
 
-def _exhausted_predispatch_camp_row(mem, actor, row):
+def _rearm_exhausted_camp_rechecks(mem):
+    if mem.get('recall'):
+        return []
     now = mem.get('tick')
-    return (isinstance(row, dict)
-            and row.get('status') in ('needs_observation', 'anonymous_recheck_exhausted')
-            and row.get('attempts') == _flow_camp_recheck.ATTEMPT_LIMIT
-            and type(row.get('retry_after')) is int
-            and type(now) is int and now >= row['retry_after']
-            and _flow_camp_recheck._arrival_request(mem, actor, row) is None)
-
-
-def _visible_camps_with_exhausted_fallback(mem, frame, queue):
-    """Let an exhausted pre-dispatch camp be opened for a fresh status read."""
-    softened = []
-    for actor, row in list((queue or {}).items()):
-        if _exhausted_predispatch_camp_row(mem, actor, row):
-            softened.append((row, row['attempts']))
-            row['attempts'] = _flow_camp_recheck.ATTEMPT_LIMIT - 1
-    try:
-        return _visible_camps_without_exhausted_release(mem, frame, queue)
-    finally:
-        for row, attempts in softened:
-            row['attempts'] = attempts
-
-
-def _release_exhausted_verified_camp_actor(screen, mem):
-    """Drop a stale named budget only after the open tent names that actor."""
-    state = mem.get('recall') or {}
-    if not (state.get('anonymous_recheck') and state.get('stage') == 'recheck_read'
-            and screen.kind == 'text'):
-        return None
-    info = _flow_house.general_status(screen)
-    actor = info.get('general') if isinstance(info, dict) else None
-    if not _flow_camp_recheck._clean_name(actor):
-        return None
+    if type(now) is not int or now < 0:
+        return []
     queue = _flow_camp_recheck._scope(mem)
-    row = queue.get(actor)
-    if not _exhausted_predispatch_camp_row(mem, actor, row):
-        return None
-    queue.pop(actor, None)
-    if not queue:
-        mem.pop('retreat_rechecks', None)
-        mem.pop('retreat_anonymous_budget', None)
-    _decision_log._record(
-        mem, 'retreat_recheck_budget_released', chart_step=None, general=actor,
-        observed_metric={'attempts': row['attempts'], 'retry_after': row['retry_after']},
-        resulting_event='verified_anonymous_camp_recall_allowed',
-        reason='現在の野営ステータスで本人を実確認したため、使い切った旧再確認予算の永続抑止を解除する',
-    )
-    return actor
+    rearmed = []
+    for actor, row in queue.items():
+        if (row.get('status') not in ('needs_observation', 'anonymous_recheck_exhausted')
+                or row.get('attempts') != _flow_camp_recheck.ATTEMPT_LIMIT
+                or type(row.get('retry_after')) is not int
+                or now < row['retry_after'] + EXHAUSTED_CAMP_RECHECK_REARM_TICKS
+                or _flow_camp_recheck._arrival_request(mem, actor, row) is not None):
+            continue
+        previous_attempts = row['attempts']
+        row.update(attempts=0, retry_after=now, status='needs_observation')
+        rearmed.append(actor)
+        _decision_log._record(
+            mem, 'retreat_recheck_budget_rearmed', chart_step=None, general=actor,
+            observed_metric={'previous_attempts': previous_attempts, 'stale_until': now},
+            resulting_event='named_camp_recheck_allowed',
+            reason='本人再確認の有限予算を使い切ったまま長時間経過したため、現在の名簿と野営を再観測する予算を再アームする',
+        )
+    return rearmed
 
 
-def _camp_recheck_step_with_exhausted_release(screen, mem, frame, existing):
-    _release_exhausted_verified_camp_actor(screen, mem)
-    return _camp_recheck_step_without_exhausted_release(screen, mem, frame, existing)
+def _camp_recheck_step_with_stale_rearm(screen, mem, frame, existing):
+    if (screen.kind == 'map' and frame is not None and not mem.get('recall') and not any(
+            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack'))):
+        _rearm_exhausted_camp_rechecks(mem)
+    return _camp_recheck_step_without_stale_rearm(screen, mem, frame, existing)
 
 
-_flow_camp_recheck._visible_camps = _visible_camps_with_exhausted_fallback
-_flow_camp_recheck.step = _camp_recheck_step_with_exhausted_release
+_flow_camp_recheck.step = _camp_recheck_step_with_stale_rearm
 
 
 # v350 can re-arm a 四季王 step after its march/entry goes stale, but a retry
