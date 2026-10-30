@@ -353,7 +353,9 @@ def test_unread_menu_after_the_last_open_is_recorded_as_unread():
 def test_egg_wait_marks_its_latch_for_the_summon_onset():
     # #2953 実例B: the non-due wait exhausts the rescue; the marker lets the
     # summon onset re-arm exactly that latch once.
-    mem = memory(enemy_hp=30)
+    # Same confirmed no-resource setup as test_confirmed_no_resource_menu_arms_deadline...
+    mem = memory(ally='どうし', ally_hp=90)
+    mem['battle'].pop('okunote_only_observed')
     cur = mem['battle']
     assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
     assert cur['survival']['exhausted'] and cur['survival']['egg_window_latch']
