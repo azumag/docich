@@ -17,13 +17,17 @@ from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
 HOUSE_TARGET = {chapter: (int(x), int(y)) for chapter, (x, y) in HOUSE_VIEW.items()}
-# Field-pixel anchor of the house's own-flagged roof bottom-centre, per
-# chapter. Chapter 4's house is beyond a camera half-width from every
-# castle, so the two-roof constellation never fires there; the single
-# own-flagged roof in view is the house itself. Measured on the live
-# g1075 chapter-4 map (2026-10-30): marker field (584, 328) with the
-# roof anchor at screen (110, 121) -> anchor field (556, 324).
-HOUSE_ROOF_ANCHOR = {4: (556, 324)}
+# Marker-minus-roof screen delta expected when the marker sits on the
+# house's entry cell. The same あたしの家 sprite anchors every chapter, so
+# the constant is chapter-independent; measured on the live g1075
+# chapter-4 map (2026-10-30): the roof's bottom-centre anchor sits at
+# field (556, 324) while the entry target is (568, 316).
+HOUSE_ROOF_DELTA = (12, -8)
+# How far the marker may sit from the entry cell and still identify the
+# roof: the Y jump lands near the target cell, so a roof this close to the
+# expected delta is the house, not an own castle (a castle's marker
+# anchor sits on its own cell, not HOUSE_ROOF_DELTA away).
+HOUSE_ROOF_MATCH = 28
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
@@ -407,28 +411,33 @@ def _house_route_problem(mem):
     return None
 
 
-def _house_roof_anchor_position(screen, mem, frame):
-    """Marker cell anchored on the house's own-flagged roof, not castle pairs.
+def _house_roof_delta(screen, mem, frame):
+    """Marker-to-house-roof screen delta, or None with no house in view.
 
-    Chapters with an entry in ``HOUSE_ROOF_ANCHOR`` have no castle pair within
-    the marker camera, so ``observed_cursor_cell`` returns None. The house
-    flies an own-coloured flag; exactly one unclipped own roof in view is the
-    house itself, and its bottom-centre anchor's field position is measured.
-    A wrong landing keeps producing off-target positions and exits through
-    the normal bounded alignment path, so this never affirms a guess.
+    The house flies an own-coloured flag, so ``castle_roofs`` reports it as
+    an 'own' roof; a castle's marker anchor sits on its own cell, not
+    ``HOUSE_ROOF_DELTA`` away, so a roof matching the delta within
+    ``HOUSE_ROOF_MATCH`` is the house itself. The delta is camera-invariant
+    (marker and roof scroll together), so ``HOUSE_ROOF_DELTA - delta`` is
+    the screen move that walks the marker onto the building; a wrong
+    landing leaves no matching roof and defers through the bounded path.
     """
-    anchor = HOUSE_ROOF_ANCHOR.get(mem.get('chapter'))
-    if anchor is None or frame is None or screen.kind != 'map_target':
+    if frame is None or screen.kind != 'map_target':
         return None
     from ..os_layer.screen import castle_roofs
     cursor = screen.marker or screen.cursor
     if cursor is None:
         return None
-    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
-    if len(roofs) != 1 or roofs[0].get('kind') != 'own':
-        return None
-    roof = roofs[0]['target']
-    return [cursor[0] + anchor[0] - roof[0], cursor[1] + anchor[1] - roof[1]]
+    best = None
+    for roof in castle_roofs(frame):
+        if roof.get('clipped') or roof.get('kind') != 'own':
+            continue
+        delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
+        if all(abs(delta[a] - HOUSE_ROOF_DELTA[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
+            if best is not None:
+                return None
+            best = delta
+    return best
 
 
 def _defer_unsafe_house_route(mem):
@@ -1326,19 +1335,31 @@ def _repair_step(screen, mem, frame):
             # field marker before committing this unit's movement; the old
             # integrated cursor / house_view phase cannot authorize that A.
             position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
-            if position is None:
-                position = _house_roof_anchor_position(screen, mem, frame)
             offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
-            if position is None or offset is None or not screen.marker:
+            if offset is None or not screen.marker:
+                return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                             diagnostic_code='position_unread')
+            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
+            # A roof matching the house's own-flag delta is the strongest
+            # evidence: walk the marker onto the building itself rather
+            # than the registered cell, which can sit a tile off on
+            # source-derived chapters.
+            roof_delta = _house_roof_delta(screen, mem, frame)
+            if roof_delta is not None:
+                err = [HOUSE_ROOF_DELTA[a] - roof_delta[a] for a in (0, 1)]
+                position = [roof_delta[a] + target[a] - HOUSE_ROOF_DELTA[a] for a in (0, 1)]
+                delta, accept, basis = err, 4, 'house_roof_delta'
+            elif position is None:
                 reads = state.get('alignment_unread', 0)
                 if type(reads) is not int or not 0 <= reads < 2:
                     return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
                                  diagnostic_code='position_unread')
                 state['alignment_unread'] = reads + 1
                 return []
-            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
-            delta = [target[a] - position[a] for a in (0, 1)]
-            if any(abs(d) > 2 for d in delta):
+            else:
+                delta = [target[a] - position[a] for a in (0, 1)]
+                accept, basis = 2, 'current_two_roof_constellation'
+            if any(abs(d) > accept for d in delta):
                 moves = state.get('alignment_moves', 0)
                 if type(moves) is not int or not 0 <= moves < 8:
                     return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
@@ -1352,7 +1373,7 @@ def _repair_step(screen, mem, frame):
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
                     observed_metric={'view': HOUSE_TARGET[mem['chapter']], 'field_position': position,
-                                     'field_target': target, 'basis': 'current_two_roof_constellation'},
+                                     'field_target': target, 'basis': basis},
                     reason='卵が壊れた本人をあたしの家へ派遣する入力を確定')
             return [pad('a')]
         return []
