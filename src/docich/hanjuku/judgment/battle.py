@@ -1880,8 +1880,16 @@ def _defender_last_resort(mem, cur):
     if any(type(v) is not int or v <= 0 for v in
            (hp, enemy, start, enemy_start, ally_max, enemy_max)):
         return False
+    # #2864: the 70% melee rule that opened this rescue menu already measures
+    # a losing fight; waiting for HP to halve came too late. g1075 10-30 11:04
+    # デュオニソス 28/54 vs アンディーブ 36 (228 vs 528 with soldiers) declined
+    # here, the one recheck at HP 14 never reached the menu, and フヌイヌム
+    # fell. The lottery's table self-damage did not show on the panel either:
+    # 15 g1075 picks of negative choices moved it 0..14, しんだフリ (-48)
+    # at HP 8 left 8.
     return (hp <= start <= ally_max and enemy <= enemy_start <= enemy_max
-            and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
+            and enemy * 5 >= enemy_start * 4
+            and (hp * 2 <= start or _combat_behind(cur)))
 
 
 def _defender_summon_last_resort(mem, cur, reading):
