@@ -190,6 +190,94 @@ def test_compact_policy_projects_battle_hp_without_free_text():
     assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
 
 
+def test_compact_policy_exposes_the_observing_bot_version():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy(
+        {'chapter': 4}, {'bot_version': 'hanjuku-chart-v350-stale-retry'})
+    assert policy['bot_version'] == 'hanjuku-chart-v350-stale-retry'
+    assert module._compact_hanjuku_policy(
+        {'chapter': 4, 'bot_version': 'x' * 500})['bot_version'] is None
+
+
+def test_march_projection_relaunch_limit_matches_the_policy():
+    from docich.hanjuku.strategy import orders
+
+    module = load_collector()
+    assert module.HANJUKU_MARCH_RELAUNCH_LIMIT == orders.BOSS_RELAUNCH_LIMIT
+
+
+def test_compact_policy_projects_a_parked_march_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 10000, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(南西)',
+                             'tick': 7000, 'note': 'DO-NOT-PUBLISH'}},
+        'boss_relaunch': {'4-B1': 2},
+        'retries': {'4-B1': 1},
+        'boss_victories': {'サマカンテ': {'site': '四季王城(南西)',
+                                      'note': 'DO-NOT-PUBLISH'}},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'], 'home_lost': True,
+        'boss_defeated': None,
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': '四季王城(南西)',
+        'age_ticks': 3000, 'relaunch': 2}
+    assert policy['march'] == {
+        'state': 'parked', 'overdue': ['4-B1'], 'exhausted': ['4-B1'],
+        'oldest_age_ticks': 3000}
+    assert policy['boss_victories'] == {'count': 1, 'sites': ['四季王城(南西)']}
+    assert policy['retries'] == {'4-B1': 1}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is True
+    assert 'captured' not in policy and 'lost' not in policy
+    assert policy['boss_defeated'] is None
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_keeps_an_overdue_retry_distinct_from_a_parked_one():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 5000, 'active': '4-B2',
+        'orders': {'4-B1': 'launched', '4-B2': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(北東)',
+                             'tick': 4500},
+                    '4-B2': {'status': 'en_route', 'target': '四季王城(南東)',
+                             'tick': 4900}},
+        'boss_relaunch': {'4-B1': 1},
+    })
+    assert policy['march']['state'] == 'active'
+    assert policy['march']['overdue'] == ['4-B1']
+    assert policy['march']['exhausted'] == []
+    assert policy['march']['oldest_age_ticks'] == 500
+    assert policy['sorties']['4-B2']['age_ticks'] == 100
+    assert policy['boss_victories'] == {'count': 0, 'sites': []}
+
+
+def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 100, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': 'x' * 500,
+                             'tick': 'yesterday'}},
+        'boss_relaunch': {'4-B1': -1},
+        'boss_victories': {'x': {'site': 'PRIVATE'}},
+        'retries': {'4-B1': -1},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'],
+        'boss_defeated': 'chapter_4',
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': None, 'age_ticks': None, 'relaunch': None}
+    assert policy['march']['state'] == 'overdue'
+    assert policy['march']['oldest_age_ticks'] is None
+    assert policy['boss_victories'] == {'count': 1, 'sites': []}
+    assert policy['retries'] == {'4-B1': None}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is False
+    assert policy['boss_defeated'] is None
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({

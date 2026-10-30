@@ -179,6 +179,19 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `phase` は `castle_confirm` / `house_view` / `house_confirm` / `other` です。
   close後も残る履歴であり、現在もキャンセル中、物理的に危険、または修理成功という証明ではありません。
   名前・自由文・identityは出力せず、古い世代や月・不正な記録はnull、容量削減時も固定形式だけを維持します。
+- `hanjuku_tactical.policy.march` は進軍の停滞を直接示す固定要約です。
+  `state` は `active`（実行中の注文あり）/ `overdue`（出撃済み注文の到着が未実測）/
+  `parked`（到着未実測のまま出し直し上限に達して待機）/ `idle` のいずれかです。
+  併せて `overdue` / `exhausted` の step、最も古い到着未実測の `oldest_age_ticks`、
+  出撃ごとの `sorties.<step>.age_ticks` / `relaunch`、実測済みの四季王サイト
+  `boss_victories.count` / `sites` を返します。`sites` は固定4地点名だけを出します。
+  あわせて章の `captured_count` / `castle_loss_count` / `home_taken`、`boss_defeated`、
+  注文ごとの再試行回数 `retries` を返し、サイト出撃が出ていないのか、敗戦後に
+  再試行中なのか、城を失って前提が崩れているのかを切り分けます。城名・将軍名の
+  自由な配列は出さず、個別名が必要な場合は既存の `garrison` の既知キーだけを使います。`parked` は「いま進軍が止まっている」
+  候補であり、戦闘中・月次処理中・単なる到着待ちを区別しないため、`active` と
+  `screen_kind` / `phase` を併読します。`bot_version` は観測時点のbot記録が名乗る
+  版で、deploy済みコードとの一致を単独では保証しません。自由文・理由・identityは出しません。
 - `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
   `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
   総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`
