@@ -576,6 +576,22 @@ class StorageBreakdownV2Tests(unittest.TestCase):
         self.assertNotIn(str(self.base), encoded)
 
 
+    def test_gateway_subtrees_split_bundles_and_releases(self):
+        self.write(self.home / ".local/state/github-vm-ops/bundles/a.bundle", 4000)
+        self.write(self.home / ".local/state/github-vm-ops/releases/docich/sha/f.txt", 6000)
+
+        result = self.collect()
+
+        bundles = result["gateway_bundles"]
+        releases = result["gateway_releases"]
+        self.assertTrue(bundles["scan_complete"])
+        self.assertTrue(releases["scan_complete"])
+        self.assertGreaterEqual(bundles["allocated_bytes"], 4000)
+        self.assertGreaterEqual(releases["allocated_bytes"], 6000)
+        self.assertLessEqual(bundles["allocated_bytes"] + releases["allocated_bytes"],
+                             result["gateway_state"]["allocated_bytes"])
+
+
 class StorageSummaryTests(unittest.TestCase):
 
     def test_renders_fixed_opencode_caller_attribution_only(self):
@@ -784,6 +800,24 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertIn("docich_git_objects_pack_complete=1", context)
         self.assertNotIn("/", context)
         self.assertNotIn("home", context)
+
+    def test_gateway_subtrees_never_change_the_incomplete_flag(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        _a, base_incomplete, _c = summary.render({"storage_breakdown": breakdown})
+
+        # Absent subtrees (older collector) and an incomplete subtree must both
+        # leave the shared flag exactly as it was.
+        _a, absent_incomplete, absent_ctx = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(absent_incomplete, base_incomplete)
+        self.assertNotIn("gateway_releases_complete", absent_ctx)
+
+        breakdown["gateway_releases"] = {**leaf, "scan_complete": False}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("gateway_releases_complete=0", context)
 
     def test_v2_incomplete_root_flags_the_shared_incomplete(self):
         leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}

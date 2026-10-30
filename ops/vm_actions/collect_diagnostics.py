@@ -1116,6 +1116,15 @@ def _collect_storage_breakdown(
         "gateway_state": _storage_tree_usage(
             home / ".local" / "state" / "github-vm-ops", max_entries=max_entries
         ),
+        # Overlapping subtrees of gateway_state (azumag/docich#365): bundles
+        # are the git bundles, releases are the preview checkouts. Split so
+        # the retention design can measure each without guessing.
+        "gateway_bundles": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "bundles", max_entries=max_entries
+        ),
+        "gateway_releases": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "releases", max_entries=max_entries
+        ),
         "alt_checkout_tmp_sync": _storage_tree_usage(
             sys_tmp / "opencode" / "docich-sync", max_entries=max_entries
         ),
