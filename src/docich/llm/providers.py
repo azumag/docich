@@ -263,7 +263,7 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
             raise ValueError("timeout")
         key_name = {"openrouter": "OPENROUTER_API_KEY", "vercel": "AI_GATEWAY_API_KEY",
                     "cloudflare": "CLOUDFLARE_API_TOKEN",
-                    "sarashina": "DOCICH_CHAT_SARASHINA_API_KEY"}[profile]
+                    "sarashina": "SARASHINA_RELAY_TOKEN"}[profile]
         if profile == "cloudflare":
             account = env.get("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "")
             base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"

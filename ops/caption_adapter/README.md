@@ -13,14 +13,14 @@
 | `DOCICH_CHAT_VERCEL_UPSTREAM` 等 | upstream による | — | 既存 direct-chat の前提 env。`vercel-api` は単一の明示 upstream が要る |
 | `AI_GATEWAY_API_KEY` 等 | upstream による | — | 既存の secret。値は env ファイルか `*_FILE` でのみ渡し、ファイル・log・Actions 出力に書かない |
 | `DOCICH_CHAT_SARASHINA_UPSTREAM` | `sarashina-api` のとき必須 | — | 単一の endpoint。https のみ（loopback http だけ例外）。userinfo・query・fragment 不可。起動時に pin し、redirect は追従しない |
-| `DOCICH_CHAT_SARASHINA_API_KEY`（`_FILE` 可） | `sarashina-api` のとき必須 | — | 起動時に存在だけ確認し、値は表示しない。ファイル・log・Actions 出力に書かない |
+| `SARASHINA_RELAY_TOKEN`（`_FILE` 可） | `sarashina-api` のとき必須 | — | adapter→リレーの bearer credential のみ。起動時に存在だけ確認し、値は表示しない。ファイル・log・Actions 出力に書かない。Sarashina の実 API キーは VM に置かない |
 
 ### sarashina-api（#2900）
 
 - 登録モデル: `sarashina3-nano`（第一候補）、`sarashina3-mini`（fallback）。`sarashina3-translate` は登録しない。
 - adapter が要求するのは chat/completions の形だけ。実際にどの Sarashina API を叩くかは endpoint 側の責任。
 - 利用条件の受入（§11）は owner が明示するまで配置しない。
-- 実キーの配置先（endpoint 側か VM の env か）は owner 決定。決まるまで、本 README は VM 側 env を前提に書いている。
+- 信頼境界: VM（adapter）が持つのはリレー発行の bearer credential（`SARASHINA_RELAY_TOKEN`）のみ。Sarashina の実 API キーはリレー側だけが保持し、VM の env・リポジトリ・log には現れない。rotation もリレー側で完結する。
 
 ## 起動・確認
 

@@ -281,7 +281,7 @@ def test_cc_translation_label_reaches_transport_and_only_exact_prefix_is_admitte
 def test_sarashina_profile_routes_only_to_fixed_endpoint_and_fails_fast_otherwise():
     from docich.llm.contracts import DispatchRequest, LlmError
     spec = parse_agents("sarashina-api:sarashina3-nano")[0]
-    good = {"DOCICH_CHAT_SARASHINA_API_KEY": "SYNTHETIC_KEY",
+    good = {"SARASHINA_RELAY_TOKEN": "SYNTHETIC_KEY",
             "DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test/"}
     request = DispatchRequest(label="CC_TRANSLATION", prompt="synthetic chunk", agents=(spec,))
     with mock.patch("docich.reply_research_api.answer_once", return_value="translated") as answer:
@@ -293,7 +293,7 @@ def test_sarashina_profile_routes_only_to_fixed_endpoint_and_fails_fast_otherwis
         assert (settings.upstream, settings.billing_mode) == ("", "")
     bad_envs = (
         {**good, "DOCICH_CHAT_SARASHINA_UPSTREAM": ""},
-        {**good, "DOCICH_CHAT_SARASHINA_API_KEY": ""},
+        {**good, "SARASHINA_RELAY_TOKEN": ""},
         {**good, "DOCICH_CHAT_SARASHINA_UPSTREAM": "http://sarashina.example.test"},
         {**good, "DOCICH_CHAT_SARASHINA_UPSTREAM": "https://user:pw@sarashina.example.test"},
         {**good, "DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test/?x=1"},

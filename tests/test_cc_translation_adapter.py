@@ -195,10 +195,10 @@ class CcAdapterSarashinaStartupTest(unittest.TestCase):
         from docich.discord_chat import ChatError
         base = {"DOCICH_CC_ADAPTER_UPSTREAM": "sarashina-api:sarashina3-nano",
                 "DOCICH_CHAT_SARASHINA_UPSTREAM": "https://sarashina.example.test",
-                "DOCICH_CHAT_SARASHINA_API_KEY": "SYNTHETIC_KEY"}
+                "SARASHINA_RELAY_TOKEN": "SYNTHETIC_KEY"}
         adapter.check_sarashina_startup(base)
         with unittest.mock.patch.object(adapter, "make_server") as serve:
-            for change in ({"DOCICH_CHAT_SARASHINA_UPSTREAM": ""}, {"DOCICH_CHAT_SARASHINA_API_KEY": ""}):
+            for change in ({"DOCICH_CHAT_SARASHINA_UPSTREAM": ""}, {"SARASHINA_RELAY_TOKEN": ""}):
                 with self.assertRaises((ValueError, ChatError)):
                     adapter.main({**base, **change})
             serve.assert_not_called()

@@ -173,7 +173,7 @@ def check_sarashina_startup(env: Mapping[str, str]) -> None:
     """Fail before listening: valid pinned endpoint and a present API key (value never logged)."""
     from .discord_chat import read_secret, sarashina_pin
     sarashina_pin(env)
-    if not read_secret(env, "DOCICH_CHAT_SARASHINA_API_KEY"):
+    if not read_secret(env, "SARASHINA_RELAY_TOKEN"):
         raise ValueError("sarashina API key is required")
 
 
