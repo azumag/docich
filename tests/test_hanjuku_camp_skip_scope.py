@@ -29,6 +29,7 @@ def test_scoped_cooldown_skips_only_the_failed_camp(monkeypatch):
 
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 8)]
     assert mem['recall']['target'] == [200, 100]
+    assert mem['recall_skip_target']['target'] == [120, 100]
 
 
 def test_scoped_cooldown_still_blocks_the_same_camp(monkeypatch):
