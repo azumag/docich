@@ -23,6 +23,7 @@ STEP_LIMIT = 24
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
+LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 INTERRUPTION_RETRIES = 2
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
 # This covers a castle footprint/localisation error and either axis-first route;
@@ -603,6 +604,38 @@ def _retry_interrupted_repair(mem):
     return True
 
 
+def _level_due(mem):
+    """This month's country-status level page has not been read yet."""
+    seen = mem.get('hanjuku_level_seen') or {}
+    return seen.get('scope') != [mem.get('chapter'), mem.get('month')]
+
+
+def _status_row_value(screen, label):
+    """Digits printed after ``label`` on the same status-page row."""
+    for line in screen.lines:
+        joined = line.known.replace(' ', '')
+        idx = joined.find(label)
+        if idx >= 0:
+            m = re.search(r'(\d+)', joined[idx + len(label):])
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _country_status_level(screen):
+    """Second country-status page: たまご count, 半熟レベル, 半熟値, next level.
+
+    The page is identified by both level labels; a lone ``はんじゅくち`` also
+    appears in the あ・た・し♥ event wording and must not pass here.
+    """
+    text = screen.text.replace(' ', '')
+    if 'はんじゅくレベル' not in text or 'つぎのレベル' not in text:
+        return None
+    return {'level': _status_row_value(screen, 'はんじゅくレベル'),
+            'value': _status_row_value(screen, 'はんじゅくち'),
+            'needed': _status_row_value(screen, 'つぎのレベル')}
+
+
 def step(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
@@ -652,9 +685,15 @@ def step(screen, mem, frame):
                 # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
                 # The attempt is over either way; only the receipt is unknown.
                 return None
+            level_due = _level_due(mem)
+            # Issue #3011 (owner): the hanjuku level lives on the country
+            # status page. Once the month's shopping is done and the level is
+            # still unread, the monthly visit runs for that page alone.
+            level_trigger = (level_due and shop.get('key') == mem.get('month')
+                             and bool(shop.get('level_scan_wait')))
             if (_recruit_sufficient(mem) or receipts.surveyed(mem)
                     or (receipts.fresh(mem)
-                        and receipts.fresh(mem).get('complete'))):
+                        and receipts.fresh(mem).get('complete'))) and not level_trigger:
                 return None
             attempts = mem.get('recruit_month_scan_attempts') or {}
             scope = [mem.get('chapter'), mem.get('month')]
@@ -696,9 +735,14 @@ def step(screen, mem, frame):
         state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
+        if monthly:
+            # Level-only visits read the status page; ordinary roster scans
+            # keep their measured order and never detour.
+            state['level_only'] = bool(level_trigger)
         if not monthly:
             mem['recruit_field_scan_attempts']['count'] = field_count + 1
-        receipts.begin(mem, state)
+        if not (monthly and level_trigger):
+            receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
         return ([pad('a')] if move == 'here' else [move]) if monthly else [pad('x')]
     if state.get('chapter') != mem.get('chapter'):
@@ -738,6 +782,12 @@ def step(screen, mem, frame):
                     _exit(mem, '月初の前面を読み取れないため募集確認を有限に終了',
                           limit='step' if state['age'] >= STEP_LIMIT else 'session')
             return None
+        if phase in ('level_status', 'leave_status'):
+            # The country-status visit returned to the monthly row; reopen
+            # the information menu and resume at the roster row.
+            state['phase'] = phase = 'month_open'
+            _record(mem, 'status_page_returned',
+                    reason='国のステータス画面から月初メニューへ戻ったため情報メニューへの移動を再開')
         if phase == 'open_roster' and isinstance(menu_to(screen, 'メインメニュー'), dict):
             # v134 could label its recovery A as a successful menu selection.
             # Resume from the observed monthly row, preserving the scan budget.
@@ -830,6 +880,17 @@ def step(screen, mem, frame):
                     reason='既知のマップへ戻ったままのため、将軍一覧を開くXを有限回再試行')
             return [pad('x')]
         if screen.kind == 'main_menu' and screen.hand:
+            if state.get('level_only'):
+                if not state.get('level_checked'):
+                    # Issue #3011: the country-status page carries this
+                    # month's hanjuku level; read it before leaving.
+                    actions = _choose(screen, 'ステータス')
+                    if actions == [pad('a')]:
+                        state['level_checked'] = True
+                        _phase(state, 'level_status')
+                    return actions
+                _phase(state, 'leave_roster')
+                return [pad('b')]
             # Status reading is free. Repair dispatch still checks funds in
             # _next_general; never keep a stale egg state just because we are poor.
             actions = _choose(screen, 'しょうぐん')
@@ -838,6 +899,36 @@ def step(screen, mem, frame):
                 _phase(state, 'roster')
             return actions
         return []
+    if phase == 'level_status':
+        read = _country_status_level(screen)
+        if isinstance(read, dict) and type(read['level']) is int:
+            scope = [mem.get('chapter'), mem.get('month')]
+            mem['hanjuku_level'] = read['level']
+            mem['hanjuku_value'] = read.get('value')
+            mem['hanjuku_level_seen'] = {'scope': scope, 'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'hanjuku_level_observed', screen=screen.kind,
+                    observed_metric={'level': read['level'], 'value': read.get('value'),
+                                     'needed': read.get('needed')},
+                    reason='国のステータス2頁目から当月の半熟レベルと半熟値を読んだ（#3011の閾値判定に使用）')
+            _phase(state, 'leave_status')
+            return [pad('b')]
+        if isinstance(read, dict) or not re.search(r'しゅうにゅう|そうちんぎん', screen.text):
+            # Page 2 without a readable level row, or an unrecognised frame:
+            # wait boundedly instead of pressing past the evidence.
+            state['level_waits'] = int(state.get('level_waits') or 0) + 1
+            if state['level_waits'] >= LEVEL_STATUS_WAIT:
+                _record(mem, 'hanjuku_level_unread', screen=screen.kind,
+                        observed_metric={'text': screen.text[-60:]},
+                        reason='半熟レベルの頁を読み取れないため今回の確認を終える')
+                _phase(state, 'leave_status')
+                return [pad('b')]
+            return []
+        return [pad('a')]   # country status page 1: advance to the level page
+    if phase == 'leave_status':
+        if screen.kind == 'main_menu' and screen.hand:
+            _phase(state, 'open_roster')
+            return []
+        return [pad('b')]
     if phase == 'roster':
         if state.get('month_scan'):
             return _month_count(screen, mem, state, frame)

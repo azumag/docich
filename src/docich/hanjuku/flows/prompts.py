@@ -33,6 +33,10 @@ TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
 
 BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
+# オーナー指示（issue #3011）: 半熟レベル14以上では半熟値を稼ぐ行為を控える。
+# ボットが意図的に半熟値を稼ぐ唯一の行為は美女の「いえ」購入（+100）であり、
+# 白兵・召喚・月イチの受動イベント・剣の稽古は稼ぎ目的の選択肢ではない。
+HANJUKU_LEVEL_CAP = 14
 BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # A held request must never outlive the corner's 300 s unchanged-screen watchdog
 # (retro_corner end_reason='screen_stalled', 2026-10-21): after ~60 s without a
@@ -203,6 +207,16 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     return [pad('a')]
 
 
+def _level_capped(mem):
+    """Observed 半熟レベル at or above the owner cap (#3011).
+
+    Levels never decrease within a run, so the latest observation stays
+    authoritative even a month later; an unobserved level never engages.
+    """
+    level = mem.get('hanjuku_level')
+    return type(level) is int and level >= HANJUKU_LEVEL_CAP
+
+
 def _bijin_gold(screen: Screen):
     gold = (screen.header or {}).get('gold')
     if type(gold) is not int or gold < 0:
@@ -331,7 +345,8 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
         mem.pop('bijin_guard', None)
         return None
     gold = _bijin_gold(screen)
-    accept = gold is not None and gold >= BIJIN_MIN_GOLD
+    capped = _level_capped(mem)
+    accept = gold is not None and gold >= BIJIN_MIN_GOLD and not capped
     if not request_seen:
         if screen.kind == 'gift_request':
             mem.pop('bijin_guard', None)
@@ -397,10 +412,14 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     guard['chosen'] = True
     cur = _current(screen)
     _record(mem, 'prompt', choice=(cur[2] if cur else label), prompt=screen.text[-60:],
-            strategy_variant=('accept_bijin_house' if accept else
+            strategy_variant=('decline_bijin_level_cap' if capped else
+                              'accept_bijin_house' if accept else
                               'decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
-            observed_metric={'gold': gold},
-            reason=('所持金1000G以上を確認したため依頼を受けて家を選ぶ' if accept else
+            observed_metric={'gold': gold,
+                             **({'hanjuku_level': mem['hanjuku_level']}
+                                if type(mem.get('hanjuku_level')) is int else {})},
+            reason=('半熟レベル14以上を確認したため半熟値を稼ぐ家の依頼を断る' if capped else
+                    '所持金1000G以上を確認したため依頼を受けて家を選ぶ' if accept else
                     '所持金1000G以上を確認できないため依頼を断る'))
     return [pad('a')]
 
@@ -431,7 +450,11 @@ def yes_no_step(screen: Screen, mem):
         # floor instead of falling through to the default accept.
         gold = _bijin_gold(screen)
         metric = {'gold': gold, 'minimum_gold': BIJIN_MIN_GOLD}
-        if gold is not None and gold >= BIJIN_MIN_GOLD:
+        if _level_capped(mem):
+            metric['hanjuku_level'] = mem['hanjuku_level']
+            choice, reason, variant = ('いかんッ!', '半熟レベル14以上のため半熟値が上がる家の依頼を断る',
+                                       'decline_bijin_level_cap')
+        elif gold is not None and gold >= BIJIN_MIN_GOLD:
             choice, reason, variant = ('うむッ!', '所持金1000G以上を確認したため美女の依頼を受ける',
                                        'accept_bijin_house')
         elif gold is None:
@@ -780,6 +803,24 @@ def gift_step(screen: Screen, mem):
             # Already in the item menu: never purchase the house without the
             # cash condition; the bound ends the menu cheaply if it never clears.
             return _bijin_gift_bound(screen, mem, gold, items)
+        if _level_capped(mem):
+            # Issue #3011: the house earns 半熟値; at the owner cap the event
+            # still has to end, so the cheapest non-earning item is bought.
+            others = [(price, name) for price, name in items if name != 'いえ']
+            if not others:
+                return _bijin_gift_bound(screen, mem, gold, items)
+            price, name = min(others)
+            move = menu_to(screen, name, exact=False)
+            if move is None:
+                return _bijin_gift_bound(screen, mem, gold, items)
+            if move == 'here':
+                mem.pop('bijin_gift_waits', None)
+                _record(mem, 'gift', strategy_variant='bijin_level_cap', item=name, price=price,
+                        gold=gold, observed_metric={'price': price, 'hanjuku_level': mem.get('hanjuku_level'),
+                                                    'affordable': gold >= price},
+                        reason='半熟レベル14以上のため半熟値を稼ぐ家を避け最安品でイベントを終える')
+                return [pad('a')]
+            return [move]
         houses = [(price, name) for price, name in items if name == 'いえ' and price == 500]
         if len(houses) != 1:
             return _bijin_gift_bound(screen, mem, gold, items)
