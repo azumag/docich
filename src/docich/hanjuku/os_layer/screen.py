@@ -249,13 +249,17 @@ def own_camps(frame: Frame) -> list[dict]:
         band = sum(1 for c in comp if frame.pixel(*c) == CAMP_BAND)
         if yellow < 6 or orange < 6 or band < 3:
             continue
-        flag = None
-        for yy in range(max(0, y0 - 4), y0):
-            hits = [(xx, yy) for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
-                    if _camp_flagish(frame.pixel(xx, yy))]
-            if len(hits) >= 2:
-                flag = hits[0]
-                break
+        # The flag flutters: a thin phase paints one red pixel per row
+        # (live g1075 2026-10-30 16:20, chapter-4 camp; the recall never
+        # fired while the tent stayed on screen). Two adjacent flagish
+        # pixels anywhere in the window still mean the flag is up.
+        hits = {(xx, yy) for yy in range(max(0, y0 - 4), y0)
+                for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
+                if _camp_flagish(frame.pixel(xx, yy))}
+        anchored = [h for h in hits if any(
+            (h[0] + dx, h[1] + dy) in hits
+            for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy)]
+        flag = min(anchored, key=lambda h: (h[1], h[0]), default=None)
         clipped = y0 - 6 < 0
         if flag is None and not clipped:
             continue
