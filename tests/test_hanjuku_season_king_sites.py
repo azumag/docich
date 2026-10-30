@@ -131,10 +131,14 @@ def test_a_site_sortie_keeps_two_generals_beside_the_hero():
     assert sent and hero not in sent
     # With the hero, any one of three may leave; of two, none may.
     assert orders._order_hero_alternatives(order, mem, [hero, *three]) == sent
-    assert orders._order_hero_alternatives(order, mem, [hero, *three[:2]]) == []
-    # A marching general does not guard (owner rule's own count).
+    # Owner 2026-10-30 (定常的にボス城へ進行): strict guards that leave no
+    # sortie-able general relax to keeping one present general - never empty.
+    relaxed = orders._order_hero_alternatives(order, mem, [hero, *three[:2]])
+    assert relaxed == three[:2]
+    # A marching general does not guard (owner rule's own count): two present
+    # beside the hero still let one go, leaving him plus one defender.
     mem['sorties'] = {'x': {'general': 'ココット', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
-    assert orders._order_hero_alternatives(order, mem, [hero, *three]) == []
+    assert orders._order_hero_alternatives(order, mem, [hero, *three]) == relaxed
     # Other chapters' boss orders keep their own sequence.
     ch3 = next(o for o in chart.orders(3) if o['target'] == 'ボス')
     assert orders._order_hero_alternatives(ch3, {'chapter': 3}, [hero, *three[:2]])

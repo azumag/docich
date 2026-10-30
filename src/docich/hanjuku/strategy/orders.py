@@ -43,7 +43,7 @@ def _hero_alternatives(mem, names):
     return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
 
 
-def _order_hero_alternatives(order, mem, names):
+def _order_hero_alternatives(order, mem, names, relaxed=True):
     candidates = _hero_alternatives(mem, names)
     if not _is_boss_order(order, mem):
         return candidates
@@ -65,6 +65,16 @@ def _order_hero_alternatives(order, mem, names):
         candidates = [g for g in candidates if _holds_egg(mem, g)
                       and not chart_adjust.hero_guard_short(names, g, unavailable)
                       and (NAME in present or any(_holds_egg(mem, s) for s in present - {g}))]
+        if relaxed and not candidates and NAME in present:
+            # Owner 2026-10-30 (定常的にボス城へ進行): strict guards may leave
+            # no sortie-able general even at the hero's castle - g1075 held
+            # every site order pending for an hour while a lone egg-holder
+            # guarded each castle. An egg-holder still goes when the hero
+            # keeps one other general beside him. Only the hero's castle
+            # relaxes: an egg-less guard elsewhere lost アルカ to a summon.
+            candidates = [g for g in _hero_alternatives(mem, names)
+                          if g in present and _holds_egg(mem, g)
+                          and len(present - {g, NAME}) >= 1]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
@@ -131,7 +141,13 @@ def _boss_companion_source(order, mem):
         # 57/9). The hero's castle, where joiners stand, is read first while
         # no read list holds one as strong as the hero.
         best = {c: names[0] for c in owned
-                if (names := _order_hero_alternatives(order, mem, garrison.get(c)))}
+                if (names := _order_hero_alternatives(order, mem, garrison.get(c), relaxed=False))}
+        if not best:
+            # Strict guards that leave no sortie-able general anywhere relax
+            # to keeping one present defender (owner 2026-10-30: 定常的に
+            # ボス城へ進行). Still never an empty castle.
+            best = {c: names[0] for c in owned
+                    if (names := _order_hero_alternatives(order, mem, garrison.get(c)))}
         home = chart.home_castle(chapter)
         if (home in owned and garrison.get(home) is None
                 and not any(_boss_comparable(mem, g) for g in best.values())):
