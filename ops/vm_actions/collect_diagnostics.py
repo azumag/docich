@@ -6546,6 +6546,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v338-season-king-panel",
             "hanjuku-chart-v339-okunote-redraw",
             "hanjuku-chart-v340-site-overdue-planned",
+            "hanjuku-chart-v341-chikyu-harmagedon-general",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
