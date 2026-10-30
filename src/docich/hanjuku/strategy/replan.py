@@ -10,7 +10,8 @@ from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
-from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
+from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
+                               _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
                                _unplaced_castle_generals)
@@ -250,6 +251,44 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
             'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
+    # A pending 四季王 site order with no companion needs an egg pair at one
+    # castle: move a spare general to join a lone egg-holder (or the hero's
+    # castle) so one can sortie while an egg-holder stays. g1075 held every
+    # site order pending for an hour while a lone egg-holder guarded each
+    # castle (owner 2026-10-30: 城に戻って出撃できる人員を探す).
+    pending_sites = [o for o in chart.orders(chapter)
+                     if o['target'] in chart.boss_sites(4)
+                     and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')]
+    if pending_sites and all(_boss_companion_source(o, mem) is None for o in pending_sites):
+        unavailable = busy | set(mem.get('general_location_unknown') or ())
+        present = {c: [g for g in garrison.get(c) or () if g not in unavailable]
+                   for c in owned}
+        paired = False
+        for site in sorted(pending_sites, key=lambda o: o['step']):
+            if paired:
+                break
+            for sink in sorted(present, key=lambda c: _distance(chapter, c, site['target'])):
+                if paired or sink in heading or not present.get(sink):
+                    continue
+                egg_sink = sink != home and any(_holds_egg(mem, g) for g in present[sink])
+                home_sink = (sink == home and NAME in present[sink]
+                             and len(present[sink]) - 1 >= chart_adjust.HERO_CASTLE_GUARD)
+                if not (egg_sink or home_sink):
+                    continue
+                for donor in sorted(present, key=lambda c: _distance(chapter, c, sink)):
+                    if donor == sink or len(present[donor]) < 2:
+                        continue
+                    free = [g for g in present[donor] if g != NAME
+                            and (home_sink or _holds_egg(mem, g))]
+                    if not free:
+                        continue
+                    general = free[0]
+                    moves.append({
+                        'general': general, 'target': sink, 'cards': [], 'source': donor,
+                        'after': None, 'purpose': 'move',
+                        'note': f"暫定: {general}を{donor}から{sink}へ移動しボス出撃の同伴者を揃える"})
+                    paired = True
+                    break
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)

@@ -57,9 +57,14 @@ def test_a_lone_general_never_leaves_its_castle_for_a_site():
     # A marching general is no defender.
     mem['sorties'] = {'x': {'general': 'ブカティーニ', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
     assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'ブカティーニ']) == []
-    # Every read list lone and the hero's castle read: nothing goes, nothing is emptied.
+    # Every read list lone: the strict pool is empty, so a relaxed egg-holder
+    # still goes while the hero keeps one other defender (owner 2026-10-30:
+    # 定常的にボス城へ進行).
     mem = memory()
     mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    assert orders._boss_companion_source(site_order(), mem) == HOME
+    # A lone hero still holds his castle: nobody else remains to defend.
+    mem['garrison'][HOME] = [chart.HERO, 'ゼウス']
     assert orders._boss_companion_source(site_order(), mem) is None
     assert not orders._ready(site_order(), mem)
 
