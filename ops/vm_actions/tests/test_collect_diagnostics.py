@@ -217,7 +217,8 @@ def test_compact_policy_projects_a_parked_march_without_free_text():
         'retries': {'4-B1': 1},
         'boss_victories': {'サマカンテ': {'site': '四季王城(南西)',
                                       'note': 'DO-NOT-PUBLISH'}},
-        'captured': ['アルカ'], 'lost': ['マラコビア'], 'boss_defeated': None,
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'], 'home_lost': True,
+        'boss_defeated': None,
     })
     assert policy['sorties']['4-B1'] == {
         'status': 'overdue', 'target': '四季王城(南西)',
@@ -227,9 +228,11 @@ def test_compact_policy_projects_a_parked_march_without_free_text():
         'oldest_age_ticks': 3000}
     assert policy['boss_victories'] == {'count': 1, 'sites': ['四季王城(南西)']}
     assert policy['retries'] == {'4-B1': 1}
-    assert policy['captured'] == ['アルカ'] and policy['lost'] == ['マラコビア']
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is True
+    assert 'captured' not in policy and 'lost' not in policy
     assert policy['boss_defeated'] is None
     assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
 
 
 def test_compact_policy_keeps_an_overdue_retry_distinct_from_a_parked_one():
@@ -259,9 +262,9 @@ def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
         'sorties': {'4-B1': {'status': 'overdue', 'target': 'x' * 500,
                              'tick': 'yesterday'}},
         'boss_relaunch': {'4-B1': -1},
-        'boss_victories': {'x': {'site': 'x' * 500}},
+        'boss_victories': {'x': {'site': 'PRIVATE'}},
         'retries': {'4-B1': -1},
-        'captured': ['x' * 500, 7], 'lost': ['マラコビア'],
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'],
         'boss_defeated': 'chapter_4',
     })
     assert policy['sorties']['4-B1'] == {
@@ -270,8 +273,9 @@ def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
     assert policy['march']['oldest_age_ticks'] is None
     assert policy['boss_victories'] == {'count': 1, 'sites': []}
     assert policy['retries'] == {'4-B1': None}
-    assert policy['captured'] == [] and policy['lost'] == ['マラコビア']
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is False
     assert policy['boss_defeated'] is None
+    assert 'PRIVATE' not in json.dumps(policy)
 
 
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):

@@ -11236,6 +11236,10 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
 # file on the VM, so a test pins the two values together instead of importing
 # game code at runtime.
 HANJUKU_MARCH_RELAUNCH_LIMIT = 2
+# Fixed chapter-4 site names. A victory record's free-form site label must not
+# become a channel for arbitrary text; only these reviewed labels are emitted.
+HANJUKU_SEASON_SITES = frozenset({
+    '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
 def _compact_hanjuku_policy(mem, state=None):
@@ -11261,8 +11265,7 @@ def _compact_hanjuku_policy(mem, state=None):
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
-    lost = mem.get('lost') if isinstance(mem.get('lost'), list) else []
-    captured = mem.get('captured') if isinstance(mem.get('captured'), list) else []
+    lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11300,9 +11303,9 @@ def _compact_hanjuku_policy(mem, state=None):
         march_state = 'parked' if exhausted else 'overdue'
     else:
         march_state = 'idle'
-    won_sites = sorted({str(value.get('site')) for value in victories.values()
-                        if isinstance(value, dict) and isinstance(value.get('site'), str)
-                        and len(value['site']) <= 32})
+    won_sites = sorted({value.get('site') for value in victories.values()
+                        if isinstance(value, dict)
+                        and value.get('site') in HANJUKU_SEASON_SITES})
     return {
         'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
         'bot_version': text(state.get('bot_version') or mem.get('bot_version'), 64),
@@ -11320,8 +11323,8 @@ def _compact_hanjuku_policy(mem, state=None):
                    if isinstance(step, str) and isinstance(status, str)},
         'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
                            and len(mem['captured']) <= 64 else None),
-        'captured': [name for name in (text(item, 32) for item in captured[:16]) if name],
-        'lost': [name for name in (text(item, 32) for item in lost[:16]) if name],
+        'castle_loss_count': (len(lost) if isinstance(lost, list) and len(lost) <= 64 else None),
+        'home_taken': mem.get('home_lost') is True,
         'boss_defeated': count(mem.get('boss_defeated'), 12),
         'retries': {text(step, 32) or '?': count(value, 1000)
                     for step, value in list(retries.items())[:20] if isinstance(step, str)},
