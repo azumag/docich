@@ -368,13 +368,29 @@ def _broken_hero_order(order, mem):
 
 def _all_normal_captured(mem):
     """Boss unlock covers the chapter's full names, including unmeasured ones."""
+    return _normal_missing(mem) == 0
+
+
+def _normal_missing(mem):
     chapter = mem.get('chapter')
     chapter_names = chart.CASTLE_NAMES.get(chapter) if type(chapter) is int else None
     captured = mem.get('captured', [])
     if not chapter_names or not isinstance(captured, (list, tuple, set, frozenset)):
-        return False
+        return len(chart.CASTLE_NAMES.get(chapter) or ()) + 1
     chapter_castles = set(chapter_names) - {chart.home_castle(chapter), chart.boss_castle(chapter)}
-    return chapter_castles <= set(captured)
+    return len(chapter_castles - set(captured))
+
+
+# Owner 2026-10-30 (全城条件は厳しいため緩和): a 四季王 site may start while
+# one normal castle is missing or lost; two or more still waits for retakes.
+SEASON_SITE_MISSING_LIMIT = 1
+
+
+def _season_site_ready(order, mem):
+    if ((mem.get('chapter') or 0) != 4 or order.get('target') not in chart.boss_sites(4)
+            or chart.home_castle(4) in (mem.get('lost') or ())):
+        return False
+    return _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
 
 
 def _boss_target_unlocked(order, mem):
@@ -386,6 +402,8 @@ def _boss_target_unlocked(order, mem):
     if chapter == 9 or (chapter == 4 and (order.get('target') not in chart.boss_sites(4)
                                           or _season_site_held(order, mem))):
         return False
+    if _season_site_ready(order, mem):
+        return True
     return _is_boss_order(order, mem) and _all_normal_captured(mem)
 
 
@@ -393,10 +411,14 @@ def _season_site_held(order, mem):
     """A 四季王 site waits for every retake and is not attacked again once won.
 
     Owner 2026-10-30: 奪還を先 - a lost castle is taken back before the next
-    site sortie starts; one already marching goes on.
+    site sortie starts; one already marching goes on. The same owner relaxed
+    it later that day: a single lost castle no longer holds the sites (全城
+    条件は厳しい), two or more still waits for retakes.
     """
     won = {v.get('site') for v in (mem.get('boss_victories') or {}).values() if isinstance(v, dict)}
-    return bool(mem.get('lost')) or order.get('target') in won
+    lost = mem.get('lost') or ()
+    return (chart.home_castle(mem.get('chapter') or 0) in lost
+            or len(lost) > SEASON_SITE_MISSING_LIMIT or order.get('target') in won)
 
 
 def _ready(order, mem) -> bool:
@@ -434,6 +456,8 @@ def _ready(order, mem) -> bool:
     if after[0] == 'captured':
         return after[1] in captured
     if after[0] == 'all_captured':
+        if _season_site_ready(order, mem):
+            return True
         return _all_normal_captured(mem)
     return False
 
