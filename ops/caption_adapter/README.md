@@ -7,11 +7,20 @@
 
 | 変数 | 必須 | 既定 | 内容 |
 |---|---|---|---|
-| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<direct-chat provider>:<model>`。`vercel-api` / `openrouter-api` / `cloudflare-api` のいずれか |
+| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<direct-chat provider>:<model>`。`vercel-api` / `openrouter-api` / `cloudflare-api` / `sarashina-api` のいずれか |
 | `DOCICH_CC_ADAPTER_PORT` | いいえ | `4100` | 127.0.0.1 の待受ポート（`.env` の `DOCICH_CC_TRANSLATION_URL` と一致させる） |
 | `DOCICH_CC_ADAPTER_TIMEOUT_SEC` | いいえ | `25` | upstream 1 回の上限（0.1〜45）。クライアント側 timeout より短く保つ |
 | `DOCICH_CHAT_VERCEL_UPSTREAM` 等 | upstream による | — | 既存 direct-chat の前提 env。`vercel-api` は単一の明示 upstream が要る |
 | `AI_GATEWAY_API_KEY` 等 | upstream による | — | 既存の secret。値は env ファイルか `*_FILE` でのみ渡し、ファイル・log・Actions 出力に書かない |
+| `DOCICH_CHAT_SARASHINA_UPSTREAM` | `sarashina-api` のとき必須 | — | 単一の endpoint。https のみ（loopback http だけ例外）。userinfo・query・fragment 不可。起動時に pin し、redirect は追従しない |
+| `DOCICH_CHAT_SARASHINA_API_KEY`（`_FILE` 可） | `sarashina-api` のとき必須 | — | 起動時に存在だけ確認し、値は表示しない。ファイル・log・Actions 出力に書かない |
+
+### sarashina-api（#2900）
+
+- 登録モデル: `sarashina3-nano`（第一候補）、`sarashina3-mini`（fallback）。`sarashina3-translate` は登録しない。
+- adapter が要求するのは chat/completions の形だけ。実際にどの Sarashina API を叩くかは endpoint 側の責任。
+- 利用条件の受入（§11）は owner が明示するまで配置しない。
+- 実キーの配置先（endpoint 側か VM の env か）は owner 決定。決まるまで、本 README は VM 側 env を前提に書いている。
 
 ## 起動・確認
 
