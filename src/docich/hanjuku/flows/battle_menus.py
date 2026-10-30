@@ -899,6 +899,8 @@ def okunote_step(screen, mem):
                         resulting_event='irreversible_risk_accepted',
                         reason=('敵卵あり・味方卵と札は実メニューで使用不能・接触召喚の位置は未校正のため、開いている救済メニューで奥の手を選ぶ。自傷リスクは残る'
                                 if egg_window['reason'] == 'menu_open_contact_unmeasured' else
+                                '前の奥の手で敵将軍が残ったため、召喚より先に奥の手を引き直す。自傷リスクは残る'
+                                if egg_window['reason'] == 'okunote_redraw' else
                                 '敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る'))
         last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
                        else _defender_last_resort(mem, cur))
