@@ -17,6 +17,13 @@ from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
 HOUSE_TARGET = {chapter: (int(x), int(y)) for chapter, (x, y) in HOUSE_VIEW.items()}
+# Field-pixel anchor of the house's own-flagged roof bottom-centre, per
+# chapter. Chapter 4's house is beyond a camera half-width from every
+# castle, so the two-roof constellation never fires there; the single
+# own-flagged roof in view is the house itself. Measured on the live
+# g1075 chapter-4 map (2026-10-30): marker field (584, 328) with the
+# roof anchor at screen (110, 121) -> anchor field (556, 324).
+HOUSE_ROOF_ANCHOR = {4: (556, 324)}
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
@@ -360,7 +367,11 @@ def _house_route_problem(mem):
     chapter = mem.get('chapter')
     source = state.get('source')
     castles = chart.castles(chapter)
-    expected = chart.CASTLE_NAMES.get(chapter)
+    # Boss entries are never ordinary route castles: chapter 4 registers
+    # its boss as four named season-site castles, so 'ボス' is absent from
+    # castles() while every ordinary castle cell is still required.
+    expected = [name for name in (chart.CASTLE_NAMES.get(chapter) or ())
+                if not chart.is_boss_castle(name)]
     if (chapter not in HOUSE_TARGET or chapter not in Y_JUMP_OFFSET
             or not expected or not set(expected) <= castles.keys()):
         return '修理ルートの城配置が未確認のため派遣を保留', []
@@ -394,6 +405,30 @@ def _house_route_problem(mem):
     if blocked:
         return '修理ルートに敵城または所属未確認の城があり、確実な迂回を確認できないため派遣を保留', sorted(blocked)
     return None
+
+
+def _house_roof_anchor_position(screen, mem, frame):
+    """Marker cell anchored on the house's own-flagged roof, not castle pairs.
+
+    Chapters with an entry in ``HOUSE_ROOF_ANCHOR`` have no castle pair within
+    the marker camera, so ``observed_cursor_cell`` returns None. The house
+    flies an own-coloured flag; exactly one unclipped own roof in view is the
+    house itself, and its bottom-centre anchor's field position is measured.
+    A wrong landing keeps producing off-target positions and exits through
+    the normal bounded alignment path, so this never affirms a guess.
+    """
+    anchor = HOUSE_ROOF_ANCHOR.get(mem.get('chapter'))
+    if anchor is None or frame is None or screen.kind != 'map_target':
+        return None
+    from ..os_layer.screen import castle_roofs
+    cursor = screen.marker or screen.cursor
+    if cursor is None:
+        return None
+    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
+    if len(roofs) != 1 or roofs[0].get('kind') != 'own':
+        return None
+    roof = roofs[0]['target']
+    return [cursor[0] + anchor[0] - roof[0], cursor[1] + anchor[1] - roof[1]]
 
 
 def _defer_unsafe_house_route(mem):
@@ -1291,6 +1326,8 @@ def _repair_step(screen, mem, frame):
             # field marker before committing this unit's movement; the old
             # integrated cursor / house_view phase cannot authorize that A.
             position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
+            if position is None:
+                position = _house_roof_anchor_position(screen, mem, frame)
             offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
             if position is None or offset is None or not screen.marker:
                 reads = state.get('alignment_unread', 0)
