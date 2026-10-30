@@ -313,6 +313,20 @@ TWITCH_OAUTH_SCOPES = frozenset({
     "clips:edit", "channel:manage:polls", "channel:manage:predictions",
     "channel:read:goals",
 })
+KICK_OAUTH_STATUSES = frozenset({
+    "ok", "not_configured", "reauth_required", "network_error",
+    "validate_unavailable", "token_endpoint_unavailable", "token_response_invalid",
+    "env_unreadable", "token_format_rejected", "new_token_not_broadcaster",
+    "new_token_missing_scopes", "new_token_token_invalid",
+    "new_token_token_inactive", "new_token_not_user_token",
+    "new_token_principal_unreadable", "io_error",
+    "consent_denied", "state_missing", "state_mismatch_or_expired",
+    "client_credentials_missing", "client_id_missing", "refresh_token_missing",
+})
+KICK_OAUTH_SCOPES = frozenset({
+    "channel:read", "channel:write",
+})
+KICK_OAUTH_BROADCASTER_RE = re.compile(r"\A[1-9][0-9]{0,18}\Z")
 
 
 def _twitch_oauth_timestamp(value):
@@ -327,7 +341,7 @@ def _twitch_oauth_timestamp(value):
         return None, None
 
 
-def _collect_twitch_oauth(now):
+def _collect_oauth_status(now, subdir, statuses, scopes):
     """Read only the fixed status record, not credentials or live OAuth APIs.
 
     These are historical producer observations, not evidence that a token is
@@ -340,7 +354,7 @@ def _collect_twitch_oauth(now):
     fd = directory = None
     try:
         fd, directory, before = _stream_title_open_fixed(
-            _program_state_dir(), ("twitch_oauth", "status.json"))
+            _program_state_dir(), (subdir, "status.json"))
         result["present"] = True
         if before.st_size > 4096:
             return result
@@ -357,7 +371,7 @@ def _collect_twitch_oauth(now):
             return result
         result["readable"] = True
         status = data.get("status")
-        if isinstance(status, str) and status in TWITCH_OAUTH_STATUSES:
+        if isinstance(status, str) and status in statuses:
             result["status"] = status
         action = data.get("action")
         if isinstance(action, str) and action in {"authorized", "refreshed", "no_change"}:
@@ -368,11 +382,14 @@ def _collect_twitch_oauth(now):
             result["checked_at_future"] = checked > now
             if checked <= now:
                 result["age_sec"] = min(int(now - checked), 2**31 - 1)
-        scopes = data.get("missing_scopes")
-        if (isinstance(scopes, list) and len(scopes) <= len(TWITCH_OAUTH_SCOPES)
-                and all(isinstance(s, str) and s in TWITCH_OAUTH_SCOPES for s in scopes)):
-            result["missing_scopes"] = sorted(set(scopes))
+        missing = data.get("missing_scopes")
+        if (isinstance(missing, list) and len(missing) <= len(scopes)
+                and all(isinstance(s, str) and s in scopes for s in missing)):
+            result["missing_scopes"] = sorted(set(missing))
             result["missing_scopes_known"] = True
+        broadcaster = data.get("broadcaster_user_id")
+        if isinstance(broadcaster, str) and KICK_OAUTH_BROADCASTER_RE.fullmatch(broadcaster):
+            result["broadcaster_user_id"] = broadcaster
     except FileNotFoundError:
         pass
     except (OSError, ValueError, RecursionError, _StreamTitleUnsafe):
@@ -383,6 +400,14 @@ def _collect_twitch_oauth(now):
         if directory is not None:
             os.close(directory)
     return result
+
+
+def _collect_twitch_oauth(now):
+    return _collect_oauth_status(now, "twitch_oauth", TWITCH_OAUTH_STATUSES, TWITCH_OAUTH_SCOPES)
+
+
+def _collect_kick_oauth(now):
+    return _collect_oauth_status(now, "kick_oauth", KICK_OAUTH_STATUSES, KICK_OAUTH_SCOPES)
 
 
 def _collect_opencode_retention(soren, now):
@@ -14299,6 +14324,7 @@ def main(argv):
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
+        "kick_oauth": _collect_kick_oauth(now),
         "stream_title_attempts": _collect_stream_title_attempts(
             soren, _program_state_dir(), now, title_sync
         ),
