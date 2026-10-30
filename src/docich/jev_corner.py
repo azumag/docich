@@ -44,6 +44,13 @@ PRECOMMIT_CAPABILITY_ERROR = "Soren player_policy_v1 capabilityを確認でき�
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
+PREFLIGHT_API_KEY_ENV = "TYPESAFE_API_KEY"
+PREFLIGHT_CODES = {
+    "ready": 0,
+    "api_key_missing": 47,
+    "storage_missing": 48,
+    "storage_unwritable": 49,
+}
 DIAGNOSE_CODES = {
     "ready": 0,
     "capability_missing": 41,
@@ -230,6 +237,37 @@ def _program_busy_reason(g: GlobalConfig) -> str | None:
     from .corner_boundary import other_corner_busy
 
     return other_corner_busy(g, str(Path(g.state_dir) / STATE_FILE))
+
+
+def preflight(g: GlobalConfig) -> dict[str, object]:
+    """Validate the static contract, storage and secret presence without any network call.
+
+    Only booleans and fixed categories leave this function; the secret value
+    and its length are never read back out.
+    """
+
+    config = load_jev_corner_config(g)
+    state_dir = Path(g.state_dir)
+    api_key_present = bool(os.environ.get(PREFLIGHT_API_KEY_ENV))
+    if not state_dir.is_dir():
+        category = "storage_missing"
+    elif not os.access(state_dir, os.W_OK | os.X_OK):
+        category = "storage_unwritable"
+    elif not api_key_present:
+        category = "api_key_missing"
+    else:
+        category = "ready"
+    return {
+        "category": category,
+        "enabled": config.enabled,
+        "model": config.model,
+        "candidate_version": config.candidate_version,
+        "max_requests_per_run": config.max_requests_per_run,
+        "decision_budget_ms": config.decision_budget_ms,
+        "http_timeout_ms": config.http_timeout_ms,
+        "api_key_present": api_key_present,
+        "network": "none",
+    }
 
 
 def diagnose(g: GlobalConfig) -> str:
@@ -913,6 +951,7 @@ def _parser():
     finish = sub.add_parser("finish")
     finish.add_argument("--timeout-seconds", type=float)
     sub.add_parser("recover")
+    sub.add_parser("preflight")
     sub.add_parser("diagnose")
     sub.add_parser("recover-diagnose")
     sub.add_parser("refresh-bridge")
@@ -926,6 +965,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         g = load_global(_repo_root(), Path(args.config) if args.config else None)
+        if args.command == "preflight":
+            summary = preflight(g)
+            print(f"jev-corner: preflight={json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}")
+            return PREFLIGHT_CODES[str(summary["category"])]
         if args.command == "diagnose":
             category = diagnose(g)
             print(f"jev-corner: diagnose={category}")

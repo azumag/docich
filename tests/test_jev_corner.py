@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from docich.jev_corner import (
     _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
+    preflight,
     recover_bridge,
     refresh_bridge,
 )
@@ -106,6 +108,38 @@ max_requests_per_run = 500
             self.assertEqual(calls[0][:3], ["tmux", "kill-session", "-t"])
             self.assertEqual(calls[1][:4], ["tmux", "new-session", "-d", "-s"])
             self.assertIn("soviet_local.mjs", calls[1][-1])
+
+    def test_preflight_is_offline_and_reports_the_static_contract(self):
+        summary = preflight(self.g)
+        self.assertEqual(summary["network"], "none")
+        self.assertFalse(summary["enabled"])
+        self.assertEqual(summary["model"], "jev-1.13.0")
+        self.assertEqual(summary["candidate_version"], "uniform25-v1")
+
+    def test_preflight_reports_key_presence_as_boolean_without_value(self):
+        secret = "synthetic-test-value-not-real"
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        with patch.dict(jev_mod.os.environ, {"TYPESAFE_API_KEY": secret}):
+            summary = preflight(self.g)
+        self.assertTrue(summary["api_key_present"])
+        self.assertEqual(summary["category"], "ready")
+        self.assertNotIn(secret, json.dumps(summary))
+        with patch.dict(jev_mod.os.environ, {}, clear=True):
+            summary = preflight(self.g)
+        self.assertFalse(summary["api_key_present"])
+        self.assertEqual(summary["category"], "api_key_missing")
+
+    def test_preflight_storage_categories_are_fixed(self):
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        absent = dataclasses.replace(self.g, state_dir=self.root / "absent")
+        with patch.dict(jev_mod.os.environ, {"TYPESAFE_API_KEY": "synthetic"}):
+            self.assertEqual(preflight(absent)["category"], "storage_missing")
+            with patch.object(jev_mod.os, "access", return_value=False):
+                self.assertEqual(preflight(self.g)["category"], "storage_unwritable")
+        self.assertEqual(
+            jev_mod.PREFLIGHT_CODES,
+            {"ready": 0, "api_key_missing": 47, "storage_missing": 48, "storage_unwritable": 49},
+        )
 
     def test_config_is_disabled_by_default_but_manual_start_is_explicit(self):
         loaded = load_jev_corner_config(self.g)
