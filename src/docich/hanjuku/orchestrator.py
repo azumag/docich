@@ -424,6 +424,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('monster_unchosen', None)
         mem.pop('monster_own_choice', None)
     battle_flow.observe_entry_return(screen, mem)
+    battle_flow.observe_season_king_panel(screen, mem)
     if kind != 'egg_choice_menu':
         mem.pop('egg_choice', None)
     if kind != 'egg_battle_menu':
