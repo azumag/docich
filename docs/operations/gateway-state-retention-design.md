@@ -1,6 +1,6 @@
 # gateway_state 保持設計（azumag/docich#365 の後続）
 
-状態: 設計ドラフト。この PR では削除挙動を変えない。実測の分割が取れるまで、削除の実装はしない。
+状態: 設計ドラフト。PR #3104 で分割を実測済み（releases 約 1.6GiB, bundles 約 103MiB）。案 A の保護テストと定数 `PREVIEW_RELEASE_KEEP`（現在 2）を用意した段階。**定数を 1 に変えるのは owner 同意後のみ。**
 
 ## 1. 実測（確認できた範囲）
 
@@ -38,6 +38,12 @@
 | C | release を bundle の alternates 参照にする | 容量を大きく下げられる可能性 | 参照先 object の GC 競合。本番 `.git` に触れるため慎重に |
 
 推奨: まず分割の実測（本 PR）で releases の寄与を確定し、寄与が大きければ A を先に検討する。B / C は別 PR。
+
+## 4.1 案 A の影響（owner 同意前に確認すること）
+
+- `preview exec` と `preview status` は `releases/<repo>/<sha>` の存在を要求する。keep=1 では直前の preview SHA が消えるため、そのロールバック先は再 upload まで使えない。
+- 削除は preview 配備時のみ。bundle prune は現存 release の SHA を preview 参照として保護するため、release が減ると未参照 bundle の保持枠が 2 件のルールで回る（想定どおり）。
+- release の削除は `deployment_intent` / `pending_repairs` を参照していない。pending repair の candidate が preview release を必要とするケースがないか、flip 前に確認すること（未確認）。
 
 ## 5. 受け入れ条件
 
