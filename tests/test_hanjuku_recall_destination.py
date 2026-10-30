@@ -46,6 +46,26 @@ def test_unknown_origin_can_join_observed_hero_castle(monkeypatch):
     assert mem['recall']['goal'] == 'ゴーメン'
 
 
+def test_unknown_origin_prefers_sortie_source_over_hero_castle():
+    # issue #2907: origin が束縛できなくても、帰還する本人の出撃元を代理の
+    # 現在地として距離判定へ使い、主人公の在城城へ一律固定しない。
+    mem = memory()
+    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    mem['recall']['sorties'] = ['s1']
+    mem['sorties'] = {'s1': {'source': 'ジョンリギ'}}
+    assert p._recall_goal(mem) == 'ジョンリギ'
+
+
+def test_captured_sortie_source_uses_nearest_owned_castle():
+    # 出撃元が奪取されて自軍城でなくても、その座標を代理 origin として
+    # 最も近い自軍城へ帰還する（けっかい(265,270) → ゴーメン(295,606)）。
+    mem = memory()
+    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    mem['recall']['sorties'] = ['s1']
+    mem['sorties'] = {'s1': {'source': 'けっかい'}}
+    assert p._recall_goal(mem) == 'ゴーメン'
+
+
 def test_distance_tie_prefers_hero_and_nearby_castle_beats_far_hero():
     mem = memory([649, 765]); mem['garrison'] = {'キカンドン': [p.NAME]}
     assert p._recall_goal(mem) == 'キカンドン'

@@ -1055,7 +1055,14 @@ def _near_goal(mem, order, name, mode):
 
 
 def _recall_goal(mem, flags=None):
-    """Nearest owned castle; hero's castle wins ties or supplies an unknown origin."""
+    """Nearest owned castle to the recalled unit's own position.
+
+    The bound ``origin`` cell wins first; without one, each recalled sortie's
+    recorded departure castle serves as the unit's position proxy so the goal
+    follows the recalling unit instead of fixing on the hero's garrison
+    (#2907). Only when neither is known does the hero's castle apply, then
+    the sole owned castle. ``hero_castle`` keeps the distance tie-break.
+    """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
     owned = sorted(c for c in _owned(mem) if c in cells
@@ -1071,12 +1078,20 @@ def _recall_goal(mem, flags=None):
         # nearer castle behind a farther one. Squaring avoids rounding ties.
         return min(owned, key=lambda c: (sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1)),
                                          c != hero_castle, c)) if owned else None
+    # origin が束縛できない場合は、帰還する本人の出撃元を代理の現在地として
+    # 距離判定へ使う（issue #2907 の方向 b）。出撃元が自軍城でなくなって
+    # いても座標は有効なので、そこへ最も近い自軍城を選べる。
+    sources = [cells[s] for s in
+               (((mem.get('sorties') or {}).get(step) or {}).get('source')
+                 for step in (state.get('sorties') or ()))
+               if s in cells]
+    if sources:
+        # 複数の出撃元を持つ場合は合計距離が最小の城（重心に近い）を選ぶ。
+        return min(owned, key=lambda c: (sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1))
+                                             for o in sources),
+                                         c != hero_castle, c)) if owned else None
     if hero_castle:
         return hero_castle
-    for step in (mem.get('recall') or {}).get('sorties') or ():
-        source = ((mem.get('sorties') or {}).get(step) or {}).get('source')
-        if source in owned:
-            return source
     return owned[0] if len(owned) == 1 else None
 BOSS_TARGET_CANCEL_LIMIT = 4   # the boss sortie is worth more retries
 
