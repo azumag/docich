@@ -57,11 +57,14 @@ def _order_hero_alternatives(order, mem, names):
         # Owner 2026-10-30 (1人残す): any other castle keeps one general too;
         # g1075 lost フヌイヌム (08:34) and ミヒラギアン (08:47) after their
         # lone ミュスカデ/アルテミス left for the sites.
+        # Owner 2026-10-30 (卵持ちを残す): that one holds an egg; g1075 lost
+        # アルカ (09:01:32) when the egg-less キール, kept as ヴィーナス left,
+        # met リーキ's おーでーん summon.
         unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
         present = set(names or ()) - unavailable
         candidates = [g for g in candidates if _holds_egg(mem, g)
                       and not chart_adjust.hero_guard_short(names, g, unavailable)
-                      and (NAME in present or present - {g})]
+                      and (NAME in present or any(_holds_egg(mem, s) for s in present - {g}))]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.

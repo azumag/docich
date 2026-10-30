@@ -35,7 +35,7 @@ def test_g1075_lists_read_the_heros_castle_before_sending_a_weak_lone_general():
 
 
 def test_the_strongest_companion_of_every_read_list_goes():
-    mem = memory(アルカ=['ヴィーナス', 'キール'])
+    mem = memory(アルカ=['ヴィーナス', 'ブカティーニ'])
     assert orders._boss_companion_source(site_order(), mem) == 'アルカ'
     mem['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
     assert orders._boss_companion_source(site_order(), mem) == HOME
@@ -43,7 +43,7 @@ def test_the_strongest_companion_of_every_read_list_goes():
 
 
 def test_a_read_heros_castle_without_a_strong_spare_falls_back_to_the_best_read_list():
-    mem = memory(ミヒラギアン=['アルテミス', 'キール'])
+    mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
     mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
     assert orders._boss_companion_source(site_order(), mem) == 'ミヒラギアン'
 
@@ -53,10 +53,10 @@ def test_a_lone_general_never_leaves_its_castle_for_a_site():
     ミヒラギアン (08:47:06) after their lone generals left for the sites."""
     mem = memory()
     assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス']) == []
-    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'キール']) == ['アルテミス']
+    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'ブカティーニ'])[0] == 'アルテミス'
     # A marching general is no defender.
-    mem['sorties'] = {'x': {'general': 'キール', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
-    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'キール']) == []
+    mem['sorties'] = {'x': {'general': 'ブカティーニ', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
+    assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'ブカティーニ']) == []
     # Every read list lone and the hero's castle read: nothing goes, nothing is emptied.
     mem = memory()
     mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
@@ -117,3 +117,20 @@ def test_the_same_site_entry_on_the_next_frame_keeps_its_site_and_step():
         assert policy.message_step(entry(), mem) == [policy.pad('a')]
     assert mem['attack'] == bound
     assert 'situation_held' not in [r['decision'] for r in mem['_records']]
+
+
+def test_the_general_kept_behind_holds_an_egg():
+    """Owner 2026-10-30 (卵持ちを残す): g1075 08:27:07 sent ヴィーナス from アルカ
+    ['ヴィーナス', 'キール']. The egg-less キール (HP 65) held it alone until
+    リーキ summoned おーでーん and won at 09:01:32 (キール HP 0, リーキ HP 4)."""
+    north_west = site_order('四季王城(北西)')
+    mem = memory(アルカ=['ヴィーナス', 'キール'])
+    assert orders._order_hero_alternatives(north_west, mem, ['ヴィーナス', 'キール']) == []
+    assert orders._boss_companion_source(north_west, mem) == HOME      # read the hero's castle instead
+    # An egg holder kept behind lets the stronger one go.
+    assert orders._order_hero_alternatives(north_west, mem, ['ヴィーナス', 'ブカティーニ']) == ['ヴィーナス']
+    # An egg read as used up is none.
+    mem['egg_uses']['ブカティーニ'] = 0
+    assert orders._order_hero_alternatives(north_west, mem, ['ヴィーナス', 'ブカティーニ']) == []
+    # The hero's castle keeps its two guards as before, with or without eggs.
+    assert orders._order_hero_alternatives(north_west, mem, [chart.HERO, 'ゼウス', 'キール', 'カペリーニ']) == ['ゼウス']
