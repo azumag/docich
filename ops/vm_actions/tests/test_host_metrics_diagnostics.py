@@ -704,9 +704,11 @@ class HostMetricsBudgetTests(HostMetricsFixture):
         self.assertEqual(section["points"], total)
         self.assertEqual(section["samples_omitted"], 0)
         self.assertEqual(section["samples"][0]["boot"], BOOT_A)
-        # The cascade then had to drop a whole section instead.
-        self.assertEqual(payload["corners"],
-                         {"status": "output_omitted", "reason": "hard_ceiling"})
+        # The cascade then had to shed the corner detail instead; #2884 keeps
+        # marked skeletons rather than the whole-section omission marker.
+        stub = payload["corners"]["rotation_evidence"]
+        self.assertEqual(stub["output_omitted"], "hard_ceiling")
+        self.assertGreater(stub["omitted_bytes"], 10 * 1024)
 
     def test_the_pre_hang_boundary_survives_a_trim_that_fits_the_floor(self):
         # Between "one more sample fits" and "nothing fits", the trim must stop

@@ -13523,6 +13523,24 @@ def _corners_hard_trim(payload, text):
     corners = payload.get("corners")
     if not isinstance(corners, dict):
         return text
+    stubbed = {}
+    for key, value in corners.items():
+        if (key in _CORNER_HARD_KEEP or not isinstance(value, dict)
+                or value.get("output_omitted") == "hard_ceiling"):
+            stubbed[key] = value
+            continue
+        stub = _corner_stub(value)
+        stub["omitted_bytes"] = len(
+            json.dumps(value, sort_keys=True, ensure_ascii=False))
+        stubbed[key] = stub
+    trial = dict(payload)
+    trial["corners"] = stubbed
+    if len(json.dumps(trial, sort_keys=True, ensure_ascii=False)
+           .encode("utf-8")) > HARD_JSON_BYTES:
+        # Even every entry skeletoned cannot fit: a whole section is dropped
+        # regardless, so do not trade full corner detail for skeletons first
+        # (same rule as the host-metrics floor in _host_metrics_hard_trim).
+        return text
     while len(text.encode("utf-8")) > HARD_JSON_BYTES:
         candidates = [
             (len(json.dumps(value, sort_keys=True, ensure_ascii=False)), key)
@@ -13670,16 +13688,17 @@ def _diagnostics_budget(payload):
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         payload = _nethack_xlog_drop(payload)
     text = _nethack_history_budget(payload)
-    # #2884: ``corners`` is the first whole section the drop order takes, so a
-    # single fat entry must not be allowed to cost every other corner its
-    # lifecycle summary. Stub the largest entries to their present/readable/
-    # status skeletons before shedding any host-metrics sample or section.
-    text = _corners_hard_trim(payload, text)
     # #2578: the ring samples are the only evidence of the hour before a
     # guest-OS hang and cannot be recreated after the reboot. Trim only against
     # the hard ceiling (and only the oldest samples) before any whole section is
     # dropped, so this section can never evict `corners` for a small overflow.
     text = _host_metrics_hard_trim(payload, text)
+    # #2884: ``corners`` is still the first whole section the drop order takes,
+    # so a single fat entry must not be allowed to cost every other corner its
+    # lifecycle summary once the ring trim above could not make room. Stub the
+    # largest entries to their present/readable/status skeletons before the
+    # whole-section drop below can fire.
+    text = _corners_hard_trim(payload, text)
     # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
     # preserves the evidence its own incident review depends on, but none of them
     # is unconditional: a payload that was still over the ceiling after them was

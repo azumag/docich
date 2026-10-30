@@ -75,8 +75,16 @@ class HardCeilingTests(unittest.TestCase):
 
     def test_corner_projections_are_dropped_instead_of_failing_the_gateway(self):
         payload = self._assert_bounded(production_scale_payload())
-        self.assertEqual(payload["corners"]["status"], "output_omitted")
-        self.assertEqual(payload["corners"]["reason"], "hard_ceiling")
+        # #2884: the heaviest entry yields to a marked skeleton first, so the
+        # rest of the section stays observable; the whole-section marker only
+        # appears when even every skeleton cannot fit.
+        corners = payload["corners"]
+        self.assertNotEqual(corners.get("status"), "output_omitted")
+        stub = corners["rotation_evidence"]
+        self.assertEqual(stub["output_omitted"], "hard_ceiling")
+        self.assertGreater(stub["omitted_bytes"], 40 * 1024)
+        self.assertEqual(corners["retro_corner"]["scene_narration"]["status"],
+                         "output_omitted")
 
     def test_largest_remaining_section_is_the_fallback(self):
         # The ordered drop names the sections that normally carry the weight. A
