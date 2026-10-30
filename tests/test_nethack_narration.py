@@ -353,6 +353,24 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
     assert brain.last_decision.actions == ()
 
 
+NO_FOOD_LISTING = "a - a newt corpse\nb - a scroll labeled ZELGO MER\n" + "\n" * 8
+
+
+def _advance(brain, text):
+    """decide() + transport ack for decide-only tests (#2806 probe flow)."""
+    from docich.nethack_observation import normalize_tty
+    actions = brain.decide(observation(text))
+    if actions and brain.last_progress_decision is not None:
+        brain.progress.sent(brain.last_progress_decision, normalize_tty(text))
+    return [a.text if a.type == "text" else a.key for a in actions]
+
+
+def _drain_inventory_probe(brain, text):
+    """Run the bounded #2806 probe (i -> listing -> Escape) to a no-food end."""
+    assert _advance(brain, text) == ["i"]
+    assert _advance(brain, NO_FOOD_LISTING) == ["Escape"]
+
+
 @pytest.mark.parametrize("intent,text", [
     ("assess_contact", "msg\n##@d.\n     \n" + _status()),
     ("hold_low_hp", "msg\n##@d.\n     \n" + _status(hp="4(10)")),
@@ -360,7 +378,13 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
 ])
 def test_brain_never_rests_beside_a_recognized_creature(intent, text):
     brain = build_brain(SimpleNamespace(), game())
-    actions = brain.decide(observation(text))
+    if intent == "seek_food":
+        # #2806: a Hungry frame probes the visible inventory first; a no-food
+        # probe leaves the reviewed step contract unchanged.
+        _drain_inventory_probe(brain, text)
+        actions = brain.decide(observation(text))
+    else:
+        actions = brain.decide(observation(text))
     # Still never the rest key beside a creature (#748). The brain steps away
     # on reviewed terrain instead, because standing still there is a deadlock:
     # the creature only gets a turn when the hero takes one.
@@ -386,8 +410,13 @@ def test_brain_prefers_real_step_and_uses_explicit_wait_without_one():
     assert brain.last_decision.intent == "explore_step"
     # owner decision 2026-09-23: 空腹の全tierで完全なframeなら `.` を送る
     # (入力なしが永久凍結になるため)。質問・未知画面・player不明は依然無入力。
+    # #2806: each food-emergency frame probes the visible inventory first;
+    # after a no-food probe the reviewed wait turn resumes unchanged.
     for extra in ("Fainting", "Weak", "Starved"):
-        assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra=extra)))] == ["."]
+        text = "msg\n###@.\n     \n" + _status(extra=extra)
+        if _advance(brain, text) == ["i"]:
+            _advance(brain, NO_FOOD_LISTING)
+        assert [a.text for a in brain.decide(observation(text))] == ["."]
         assert brain.last_decision.intent == "food_emergency"
 
 
