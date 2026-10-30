@@ -177,3 +177,37 @@ def test_an_unmeasured_egg_holder_is_a_valid_attrition_last_seat():
     # A spent egg does not go — and cannot guard either, so nobody leaves.
     mem['egg_uses']['ランダム将軍'] = 0
     assert orders._order_hero_alternatives(order, mem, ['ランダム将軍', 'ブカティーニ']) == []
+
+
+def test_an_exhausted_site_step_rearms_after_a_long_stale_wait():
+    """Owner 2026-10-30: a relaunch budget of 2 parks a site forever once its
+    sorties never produce a measured entry; g1075 showed all four steps
+    overdue+launched for 10h+ with nobody marching. A very long stale wait
+    re-arms one retry so the chapter is never abandoned mid-attrition."""
+    order = site_order()
+    step = order['step']
+    mem = memory()
+    mem['orders'][step] = 'launched'
+    mem['sorties'] = {step: {'general': 'カペリーニ', 'source': 'ミヒラギアン',
+                             'target': order['target'], 'status': 'overdue', 'tick': 100}}
+    mem['boss_relaunch'] = {step: 2}
+    mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN - 1
+    orders._relaunch_overdue_boss(mem)
+    assert mem['orders'][step] == 'launched'              # still cooling down
+    mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN
+    orders._relaunch_overdue_boss(mem)
+    assert mem['orders'][step] == 'pending' and mem['boss_relaunch'][step] == 1
+
+
+def test_a_measured_boss_entry_rearms_the_relaunch_budget():
+    """A real entry is progress, not another black-hole cycle: binding it
+    clears the step's relaunch count so later unresolved cycles can retry."""
+    order = site_order()
+    step = order['step']
+    mem = memory()
+    mem['boss_relaunch'] = {step: 2}
+    mem['sorties'] = {step: {'general': 'ヴィーナス', 'source': 'アルカ',
+                             'target': order['target'], 'status': 'en_route', 'tick': 50}}
+    orders._bind_sortie(mem, step, order['target'])
+    assert mem['sorties'][step]['status'] == 'arrived'
+    assert mem['boss_relaunch'].get(step) is None

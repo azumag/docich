@@ -595,7 +595,8 @@ def _boss_retry_due(order, mem) -> bool:
 
 
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
-BOSS_RELAUNCH_LIMIT = 2                      # boss sorties sent again per step after a march that never entered
+BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
+BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
 
 
 def _site_king_down(mem, target):
@@ -637,20 +638,31 @@ def _relaunch_overdue_boss(mem):
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
                 or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue
+        relaunches = mem.setdefault('boss_relaunch', {})
+        # Owner 2026-10-30: a spent relaunch budget must not park a site
+        # forever. After a very long wait past the normal limit the step
+        # re-arms once - the counter still bounds rapid cycles, but a chapter
+        # whose kings are unmeasured can never be abandoned mid-attrition.
+        stale = (sortie.get('status') == 'overdue'
+                 and relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT)
         if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 and not (sortie.get('status') == 'arrived'
                          and not _site_king_down(mem, target)
-                         and not _boss_fight_live(mem, step))):
+                         and not _boss_fight_live(mem, step))
+                and not (stale and now - sortie['tick'] >= BOSS_STALE_COOLDOWN)):
             continue
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
-        relaunches = mem.setdefault('boss_relaunch', {})
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
-            _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
-                    reason='ボス出撃の出し直しが上限に達したため保留')
-            continue
+            if not stale:
+                _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
+                        reason='ボス出撃の出し直しが上限に達したため保留')
+                continue
+            relaunches[step] = 0
+            _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
+                    reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
                     'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss', 'launched_orders'):
@@ -1249,6 +1261,11 @@ def _bind_sortie(mem, step, castle):
             if (mem.get('sortie_attempt') or {}).get('step') == step:
                 mem.pop('sortie_attempt', None)
         sortie.update(status='arrived', target=castle)
+        if chart.is_boss_castle(castle):
+            # A measured boss entry re-arms the relaunch budget: the cap
+            # counts cycles that never produced an entry, not attempts that
+            # actually reached the castle and fought.
+            (mem.get('boss_relaunch') or {}).pop(step, None)
 
 
 def _transit_sorties(mem, castle, names):
