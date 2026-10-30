@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the broadcaster Kick token every 15 minutes
+
+[Timer]
+OnActiveSec=1min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+Unit=docich-kick-oauth-refresh.service
+
+[Install]
+WantedBy=timers.target
