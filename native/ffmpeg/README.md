@@ -35,8 +35,10 @@ The filter links against libcaption. License text is installed from
 
 ## Build
 
-The build host needs a C/C++ toolchain, CMake, pkg-config, Git, GNU make, and
-libx264 development files. The default build root is disposable and outside the
+The build host needs a C/C++ toolchain, CMake, pkg-config, Git, GNU make,
+libx264 development files, and libpulse development files (`libpulse-dev`;
+`build.sh` passes `--enable-libpulse`, so configure fails early when the
+headers are absent). The default build root is disposable and outside the
 repository:
 
 ```bash
