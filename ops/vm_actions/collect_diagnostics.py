@@ -13483,6 +13483,64 @@ def _host_metrics_hard_trim(payload, text):
     return text
 
 
+# Lifecycle fields kept when one corners entry is stubbed at the hard
+# ceiling: enough to read each corner's state without the bounded-but-heavy
+# evidence bodies that pushed the envelope over (#2884).
+_CORNER_STUB_KEYS = (
+    "present", "readable", "status", "game", "previous_game",
+    "end_reason", "finish_reason", "last_error_code", "completed_at",
+    "updated_at", "phase", "active_game",
+)
+# Corners entries that never stub individually: ``game_switch`` is the
+# identity of what is actually on screen and ``corner_rotation`` is the
+# ledger an operator opens diagnostics to check when the rotation wedges.
+# Both are bounded and small; the whole-section drop below can still take
+# them in a truly pathological envelope, same as before.
+_CORNER_HARD_KEEP = ("game_switch", "corner_rotation")
+
+
+def _corner_stub(entry):
+    """Minimal lifecycle skeleton of one corners entry (#2884)."""
+    stub = {key: entry[key] for key in _CORNER_STUB_KEYS if key in entry}
+    stub["output_omitted"] = "hard_ceiling"
+    return stub
+
+
+def _corners_hard_trim(payload, text):
+    """Stub the largest corners entries before the whole section is dropped.
+
+    ``corners`` sits first in ``_HARD_DROP_ORDER`` because it is the
+    heaviest section, but its entries are independent state files: one fat
+    entry (a retro run's evidence body, a FIFO scan, a long failed_corners
+    ledger) used to take every other corner's lifecycle summary down with
+    it, which is how #2884 lost the whole section over a few KiB and why
+    prediction/lawsim needed top-level copies. Stub the largest entries
+    first -- keeping each corner's present/readable/status skeleton and
+    recording the omitted size -- so the small corners stay observable
+    until the section truly cannot fit. The whole-section drop in the
+    cascade remains the last resort.
+    """
+    corners = payload.get("corners")
+    if not isinstance(corners, dict):
+        return text
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        candidates = [
+            (len(json.dumps(value, sort_keys=True, ensure_ascii=False)), key)
+            for key, value in corners.items()
+            if key not in _CORNER_HARD_KEEP
+            and isinstance(value, dict)
+            and value.get("output_omitted") != "hard_ceiling"
+        ]
+        if not candidates:
+            break
+        size, key = max(candidates)
+        stub = _corner_stub(corners[key])
+        stub["omitted_bytes"] = size
+        corners[key] = stub
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -13612,6 +13670,11 @@ def _diagnostics_budget(payload):
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         payload = _nethack_xlog_drop(payload)
     text = _nethack_history_budget(payload)
+    # #2884: ``corners`` is the first whole section the drop order takes, so a
+    # single fat entry must not be allowed to cost every other corner its
+    # lifecycle summary. Stub the largest entries to their present/readable/
+    # status skeletons before shedding any host-metrics sample or section.
+    text = _corners_hard_trim(payload, text)
     # #2578: the ring samples are the only evidence of the hour before a
     # guest-OS hang and cannot be recreated after the reboot. Trim only against
     # the hard ceiling (and only the oldest samples) before any whole section is
