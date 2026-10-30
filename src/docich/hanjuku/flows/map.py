@@ -156,6 +156,46 @@ def boss_stall_escape_step(mem, kind, phase):
     return [pad('b')]
 
 
+BOSS_SORTIE_MENU_HOLD_TICKS = 60   # ~90 s at 1.5 s, safely inside the 300 s stall terminal
+BOSS_SORTIE_MENU_KINDS = frozenset({'general_list', 'castle_menu', 'card_select', 'sortie_confirm'})
+
+
+def boss_sortie_menu_escape_step(mem, kind, actions):
+    """Cancel a boss sortie menu that produced no input for too long.
+
+    g1075 2026-10-31 08:27-08:33: 4-B1 was active but every observation in
+    general_list returned [] (situation_held), so the corner hit
+    input_stalled after 300 s and the run ended. The menu owner has no
+    unlimited hold: after BOSS_SORTIE_MENU_HOLD_TICKS with no action for the
+    same step/screen, press B once and let the order be retried. Normal
+    castle orders and screens with an action are untouched.
+    """
+    active = mem.get('active')
+    if (not active or kind not in BOSS_SORTIE_MENU_KINDS or actions != []
+            or mem.get('battle') or mem.get('attack') or mem.get('recall')):
+        mem.pop('boss_sortie_menu_hold', None)
+        return None
+    order = _order_for_step(mem, active)
+    if not _is_boss_order(order, mem):
+        mem.pop('boss_sortie_menu_hold', None)
+        return None
+    tick = int(mem.get('tick') or 0)
+    hold = mem.get('boss_sortie_menu_hold') or {}
+    if hold.get('step') != active or hold.get('kind') != kind:
+        mem['boss_sortie_menu_hold'] = {'step': active, 'kind': kind, 'tick': tick}
+        return None
+    since = hold.get('tick')
+    if type(since) is not int or tick - since < BOSS_SORTIE_MENU_HOLD_TICKS:
+        return None
+    mem.pop('boss_sortie_menu_hold', None)
+    mem['world_map_due'] = True
+    mem['uncertain'] = True
+    _record(mem, 'boss_sortie_menu_escape', chart_step=active, screen=kind,
+            observed_metric={'held_ticks': tick - since},
+            reason='ボス出撃メニューで有限時間入力が決まらないため、Bで取り消して出撃をやり直す')
+    return [pad('b')]
+
+
 def _picker_origin(chapter, frame):
     """The recalling unit's chart cell, only when the picker shows exactly one ▲.
 

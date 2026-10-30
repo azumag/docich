@@ -643,6 +643,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # nothing handled it and the bot pressed nothing for over an hour.
         decision_log._record(mem,'close_panel',screen='camp_menu',reason='帰還指示中でない野営メニューを閉じる')
         actions=[pad('b')]
+    menu_escape = map_flow.boss_sortie_menu_escape_step(mem, kind, actions)
+    if menu_escape is not None:
+        # A boss sortie menu that keeps returning [] would otherwise hit the
+        # 300 s input_stalled terminal (g1075 08:33). Bounded B, then retry.
+        actions = menu_escape
     if actions is None:
         actions=legacy_actions(frame,phase,updated)
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)

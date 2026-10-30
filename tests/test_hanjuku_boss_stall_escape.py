@@ -91,6 +91,67 @@ def test_the_orchestrator_returns_the_escape_action(monkeypatch):
                for record in state['_records'])
 
 
+def test_a_held_boss_general_list_is_cancelled_before_the_stall_terminal():
+    mem = memory()
+    mem['active'] = '4-B1'
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
+    mem['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS - 1
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
+    mem['tick'] += 1
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) == [policy.pad('b')]
+    assert mem['world_map_due'] is True
+    assert 'boss_sortie_menu_hold' not in mem
+    assert any(record.get('decision') == 'boss_sortie_menu_escape'
+               for record in mem['_records'])
+    assert map_flow.BOSS_SORTIE_MENU_HOLD_TICKS < 200   # input_stalled is ~200 ticks at 1.5 s
+
+
+def test_the_sortie_menu_escape_only_owns_a_boss_order_with_no_action():
+    for kind, actions in (('map', []), ('general_list', [policy.pad('a')]),
+                          ('battle', []), ('general_list', None)):
+        mem = memory()
+        mem['active'] = '4-B1'
+        assert map_flow.boss_sortie_menu_escape_step(mem, kind, actions) is None
+    mem = memory()
+    mem['active'] = '4-C1'   # a normal castle order is not in this watchdog
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
+    mem = memory()
+    mem['active'] = '4-B1'
+    mem['recall'] = {'stage': 'dest'}
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
+
+
+def test_a_changed_step_or_screen_restarts_the_hold_window():
+    mem = memory()
+    mem['active'] = '4-B1'
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
+    mem['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'card_select', []) is None
+    mem['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS
+    assert map_flow.boss_sortie_menu_escape_step(mem, 'card_select', []) == [policy.pad('b')]
+
+
+def test_the_orchestrator_escapes_a_held_general_list(monkeypatch):
+    from docich.hanjuku import orchestrator
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku_screen import Screen as ScreenType
+
+    screen = ScreenType(lines=[], hand=None, text='', kind='general_list')
+    monkeypatch.setattr(orchestrator, 'classify', lambda frame: 'field_menu')
+    monkeypatch.setattr('docich.hanjuku.os_layer.screen.parse',
+                        lambda frame, phase=None: screen)
+    mem = memory(tick=1000)
+    mem['active'] = '4-B1'
+    state = {'policy': mem}
+    first, state = orchestrator.decide(Frame(256, 224, bytes(256 * 224 * 3)), state)
+    assert first == []
+    state['policy']['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS
+    second, state = orchestrator.decide(Frame(256, 224, bytes(256 * 224 * 3)), state)
+    assert second == [policy.pad('b')]
+    assert any(record.get('decision') == 'boss_sortie_menu_escape'
+               for record in state['_records'])
+
+
 def test_the_escape_stops_after_the_step_is_rearmed():
     mem = memory()
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') == [policy.pad('b')]
