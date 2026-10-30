@@ -1,0 +1,181 @@
+"""戦略層: durable deferred-goal queue.
+
+Bounded deferrals and interruptions already record decision events, but the
+intent itself was re-derived at each site (or dropped: ``month_sub_lost`` left
+an 'opened' purchase unreachable for the rest of the month). ``mem['goals']``
+materializes a ledger over the observed facts those sites already persist --
+lost castles, broken eggs, depleted egg counts, roster shortage, empty
+garrisons -- so an interrupted or deferred goal stays listed, ages, and is
+re-offered to its existing owner whenever the surface is idle.
+
+The queue never plans input and never authorizes a payment or a sortie: it
+only records intent and attempt history. Every screen-evidence gate in the
+owning flow still decides whether the goal may act.
+"""
+from __future__ import annotations
+
+from ... import hanjuku_chart as chart
+from ..decision_log import _record
+from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
+
+
+GOAL_LIMIT = 24            # bounded ledger; the fact stores stay the fallback
+STARVE_ATTEMPTS = 6        # deferral outcomes per goal before a starved record
+
+# The fact store that keeps each kind's intent alive, and the flow that owns it:
+#   repair      house_eggs[name].broken            -> flows/house.py session
+#   egg_recover economy._egg_recovery_targets      -> flows/month.py sub
+#   recruit     economy._recruit_shortage          -> flows/month.py sub
+#   retake      mem['lost']                        -> replan interim candidates
+#   move        garrison[castle] == []             -> replan interim candidates
+
+
+def _goals(mem):
+    goals = mem.get('goals')
+    if not isinstance(goals, list):
+        goals = mem['goals'] = []
+    return goals
+
+
+def _key(goal):
+    return (goal.get('kind'), goal.get('actor'), goal.get('target'))
+
+
+def _summary(goal):
+    return {k: goal.get(k) for k in ('kind', 'actor', 'target', 'targets',
+                                     'queued', 'attempts', 'outcome')}
+
+
+def _wanted(mem):
+    """Intent keys the observed facts still support: ``{key: spec}``."""
+    wanted = {}
+    chapter = mem.get('chapter') or 0
+    # Same chapter-map bound as ``interim_candidates``: a name outside the
+    # measured map cannot be navigated to, so it is not a serveable want.
+    try:
+        castles = set(chart.castles(chapter))
+    except AttributeError:
+        castles = set()
+    for castle in mem.get('lost') or ():
+        if type(castle) is str and castle in castles:
+            wanted[('retake', None, castle)] = {'kind': 'retake', 'target': castle}
+    for name, info in (mem.get('house_eggs') or {}).items():
+        if isinstance(info, dict) and info.get('broken') is True:
+            wanted[('repair', name, None)] = {'kind': 'repair', 'actor': name}
+    from .economy import _egg_recovery_targets, _recruit_shortage
+    targets = _egg_recovery_targets(mem)
+    if targets:
+        wanted[('egg_recover', None, None)] = {'kind': 'egg_recover', 'targets': targets}
+    try:
+        shortage = _recruit_shortage(mem)
+    except AttributeError:
+        # A rebound chart without castle tables (the layer contract allows a
+        # minimal namespace) cannot evaluate roster shortage: no recruit want.
+        shortage = None
+    if shortage:
+        wanted[('recruit', None, None)] = {'kind': 'recruit'}
+    owned = _owned(mem) & castles
+    lost = set(mem.get('lost') or ())
+    now = int(mem.get('tick') or 0)
+    # A march already on the way to an empty castle is the move being served;
+    # it stops counting as a want the way ``interim_candidates`` sees it.
+    from .orders import _sortie_reserved_target
+    heading = {_sortie_reserved_target(mem, step, s)
+               for step, s in (mem.get('sorties') or {}).items()
+               if s.get('status') in ('en_route', 'launched_unconfirmed')
+               and s.get('tick') is not None
+               and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
+    garrison = mem.get('garrison') or {}
+    for castle in sorted(owned - lost - heading):
+        if garrison.get(castle) == []:
+            wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
+    return wanted
+
+
+def refresh(mem):
+    """Reconcile the ledger with the observed facts. Idempotent per observation.
+
+    A goal the facts still support keeps its queue position and age; one whose
+    intent is satisfied (by any means, including ordinary play) leaves with a
+    resolution record when it has a history worth closing. Newly observed
+    wants append behind the existing queue.
+    """
+    wanted = _wanted(mem)
+    goals = _goals(mem)
+    tick = int(mem.get('tick') or 0)
+    kept, resolved = [], []
+    for goal in goals:
+        spec = wanted.pop(_key(goal), None)
+        if spec is not None:
+            if spec.get('targets') is not None:
+                goal['targets'] = spec['targets']
+            kept.append(goal)
+        else:
+            resolved.append(goal)
+    for goal in resolved:
+        if goal.get('attempts') or goal.get('outcome'):
+            _record(mem, 'goal_resolved', chart_step=None,
+                    observed_metric=_summary(goal),
+                    reason='延期・中断されていた目標が別の手段で達成されたか不要になったため台帳から外す')
+    new_items = list(wanted.items())
+    room = max(0, GOAL_LIMIT - len(kept))
+    for key, spec in new_items[:room]:
+        goal = {'kind': spec['kind'], 'actor': spec.get('actor'),
+                'target': spec.get('target'), 'targets': spec.get('targets'),
+                'queued': tick, 'attempts': 0}
+        kept.append(goal)
+        _record(mem, 'goal_queued', chart_step=None, observed_metric=_summary(goal),
+                reason='観測済みの未達目標が延期・中断で失われないよう台帳へ登録する')
+    dropped = new_items[room:]
+    if dropped:
+        if mem.get('goals_overflow') != len(dropped):
+            mem['goals_overflow'] = len(dropped)
+            _record(mem, 'goal_queue_full', chart_step=None,
+                    observed_metric={'queued': len(kept), 'overflow': len(dropped),
+                                     'dropped': [str(key) for key, _ in dropped[:4]]},
+                    reason='目標台帳が上限のため新しい未達目標を登録できない。事実は各元データに残る')
+    else:
+        mem.pop('goals_overflow', None)
+    if resolved or new_items:
+        mem['goals'] = kept
+
+
+def _find(mem, kind, *, actor=None, target=None):
+    return next((g for g in _goals(mem)
+                 if g.get('kind') == kind and g.get('actor') == actor
+                 and g.get('target') == target), None)
+
+
+def pending(mem, kinds=None):
+    """Queued goals, oldest first; ``kinds`` filters by kind name(s)."""
+    wanted_kinds = None if kinds is None else (
+        {kinds} if isinstance(kinds, str) else set(kinds))
+    return [g for g in _goals(mem)
+            if wanted_kinds is None or g.get('kind') in wanted_kinds]
+
+
+def repair_due(mem):
+    """A deferred broken-egg repair is waiting for idle map time."""
+    return any(g.get('kind') == 'repair' for g in _goals(mem))
+
+
+def note_attempt(mem, kind, outcome, *, actor=None, target=None, reason=None, metric=None):
+    """Count one deferral/interruption outcome against a live goal.
+
+    Called beside the existing deferral records; a goal the facts no longer
+    support is silently absent and the call is a no-op. Every
+    ``STARVE_ATTEMPTS``-th unresolved outcome records ``goal_starved`` so a
+    goal that keeps losing its turn is visible in the decision log.
+    """
+    goal = _find(mem, kind, actor=actor, target=target)
+    if goal is None:
+        return None
+    goal['attempts'] = int(goal.get('attempts') or 0) + 1
+    goal['outcome'] = outcome
+    if reason:
+        goal['reason'] = reason
+    if goal['attempts'] % STARVE_ATTEMPTS == 0:
+        _record(mem, 'goal_starved', chart_step=None,
+                observed_metric={**_summary(goal), **(metric or {})},
+                reason=f'{kind}の目標が{goal["attempts"]}回の延期・中断でも達成できていないため飢餓として記録')
+    return goal

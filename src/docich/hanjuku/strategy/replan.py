@@ -409,6 +409,9 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                     jev_status='no_candidates',
                     deviation_reason='interim_no_candidates',
                     reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
+            from . import goals
+            for goal in goals.pending(mem, {'retake', 'move'}):
+                goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     label, order = next(iter(candidates.items()))
     if allow_sole and len(set(((mem.get('garrison') or {}).get(order['source']) or ()))) < 2:
