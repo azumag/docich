@@ -232,6 +232,21 @@ def _program_busy_reason(g: GlobalConfig) -> str | None:
     return other_corner_busy(g, str(Path(g.state_dir) / STATE_FILE))
 
 
+def preflight(g: GlobalConfig) -> dict[str, object]:
+    """Validate the static corner contract without any network or VM access."""
+
+    config = load_jev_corner_config(g)
+    return {
+        "enabled": config.enabled,
+        "model": config.model,
+        "candidate_version": config.candidate_version,
+        "max_requests_per_run": config.max_requests_per_run,
+        "decision_budget_ms": config.decision_budget_ms,
+        "http_timeout_ms": config.http_timeout_ms,
+        "network": "none",
+    }
+
+
 def diagnose(g: GlobalConfig) -> str:
     """Return a fixed, non-sensitive preflight category for the owner operator."""
 
@@ -913,6 +928,7 @@ def _parser():
     finish = sub.add_parser("finish")
     finish.add_argument("--timeout-seconds", type=float)
     sub.add_parser("recover")
+    sub.add_parser("preflight")
     sub.add_parser("diagnose")
     sub.add_parser("recover-diagnose")
     sub.add_parser("refresh-bridge")
@@ -926,6 +942,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         g = load_global(_repo_root(), Path(args.config) if args.config else None)
+        if args.command == "preflight":
+            summary = preflight(g)
+            print(f"jev-corner: preflight={json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}")
+            return 0
         if args.command == "diagnose":
             category = diagnose(g)
             print(f"jev-corner: diagnose={category}")

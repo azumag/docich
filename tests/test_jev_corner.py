@@ -18,6 +18,7 @@ from docich.jev_corner import (
     _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
+    preflight,
     recover_bridge,
     refresh_bridge,
 )
@@ -106,6 +107,13 @@ max_requests_per_run = 500
             self.assertEqual(calls[0][:3], ["tmux", "kill-session", "-t"])
             self.assertEqual(calls[1][:4], ["tmux", "new-session", "-d", "-s"])
             self.assertIn("soviet_local.mjs", calls[1][-1])
+
+    def test_preflight_is_offline_and_reports_the_static_contract(self):
+        summary = preflight(self.g)
+        self.assertEqual(summary["network"], "none")
+        self.assertFalse(summary["enabled"])
+        self.assertEqual(summary["model"], "jev-1.13.0")
+        self.assertEqual(summary["candidate_version"], "uniform25-v1")
 
     def test_config_is_disabled_by_default_but_manual_start_is_explicit(self):
         loaded = load_jev_corner_config(self.g)
