@@ -1214,7 +1214,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              and cur.get('castle') in chart.boss_sites(4)))
                     and cur.get('side') == 'attack'
                     and cur.get('entry_evidence') == 'measured_boss_entry')
-    if outcome == 'loss' and boss_attempt:
+    # An unclassified end also leaves no measured defeat (g1075 2026-10-30:
+    # 4-B3 キッシュ closed his ウイナッツォ fight 26/537 with neither HP at 0;
+    # 4-B1・4-B4's site fights never left a result at all). Retrying it like a
+    # measured loss is the only way a launched boss step comes back: the same
+    # bounded budget applies.
+    if outcome in ('loss', 'unclassified') and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
         for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
@@ -1222,14 +1227,18 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
-                       'deviation_reason': 'ボス戦のHP敗北を確認。出撃将軍と既定切り札を再確認して再試行',
+                       'deviation_reason': ('ボス戦のHP敗北を確認。出撃将軍と既定切り札を再確認して再試行'
+                                            if outcome == 'loss' else
+                                            'ボス戦が決着HPなしに終わり撃破の実測がないため、出撃将軍と既定切り札を再確認して再試行'),
                        'expected_metric': {'general': boss_order['general'],
                                            'cards': list(boss_order['cards']),
                                            'goal': f'{boss_name or "ボス"}戦勝利'}}
             mem.setdefault('retry_context', {})[step] = context
             _record(mem, 'order_retry', chart_step=step, **context,
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
-                    resulting_event=f'retry:{retries[step]}', reason='既定のチャート装備を確認してボスへ再挑戦')
+                    resulting_event=f'retry:{retries[step]}',
+                    reason=('既定のチャート装備を確認してボスへ再挑戦' if outcome == 'loss' else
+                            '決着が実測できないままボス戦が終わったため、チャート装備を確認してボスへ再挑戦'))
         else:
             mem.setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',

@@ -539,8 +539,21 @@ BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march 
 BOSS_RELAUNCH_LIMIT = 2                      # boss sorties sent again per step after a march that never entered
 
 
+def _site_king_down(mem, target):
+    """A 四季王 site whose king's defeat is already measured."""
+    return any(isinstance(victory, dict) and victory.get('site') == target
+               for victory in (mem.get('boss_victories') or {}).values())
+
+
+def _boss_fight_live(mem, step):
+    """The boss order's entry still has an attack or battle record running."""
+    return any(isinstance(record, dict) and record.get('step') == step
+               for record in (mem.get('attack'), mem.get('battle')))
+
+
 def _relaunch_overdue_boss(mem):
-    """Send a boss order again when its march never entered the boss castle.
+    """Send a boss order again when its march never entered the boss castle,
+    or when its entry ended without a measured result.
 
     Only an entry ends a launched boss march (``_bind_sortie`` marks it
     arrived). g1075 2026-10-29: the v293 marker landed 6 px outside the boss
@@ -548,6 +561,13 @@ def _relaunch_overdue_boss(mem):
     en route for over 3000 observations with nothing left to start it. The
     order goes back to pending like a lost boss battle: its unlock, source
     and companion checks run again, and the old march stops counting.
+
+    An arrived sortie is sent again too once its fight is over: g1075
+    2026-10-30 had 4-B1 アルテミス enter 四季王城(南西) at 08:27 and 4-B4
+    ヴィーナス enter 北西 at 08:41, and both steps stayed 'launched' past
+    12:30 — their fights predate the season-king panel record, so no win or
+    loss could ever reset them. A live battle for the step or a king already
+    measured defeated keeps the sortie out of this rule.
     """
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
@@ -556,16 +576,21 @@ def _relaunch_overdue_boss(mem):
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
         target = sortie.get('target') or sortie.get('planned_target')
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
-                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue
+        if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                and not (sortie.get('status') == 'arrived'
+                         and not _site_king_down(mem, target)
+                         and not _boss_fight_live(mem, step))):
+            continue
+        entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
         relaunches = mem.setdefault('boss_relaunch', {})
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
             _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
-                    reason='ボス城へ入らない出撃の出し直しが上限に達したため保留')
+                    reason='ボス出撃の出し直しが上限に達したため保留')
             continue
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
@@ -574,7 +599,9 @@ def _relaunch_overdue_boss(mem):
         status[step] = 'pending'
         _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
-                reason='ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す')
+                reason=('ボス城への突入後に勝敗の実測が残らず上限を超えたため、チャートの指示から出し直す'
+                        if entered else
+                        'ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す'))
 
 
 def next_order(mem):
