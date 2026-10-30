@@ -437,6 +437,18 @@ class GameSwitchLock:
             return
         try:
             self._file.seek(0)
+            existing = self._file.read().strip()
+            if existing:
+                try:
+                    holder = json.loads(existing)
+                except ValueError:
+                    holder = None
+                if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+                    # Same process re-acquiring keeps its first sighting; a
+                    # rewrite would only churn the timestamp and make the
+                    # record look like a fresh contention point.
+                    return
+            self._file.seek(0)
             self._file.truncate()
             json.dump(
                 {
