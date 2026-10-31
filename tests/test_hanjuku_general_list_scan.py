@@ -121,3 +121,58 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
     # アポロン (74/14, egg) is the strongest egg holder and leaves the hero four.
     assert actions == [policy.pad('down')]
     assert mem['general_override']['4-B2'] == 'アポロン'
+
+
+def test_a_dropped_dakuten_in_the_walk_is_folded_back_to_the_roster():
+    """g1075 2026-10-31: キャンティー/ポセイトン readings held 4-B1 ~10 min."""
+    mem = memory()
+    misread = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンティー']
+    pages = [window(0, 0), window(0, 1), window(0, 2), general_list(misread, 3),
+             window(1, 3), window(2, 3)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    walk(mem, [window(0, 0)])
+    assert mem['garrison']['アルマムーン'] == ROSTER
+
+
+def boss_site_memory():
+    """Chapter 4 4-B2 sortie from the hero's castle (as in the g1075 test)."""
+    from docich import hanjuku_chart as chart
+    normal = [c for c in chart.CASTLE_NAMES[4] if c not in ('アルマムーン', 'ボス')]
+    return {'chapter': 4, 'tick': 140000, 'active': '4-B2', 'orders': {'4-B2': 'pending'},
+            'captured': normal, 'lost': [], 'card_stock': {'クースカン': 3, 'グリンボー': 40},
+            'source_override': {'4-B2': 'アルマムーン'}}
+
+
+HOME = ['どうし', 'ピスタチオ', 'キッシュ', 'クランベリー', 'アポロン', 'ヘスティア']
+
+
+def test_a_dropped_dakuten_in_the_walk_does_not_hold_a_boss_sortie():
+    """The same misread during the walk held the g1075 4-B1 sortie as an
+    unverifiable identity until the input stall."""
+    mem = boss_site_memory()
+    misread = ['どうし', 'ピスタチオ', 'キッシュ', 'クランヘリー']
+    pages = [general_list(HOME[0:4], r) for r in range(3)] + [general_list(misread, 3),
+            general_list(HOME[1:5], 3), general_list(HOME[2:6], 3)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    (actions,) = walk(mem, [general_list(HOME[0:4], 0)])
+    # The walked list folds back to the roster; the アポロン pick keeps moving.
+    assert actions == [policy.pad('down')]
+    assert mem['garrison']['アルマムーン'] == HOME
+    held = [r for r in mem['_records']
+            if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
+    assert not held
+
+
+def test_a_dropped_dakuten_on_the_visible_page_does_not_hold_a_boss_sortie():
+    mem = boss_site_memory()
+    pages = [general_list(HOME[0:4], r) for r in range(4)] + [
+        general_list(HOME[1:5], 3), general_list(HOME[2:6], 3)]
+    walk(mem, pages)
+    misread = ['どうし', 'ピスタチオ', 'キッシュ', 'クランヘリー']
+    (actions,) = walk(mem, [general_list(misread, 0)])
+    assert actions == [policy.pad('down')]
+    held = [r for r in mem['_records']
+            if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
+    assert not held

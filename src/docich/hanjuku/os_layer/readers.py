@@ -15,6 +15,7 @@ from .screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmati
 from .screen import own_camps  # noqa: F401
 from .font import TextLine, UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
+from ...hanjuku_egg_reference import GENERAL_HP
 from ...hanjuku_egg_stock import observed_uses
 
 
@@ -34,7 +35,8 @@ ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
 
 # ---------------------------------------------------------------- menus
 def _options(screen: Screen) -> list[tuple[int, int, str]]:
-    return [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
+    return [(x, line.y, _canonical_general(word))
+            for line in screen.lines for x, word in line.spans()]
 
 
 def _current(screen: Screen):
@@ -74,7 +76,7 @@ def _general_visible(screen, general):
     """Exact name with no adjacent unknown glyph; ignore hand/border pixels."""
     for line in screen.lines:
         for x, word in line.spans():
-            if x <= 100 or word != general:
+            if x <= 100 or _canonical_general(word) != general:
                 continue
             neighbors = (x - 8, x + 8 * len(word))
             if not any(ch == UNKNOWN and cx in neighbors
@@ -623,3 +625,16 @@ _KANA_FOLD = str.maketrans(
 
 def _fold_skill(text: str) -> str:
     return text.replace(' ', '').replace('！', '!').replace('？', '?').translate(_KANA_FOLD)
+
+
+# The same tile reader drops a voicing mark on general names too
+# (g1075 2026-10-31: ポセイドン→ポセイトン, キャンディー→キャンティー,
+# アマンディーヌ→アマンティーヌ stayed in the walked list and held the 4-B1
+# sortie ~10 min until input_stalled). Folded roster names are unique, so an
+# unknown reading maps back to exactly one general; anything else passes
+# through unchanged.
+_GENERAL_BY_FOLD = {name.translate(_KANA_FOLD): name for name in GENERAL_HP}
+
+
+def _canonical_general(word: str) -> str:
+    return _GENERAL_BY_FOLD.get(word.translate(_KANA_FOLD), word)
