@@ -849,7 +849,7 @@ def step(screen, mem, frame, existing):
 
 # Stage 1 ships OFF (DSH 2026-10-31 approval). Stage 2 flips it in its own commit;
 # revert = set back to False. A read-only observation: it records HP, never changes a decision.
-CAMP_HP_PROBE_ENABLED = False
+CAMP_HP_PROBE_ENABLED = True
 CAMP_HP_PROBE_LIMIT = 2  # per retreat: one baseline read plus one change check
 PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')
 
