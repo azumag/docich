@@ -2,7 +2,9 @@
 
 Windows kabu / MT5 + Tailscale-limited bridge. PAPER only. No order path.
 
-Status: Step 1 (inventory) in progress. Design v1 lives in issue #603.
+Status: Step 2 (Linux side) in progress — common readiness, persistent skip/cancel,
+guard/recovery implemented with a fake provider. All markets remain disabled.
+Design v1 lives in issue #603.
 
 ## Layout
 

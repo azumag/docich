@@ -275,3 +275,9 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# Step 2: fake provider re-export (no network/deps).
+try:
+    from .fake_provider import *
+except Exception:
+    pass

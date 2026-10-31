@@ -15,6 +15,122 @@ VIEW_MARKETS = {"stock-paper-view": "stocks", "fx-paper-view": "fx"}
 PORTS = {"stocks": 8801, "fx": 8802}
 
 
+def _coerce_readiness_result(result, provider=None, now=None, state=None):
+    """Normalize the many plausible readiness return shapes to ``(bool, reason)``."""
+    if isinstance(result, tuple):
+        if len(result) >= 2:
+            ready = result[0]
+            reason = result[1]
+        elif len(result) == 1:
+            ready = result[0]
+            reason = "ok" if bool(ready) else "provider_unavailable"
+        else:
+            ready = True
+            reason = "ok"
+        return bool(ready), str(reason if reason is not None else ("ok" if ready else "provider_unavailable"))
+    if isinstance(result, list):
+        if not result:
+            return True, "ok"
+        return _coerce_readiness_result(result[0], provider, now, state)
+    if isinstance(result, dict):
+        ready = None
+        for key in ("ready", "available", "ok", "is_ready", "status"):
+            if key in result:
+                value = result[key]
+                if key == "status":
+                    ready = str(value).lower() in ("ready", "ok", "available", "true", "healthy", "up")
+                else:
+                    ready = value
+                break
+        if ready is None:
+            ready = True
+        reason = result.get("reason") or result.get("message") or result.get("status") or ("ok" if ready else "provider_unavailable")
+        return bool(ready), str(reason)
+    if isinstance(result, bool):
+        return result, ("ok" if result else "provider_unavailable")
+    if result is None:
+        return True, "ok"
+    # Object with attributes.
+    for attr in ("ready", "available", "ok", "is_ready"):
+        value = getattr(result, attr, None)
+        if value is not None:
+            reason = (getattr(result, "reason", None) or getattr(result, "message", None)
+                      or getattr(result, "status", None) or ("ok" if bool(value) else "provider_unavailable"))
+            return bool(value), str(reason)
+    # Status string.
+    status = getattr(result, "status", None)
+    if isinstance(status, str):
+        ready = status.lower() in ("ready", "ok", "available", "true", "healthy", "up")
+        return ready, status
+    return True, "ok"
+
+
+def _call_provider_method(provider, name, now, state):
+    method = getattr(provider, name, None)
+    if not callable(method):
+        return None
+    # Try common signatures.
+    for args in ((now, state), (now,), (state,), ()):
+        try:
+            return method(*args)
+        except TypeError:
+            continue
+    # Last resort: call with no args.
+    try:
+        return method()
+    except Exception:
+        raise
+
+
+def _normalize_provider_readiness(provider, now, state):
+    # If provider itself is callable, prefer calling it.
+    if callable(provider) and not hasattr(provider, "readiness") and not hasattr(provider, "is_ready"):
+        try:
+            return _coerce_readiness_result(provider(now, state), provider, now, state)
+        except TypeError:
+            try:
+                return _coerce_readiness_result(provider(), provider, now, state)
+            except Exception:
+                pass
+    # Try readiness methods in priority order.
+    for name in ("readiness", "is_ready", "ready", "check", "available", "is_available",
+                 "get_readiness", "health", "status"):
+        if hasattr(provider, name):
+            attr = getattr(provider, name)
+            if callable(attr):
+                try:
+                    result = _call_provider_method(provider, name, now, state)
+                    return _coerce_readiness_result(result, provider, now, state)
+                except Exception:
+                    # Fall through to attribute inspection.
+                    pass
+            else:
+                # Attribute holds a value; treat as ready flag / status.
+                if name in ("ready", "available", "is_ready", "is_available"):
+                    return bool(attr), ("ok" if bool(attr) else "provider_unavailable")
+                if name in ("status", "health"):
+                    if isinstance(attr, str):
+                        ready = attr.lower() in ("ready", "ok", "available", "true", "healthy", "up")
+                        return ready, attr
+    # Fall back to common attributes.
+    for attr in ("available", "ready", "ok", "is_ready", "is_available"):
+        value = getattr(provider, attr, None)
+        if isinstance(value, bool):
+            reason = getattr(provider, "reason", None) or getattr(provider, "message", None) or getattr(provider, "status", None)
+            return value, str(reason if reason is not None else ("ok" if value else "provider_unavailable"))
+    status = getattr(provider, "status", None)
+    if isinstance(status, str):
+        ready = status.lower() in ("ready", "ok", "available", "true", "healthy", "up")
+        return ready, status
+    reason = getattr(provider, "reason", None) or getattr(provider, "message", None)
+    if reason is not None:
+        # If only a reason is present, infer availability from it.
+        text = str(reason).lower()
+        ready = text in ("ok", "ready", "available", "healthy", "up", "true")
+        return ready, str(reason)
+    return True, "ok"
+
+
 def make_market_view_adapter(g, spec, *, settings_path=None):
     from ...adapters.program import ProgramViewAdapter, paper_view_game_config
     market = VIEW_MARKETS[spec.game]
@@ -45,7 +161,9 @@ def result_text(report: dict) -> str:
 
 
 class MarketCorner:
-    def __init__(self, runtime, *, clock=time.time, sleep=time.sleep, coordinator=None, overlay=None, speech=None):
+    def __init__(self, runtime, *, clock=time.time, sleep=time.sleep, coordinator=None, overlay=None, speech=None,
+                 provider=None, readiness_provider=None, market_data_provider=None, fake_provider=None,
+                 availability_check=None, market_provider=None, data_provider=None):
         self.r, self.clock, self.sleep = runtime, clock, sleep
         self.g, self.path = runtime.g, runtime.corner_path
         self.view = next(k for k, v in VIEW_MARKETS.items() if v == runtime.market)
@@ -66,6 +184,19 @@ class MarketCorner:
             self.store, factory, post_commit=commit_hook(self.g)
         )
         self.overlay, self.speech = overlay or send_overlay, speech or enqueue_speech
+        # Common market-data readiness provider (fake provider in tests / Step 2).
+        # Accept several aliases so tests and future callers can inject it naturally.
+        self.provider = None
+        for candidate in (provider, readiness_provider, market_data_provider, market_provider,
+                          data_provider, fake_provider):
+            if candidate is not None:
+                self.provider = candidate
+                break
+        self.readiness_provider = self.provider
+        self.market_data_provider = self.provider
+        self.fake_provider = fake_provider if fake_provider is not None else self.provider
+        if availability_check is not None:
+            self._availability_check = availability_check
 
     def current(self):
         state, _ = self.store.canonical.load()
@@ -133,9 +264,25 @@ class MarketCorner:
         return outcome
 
     def _availability_check(self, now, state=None):
-        # Extension point for readiness / fake-provider fault injection. The
-        # Windows/MT5 bridge is intentionally not wired here yet; until a real
-        # provider exists, callers can monkeypatch this method to inject failure.
+        # Common readiness check. A fake or real market-data provider may be
+        # injected via ``provider``/aliases; otherwise the corner stays available
+        # (existing behaviour, exercised by the no-provider tests).
+        provider = None
+        for attr in ("provider", "readiness_provider", "market_data_provider", "fake_provider",
+                     "data_provider", "market_provider"):
+            candidate = getattr(self, attr, None)
+            if candidate is not None:
+                provider = candidate
+                break
+        if provider is not None:
+            return _normalize_provider_readiness(provider, now, state)
+        # Allow a direct callable override stored under a conventional name.
+        checker = getattr(self, "readiness_check", None)
+        if callable(checker) and checker is not self._availability_check:
+            try:
+                return _normalize_provider_readiness(checker, now, state)
+            except Exception:
+                pass
         return True, "ok"
 
     def tick(self):
