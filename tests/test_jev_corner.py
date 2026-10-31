@@ -129,6 +129,24 @@ max_requests_per_run = 500
         self.assertFalse(summary["api_key_present"])
         self.assertEqual(summary["category"], "api_key_missing")
 
+    def test_preflight_checks_the_worker_env_file_without_reading_the_value(self):
+        secret = "synthetic-env-value-not-real"
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        soren = self.root / "soren-env"
+        soren.mkdir()
+        with patch.object(jev_mod, "_soren_root", return_value=soren), patch.dict(jev_mod.os.environ, {}, clear=True):
+            (soren / ".env").write_text(f"OTHER=1\nTYPESAFE_API_KEY={secret}\n", encoding="utf-8")
+            summary = preflight(self.g)
+            self.assertTrue(summary["api_key_present"])
+            self.assertEqual(summary["category"], "ready")
+            self.assertNotIn(secret, json.dumps(summary))
+
+            (soren / ".env").write_text("# TYPESAFE_API_KEY=commented-out\nTYPESAFE_API_KEY=\n", encoding="utf-8")
+            self.assertFalse(preflight(self.g)["api_key_present"])
+
+            (soren / ".env").unlink()
+            self.assertEqual(preflight(self.g)["category"], "api_key_missing")
+
     def test_preflight_storage_categories_are_fixed(self):
         self.g.state_dir.mkdir(parents=True, exist_ok=True)
         absent = dataclasses.replace(self.g, state_dir=self.root / "absent")

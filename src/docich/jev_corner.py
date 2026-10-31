@@ -45,6 +45,7 @@ UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 PREFLIGHT_API_KEY_ENV = "TYPESAFE_API_KEY"
+PREFLIGHT_ENV_MAX_BYTES = 64 * 1024
 PREFLIGHT_CODES = {
     "ready": 0,
     "api_key_missing": 47,
@@ -239,6 +240,22 @@ def _program_busy_reason(g: GlobalConfig) -> str | None:
     return other_corner_busy(g, str(Path(g.state_dir) / STATE_FILE))
 
 
+def _env_file_has_secret(path: Path, name: str) -> bool:
+    """True when the dotenv file assigns a non-empty value to ``name``.
+
+    Only a boolean leaves this function; the value is matched but never returned.
+    """
+
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > PREFLIGHT_ENV_MAX_BYTES:
+            return False
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    pattern = re.compile(rf"^[ \t]*(?:export[ \t]+)?{re.escape(name)}[ \t]*=[ \t]*[\"']?[^\s\"']", re.MULTILINE)
+    return pattern.search(text) is not None
+
+
 def preflight(g: GlobalConfig) -> dict[str, object]:
     """Validate the static contract, storage and secret presence without any network call.
 
@@ -248,7 +265,9 @@ def preflight(g: GlobalConfig) -> dict[str, object]:
 
     config = load_jev_corner_config(g)
     state_dir = Path(g.state_dir)
-    api_key_present = bool(os.environ.get(PREFLIGHT_API_KEY_ENV))
+    api_key_present = bool(os.environ.get(PREFLIGHT_API_KEY_ENV)) or _env_file_has_secret(
+        _soren_root(g) / ".env", PREFLIGHT_API_KEY_ENV
+    )
     if not state_dir.is_dir():
         category = "storage_missing"
     elif not os.access(state_dir, os.W_OK | os.X_OK):
