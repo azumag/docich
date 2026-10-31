@@ -591,6 +591,43 @@ class StorageBreakdownV2Tests(unittest.TestCase):
         self.assertLessEqual(bundles["allocated_bytes"] + releases["allocated_bytes"],
                              result["gateway_state"]["allocated_bytes"])
 
+    def test_opencode_subtrees_split_fixed_subpaths(self):
+        # Session-file subtrees of the opencode default data dir
+        # (azumag/docich#3140): each fixed sub-path is measured separately so
+        # the retention baseline attributes growth per sub-path.
+        self.write(self.home / ".local/share/opencode/snapshot/aa/objects/ff", 2000)
+        self.write(self.home / ".local/share/opencode/storage/session_diff/s1.json", 3000)
+        self.write(self.home / ".local/share/opencode/tool-output/t1", 4000)
+        self.write(self.home / ".local/share/opencode/log/opencode.log", 5000)
+
+        result = self.collect()
+
+        for key, minimum in (
+            ("opencode_default_snapshot", 2000),
+            ("opencode_default_storage", 3000),
+            ("opencode_default_tool_output", 4000),
+            ("opencode_default_log", 5000),
+        ):
+            item = result[key]
+            self.assertTrue(item["present"])
+            self.assertTrue(item["scan_complete"])
+            self.assertGreaterEqual(item["allocated_bytes"], minimum)
+
+    def test_opencode_subtrees_absent_report_present_false(self):
+        # A subtree that does not exist on the scanned host reports
+        # present=false with a complete scan, the same contract as the other
+        # absent fixed roots; it must not pretend zero bytes were verified.
+        result = self.collect()
+
+        for key in (
+            "opencode_default_snapshot",
+            "opencode_default_storage",
+            "opencode_default_tool_output",
+            "opencode_default_log",
+        ):
+            self.assertFalse(result[key]["present"])
+            self.assertTrue(result[key]["scan_complete"])
+
 
 class StorageSummaryTests(unittest.TestCase):
 
@@ -818,6 +855,29 @@ class StorageSummaryTests(unittest.TestCase):
         _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
         self.assertEqual(incomplete, base_incomplete)
         self.assertIn("gateway_releases_complete=0", context)
+
+    def test_opencode_subtrees_optional_and_not_charged_to_incomplete(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        _a, base_incomplete, base_ctx = summary.render({"storage_breakdown": breakdown})
+
+        # An older collector that never emits the opencode subtrees must not
+        # look incomplete and must not invent keys.
+        self.assertNotIn("opencode_default_snapshot_complete", base_ctx)
+
+        breakdown["opencode_default_snapshot"] = {**leaf, "allocated_bytes": 2000, "count": 40}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_snapshot_complete=1", context)
+        self.assertIn("opencode_default_snapshot_bytes=2000", context)
+        self.assertIn("opencode_default_snapshot_count=40", context)
+
+        breakdown["opencode_default_snapshot"]["scan_complete"] = False
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_snapshot_complete=0", context)
 
     def test_v2_incomplete_root_flags_the_shared_incomplete(self):
         leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}

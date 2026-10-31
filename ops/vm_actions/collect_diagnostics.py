@@ -1091,6 +1091,23 @@ def _collect_storage_breakdown(
         "opencode_worker": _storage_db_family(worker_db),
         "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
         "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
+        # Subtrees of the opencode default data dir (azumag/docich#3140): the
+        # session-file store outside opencode.db, split per fixed sub-path so
+        # the retention baseline attributes growth without SSH. Same opt-in
+        # shape as the gateway_state subtrees (optional keys, never charged
+        # to the shared incomplete flag).
+        "opencode_default_snapshot": _storage_tree_usage(
+            default_db.parent / "snapshot", max_entries=max_entries
+        ),
+        "opencode_default_storage": _storage_tree_usage(
+            default_db.parent / "storage", max_entries=max_entries
+        ),
+        "opencode_default_tool_output": _storage_tree_usage(
+            default_db.parent / "tool-output", max_entries=max_entries
+        ),
+        "opencode_default_log": _storage_tree_usage(
+            default_db.parent / "log", max_entries=max_entries
+        ),
         "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
         "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),
         "say_queue": _storage_tree_usage(soren / "tmp" / ".say_queue", max_entries=max_entries),
