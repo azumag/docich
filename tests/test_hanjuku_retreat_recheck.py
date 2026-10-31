@@ -5,6 +5,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide
+from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, _camp_frame, camp_menu
 from test_hanjuku_house import roster, status
@@ -233,7 +234,8 @@ def test_actual_picker_uses_the_existing_receipt_path():
     assert p.camp_recall_step(screen, mem, frame) == []
 
 
-def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall():
+def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); named_menu(mem)
     mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
@@ -246,6 +248,7 @@ def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall():
 
 
 def test_two_roofs_keep_the_same_failed_camp_backoff_when_map_animates(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
@@ -289,6 +292,7 @@ def test_named_status_has_a_finite_freshness_budget():
 
 
 def test_changed_view_cannot_send_an_exhausted_actor_through_anonymous_recall(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
     # A different camera/current tent has no durable identity yet.
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
@@ -331,6 +335,7 @@ def test_anonymous_checked_other_actor_uses_owned_picker_without_resetting_named
 
 
 def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     import json
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
@@ -354,6 +359,7 @@ def test_anonymous_status_does_not_switch_an_intended_hero_to_another_actor():
 
 
 def test_changing_unanchored_views_cannot_scan_an_exhausted_actor_forever(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     from docich.hanjuku_pixels import Frame
     from docich import hanjuku_roster
     mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)

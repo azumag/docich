@@ -720,15 +720,26 @@ def _arrival_request(mem, actor, row):
 
 
 def step(screen, mem, frame, existing):
+    if interrupt(screen, mem):
+        return [] if mem.get('battle') and screen.kind == 'map' else None
+    # An in-progress probe keeps its own yield rules. Otherwise the existing flow decides first.
+    in_probe = mem.get('camp_hp_probe') is not None
+    if in_probe:
+        probe = camp_hp_probe_step(screen, mem, frame)
+        if probe is not None:
+            return probe
+    actions = _step_flow(screen, mem, frame, existing)
+    if actions or in_probe:
+        return actions
+    # Idle start only after the existing flow stayed silent on this frame, so it never preempts a flow.
+    return camp_hp_probe_step(screen, mem, frame)
+
+
+def _step_flow(screen, mem, frame, existing):
     """Keep named observation retries separate from the anonymous camp cooldown."""
     from .map import world_map_step
     from ..os_layer.commands import pad
     from ..os_layer.readers import is_camp_menu
-    if interrupt(screen, mem):
-        return [] if mem.get('battle') and screen.kind == 'map' else None
-    probe = camp_hp_probe_step(screen, mem, frame)
-    if probe is not None:
-        return probe
     queue = _scope(mem)
     state = mem.get('recall') or {}
     named = bool(state.get('retreat_recheck'))
