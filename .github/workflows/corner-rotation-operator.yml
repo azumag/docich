@@ -8,7 +8,7 @@ on:
         required: true
         default: restart-service
         type: choice
-        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]
+        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]
       expected_reservation:
         description: Reviewed reservation fingerprint (cancel, administrative release, or failed-before-AI resume recovery)
         required: false
@@ -227,6 +227,20 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/start_hanjuku_corner.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Clear a clock-gap quarantine for the queued Hanjuku request
+        if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/clear_hanjuku_clock_quarantine.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          echo 'cleared the clock-gap hold; the queued Hanjuku request remains for the normal tick'
 
       - name: Resume Hanjuku once from latest remaining checkpoint
         if: steps.auth.outputs.operation == 'resume-hanjuku-latest'
