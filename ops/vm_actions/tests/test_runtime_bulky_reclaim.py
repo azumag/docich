@@ -45,7 +45,6 @@ class RuntimeBulkyReclaimTests(unittest.TestCase):
         self.make(ACTIVE, _run(ACTIVE))
         self.make(UNFINISHED, _run(UNFINISHED, reason="not_completed"))
         self.make(LINKED, _run(LINKED))
-        # A symlinked log is never an acceptable deletion target: that generation is skipped.
         (runtimes / LINKED / "hanjuku_narration.jsonl").unlink()
         (runtimes / LINKED / "hanjuku_narration.jsonl").symlink_to(runtimes / DONE / "hanjuku_run.json")
         self.canonical["active"] = {"runtime_id": ACTIVE, "generation": 2}
@@ -95,6 +94,23 @@ class RuntimeBulkyReclaimTests(unittest.TestCase):
         self.assertTrue((done / "hanjuku_decisions.jsonl").exists())
         self.assertTrue((done / "hanjuku_run.json").exists())
         self.assertTrue((self.state / "runtimes" / ACTIVE / "hanjuku_commentary.jsonl").exists())
+
+    def test_rewrite_with_restored_size_and_mtime_invalidates_reviewed_plan(self):
+        digest = self.dry_run()["plan_sha256"]
+        target = self.state / "runtimes" / DONE / "hanjuku_commentary.jsonl"
+        before = target.stat()
+        target.write_bytes(b"y" * before.st_size)
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = target.stat()
+        self.assertEqual(after.st_size, before.st_size)
+        self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+        self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            reclaim.run(self.state, apply=True, batch=20, expect_plan=digest,
+                        target_free_bytes=1 << 62)
+        self.assertEqual(str(caught.exception), "plan_mismatch")
+        self.assertTrue(target.exists())
+        self.assertEqual(target.read_bytes(), b"y" * before.st_size)
 
     def test_batch_bounds_are_enforced(self):
         for batch in (0, reclaim.MAX_BATCH + 1):
