@@ -9708,8 +9708,39 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None):
-    if workers["required_down"] or workers["required_stale"]:
+def _worker_down_severity(workers, lifecycle_pause=None):
+    """Return the severity contributed by required-worker down/stale state.
+
+    Returns "critical" when a required worker is stale or down without evidence
+    of an active lifecycle handover, "warn" when a required worker is down but
+    an active lifecycle handover is proven to be holding it, or None when no
+    required worker is down or stale.
+    """
+    required_down = workers.get("required_down") if isinstance(workers, dict) else None
+    required_down = required_down or []
+    required_stale = workers.get("required_stale") if isinstance(workers, dict) else None
+    required_stale = required_stale or []
+    # Fail-safe: a required worker that is down only becomes a WARN (instead of
+    # CRITICAL) when the lifecycle broker proves an active handover is holding
+    # it.  Without that evidence the original CRITICAL verdict stands, so an
+    # ordinary crash is never hidden behind a lifecycle excuse.
+    lifecycle_handover_active = (
+        isinstance(lifecycle_pause, dict)
+        and lifecycle_pause.get("active") is True
+        and lifecycle_pause.get("waiting_for") == "lifecycle_handover"
+    )
+    if required_stale:
+        return "critical"
+    if not required_down:
+        return None
+    if not lifecycle_handover_active:
+        return "critical"
+    return "warn"
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
+    if worker_down_sev == "critical":
         return "critical"
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
@@ -9723,6 +9754,8 @@ def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=Non
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
     if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
+        return "warn"
+    if worker_down_sev == "warn":
         return "warn"
     if (
         _paused_workers_actionable(workers)
@@ -14415,11 +14448,12 @@ def main(argv):
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
     hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
+    lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume),
+        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause),
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
@@ -14433,7 +14467,7 @@ def main(argv):
         # and not a config/state_dir value (#2578: reboot-persistent evidence).
         "host_metrics": _collect_host_metrics(_host_metrics_home(), now),
         "workers": workers,
-        "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
+        "lifecycle_pause": lifecycle_pause,
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
