@@ -32,8 +32,6 @@ DEFAULT_BATCH = 50
 MAX_BATCH = 500
 DEFAULT_GATE_WAIT_SEC = 120
 FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
-# Fixed exclusion set at the data-dir top level. Anything else is only
-# inspected if it matches the fixed target sub-paths below.
 TARGET_DIRS = ("snapshot",)
 TARGET_FILE_DIRS = (("storage", "session_diff"),)
 
@@ -101,8 +99,6 @@ def _collect(data_fd, cutoff_ns):
                     st = item.stat(follow_symlinks=False)
                     if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
                         raise ReclaimError("unsafe_entry")
-                    with os.scandir(top_fd) as _:
-                        pass
                     child_fd = _open_dir(item.name, top_fd)
                     try:
                         tree = _walk(child_fd, "")
@@ -145,8 +141,7 @@ def _collect(data_fd, cutoff_ns):
 
 
 def _digest(plan_view):
-    return hashlib.sha256(
-        json.dumps(plan_view, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(plan_view, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _verify(data_fd, rel, stamp):
@@ -174,9 +169,6 @@ def _apply(data_fd, plan):
                 os.close(fd)
             removed += item["stamp"][2]
             continue
-        # dir tree: verify the top dir and every entry BEFORE removal —
-        # deleting children rewrites the parent dir's own stamp, so the top
-        # stamp must be checked first (fail-closed on any drift).
         tree = item["entries"]
         _verify(data_fd, item["path"], item["top_stamp"])
         for rel, st, _is_dir in tree:
@@ -192,8 +184,7 @@ def _apply(data_fd, plan):
                 removed += st.st_size
             finally:
                 os.close(fd)
-        dirs = sorted(((r, s) for r, s, d in tree if d),
-                      key=lambda e: e[0].count("/"), reverse=True)
+        dirs = sorted(((r, s) for r, s, d in tree if d), key=lambda e: e[0].count("/"), reverse=True)
         for rel, _st in dirs:
             full = f"{item['path']}/{rel}"
             parent_rel, _, leaf = full.rpartition("/")
@@ -211,8 +202,7 @@ def _apply(data_fd, plan):
     return removed
 
 
-def run(data_dir, gate_path, *, apply, batch, expect_plan, cutoff_hours,
-        gate_wait_sec):
+def run(data_dir, gate_path, *, apply, batch, expect_plan, cutoff_hours, gate_wait_sec):
     if type(batch) is not int or not 1 <= batch <= MAX_BATCH:
         raise ReclaimError("invalid_batch")
     if gate_wait_sec < 0:
@@ -233,12 +223,7 @@ def run(data_dir, gate_path, *, apply, batch, expect_plan, cutoff_hours,
                 time.sleep(0.2)
         plan = _collect(data_fd, cutoff_ns)
         selected = plan[:batch]
-        plan_view = [
-            {"path": i["path"], "kind": i["kind"],
-             "top_stamp": i.get("top_stamp"), "stamp": i.get("stamp"),
-             "entries": [[r, *_stamp(st), d] for r, st, d in i.get("entries", [])]}
-            for i in selected
-        ]
+        plan_view = [{"path": i["path"], "kind": i["kind"], "top_stamp": i.get("top_stamp"), "stamp": i.get("stamp"), "entries": [[r, *_stamp(st), d] for r, st, d in i.get("entries", [])]} for i in selected]
         digest = _digest(plan_view)
         removed = 0
         if apply:
@@ -246,25 +231,7 @@ def run(data_dir, gate_path, *, apply, batch, expect_plan, cutoff_hours,
                 raise ReclaimError("plan_mismatch")
             removed = _apply(data_fd, selected)
         fcntl.flock(gate_fd, fcntl.LOCK_UN)
-        return {
-            "schema": SCHEMA,
-            "mode": "apply" if apply else "dry-run",
-            "batch": batch,
-            "cutoff_hours": cutoff_hours,
-            "entries_planned": len(plan),
-            "entries_selected": len(selected),
-            "truncated": len(plan) > batch,
-            "plan_sha256": digest,
-            "plan": [{"path": i["path"], "kind": i["kind"],
-                      "bytes": (i["stamp"][2] if i["kind"] == "file"
-                                else sum(e[1].st_size for e in i["entries"] if not e[2]))}
-                     for i in selected],
-            "bytes_planned": sum(
-                i["stamp"][2] if i["kind"] == "file"
-                else sum(e[1].st_size for e in i["entries"] if not e[2])
-                for i in selected),
-            "bytes_removed": removed,
-        }
+        return {"schema": SCHEMA, "mode": "apply" if apply else "dry-run", "batch": batch, "cutoff_hours": cutoff_hours, "entries_planned": len(plan), "entries_selected": len(selected), "truncated": len(plan) > batch, "plan_sha256": digest, "plan": [{"path": i["path"], "kind": i["kind"], "bytes": (i["stamp"][2] if i["kind"] == "file" else sum(e[1].st_size for e in i["entries"] if not e[2]))} for i in selected], "bytes_planned": sum(i["stamp"][2] if i["kind"] == "file" else sum(e[1].st_size for e in i["entries"] if not e[2]) for i in selected), "bytes_removed": removed}
     finally:
         os.close(gate_fd)
         os.close(data_fd)
@@ -281,9 +248,7 @@ def main(argv=None):
     parser.add_argument("--gate-wait-sec", type=float, default=DEFAULT_GATE_WAIT_SEC)
     args = parser.parse_args(argv)
     try:
-        result = run(args.data_dir, args.gate_path, apply=args.apply,
-                     batch=args.batch, expect_plan=args.expect_plan,
-                     cutoff_hours=args.cutoff_hours, gate_wait_sec=args.gate_wait_sec)
+        result = run(args.data_dir, args.gate_path, apply=args.apply, batch=args.batch, expect_plan=args.expect_plan, cutoff_hours=args.cutoff_hours, gate_wait_sec=args.gate_wait_sec)
     except ReclaimError as exc:
         print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": str(exc)}))
         return 1
