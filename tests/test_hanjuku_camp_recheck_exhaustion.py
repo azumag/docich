@@ -41,7 +41,7 @@ def test_exhausted_predispatch_recheck_rearms_after_stale_wait():
     assert _row(mem)['attempts'] == 0
     assert _row(mem)['retry_after'] == mem['tick']
     assert _row(mem)['status'] == 'needs_observation'
-    assert any(record.get('event') == 'retreat_recheck_budget_rearmed'
+    assert any(record.get('decision') == 'retreat_recheck_budget_rearmed'
                for record in mem['_records'])
 
     # The refreshed budget re-enters the measured named roster/SELECT flow;
@@ -65,5 +65,5 @@ def test_exhausted_postdispatch_recheck_is_never_rearmed(status_name):
     assert p._rearm_exhausted_camp_rechecks(mem) == []
     assert _row(mem)['status'] == status_name
     assert _row(mem)['attempts'] == recheck.ATTEMPT_LIMIT
-    assert not any(record.get('event') == 'retreat_recheck_budget_rearmed'
+    assert not any(record.get('decision') == 'retreat_recheck_budget_rearmed'
                    for record in mem['_records'])
