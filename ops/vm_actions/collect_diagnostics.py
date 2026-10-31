@@ -9708,7 +9708,14 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+def _worker_down_severity(workers, lifecycle_pause=None):
+    """Return the severity contributed by required-worker down/stale state.
+
+    Returns "critical" when a required worker is stale or down without evidence
+    of an active lifecycle handover, "warn" when a required worker is down but
+    an active lifecycle handover is proven to be holding it, or None when no
+    required worker is down or stale.
+    """
     required_down = workers.get("required_down") if isinstance(workers, dict) else None
     required_down = required_down or []
     required_stale = workers.get("required_stale") if isinstance(workers, dict) else None
@@ -9724,7 +9731,16 @@ def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=Non
     )
     if required_stale:
         return "critical"
-    if required_down and not lifecycle_handover_active:
+    if not required_down:
+        return None
+    if not lifecycle_handover_active:
+        return "critical"
+    return "warn"
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
+    if worker_down_sev == "critical":
         return "critical"
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
@@ -9739,7 +9755,7 @@ def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=Non
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
     if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
         return "warn"
-    if required_down and lifecycle_handover_active:
+    if worker_down_sev == "warn":
         return "warn"
     if (
         _paused_workers_actionable(workers)
