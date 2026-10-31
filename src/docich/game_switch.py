@@ -44,6 +44,7 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
+from .hanjuku_log_retention import prune_completed
 from .log_redaction import redact_log_detail
 
 
@@ -5159,7 +5160,26 @@ class GameSwitchCoordinator:
                     _retiring_label(runtime) for runtime in remaining
                 ),
             )
+        self._prune_hanjuku_logs(warnings)
         return cleanup_pending
+
+    def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
+        """Bounded retention for completed hanjuku decision/event logs (#3132).
+        Failures are warnings, never rollback reasons."""
+        canonical = self.store.canonical
+        try:
+            result = prune_completed(canonical.state_dir, lambda: canonical.load()[0])
+        except Exception as exc:
+            warnings.append(f"hanjuku log retention失敗: {_safe_detail(exc)}")
+            return
+        if result.generations:
+            self._log(
+                "hanjuku_logs_pruned", result="pruned",
+                detail=(f"generations={len(result.generations)} files={result.files_removed}"
+                        f" bytes={result.bytes_removed} skipped={result.skipped}"),
+            )
+        elif result.skipped:
+            self._log("hanjuku_logs_pruned", result="skipped", detail=f"skipped={result.skipped}")
 
     def _retry_retiring_locked(
         self, tx: GameSwitchTransaction, deadline: float, warnings: list[str]
