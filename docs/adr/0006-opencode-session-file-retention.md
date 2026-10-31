@@ -32,7 +32,13 @@
 - **実測の読み**: `~/.local/share/opencode/` ツリー全体は **約 2.3GiB・約 9.8万ファイル**で、**+0.4GiB/日**の増加傾斜にある。opencode.db 本体は既存 timer（hourly、`retention_days=1`）で ~60–107MiB に bounded 化済みのため、増加分のほぼ全量は **非 DB の session ファイル群**（`snapshot/` の session ごとの git object ストアと `storage/` の session_diff 等）である。
 - 補助スナップショット（10-27、ローカル退避の diagnostics 抜粋）: ~1.0GiB / ~7–10k ent。DB prune 適用前で DB が支配していた時期。file entries はそこから 97k へ増えており、**エントリ数ベースでも増加が継続**している。
 - worker ツリー `soren/tmp/state/xdg_data/opencode/` = 20.9MiB / 7 ent（10-31 時点の抜粋値）。小さいが同構造のため対称扱いを検討対象とする（DSH 判断: 対称適用は据え置き）。
-- **サブパス実測（#3141 マージ後の production diagnostics、DSH 実測値）**: `snapshot/` = **1.98GiB / 97,352 files**。session ごとの git object ストアが file ストア増分の支配的要素であることを確認。他サブパスの内訳値は次回 diagnostics で追記する。
+- **サブパス実測（#3141 マージ後の production diagnostics、DSH 実測値 2026-10-31 06:02Z）**:
+  - `snapshot/` = **1.98GiB / 97,352 files** — session ごとの git object ストアが増分の支配的要素
+  - `tool-output/` = 50.6MiB（除外方針維持・対象外）
+  - `log/` = 12.2MiB（logrotate 済み・対象外）
+  - `storage/` = 不在（session_diff 等は未生成または空）
+  - `opencode.db` = 55.7MB（既存 timer で bounded 維持）
+  - ツリー全体 ≈ 2.3GiB のほぼ全量が `snapshot/` に集中していることを確認。
 - 注: 本ADR初稿で参照したローカル退避 diagnostics には上位桁がマスクされた値が含まれており、production 実測と読み違いが生じた。ベースラインは上記 DSH production 系列を正本とする。
 
 ### 1.3 「2.29GiB」報告値との突き合わせ（VM 実測で確定）
