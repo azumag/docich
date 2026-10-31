@@ -907,6 +907,8 @@ def camp_hp_probe_step(screen, mem, frame):
     if probe is None:
         if mem.get('recall') or screen.kind != 'map' or frame is None or any(mem.get(k) for k in PROBE_BUSY_KEYS):
             return None
+        if mem.get('recall_skip') or mem.get('recall_skip_target'):
+            return None  # the flow is deliberately holding this camp in backoff; never enter it
         if _recheck_due(mem):
             return None  # a due retreat recheck always goes first (boundary condition 2)
         queue = _scope(mem)
