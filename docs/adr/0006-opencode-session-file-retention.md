@@ -24,22 +24,21 @@
 
 ### 1.2 実測ベースライン（VM diagnostics スナップショットより）
 
-| 時刻 (JST) | `opencode_default_total` | DB family | 備考 |
-|---|---|---|---|
-| 2026-10-27 11:22 | 1,016,446,976 B / 6,648 ent | （prune 前〜1GiB 級） | DB prune 適用前 |
-| 2026-10-27 16:34 | 1,068,707,840 B / 10,139 ent | 〃 | **+52MB / +3,491 ent を 5h で**（≈ +250MB/日・+700ent/h の傾斜） |
-| 2026-10-31 07:45 | 48,114,176 B / 97,628 ent | db 62,586,880 B | DB retention pass 完了後（249 sessions 削除・sparse reclaim 済） |
-| 2026-10-31 10:48 | 47,753,728 B / 97,638 ent | 〃 | entries は依然 +10/3h でも増加継続 |
+| 時刻 (UTC) | `opencode_default_total` | 備考 |
+|---|---|---|
+| 2026-10-30 08:59Z | **2,342,293,504 B / 97,627 files** | DSH production 実測（正本） |
+| 2026-10-30 21:17Z | **2,463,748,096 B** | 同。増加率 **+0.4GiB/日** |
 
-- **実測の読み**: Oct 27 の ~1.0GiB は opencode.db が支配（prune 前）。retention pass で DB は ~60MiB へ収束した一方、**非 DB ファイルのエントリ数は 10k→97k へ 4 日で約 10 倍**に増えている。`snapshot/`（session ごとの git object ストア）と `storage/`（session_diff JSON 等）のファイル群が増加主体で、エントリ数ベースでは無制限のまま。
-- worker ツリー `soren/tmp/state/xdg_data/opencode/` = 20.9MiB / 7 ent（2026-10-31）。小さいが同構造のため対称扱いを検討対象とする。
+- **実測の読み**: `~/.local/share/opencode/` ツリー全体は **約 2.3GiB・約 9.8万ファイル**で、**+0.4GiB/日**の増加傾斜にある。opencode.db 本体は既存 timer（hourly、`retention_days=1`）で ~60–107MiB に bounded 化済みのため、増加分のほぼ全量は **非 DB の session ファイル群**（`snapshot/` の session ごとの git object ストアと `storage/` の session_diff 等）である。
+- 補助スナップショット（10-27、ローカル退避の diagnostics 抜粋）: ~1.0GiB / ~7–10k ent。DB prune 適用前で DB が支配していた時期。file entries はそこから 97k へ増えており、**エントリ数ベースでも増加が継続**している。
+- worker ツリー `soren/tmp/state/xdg_data/opencode/` = 20.9MiB / 7 ent（10-31 時点の抜粋値）。小さいが同構造のため対称扱いを検討対象とする。
+- 注: 本ADR初稿で参照したローカル退避 diagnostics には上位桁がマスクされた値が含まれており、production 実測と読み違いが生じた。ベースラインは上記 DSH production 系列を正本とする。
 
 ### 1.3 「2.29GiB」報告値との突き合わせ（VM 実測で確定）
 
-- ops 報告の「session ファイルストア 2.29GiB・+0.3GiB/日」について、VM diagnostics の両候補を突き合わせた:
-  - `opencode_default_total`（`~/.local/share/opencode`）: 最新実測 47.75MiB。**allocated ベースでは 2.29GiB に一致しない**。
-  - `gateway_state`（`~/.local/state/github-vm-ops`）: **2,425,036,800 B（約 2.26GiB）/ 19,979 ent（2026-10-31 10:48）**。Oct 27→31 も 2.26–2.28GiB で安定・entries は増加傾向。**「2.29GiB」に最も合致する実測値はこちら**。
-- 結論: 報告値 2.29GiB は `~/.local/state/github-vm-ops` 側（gateway state、releases/session 状態ファイル群）である可能性が高い。`github-vm-ops` 側の retention は #3109・#3120/#3121 の keep=2→1 レーンであり、**本ADRの対象外**とする。apply 時のサブパスベースラインでこの対応を最終確認する（下記 §4.1）。
+- ops 報告の「session ファイルストア 2.29GiB・+0.3GiB/日」は、DSH の production 系列（10-30 08:59Z 2,342,293,504 B / 97,627 files、10-30 21:17Z 2,463,748,096 B、+0.4GiB/日）と同一ストア、つまり **`~/.local/share/opencode/` ツリー全体である**と確定した。
+- `gateway_state`（`~/.local/state/github-vm-ops`）は同時期に約 2.26–2.46GiB を観測されるが、**サイズが偶然近いだけの別系統**であり、本ストアではない。`github-vm-ops` 側の retention は #3109・#3120/#3121 の keep=2→1 レーンで、**本ADRの対象外**とする。
+- 初稿ではマスク済みの抜粋値を読み違え「gateway_state が最も合致」と記したが、DSH の指摘により上記のとおり訂正する。
 
 ### 1.4 サブパス列挙（対象ツリーの構造）
 
