@@ -40,23 +40,35 @@ set +a
 set -u -e
 [[ "$source_rc" -eq 0 ]] || exit 71
 
-# The first production attempt proved these three feature gates are not all
-# present in the base .env. They are part of this explicitly approved rollout,
-# so own them here instead of assuming global policy. Provider route/credentials
-# remain pre-existing production capabilities and are still only validated.
+# These three feature gates are part of this explicitly approved rollout.
+# Provider account/credential material remains pre-existing production state.
 export DOCICH_ALLOW_REAL_AI=1
 export DOCICH_REPLY_ROUTING_ENABLED=1
 export COMMENT_CLASSIFIER_BACKEND=jev
 
-[[ "${DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[A-Fa-f0-9]{32}$ ]] || exit 73
-[[ -n "${DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN:-}" ]] || exit 73
-[[ "${DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[A-Fa-f0-9]{32}$ ]] || exit 73
-if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_API_TOKEN_FILE:-}" ]] \
-   || [[ -z "${CLOUDFLARE_API_TOKEN:-}" && -z "${CLOUDFLARE_API_TOKEN_FILE:-}" ]]; then
-  exit 73
-fi
+# Reuse PAPER's existing secret-free readiness contract so a missing capability
+# has a distinct fixed exit code without printing credential values or paths.
+capability_rc=0
+PYTHONPATH="$docich_root/src" python3 - <<'PY' || capability_rc=$?
+import os
+from docich.trading.paper_ai_canary import readiness
+
+state = readiness(os.environ)
+for name, code in (
+    ("search_account_configured", 73),
+    ("search_credential_present", 74),
+    ("direct_account_configured", 75),
+    ("direct_credential_present", 76),
+):
+    if state.get(name) is not True:
+        raise SystemExit(code)
+PY
+[[ "$capability_rc" -eq 0 ]] || exit "$capability_rc"
+
+# readiness verifies exactly one direct credential namespace. If the selected
+# credential is a file, validate only its local shape/existence; never print it.
 if [[ -n "${CLOUDFLARE_API_TOKEN_FILE:-}" ]]; then
-  [[ "$CLOUDFLARE_API_TOKEN_FILE" == /* && -f "$CLOUDFLARE_API_TOKEN_FILE" && ! -L "$CLOUDFLARE_API_TOKEN_FILE" ]] || exit 73
+  [[ "$CLOUDFLARE_API_TOKEN_FILE" == /* && -f "$CLOUDFLARE_API_TOKEN_FILE" && ! -L "$CLOUDFLARE_API_TOKEN_FILE" ]] || exit 77
 fi
 
 # Canary-only feature flags. The persistent block is written only after both
@@ -89,7 +101,7 @@ if not result.ok or result.covered_questions != (1,) or not result.sources:
     raise SystemExit(1)
 PY
 then
-  exit 74
+  exit 78
 fi
 
 # Real RADIO canary: existing production JEV route -> Cloudflare Web Search /
@@ -109,7 +121,7 @@ topic = "Cloudflare Workers Web Search の現在公開されている公式仕�
 json.dump({"topic": topic, "queries": [topic], "agents": agent}, sys.stdout, ensure_ascii=False)
 PY
 if ! PYTHONPATH="$docich_root/src" python3 -P -m docich.radio.consumer <"$request_file" >"$result_file"; then
-  exit 75
+  exit 79
 fi
 if ! python3 - "$result_file" <<'PY'
 import json, pathlib, sys
@@ -125,7 +137,7 @@ if not isinstance(body, str) or len(body) < 100 or not isinstance(summary, str) 
     raise SystemExit(1)
 PY
 then
-  exit 75
+  exit 79
 fi
 
 umask 077
@@ -198,14 +210,14 @@ finally:
         pass
 PY
 then
-  exit 76
+  exit 80
 fi
 
 # Full replacement is required because these long-lived bash workers source
 # .env only at startup. The helpers fail closed unless the supervisor produces
 # a new reviewed PID.
-"$docich_root/ops/vm_actions/restart_radio_worker.sh" || exit 77
-"$docich_root/ops/vm_actions/restart_chat_kick_workers.sh" || exit 78
+"$docich_root/ops/vm_actions/restart_radio_worker.sh" || exit 81
+"$docich_root/ops/vm_actions/restart_chat_kick_workers.sh" || exit 82
 
 worker_pid() {
   local name="$1" file="$soren_root/tmp/state/${name}.pid" pid="" cmd=""
@@ -245,12 +257,12 @@ verify_env radio_worker "${common[@]}" \
   "DOCICH_RADIO_NATIVE_ROOT=/home/ubuntu/docich" \
   "DOCICH_RADIO_NATIVE_AGENTS=$canary_agent" \
   "DOCICH_RADIO_SCRIPT_DIRECT_ENABLED=1" \
-  "DOCICH_RADIO_RESEARCH_ROUTING_ENABLED=1" || exit 79
+  "DOCICH_RADIO_RESEARCH_ROUTING_ENABLED=1" || exit 83
 for name in chat_worker kick_worker; do
   verify_env "$name" "${common[@]}" \
     "DOCICH_REPLY_WEB_DIRECT_BATCH_ENABLED=1" \
     "DOCICH_REPLY_ROUTING_ENABLED=1" \
-    "COMMENT_CLASSIFIER_BACKEND=jev" || exit 79
+    "COMMENT_CLASSIFIER_BACKEND=jev" || exit 83
 done
 
 rollback_needed=0
