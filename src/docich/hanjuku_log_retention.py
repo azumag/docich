@@ -161,12 +161,17 @@ def prune_completed(state_dir: Path, reload: Callable[[], dict], *,
         return result
     protected = _protected_ids(reload())
     completed = _collect(runtimes, protected)
-    for _generation, name in completed[keep:keep + limit]:
-        if name in _protected_ids(reload()):
-            result.skipped += 1
-            continue
+    # The budget counts only generations actually pruned in this pass. A
+    # completed generation whose logs are already gone stays in the list (its
+    # run state is terminal) and must not occupy a slot, or later passes would
+    # keep selecting the same window and never reach older generations.
+    for _generation, name in completed[keep:]:
+        if len(result.generations) >= limit:
+            break
         runtime_dir = runtimes / name
-        if not _completed(runtime_dir, name):
+        if not any(os.path.lexists(runtime_dir / log) for log in LOG_FILES):
+            continue
+        if name in _protected_ids(reload()) or not _completed(runtime_dir, name):
             result.skipped += 1
             continue
         try:

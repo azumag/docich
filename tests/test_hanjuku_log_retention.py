@@ -146,3 +146,26 @@ def test_malformed_canonical_state_fails_closed(tmp_path):
 def test_missing_runtimes_is_noop(tmp_path):
     result = prune_completed(tmp_path, lambda: _canonical())
     assert result.generations == []
+
+
+def test_repeated_passes_converge_past_first_window(tmp_path):
+    # Regression for the position-based window: with more completed generations
+    # than one pass can cover, later passes must still reach the older ones.
+    for n in range(1, 31):
+        _generation(tmp_path, n)
+    passes = 0
+    while True:
+        passes += 1
+        result = prune_completed(tmp_path, lambda: _canonical(), keep=10, limit=5)
+        if not result.generations:
+            break
+    assert passes > 1
+    remaining = [n for n in range(1, 31) if _exists(tmp_path, f'g{n}-{"a" * 8}', LOGS[0])]
+    assert remaining == list(range(21, 31))
+
+
+def test_policy_constants_match_run_state_definitions(tmp_path):
+    from docich import hanjuku_run
+    assert retention.RUN_FILE == hanjuku_run.RUN_FILE
+    assert retention.TERMINAL_REASONS == hanjuku_run.TERMINAL_REASONS
+    assert retention.GAME == 'hanjuku-hero'
