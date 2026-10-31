@@ -89,3 +89,19 @@ def test_wrong_general_in_status_is_not_recorded(probe_on):
     camp_recheck.camp_hp_probe_step(camp_menu(1), mem, FRAME)
     assert camp_recheck.camp_hp_probe_step(status_screen(name='ヴィーナス'), mem, FRAME) is None
     assert not [r for r in mem['_records'] if r['decision'] == 'camp_hp_observation']
+
+
+def test_due_recheck_mid_probe_takes_the_frame(probe_on):
+    mem = memory()
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) == [p.pad('a')]
+    mem['_queue']['ゼウス'].update(status='needs_observation', retry_after=100, attempts=0)
+    assert camp_recheck.camp_hp_probe_step(camp_menu(1), mem, FRAME) is None
+    assert 'camp_hp_probe' not in mem
+
+
+def test_aborted_probe_is_not_retried_in_same_camp(probe_on):
+    mem = memory()
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) == [p.pad('a')]
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None  # aborted: camp menu never opened
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None  # no second start in the same camp
+    assert 'camp_hp_probe' not in mem
