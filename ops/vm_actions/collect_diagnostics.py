@@ -11223,8 +11223,12 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
                     continue
                 kind = row.get("screen_kind")
                 kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                variant = row.get("strategy_variant")
                 out.append({"event": event, "decision": decision,
-                            "screen_kind": kind, "age_sec": age})
+                            "screen_kind": kind, "age_sec": age,
+                            "strategy_variant": (
+                                variant if isinstance(variant, str)
+                                and re.fullmatch(r"[a-z_]{1,40}", variant) else None)})
             except (ValueError, TypeError, OverflowError, RecursionError):
                 continue
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
