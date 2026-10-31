@@ -726,6 +726,9 @@ def step(screen, mem, frame, existing):
     from ..os_layer.readers import is_camp_menu
     if interrupt(screen, mem):
         return [] if mem.get('battle') and screen.kind == 'map' else None
+    probe = camp_hp_probe_step(screen, mem, frame)
+    if probe is not None:
+        return probe
     queue = _scope(mem)
     state = mem.get('recall') or {}
     named = bool(state.get('retreat_recheck'))
@@ -842,3 +845,94 @@ def step(screen, mem, frame, existing):
         _defer(mem, state, '操作の有限終了後も本人の到着は未確認として再観測へ残す',
                status=status if status in ('arrival_unconfirmed', 'dispatch_unconfirmed') else 'needs_observation')
     return actions
+
+
+# Stage 1 ships OFF (DSH 2026-10-31 approval). Stage 2 flips it in its own commit;
+# revert = set back to False. A read-only observation: it records HP, never changes a decision.
+CAMP_HP_PROBE_ENABLED = False
+CAMP_HP_PROBE_LIMIT = 2  # per retreat: one baseline read plus one change check
+PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')
+
+
+def _camp_under_cursor(screen, frame):
+    """The single own camp under the real map cursor, as its target tuple, else None."""
+    from .recall import RECALL_ARRIVE_PX
+    from ..os_layer.readers import _cursor, own_camps
+    cursor = _cursor(screen)
+    under = [camp for camp in own_camps(frame) if not camp.get('clipped') and cursor
+             and all(abs(camp['target'][axis] - cursor[axis]) <= RECALL_ARRIVE_PX for axis in (0, 1))]
+    return tuple(under[0]['target']) if len(under) == 1 else None
+
+
+def _probe_abort(mem):
+    mem.pop('camp_hp_probe', None)
+    return None
+
+
+def camp_hp_probe_step(screen, mem, frame):
+    """Read the camped general's HP from the camp status menu while idle.
+
+    Only the route named rechecks already use (map a -> ステータス a -> b, b).
+    Returns None whenever it does not act, so existing flows keep their inputs.
+    Any unexpected screen drops the probe and hands the frame back to the old logic.
+    """
+    from ..decision_log import _record
+    from ..os_layer.commands import menu_to, pad
+    from ..os_layer.readers import is_camp_menu
+    from . import house
+    if not CAMP_HP_PROBE_ENABLED:
+        mem.pop('camp_hp_probe', None)
+        return None
+    probe = mem.get('camp_hp_probe')
+    if probe is None:
+        if mem.get('recall') or screen.kind != 'map' or frame is None or any(mem.get(k) for k in PROBE_BUSY_KEYS):
+            return None
+        queue = _scope(mem)
+        if any(row['status'] == 'needs_observation' and row['retry_after'] <= mem['tick']
+               and row['attempts'] < ATTEMPT_LIMIT for row in queue.values()):
+            return None  # a due retreat recheck always goes first (boundary condition 2)
+        target = _camp_under_cursor(screen, frame)
+        counts = mem.get('camp_hp_probe_counts') or {}
+        actor = next((name for name, row in queue.items()
+                      if target is not None and (row.get('camp_observation') or {}).get('target') == list(target)
+                      and counts.get(f"{name}:{row['tick']}", 0) < CAMP_HP_PROBE_LIMIT), None)
+        if actor is None:
+            return None
+        key = f"{actor}:{queue[actor]['tick']}"
+        mem['camp_hp_probe_counts'] = {**counts, key: counts.get(key, 0) + 1}
+        mem['camp_hp_probe'] = {'stage': 'menu', 'general': actor, 'key': key, 'steps': 0}
+        return [pad('a')]
+    probe['steps'] = probe.get('steps', 0) + 1
+    if probe['steps'] > 6:
+        return _probe_abort(mem)
+    actor = probe['general']
+    if probe['stage'] == 'menu':
+        if not is_camp_menu(screen):
+            return _probe_abort(mem)
+        move = menu_to(screen, 'ステータス')
+        if move is None:
+            return _probe_abort(mem)
+        if move == 'here':
+            probe['stage'] = 'read'
+            return [pad('a')]
+        return [move]
+    if probe['stage'] == 'read':
+        info = house.general_status(screen)
+        main_panel = info is not None and any(line.y == 39 and line.span(24, 88).strip() == actor
+                                              and line.span(88, 136) == 'しょうぐん' for line in screen.lines)
+        if not main_panel or info['general'] != actor or type(info.get('hp')) is not int or info['hp'] < 0:
+            return _probe_abort(mem)
+        _record(mem, 'camp_hp_observation', chart_step=None, general=actor,
+                observed_metric={'hp': info['hp'], 'max_hp': info.get('max_hp'), 'tick': mem['tick'],
+                                 'read': mem['camp_hp_probe_counts'][probe['key']]},
+                resulting_event='camp_hp_observed',
+                reason='野営中の本人HPを状態画面で読み取り記録。HPによる挙動変更はしない')
+        probe['stage'] = 'exit_menu'
+        return [pad('b')]
+    if probe['stage'] == 'exit_menu':
+        if not is_camp_menu(screen):
+            return _probe_abort(mem)
+        probe['stage'] = 'exit_map'
+        return [pad('b')]
+    mem.pop('camp_hp_probe', None)
+    return None
