@@ -122,6 +122,30 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
             self.assertEqual(unsupported.returncode, 25)
             self.assertEqual(unsupported.stdout, "")
 
+    def test_clear_quarantine_script_has_only_fixed_argv(self):
+        import os
+        import sys
+        import tempfile
+        script = ROOT / "ops/vm_actions/clear_hanjuku_clock_quarantine.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/docich").mkdir(parents=True)
+            (root / "config").mkdir()
+            (root / "src/docich/hanjuku_corner.py").touch()
+            (root / "config/docich.soren-live.toml").touch()
+            python = root / ".venv-trading/bin/python3"
+            python.parent.mkdir(parents=True)
+            python.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            python.chmod(0o755)
+            env = {**os.environ, "DOCICH_PROD_ROOT": str(root)}
+            result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [
+                "-B", "-m", "docich.hanjuku_corner", "--clear-clock-quarantine"])
+            extra = subprocess.run(["bash", str(script), "other"], env=env, capture_output=True, text=True)
+            self.assertEqual(extra.returncode, 64)
+            self.assertEqual(extra.stdout, "")
+
     def test_cancel_script_has_only_fixed_argv_and_rejects_injection(self):
         import os
         import tempfile
@@ -232,6 +256,18 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
         self.assertEqual(self.run_auth(INPUT_OPERATION="start-hanjuku").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku;id").returncode, 0)
+        cleared = self.run_auth(INPUT_OPERATION="clear-hanjuku-clock-quarantine")
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        self.assertEqual(
+            json.loads(cleared.stdout),
+            {"operation": "clear-hanjuku-clock-quarantine",
+             "target": "production", "ref": "main"},
+        )
+        self.assertNotEqual(self.run_auth(
+            INPUT_OPERATION="clear-hanjuku-clock-quarantine",
+            GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
+        self.assertNotEqual(self.run_auth(
+            INPUT_OPERATION="clear-hanjuku-clock-quarantine;id").returncode, 0)
         recovered_runtime = self.run_auth(INPUT_OPERATION="recover-runtime")
         self.assertEqual(recovered_runtime.returncode, 0, recovered_runtime.stderr)
         self.assertEqual(
@@ -421,7 +457,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -433,6 +469,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/recover_corner_rotation.sh",
             "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
             "control/ops/vm_actions/start_hanjuku_corner.sh",
+            "control/ops/vm_actions/clear_hanjuku_clock_quarantine.sh",
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
             "control/ops/vm_actions/control_hanjuku_prediction.sh",
@@ -444,6 +481,8 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "if: steps.auth.outputs.operation == 'restart-service'",
             "if: steps.auth.outputs.operation == 'rollback-timer'",
             "if: steps.auth.outputs.operation == 'recover-runtime'",
+            "if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'",
+            "Clear a clock-gap quarantine for the queued Hanjuku request",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
             "ClearAllForwardings=yes",

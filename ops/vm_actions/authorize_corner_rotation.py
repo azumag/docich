@@ -26,14 +26,15 @@ WORKFLOWS = (
 )
 ALLOWED_OPERATIONS = {
     "restart-service", "recover-failed", "rollback-timer", "start-hanjuku", "resume-hanjuku-latest",
-    "recover-runtime",
+    "clear-hanjuku-clock-quarantine", "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
     "check-recover-hanjuku-resume", "recover-hanjuku-resume",
     "check-cancel-prediction", "cancel-prediction",
     "check-sync-prediction", "sync-prediction",
 }
-CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
+CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-hanjuku-clock-quarantine",
+                             "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
                              "check-admin-release-hanjuku", "admin-release-hanjuku",
                              "check-recover-hanjuku-resume", "recover-hanjuku-resume",
                              "check-cancel-prediction", "cancel-prediction",

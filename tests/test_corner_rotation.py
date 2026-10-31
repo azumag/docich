@@ -963,6 +963,69 @@ def test_clock_regression_and_large_forward_jump_quarantine(setup):
     assert len(executor.calls) == 2
 
 
+def _quarantined_manual(make, clock, *, corner='hanjuku-hero', hold=DAY,
+                       status='waiting', reason='clock-gap-quarantine', queued=True):
+    manager = make()
+    ledger = manager.load(clock[0])
+    ledger.update(status=status, reason=reason,
+                  clock_hold_until=clock[0] + hold)
+    if queued:
+        ledger['queued_manual'] = {
+            'corner': corner, 'selected_at': clock[0],
+            'request_id': '00000000-0000-0000-0000-000000000000'}
+    manager.save(ledger)
+    return manager
+
+
+def test_clear_manual_clock_quarantine_removes_only_the_hold(setup):
+    _, clock, _, executor, make = setup
+    manager = _quarantined_manual(make, clock)
+    before = state(manager)
+    result = manager.clear_manual_clock_quarantine()
+    assert result == {'status': 'cleared', 'corner': 'hanjuku-hero'}
+    after = state(manager)
+    assert 'clock_hold_until' not in after
+    assert after['status'] == 'waiting' and after['reason'] == 'manual-clock-hold-cleared'
+    assert after['queued_manual'] == before['queued_manual']
+    assert executor.calls == []
+    assert manager.clear_manual_clock_quarantine() == {'status': 'not_quarantined'}
+
+
+@pytest.mark.parametrize('mutate,expected', [
+    ({'reason': 'other'}, 'not_quarantined'),
+    ({'status': 'recovery_required'}, 'recovery_required'),
+    ({'hold': 0}, 'not_held'),
+    ({'corner': 'nsnake'}, 'not_queued'),
+    ({'queued': False}, 'not_queued'),
+])
+def test_clear_manual_clock_quarantine_fails_closed(setup, mutate, expected):
+    _, clock, _, _, make = setup
+    manager = _quarantined_manual(make, clock, **mutate)
+    assert manager.clear_manual_clock_quarantine() == {'status': expected}
+    assert 'clock_hold_until' in state(manager) or expected in (
+        'recovery_required', 'not_quarantined')
+
+
+def test_clear_manual_clock_quarantine_refuses_a_regressed_clock(setup):
+    _, clock, _, _, make = setup
+    manager = _quarantined_manual(make, clock)
+    ledger = manager.load(clock[0])
+    ledger['last_seen_at'] = clock[0] + 1
+    manager.save(ledger)
+    assert manager.clear_manual_clock_quarantine() == {'status': 'clock_regressed'}
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+
+
+def test_clear_manual_clock_quarantine_is_busy_while_the_lock_is_held(setup):
+    _, clock, _, _, make = setup
+    _quarantined_manual(make, clock)
+    owner = make()
+    with owner.locked() as acquired:
+        assert acquired
+        assert make().clear_manual_clock_quarantine() == {'status': 'busy'}
+    assert state(make())['clock_hold_until'] == clock[0] + DAY
+
+
 def test_manual_running_blocks_and_completed_usage_imports_cooldown(setup):
     _, clock, _, executor, make = setup
     manager = make()

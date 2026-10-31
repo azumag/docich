@@ -8,6 +8,13 @@ from pathlib import Path
 from .config import ConfigError, load_global
 
 
+def clear_clock_quarantine():
+    root = Path(__file__).resolve().parents[2]
+    config = load_global(root, root / 'config/docich.soren-live.toml')
+    from .corner_rotation import CornerRotationManager
+    return CornerRotationManager(config).clear_manual_clock_quarantine('hanjuku-hero')
+
+
 def start(*, resume_latest=False):
     root = Path(__file__).resolve().parents[2]
     config = load_global(root, root / 'config/docich.soren-live.toml')
@@ -98,10 +105,13 @@ def _fixed_failure_exit(exc):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--resume-latest', action='store_true')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--resume-latest', action='store_true')
+    group.add_argument('--clear-clock-quarantine', action='store_true')
     args = parser.parse_args(argv)
     try:
-        result = start(resume_latest=True) if args.resume_latest else start()
+        result = (clear_clock_quarantine() if args.clear_clock_quarantine
+                  else start(resume_latest=True) if args.resume_latest else start())
     except Exception as exc:
         exit_code = _fixed_failure_exit(exc)
         # stderr is retained only in the owner-only VM operation log. Keep it
@@ -109,6 +119,8 @@ def main(argv=None):
         print(f'hanjuku_queue_failure={EXIT_FAILURE_REASON[exit_code]}', file=sys.stderr)
         return exit_code
     print(result)
+    if args.clear_clock_quarantine:
+        return 0 if result['status'] == 'cleared' else 77
     return 0 if result['status'] in {'completed', 'queued', 'waiting'} else 77
 
 
