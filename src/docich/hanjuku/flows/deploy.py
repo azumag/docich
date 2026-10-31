@@ -26,7 +26,7 @@ from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_U
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
-                               _continue_transit_sorties, _few_castles,
+                               _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
@@ -585,7 +585,8 @@ def _move_general_pick(screen, mem, order):
         return [pad('b'), pad('b')]
     general = mem.get('general_override', {}).get(order['step'])
     if general not in spare:
-        general = spare[0]
+        general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
+                   or spare[0])
         mem.setdefault('general_override', {})[order['step']] = general
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
