@@ -865,8 +865,17 @@ def _camp_under_cursor(screen, frame):
 
 
 def _probe_abort(mem):
-    mem.pop('camp_hp_probe', None)
+    # An aborted probe spends its whole budget for this retreat: no retry in the same camp.
+    probe = mem.pop('camp_hp_probe', None) or {}
+    if 'key' in probe:
+        counts = mem.get('camp_hp_probe_counts') or {}
+        mem['camp_hp_probe_counts'] = {**counts, probe['key']: CAMP_HP_PROBE_LIMIT}
     return None
+
+
+def _recheck_due(mem):
+    return any(row['status'] == 'needs_observation' and row['retry_after'] <= mem['tick']
+               and row['attempts'] < ATTEMPT_LIMIT for row in _scope(mem).values())
 
 
 def camp_hp_probe_step(screen, mem, frame):
@@ -887,10 +896,9 @@ def camp_hp_probe_step(screen, mem, frame):
     if probe is None:
         if mem.get('recall') or screen.kind != 'map' or frame is None or any(mem.get(k) for k in PROBE_BUSY_KEYS):
             return None
-        queue = _scope(mem)
-        if any(row['status'] == 'needs_observation' and row['retry_after'] <= mem['tick']
-               and row['attempts'] < ATTEMPT_LIMIT for row in queue.values()):
+        if _recheck_due(mem):
             return None  # a due retreat recheck always goes first (boundary condition 2)
+        queue = _scope(mem)
         target = _camp_under_cursor(screen, frame)
         counts = mem.get('camp_hp_probe_counts') or {}
         actor = next((name for name, row in queue.items()
@@ -902,6 +910,9 @@ def camp_hp_probe_step(screen, mem, frame):
         mem['camp_hp_probe_counts'] = {**counts, key: counts.get(key, 0) + 1}
         mem['camp_hp_probe'] = {'stage': 'menu', 'general': actor, 'key': key, 'steps': 0}
         return [pad('a')]
+    # Yield mid-probe as well: a recall or a due retreat recheck that appears now takes the frame.
+    if mem.get('recall') or _recheck_due(mem) or any(mem.get(k) for k in PROBE_BUSY_KEYS):
+        return _probe_abort(mem)
     probe['steps'] = probe.get('steps', 0) + 1
     if probe['steps'] > 6:
         return _probe_abort(mem)
