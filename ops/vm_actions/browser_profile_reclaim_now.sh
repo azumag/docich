@@ -9,7 +9,7 @@
 #     dry-run>. Refuses to delete anything else (plan_mismatch).
 #
 # The actual mutation contract lives in the reviewed
-# runtime_browser_profile_reclaim.py (same dir): completed-generation gates
+# runtime_browser_profile_reclaim.py: completed-generation gates
 # (RUN_ID / canonical inactive / terminal_identity), game-switch.lock shared
 # flock, symlink/nlink/unsafe-entry rejection, per-entry re-stamp on apply.
 # hanjuku logs, frames and the generation dir are never removed.
@@ -20,7 +20,9 @@ set -euo pipefail
 
 root="/home/ubuntu/docich"
 state_dir="$root/run-soren-live"
-helper="$(dirname "$0")/runtime_browser_profile_reclaim.py"
+# Use the deployed checkout path rather than dirname "$0": vm-operations may
+# execute this wrapper via stdin, where $0 does not identify this file.
+helper="$root/ops/vm_actions/runtime_browser_profile_reclaim.py"
 
 mode="dry-run"
 case "${1:-}" in
@@ -36,7 +38,7 @@ esac
 
 if [[ "$mode" == "apply" ]]; then
   # Owner consent gate: the digest of the reviewed dry-run plan must be
-  # supplied explicitly. First apply (~7 GiB scale) is owner-approved only;
+  # supplied explicitly. The current reclaim size is determined by Phase 1;
   # later bounded runs reuse the same two-phase flow.
   [[ -n "${EXPECT_PLAN:-}" ]] || { echo "EXPECT_PLAN digest required for apply" >&2; exit 2; }
   exec python3 "$helper" "$state_dir" --apply --expect-plan "$EXPECT_PLAN" \
