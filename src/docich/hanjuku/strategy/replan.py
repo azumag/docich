@@ -13,6 +13,8 @@ from . import routes
 from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
+                               _defense_move_pick, _defense_priority_castles, _defense_score,
+                               _post_conquest_wait,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
                                _unplaced_castle_generals)
 
@@ -125,6 +127,60 @@ def _spares(free, unavailable=(), sole=False):
     return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
 
 
+def _defense_rebalance(mem, owned, busy, heading):
+    """Boss-wait moves that staff a weak priority castle (#2985).
+
+    Only a measured list can qualify a castle, and only a spare strictly
+    stronger than its best defender is sent, so the moves stop once every
+    priority castle holds the best available general. A donor's remaining
+    best must not drop below the target it relieves, which keeps two weak
+    castles from trading generals forever. The hero is not counted as a
+    defender: it may sortie at any time, so weak non-hero garrisons still
+    qualify for reinforcement.
+    """
+    chapter = mem.get('chapter') or 0
+    garrison = mem.get('garrison') or {}
+    home = chart.home_castle(chapter)
+    priority = _defense_priority_castles(mem)
+    unlocated = set(mem.get('general_location_unknown') or ())
+    free = {c: [g for g in (garrison.get(c) or ())
+                if g not in busy and g not in unlocated] for c in owned}
+    out = []
+    for target in sorted(priority, key=lambda c: _distance(chapter, home, c)):
+        if (target in heading or garrison.get(target) is None
+                or routes.unread_dispatches(mem, target)):
+            continue
+        best = max((_defense_score(mem, g) for g in free[target] if g != NAME),
+                   default=None)
+        donors = []
+        for source in sorted(owned, key=lambda c: _distance(chapter, c, target)):
+            if source == target or len(free[source]) < 2:
+                continue
+            sendable = [g for g in _spares(free[source]) if g != NAME]
+            if not sendable:
+                continue
+            top = sorted(sendable, key=lambda g: _defense_score(mem, g),
+                         reverse=True)[0]
+            top_score = _defense_score(mem, top)
+            if best is not None and top_score <= best:
+                continue
+            rest_best = max((_defense_score(mem, g)
+                             for g in free[source] if g != top),
+                            default=(0, 0, 0))
+            if best is not None and rest_best < best:
+                continue
+            donors.append((top_score, -_distance(chapter, source, target),
+                           source, top))
+        if not donors:
+            continue
+        _, _, source, general = max(donors)
+        out.append({'general': general, 'target': target, 'cards': [],
+                    'source': source, 'after': None, 'purpose': 'move',
+                    'defense_rebalance': True,
+                    'note': f'暫定: ボス出撃待ちの防衛優先として{general}を{source}から{target}へ移動'})
+    return out
+
+
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
 
 
@@ -218,7 +274,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             if leg in seen_legs:
                 continue
             seen_legs.add(leg)
-            general = MOVE_ANY_GENERAL if len(free) < 2 else _spares(free)[0]
+            general = (MOVE_ANY_GENERAL if len(free) < 2
+                       else (_defense_move_pick(mem, donor, route[1],
+                                                _spares(free)) or _spares(free)[0]))
             moves.append({'general': general, 'source': donor, 'target': route[1],
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
@@ -246,7 +304,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             continue
         spare = [g for g in garrison.get(donors[0]) or () if g not in busy]
         spare = _spares(spare) if len(spare) >= 2 else []
-        general = spare[0] if spare else MOVE_ANY_GENERAL
+        general = _defense_move_pick(mem, donors[0], target, spare) or MOVE_ANY_GENERAL
         moves.append({
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
@@ -289,6 +347,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                         'note': f"暫定: {general}を{donor}から{sink}へ移動しボス出撃の同伴者を揃える"})
                     paired = True
                     break
+    # Post-conquest boss wait: reinforce weak priority castles with the
+    # strongest sendable spare instead of whoever the list happens to hold
+    # (#2985: the home castle waited out a boss sortie with its weakest
+    # general while stronger ones sat at border castles). Targets already
+    # covered by an ordinary move above are not duplicated.
+    if _post_conquest_wait(mem):
+        moved = {o['target'] for o in moves}
+        moves.extend(o for o in _defense_rebalance(mem, owned, busy, heading)
+                     if o['target'] not in moved)
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)

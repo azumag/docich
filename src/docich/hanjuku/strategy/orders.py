@@ -430,6 +430,69 @@ def _season_site_ready(order, mem):
     return _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
 
 
+def _post_conquest_wait(mem):
+    """All normal castles held while the boss fight is still ahead (#2985).
+
+    Chapter 4's 四季王 sites open while one normal castle is still missing
+    (owner 2026-10-30, SEASON_SITE_MISSING_LIMIT), so the same wait window
+    starts at that readiness too.
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or chapter not in chart.CASTLE_NAMES:
+        return False
+    if _all_normal_captured(mem):
+        return True
+    return chapter == 4 and _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
+
+
+def _defense_priority_castles(mem):
+    """Castles whose garrison must stay strong while the boss is awaited:
+    the owned home castle plus the owned castle(s) nearest the boss castle
+    (the frontier a boss sortie reaches first)."""
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    boss = chart.boss_castle(chapter)
+    owned = _owned(mem) & set(cells)
+    if not owned:
+        return set()
+    home = chart.home_castle(chapter)
+    if boss not in cells:
+        return {home} if home in owned else set()
+    nearest = min(_distance(chapter, c, boss) for c in owned)
+    return {c for c in owned
+            if c == home or _distance(chapter, c, boss) == nearest}
+
+
+def _defense_score(mem, name):
+    """(has a usable egg, HP, combat); unmeasured stats fall back to (0, 0)."""
+    hp, combat = (reference.general_strength(name) or (0, 0))[:2]
+    return (1 if _holds_egg(mem, name) else 0, hp, combat)
+
+
+def _defense_move_pick(mem, source, target, sendable):
+    """Which sendable general a move order takes.
+
+    Boss wait only (#2985): a priority castle parts with its weakest general
+    so the strongest stays, and a weak priority castle is reinforced with the
+    donor's strongest spare. Outside the wait the list head goes, as before.
+    The sort is stable, so tied scores keep the observed order — a roster
+    whose strength is unmeasured never sends someone the head pick would
+    have kept. The hero is sendable only when alone.
+    """
+    if not sendable:
+        return None
+    if not _post_conquest_wait(mem):
+        return sendable[0]
+    priority = _defense_priority_castles(mem)
+    pool = [g for g in sendable if g != NAME] or sendable
+    ranked = sorted(pool, key=lambda g: _defense_score(mem, g), reverse=True)
+    if source in priority:
+        return ranked[-1]
+    if target in priority:
+        return ranked[0]
+    return sendable[0]
+
+
 def _boss_target_unlocked(order, mem):
     # An adjusted after=None (including normalized self-capture conditions),
     # a retry or a hotloaded active order cannot remove the game prerequisite.

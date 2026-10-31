@@ -215,8 +215,10 @@ def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     candidates = policy.interim_candidates(mem)
     assert list(candidates) == ['move_1']
     move = candidates['move_1']
+    # #2985: captured=all normals puts this mem in the post-conquest boss wait,
+    # so a priority source parts with its weakest spare, not the list head.
     assert (move['general'], move['source'], move['target'], move['purpose']) == (
-        'ゼウス', 'アルマムーン', 'キカンドン', 'move')
+        'クミン', 'アルマムーン', 'キカンドン', 'move')
     # v305: the hero keeps two others; with only two there nobody leaves him.
     mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
