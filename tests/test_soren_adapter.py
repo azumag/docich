@@ -375,6 +375,97 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 self.assertTrue(adapter.cancel_round_boundary("req-c", time.monotonic() + 30, None))
             self.assertEqual(calls[0], [str(adapter.control), "cancel", "req-c"])
 
+    def _cancel_status_run(self, cancel_rc, cancel_payload, status_payload=None, status_rc=0):
+        """Dispatch on argv: fixed control cancel vs broker status."""
+        def fake_run(argv, **kwargs):
+            if len(argv) > 1 and argv[1] == "cancel":
+                return SimpleNamespace(
+                    returncode=cancel_rc, stdout=json.dumps(cancel_payload), stderr="")
+            return SimpleNamespace(
+                returncode=status_rc,
+                stdout=json.dumps(status_payload if status_payload is not None else {}),
+                stderr="")
+        return fake_run
+
+    def test_cancel_acknowledged_when_broker_never_registered_the_request(self):
+        """A ``missing`` cancel response + absent live request cannot ack later."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(
+                4, {"status": "missing"},
+                {"schema": 1, "request": None, "ack": None, "resource": None},
+            )
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
+    def test_cancel_acknowledged_when_broker_holds_another_request(self):
+        """A different live request proves ours was never registered."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(
+                3, {"status": "conflict", "error": "request_id does not match the active lifecycle request"},
+                {"schema": 1,
+                 "request": {"schema": 1, "request_id": "req-other", "game": "sorengame",
+                             "generation": 8, "deadline_epoch": 1893456000.0,
+                             "deadline_at": "2030-01-01T00:00:00Z"},
+                 "ack": {"status": "waiting"}, "resource": None},
+            )
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
+    def test_cancel_acknowledged_when_own_request_is_terminal(self):
+        """Our own request in a terminal ack cannot deliver a boundary ack."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(
+                3, {"status": "conflict"},
+                {"schema": 1,
+                 "request": {"schema": 1, "request_id": "req-x", "game": "sorengame",
+                             "generation": 8, "deadline_epoch": 1893456000.0,
+                             "deadline_at": "2030-01-01T00:00:00Z"},
+                 "ack": {"status": "timeout"}, "resource": None},
+            )
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
+    def test_cancel_refused_while_own_request_is_pending(self):
+        """A live non-terminal request for this id stays fail-closed."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(
+                3, {"status": "conflict"},
+                {"schema": 1,
+                 "request": {"schema": 1, "request_id": "req-x", "game": "sorengame",
+                             "generation": 8, "deadline_epoch": 1893456000.0,
+                             "deadline_at": "2030-01-01T00:00:00Z"},
+                 "ack": {"status": "waiting"}, "resource": None},
+            )
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertFalse(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
+    def test_cancel_refused_when_own_request_lacks_ack(self):
+        """A request file without its ack is unverifiable: refuse."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(
+                4, {"status": "missing"},
+                {"schema": 1,
+                 "request": {"schema": 1, "request_id": "req-x", "game": "sorengame",
+                             "generation": 8, "deadline_epoch": 1893456000.0,
+                             "deadline_at": "2030-01-01T00:00:00Z"},
+                 "ack": None, "resource": None},
+            )
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertFalse(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
+    def test_cancel_refused_when_status_unreadable(self):
+        """A status call failure keeps the refusal fail-closed."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            fake_run = self._cancel_status_run(4, {"status": "missing"}, status_payload="", status_rc=1)
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertFalse(adapter.cancel_round_boundary("req-x", time.monotonic() + 30, None))
+
     def test_cancelled_runtime_requires_materialize_before_ready(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
