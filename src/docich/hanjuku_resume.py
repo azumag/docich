@@ -631,11 +631,12 @@ def restore(adapter, deadline, cancel):
     gift_without_chapter = False
     dialogue_without_chapter = False
     message_without_chapter = False
+    menu_without_chapter = False
     inherited = source_chapter(adapter.g.state_dir, request)
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
            and not ritual_without_chapter and not battle_menu_without_chapter
            and not gift_without_chapter and not dialogue_without_chapter
-           and not message_without_chapter):
+           and not message_without_chapter and not menu_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -666,6 +667,13 @@ def restore(adapter, deadline, cancel):
             gift_without_chapter = True
         elif _castle_dialogue(screen):
             dialogue_without_chapter = True
+        elif observed is None and screen.kind in {'map', 'map_target', 'castle_menu', 'general_list'}:
+            # g1091/g1093: a stall checkpoint restores to an open order or map
+            # menu (e.g. しゅつげき/ステータス general_list with no header
+            # chapter). These kinds are already proven in-game foregrounds by
+            # the parser, so waiting for a chapter-bearing frame can only
+            # expire the restore deadline on an already-loaded state.
+            menu_without_chapter = True
         elif observed is None and inherited is not None and screen.kind == 'text' and screen.text:
             # g1071 11:30: the stall checkpoint showed a headerless field
             # notice (「かんじゅくプリンスじょうは…」) and the wait ran out the

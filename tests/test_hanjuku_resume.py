@@ -231,7 +231,7 @@ def test_claim_rejects_changed_rom_without_default_game(setup):
 
 
 def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
-                 stale_writes=(), seconds=None):
+                 stale_writes=(), seconds=None, kind='map'):
     """Exercise restore. ``stale_writes`` lists 1-based SAVE writes whose file
     mtime must predate the request, so the production loop legitimately retries
     the roundtrip instead of accepting an unprovable save."""
@@ -272,7 +272,7 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
         loaded_screen = parse(native_frame.resized())
         frame = native_frame
     else:
-        loaded_screen = SimpleNamespace(header={'chapter':chapter},kind='map',lines=[])
+        loaded_screen = SimpleNamespace(header={'chapter':chapter},kind=kind,lines=[])
     with mock.patch('docich.adapters.retroarch.send_ra_cmd',side_effect=send), \
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
@@ -323,7 +323,7 @@ def test_stale_core_write_is_retried_without_a_second_load(setup):
 def test_failed_load_never_opens_ai_or_rewinds_again(setup,failure):
     s=setup
     with pytest.raises((AdapterError,DeadlineExceededError)):
-        restore_test(s,valid=failure not in {'mismatch','unchanged_future'},ack=failure!='no_ack',chapter=None if failure=='unread_header' else 1)
+        restore_test(s,valid=failure not in {'mismatch','unchanged_future'},ack=failure!='no_ack',chapter=None if failure=='unread_header' else 1,kind='unknown' if failure=='unread_header' else 'map')
     assert read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)['status']=='claimed'
     with pytest.raises(AdapterError):resume.require_verified(s.spec)
     assert not (s.spec.runtime_dir/'hanjuku_bot.json').exists()

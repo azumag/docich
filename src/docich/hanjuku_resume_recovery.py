@@ -161,10 +161,12 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
                 or original.get('startup_recovery') is not None):
             raise CancelRefused('reservation_not_in_scope')
         logical = validate_request_id(claim.get('request_id'))
-        first = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-1'))
-        second = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-2'))
-        third = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-3'))
-        if (original.get('request_id') != logical or previous.get('attempt_id') != first
+        attempt_ids = [str(uuid.uuid5(uuid.UUID(logical), f'failed-before-ai-recovery-{n}'))
+                       for n in (1, 2, 3, 4)]
+        first = attempt_ids[0]
+        if (original.get('request_id') != logical
+                or previous.get('attempt_id') != (
+                    failed.get('attempt_id') if isinstance(failed, dict) else first)
                 or previous.get('fingerprint') != fingerprint(original)
                 or any(claim.get(k) != original.get(k) for k in (
                     'start_policy', 'start_mode', 'source_boundary', 'sha256', 'bytes',
@@ -173,13 +175,15 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         from .hanjuku_resume import _start_mode
         if _start_mode(claim) != 'resume':
             raise CancelRefused('reservation_not_in_scope')
+        position = (attempt_ids.index(recovery.get('attempt_id'))
+                    if recovery.get('attempt_id') in attempt_ids else -1)
         if failed is not None:
             if (type(request.get('schema')) is not int or request.get('schema') != 1
                     or request.get('status') not in {'queued', 'claimed'}
-                    or recovery.get('attempt_id') != second
+                    or position < 1
                     or recovery.get('original') != original
                     or recovery.get('fingerprint') != fingerprint(original)
-                    or failed.get('attempt_id') != first
+                    or failed.get('attempt_id') != attempt_ids[position - 1]
                     or failed.get('fingerprint') != fingerprint(claim)
                     or request.get('request_id') != logical
                     or any(request.get(k) != claim.get(k) for k in (
@@ -188,9 +192,9 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
                 raise CancelRefused('invalid_evidence')
         elif request != claim:
             raise CancelRefused('context_changed')
-        second_claimed = failed is not None and request.get('status') == 'claimed'
-        evidence = request if second_claimed else claim
-        attempt_receipt_id = second if second_claimed else first
+        latest_claimed = failed is not None and request.get('status') == 'claimed'
+        evidence = request if latest_claimed else claim
+        attempt_receipt_id = recovery.get('attempt_id') if latest_claimed else first
         validate_request_id(evidence.get('lease_id'))
         if runtime_id_generation(evidence.get('runtime_id')) != evidence['generation']:
             raise CancelRefused('invalid_evidence')
@@ -233,7 +237,11 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         if at < max(timestamp(claim['selected_at']), timestamp(state['last_seen_at'])):
             raise CancelRefused('clock_regressed')
         queued = state.get('queued_manual') or {}
-        attempt_queued_id = third if second_claimed else second
+        if latest_claimed and position + 1 >= len(attempt_ids):
+            raise CancelRefused('retry_exhausted')
+        attempt_queued_id = (attempt_ids[1] if failed is None
+                             else (attempt_ids[position + 1] if latest_claimed
+                                   else recovery.get('attempt_id')))
         if (state.get('status') not in {'ready', 'waiting'} or state.get('pending')
                 or state.get('manual_pending') or manager._read_manual_queue()
                 or (queued and (queued.get('request_id') != attempt_queued_id
@@ -244,21 +252,22 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
             raise CancelRefused('owner_not_terminal')
         if failed is None:
             audit = {'claim': claim, 'attempt_id': first, 'fingerprint': fingerprint(claim)}
-            new_recovery = dict(previous, attempt_id=second, failed_attempt=audit)
+            new_recovery = dict(previous, attempt_id=attempt_ids[1], failed_attempt=audit)
             request = {k: v for k, v in claim.items()
                        if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
             request.update(status='queued', startup_recovery=new_recovery,
                            dispatch_source='manual', explicit_resume=True)
             atomic_write_json(path, request)
-        elif second_claimed:
-            # The second attempt claimed and rolled back before the corner
-            # became active (same pre-AI shape as the first): derive the third
-            # and last audited retry, keeping the newest claim as the evidence
-            # chain head. A further failure is a real fault, not another
-            # derived attempt, so no fourth id exists.
-            audit = {'claim': request, 'attempt_id': second,
+        elif latest_claimed:
+            # The latest attempt claimed and rolled back before the corner
+            # became active (same pre-AI shape as the first): derive the next
+            # audited retry, keeping the newest claim as the evidence chain
+            # head. The id list bounds the audited chain; a failure past it is
+            # a real fault, not another derived attempt.
+            audit = {'claim': request, 'attempt_id': recovery.get('attempt_id'),
                      'fingerprint': fingerprint(request)}
-            new_recovery = dict(recovery, attempt_id=third, failed_attempt=audit)
+            new_recovery = dict(recovery, attempt_id=attempt_ids[position + 1],
+                                failed_attempt=audit)
             request = {k: v for k, v in request.items()
                        if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
             request.update(status='queued', startup_recovery=new_recovery,
