@@ -38,6 +38,12 @@ SCAN_INTERVAL = 200
 # A queued repair goal may spend this many extra field sessions per
 # (chapter, month) scope beyond the two a free survey already allows.
 GOAL_FIELD_EXTRA = 2
+# キャンプしています: the general holds the tent (or the 砦 he founded).
+# キャンプのなかにいます: he stays inside a 砦 another general holds.
+CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのなかにいます'})
+# しんぐんちゅうです is what the game prints for a marching general (probe of
+# g1097, 2026-11-01); いどうしています was never seen on a real status panel.
+MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 INTERRUPTION_RETRIES = 2
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
@@ -47,6 +53,17 @@ HOUSE_ROUTE_CLEARANCE = 8
 PRE_DISPATCH_PHASES = frozenset({
     'find_castle', 'castle_view', 'castle_open', 'castle_verify',
     'castle_sortie', 'castle_pick', 'castle_kit', 'castle_confirm'})
+
+
+def location_row(screen):
+    """The main status panel's location sentence, without the roster beside it.
+
+    The right panel keeps listing generals on the same row (x=168, see
+    ``roster``), so reading past it never equals a location sentence: until
+    g1097 2026-11-01 ``キャンプしています`` was compared with
+    ``キャンプしています リースリング`` and no real camp was ever observed.
+    """
+    return next((r.span(24, 168).replace(' ', '') for r in screen.lines if r.y == 151), None)
 
 
 def general_status(screen):
@@ -83,14 +100,13 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = (x == 24 and y == 39 and any(r.y == 151
-                and r.span(24, 232).replace(' ', '') == 'キャンプしています' for r in screen.lines))
+        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
                 'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', 'いどうしています'))}
+                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -605,7 +621,20 @@ def _month_count_advance(screen, mem, state, frame):
     return [pad('down')]
 
 
-def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
+def _camp_recall_first(mem, frame):
+    """A camp ready on this map frame goes before a new survey or repair session.
+
+    This flow runs ahead of ``map_step``. g1097 2026-11-01: 23 surveys of about
+    three minutes each took the idle map frames, so a tent in plain view at
+    19:16, 19:19 and 19:23 never reached the recall that the owner rule of
+    2026-09-28 asks for. The recall keeps its own bounded cooldowns, so a camp
+    it cannot serve stops being "ready" and this survey runs on the next frame.
+    """
+    from .camp_recheck import recall_ready
+    return recall_ready(mem, frame)
+
+
+def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick):
     from ..os_layer.commands import pad
     from ..os_layer.readers import STATUS_NAMES
     from ..os_layer.world import _owned
@@ -627,6 +656,8 @@ def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
     goal_due = goals.repair_due(mem)
     recent = int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL
     if field_count >= (2 + GOAL_FIELD_EXTRA if goal_due else 2) or (recent and not goal_due):
+        return True, None
+    if _camp_recall_first(mem, frame):
         return True, None
     if goal_due and (field_count >= 2 or recent):
         _record(mem, 'goal_dispatch',
@@ -792,7 +823,7 @@ def step(screen, mem, frame):
         field_month = (scope[1] if field_done else
                        None if legacy_monthly else mem.get('house_scan_month'))
         if not monthly:
-            reused, actions = _resume_completed_survey(screen, mem, scope, field_count, field_tick)
+            reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
         # Monthly roster/status reads return to the monthly menu and never
@@ -814,7 +845,8 @@ def step(screen, mem, frame):
                 or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck')
                     and not goal_due)
                 or (not monthly and receipts.surveyed(mem) and not _survey_work(mem)
-                    and not mem.get('recruit_roster_recheck'))):
+                    and not mem.get('recruit_roster_recheck'))
+                or (not monthly and _camp_recall_first(mem, frame))):
             return None
         if bypassed:
             _record(mem, 'goal_dispatch',

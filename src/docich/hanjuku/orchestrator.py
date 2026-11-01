@@ -643,6 +643,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # nothing handled it and the bot pressed nothing for over an hour.
         decision_log._record(mem,'close_panel',screen='camp_menu',reason='帰還指示中でない野営メニューを閉じる')
         actions=[pad('b')]
+    elif kind=='text' and readers.is_fort_menu(screen):
+        # g1097 2026-11-01 19:24 and 19:33: the same stray A landed on a 砦 and
+        # its しゅつげき/こうかん stayed open for 101 observations each time.
+        decision_log._record(mem,'close_panel',screen='fort_menu',reason='帰還指示中でない砦のメニューを閉じる')
+        actions=[pad('b')]
     menu_escape = map_flow.boss_sortie_menu_escape_step(mem, kind, actions)
     if menu_escape is not None:
         # A boss sortie menu that keeps returning [] would otherwise hit the

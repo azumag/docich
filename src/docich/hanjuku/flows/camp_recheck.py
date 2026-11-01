@@ -333,14 +333,14 @@ def observe_camp_status(screen, mem):
     if not isinstance(actors, dict):
         return  # malformed saved suppression must not reset into permission
     old = actors.get(actor)
-    location = next((r.span(24, 232).replace(' ', '') for r in screen.lines if r.y == 151), None)
+    location = house.location_row(screen)
     if old is not None and location == 'しろのなかにいます':
         # Upgrade old list-shaped saved signatures only through a new receipt.
         if isinstance(old, list):
             old = actors[actor] = {'signature': old, 'tick': now}
         if isinstance(old, dict) and type(old.get('tick')) is int and old['tick'] <= now:
             old['castle_tick'] = now
-    elif isinstance(old, dict) and location == 'いどうしています':
+    elif isinstance(old, dict) and location in house.MARCH_LOCATIONS:
         castle_tick = old.get('castle_tick')
         if (type(castle_tick) is int and type(old.get('tick')) is int
                 and 0 <= old['tick'] <= castle_tick < now):
@@ -448,10 +448,11 @@ def _named_step(screen, mem, frame, state):
     from ..decision_log import _record
     from .recall import RECALL_ARRIVE_PX, RECALL_LIMIT, _observe_recall_origin
     from ..os_layer.commands import menu_to, pad
-    from ..os_layer.readers import _cursor, is_camp_menu
+    from ..os_layer.readers import _cursor, is_camp_menu, is_fort_menu
     from ..os_layer.readers import own_camps
     from ..os_layer.world import NAME
     from . import house
+    from .recall import enter_fort
     stage, actor = state['stage'], state.get('general')
     if stage in ('recheck_roster_open', 'recheck_pick', 'recheck_roster_read', 'recheck_focus') and not _valid_episode(mem, state):
         _defer(mem, state, '本人focusのUI episodeを確認できず旧状態では操作しない')
@@ -537,6 +538,10 @@ def _named_step(screen, mem, frame, state):
         _advance(state, 'recheck_status')
         return [pad('a')]
     if stage == 'recheck_status':
+        if is_fort_menu(screen):
+            # The 砦 has no ステータス row: the status panel comes with the
+            # sortie itself, so the named row ends here and the sortie runs.
+            return _hand_over_to_fort(screen, mem, state, frame, enter_fort)
         if not is_camp_menu(screen):
             return _wait(mem, state, '本人の野営ステータスメニューを確認できない')
         move = menu_to(screen, 'ステータス')
@@ -595,6 +600,25 @@ def _named_step(screen, mem, frame, state):
                 reason='現tentを選択した後の本人ステータスと生存HPを確認。回復や到着は未確認')
         return [pad('b')]
     return None
+
+
+def _hand_over_to_fort(screen, mem, state, frame, enter_fort):
+    from ..decision_log import _record
+    from .recall import _camp_recall_step
+    actor = state.get('general') if not state.get('anonymous_recheck') else None
+    recall = {'stage': 'menu', 'steps': 0, 'target': state.get('target'), 'camp_kind': 'dome'}
+    for key in ('origin', 'origin_source'):
+        if key in state:
+            recall[key] = state[key]
+    if _clean_name(actor):
+        recall['fort_actor'] = actor
+        _scope(mem).pop(actor, None)
+    mem['recall'] = recall
+    enter_fort(mem, recall)
+    _record(mem, 'retreat_recheck_fort', chart_step=None, general=actor,
+            observed_metric={'camp': recall['target']}, resulting_event='fort_menu_observed',
+            reason='現在の野営が砦のメニューを開いたため、本人再確認から砦のしゅつげきへ引き継ぐ')
+    return _camp_recall_step(screen, mem, frame)
 
 
 def _status_close_step(screen, mem, state):
@@ -684,6 +708,25 @@ def _visible_camps(mem, frame, queue):
     return camps
 
 
+def recall_ready(mem, frame):
+    """Would the recall act on this idle map frame? Never changes its budgets."""
+    from .recall import _filter_recall_skip
+    from ..os_layer.readers import own_camps
+    if frame is None or mem.get('recall'):
+        return False
+    queue = _scope(mem)
+    # The same condition that starts a named search in ``_step_flow``: a row it
+    # would not start must not hold a survey back.
+    if not any(mem.get(key) for key in PROBE_BUSY_KEYS) and any(
+            row['attempts'] < ATTEMPT_LIMIT and mem['tick'] >= row['retry_after']
+            and _arrival_request(mem, name, row) is None for name, row in queue.items()):
+        return True
+    if queue and _anonymous_budget(mem, queue)['reads'] >= roster_receipts.MAX_GENERALS:
+        return False
+    camps = _visible_camps(mem, frame, queue) if queue else own_camps(frame)
+    return bool(_filter_recall_skip(mem, camps))
+
+
 def _anonymous_budget(mem, queue):
     key = {'identity': roster_receipts.run_identity(mem.get('_run_identity')), 'chapter': mem.get('chapter'),
            'pending': sorted([name, row['tick']] for name, row in queue.items())}
@@ -740,7 +783,7 @@ def _step_flow(screen, mem, frame, existing):
     """Keep named observation retries separate from the anonymous camp cooldown."""
     from .map import world_map_step
     from ..os_layer.commands import pad
-    from ..os_layer.readers import is_camp_menu
+    from ..os_layer.readers import is_camp_menu, is_fort_menu
     queue = _scope(mem)
     state = mem.get('recall') or {}
     named = bool(state.get('retreat_recheck'))
@@ -824,7 +867,7 @@ def _step_flow(screen, mem, frame, existing):
             current['camp_observation'] = _observe_camp(screen, mem, frame, current, 'anonymous_map_open')
         return actions
     if screen.kind == 'text' and state['stage'] not in ('recheck_read', 'recheck_roster_read') and not (
-            is_camp_menu(screen) or 'Aボタンでステータスひょうじ' in screen.text):
+            is_camp_menu(screen) or is_fort_menu(screen) or 'Aボタンでステータスひょうじ' in screen.text):
         _defer(mem, state, '別のtext表示で本人UIを失ったため通常の表示処理へ戻す')
         return None
     if state['stage'].startswith('recheck_'):
