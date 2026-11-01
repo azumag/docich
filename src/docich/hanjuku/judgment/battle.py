@@ -1747,7 +1747,9 @@ COMMAND_OPEN_WAITS = 4
 
 
 def _full_hp_melee_advantage(cur):
-    if (cur.get('ally') == NAME or cur.get('enemy') in chart.BOSSES.values()
+    if (cur.get('ally') == NAME or cur.get('side') != 'attack'
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
             or cur.get('egg_battle') or cur.get('card_summon_observed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True):
@@ -1756,7 +1758,7 @@ def _full_hp_melee_advantage(cur):
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
     balance = _melee_balance(cur)
     scores = balance['ally_melee_score'], balance['enemy_melee_score']
-    max_hp = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    max_hp = general_max_hp(cur.get('ally'))
     return (all(type(n) is int and n > 0 for n in (hp, enemy, start, *scores))
             and all(type(n) is int and 0 <= n <= 7 for n in (ours, theirs))
             and type(max_hp) is int and hp == max_hp
