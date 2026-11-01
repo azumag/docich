@@ -154,9 +154,54 @@ def pending(mem, kinds=None):
             if wanted_kinds is None or g.get('kind') in wanted_kinds]
 
 
+REPAIR_SLEEP_ATTEMPTS = 6   # failed repair dispatches before the goal sleeps
+
+
+def _repair_signature(mem, actor):
+    """Location facts that decide whether a repair session can reach the actor."""
+    info = (mem.get('house_eggs') or {}).get(actor) or {}
+    in_garrison = any(actor in (roster or [])
+                    for roster in (mem.get('garrison') or {}).values())
+    gold = mem.get('gold')
+    bucket = (min(gold, 400) // 100) if type(gold) is int and gold >= 0 else None
+    return [info.get('location'), info.get('month'), in_garrison, bucket]
+
+
+def _repair_goal_due(mem, goal):
+    """A failed repair sleeps until the actor's location facts change.
+
+    Generals the session can never reach burn the whole idle map window:
+    ソーピニヨン and ブカティーニ sit in castles we no longer own and ゼウス
+    is stranded on the field after the failed boss sortie — 39/19/18
+    dispatch cycles each ended at the observation limit, and every idle
+    frame re-dispatched them, starving next_order of map time entirely.
+    After REPAIR_SLEEP_ATTEMPTS the goal sleeps until the actor's location
+    signature changes (returns to an owned garrison, a fresh status read
+    moves it, or the purse crosses a gift bracket), then wakes with a
+    fresh attempt budget.
+    """
+    if int(goal.get('attempts') or 0) < REPAIR_SLEEP_ATTEMPTS:
+        return True
+    sig = _repair_signature(mem, goal.get('actor'))
+    previous = goal.get('sleep_signature')
+    if previous == sig:
+        return False
+    if previous is None:
+        goal['sleep_signature'] = sig
+        _record(mem, 'repair_goal_sleeping', chart_step=None,
+                observed_metric={**_summary(goal), 'signature': sig},
+                reason='修理の試行が上限に達し、将軍の所在・駐留・所持金が変わるまで再ディスパッチを休眠')
+        return False
+    # Location facts changed: release the goal with a fresh attempt budget.
+    goal.pop('sleep_signature', None)
+    goal['attempts'] = 0
+    return True
+
+
 def repair_due(mem):
     """A deferred broken-egg repair is waiting for idle map time."""
-    return any(g.get('kind') == 'repair' for g in _goals(mem))
+    return any(g.get('kind') == 'repair' and _repair_goal_due(mem, g)
+               for g in _goals(mem))
 
 
 def note_attempt(mem, kind, outcome, *, actor=None, target=None, reason=None, metric=None):
