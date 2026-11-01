@@ -214,6 +214,13 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'chart_interim_hold':
         # Only when there is literally nothing left to retake, attack or staff.
         return 'jev_interim_hold', '動かせる将軍と攻め先が無いため、調整チャートを待っています。'
+    if kind == 'battle_okunote_risk_accepted':
+        metric = rec.get('observed_metric') or {}
+        hp = metric.get('ally_hp')
+        safe = metric.get('safe_candidates')
+        hp_s = f'味方HP{hp}' if type(hp) is int else '味方HPは読めず'
+        safe_s = f'安全候補{len(safe)}体' if isinstance(safe, list) and safe else '安全候補あり'
+        return 'battle_okunote_risk_accepted', f'{hp_s}、{safe_s}を観測したため、おくのてを開きます。'
     return f'other:{kind}', None
 
 
