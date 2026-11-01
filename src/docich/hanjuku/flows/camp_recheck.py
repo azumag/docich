@@ -206,6 +206,10 @@ def _invalidate(mem, reason, actor=None, *, new_game=False):
     queue = _scope(mem)
     if new_game:
         mem.pop('camp_status_seen', None)
+    elif actor is None and isinstance(mem.get('camp_status_seen'), dict):
+        # A changed roster drops every row, so the next status read of a
+        # general still camped has to queue him again.
+        mem['camp_status_seen']['actors'] = {}
     raw_state = mem.get('recall')
     state = raw_state if isinstance(raw_state, dict) else {}
     affected = bool(queue) if actor is None else actor in queue
@@ -613,6 +617,9 @@ def _hand_over_to_fort(screen, mem, state, frame, enter_fort):
     if _clean_name(actor):
         recall['fort_actor'] = actor
         _scope(mem).pop(actor, None)
+        # If this sortie fails the next status read queues him again; a
+        # successful one reads しんぐんちゅうです and stays out of the queue.
+        ((mem.get('camp_status_seen') or {}).get('actors') or {}).pop(actor, None)
     mem['recall'] = recall
     enter_fort(mem, recall)
     _record(mem, 'retreat_recheck_fort', chart_step=None, general=actor,

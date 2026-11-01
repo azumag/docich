@@ -321,6 +321,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if screen.kind == 'map':
                 mem.pop('recall', None)
                 mem['uncertain'] = True
+                _hold_after_picker(mem, state)
             return [pad('b')] if screen.kind == 'world_map' else []
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
@@ -336,6 +337,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if not marker or not roofs:
             mem.pop('recall', None)
             mem['uncertain'] = True
+            _hold_after_picker(mem, state)
             _record(mem, 'camp_recall_skipped',
                     observed_metric={'marker': list(marker) if marker else None, 'roofs': len(roofs)},
                     reason='可視範囲に自軍城の屋根がなく帰還先を選べないため取り消す')
@@ -357,11 +359,26 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
 FORT_STAGES = ('fort_menu', 'fort_list', 'fort_status')
 
 
+def in_fort_route(state):
+    return state.get('stage') in FORT_STAGES
+
+
 def enter_fort(mem, state):
     """Start the 砦's own route: its generals leave by しゅつげき, not by きかん."""
     state.update(stage='fort_menu', steps=0, camp_kind='dome')
     (mem.get('y_jumps') or {}).pop('RECALL:target', None)
     (mem.get('y_jumped') or {}).pop('RECALL', None)
+
+
+def _hold_after_picker(mem, state):
+    """A picker that ended without a castle must not restart at once.
+
+    The recall outranks orders and surveys, and re-entering a 砦 refills its Y
+    jumps, so an unheld retry would keep every other flow off the map. The
+    hero's own return names no camp: a hold there would stop every camp.
+    """
+    if not state.get('hero'):
+        _arm_recall_skip(mem, state, FORT_RETRY_TICKS if state.get('fort') else LOST_CAMP_RETRY_TICKS)
 
 
 def _leave_fort(mem, state, reason, actions):

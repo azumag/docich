@@ -483,7 +483,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     recall_dialog = recall and phase != 'concert' and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
         not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
         and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
-        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')) or
+        # Between a 砦's screens the default A would pick the list's top row or
+        # confirm the marker on the 砦 itself, which cancels the sortie.
+        (kind == 'unknown' and (recall.get('fort') or recall_flow.in_fort_route(recall))))))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):

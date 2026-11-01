@@ -254,3 +254,65 @@ def test_the_named_recheck_hands_a_fort_to_the_sortie_route():
     assert mem['recall']['stage'] == 'fort_list' and mem['recall']['fort_actor'] == 'エピィ'
     assert 'エピィ' not in (mem.get('retreat_rechecks') or {})
     assert decisions(mem, 'retreat_recheck_fort')
+
+
+def test_a_fort_picker_with_only_an_enemy_castle_holds_the_fort_back(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [
+        {'kind': 'enemy', 'target': (132, 109), 'clipped': False}])
+    mem = memory(recall=fort_recall(stage='dest', fort=True), y_jumped={'RECALL': 'アルマムーン'},
+                 y_jumps={'RECALL:target': 2})
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('b')]
+    assert 'recall' not in mem and mem['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
+    assert decisions(mem, 'camp_recall_skipped')
+
+
+def test_a_fort_picker_closed_to_the_map_holds_the_fort_back():
+    mem = memory(recall=fort_recall(stage='dest', fort=True))
+    assert p.camp_recall_step(MAP, mem, object()) == []
+    assert 'recall' not in mem and mem['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
+
+
+def test_a_tent_picker_closed_to_the_map_holds_the_tent_back():
+    mem = memory(recall={'stage': 'dest', 'steps': 0, 'target': [150, 120]})
+    assert p.camp_recall_step(MAP, mem, object()) == []
+    assert mem['recall_skip_ticks'] == recall.LOST_CAMP_RETRY_TICKS
+
+
+def test_the_heros_return_never_arms_a_hold_on_every_camp():
+    mem = memory(recall={'stage': 'dest', 'steps': 0, 'hero': True})
+    assert p.camp_recall_step(MAP, mem, object()) == []
+    assert 'recall_skip' not in mem
+
+
+@pytest.mark.parametrize('stage', ['fort_menu', 'fort_list', 'fort_status', 'dest'])
+def test_an_unknown_frame_gets_no_default_a_inside_a_fort_route(stage):
+    frame = load('g1097-dome-beside-house.png')
+    assert parse(frame, phase=phase.classify(frame)).kind == 'unknown'
+    policy = {'chapter': 4, 'tick': 10, 'recall': fort_recall(stage=stage, fort=True)}
+    actions, _ = orchestrator.decide(frame, {'policy': policy}, run_identity=dict(IDENTITY))
+    assert actions == []
+
+
+def test_a_failed_fort_handover_lets_the_next_status_read_queue_him_again():
+    identity = dict(IDENTITY)
+    mem = memory(retreat_rechecks={'キッシュ': {'identity': identity, 'chapter': 4, 'tick': 900, 'attempts': 1,
+                                                'retry_after': 900, 'status': 'needs_observation'}},
+                 camp_status_seen={'scope': {'identity': identity, 'chapter': 4},
+                                   'actors': {'キッシュ': {'signature': [], 'tick': 900}}})
+    state = {'stage': 'recheck_status', 'steps': 0, 'reads': 0, 'general': 'キッシュ', 'target': [131, 110]}
+    mem['recall'] = state
+    camp_recheck._hand_over_to_fort(screen('g1097-fort-menu-over-dome.png'), mem, state, object(),
+                                    recall.enter_fort)
+    mem.pop('recall')
+    camp_recheck.observe_camp_status(screen('g1097-status-holds-camp.png'), mem)
+    assert 'キッシュ' in mem['retreat_rechecks']
+
+
+def test_a_changed_roster_lets_a_general_still_camped_queue_again():
+    mem = memory()
+    camp_recheck.observe_camp_status(screen('g1097-status-holds-camp.png'), mem)
+    camp_recheck._invalidate(mem, '加入の実表示で名簿が変わった')
+    assert 'retreat_rechecks' not in mem
+    camp_recheck.observe_camp_status(screen('g1097-status-holds-camp.png'), mem)
+    assert 'キッシュ' in mem['retreat_rechecks']
