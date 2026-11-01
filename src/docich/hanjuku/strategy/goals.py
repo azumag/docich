@@ -21,6 +21,7 @@ from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 GOAL_LIMIT = 24            # bounded ledger; the fact stores stay the fallback
 STARVE_ATTEMPTS = 6        # deferral outcomes per goal before a starved record
+MAP_IDLE_WINDOW = 2        # observations a "nothing to sortie" reading stays current
 
 # The fact store that keeps each kind's intent alive, and the flow that owns it:
 #   repair      house_eggs[name].broken            -> flows/house.py session
@@ -46,6 +47,30 @@ def _summary(goal):
                                      'queued', 'attempts', 'outcome')}
 
 
+def _departed(mem, chapter):
+    """Generals a complete roster stopped listing, until a roster names them.
+
+    A broken-egg fact outlives its general. g1097 2026-11-02: ゼウス left the
+    army at 37-2 and his goal kept the repair dispatch open for hours. A scan
+    clears ``complete`` while it runs, so the proof is remembered here rather
+    than read off the receipt, or each scan would requeue the goal.
+    """
+    departed = set(mem.get('goal_departed') or ())
+    roster = mem.get('recruit_roster') or {}
+    if roster.get('chapter') == chapter:
+        listed = set(roster.get('names') or ())
+        departed -= listed
+        if roster.get('complete') is True:
+            departed |= {name for name, info in (mem.get('house_eggs') or {}).items()
+                         if isinstance(info, dict) and info.get('broken') is True
+                         and name not in listed}
+    if departed:
+        mem['goal_departed'] = sorted(departed)
+    else:
+        mem.pop('goal_departed', None)
+    return departed
+
+
 def _wanted(mem):
     """Intent keys the observed facts still support: ``{key: spec}``."""
     wanted = {}
@@ -59,8 +84,9 @@ def _wanted(mem):
     for castle in mem.get('lost') or ():
         if type(castle) is str and castle in castles:
             wanted[('retake', None, castle)] = {'kind': 'retake', 'target': castle}
+    departed = _departed(mem, chapter)
     for name, info in (mem.get('house_eggs') or {}).items():
-        if isinstance(info, dict) and info.get('broken') is True:
+        if isinstance(info, dict) and info.get('broken') is True and name not in departed:
             wanted[('repair', name, None)] = {'kind': 'repair', 'actor': name}
     from .economy import _egg_recovery_targets, _recruit_shortage
     targets = _egg_recovery_targets(mem)
@@ -202,6 +228,26 @@ def repair_due(mem):
     """A deferred broken-egg repair is waiting for idle map time."""
     return any(g.get('kind') == 'repair' and _repair_goal_due(mem, g)
                for g in _goals(mem))
+
+
+def note_map_idle(mem):
+    """``map_step`` looked for an order, off-chart ones included, and found none."""
+    mem['map_idle_tick'] = int(mem.get('tick') or 0)
+
+
+def map_idle(mem):
+    idle, tick = mem.get('map_idle_tick'), mem.get('tick')
+    return type(idle) is int and type(tick) is int and 0 <= tick - idle <= MAP_IDLE_WINDOW
+
+
+def repair_dispatch_due(mem):
+    """A deferred repair may exceed the field scan budget only on idle map time.
+
+    The house flow runs before ``map_step``, so a quiet frame is not idle time:
+    g1097 2026-11-02 sent no sortie for about 4.6 hours while the bypass took
+    every map frame. Only ``map_step`` can say that nothing is ready to sortie.
+    """
+    return map_idle(mem) and repair_due(mem)
 
 
 def note_attempt(mem, kind, outcome, *, actor=None, target=None, reason=None, metric=None):

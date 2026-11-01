@@ -20,6 +20,7 @@ from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, 
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
                                 world_flags, world_markers)
 from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
+from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
@@ -487,6 +488,7 @@ def map_step(screen: Screen, mem, frame):
             order = next_order(mem) or order
         if order is None:
             update_world(screen, mem, frame)
+            goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []

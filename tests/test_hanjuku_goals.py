@@ -142,6 +142,7 @@ def field_scan_mem(**extra):
 def test_repair_goal_bypasses_the_field_scan_budget_when_idle():
     m = field_scan_mem()
     goals.refresh(m)
+    goals.note_map_idle(m)
     assert house.step(Screen([], None, '', kind='map'), m, None) is not None
     assert m['house']['phase'] == 'open_roster'
     assert records(m, 'house_goal_dispatch')
@@ -205,3 +206,47 @@ def test_repair_goal_stays_due_below_the_attempt_limit():
     for _ in range(goals.REPAIR_SLEEP_ATTEMPTS - 1):
         goals.note_attempt(m, 'repair', 'interrupted', actor='ゼウス')
     assert goals.repair_due(m) is True
+
+
+def test_a_general_a_complete_roster_no_longer_lists_is_not_a_repair_goal():
+    """g1097: ゼウス left the army at 37-2 and kept ``repair_due`` true forever."""
+    m = mem(house_eggs={'ゼウス': {'broken': True}, 'ヴィーナス': {'broken': True}})
+    goals.refresh(m)
+    assert goals.repair_due(m)
+
+    m['recruit_roster'] = {'chapter': 1, 'month': '1-6', 'names': ['どうし', 'ヴィーナス'], 'complete': True}
+    goals.refresh(m)
+    assert [g['actor'] for g in goals.pending(m, 'repair')] == ['ヴィーナス']
+    assert goals.repair_due(m)
+
+
+def test_a_roster_scan_in_progress_does_not_requeue_a_departed_general():
+    m = mem(house_eggs={'ゼウス': {'broken': True}},
+            recruit_roster={'chapter': 1, 'month': '1-6', 'names': ['どうし'], 'complete': True})
+    goals.refresh(m)
+    assert not goals.repair_due(m)
+
+    m['recruit_roster'] = {'chapter': 1, 'month': '1-7', 'names': [], 'complete': False}
+    goals.refresh(m)
+    assert not goals.repair_due(m) and not records(m, 'goal_queued')
+
+
+def test_an_incomplete_roster_proves_nothing_and_a_rejoined_general_returns():
+    m = mem(house_eggs={'ゼウス': {'broken': True}},
+            recruit_roster={'chapter': 1, 'month': '1-6', 'names': ['どうし'], 'complete': False})
+    goals.refresh(m)
+    assert goals.repair_due(m)
+
+    m['recruit_roster'] = {'chapter': 1, 'month': '1-6', 'names': ['どうし'], 'complete': True}
+    goals.refresh(m)
+    assert not goals.repair_due(m)
+    m['recruit_roster'] = {'chapter': 1, 'month': '1-7', 'names': ['ゼウス'], 'complete': False}
+    goals.refresh(m)
+    assert goals.repair_due(m)
+
+
+def test_another_chapters_roster_proves_nothing():
+    m = mem(house_eggs={'ゼウス': {'broken': True}},
+            recruit_roster={'chapter': 2, 'names': ['どうし'], 'complete': True})
+    goals.refresh(m)
+    assert goals.repair_due(m)
