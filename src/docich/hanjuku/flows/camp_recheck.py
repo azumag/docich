@@ -732,7 +732,9 @@ def step(screen, mem, frame, existing):
     if actions or in_probe:
         return actions
     # Idle start only after the existing flow stayed silent on this frame, so it never preempts a flow.
-    return camp_hp_probe_step(screen, mem, frame)
+    # When the probe declines, hand back the flow's own silent result unchanged (e.g. []), not the probe's None.
+    probe = camp_hp_probe_step(screen, mem, frame)
+    return actions if probe is None else probe
 
 
 def _step_flow(screen, mem, frame, existing):
