@@ -2,7 +2,9 @@
 
 Windows kabu / MT5 + Tailscale-limited bridge. PAPER only. No order path.
 
-Status: Step 1 (inventory) in progress. Design v1 lives in issue #603.
+Status: Step 2 (Linux side) in progress: common readiness contract (fail-closed), persistent
+skip/cancel, guard/recovery exercised with a fake provider. All markets remain disabled.
+Design v1 lives in issue #603.
 
 ## Layout
 
@@ -10,7 +12,7 @@ Status: Step 1 (inventory) in progress. Design v1 lives in issue #603.
 - `runbooks/` — operational runbooks (boot/session/Tailscale/network/auth/data/backup/monitoring/deploy).
 - `inventory/` (gitignored) — collected evidence (no secrets).
 
-## Gates (Step 1)
+## Gates (Step 2)
 
 - No Tailscale ACL/Serve changes.
 - No Windows-side changes.

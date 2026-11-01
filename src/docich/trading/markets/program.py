@@ -15,6 +15,28 @@ VIEW_MARKETS = {"stock-paper-view": "stocks", "fx-paper-view": "fx"}
 PORTS = {"stocks": 8801, "fx": 8802}
 
 
+def _normalize_readiness_result(result):
+    """Accept only ``(bool, reason)`` or ``bool``; anything else is unready (fail-closed)."""
+    if isinstance(result, bool):
+        return result, ("ok" if result else "provider_unavailable")
+    if (isinstance(result, tuple) and len(result) == 2
+            and isinstance(result[0], bool) and isinstance(result[1], str) and result[1]):
+        return result
+    return False, "invalid_readiness_result"
+
+
+def provider_readiness(provider, now, state=None):
+    """Ask an injected market-data provider; any error or missing contract is unready."""
+    readiness = getattr(provider, "readiness", None)
+    if not callable(readiness):
+        return False, "provider_readiness_missing"
+    try:
+        result = readiness(now, state)
+    except Exception:
+        return False, "provider_readiness_error"
+    return _normalize_readiness_result(result)
+
+
 def make_market_view_adapter(g, spec, *, settings_path=None):
     from ...adapters.program import ProgramViewAdapter, paper_view_game_config
     market = VIEW_MARKETS[spec.game]
@@ -45,7 +67,8 @@ def result_text(report: dict) -> str:
 
 
 class MarketCorner:
-    def __init__(self, runtime, *, clock=time.time, sleep=time.sleep, coordinator=None, overlay=None, speech=None):
+    def __init__(self, runtime, *, clock=time.time, sleep=time.sleep, coordinator=None, overlay=None, speech=None,
+                 provider=None):
         self.r, self.clock, self.sleep = runtime, clock, sleep
         self.g, self.path = runtime.g, runtime.corner_path
         self.view = next(k for k, v in VIEW_MARKETS.items() if v == runtime.market)
@@ -66,6 +89,8 @@ class MarketCorner:
             self.store, factory, post_commit=commit_hook(self.g)
         )
         self.overlay, self.speech = overlay or send_overlay, speech or enqueue_speech
+        # Injected market-data readiness provider (fake in Step 2). None keeps the corner available.
+        self.provider = provider
 
     def current(self):
         state, _ = self.store.canonical.load()
@@ -133,10 +158,11 @@ class MarketCorner:
         return outcome
 
     def _availability_check(self, now, state=None):
-        # Extension point for readiness / fake-provider fault injection. The
-        # Windows/MT5 bridge is intentionally not wired here yet; until a real
-        # provider exists, callers can monkeypatch this method to inject failure.
-        return True, "ok"
+        # Windows/MT5 bridge is not wired yet; without an injected provider the
+        # corner stays available (existing behaviour).
+        if self.provider is None:
+            return True, "ok"
+        return provider_readiness(self.provider, now, state)
 
     def tick(self):
         from ...corner_boundary import CornerWaitExpired, program_slot
