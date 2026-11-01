@@ -645,7 +645,8 @@ def _await_level_scan(mem, shop):
     if mem.get('month_sub') or mem.get('house'):
         return False
     scope = [mem.get('chapter'), mem.get('month')]
-    if (mem.get('hanjuku_level_seen') or {}).get('scope') == scope:
+    from .house import _level_given_up
+    if (mem.get('hanjuku_level_seen') or {}).get('scope') == scope or _level_given_up(mem):
         return False
     attempts = mem.get('recruit_month_scan_attempts') or {}
     if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:

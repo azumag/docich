@@ -45,6 +45,8 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
+LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
+LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
 INTERRUPTION_RETRIES = 2
 OPEN_ALIGN_KEYS = {'castle_open': 'HOUSE:source', 'income_open': 'HOUSE:income'}
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
@@ -575,6 +577,7 @@ def _month_count(screen, mem, state, frame):
     unproven end leaves ``complete`` false and the existing retry cap applies.
     """
     from ..os_layer.commands import pad
+    from ..os_layer.readers import _canonical_general
     names = roster(screen)
     if names is None or screen.selected not in names:
         return []
@@ -583,6 +586,10 @@ def _month_count(screen, mem, state, frame):
         state['roster_first_general'] = selected if selected == 'どうし' and screen.hand[1] == 33 else None
         state['singleton_first_page'] = _singleton_page(screen, frame)
     for name in names:
+        # g1097 2026-11-02: one row read ポセイトン, and that spelling alone left
+        # every monthly scan incomplete. page() still refuses the misread page,
+        # so the general only counts once a clean page has shown the real name.
+        name = _canonical_general(name)
         if name not in state.get('seen', []):
             state.setdefault('seen', []).append(name)
     if _roster_scroll_end(screen, frame):
@@ -725,10 +732,18 @@ def _retry_interrupted_repair(mem):
     return True
 
 
+def _level_given_up(mem):
+    """A page that keeps failing must not cost a visit every month."""
+    missed = mem.get('hanjuku_level_unread') or {}
+    return (missed.get('chapter') == mem.get('chapter')
+            and int(missed.get('count') or 0) >= LEVEL_UNREAD_LIMIT)
+
+
 def _level_due(mem):
     """This month's country-status level page has not been read yet."""
     seen = mem.get('hanjuku_level_seen') or {}
-    return seen.get('scope') != [mem.get('chapter'), mem.get('month')]
+    return (seen.get('scope') != [mem.get('chapter'), mem.get('month')]
+            and not _level_given_up(mem))
 
 
 def _status_row_value(screen, label):
@@ -1040,6 +1055,7 @@ def step(screen, mem, frame):
             mem['hanjuku_level'] = read['level']
             mem['hanjuku_value'] = read.get('value')
             mem['hanjuku_level_seen'] = {'scope': scope, 'tick': int(mem.get('tick') or 0)}
+            mem.pop('hanjuku_level_unread', None)
             _record(mem, 'hanjuku_level_observed', screen=screen.kind,
                     observed_metric={'level': read['level'], 'value': read.get('value'),
                                      'needed': read.get('needed')},
@@ -1054,8 +1070,19 @@ def step(screen, mem, frame):
                 _record(mem, 'hanjuku_level_unread', screen=screen.kind,
                         observed_metric={'text': screen.text[-60:]},
                         reason='半熟レベルの頁を読み取れないため今回の確認を終える')
+                missed = mem.get('hanjuku_level_unread') or {}
+                count = (int(missed.get('count') or 0) + 1
+                         if missed.get('chapter') == mem.get('chapter') else 1)
+                mem['hanjuku_level_unread'] = {'chapter': mem.get('chapter'), 'count': count}
                 _phase(state, 'leave_status')
                 return [pad('b')]
+            # g1097 2026-11-02 (7 of 7 months): the menu opens on its greeting,
+            # and an A there only brings up the row's help line. The page opens
+            # on the next A, which this wait never sent.
+            if ('じょうたいをみる' in screen.text.replace(' ', '')
+                    and state['level_waits'] % LEVEL_REPRESS_EVERY == 0
+                    and _choose(screen, 'ステータス') == [pad('a')]):
+                return [pad('a')]
             return []
         return [pad('a')]   # country status page 1: advance to the level page
     if phase == 'leave_status':
@@ -1077,8 +1104,22 @@ def step(screen, mem, frame):
             if not targets:
                 _phase(state, 'leave_roster')
                 return [pad('b')]
+            if not state.get('walk_names'):
+                state['walk_from_top'] = selected == 'どうし' and screen.hand[1] == 33
+            walked = state.setdefault('walk_names', [])
+            walked.extend(n for n in names if n not in walked)
             target = targets[0]
             if target not in names:
+                if target in walked:
+                    return [pad('up')]  # passed on the way to a lower target
+                if (state.get('walk_from_top')
+                        and (len(names) < receipts.VISIBLE_NAME_ROWS
+                             or _roster_scroll_end(screen, frame))
+                        and receipts.forget_defeated(mem, target)):
+                    targets.remove(target)
+                    _record(mem, 'roster_defeated_gone', observed_metric={'general': target},
+                            reason='一覧を端まで読んでも敗北した将軍が居ないため、この本人だけ名簿から外す')
+                    return []
                 return [pad('down')]  # the existing step budget bounds this search
             actions = _choose(screen, target)
             if actions == [pad('a')]:

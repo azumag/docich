@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import hanjuku_policy as p
+from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
 from docich.hanjuku.flows import house
 from docich.hanjuku.flows import month as month_flow
@@ -139,3 +140,51 @@ def test_unreadable_level_page_gives_up_bounded():
     assert house.step(parse(blank), mem, blank) == [p.pad('b')]
     assert mem['house']['phase'] == 'leave_status'
     assert any(r['decision'] == 'house_hanjuku_level_unread' for r in mem['_records'])
+
+
+FIXTURES = Path(__file__).parent / 'fixtures/hanjuku'
+
+
+def _level_state():
+    return {'phase': 'level_status', 'chapter': 1, 'roster_month': '1-7',
+            'month_scan': True, 'age': 0, 'total': 0, 'seen': [], 'pending': [],
+            'level_only': True, 'level_checked': True}
+
+
+def test_the_status_row_is_pressed_again_once_its_help_line_shows():
+    """g1097 2026-11-02: seven months, seven unread pages, on this real screen."""
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    intro = read_png(FIXTURES / 'g1097-main-menu-intro.png').resized()
+    help_line = read_png(FIXTURES / 'g1097-main-menu-status-help.png').resized()
+    for _ in range(house.LEVEL_REPRESS_EVERY - 1):
+        assert house.step(parse(help_line), mem, help_line) == []
+    assert house.step(parse(intro), mem, intro) == []
+    mem['house'] = _level_state()
+    for _ in range(house.LEVEL_REPRESS_EVERY - 1):
+        assert house.step(parse(help_line), mem, help_line) == []
+    assert house.step(parse(help_line), mem, help_line) == [p.pad('a')]
+
+
+def test_two_unread_months_stop_the_monthly_visit_for_the_chapter():
+    mem = _month_memory()
+    blank = Canvas().frame()
+    for month in range(house.LEVEL_UNREAD_LIMIT):
+        assert house._level_due(mem)
+        mem['house'] = _level_state()
+        for _ in range(house.LEVEL_STATUS_WAIT):
+            house.step(parse(blank), mem, blank)
+    assert mem['hanjuku_level_unread'] == {'chapter': 1, 'count': house.LEVEL_UNREAD_LIMIT}
+    assert not house._level_due(mem)
+    mem['chapter'] = 2
+    assert house._level_due(mem)
+
+
+def test_a_read_level_clears_the_unread_count():
+    mem = _month_memory()
+    mem['hanjuku_level_unread'] = {'chapter': 1, 'count': 1}
+    mem['house'] = _level_state()
+    page2 = _country_page2(level=14, value=2800, needed=3400)
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert 'hanjuku_level_unread' not in mem
+

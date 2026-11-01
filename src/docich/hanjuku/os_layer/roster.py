@@ -183,6 +183,42 @@ def invalidate(mem):
         mem['house']['roster_invalidated'] = True
 
 
+def defeated(mem, name):
+    """HP 0 is a question about one general, not about the other seventeen.
+
+    g1097 2026-11-02: all four defeats removed exactly that general from the
+    next walk, and each cost a second full status walk (17-19 reads, two
+    minutes) in the same month. Keep the survey and let the partial walk look
+    for the name. Without a complete survey there is nothing worth keeping.
+    """
+    survey = completed_survey(mem)
+    if survey is None or name not in survey['statuses']:
+        invalidate(mem)
+        return
+    dirty_status(mem, [name])
+    survey['defeated'] = sorted({*(survey.get('defeated') or ()), name})
+
+
+def forget_defeated(mem, name):
+    """The whole list was read and a defeated general is not on it."""
+    survey = completed_survey(mem)
+    if survey is None or name not in (survey.get('defeated') or ()):
+        return False
+    for receipt in (survey['receipt'], mem.get('recruit_roster')):
+        if not isinstance(receipt, dict):
+            continue
+        if isinstance(receipt.get('names'), list) and name in receipt['names']:
+            receipt['names'].remove(name)
+        if isinstance(receipt.get('wages'), dict):
+            receipt['wages'].pop(name, None)
+    survey['statuses'].pop(name, None)
+    for key in ('dirty', 'dirty_revisions', 'read_revisions'):
+        survey.get(key, {}).pop(name, None)
+    survey['defeated'].remove(name)
+    mem['house_status_recheck'] = bool(survey.get('dirty'))
+    return True
+
+
 def _payroll_hold_wages(mem):
     hold = mem.get('payroll_membership_hold')
     identity = run_identity(mem.get('_run_identity'))
@@ -346,6 +382,8 @@ def status_observed(mem, info):
     if survey is None or name not in survey['statuses']:
         return
     survey['statuses'][name] = deepcopy(info)
+    if name in (survey.get('defeated') or ()):
+        survey['defeated'].remove(name)  # still on the list after the defeat
     missing = [] if (type(info.get('hp')) is int and type(info.get('max_hp')) is int
                      and 0 <= info['hp'] <= info['max_hp'] and info['max_hp'] > 0) else ['hp']
     if (info.get('location_observed') is False

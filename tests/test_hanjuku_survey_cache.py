@@ -285,16 +285,90 @@ def test_actual_recovery_not_needed_also_rechecks_the_previous_target_egg_fact()
     assert mem['egg_uses'] == {}
 
 
-def test_join_and_hp_defeat_invalidate_membership_without_inventing_a_headcount_or_death():
+def _defeat(mem, ally='ゼウス'):
+    mem['battle'] = {'ally': ally, 'enemy': 'バジル', 'ally_hp': 0, 'enemy_hp': 2,
+                     'away': 1, 'cards_used': []}
+    p.battle_end(mem, 'map')
+
+
+def test_a_join_invalidates_membership_without_inventing_a_headcount():
     mem = completed()
     p.observe_events(Screen([], None, 'ココットがはいかにくわわった!', kind='text'), mem)
     assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+
+
+def test_hp_defeat_rereads_only_that_general_without_inventing_a_death():
     mem = completed()
-    mem['battle'] = {'ally': 'ゼウス', 'enemy': 'バジル', 'ally_hp': 0, 'enemy_hp': 2,
-                    'away': 1, 'cards_used': []}
-    p.battle_end(mem, 'map')
-    assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+    _defeat(mem)
+    assert mem['roster_survey']['defeated'] == ['ゼウス']
+    assert r.recheck_targets(mem) == ['ゼウス']
+    assert not mem.get('recruit_roster_recheck')
     assert p.summary(mem)['generals_lost'] is None
+
+
+def test_hp_defeat_without_a_survey_entry_still_invalidates_membership():
+    mem = completed()
+    _defeat(mem, ally='ヴィーナス')
+    assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+
+
+def test_a_defeated_general_still_listed_stays_in_the_survey():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    page = parse(roster(NAMES))
+    assert house.step(page, mem, None) == [p.pad('down')]
+    assert mem['roster_survey']['defeated'] == ['ゼウス']
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_defeated_general_missing_from_the_whole_list_leaves_only_that_name():
+    mem = completed()
+    survey_names = list(mem['roster_survey']['receipt']['names'])
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    page = parse(roster(['どうし']))
+    assert house.step(page, mem, None) == []
+    assert mem['house']['status_targets'] == []
+    assert any(rec['decision'] == 'house_roster_defeated_gone' for rec in mem['_records'])
+    survey = r.completed_survey(mem)
+    assert survey is not None and survey['receipt']['names'] == ['どうし']
+    assert set(survey['statuses']) == {'どうし'} and not survey['dirty']
+    assert survey_names == NAMES and not mem.get('recruit_roster_recheck')
+    assert r.fresh(mem)['names'] == ['どうし']
+
+
+def test_an_undefeated_target_is_never_dropped_from_the_survey():
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'])
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('down')]
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_walk_not_started_at_the_top_cannot_prove_a_defeated_general_gone():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'walk_names': ['どうし'], 'walk_from_top': False}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('down')]
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_target_passed_on_the_way_down_is_reached_going_up():
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'])
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'walk_names': ['ゼウス']}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('up')]
 
 
 def test_unknown_hp_is_a_dirty_field_even_when_membership_is_complete():
