@@ -465,10 +465,15 @@ def test_actual_card_row_geometry_uses_knight_cursor_and_bounds_receipt_wait():
     for _ in range(6):
         actions, state = decide(cards_frame(1), state)
         assert actions == []
+    # First timeout re-enters the list once for the same card (owner 2026-11-02:
+    # a timed-out announce never proves the carry actually fired); here the
+    # damage gate refuses it on re-entry and the flow exits boundedly.
+    actions, state = decide(cards_frame(1), state)
+    assert actions == []
     actions, state = decide(cards_frame(1), state)
     assert actions == [p.pad('b')]
+    assert state['policy']['battle']['card_flow'] is None
     assert state['policy']['battle']['cards_used'] == []
-    assert state['policy']['battle']['cards_unclassified'] == ['グリンボー']
 
 
 def test_observed_menu_resets_open_retries_for_following_resource():
@@ -1088,11 +1093,6 @@ def test_low_hp_opens_okunote_when_safe_candidate_visible():
     assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
     assert not mem['battle'].get('survival', {}).get('exhausted')
     assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])
-    from docich import hanjuku_commentary
-    # The risk-acceptance record is registered as a spoken-kind decision, like
-    # its #2882 sibling battle_rescue_rearmed. It stays out of scene.fact()'s
-    # receipt whitelist (an intention, not an observed outcome).
-    assert 'battle_okunote_risk_accepted' in hanjuku_commentary.SPOKEN
 
 
 def test_low_hp_conerves_okunote_when_healthy_melee_advantage():

@@ -78,6 +78,8 @@ def test_failed_direction_input_cannot_confirm_the_wrong_card_or_wait_forever():
 
 def test_chart_card_announcement_times_out_without_claiming_consumption():
     mem = chart_card()
+    # already-retried announce: the post-retry timeout still exits unclassified
+    mem['battle']['card_flow']['announce_retried'] = True
     screen = menu(CARDS, selected=1, kind='text')
     assert policy.card_list_step(screen, mem) == [policy.pad('a')]
     for _ in range(policy.CARD_ANNOUNCE_LIMIT):
@@ -93,7 +95,8 @@ def test_chart_card_announcement_times_out_without_claiming_consumption():
 def test_hotloaded_announcement_without_a_counter_also_exits():
     mem = chart_card()
     mem['battle']['cards_selected'] = ['ブラッキー']
-    mem['battle']['card_flow'].update(stage='announce', selection_planned=True)
+    mem['battle']['card_flow'].update(stage='announce', selection_planned=True,
+                                     announce_retried=True)  # post-retry exit
     for _ in range(policy.CARD_ANNOUNCE_LIMIT):
         assert policy.card_list_step(menu(CARDS, selected=1, kind='text'), mem) == []
     assert policy.card_list_step(menu(CARDS, selected=1, kind='text'), mem) == [policy.pad('b')]

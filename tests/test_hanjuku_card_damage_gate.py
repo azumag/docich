@@ -295,7 +295,8 @@ def test_an_old_already_selected_announcement_is_not_reclassified_as_never_used(
     mem = memory()
     cur = mem['battle']
     cur['cards_selected'] = ['ゼンマイン']
-    cur['card_flow'].update(stage='announce', selection_planned=True)
+    cur['card_flow'].update(stage='announce', selection_planned=True,
+                            announce_retried=True)  # already-retried: go straight to unclassified
     for _ in range(p.CARD_ANNOUNCE_LIMIT):
         assert p.card_list_step(cards(['ゼンマイン']), mem) == []
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]

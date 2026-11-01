@@ -20,7 +20,8 @@ def delayed_selection():
     mem['egg_uses'] = {'ヴィーナス': 0}
     cur = mem['battle']
     cur.update(planned_cards=[], castle='ナキューメラ',
-               card_flow={'stage': 'list', 'survival': True, 'list_ticks': 0})
+               card_flow={'stage': 'list', 'survival': True, 'list_ticks': 0,
+                          'announce_retried': True})  # post-retry timeout path
     opening = native('opening')
     assert opening.battle.enemy_hp == 49 and opening.battle.ally_hp == 82
     assert opening.field_soldiers == (5, 3)
