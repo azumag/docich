@@ -154,3 +154,54 @@ def test_exhausted_field_budget_still_blocks_without_a_goal():
     assert not goals.repair_due(m)
     assert house.step(Screen([], None, '', kind='map'), m, None) is None
     assert 'house' not in m
+
+
+def test_repair_goal_sleeps_after_attempt_limit_until_location_changes():
+    """Unreachable repair targets sleep instead of burning every idle frame."""
+    m = mem(house_eggs={'ソーピニヨン': {'broken': True, 'location': 'castle', 'month': '38-3'}},
+            garrison={'アルマムーン': ['どうし']})
+    goals.refresh(m)
+    for _ in range(goals.REPAIR_SLEEP_ATTEMPTS):
+        goals.note_attempt(m, 'repair', 'interrupted', actor='ソーピニヨン')
+    assert goals.repair_due(m) is False
+    goal = goals._find(m, 'repair', actor='ソーピニヨン')
+    assert goal['sleep_signature'] == ['castle', '38-3', False, None]
+    assert len(records(m, 'repair_goal_sleeping')) == 1
+    assert goals.repair_due(m) is False
+    m['garrison']['アルマムーン'].append('ソーピニヨン')
+    assert goals.repair_due(m) is True
+    assert goal['attempts'] == 0
+    assert 'sleep_signature' not in goal
+
+
+def test_sleeping_repair_goal_wakes_when_the_purse_crosses_a_bracket():
+    """A gold-deferred repair wakes once a gift is affordable again."""
+    m = mem(gold=50,
+            house_eggs={'ゼウス': {'broken': True, 'location': 'field', 'month': '37-2'}},
+            garrison={'アルマムーン': ['どうし']})
+    goals.refresh(m)
+    for _ in range(goals.REPAIR_SLEEP_ATTEMPTS):
+        goals.note_attempt(m, 'repair', 'deferred', actor='ゼウス')
+    assert goals.repair_due(m) is False
+    m['gold'] = 250
+    assert goals.repair_due(m) is True
+
+
+def test_sleeping_repair_goal_does_not_block_a_due_one():
+    """One unreachable actor sleeps while a reachable repair stays due."""
+    m = mem(house_eggs={'ソーピニヨン': {'broken': True, 'location': 'castle', 'month': '38-3'},
+                        'ブカティーニ': {'broken': True, 'location': 'castle', 'month': '38-3'}},
+            garrison={'アルマムーン': ['どうし', 'ブカティーニ']})
+    goals.refresh(m)
+    for _ in range(goals.REPAIR_SLEEP_ATTEMPTS):
+        goals.note_attempt(m, 'repair', 'interrupted', actor='ソーピニヨン')
+    assert goals.repair_due(m) is True
+
+
+def test_repair_goal_stays_due_below_the_attempt_limit():
+    m = mem(house_eggs={'ゼウス': {'broken': True, 'location': 'castle', 'month': '37-2'}},
+            garrison={'アルマムーン': ['どうし', 'ゼウス']})
+    goals.refresh(m)
+    for _ in range(goals.REPAIR_SLEEP_ATTEMPTS - 1):
+        goals.note_attempt(m, 'repair', 'interrupted', actor='ゼウス')
+    assert goals.repair_due(m) is True
