@@ -718,11 +718,31 @@ def _check_jev_bridge_stuck_live(g: GlobalConfig, manager: "JevCornerManager") -
         return False
     if corner_state.get("policy") != "jev":
         return False
+    if corner_state.get("player_generation") != player_state.get("player_generation"):
+        return False
     if not corner_state.get("last_error"):
         return False
 
     if _program_busy_reason(g) is not None:
         return False
+
+    # A pending lifecycle transaction owns the boundary; an in-flight
+    # request/ack must not race the bridge relaunch.
+    lifecycle_dir = root / "tmp/state/game_lifecycle"
+    if (lifecycle_dir / "request.json").exists() or (lifecycle_dir / "ack.json").exists():
+        return False
+
+    # A live runner could still be dispatching moves to this board; the
+    # frozen-board evidence only holds once the runner has exited.
+    runner = _read_json(root / "tmp/state/main_strategy_runner_active.json") or {}
+    runner_pid = runner.get("pid")
+    if type(runner_pid) is int and runner_pid > 0:
+        try:
+            os.kill(runner_pid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        else:
+            return False
 
     capability_path = root / "tmp/state/game_lifecycle/player_capabilities.json"
     capability = _read_json(capability_path)
@@ -736,11 +756,25 @@ def _check_jev_bridge_stuck_live(g: GlobalConfig, manager: "JevCornerManager") -
 
     game_state_path = root / "game_state.json"
     if game_state_path.is_file():
+        board = _read_json(game_state_path)
+        if not isinstance(board, dict) or board.get("state") != "MOVE":
+            return False
         try:
             age = time.time() - game_state_path.stat().st_mtime
         except OSError:
             return False
         if age < FIXED_BRIDGE_STUCK_MOVE_AGE_S:
+            return False
+        # The stale mtime already proves score/pieces unchanged for the whole
+        # window; sample once more so a write landing between the two reads
+        # cannot slip a live board through.
+        time.sleep(1.0)
+        board_again = _read_json(game_state_path)
+        if (
+            not isinstance(board_again, dict)
+            or board_again.get("score") != board.get("score")
+            or board_again.get("pieces") != board.get("pieces")
+        ):
             return False
 
     return True
