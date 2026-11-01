@@ -729,12 +729,11 @@ def step(screen, mem, frame, existing):
         if probe is not None:
             return probe
     actions = _step_flow(screen, mem, frame, existing)
-    if actions or in_probe:
+    # [] means the flow consumed this frame and chose no input, so the probe must not inject into it.
+    # Only a flow that has no opinion (None) leaves the frame open for an idle probe start.
+    if actions is not None or in_probe:
         return actions
-    # Idle start only after the existing flow stayed silent on this frame, so it never preempts a flow.
-    # When the probe declines, hand back the flow's own silent result unchanged (e.g. []), not the probe's None.
-    probe = camp_hp_probe_step(screen, mem, frame)
-    return actions if probe is None else probe
+    return camp_hp_probe_step(screen, mem, frame)
 
 
 def _step_flow(screen, mem, frame, existing):
