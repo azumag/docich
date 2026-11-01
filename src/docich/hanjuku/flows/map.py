@@ -12,7 +12,7 @@ from ... import hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
-from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
+from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
@@ -249,6 +249,7 @@ def world_map_step(screen, mem, frame):
                     reason='帰還先カーソルが有限回で合わず確定せず取り消す')
             mem.pop('recall', None)
             mem['uncertain'] = True
+            _hold_after_picker(mem, recall)
             return [pad('b')]
         if recall.get('origin') is None:
             picked = _picker_origin(chapter, frame)

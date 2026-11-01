@@ -21,7 +21,10 @@ from docich.hanjuku_screen import Screen
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
 DOMES = {'g1075-boss-target-enclosure.png': (173, 42),
-         'g1075-ch3-dome-camp-cave-ring.png': (141, 26)}
+         'g1075-ch3-dome-camp-cave-ring.png': (141, 26),
+         'g1097-dome-beside-house.png': (142, 117),
+         'g1097-probe-dome-under-cursor.png': (131, 110),
+         'g1097-probe-fort-list.png': (132, 110)}
 
 
 @pytest.mark.parametrize('name,target', sorted(DOMES.items()))

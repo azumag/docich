@@ -314,6 +314,24 @@ def is_camp_menu(screen) -> bool:
     return all(word in screen.text for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
 
 
+def is_fort_menu(screen) -> bool:
+    """A 砦 (two or more generals camped together, drawn as a dome).
+
+    Measured on g1097 (live 2026-11-01 19:24/19:33 and the isolated probe of
+    its start state): A on the dome opens しゅつげき/こうかん, not the tent's
+    いどう/ステータス/キャンプ/きかん, and the list of the generals inside opens
+    beside it (``fort_list_open``). A castle menu also says しゅつげき, but it
+    always has ステータス and is classified ``castle_menu``.
+    """
+    return (screen.kind == 'text' and screen.text.startswith('しゅつげき')
+            and 'こうかん' in screen.text and 'ステータス' not in screen.text)
+
+
+def fort_list_open(screen) -> bool:
+    """The generals' list beside the 砦 menu: the hand moved to the right panel."""
+    return is_fort_menu(screen) and bool(screen.hand) and screen.hand[0] > 100
+
+
 def _empty_sortie_inventory(screen):
     """Measured g328 empty inventory, using exact text cells in its panels.
 

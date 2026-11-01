@@ -282,13 +282,18 @@ def own_camps(frame: Frame) -> list[dict]:
 # the winter tent. Colours measured on that sprite (frame 13:34 x174-187,
 # y42-57); a full flag is required, a clipped dome waits for the camera.
 DOME_DOOR = (123, 88, 0)
+DOME_DOOR_TOLERANCE = 1   # the same tile is (123, 89, 0) through a libretro 565 readback
 DOME_BODY = ((131, 198, 222), (115, 149, 197), (205, 206, 246))
 DOME_OUTLINE = (32, 32, 32)
 
 
+def _dome_door(pixel) -> bool:
+    return all(abs(value - base) <= DOME_DOOR_TOLERANCE for value, base in zip(pixel, DOME_DOOR))
+
+
 def _dome_camps(frame: Frame) -> list[dict]:
     door = {(x, y) for y in range(frame.height) for x in range(frame.width)
-            if frame.pixel(x, y) == DOME_DOOR}
+            if _dome_door(frame.pixel(x, y))}
     found, seen = [], set()
     for start in sorted(door):
         if start in seen:
