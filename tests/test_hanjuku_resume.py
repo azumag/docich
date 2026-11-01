@@ -1208,3 +1208,71 @@ def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup
         'name':{'done':True},'resume_chapter_pending':True,
         'resume_battle_menu':{'readings':0}}}
     assert setup.source.read_bytes()==compressed(state_bytes())
+
+
+@pytest.fixture
+def detached_claimed(recovery_setup):
+    # g1077 2026-10-31: a manual claimed transfer whose slot rolled back and
+    # whose bounded ledger evidence (released / failed-corner / last-result
+    # rows naming this request) was overwritten by later corners.
+    s = recovery_setup; base = Path(s.g.state_dir)
+    ledger = s.manager.load(1000000.0)
+    ledger.update(status='waiting', reason='not-due', pending=None, queued_manual=None,
+                  last_result={'corner':'moon-buggy','request_id':str(uuid.uuid4()),'status':'unverified'},
+                  released_requests={'hanjuku-hero':{'request_id':str(uuid.uuid4()),'at':999999.0}},
+                  failed_corners=[{'corner':'hanjuku-hero','request_id':str(uuid.uuid4()),
+                                   'resolution':'released-unverified'}])
+    s.manager.save(ledger)
+    atomic_write_json(base/'retro_corner.json', {'status':'interrupted','game':'nsnake'})
+    return s
+
+
+def test_detached_claimed_requeues_same_sealed_transfer(detached_claimed):
+    s = detached_claimed; base = Path(s.g.state_dir); before = snapshot_recovery(s)
+    assert recover_startup(s) == {'status':'recovery-eligible','fingerprint':s.fingerprint}
+    assert snapshot_recovery(s) == before
+    result = recover_startup(s, apply=True, expected=s.fingerprint)
+    assert result['status'] == 'recovery-queued'
+    current = read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['status'] == 'queued' and current['explicit_resume'] is True
+    assert current['dispatch_source'] == 'manual'
+    assert current['startup_recovery']['original'] == s.claim
+    assert current['sha256'] == s.claim['sha256']
+    assert current['request_id'] == s.claim['request_id']
+    queued = s.manager.load(1000000.0)['queued_manual']
+    assert queued['resume_request_id'] == s.queue['request_id']
+    assert queued['request_id'] == current['startup_recovery']['attempt_id']
+    unchanged = snapshot_recovery(s)
+    assert recover_startup(s, apply=True, expected=s.fingerprint) == result
+    assert snapshot_recovery(s) == unchanged
+
+
+@pytest.mark.parametrize('bad', ['owner-hanjuku','owner-live','newer-progress','pending',
+                                 'queued-manual','gameplay','not-rolled-back'])
+def test_detached_claimed_refuses_uncertainty(detached_claimed, bad):
+    s = detached_claimed; base = Path(s.g.state_dir)
+    ledger = s.manager.load(1000000.0)
+    if bad == 'owner-hanjuku':
+        atomic_write_json(base/'retro_corner.json', {'status':'interrupted','game':'hanjuku-hero',
+                                                     'rotation_request_id':str(uuid.uuid4())})
+    elif bad == 'owner-live':
+        atomic_write_json(base/'retro_corner.json', {'status':'active','game':'nsnake'})
+    elif bad == 'newer-progress':
+        rd = base/'runtimes/g705-aabbccdd'; (rd/'states').mkdir(parents=True)
+        (rd/'hanjuku_run.json').touch()
+    elif bad == 'pending':
+        ledger['pending'] = {'corner':'weather','request_id':str(uuid.uuid4()),
+                             'phase':'dispatched','selected_at':1.0,'source':'automatic'}
+        s.manager.save(ledger)
+    elif bad == 'queued-manual':
+        ledger['queued_manual'] = {'corner':'weather','request_id':str(uuid.uuid4()),'selected_at':1.0}
+        s.manager.save(ledger)
+    elif bad == 'gameplay':
+        (s.spec.runtime_dir/'hanjuku_run.json').touch()
+    elif bad == 'not-rolled-back':
+        row = s.store.receipts.load(s.queue['request_id']); row['status']='failed'; row['result']['status']='failed'
+        s.store.receipts.save(row)
+    before = snapshot_recovery(s)
+    with pytest.raises(s.op.CancelRefused):
+        recover_startup(s, apply=True, expected=s.fingerprint)
+    assert snapshot_recovery(s) == before

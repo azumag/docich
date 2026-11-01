@@ -397,9 +397,24 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                              and not pending and not queued
                              and state.get('status') in {'ready', 'waiting'}
                              and _released_unclaimed_attempt(base, store, state, attempt, tmux))
-        if not original_pending and not detached and not recovered_pending and not unclaimed_release:
+        # A manual claimed original whose reservation resolved before the
+        # bounded audit could keep it: later corners overwrote the released /
+        # failed-corner / last-result rows naming this request (g1077
+        # 2026-10-31).  The durable rolled-back switch receipt already proved
+        # the dispatch died before the corner became active; together with
+        # the empty runtime, released windows, stable canonical state, no
+        # newer Hanjuku progress and a settled ledger, that still proves this
+        # exact sealed transfer safe to re-queue -- never a newer save.
+        detached_claimed = (recovery is None and not automatic
+                            and original.get('dispatch_source') == 'manual'
+                            and not pending and not queued
+                            and state.get('status') in {'ready', 'waiting'})
+        if not (original_pending or detached or recovered_pending
+                or unclaimed_release or detached_claimed):
             raise CancelRefused('reservation_not_in_scope')
         if unclaimed_release and not _no_newer_hanjuku_progress(base, store, original['generation']):
+            raise CancelRefused('newer_progress_unverified')
+        if detached_claimed and not _no_newer_hanjuku_progress(base, store, original['generation']):
             raise CancelRefused('newer_progress_unverified')
         owns_failure = (owner.get('rotation_request_id') == logical
                         and owner.get('game') == 'hanjuku-hero')
@@ -408,12 +423,15 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         # owner would refuse the next dispatch as an owner mismatch.
         owns_unclaimed = (owner.get('rotation_request_id') == attempt
                           and owner.get('game') == 'hanjuku-hero' and terminal_owner)
+        foreign_terminal_owner = (terminal_owner
+                                  and owner.get('game') != 'hanjuku-hero')
         if not ((owns_failure and (owner.get('status') == 'failed'
                                   or (owner.get('status') == 'interrupted'
                                       and owner.get('startup_resume_recovery') == attempt)))
                 or (automatic and released_proven and terminal_owner)
                 or (interrupted_release and owns_failure and owner.get('status') == 'interrupted')
-                or ((unclaimed_release or unclaimed is not None) and owns_unclaimed)):
+                or ((unclaimed_release or unclaimed is not None) and owns_unclaimed)
+                or ((detached_claimed or recovered_pending) and foreign_terminal_owner)):
             raise CancelRefused('owner_not_terminal')
         if not apply:
             return {'status': 'recovery-eligible', 'fingerprint': digest}
