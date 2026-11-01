@@ -950,9 +950,13 @@ class RetroCornerManager:
         *this* request: it is a ``switch`` to the corner's target, it reached
         terminal ``failed``, and its own result carries one of those two
         reviewed prelaunch codes for the exact ``from_game``/``to_game`` pair.
-        If the corner preserved an error code it must match the receipt. A
-        missing, pruned, non-terminal or differently-shaped receipt leaves the
-        ``failed`` state latched. When ``expected_request_id`` is given the
+        If the corner preserved an error code it must match the receipt, with
+        one exception: a preserved ``recovery_required`` records that the
+        canonical latch interrupted this exact start mid-boundary (the corner
+        still never became active), so the terminal receipt's own prelaunch
+        code is the binding evidence (#3152). A missing, pruned, non-terminal
+        or differently-shaped receipt leaves the ``failed`` state latched.
+        When ``expected_request_id`` is given the
         proof is additionally bound to that exact request, so a caller acting
         on one released reservation can never terminalize another request's
         slot (#2352).
@@ -962,6 +966,7 @@ class RetroCornerManager:
         if (state.get("status") != "failed"
                 or state_error not in {
                     None, ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
+                    ERROR_RECOVERY_REQUIRED,
                 }):
             return False
         target = state.get("game")
@@ -995,6 +1000,7 @@ class RetroCornerManager:
                 ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
             }
             or (state_error is not None
+                and state_error != ERROR_RECOVERY_REQUIRED
                 and result.get("error_code") != state_error)
             or result.get("from_game") != previous
             or result.get("to_game") != target
@@ -1055,6 +1061,7 @@ class RetroCornerManager:
         if (state.get("status") != "failed"
                 or state.get("last_error_code") not in {
                     None, ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
+                    ERROR_RECOVERY_REQUIRED,
                 }):
             return None
         target = state.get("game")
