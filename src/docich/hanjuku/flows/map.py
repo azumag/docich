@@ -106,6 +106,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     mem.pop('expect_menu', None)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
+WORLD_MAP_CLOSE_LIMIT = 3      # Y presses before the view is known not to close with Y
 PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
 PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor before giving up
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
@@ -304,7 +305,7 @@ def world_map_step(screen, mem, frame):
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
         mem['world_map_wait'] = waited
-        return [] if waited < WORLD_MAP_WAIT else [pad('y')]
+        return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
     markers = world_markers(frame)
@@ -312,7 +313,28 @@ def world_map_step(screen, mem, frame):
         _record(mem, 'world_map_units', observed_metric={'count': len(markers),
                 'boxes': [list(m) for m in markers]},
                 reason='全体マップの▲（部隊マーカー）を定期確認')
+    return _close_world_map(mem)
+
+
+def _close_world_map(mem):
+    """Y closes the owner survey, but not a destination picker left open.
+
+    A battle can take the screen while きかん's picker is up: the recall state
+    ends and the picker comes back afterwards. g1097 07:36:47 pressed Y 33 times
+    on it, until a monthly scene took the screen.
+    """
+    tick = int(mem.get('tick') or 0)
+    tries = mem.get('world_map_close') or {}
+    count = int(tries.get('count') or 0) + 1 if 0 <= tick - int(tries.get('tick') or 0) <= 2 else 1
+    if count > WORLD_MAP_CLOSE_LIMIT:
+        mem.pop('world_map_close', None)
+        _record(mem, 'world_map_picker_escape', observed_metric={'presses': count - 1},
+                reason='Yで閉じない全体マップは取り残された帰還先の選択なのでBで閉じる')
+        return [pad('b')]
+    mem['world_map_close'] = {'tick': tick, 'count': count}
     return [pad('y')]
+
+
 OFF_CASTLE_LIMIT = 3           # refusals before pressing A anyway (bounded)
 APPROX_LOCALIZE_LIMIT = 4      # observations without a roof anchor before native survey
 

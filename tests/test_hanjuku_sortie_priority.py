@@ -106,3 +106,30 @@ def test_map_step_with_no_order_marks_idle_and_a_ready_order_does_not(monkeypatc
     with pytest.raises(AssertionError, match='stop'):
         map_flow.map_step(map_screen(), busy, None)
     assert not goals.map_idle(busy)
+
+
+def test_a_world_map_that_y_does_not_close_is_left_with_b(monkeypatch):
+    """g1097 07:36:47: 33 Y presses on the picker a battle had left open."""
+    monkeypatch.setattr(map_flow, 'world_flags', lambda *a: {'アルマムーン': 'own'})
+    monkeypatch.setattr(map_flow, '_apply_world_flags', lambda *a: None)
+    monkeypatch.setattr(map_flow, 'world_markers', lambda frame: [])
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 5, 'tick': 100, '_records': []}
+    pressed = []
+    for _ in range(map_flow.WORLD_MAP_CLOSE_LIMIT + 1):
+        pressed.extend(map_flow.world_map_step(screen, mem, object()))
+        mem['tick'] += 1
+    assert [a['buttons'] for a in pressed] == [['y']] * map_flow.WORLD_MAP_CLOSE_LIMIT + [['b']]
+    assert records(mem, 'world_map_picker_escape')
+
+
+def test_separate_surveys_never_add_up_to_an_escape(monkeypatch):
+    monkeypatch.setattr(map_flow, 'world_flags', lambda *a: {'アルマムーン': 'own'})
+    monkeypatch.setattr(map_flow, '_apply_world_flags', lambda *a: None)
+    monkeypatch.setattr(map_flow, 'world_markers', lambda frame: [])
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 5, 'tick': 100, '_records': []}
+    for _ in range(map_flow.WORLD_MAP_CLOSE_LIMIT * 3):
+        assert map_flow.world_map_step(screen, mem, object())[0]['buttons'] == ['y']
+        mem['tick'] += 200
+
