@@ -183,7 +183,7 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999})
-    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 1]]
+    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
@@ -754,13 +754,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v353-sortie-over-repair-retry'
+    assert state['bot_version'] == 'hanjuku-chart-v354-bargains-after-low-army'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_the_native_map_registration_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v353-sortie-over-repair-retry'
+    assert BOT_VERSION == 'hanjuku-chart-v354-bargains-after-low-army'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():

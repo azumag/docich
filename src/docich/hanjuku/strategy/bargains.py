@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ..decision_log import _record
 from .economy import (KNOWN_PRICES, _charted_purchase_ahead,
-                      _egg_recovery_targets, _merchant_spendable)
+                      _egg_recovery_targets, _merchant_spendable, low_army_first)
 
 
 # Owner 2026-10-15: buy useful cheap cards from merchants/carts when cash is
@@ -116,7 +116,9 @@ def plan_bargains(mem, shop, header, *, listed=None):
     receipt = shop.get('soldier_receipt')
     if (receipt and (not isinstance(receipt, dict) or receipt.get('status') != 'paid')):
         return shop
-    if _necessities_pending(mem, shop):
+    if _necessities_pending(mem, shop) or low_army_first(shop):
+        # A month refilling a low army has no spare cash, even if the 5G
+        # ころぼぐんだん still fits above the buffer (g825 2-8: 127G, 14 soldiers).
         return shop
     budget = bargain_spendable(mem, shop, header)
     if budget is None or _charted_purchase_ahead(mem, header):
