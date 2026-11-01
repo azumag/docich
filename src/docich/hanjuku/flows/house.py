@@ -46,6 +46,7 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 INTERRUPTION_RETRIES = 2
+OPEN_ALIGN_KEYS = {'castle_open': 'HOUSE:source', 'income_open': 'HOUSE:income'}
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
 # This covers a castle footprint/localisation error and either axis-first route;
 # it is not a measured terrain path or permission to invent detour waypoints.
@@ -363,6 +364,15 @@ def _observe_status(screen, mem):
     return info
 
 
+def _fresh_align_budget(mem, key):
+    """One jump, one budget: ``ALIGN_LIMIT`` bounds a visit, not a chapter.
+
+    The HOUSE keys have no order step to scope them. g1097 2026-11-02 reached
+    838 for 'HOUSE:source', so every later visit idled out unaligned.
+    """
+    (mem.get('align_steps') or {}).pop(key, None)
+
+
 def _view_move(screen, mem, frame, target, next_phase, tolerance=0.6):
     from ..os_layer.commands import pad
     from ..os_layer.readers import world_cursor, world_flags
@@ -381,6 +391,8 @@ def _view_move(screen, mem, frame, target, next_phase, tolerance=0.6):
         if next_phase == 'house_confirm' and _defer_unsafe_house_route(mem):
             return []
         _phase(state, next_phase)
+        if next_phase in OPEN_ALIGN_KEYS:
+            _fresh_align_budget(mem, OPEN_ALIGN_KEYS[next_phase])
         return [pad('a')]
     return [pad('right' if dx > 0 else 'left', min(56, max(1, round(abs(dx) * 2))))] if abs(dx) > tolerance else [
         pad('down' if dy > 0 else 'up', min(56, max(1, round(abs(dy) * 2))))]
@@ -653,7 +665,7 @@ def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
                if _recruit_shortage(mem) and not mem.get('recruit_payroll_pending') else [])
     if not dirty and not pending and not missing:
         return True, None  # returning to the field is not a status change
-    goal_due = goals.repair_due(mem)
+    goal_due = goals.repair_dispatch_due(mem)
     recent = int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL
     if field_count >= (2 + GOAL_FIELD_EXTRA if goal_due else 2) or (recent and not goal_due):
         return True, None
@@ -828,7 +840,7 @@ def step(screen, mem, frame):
                 return actions
         # Monthly roster/status reads return to the monthly menu and never
         # dispatch a repair trip. Only the field route needs a measured house.
-        goal_due = goals.repair_due(mem)
+        goal_due = goals.repair_dispatch_due(mem)
         field_cap = 2 + (GOAL_FIELD_EXTRA if goal_due else 0)
         recent = tick - int(field_tick) < SCAN_INTERVAL
         bypassed = (goal_due and not monthly
@@ -1724,6 +1736,7 @@ def _return_step(screen, mem, frame):
             state['return_goal'] = nearby[0]
             if state['phase'] == 'return_view':
                 _phase(state, 'return_confirm')
+                _fresh_align_budget(mem, 'HOUSE:return')
             else:
                 _return_requested(mem)
             return [pad('a')]

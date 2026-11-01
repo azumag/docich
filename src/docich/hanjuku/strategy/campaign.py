@@ -38,7 +38,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs', 'hero_repair_deferral',
-                'goals', 'goals_overflow',
+                'goals', 'goals_overflow', 'goal_departed', 'map_idle_tick',
                 'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
                 'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
