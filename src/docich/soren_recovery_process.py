@@ -134,6 +134,44 @@ class LinuxRecoveryEffects:
         if (self.root / "tmp/improve.lock").exists():
             raise RecoveryRefused("improve lock would hold the loop respawn")
 
+    def _screen_observation_gameover(self):
+        # The Unity board file can freeze at MOVE while the bridge's screen
+        # observation already reports GAMEOVER.  Only a fresh, schema-valid
+        # observation counts as evidence for that continuation (#3152).
+        path = self.root / "tmp/state/game_observation.json"
+        try:
+            observation = read_object(path)
+        except (RecoveryRefused, OSError, ValueError):
+            return False
+        board_state = None
+        board = observation.get("board")
+        if isinstance(board, dict):
+            board_state = board.get("state")
+        if board_state is None:
+            board_state = observation.get("state")
+        if board_state != "GAMEOVER":
+            return False
+        # Schema and a fresh timestamp are mandatory: a missing/legacy
+        # observation must never be treated as live GAMEOVER evidence (#3152).
+        schema = observation.get("schema")
+        if schema != 1:
+            return False
+        epoch = observation.get("observed_epoch")
+        if epoch is None:
+            epoch = observation.get("observed_at")
+        if epoch is None:
+            epoch = observation.get("timestamp")
+        if epoch is None:
+            return False
+        try:
+            epoch = float(epoch)
+        except (TypeError, ValueError):
+            return False
+        now = self.clock()
+        if epoch > now + 5 or now - epoch > 15:
+            return False
+        return True
+
     def preflight(self):
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise RecoveryRefused("Linux pidfd containment unavailable")
@@ -149,7 +187,14 @@ class LinuxRecoveryEffects:
             raise RecoveryRefused("existing common supervisor is not unique")
         state_path = self.root / "game_state.json"
         state = read_object(state_path)
-        if state.get("state") not in {"STOP", "GAMEOVER"}:
+        observation_gameover = self._screen_observation_gameover()
+        stopped_states = {"STOP", "GAMEOVER"}
+        if state.get("state") == "MOVE" and observation_gameover:
+            # Divergence: the board file is frozen at MOVE while the screen
+            # observation already reports GAMEOVER.  Treat the stale MOVE
+            # board as a stopped board for recovery (#3152).
+            stopped_states = {"MOVE", "STOP", "GAMEOVER"}
+        if state.get("state") not in stopped_states:
             raise RecoveryRefused("round is not a stopped board")
         if self.clock() - state_path.stat().st_mtime < 600:
             raise RecoveryRefused("stopped board has not been static for ten minutes")
@@ -248,7 +293,10 @@ class LinuxRecoveryEffects:
 
     def _verify_stopped_board(self, recovery, path):
         board = read_object(path)
-        if (board != recovery["inventory"]["board"] or board.get("state") not in {"STOP", "GAMEOVER"}
+        allowed = {"STOP", "GAMEOVER"}
+        if board.get("state") == "MOVE" and self._screen_observation_gameover():
+            allowed.add("MOVE")
+        if (board != recovery["inventory"]["board"] or board.get("state") not in allowed
                 or self.clock() - path.stat().st_mtime < 600):
             raise RecoveryRefused("live board changed before termination")
 

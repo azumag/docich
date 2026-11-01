@@ -720,3 +720,24 @@ def test_fixed_entry_refusal_does_not_publish_exception_details(monkeypatch, cap
     assert exit_info.value.code == 1
     assert json.loads(output.out)["reason"] == "recovery_refused"
     assert "private" not in output.out + output.err
+def test_move_frozen_with_gameover_observation_is_allowed(topo):
+    import json
+    state = topo.root / "game_state.json"
+    state.write_text(json.dumps({"state": "MOVE", "score": 42, "makeSorenCount": 1, "pieces": [1]}))
+    os.utime(state, (CLOCK - 1200, CLOCK - 1200))
+    (topo.root / "tmp/state/game_observation.json").write_text(json.dumps(
+        {"schema": 1, "game_id": "bridge", "board": {"state": "GAMEOVER"}, "observed_epoch": CLOCK}))
+    inventory = topo.effects.preflight()
+    assert inventory["board"]["state"] == "MOVE"
+    assert not topo.sent
+
+
+def test_move_frozen_without_gameover_observation_is_refused(topo):
+    import json
+    state = topo.root / "game_state.json"
+    state.write_text(json.dumps({"state": "MOVE", "score": 42, "makeSorenCount": 1, "pieces": [1]}))
+    os.utime(state, (CLOCK - 1200, CLOCK - 1200))
+    with pytest.raises(RecoveryRefused):
+        topo.effects.preflight()
+    assert not topo.sent
+

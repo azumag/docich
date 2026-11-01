@@ -44,6 +44,10 @@ class SorenCoordinatorAdapter:
         self.agent_enabled = False
         self.requires_round_boundary = True
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
+        if (isinstance(self.round_boundary_timeout_s, (int, float))
+                and not isinstance(self.round_boundary_timeout_s, bool)
+                and self.round_boundary_timeout_s > 3600):
+            self.round_boundary_timeout_s = 3600.0
         raw = game.raw.get("soren") or {}
         if not isinstance(raw, dict):
             raise AdapterError("[soren] はテーブルである必要があります")
