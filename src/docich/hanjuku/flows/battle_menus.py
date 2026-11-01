@@ -275,6 +275,22 @@ def _survival_menu(screen, mem, cur):
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
           and not _own_egg_empty(mem, cur)):
         label = 'たまごをつかう'
+    elif ('たまごをつかう' in labels and critical
+          and cur.get('side') == 'defense'
+          and cur.get('castle') in chart.castles(mem.get('chapter') or 0)
+          and not rescue.get('egg_break_bait') and _own_egg_empty(mem, cur)):
+        # A spent-but-intact egg on a losing defender: pull the shell out so
+        # the next hit breaks it, then おくのて becomes the only usable row
+        # (チコリ died at 0 uses before the shell ever cracked). The row may
+        # be greyed and inert — the bait flag bounds this to one try, after
+        # which melee resumes and a landed hit still cracks the held shell.
+        # Castle defense only: an attacker's egg bait has no defensive need.
+        label = 'たまごをつかう'
+        rescue['egg_break_bait'] = True
+        _record(mem, 'battle_egg_break_bait', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                resulting_event='selection_planned_not_yet_confirmed',
+                reason='卵残0で使えず敗勢のため、卵を出して敵の一撃で殻を割らせ、おくのてを使える状態にする')
     else:
         rescue['exhausted'] = True
         _record(mem, 'battle_survival_unavailable', **_battle_labels(cur),
