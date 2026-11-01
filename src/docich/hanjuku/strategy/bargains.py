@@ -13,10 +13,15 @@ from .economy import (KNOWN_PRICES, _charted_purchase_ahead,
 
 # Owner 2026-10-15: buy useful cheap cards from merchants/carts when cash is
 # plentiful. Do not buy a weak card merely because it costs only one gold.
-BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイン': 2, 'ミックミー': 2}
+# Owner 2026-11-02: stock the useful vendor cards too, not only the cheap
+# four — マグネガキン halves egg/boss attack (STRONG_CARDS), エンジェリン
+# fully heals and refills the egg, ころぼぐんだん is the cheap egg-dropper
+# of the recommended sets.
+BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイン': 2, 'ミックミー': 2,
+                   'マグネガキン': 2, 'エンジェリン': 2, 'ころぼぐんだん': 2}
 BARGAIN_CASH_BUFFER = 30
-BARGAIN_MONTHLY_GOLD = 100
-BARGAIN_MONTHLY_COPIES = 6
+BARGAIN_MONTHLY_GOLD = 200
+BARGAIN_MONTHLY_COPIES = 8
 
 
 def _necessities_pending(mem, shop):
