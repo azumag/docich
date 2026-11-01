@@ -151,22 +151,25 @@ class LinuxRecoveryEffects:
             board_state = observation.get("state")
         if board_state != "GAMEOVER":
             return False
+        # Schema and a fresh timestamp are mandatory: a missing/legacy
+        # observation must never be treated as live GAMEOVER evidence (#3152).
         schema = observation.get("schema")
-        if schema is not None and schema != 1:
+        if schema != 1:
             return False
         epoch = observation.get("observed_epoch")
         if epoch is None:
             epoch = observation.get("observed_at")
         if epoch is None:
             epoch = observation.get("timestamp")
-        if epoch is not None:
-            try:
-                epoch = float(epoch)
-            except (TypeError, ValueError):
-                return False
-            now = self.clock()
-            if epoch > now + 5 or now - epoch > 15:
-                return False
+        if epoch is None:
+            return False
+        try:
+            epoch = float(epoch)
+        except (TypeError, ValueError):
+            return False
+        now = self.clock()
+        if epoch > now + 5 or now - epoch > 15:
+            return False
         return True
 
     def preflight(self):
