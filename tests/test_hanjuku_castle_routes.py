@@ -314,3 +314,40 @@ def test_a_read_list_in_chapter_4_makes_an_empty_castle_a_move_target_again():
     routes.observed_roster(mem, 'ビクトリア', [])
     assert routes.unread_dispatches(mem, 'ビクトリア') == []
     assert [o['source'] for o in moves_into(mem, 'ビクトリア')] == ['アルマムーン']
+
+
+def test_lost_castle_gating_the_boss_path_is_retaken_first():
+    """Owner 2026-11-02 (g1097): 5-C4 waits on captured バスカビル while minor
+    retakes cycle — a lost castle gating the boss chain outranks the rest."""
+    mem = {'chapter': 5, 'month': '38-10', 'tick': 1000,
+           'captured': ['テラビル', 'ヒュペルボレア', 'カルーン', 'アルマムーン'],
+           'lost': ['ボッサール', 'バスカビル', 'アイアイエー', 'オトラント'],
+           'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ'],
+                        'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
+                        'カルーン': ['セルリアク']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
+    assert retakes[:2] == ['バスカビル', 'アイアイエー']
+    assert set(retakes) == {'ボッサール', 'バスカビル', 'アイアイエー', 'オトラント'}
+
+
+def test_boss_gate_ordering_is_scoped_to_lost_castles():
+    """The gate only reorders castles actually lost — a captured gate castle
+    does not fabricate a retake."""
+    mem = {'chapter': 5, 'month': '38-10', 'tick': 1000,
+           'captured': ['テラビル', 'ヒュペルボレア', 'カルーン', 'アルマムーン',
+                        'バスカビル', 'アイアイエー'],
+           'lost': ['ボッサール', 'オトラント'],
+           'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ'],
+                        'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
+                        'カルーン': ['セルリアク'], 'バスカビル': ['ココット'],
+                        'アイアイエー': ['エシャロット']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
+    assert set(retakes) == {'ボッサール', 'オトラント'}
