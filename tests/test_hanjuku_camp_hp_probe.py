@@ -105,3 +105,31 @@ def test_aborted_probe_is_not_retried_in_same_camp(probe_on):
     assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None  # aborted: camp menu never opened
     assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None  # no second start in the same camp
     assert 'camp_hp_probe' not in mem
+
+
+def test_backoff_blocks_idle_start(probe_on):
+    mem = memory()
+    mem['recall_skip'] = {'tick': 100}
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None
+    assert 'camp_hp_probe' not in mem
+    mem.pop('recall_skip')
+    mem['recall_skip_target'] = {'camp': TARGET}
+    assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None
+    assert 'camp_hp_probe' not in mem
+
+
+def test_flow_that_acts_is_never_preempted(probe_on, monkeypatch):
+    mem = memory()
+    monkeypatch.setattr(camp_recheck, '_step_flow', lambda *args: [p.pad('x')])
+    assert camp_recheck.step(MAP, mem, FRAME, None) == [p.pad('x')]
+    assert 'camp_hp_probe' not in mem
+    assert not mem.get('camp_hp_probe_counts')
+
+
+def test_consumed_empty_flow_frame_is_never_probed(probe_on, monkeypatch):
+    # [] = the flow consumed this frame and chose no input; the probe must not inject into it.
+    mem = memory()
+    monkeypatch.setattr(camp_recheck, '_step_flow', lambda *args: [])
+    assert camp_recheck.step(MAP, mem, FRAME, None) == []
+    assert 'camp_hp_probe' not in mem
+    assert not mem.get('camp_hp_probe_counts')

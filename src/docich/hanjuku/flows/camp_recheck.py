@@ -720,15 +720,27 @@ def _arrival_request(mem, actor, row):
 
 
 def step(screen, mem, frame, existing):
+    if interrupt(screen, mem):
+        return [] if mem.get('battle') and screen.kind == 'map' else None
+    # An in-progress probe keeps its own yield rules. Otherwise the existing flow decides first.
+    in_probe = mem.get('camp_hp_probe') is not None
+    if in_probe:
+        probe = camp_hp_probe_step(screen, mem, frame)
+        if probe is not None:
+            return probe
+    actions = _step_flow(screen, mem, frame, existing)
+    # [] means the flow consumed this frame and chose no input, so the probe must not inject into it.
+    # Only a flow that has no opinion (None) leaves the frame open for an idle probe start.
+    if actions is not None or in_probe:
+        return actions
+    return camp_hp_probe_step(screen, mem, frame)
+
+
+def _step_flow(screen, mem, frame, existing):
     """Keep named observation retries separate from the anonymous camp cooldown."""
     from .map import world_map_step
     from ..os_layer.commands import pad
     from ..os_layer.readers import is_camp_menu
-    if interrupt(screen, mem):
-        return [] if mem.get('battle') and screen.kind == 'map' else None
-    probe = camp_hp_probe_step(screen, mem, frame)
-    if probe is not None:
-        return probe
     queue = _scope(mem)
     state = mem.get('recall') or {}
     named = bool(state.get('retreat_recheck'))
@@ -849,7 +861,7 @@ def step(screen, mem, frame, existing):
 
 # Stage 1 ships OFF (DSH 2026-10-31 approval). Stage 2 flips it in its own commit;
 # revert = set back to False. A read-only observation: it records HP, never changes a decision.
-CAMP_HP_PROBE_ENABLED = False
+CAMP_HP_PROBE_ENABLED = True
 CAMP_HP_PROBE_LIMIT = 2  # per retreat: one baseline read plus one change check
 PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')
 
@@ -896,6 +908,8 @@ def camp_hp_probe_step(screen, mem, frame):
     if probe is None:
         if mem.get('recall') or screen.kind != 'map' or frame is None or any(mem.get(k) for k in PROBE_BUSY_KEYS):
             return None
+        if mem.get('recall_skip') or mem.get('recall_skip_target'):
+            return None  # the flow is deliberately holding this camp in backoff; never enter it
         if _recheck_due(mem):
             return None  # a due retreat recheck always goes first (boundary condition 2)
         queue = _scope(mem)
