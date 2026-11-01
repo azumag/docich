@@ -225,7 +225,7 @@ SPOKEN = frozenset({
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
     'castle_lost_observed', 'castle_owned_observed', 'soldier_refill_outcome',
-    'battle_rescue_rearmed'})
+    'battle_rescue_rearmed', 'battle_okunote_risk_accepted'})
 
 
 # ---------------------------------------------------------------- game over
