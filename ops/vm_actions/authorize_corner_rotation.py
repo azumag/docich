@@ -29,14 +29,14 @@ ALLOWED_OPERATIONS = {
     "clear-hanjuku-clock-quarantine", "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
-    "check-recover-hanjuku-resume", "recover-hanjuku-resume",
+    "check-recover-hanjuku-resume", "recover-hanjuku-resume", "recover-hanjuku-retry",
     "check-cancel-prediction", "cancel-prediction",
     "check-sync-prediction", "sync-prediction",
 }
 CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-hanjuku-clock-quarantine",
                              "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
                              "check-admin-release-hanjuku", "admin-release-hanjuku",
-                             "check-recover-hanjuku-resume", "recover-hanjuku-resume",
+                             "check-recover-hanjuku-resume", "recover-hanjuku-resume", "recover-hanjuku-retry",
                              "check-cancel-prediction", "cancel-prediction",
                              "check-sync-prediction", "sync-prediction"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
