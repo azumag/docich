@@ -936,7 +936,12 @@ def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
         'storage_breakdown':{'filler':'x'*(70*1024)},
     }
     decoded=json.loads(module._diagnostics_budget(payload))
-    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    # #3149: the omission marker still means the whole section was dropped,
+    # but the bounded switch/ledger skeletons survive inside it.
+    dropped=decoded['corners']
+    assert dropped['status']=='output_omitted' and dropped['reason']=='hard_ceiling'
+    assert dropped['game_switch']['present'] is False
+    assert dropped['corner_rotation']['present'] is False
     assert decoded['lawsim']['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
     assert decoded['lawsim']['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
     # Unknown status/game values never leave the collector.
@@ -1022,6 +1027,61 @@ def test_corners_hard_keep_entries_never_stub():
     assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
     assert dec['corner_rotation']['pad']=='c'*8000
     assert dec['retro_corner']['output_omitted']=='hard_ceiling'
+
+
+def test_corners_whole_section_drop_keeps_switch_and_ledger_skeleton():
+    # #3149: the whole ``corners`` section is the first whole section the hard
+    # ceiling drops, and dropping it blanked ``game_switch`` and
+    # ``corner_rotation`` -- the switch identity and the failed-corner ledger
+    # an operator opens diagnostics to read when the rotation wedges. The
+    # omission marker now keeps those two bounded entries inside it.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','active_generation':1097},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'failed_corners':[
+                               {'corner':'hanjuku-hero','at':1793411161,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'},
+                               {'corner':'nsnake','at':1793498215,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'}]},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    # Many already-stubbed entries so the skeleton-only envelope is still
+    # over the ceiling: the whole-section drop must fire for this payload.
+    for index in range(160):
+        corners['pad_%03d'%index]={'present':True,'readable':True,
+                                   'status':'failed','game':'nsnake',
+                                   'evidence':'z'*400}
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'w'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert dec['status']=='output_omitted' and dec['reason']=='hard_ceiling'
+    assert 'retro_corner' not in dec and 'yoso_corner' not in dec
+    assert dec['game_switch']['phase']=='ready'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    rows=dec['corner_rotation']['failed_corners']
+    assert [row['corner'] for row in rows]==['hanjuku-hero','nsnake']
+    assert rows[0]['error_kind']=='execution-error'
+    assert rows[0]['reason_code']=='failed-corner-slot-released'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
 
 
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):

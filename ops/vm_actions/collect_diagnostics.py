@@ -13759,9 +13759,32 @@ _CORNER_STUB_KEYS = (
 # Corners entries that never stub individually: ``game_switch`` is the
 # identity of what is actually on screen and ``corner_rotation`` is the
 # ledger an operator opens diagnostics to check when the rotation wedges.
-# Both are bounded and small; the whole-section drop below can still take
-# them in a truly pathological envelope, same as before.
+# Both are bounded and small, so the whole-section drop keeps them inside
+# the omission marker too (#3149): a fat envelope that still cannot fit
+# must not blank the switch identity and the failed-corner ledger at the
+# same time.
 _CORNER_HARD_KEEP = ("game_switch", "corner_rotation")
+
+
+def _section_omission_stub(key, value):
+    """Marker that replaces a whole dropped section at the hard ceiling.
+
+    ``corners`` is the heaviest section and drops first, but its
+    ``game_switch`` (what is on screen) and ``corner_rotation`` (the ledger
+    an operator opens diagnostics to read when the rotation wedges,
+    including ``failed_corners``) are already bounded, fixed-shape
+    projections. Keeping them inside the omission marker costs a few KiB
+    while the other sections are still being dropped, so a fat envelope
+    can never blank both at once (#3149). Only when the remaining sections
+    still cannot fit does the pathological fallback take this skeleton too.
+    """
+    stub = {"status": "output_omitted", "reason": "hard_ceiling"}
+    if key == "corners" and isinstance(value, dict):
+        for keep in _CORNER_HARD_KEEP:
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+    return stub
 
 
 def _corner_stub(entry):
@@ -13981,7 +14004,7 @@ def _diagnostics_budget(payload):
             break
         if not isinstance(payload.get(key), dict):
             continue
-        payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+        payload[key] = _section_omission_stub(key, payload[key])
         text = _nethack_history_budget(payload)
     # Pathological fallback: a payload whose surviving sections are individually
     # small but numerous. Drop the remaining top-level sections largest-first,
@@ -13994,7 +14017,7 @@ def _diagnostics_budget(payload):
                 key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
             if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
-            payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+            payload[key] = _section_omission_stub(key, value)
             text = _nethack_history_budget(payload)
             if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
                 break
