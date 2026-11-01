@@ -114,6 +114,11 @@ def _low_army_refill(mem, shop, header):
     if shop.get('recruit') != 'done':
         shop['recruit'] = 'deferred_army'
     shop.update(recruit_priority=False, recruit_reserve=0)
+    extras = shop.get('bargain_cards')
+    if extras and isinstance(shop.get('items'), list):
+        # The spare-cash pass ran first: this month has no spare cash after all.
+        shop['items'][:] = [row for row in shop['items'] if row[0] not in extras]
+        shop['bargain_cards'] = []
     previous = state if isinstance(state, dict) else {}
     shop[LOW_ARMY_KEY] = {'version': 1, 'scope': scope, 'count': count,
                           'amount': amount, 'active': True}

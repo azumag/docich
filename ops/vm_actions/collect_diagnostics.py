@@ -6609,6 +6609,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v351-boss-stall-recovery",
             "hanjuku-chart-v352-fort-camp-recall",
             "hanjuku-chart-v353-sortie-over-repair-retry",
+            "hanjuku-chart-v354-bargains-after-low-army",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
