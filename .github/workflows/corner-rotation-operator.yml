@@ -8,7 +8,7 @@ on:
         required: true
         default: restart-service
         type: choice
-        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]
+        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]
       expected_reservation:
         description: Reviewed reservation fingerprint (cancel, administrative release, or failed-before-AI resume recovery)
         required: false
@@ -264,7 +264,7 @@ jobs:
           PY
 
       - name: Check or recover the same failed-before-AI checkpoint transfer
-        if: steps.auth.outputs.operation == 'check-recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-resume'
+        if: steps.auth.outputs.operation == 'check-recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-retry'
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -274,12 +274,15 @@ jobs:
         run: |
           set -euo pipefail
           EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
-          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           mode=check
           if [[ "$OPERATION" == recover-hanjuku-resume ]]; then
             mode=recover
+            [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+          elif [[ "$OPERATION" == recover-hanjuku-retry ]]; then
+            mode=retry
           else
             [[ "$OPERATION" == check-recover-hanjuku-resume ]]
+            [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           fi
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           result="$(

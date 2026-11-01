@@ -469,13 +469,18 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('check', 'recover'))
+    parser.add_argument('mode', choices=('check', 'recover', 'retry'))
     parser.add_argument('--expected')
     args = parser.parse_args(argv)
     try:
         root = Path(__file__).resolve().parents[2]
         g = load_global(root, root / 'config/docich.soren-live.toml')
-        result = recover(g, expected=args.expected, apply=args.mode == 'recover')
+        if args.mode == 'retry':
+            result = queue_failed_start(g)
+            if result is None:
+                result = {'status': 'noop'}
+        else:
+            result = recover(g, expected=args.expected, apply=args.mode == 'recover')
     except Exception:
         # Never publish raw exception text, private checkpoint paths or bytes.
         print(json.dumps({'status': 'refused'}))

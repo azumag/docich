@@ -31,6 +31,11 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
                 self.assertNotEqual(self.run_auth(**{'INPUT_OPERATION':'resume-hanjuku-latest', **changes}).returncode, 0)
 
     def test_startup_resume_recovery_requires_owner_main_and_exact_fingerprint(self):
+        self.assertEqual(self.run_auth(INPUT_OPERATION='recover-hanjuku-retry').returncode, 0)
+        for changes in ({'GITHUB_WORKFLOW_REF': LEGACY_REF}, {'GITHUB_ACTOR_ID': '42'},
+                        {'GITHUB_REF_PROTECTED': 'false'}, {'INPUT_CONFIRM': ''}):
+            with self.subTest(operation='recover-hanjuku-retry', changes=changes):
+                self.assertNotEqual(self.run_auth(INPUT_OPERATION='recover-hanjuku-retry', **changes).returncode, 0)
         for operation in ('check-recover-hanjuku-resume', 'recover-hanjuku-resume'):
             self.assertEqual(self.run_auth(INPUT_OPERATION=operation, INPUT_EXPECTED_RESERVATION='a'*64).returncode, 0)
             for changes in ({'INPUT_EXPECTED_RESERVATION':''}, {'INPUT_EXPECTED_RESERVATION':'a'*64+';id'},
@@ -457,7 +462,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
