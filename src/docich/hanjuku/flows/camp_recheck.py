@@ -581,9 +581,15 @@ def _named_step(screen, mem, frame, state):
             row = _scope(mem).get(actor)
             if row is not None:
                 sent = _arrival_request(mem, actor, row) is not None
-                if sent or row['attempts'] >= ATTEMPT_LIMIT or mem['tick'] < row['retry_after']:
-                    _defer(mem, state, '実本人が再確認待ちまたは予算上限のため帰還Aを再送しない',
+                # ``retry_after`` paces searching for the tent; this read just
+                # found it, under the cursor. Refusing here pushed the retry out
+                # on every pass (g1097 07:28, グレナデン reopened 30 times).
+                if sent or row['attempts'] >= ATTEMPT_LIMIT:
+                    _defer(mem, state, '実本人が帰還送信済みまたは予算上限のため帰還Aを再送しない',
                            status='arrival_unconfirmed' if sent else row['status'])
+                    # A roofless animated view defeats the same-view suppression.
+                    from .recall import LOST_CAMP_RETRY_TICKS, _arm_recall_skip
+                    _arm_recall_skip(mem, state, LOST_CAMP_RETRY_TICKS)
                     return [pad('b')]
                 row['attempts'] += 1
                 state.update(retreat_recheck=True, identity=row['identity'], chapter=row['chapter'],
