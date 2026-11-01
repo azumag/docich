@@ -76,7 +76,7 @@ def test_all_necessities_and_original_card_priority_survive(ready):
     for key in ('reserve', 'hero_repair_reserve', 'general_repair_reserve',
                 'recruit_reserve', 'soldiers', 'soldiers_done'):
         assert shop[key] == original[key]
-    assert sum(b.KNOWN_PRICES[n] * q for n, q in shop['items'][1:]) <= 100
+    assert sum(b.KNOWN_PRICES[n] * q for n, q in shop['items'][1:]) <= b.BARGAIN_MONTHLY_GOLD
 
 
 def test_existing_same_card_is_not_duplicated_or_reordered(ready):
@@ -175,7 +175,7 @@ def test_saved_before_recruit_soldier_budget_is_retained(ready):
 def test_spent_optional_gold_is_not_reissued_on_another_card(ready):
     ready['shop'].update(bargain_cards=['ノリウツール', 'クースカン'],
                         bought=[['ノリウツール', 3, 18]], items=[['クースカン', 3]])
-    assert b.bargain_spendable(ready, ready['shop'], listing(999).header) == 46
+    assert b.bargain_spendable(ready, ready['shop'], listing(999).header) == b.BARGAIN_MONTHLY_GOLD - 54
 
 
 @pytest.mark.parametrize('gold', [100, 200, 300, 400, 500, 1000, 2000])
