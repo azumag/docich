@@ -66,7 +66,7 @@ def setup(tmp_path):
     queue = {'corner': 'hanjuku-hero', 'request_id': str(uuid.uuid4()), 'resume_latest': True, 'selected_at': 1000000.0}
     rd = Path(g.state_dir) / 'runtimes/g700-abcdef12'; (rd / 'states').mkdir(parents=True)
     spec = RuntimeSpec('hanjuku-hero', 'retroarch', 700, rd.name, str(uuid.uuid4()), rd, 'game-700', 'agent-700', 'docich')
-    def check(deadline, cancel):
+    def check(deadline, cancel, reason=None):
         if time.monotonic() >= deadline or (cancel and cancel.is_set()):
             raise DeadlineExceededError('cancelled')
     adapter = SimpleNamespace(g=g, game=game, spec=spec, _check_active=check,
