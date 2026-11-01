@@ -402,7 +402,7 @@ def claim(adapter, deadline, cancel):
         return
     from .hanjuku_run import enabled
     strict = enabled(adapter.game)
-    adapter._check_active(deadline, cancel)
+    adapter._check_active(deadline, cancel, "claim")
     prior = read_record(spec.runtime_dir / RECEIPT_FILE)
     if prior:
         if not matches(prior, spec, prior.get('request_id')) or prior.get('status') != 'verified':
@@ -462,14 +462,14 @@ def claim(adapter, deadline, cancel):
         atomic_write_json(root / REQUEST_FILE, local)  # consume even if staging fails
         atomic_write_json(spec.runtime_dir / RECEIPT_FILE, local)
         _persist_copy(sealed, spec.runtime_dir / 'states/hanjuku-hero.state')
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "claim")
 
 
 def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
     from .adapters.retroarch import send_ra_cmd
     verified = False
     while not verified:
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "_fresh_roundtrip")
         adapter._require_paused(deadline, cancel)
         before = saved.stat() if saved.exists() else None
         fingerprint = ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) if before else None)
@@ -477,7 +477,7 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
         send_ra_cmd('SAVE_STATE', port=adapter._network_port())
         save_end = min(deadline, time.monotonic() + 2)
         while time.monotonic() < save_end:
-            adapter._check_active(deadline, cancel)
+            adapter._check_active(deadline, cancel, "_fresh_roundtrip")
             time.sleep(.05)
             if not saved.exists():
                 continue
@@ -637,7 +637,7 @@ def restore(adapter, deadline, cancel):
            and not ritual_without_chapter and not battle_menu_without_chapter
            and not gift_without_chapter and not dialogue_without_chapter
            and not message_without_chapter and not menu_without_chapter):
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "restore")
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
         if not reply or not reply.startswith('GET_STATUS PAUSED '):
@@ -695,11 +695,11 @@ def restore(adapter, deadline, cancel):
         if battle_menu_without_chapter:
             policy['resume_battle_menu'] = {'readings': 0}
     atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
-    adapter._check_active(deadline, cancel)
+    adapter._check_active(deadline, cancel, "restore")
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
     from .adapters.retroarch import resolve_rom
     while True:
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "restore")
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
         prefix = 'GET_STATUS PLAYING '
         fields = reply[len(prefix):].strip().split(',') if reply and reply.startswith(prefix) else []
