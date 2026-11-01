@@ -348,6 +348,8 @@ def _card_battle_reading(screen, cur, mem=None):
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         cur['card_hp_unread'] = True
         cur['card_context_unclassified'] = True
+        cur['card_combatants_changed'] = (b is not None and (b.enemy != cur.get('enemy')
+                                                             or b.ally != cur.get('ally')))
         cur['card_soldiers_current'] = False
         if mem is not None:
             egg_bait.cancel(mem, cur, '本人HPまたは戦闘パネルが未確認になったため召喚待ちを終了')
@@ -362,6 +364,7 @@ def _card_battle_reading(screen, cur, mem=None):
                                             previous - b.enemy_hp)
     cur['card_hp_unread'] = False
     cur['card_context_unclassified'] = False
+    cur['card_combatants_changed'] = False
     cur['card_summon_observed'] = False
     cur['egg_battle'] = False
     if mem is not None:

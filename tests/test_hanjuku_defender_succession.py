@@ -65,6 +65,7 @@ def test_unsafe_name_changes_do_not_end_previous_battle(changes, observation):
     # The prior combat/ownership record stays intact. A mismatched panel now
     # also invalidates its card inputs, so the old HP/egg state cannot select A.
     assert mem['battle'] == {**before, 'card_context_unclassified': True,
+                             'card_combatants_changed': True,
                              'card_hp_unread': True, 'card_soldiers_current': False}
     assert mem['captured'] == ['ジョンリギ'] and 'stats' not in mem
 

@@ -1,8 +1,18 @@
+import pytest
 """Owner 2026-11-02 (VSヴィーナス at オトラント): a timed-out card announce means
 the list is still open — the carry may never have fired. Retry the same card
 once instead of backing out and retreating with it unused."""
 from docich import hanjuku_policy as p
 from test_hanjuku_card_damage_gate import memory, cards
+
+
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
 
 
 def _first_timeout(mem, names):

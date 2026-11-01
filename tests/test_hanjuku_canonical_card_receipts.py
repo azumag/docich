@@ -9,6 +9,15 @@ from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 
+
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+
 FIXTURE = Path(__file__).parent / 'fixtures' / 'hanjuku' / 'g700-balmung-sortie-confirm.png'
 
 

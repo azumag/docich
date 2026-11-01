@@ -12,6 +12,15 @@ from docich.hanjuku_screen import Battle
 from test_hanjuku_card_damage_gate import memory as card_memory, cards
 
 
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+
+
 def memory(*, hp=27, soldiers=(0, 0), ally_hp=90, survival=True, card='ブラッキー'):
     mem = card_memory(card, enemy='ソーピニヨン', enemy_hp=hp,
                       ally='どうし', ally_hp=ally_hp, soldiers=soldiers)
