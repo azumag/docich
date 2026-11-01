@@ -1026,6 +1026,7 @@ def card_list_step(screen: Screen, mem):
     rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
     if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
             and flow and flow.get('stage') == 'list'
+            and not flow.get('announce_retried')
             and not _critical_safe_card(mem, cur, rescue)
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
@@ -1115,6 +1116,21 @@ def card_list_step(screen: Screen, mem):
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
         flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
         if flow['announce_ticks'] > CARD_ANNOUNCE_LIMIT:
+            # Owner 2026-11-02 (VSヴィーナス at オトラント): a timed-out
+            # announce means the list is still open — the carry may never
+            # have fired, so retreating here leaves the card unused.
+            # Re-enter the same card once: a consumed row falls into the
+            # missing-card path; a still-carried row gets one more A.
+            if not flow.get('announce_retried'):
+                flow['announce_retried'] = True
+                flow.update(stage='list', selection_planned=False,
+                            announce_ticks=0, cursor_ticks=0, list_observations=0)
+                _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
+                        card=flow['card'],
+                        expected_metric='実使用告知または一覧からの消失',
+                        resulting_event='card_retry_not_yet_confirmed',
+                        reason='切り札の使用告知が確認できないままなので、消費を断定せず同じ札をもう一度選択する')
+                return []
             _card_use_unclassified(mem, cur, '切り札の告知待ち上限に達したため選択画面から戻る')
             return [pad('b')]
         # No live frame/parser signature has calibrated a use receipt yet.
