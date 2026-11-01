@@ -14,6 +14,7 @@ from docich.hanjuku_bot import decide, NO_INPUT_HOLD_MAX
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse, Screen
 from test_hanjuku_sortie_evidence import memory, measured_card_select
+from docich.hanjuku.flows import map as map_flow
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'card-hold-fixture', 'generation': 1, 'lease_id': 'fixture-lease'}
 
@@ -188,6 +189,12 @@ def test_another_run_cannot_inherit_the_cancel_only_owner_or_its_hold(capped):
     assert not mem.get('boss_stock_restart') and not mem.get('boss_stock_cancelled')
 
 
+def _survey_close(observation):
+    """This fixture never closes, so the survey's Y gives way to its B escape."""
+    limit = map_flow.WORLD_MAP_CLOSE_LIMIT
+    return [p.pad('b' if (observation + 1) % (limit + 1) == 0 else 'y')]
+
+
 @pytest.mark.parametrize('capped', [False, True])
 def test_free_map_completes_cancel_before_a_new_survey_world_map(capped):
     from test_hanjuku_off_chart import FRAME, map_screen, _world_map_frame
@@ -201,11 +208,11 @@ def test_free_map_completes_cancel_before_a_new_survey_world_map(capped):
     if actions is None: actions = p.map_step(screen, mem, FRAME)
     assert actions == [p.pad('y')]
     frame = _world_map_frame({'アルマムーン': 'own'})
-    for _ in range(14):
+    for n in range(14):
         mem = json.loads(json.dumps(mem))
         actions = p.boss_stock_restart_step(parse(frame), mem)
         if actions is None: actions = p.world_map_step(parse(frame), mem, frame)
-        assert actions == [p.pad('y')]
+        assert actions == _survey_close(n)
         assert not mem.get('boss_stock_restart') and not mem.get('boss_stock_cancelled')
     assert not mem.get('boss_card_hold') and not mem.get('boss_card_hold_scope')
 
@@ -224,9 +231,9 @@ def test_public_decide_cancel_then_free_map_then_survey_through_json(capped):
     actions, state = decide(field, json.loads(json.dumps(state)), run_identity=ID)
     assert actions == [p.pad('y')]
     view = _world_map_frame({'アルマムーン': 'own'})
-    for _ in range(14):
+    for n in range(14):
         actions, state = decide(view, json.loads(json.dumps(state)), run_identity=ID)
-        assert actions == [p.pad('y')]
+        assert actions == _survey_close(n)
         assert not state['policy'].get('boss_stock_restart')
         assert not state['policy'].get('boss_stock_cancelled')
     assert not state['policy'].get('boss_card_hold')
