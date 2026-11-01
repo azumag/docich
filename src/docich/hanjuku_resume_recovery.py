@@ -88,7 +88,7 @@ def queue_failed_start(g, *, tmux=None, now=time.time):
 
 
 def _attempt_ids(logical):
-    return tuple(str(uuid.uuid5(uuid.UUID(logical), f'failed-before-ai-recovery-{n}')) for n in (1, 2))
+    return tuple(str(uuid.uuid5(uuid.UUID(logical), f'failed-before-ai-recovery-{n}')) for n in (1, 2, 3))
 
 
 def _released_unclaimed_attempt(base, store, state, attempt, tmux):
@@ -163,6 +163,7 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         logical = validate_request_id(claim.get('request_id'))
         first = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-1'))
         second = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-2'))
+        third = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-3'))
         if (original.get('request_id') != logical or previous.get('attempt_id') != first
                 or previous.get('fingerprint') != fingerprint(original)
                 or any(claim.get(k) != original.get(k) for k in (
@@ -174,7 +175,8 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
             raise CancelRefused('reservation_not_in_scope')
         if failed is not None:
             if (type(request.get('schema')) is not int or request.get('schema') != 1
-                    or request.get('status') != 'queued' or recovery.get('attempt_id') != second
+                    or request.get('status') not in {'queued', 'claimed'}
+                    or recovery.get('attempt_id') != second
                     or recovery.get('original') != original
                     or recovery.get('fingerprint') != fingerprint(original)
                     or failed.get('attempt_id') != first
@@ -186,31 +188,35 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
                 raise CancelRefused('invalid_evidence')
         elif request != claim:
             raise CancelRefused('context_changed')
-        validate_request_id(claim.get('lease_id'))
-        if runtime_id_generation(claim.get('runtime_id')) != claim['generation']:
+        second_claimed = failed is not None and request.get('status') == 'claimed'
+        evidence = request if second_claimed else claim
+        attempt_receipt_id = second if second_claimed else first
+        validate_request_id(evidence.get('lease_id'))
+        if runtime_id_generation(evidence.get('runtime_id')) != evidence['generation']:
             raise CancelRefused('invalid_evidence')
-        runtime = runtime_directory(base, claim['runtime_id'])
-        if _object(runtime / RECEIPT_FILE) != claim:
+        runtime = runtime_directory(base, evidence['runtime_id'])
+        if _object(runtime / RECEIPT_FILE) != evidence:
             raise CancelRefused('context_changed')
         if any((runtime / name).exists() or (runtime / name).is_symlink()
                for name in ('hanjuku_bot.json', 'hanjuku_run.json', 'hanjuku_events.jsonl')):
             raise CancelRefused('gameplay_started')
         _released_runtime(base, runtime.name, tmux)
-        terminal = store.receipts.load(first)
+        terminal = store.receipts.load(attempt_receipt_id)
         result = terminal.get('result') if terminal else None
         if (not terminal or terminal.get('operation') != 'switch'
                 or terminal.get('target') != 'hanjuku-hero' or terminal.get('status') != 'rolled_back'
-                or terminal.get('generation') != claim['generation']
-                or terminal.get('runtime_id') != claim['runtime_id']
+                or terminal.get('generation') != evidence['generation']
+                or terminal.get('runtime_id') != evidence['runtime_id']
                 or not isinstance(result, dict) or result.get('status') != 'rolled_back'
-                or result.get('request_id') != first or result.get('generation') != claim['generation']):
+                or result.get('request_id') != attempt_receipt_id
+                or result.get('generation') != evidence['generation']):
             raise CancelRefused('startup_rollback_unverified')
         canonical, missing = store.canonical.load()
         if (missing or canonical.get('phase') not in {'ready', 'idle'}
                 or any(canonical.get(k) for k in ('candidate', 'previous', 'retiring', 'operation', 'request_id'))
                 or (canonical.get('active') or {}).get('game') == 'hanjuku-hero'):
             raise CancelRefused('switch_not_stable')
-        if not _no_newer_hanjuku_progress(base, store, claim['generation']):
+        if not _no_newer_hanjuku_progress(base, store, evidence['generation']):
             raise CancelRefused('newer_progress_unverified')
         if not rotation_enabled(g) or 'hanjuku-hero' not in manager._eligible(include_manual_only=True)[0]:
             raise CancelRefused('target_paused_or_unavailable')
@@ -227,9 +233,10 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         if at < max(timestamp(claim['selected_at']), timestamp(state['last_seen_at'])):
             raise CancelRefused('clock_regressed')
         queued = state.get('queued_manual') or {}
+        attempt_queued_id = third if second_claimed else second
         if (state.get('status') not in {'ready', 'waiting'} or state.get('pending')
                 or state.get('manual_pending') or manager._read_manual_queue()
-                or (queued and (queued.get('request_id') != second
+                or (queued and (queued.get('request_id') != attempt_queued_id
                                 or queued.get('resume_request_id') != logical))):
             raise CancelRefused('manual_queue_conflict')
         owner = _object(base / 'retro_corner.json')
@@ -243,13 +250,28 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
             request.update(status='queued', startup_recovery=new_recovery,
                            dispatch_source='manual', explicit_resume=True)
             atomic_write_json(path, request)
+        elif second_claimed:
+            # The second attempt claimed and rolled back before the corner
+            # became active (same pre-AI shape as the first): derive the third
+            # and last audited retry, keeping the newest claim as the evidence
+            # chain head. A further failure is a real fault, not another
+            # derived attempt, so no fourth id exists.
+            audit = {'claim': request, 'attempt_id': second,
+                     'fingerprint': fingerprint(request)}
+            new_recovery = dict(recovery, attempt_id=third, failed_attempt=audit)
+            request = {k: v for k, v in request.items()
+                       if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
+            request.update(status='queued', startup_recovery=new_recovery,
+                           dispatch_source='manual', explicit_resume=True)
+            atomic_write_json(path, request)
         if not queued:
-            queued = dict(corner='hanjuku-hero', selected_at=at, request_id=second,
+            queued = dict(corner='hanjuku-hero', selected_at=at,
+                          request_id=attempt_queued_id,
                           resume_request_id=logical, resume_latest=True)
             state.update(status='waiting', reason='startup-resume-recovery-queued',
                          error_kind=None, pending=None, queued_manual=queued)
             manager.save(state)
-        return {'status':'queued', 'corner':'hanjuku-hero', 'request_id':second}
+        return {'status':'queued', 'corner':'hanjuku-hero', 'request_id':attempt_queued_id}
 
 
 def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
@@ -291,7 +313,7 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         digest = fingerprint(original)
         if expected is not None and expected != digest:
             raise CancelRefused('reservation_changed')
-        attempt, retry = _attempt_ids(logical)
+        attempt, retry, _third = _attempt_ids(logical)
         unclaimed = recovery.get('unclaimed_attempt') if isinstance(recovery, dict) else None
         current = attempt if unclaimed is None else retry
         if recovery is not None:

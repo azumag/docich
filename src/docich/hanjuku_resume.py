@@ -577,7 +577,11 @@ def restore(adapter, deadline, cancel):
     """Pause, load, then reserialize and compare before staging any agent."""
     from .adapters.retroarch import send_ra_cmd
     spec = adapter.spec
-    deadline = min(deadline, time.monotonic() + 10)
+    # A cold runtime (fresh RetroArch boot + ROM load + first network-command
+    # replies + the chapter-detection frame loop) cannot finish the restore in
+    # 10s: g1091/g1093 both rolled back inside this cap after reaching the
+    # parse loop. Keep a bounded budget but size it for a cold restore.
+    deadline = min(deadline, time.monotonic() + 60)
     receipt_path = spec.runtime_dir / RECEIPT_FILE
     request = read_record(receipt_path)
     if not request:
