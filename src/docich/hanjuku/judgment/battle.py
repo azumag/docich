@@ -1895,13 +1895,20 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
     draws = cur.get('okunote_draws') or 0
     redraw = (0 < draws < OKUNOTE_REDRAW_LIMIT and hp > OKUNOTE_REDRAW_HP_FLOOR
               and cur.get('ally') not in (NAME, 'しゅじんこう'))
+    # gcgx battle.html: an edge hit costs 4 HP. At or below that the next
+    # successful push kills outright, so the living-HP summon trigger can
+    # never fire and the self-damage lottery is unnecessary (owner 2026-11-02:
+    # 「一回ぶつかれば勝てるような場合におくのては必要ない」).
+    one_hit_lethal = enemy <= EGG_WALL_DAMAGE
     reason = ('wall_hp_window' if enemy <= critical_hp + margin
               else 'okunote_redraw' if redraw
               else 'unmeasured_clash_guard_exhausted' if position_guard_exhausted
               else 'menu_open_contact_unmeasured'
               if menu_open and cur.get('ally') not in (NAME, 'しゅじんこう') else None)
-    if guard.get('reason'):
+    if guard.get('reason') and not one_hit_lethal:
         reason = guard['reason']  # a menu opening keeps its chosen rescue route
+    if one_hit_lethal:
+        reason = None
     return {'thought': 1, 'thought_basis': 'player_castle_defense',
             'enemy_egg_basis': 'static_general_data', 'own_egg_usable': False,
             'resources_basis': 'observed_okunote_only', 'enemy_hp': enemy, 'ally_hp': hp,
@@ -1911,6 +1918,7 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             'clash_internal_x_threshold': chapter * 4 + 32, 'clash_position_measured': False,
             'hold_count': holds, 'hold_hp_bled': start - hp, 'hold_hp_budget': hp_budget,
             'okunote_draws': draws, 'reason': reason, 'due': reason is not None,
+            'one_hit_lethal': one_hit_lethal,
             'short_burst': enemy <= critical_hp + 2 * margin}
 
 
