@@ -1132,6 +1132,19 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
             adapter._sync_twitch("soren91")
         self.assertEqual(calls, [])
 
+    def test_twitch_sync_survives_an_unreadable_soren_root(self):
+        # Some hosted runners have an unreadable /home/ubuntu, where is_file()
+        # raises instead of returning False. The sync is best-effort on the
+        # on-air path, so that must not fail the corner.
+        from docich.adapters import soren91 as mod
+
+        calls = []
+        adapter = self._adapter()
+        with mock.patch.object(mod.Path, "is_file", side_effect=PermissionError(13, "denied")), \
+                mock.patch.object(mod.subprocess, "run", lambda *a, **k: calls.append(a)):
+            adapter._sync_twitch("soren91")
+        self.assertEqual(calls, [])
+
     def test_cleanup_restores_the_main_title_even_on_a_fresh_adapter(self):
         # The coordinator and the manual cross-process stop clean up through a
         # different adapter instance than the one that started, so the restore

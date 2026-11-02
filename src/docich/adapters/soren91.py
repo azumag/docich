@@ -713,9 +713,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             return
         root = Path(self.soren_root)
         script = root / "update_stream_game.sh"
-        if not script.is_file():
-            return
         try:
+            if not script.is_file():
+                return
             from ..stream_category import viewer_title_args
             cmd = ["bash", str(script), "--game", game, *viewer_title_args(game)]
             if self.games_dir:

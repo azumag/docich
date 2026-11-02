@@ -6,7 +6,8 @@ one answers, and records every deviation.
 """
 from __future__ import annotations
 
-from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
+from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
+                 hanjuku_reference as reference)
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
@@ -309,8 +310,39 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
+    def _boss_wave_pick(mem, owned, busy, allow_sole):
+        """(source, general) of the strongest sendable spare for the boss.
+
+        Waves should throw the army's best spare at the boss, not whoever the
+        nearest staffed list happens to lead with — the boss fight is where a
+        weak substitute loses outright (owner 2026-11-02: 余剰兵力を連続投入).
+        """
+        chapter = mem.get('chapter') or 0
+        home = chart.home_castle(chapter)
+        garrison = mem.get('garrison') or {}
+        unavailable = set(busy) | set(mem.get('general_location_unknown') or ()) | {NAME}
+        if _hero_egg_broken(mem):
+            unavailable |= {NAME}
+        sole = len(owned) == 1
+        need = 1 if allow_sole else 2
+        choices = []
+        for c in owned:
+            free = [g for g in garrison.get(c) or () if g not in busy]
+            if len(set(free)) < need:
+                continue
+            spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
+            for g in spare:
+                if g != MOVE_ANY_GENERAL and g not in unavailable:
+                    choices.append((reference.general_strength(g) or (0, 0), c, g))
+        if not choices:
+            return None
+        choices.sort(key=lambda x: (x[0], x[1] != home), reverse=True)
+        _, source, general = choices[0]
+        return source, general
     for target in targets:
-        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy, allow_sole)
+        picked = (_boss_wave_pick(mem, owned, busy, allow_sole)
+                  if chart.is_boss_castle(target) else
+                  _interim_source(mem, target, chart_orders.get(target), owned, busy, allow_sole))
         if picked is None:
             continue
         source, general = picked

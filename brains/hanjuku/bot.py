@@ -60,6 +60,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified','battle_card_open_unclassified',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
+    'sortie_departure_requested','sortie_departure_input_sent','sortie_departure_resend','sortie_departure_not_accepted',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
@@ -103,6 +104,10 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     boundary = policy.get('card_upper_boundary') or {}
     if (boundary.get('await_input') is True and actions == [{'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}]):
         boundary['request_trace'] = {**state['decision_trace'], 'planned_at': now}
+    request = policy.get('departure_request') or {}
+    if (request.get('status') == 'requested' and not request.get('request_trace')
+            and actions == [CONFIRM]):
+        request['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.
     try:
@@ -292,25 +297,24 @@ def observation_interval_ms(state, actions=None):
     return 1500
 
 
-def recall_input_receipts(runtime, state, meta):
-    """Read only a bounded tail of the existing sender journal; never replay.
-
-    This command process reloads on each observation. No controller restart
-    or new controller receipt writer is required for the current live run.
-    """
-    recall = (state.get('policy') or {}).get('recall') or {}
-    trace = recall.get('request_trace') or {}
-    identity = meta.get('hanjuku') or {}
+def _valid_request_trace(trace, identity):
+    """A request trace bound to this run, decision and observed frame."""
     keys = ('game', 'runtime_id', 'generation', 'lease_id')
-    if (recall.get('stage') != 'await_dispatch' or not trace
-            or any(identity.get(k) is None or trace.get(k) != identity[k] for k in keys)
-            or not isinstance(trace.get('decision_id'), str)
-            or not isinstance(trace.get('frame_sha256'), str)
-            or len(trace['frame_sha256']) != 64
-            or type(trace.get('planned_at')) not in (int, float)):
-        return None
-    count = 0
-    seen = set()
+    return (bool(trace)
+            and not any(identity.get(k) is None or trace.get(k) != identity[k] for k in keys)
+            and isinstance(trace.get('decision_id'), str)
+            and isinstance(trace.get('frame_sha256'), str) and len(trace['frame_sha256']) == 64
+            and type(trace.get('planned_at')) in (int, float)
+            and 0 <= trace['planned_at'])
+
+
+def _journal_pad_inputs(runtime, trace, button):
+    """Distinct delivered ``button`` presses matching this request trace.
+
+    Reads only a bounded tail of the existing sender journal; never replays.
+    None means the journal could not be read, which is *unknown*, not
+    *unsent* — callers must not treat it as permission to resend.
+    """
     try:
         path = runtime / 'hanjuku_events.jsonl'
         if path.is_symlink() or not path.is_file():
@@ -322,50 +326,7 @@ def recall_input_receipts(runtime, state, meta):
             tail = stream.read(65536)
             if offset:
                 tail = tail.partition(b'\n')[2]
-            for raw in tail.splitlines():
-                try:
-                    row = json.loads(raw)
-                except (ValueError, UnicodeError):
-                    continue
-                if (isinstance(row, dict) and row.get('event') == 'input_sent'
-                        and row.get('decision_id') == trace.get('decision_id')
-                        and row.get('decision_frame_sha256') == trace.get('frame_sha256')
-                        and type(row.get('at')) in (int, float)
-                        and 0 <= trace['planned_at'] <= row['at'] < 10**12
-                        and row.get('type') == 'pad' and row.get('buttons') == ['a']
-                        and row.get('hold_ms') == 100):
-                    if row['at'] not in seen:
-                        seen.add(row['at'])
-                        count = min(2, count + 1)
-    except OSError:
-        return None
-    return {'request_trace': trace, 'a_inputs': count}
-
-
-def card_scroll_receipt(runtime, state, meta):
-    """Match the previous top-row Up to the sender journal and run identity."""
-    boundary = (state.get('policy') or {}).get('card_upper_boundary') or {}
-    trace = boundary.get('request_trace') or {}
-    identity = meta.get('hanjuku') or {}
-    if (boundary.get('await_input') is not True or not trace
-            or any(identity.get(k) is None or trace.get(k) != identity[k]
-                   for k in ('game', 'runtime_id', 'generation', 'lease_id'))
-            or not isinstance(trace.get('decision_id'), str)
-            or not isinstance(trace.get('frame_sha256'), str) or len(trace['frame_sha256']) != 64
-            or type(trace.get('planned_at')) not in (int, float)):
-        return None
-    try:
-        path = runtime / 'hanjuku_events.jsonl'
-        if path.is_symlink() or not path.is_file():
-            return None
-        with path.open('rb') as stream:
-            stream.seek(0, 2)
-            offset = max(0, stream.tell() - 65536)
-            stream.seek(offset)
-            tail = stream.read(65536)
-            if offset:
-                tail = tail.partition(b'\n')[2]
-        matches = set()
+        seen = set()
         for raw in tail.splitlines():
             try:
                 row = json.loads(raw)
@@ -376,12 +337,59 @@ def card_scroll_receipt(runtime, state, meta):
                     and row.get('decision_frame_sha256') == trace['frame_sha256']
                     and type(row.get('at')) in (int, float)
                     and trace['planned_at'] <= row['at'] < 10**12
-                    and row.get('type') == 'pad' and row.get('buttons') == ['up']
+                    and row.get('type') == 'pad' and row.get('buttons') == [button]
                     and row.get('hold_ms') == 100):
-                matches.add(row['at'])
+                seen.add(row['at'])
     except OSError:
         return None
-    return {'request_trace': trace, 'up_inputs': min(2, len(matches))}
+    return min(2, len(seen))
+
+
+def recall_input_receipts(runtime, state, meta):
+    """Read only a bounded tail of the existing sender journal; never replay.
+
+    This command process reloads on each observation. No controller restart
+    or new controller receipt writer is required for the current live run.
+    """
+    recall = (state.get('policy') or {}).get('recall') or {}
+    trace = recall.get('request_trace') or {}
+    if (recall.get('stage') != 'await_dispatch'
+            or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
+        return None
+    count = _journal_pad_inputs(runtime, trace, 'a')
+    if count is None:
+        return None
+    return {'request_trace': trace, 'a_inputs': count}
+
+
+def card_scroll_receipt(runtime, state, meta):
+    """Match the previous top-row Up to the sender journal and run identity."""
+    boundary = (state.get('policy') or {}).get('card_upper_boundary') or {}
+    trace = boundary.get('request_trace') or {}
+    if (boundary.get('await_input') is not True
+            or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
+        return None
+    count = _journal_pad_inputs(runtime, trace, 'up')
+    if count is None:
+        return None
+    return {'request_trace': trace, 'up_inputs': count}
+
+
+def departure_input_receipt(runtime, state, meta):
+    """Match a requested departure A to the sender journal and run identity.
+
+    The policy holds the target A as a reservation only; this receipt is the
+    sole writer that may prove the pad press actually left (docich#3193 A).
+    """
+    request = (state.get('policy') or {}).get('departure_request') or {}
+    trace = request.get('request_trace') or {}
+    if (request.get('status') not in ('requested', 'sent')
+            or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
+        return None
+    count = _journal_pad_inputs(runtime, trace, 'a')
+    if count is None:
+        return None
+    return {'request_trace': trace, 'a_inputs': count}
 
 
 # The agent and the corner monitor both write screenshots/latest.png. A pad A
@@ -501,6 +509,7 @@ def main():
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
                                  card_scroll_input=card_scroll_receipt(runtime, state, meta),
+                                 departure_input=departure_input_receipt(runtime, state, meta),
                                  overtaken_frames=overtaken_frames(runtime, state),
                                  run_identity=meta.get('hanjuku'),
                                  chart_edition=chart_edition_setting(),

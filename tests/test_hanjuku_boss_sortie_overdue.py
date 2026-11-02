@@ -214,3 +214,40 @@ def test_an_unconfirmed_site_launch_goes_overdue_by_its_planned_target():
     mem = site_memory('マラコビア')
     O._relaunch_overdue_boss(mem)
     assert mem['sorties']['4-B2']['status'] == 'en_route'
+
+
+def test_an_overdue_relaunch_drops_the_spent_sortie_attempt():
+    """g1097 2026-11-02: an interrupted departure attempt with a confirmation
+    tick survived the overdue relaunch, so ``execution_claimed`` resolved the
+    re-picked pending order to None and every castle menu backed out."""
+    mem = memory(79599, lost=['パタゴーヌ'])
+    mem['sortie_attempt'] = {'step': '3-B1', 'confirmation_tick': LAUNCH - 6,
+                             'interrupted': True, 'target_seen': True}
+    O.next_order(mem)
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert mem['orders']['3-B1'] == 'pending'
+    assert 'sortie_attempt' not in mem
+    assert O._order_for_step(mem, '3-B1') is not None
+
+
+def test_an_already_overdue_sortie_drops_the_spent_attempt():
+    """The live deadlock state: sortie already overdue, order pending, and a
+    stale claimed attempt still blocking the menu flow."""
+    mem = memory(79599)
+    mem['sorties']['3-B1']['status'] = 'overdue'
+    mem['orders']['3-B1'] = 'pending'
+    mem['sortie_attempt'] = {'step': '3-B1', 'confirmation_tick': LAUNCH - 6,
+                             'interrupted': True, 'target_seen': True}
+    O._relaunch_overdue_march(mem)
+    assert 'sortie_attempt' not in mem
+
+
+def test_an_attempt_for_another_step_or_unconfirmed_is_kept():
+    mem = memory(79599)
+    mem['sorties']['3-B1']['status'] = 'overdue'
+    mem['sortie_attempt'] = {'step': '3-B2', 'confirmation_tick': 1}
+    O._relaunch_overdue_boss(mem)
+    assert mem['sortie_attempt']['step'] == '3-B2'
+    mem['sortie_attempt'] = {'step': '3-B1', 'target_seen': True}  # no tick: no claim
+    O._relaunch_overdue_march(mem)
+    assert mem['sortie_attempt']['step'] == '3-B1'

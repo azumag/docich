@@ -86,9 +86,14 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     mem['cursor'] = list(chart.castles(1)['スペンソニア'])
     actions = p.target_step(Screen([], None, '', kind='map_target'), mem, None)
     assert actions == [p.pad('a')]
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
-    assert mem['sorties']['1-A3']['source'] == 'カストーラ'
-    assert mem['launched_orders']['1-A3']['general'] == 'ゼウス'
+    # The decided A is a reservation only: world state commits on the
+    # receipt-backed departure observation, not at decision time.
+    request = mem['departure_request']
+    assert request['step'] == '1-A3' and request['target'] == 'スペンソニア'
+    assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
+    assert mem['orders']['1-A3'] == 'pending'
+    assert 'ゼウス' in mem['garrison']['カストーラ']
+    assert not mem.get('sorties') and not mem.get('launched_orders')
     assert_frozen(mem)
 
 

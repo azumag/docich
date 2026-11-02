@@ -74,10 +74,16 @@ _BROWSER_NAMES = (
 _POLL_INTERVAL_S = 0.5
 MANIFEST_REFRESH_INTERVAL_S = 1.0
 MAX_PROCESS_GROUP_MEMBERS = 128
-# Give cold Chromium startup time under Xvfb. The parent presentation process
-# must outlive this wait so it can observe either the browser or TTY fallback.
-BROWSER_WINDOW_WAIT_S = 20.0
-PRESENTATION_WINDOW_WAIT_S = 30.0
+# Give cold Chromium startup time under Xvfb. CI runners under load have
+# taken longer than 20s to map the first browser window, which forced an
+# unnecessary TTY fallback and then a readiness timeout (docich#3240).
+BROWSER_WINDOW_WAIT_S = 30.0
+# The parent presentation process must outlive the supervisor's worst-case
+# startup path before it may record viewer_timeout: frame service start (<=3s)
+# + browser window wait + browser stop + TTY fallback window wait (8s) is
+# already ~50s, so a smaller value would declare failure while the fallback
+# window is still legitimately appearing (docich#3240).
+PRESENTATION_WINDOW_WAIT_S = 60.0
 _TTY_WINDOW_WAIT_S = 8.0
 _READER_GRACE_S = 12.0
 
@@ -116,7 +122,7 @@ def _proc_identity(pid: int) -> dict[str, int | str] | None:
     """Read PID, process-group, session and start-time identity from procfs."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError:
         return {}

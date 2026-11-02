@@ -226,6 +226,26 @@ Y_JUMP_STILL_LIMIT = 3         # readable observations unchanged after direction
 Y_JUMP_INTERRUPTED_TICKS = 30  # an unseen jump this old was cut by other screens, not refused
 
 
+def observe_jump_foreground(screen, mem):
+    """A readable foreground event is evidence that Y was interrupted.
+
+    Unknown/fade frames and the map itself do not release a failed jump.
+    Keep the attempt budget, and never release a stationary/unreadable cursor.
+    Also accept a fresh event after hot-loading an old zero-move view_closed
+    receipt, so the live order can recover without rewriting runtime state.
+    """
+    if not screen.kind or screen.kind in ('map', 'map_target', 'world_map', 'unknown'):
+        return
+    active = mem.get('active')
+    jump = mem.get('y_jump') or {}
+    if active and jump.get('step') == active:
+        jump['foreground_interrupted'] = True
+    last = mem.get('y_jump_last') or {}
+    if (active and last.get('step') == active and last.get('why') == 'view_closed'
+            and not int(last.get('moves') or 0)):
+        last['foreground_interrupted'] = True
+
+
 def _note_failed_jump(mem, jump, why):
     """Remember the closed jump so a view that never moved is not reopened.
 
@@ -233,8 +253,11 @@ def _note_failed_jump(mem, jump, why):
     the view again (g1075 2026-10-28: 69 closes at 0 moves, ~1 minute of Y
     blinking per order while the ring cursor sat still on the sea).
     """
-    mem['y_jump_last'] = {'step': jump.get('step'), 'mode': jump.get('mode'),
-                          'moves': int(jump.get('moves') or 0), 'why': why}
+    last = {'step': jump.get('step'), 'mode': jump.get('mode'),
+            'moves': int(jump.get('moves') or 0), 'why': why}
+    if jump.get('foreground_interrupted'):
+        last['foreground_interrupted'] = True
+    mem['y_jump_last'] = last
 
 
 def _forget_failed_jump(mem, step, mode=None):
@@ -264,12 +287,16 @@ def _drop_stale_y_jump(screen, mem):
     if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) < Y_JUMP_OPEN_GRACE:
         return True                      # the view is still opening: press nothing
     mem.pop('y_jump', None)
-    if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) >= Y_JUMP_INTERRUPTED_TICKS:
+    if (not jump.get('seen') and not jump.get('foreground_interrupted')
+            and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) >= Y_JUMP_INTERRUPTED_TICKS):
         # g1075 2026-10-30 08:51-08:55: the target Y at 08:51:09 was cut by the
         # month turnover and a defense. Back on the target map 4 minutes later
         # it was noted as a 0-move close, so the retake walked from a stale
         # estimate and was cancelled. Nothing refused Y here: let it open
         # again, and drop the estimate the other screens made stale.
+        # A jump a readable foreground event explains instead keeps its
+        # cursor estimate and falls through to the receipted view_closed
+        # path, which permits one retry within the existing budget.
         mem.pop('cursor', None)
         mem['uncertain'] = True
         _record(mem, 'y_jump_interrupted', chart_step=jump.get('step'), target=jump.get('goal'),
@@ -292,9 +319,13 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         return False
     last = mem.get('y_jump_last') or {}
     if (last.get('step') == order['step'] and last.get('mode') == mode
-            and (not int(last.get('moves') or 0) or last.get('why') == 'cursor_stationary')):
+            and ((not int(last.get('moves') or 0)
+                  and not (last.get('why') == 'view_closed' and last.get('foreground_interrupted')))
+                 or last.get('why') == 'cursor_stationary')):
         # The last jump for this order closed without moving the cursor. The
         # view is not opening or readable here, so walk instead of toggling Y.
+        # A fresh foreground event explains a view_closed receipt, permitting
+        # another attempt within the existing budget; it proves no arrival.
         return False
     key = f"{order['step']}:{mode}"
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:

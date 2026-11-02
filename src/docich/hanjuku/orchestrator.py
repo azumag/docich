@@ -17,6 +17,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
 from .judgment import battle as battle_judgment
 from .strategy import campaign, edition, goals
 from .os_layer import readers
+from .os_layer.navigation import observe_jump_foreground
 from .os_layer.phase import classify, shop_exit_confirmation
 from .version import BOT_VERSION
 
@@ -254,6 +255,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
+           departure_input: dict | None = None,
            overtaken_frames: list | None = None,
            run_identity: dict | None = None,
            chart_edition: str | None = None,
@@ -266,7 +268,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,
-                            card_scroll_input=card_scroll_input, overtaken_frames=overtaken_frames,
+                            card_scroll_input=card_scroll_input, departure_input=departure_input,
+                            overtaken_frames=overtaken_frames,
                             run_identity=run_identity, chart_edition=chart_edition,
                             _memory=memory)
 
@@ -296,7 +299,7 @@ def _tally_observation(mem, kind, screen, actions):
 
 
 def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
-                 experience=None, recall_inputs=None, card_scroll_input=None, overtaken_frames=None,
+                 experience=None, recall_inputs=None, card_scroll_input=None, departure_input=None, overtaken_frames=None,
                  run_identity=None, chart_edition=None, _memory):
     """Return bounded pad actions and new policy memory; never write or send.
 
@@ -347,6 +350,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
     mem['_card_scroll_input']=card_scroll_input
+    mem['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
@@ -357,6 +361,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         battle_menus_flow.count_overtaken_monster_turn(parse(sent[1], phase=classify(sent[1])), mem, sent[0])
     if prompts_flow.summer_bonus_continue(screen,mem):
         screen.kind='summer_bonus'
+    observe_jump_foreground(screen, mem)
     prompts_flow.observe_events(screen,mem)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     # Reconcile the deferred-goal ledger with the facts this observation just
@@ -380,7 +385,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -392,7 +397,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -407,7 +412,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # hours. One bounded B returns to the field map, where next_order can
         # re-arm the stale step; normal flows resume if no step is parked.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
             mem.pop(key, None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -812,6 +817,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
     mem.pop('_card_scroll_input',None)
+    mem.pop('_departure_input',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem
