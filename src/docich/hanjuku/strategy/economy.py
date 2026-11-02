@@ -283,6 +283,25 @@ WAGE_SPEND_HOLD = 0
 # 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
+# Owner 2026-11-02: with cash to spare (1000G or more) a general shortage is
+# filled in one monthly visit instead of one general per month.
+RECRUIT_BATCH_GOLD = 1000
+
+
+def _batch_active(shop):
+    batch = shop.get('recruit_batch') if isinstance(shop, dict) else None
+    return isinstance(batch, dict) and type(batch.get('left')) is int and batch['left'] > 0
+
+
+def _batch_continuing(shop):
+    """A batch that already paid for at least one general this month."""
+    return _batch_active(shop) and type(shop['recruit_batch'].get('done')) is int \
+        and shop['recruit_batch']['done'] > 0
+
+
+def _recruit_units(shop):
+    """Recruit fees to keep aside: the whole batch, else one."""
+    return shop['recruit_batch']['left'] if _batch_active(shop) else 1
 # 月イチイベント「ゴニンジャー」(gcgx event.html: 50Gで敵将軍の暗殺を依頼できる。
 # 成功率は低い)。隠密戦隊ごにんじゃーへの依頼料。
 GONINJA_COST = 50
@@ -477,9 +496,10 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     evidence = {'generals': len(seen['names']) if seen and seen.get('complete') is True else None,
                 'owned_castles': len(owned) if owned and owned <= known else None,
                 'gold': gold, 'spare': None}
-    if evidence['generals'] is None or evidence['owned_castles'] is None:
+    continuing = _batch_continuing(shop)
+    if not continuing and (evidence['generals'] is None or evidence['owned_castles'] is None):
         return None, evidence
-    if evidence['generals'] < evidence['owned_castles']:
+    if not continuing and evidence['generals'] < evidence['owned_castles']:
         return True, evidence  # the existing shortage cash rules still apply
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     completed = (shop.get('soldiers_before_recruit_done', shop.get('soldiers_done')) is True
@@ -569,6 +589,10 @@ def _stop_unneeded_recruit(mem, shop):
     from ..os_layer.roster import fresh
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return True  # finish the existing transaction; do not invent a refund
+    if _batch_continuing(shop):
+        # Each paid recruit invalidates the roster, so the next round cannot
+        # re-prove the shortage; the first complete roster did (recruit_batch).
+        return False
     seen, target = fresh(mem), _recruit_target(mem)
     if seen is not None and target is not None and len(seen['names']) < target and seen.get('complete') is True:
         return False
@@ -615,6 +639,8 @@ def _stop_uneconomic_recruit(mem, shop):
     """
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return False  # finish the existing conversation without guessing refunds
+    if _batch_continuing(shop):
+        return False
     if (not mem.get('recruit_payroll_pending')
             or (shop.get('key') == mem.get('month') and _recruit_shortage(mem))):
         mem.pop('recruit_hold', None)
@@ -820,6 +846,13 @@ def _prioritise_recruit(mem, shop, gold):
         return
     shop['recruit_budget_version'] = 2
     shop['recruit_priority'] = True
+    need = shortage['target'] - shortage['count_lower_bound']
+    if ('recruit_batch' not in shop and need > 1 and type(gold) is int
+            and gold >= RECRUIT_BATCH_GOLD and shop.get('recruit') not in ('opened', 'done', 'unverified')):
+        shop['recruit_batch'] = {'left': need, 'initial': need, 'done': 0, 'gold_start': gold}
+        _record(mem, 'recruit_batch_planned', month=shop.get('key'),
+                observed_metric={**shortage, 'gold': gold, 'need': need},
+                reason='資金に余裕(1000G以上)があり将軍が不足しているため、不足人数分をこの月の訪問で続けて募集する')
     if shop.get('recruit') not in ('opened', 'done', 'unverified'):
         shop['recruit'] = 'check'
     items = shop.get('items') or []
@@ -831,7 +864,7 @@ def _prioritise_recruit(mem, shop, gold):
         card_cost = 0
     available = (max(0, gold - card_cost - _month_held_reserve(shop))
                  if type(gold) is int and card_cost is not None else 0)
-    budget = 0 if shop.get('recruit') == 'done' else min(RECRUIT_COST, available)
+    budget = 0 if shop.get('recruit') == 'done' else min(RECRUIT_COST * _recruit_units(shop), available)
     shop['recruit_reserve'] = budget
     if not shop.get('soldiers_done'):
         if card_cost is not None:

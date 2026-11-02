@@ -22,14 +22,14 @@ from ..os_layer.world import NAME
 from ..strategy import goals
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
-                                WAGE_SPEND_HOLD, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                WAGE_SPEND_HOLD, _army_count_increment, _batch_active, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
                                 _egg_estimate, _egg_measured_cost, _egg_recovery_targets,
                                 _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
                                 _low_army_planned, _low_army_refill, _month_held_reserve, _month_key, _plan,
                                 _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
-                                _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities,
+                                _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities, _recruit_units,
                                 _refresh_egg_priority, _soldier_count_current, _soldier_count_scope,
                                 _soldiers_enough, _stop_uneconomic_recruit, _stop_unneeded_recruit,
                                 low_army_first, refill_outcome)
@@ -349,7 +349,8 @@ def month_step(screen: Screen, mem):
         if type(gold) is not int:
             return []
         shop['recruit_reserve'] = (0 if shop.get('recruit') == 'done' else
-                                   min(RECRUIT_COST, max(0, gold - _month_held_reserve(shop))))
+                                   min(RECRUIT_COST * _recruit_units(shop),
+                                       max(0, gold - _month_held_reserve(shop))))
         if not shop.get('soldiers_done'):
             shop['soldiers'] = min(shop.get('soldiers', 0),
                                    max(0, gold - _month_held_reserve(shop)
@@ -1021,6 +1022,40 @@ def _unpaid_egg_return(screen, mem, shop, sub):
             and month_menu_ready(screen) and _month_menu_quiet(screen))
 
 
+def _continue_recruit_batch(mem, shop, sub, paid, gold):
+    """Issue: 月初の不足人数分をまとめて募集する (owner 2026-11-02).
+
+    Only a verified payment advances the batch, and only while the cash left
+    after the existing reservations still covers another fee. Anything else
+    ends the batch, so a stalled round never spends on a guess.
+    """
+    if not shop or not _batch_active(shop):
+        return
+    batch = shop['recruit_batch']
+    if not paid:
+        batch['left'] = 0
+        _record(mem, 'recruit_batch_stopped', month=sub.get('key'),
+                observed_metric={'done': batch.get('done', 0), 'initial': batch.get('initial')},
+                reason='募集費の支払いを照合できないため、まとめ募集を打ち切り次の判断へ戻す')
+        return
+    batch['left'] -= 1
+    batch['done'] = int(batch.get('done') or 0) + 1
+    held = _month_held_reserve(shop)
+    if (batch['left'] > 0 and type(gold) is int and type(held) is int
+            and gold >= RECRUIT_COST + held):
+        shop['recruit'] = 'pending'
+        shop['recruit_reserve'] = RECRUIT_COST * batch['left']
+        _record(mem, 'recruit_batch_continue', month=sub.get('key'),
+                observed_metric={'done': batch['done'], 'left': batch['left'], 'gold': gold,
+                                 'held': held},
+                reason='不足人数が残り、予約を引いても募集費が残るため、同じ月の訪問で次の将軍を募集する')
+        return
+    batch['left'] = 0
+    _record(mem, 'recruit_batch_end', month=sub.get('key'),
+            observed_metric={'done': batch['done'], 'initial': batch.get('initial'), 'gold': gold},
+            reason='まとめ募集を終える(不足を満たした、または残金が募集費と予約に足りない)')
+
+
 def _finish_month_sub(screen, mem, shop) -> bool:
     """Back on the month menu: judge the sub-action by the gold it cost.
 
@@ -1108,6 +1143,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         invalidate(mem)  # payment/return never proves an extra general
         if shop and paid:
             shop['recruit_reserve'] = 0
+        _continue_recruit_batch(mem, shop, sub, paid, gold)
         # A recruit joins the hero's castle, which need not be home.
         # Invalidate its old list; observe the candidate there before claiming
         # admission. Payment alone is not a roster increase.
