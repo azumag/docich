@@ -127,11 +127,41 @@ def test_an_entry_inside_the_limit_is_not_sent_again():
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
-def test_an_old_march_to_a_normal_castle_is_not_touched():
+def test_an_old_march_to_a_normal_castle_is_settled_and_relaunched():
+    """Owner 2026-11-02 (g1097): a march to a normal castle that never
+    arrived (26 stale sorties up to 40k ticks) starved a whole month —
+    settle it overdue and hand the order back to pending."""
     mem = memory(79599, target='パタゴーヌ')
     O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'pending'
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert mem['sortie_relaunch']['3-B1'] == 1
+
+
+def test_a_march_relaunch_is_bounded():
+    mem = memory(79599, target='パタゴーヌ')
+    for n in range(1, O.MARCH_RELAUNCH_LIMIT + 1):
+        O.next_order(mem)
+        assert mem['sortie_relaunch']['3-B1'] == n
+        mem['orders']['3-B1'] = 'launched'
+        mem['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'アルマムーン',
+                                  'target': 'パタゴーヌ', 'status': 'en_route',
+                                  'tick': mem['tick']}
+        mem['tick'] += O.BOSS_ARRIVAL_LIMIT
+    O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
-    assert mem['sorties']['3-B1']['status'] == 'en_route'
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert len(decisions(mem, 'sortie_march_relaunch_exhausted')) == 1
+
+
+def test_a_march_without_a_launched_order_is_just_closed():
+    mem = memory(79599, target='パタゴーヌ')
+    mem['orders']['3-B1'] = 'failed'
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'failed'
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert not decisions(mem, 'sortie_march_overdue')
+    assert decisions(mem, 'sortie_march_overdue_settled')
 
 
 def test_relaunches_are_bounded_per_step():
