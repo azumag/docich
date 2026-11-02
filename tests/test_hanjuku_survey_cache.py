@@ -574,3 +574,109 @@ def test_only_the_satisfied_target_is_dropped_when_two_are_pending():
     house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)
     house.step(parse(roster(NAMES)), mem, None)
     assert mem['house']['status_targets'] == ['どうし']
+
+
+# ---- Issue #3194 (06/10): month-boundary carry-over (flag, default off) ----
+
+def _next_month(mem, month='1-7', names=NAMES, tick=900):
+    """A new month with its own complete names-only roster count."""
+    mem.update(month=month, tick=tick)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'month_scan': True, 'seen': [], 'pending': [],
+                    'age': 0, 'total': 0}
+    r.begin(mem, mem['house'])
+    r.page(mem, list(names))
+    mem['recruit_roster']['wages'] = {n: r.fixed_wage(n) or 0 for n in names}
+    mem['recruit_roster']['complete'] = True
+    mem.pop('house')
+    for castle in list(mem.get('castle_income', {})):
+        mem['castle_income'][castle].update(month=month, tick=tick)
+    return mem
+
+
+@pytest.fixture
+def carry_on(monkeypatch):
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)  # on by default
+
+
+def test_month_carry_is_on_by_default_and_the_kill_switch_turns_it_off(monkeypatch):
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)
+    assert r.month_carry_enabled() is True
+    assert r.carry_forward(_next_month(completed())) is not None
+    monkeypatch.setenv(r.MONTH_CARRY_ENV, '0')
+    mem = _next_month(completed())
+    assert r.carry_forward(mem) is None
+    assert r.reusable_survey(mem) is None
+
+
+def test_healthy_castle_residents_are_carried_and_only_the_new_member_is_opened(carry_on):
+    mem = completed()
+    mem = _next_month(mem, names=NAMES + ['ヴィーナス'])
+    out = r.carry_forward(mem)
+    assert out == {'carried': NAMES, 'reopen': ['ヴィーナス']}
+    assert r.recheck_targets(mem) == ['ヴィーナス']
+    assert r.completed_survey(mem) is not None
+    row = mem['house_eggs']['ゼウス']
+    assert row['month'] == '1-7' and row['carried_from'] == '1-6' and row['carry_depth'] == 1
+    assert row['location'] == 'castle' and row['location_observed'] is True
+
+
+def test_everyone_carried_means_no_status_screen_is_opened(carry_on):
+    mem = _next_month(completed())
+    assert r.carry_forward(mem)['reopen'] == []
+    assert r.recheck_targets(mem) == []
+    mem['obs_cost'] = {}
+    assert house.step(MAP, mem, None) is None  # back to the field, no survey walk
+    assert 'house' not in mem or not mem.get('house')
+
+
+def test_a_general_with_an_event_since_the_last_read_is_reopened(carry_on):
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'], fields=('egg',))
+    mem = _next_month(mem)
+    out = r.carry_forward(mem)
+    assert out == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    assert r.recheck_targets(mem) == ['ゼウス']
+
+
+@pytest.mark.parametrize('change', ['hp', 'field', 'broken', 'unobserved'])
+def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on, change):
+    mem = completed()
+    row = mem['roster_survey']['statuses']['ゼウス']
+    if change == 'hp':
+        row['hp'] = row['max_hp'] - 1
+    elif change == 'field':
+        row['location'] = 'field'
+    elif change == 'broken':
+        row['broken'] = True
+    else:
+        row['location_observed'] = False
+    mem = _next_month(mem)
+    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+
+
+def test_a_row_is_carried_at_most_two_months_in_a_row(carry_on):
+    mem = completed()
+    for month, expect in (('1-7', NAMES), ('1-8', NAMES), ('1-9', [])):
+        mem = _next_month(mem, month=month, tick=mem['tick'] + 400)
+        out = r.carry_forward(mem)
+        assert out['carried'] == expect, month
+        assert sorted(out['reopen']) == sorted(set(NAMES) - set(expect))
+        # a real read of everyone ends the reopened ones' streak
+        mem['roster_survey']['dirty'] = {}
+
+
+def test_a_gap_in_months_or_another_run_or_chapter_is_not_carried(carry_on):
+    mem = _next_month(completed(), month='1-8')       # 1-7 was never surveyed
+    assert r.carry_forward(mem) is None
+    mem = completed(); mem['roster_survey']['identity'] = {**IDENTITY, 'runtime_id': 'other'}
+    assert r.carry_forward(_next_month(mem)) is None
+    mem = completed()
+    mem = _next_month(mem); mem['chapter'] = 2
+    assert r.carry_forward(mem) is None
+
+
+def test_carry_over_needs_this_months_complete_names_only_count(carry_on):
+    mem = completed()
+    mem.update(month='1-7', tick=900)                  # no new roster count yet
+    assert r.carry_forward(mem) is None
+    assert r.reusable_survey(mem) is None

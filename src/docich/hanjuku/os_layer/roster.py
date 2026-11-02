@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 import re
 
 from ..identity import run_identity
@@ -359,6 +360,101 @@ def _status_survey(mem, key, *, complete):
                 or any(type(v) is not int or not 0 <= v <= 10**6 for v in revisions.values())):
             return None
     return survey
+
+
+# Issue #3194 (06/10): month-boundary carry-over of unchanged status rows.
+# On by default (owner 2026-11-02: apply on merge). DOCICH_HANJUKU_MONTH_CARRY=0
+# is the kill switch and is read when the brain starts. A row is carried at
+# most MONTH_CARRY_MAX months in a row, then the general is opened again (the
+# periodic cross-check).
+MONTH_CARRY_ENV = 'DOCICH_HANJUKU_MONTH_CARRY'
+MONTH_CARRY_MAX = 2
+
+
+def month_carry_enabled():
+    return os.environ.get(MONTH_CARRY_ENV) != '0'
+
+
+def _previous_month(month):
+    m = re.fullmatch(r'([1-9][0-9]*)-([1-9]|1[0-2])', month) if isinstance(month, str) else None
+    if m is None:
+        return None
+    year, mon = int(m.group(1)), int(m.group(2))
+    return f'{year}-{mon - 1}' if mon > 1 else (f'{year - 1}-12' if year > 1 else None)
+
+
+def _carry_eligible(row, dirty_fields):
+    """Only a healthy, unbroken castle resident with no event since the read."""
+    if not isinstance(row, dict) or dirty_fields:
+        return False
+    hp, maximum = row.get('hp'), row.get('max_hp')
+    depth = row.get('carry_depth', 0)
+    return (row.get('location') == 'castle' and row.get('location_observed') is True
+            and row.get('broken') is False
+            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
+            and type(depth) is int and 0 <= depth < MONTH_CARRY_MAX)
+
+
+def carry_forward(mem):
+    """Start this month's survey from last month's rows, reopening only the rest.
+
+    The roster names come from this month's complete names-only count, so
+    membership is always re-read. A previous-month row is reused only if the
+    general was a healthy, unbroken castle resident whose last read was
+    observed, and no battle/sortie/recall/egg event marked it dirty since.
+    Every other general gets a placeholder row that is dirty in all fields, so
+    the ordinary partial walk opens exactly those. Returns ``None`` when
+    nothing was done, else ``{'carried': [...], 'reopen': [...]}``.
+    """
+    if not month_carry_enabled() or reusable_survey(mem) is not None:
+        return None
+    identity = run_identity(mem.get('_run_identity'))
+    chapter, month = mem.get('chapter'), mem.get('month')
+    previous = _previous_month(month)
+    prev = mem.get('roster_survey')
+    receipt = fresh(mem, include_completed=False)
+    if (identity is None or previous is None or not isinstance(prev, dict)
+            or prev.get('schema') != 1 or prev.get('identity') != identity
+            or prev.get('scope') != [chapter, previous]
+            or not isinstance(prev.get('statuses'), dict) or not isinstance(prev.get('dirty'), dict)
+            or receipt is None or receipt.get('complete') is not True
+            or not isinstance(receipt.get('wages'), dict)):
+        return None
+    rtick = receipt['tick']
+    statuses, dirty, carried, reopen = {}, {}, [], []
+    carried_rows = {}
+    for name in receipt['names']:
+        row = prev['statuses'].get(name)
+        if _carry_eligible(row, prev['dirty'].get(name)):
+            new = deepcopy(row)
+            new.update(month=month, observed_chapter=chapter, observed_tick=rtick,
+                       carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
+            statuses[name] = carried_rows[name] = new
+            carried.append(name)
+        else:
+            statuses[name] = {'general': name, 'month': month, 'observed_chapter': chapter,
+                              'observed_tick': rtick, 'broken': False, 'hp': None, 'max_hp': None,
+                              'location': None, 'location_observed': False, 'egg': None,
+                              'uses': None, 'wage': receipt['wages'].get(name)}
+            dirty[name] = ['hp', 'location', 'egg']
+            reopen.append(name)
+    saved = {k: deepcopy(mem.get(k)) for k in ('roster_survey', 'roster_status_walk', 'house_eggs')}
+    mem['roster_survey'] = {'schema': 1, 'identity': identity, 'scope': [chapter, month],
+                            'receipt': deepcopy(receipt), 'statuses': statuses, 'dirty': dirty,
+                            'dirty_revisions': {n: 1 for n in dirty}, 'read_revisions': {}}
+    mem.pop('roster_status_walk', None)
+    if reusable_survey(mem) is None:  # any invalid shape: leave everything as it was
+        for k, v in saved.items():
+            if v is None:
+                mem.pop(k, None)
+            else:
+                mem[k] = v
+        return None
+    eggs = mem.setdefault('house_eggs', {})
+    for name, row in carried_rows.items():
+        eggs[name] = deepcopy(row)
+    mem['house_status_recheck'] = bool(dirty)
+    return {'carried': carried, 'reopen': reopen}
 
 
 def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
