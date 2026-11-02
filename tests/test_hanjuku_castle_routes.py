@@ -351,3 +351,31 @@ def test_boss_gate_ordering_is_scoped_to_lost_castles():
     cands = list(replan.interim_candidates(mem).values())
     retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
     assert set(retakes) == {'ボッサール', 'オトラント'}
+
+
+def test_source_past_an_own_castle_on_the_march_is_avoided():
+    """Owner 2026-11-02 (g1097): アルマムーン→クロチェット always stopped at
+    オトラント on the way — a source behind another own castle never reaches
+    the target, so the nearer front-line castle is picked instead."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'],
+           'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
+                        'オトラント': ['グレナデン', 'バジル'],
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    kuro = next(c for c in cands if c.get('target') == 'クロチェット')
+    assert kuro['source'] == 'オトラント'
+
+
+def test_march_blocked_geometry():
+    assert replan._march_blocked(5, 'アルマムーン', 'クロチェット',
+                                 {'アルマムーン', 'オトラント'})
+    assert replan._march_blocked(5, 'アルマムーン', 'プトレマイス',
+                                 {'アルマムーン', 'バスカビル'})
+    assert not replan._march_blocked(5, 'オトラント', 'クロチェット',
+                                     {'アルマムーン', 'オトラント'})
+    assert not replan._march_blocked(5, 'アルマムーン', 'オトラント',
+                                     {'アルマムーン', 'オトラント', 'カルーン'})
