@@ -164,7 +164,10 @@ def test_ready_all_captured_keeps_unmeasured_castles_locked(monkeypatch):
     # the chapter's unmeasured normal castles are still unconquered.
     assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured)})
     assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured) - {boss}})
-    assert not policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {sorted(normal)[0]}})
+    # Owner 2026-11-02 (並行で攻め込める): a castle off the boss chain no
+    # longer gates it — chapter 3's chain is アルマムーン→パタゴーヌ→ボス only.
+    assert policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {sorted(normal)[0]}})
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {'パタゴーヌ'}})
     assert policy._ready(order, {'chapter': chapter, 'captured': set(normal)})
 
 
@@ -300,7 +303,10 @@ def test_chapter_3_boss_cell_puts_the_marker_on_the_building_under_the_skull():
     assert boss_order['target'] == 'ボス' and boss_order['after'] == ('all_captured',)
     ordinary = [n for n in chart.CASTLE_NAMES[3] if n not in (chart.home_castle(3), 'ボス')]
     assert len(ordinary) == 8
-    assert not _ready(boss_order, {'chapter': 3, 'captured': ordinary[:-1]})
+    # Owner 2026-11-02 (並行で攻め込める): the boss gate only covers its own
+    # chain (アルマムーン→パタゴーヌ→ボス) — a side castle may lag behind.
+    assert _ready(boss_order, {'chapter': 3, 'captured': ordinary[:-1]})
+    assert not _ready(boss_order, {'chapter': 3, 'captured': [c for c in ordinary if c != 'パタゴーヌ']})
     assert _ready(boss_order, {'chapter': 3, 'captured': ordinary})
 
 

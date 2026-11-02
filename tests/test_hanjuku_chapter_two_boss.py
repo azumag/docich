@@ -31,12 +31,20 @@ def test_all_ordinary_castles_captured_selects_the_base_boss_order():
     assert policy._deploy_cards(order, mem) == list(order['cards'])
 
 
-def test_boss_remains_gated_until_last_ordinary_castle_is_captured():
+def test_boss_opens_while_a_side_castle_is_still_missing():
+    """Owner 2026-11-02 (並行で攻め込める): the boss order waits only on its
+    own chain — アウスパジア is off the アルマムーン→スペランザ→ボス route."""
     mem = ready_memory()
     mem['captured'].remove('アウスパジア')
     boss = next(o for o in chart.orders(2) if o['step'] == '2-B1')
+    assert policy._ready(boss, mem)
+
+
+def test_boss_stays_gated_while_a_chain_castle_is_missing():
+    mem = ready_memory()
+    mem['captured'].remove('スペランザ')
+    boss = next(o for o in chart.orders(2) if o['step'] == '2-B1')
     assert not policy._ready(boss, mem)
-    assert policy.next_order(mem) is None
 
 
 def test_native_ring_confirms_the_measured_boss_cell():

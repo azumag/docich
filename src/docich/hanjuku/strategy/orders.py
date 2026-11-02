@@ -430,6 +430,30 @@ def _season_site_ready(order, mem):
     return _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
 
 
+def _boss_path_captured(mem):
+    """Every castle on the order chain toward the boss is held.
+
+    Owner 2026-11-02 (クロシェット取り返し中でも同時にボス城に攻め込める):
+    ``all_captured`` gated the boss order behind side castles that have
+    nothing to do with the boss route — the assault may run in parallel
+    with their retakes once every castle the chain marches through is held.
+    """
+    chapter = mem.get('chapter') or 0
+    all_orders = chart.all_orders(chapter)
+    path = {o.get('target') for o in all_orders
+            if chart.is_boss_castle(o.get('target'))}
+    boss_targets = set(path)
+    while True:
+        grow = {o.get('source') for o in all_orders
+                if o.get('target') in path and o.get('source') not in path}
+        if not grow:
+            break
+        path |= grow
+    captured = set(mem.get('captured') or ()) | {chart.home_castle(chapter)}
+    chain = path - boss_targets
+    return bool(chain) and all(c in captured for c in chain)
+
+
 def _post_conquest_wait(mem):
     """All normal castles held while the boss fight is still ahead (#2985).
 
@@ -504,7 +528,10 @@ def _boss_target_unlocked(order, mem):
         return False
     if _season_site_ready(order, mem):
         return True
-    return _is_boss_order(order, mem) and _all_normal_captured(mem)
+    # Parallel assault while side castles are retaken: the boss target is
+    # unlocked once every castle on its own chain is held (owner 2026-11-02).
+    return _is_boss_order(order, mem) and (_all_normal_captured(mem)
+                                         or _boss_path_captured(mem))
 
 
 def _season_site_held(order, mem):
@@ -557,6 +584,11 @@ def _ready(order, mem) -> bool:
         return after[1] in captured
     if after[0] == 'all_captured':
         if _season_site_ready(order, mem):
+            return True
+        # The boss assault may run while side castles are still being
+        # retaken — only the castles on its own chain must be held
+        # (owner 2026-11-02: クロシェット取り返し中でも並行で攻め込める).
+        if chart.is_boss_castle(order.get('target')) and _boss_path_captured(mem):
             return True
         return _all_normal_captured(mem)
     return False
