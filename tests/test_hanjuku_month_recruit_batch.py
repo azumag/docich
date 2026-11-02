@@ -80,3 +80,42 @@ def test_single_missing_general_does_not_create_a_batch():
                                  wages={'どうし': 0, 'ゼウス': 4, 'ヴィーナス': 4, 'ヘルメス': 4})
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 1200})
     assert shop.get('recruit_batch') is None and shop['recruit_reserve'] == 50
+
+
+
+# ---- owner 2026-11-02: 募集1人ごとにステータス確認するのは冗長 ----
+# g1097 19:01:09: right after the first general of a batch joined, the monthly
+# roster scan (~40 s) ran, although the next round needed no new roster.
+def scan_after_payment(recruit_status):
+    from docich import hanjuku_house as house
+    mem, shop = planned(1200)
+    mem['shop'] = shop
+    paid_round(mem, shop, 1200, 1150)               # roster evidence invalidated, as in play
+    if recruit_status is not None:
+        shop['recruit'] = recruit_status
+    screen = parse(month_canvas(1150, on='しょうぐんぼしゅう'))
+    return house.step(screen, mem, None), mem
+
+
+def test_no_roster_scan_between_the_rounds_of_an_active_batch():
+    actions, mem = scan_after_payment(None)          # next round is 'pending', batch left > 0
+    assert actions is None and not mem.get('house')
+    assert not mem.get('recruit_month_scan_attempts')
+
+
+def test_a_stalled_batch_does_not_block_the_roster_scan_for_the_month():
+    # A round skipped for cash leaves batch['left'] > 0; the month must still get
+    # its roster count rather than none at all.
+    actions, mem = scan_after_payment('skipped')
+    assert mem.get('house') and actions is not None
+    assert mem['recruit_month_scan_attempts']['count'] == 1
+
+
+def test_after_the_last_round_the_existing_recruit_transaction_gate_still_applies():
+    mem, shop = planned(1200)
+    mem['shop'] = shop
+    for before, after in ((1200, 1150), (1150, 1100), (1100, 1050)):
+        paid_round(mem, shop, before, after)
+    assert shop['recruit'] == 'done' and shop['recruit_batch']['left'] == 0
+    from docich import hanjuku_house as house
+    assert house.step(parse(month_canvas(1050, on='しょうぐんぼしゅう')), mem, None) is None

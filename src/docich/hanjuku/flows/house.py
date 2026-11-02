@@ -878,6 +878,14 @@ def _step_once(screen, mem, frame):
             if ((mem.get('shop') or {}).get('key') == mem.get('month')
                     and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
                 return None
+            from ..strategy.economy import _batch_active
+            if ((mem.get('shop') or {}).get('key') == mem.get('month')
+                    and _batch_active(mem.get('shop') or {})
+                    and (mem.get('shop') or {}).get('recruit') in ('pending', 'check')):
+                # Owner 2026-11-02 (募集1人ごとのステータス確認は冗長): between the
+                # rounds of a batch recruit the roster is re-counted once, after
+                # the last general, not after the first (g1097 19:01, ~40 s each).
+                return None
             if (_egg_recovery_targets(mem)
                     and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed',
                                                                     'unverified')):
