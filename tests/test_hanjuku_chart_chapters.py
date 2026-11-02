@@ -333,13 +333,20 @@ def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them(
                     8 * (v + d) for v, d in zip(SOURCE_CASTLES[chapter][name], (1, 3)))
                 limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
                 assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
+    measured = set(chart.SEASON_SITE_CELLS) | {
+        n for cells in chart.DEMON_CASTLE_CELLS.values() for n in cells}
     for chapter in range(4, 13):
-        # Chapter 4's 四季王 sites come from the live Y view, not the table.
-        ordinary = {n: c for n, c in chart.CASTLES[chapter].items() if n not in chart.SEASON_SITE_CELLS}
+        # Chapter 4's 四季王 sites and chapter 5's 完熟大魔城 come from the
+        # live Y view, not the table.
+        ordinary = {n: c for n, c in chart.CASTLES[chapter].items() if n not in measured}
         assert ordinary == {
             n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
-        assert set(chart.CASTLES[chapter]) - set(ordinary) == (set(chart.boss_sites(4)) if chapter == 4 else set())
-        assert 'ボス' not in chart.CASTLES[chapter]
+        extra = set(chart.CASTLES[chapter]) - set(ordinary)
+        expected = (set(chart.boss_sites(4)) if chapter == 4 else
+                    set(chart.DEMON_CASTLE_CELLS.get(chapter) or ()))
+        assert extra == expected
         assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
         assert chart.orders(chapter)
-        assert not any(o['target'] == 'ボス' for o in chart.orders(chapter))
+        # Only a chapter whose boss cell was measured lists its boss order.
+        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter))
+                == (chapter in chart.DEMON_CASTLE_CELLS))
