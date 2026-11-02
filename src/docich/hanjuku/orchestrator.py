@@ -271,6 +271,30 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                             _memory=memory)
 
 
+IDLE_TEXT_KEYS = 24      # distinct (screen kind, text head) pairs kept
+IDLE_TEXT_HEAD = 16      # leading characters of the screen text kept
+
+
+def _tally_observation(mem, kind, screen, actions):
+    """Issue #3194 (36): how many observations send nothing, and while on what.
+
+    g1097 2026-11-02: 36% of 4021 observations issued no input, 1009 of the
+    idle ones on a text screen, but the log keeps no screen text, so what they
+    waited on was unknowable. Counts only, bounded in keys; never read by a
+    decision.
+    """
+    cost = mem.setdefault('obs_cost', {})
+    cost.setdefault('observations', {'n': 0})['n'] += 1
+    if actions or kind not in ('text', 'unknown'):
+        return
+    entry = cost.setdefault('idle_text', {'n': 0, 'by_text': {}})
+    entry['n'] += 1
+    head = ''.join((getattr(screen, 'text', '') or '').split())[:IDLE_TEXT_HEAD] or '(blank)'
+    key = f'{kind}:{head}'
+    if key in entry['by_text'] or len(entry['by_text']) < IDLE_TEXT_KEYS:
+        entry['by_text'][key] = entry['by_text'].get(key, 0) + 1
+
+
 def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                  experience=None, recall_inputs=None, card_scroll_input=None, overtaken_frames=None,
                  run_identity=None, chart_edition=None, _memory):
@@ -783,6 +807,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     updated['no_input_streak']=streak
     updated['no_input_frames']=[hold_key]+[d for d in frozen if d!=hold_key][:1]
     updated['screen_kind']=kind
+    _tally_observation(mem, kind, screen, actions)
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
