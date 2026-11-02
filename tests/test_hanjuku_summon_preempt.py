@@ -397,3 +397,25 @@ def test_a_stuck_selected_parent_menu_resends_a_bounded():
     assert mem['battle']['okunote_summon_preempt'].get('parent_retries') == 4
     assert any(r['decision'] == 'battle_okunote_committed_unread'
                for r in mem['_records'])
+
+
+# ---- g1097 23:40: ticks上限超過で確定済み救済がBループ化 ----
+# ticks > OKUNOTE_COMMITTED_TICKS_LIMIT では「予算Bを返す」条件が先に
+# 成立し、おくのて行が読めていても永久に選択へ進まなかった (実測: 同じ
+# battle_menu にBを2600観測以上)。読める行は tick 数に関わらず選ぶ。
+def test_a_committed_rescue_past_the_tick_limit_still_selects_okunote():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+
+
+def test_an_unreadable_committed_menu_past_the_limit_marks_unavailable():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(labels=('こうげき',), hidden=True), mem) == [p.pad('b')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['exhausted'] and guard['stage'] == 'unavailable'
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])

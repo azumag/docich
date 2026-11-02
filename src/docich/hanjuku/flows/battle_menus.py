@@ -1066,12 +1066,20 @@ def okunote_step(screen, mem):
         committed = (cur.get('okunote_last_resort_recorded')
                      or (cur.get('okunote_summon_preempt') or {}).get('recorded')
                      or (cur.get('okunote_egg_preempt') or {}).get('recorded'))
-        if not (committed and cur.get('okunote_only_observed')
-                and flow['ticks'] <= OKUNOTE_COMMITTED_TICKS_LIMIT):
+        committed_active = committed and cur.get('okunote_only_observed')
+        # g1097 23:40: with ``ticks <= LIMIT`` inside the first condition the
+        # unread limit below was unreachable — past it the budgeted B always
+        # returned first, looping a button this box ignores. A おくのて row
+        # that is readable *and* has a readable cursor must still be selected
+        # below at any tick count; the limit still bounds navigation toward a
+        # row whose label or cursor cannot be confirmed.
+        if not committed_active:
             if cur.get('okunote_egg_preempt'):
                 cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
             return [pad('b')]
-        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT:
+        okunote_row_ready = ('おくのて' in {w for _, _, w in _options(screen)}
+                             and screen.menu_cursor is not None)
+        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT and not okunote_row_ready:
             for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
                 if cur.get(key):
                     cur[key].update(exhausted=True, stage='unavailable', close_pending=True)
