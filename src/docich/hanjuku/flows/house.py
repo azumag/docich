@@ -917,6 +917,14 @@ def _step_once(screen, mem, frame):
         field_month = (scope[1] if field_done else
                        None if legacy_monthly else mem.get('house_scan_month'))
         if not monthly:
+            carry = receipts.carry_forward(mem)
+            if carry is not None:
+                for _ in carry['carried']:
+                    _tally(mem, 'carried_rows')
+                for _ in carry['reopen']:
+                    _tally(mem, 'reopened_rows')
+                _record(mem, 'survey_carried', observed_metric=carry,
+                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
             reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
