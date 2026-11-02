@@ -29,6 +29,15 @@ HOUSE_ROOF_DELTA = (12, -8)
 # expected delta is the house, not an own castle (a castle's marker
 # anchor sits on its own cell, not HOUSE_ROOF_DELTA away).
 HOUSE_ROOF_MATCH = 28
+# Alternate entry after an unconfirmed arrival: put the marker on the
+# house's own cell (delta (0,0) to the roof anchor) instead of the charted
+# offset, which can land on a neighbouring tree tile (g1097 ch5).
+HOUSE_OWN_CELL_DELTA = (0, 0)
+
+
+def _entry_delta(mem):
+    misses = (mem.get('house_entry_miss') or {}).get(mem.get('chapter'), 0)
+    return HOUSE_OWN_CELL_DELTA if type(misses) is int and misses % 2 == 1 else HOUSE_ROOF_DELTA
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
@@ -285,7 +294,15 @@ def _finish(mem):
     for key in stale:
         mem['sorties'][key]['status'] = 'closed'
     if stale:
-        _record(mem, 'sortie_closed', observed_metric={'sorties': stale},
+        # The registered entry cell can sit on a neighbouring impassable
+        # tile in some chapters (g1097 ch5: the general stopped beside the
+        # tree next to the house). Alternate the next attempt between the
+        # charted cell and the house's own cell (see _entry_delta).
+        misses = mem.setdefault('house_entry_miss', {})
+        chapter = mem.get('chapter')
+        misses[chapter] = int(misses.get(chapter) or 0) + 1
+        _record(mem, 'sortie_closed', observed_metric={'sorties': stale,
+                'entry_miss': misses[chapter]},
                 reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
     # A session that ends before its repairs leaves every still-broken target
@@ -484,7 +501,7 @@ def _house_route_problem(mem):
     return None
 
 
-def _house_roof_delta(screen, mem, frame):
+def _house_roof_delta(screen, mem, frame, expected=HOUSE_ROOF_DELTA):
     """Marker-to-house-roof screen delta, or None with no house in view.
 
     The house flies an own-coloured flag, so ``castle_roofs`` reports it as
@@ -506,7 +523,7 @@ def _house_roof_delta(screen, mem, frame):
         if roof.get('clipped') or roof.get('kind') != 'own':
             continue
         delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
-        if all(abs(delta[a] - HOUSE_ROOF_DELTA[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
+        if all(abs(delta[a] - expected[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
             if best is not None:
                 return None
             best = delta
@@ -1569,10 +1586,11 @@ def _repair_step(screen, mem, frame):
             # evidence: walk the marker onto the building itself rather
             # than the registered cell, which can sit a tile off on
             # source-derived chapters.
-            roof_delta = _house_roof_delta(screen, mem, frame)
+            entry = _entry_delta(mem)
+            roof_delta = _house_roof_delta(screen, mem, frame, entry)
             if roof_delta is not None:
-                err = [HOUSE_ROOF_DELTA[a] - roof_delta[a] for a in (0, 1)]
-                position = [roof_delta[a] + target[a] - HOUSE_ROOF_DELTA[a] for a in (0, 1)]
+                err = [entry[a] - roof_delta[a] for a in (0, 1)]
+                position = [roof_delta[a] + target[a] - entry[a] for a in (0, 1)]
                 delta, accept, basis = err, 4, 'house_roof_delta'
             elif position is None:
                 reads = state.get('alignment_unread', 0)
