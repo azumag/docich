@@ -61,6 +61,14 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     need = 1 if allow_sole else 2
     excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
                 if allow_sole else set())
+    # Owner 2026-11-03 (g1097): generals moved into a castle recorded empty
+    # stood there unseen while アルマムーン kept sending the sorties. The
+    # castle's own list, opened once by a probe, is the arrival receipt; the
+    # read then lets them sortie from it like any staffed castle.
+    arrivals = sorted((c for c in owned if routes.arrival_probe_due(mem, c, cooldown=True)),
+                      key=lambda c: (_distance(chapter, c, target), c))
+    if arrivals:
+        return arrivals[0], MOVE_ANY_GENERAL
     staffed = sorted((c for c in owned if len(set(free[c])) >= need
                       and _spares(free[c], unavailable_for_attack, sole) and c not in excluded),
                      key=lambda c: (_march_blocked(chapter, c, target, owned),

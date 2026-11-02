@@ -164,6 +164,53 @@ def test_a_march_without_a_launched_order_is_just_closed():
     assert decisions(mem, 'sortie_march_overdue_settled')
 
 
+def test_a_confirmed_move_to_an_own_castle_is_settled_not_relaunched():
+    """g1097 2026-11-02: moves into our own アイアイエー (recorded empty)
+    went overdue one after another — ジェラート, チコリ, ピオーネ,
+    ピスタチオ — because a move's arrival is only observable in the
+    destination's general list, which nothing reads. Each relaunch drained
+    the donor while the earlier movers already sat there. A confirmed
+    move past the limit closes the order; routes.unread_dispatches keeps
+    the castle off the move list until its list is read."""
+    mem = memory(79599, target='パタゴーヌ')
+    mem['sorties']['3-B1']['purpose'] = 'move'
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'failed'
+    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert 'sortie_relaunch' not in mem or '3-B1' not in mem['sortie_relaunch']
+    assert not decisions(mem, 'sortie_march_overdue')
+    (record,) = decisions(mem, 'sortie_move_overdue_settled')
+    assert record['chart_step'] == '3-B1' and record['general'] == 'アポロン'
+    assert record['observed_metric']['target'] == 'パタゴーヌ'
+
+
+def test_a_move_into_lost_or_enemy_ground_still_relaunches():
+    mem = memory(79599, target='パタゴーヌ', lost=['パタゴーヌ'])
+    mem['sorties']['3-B1']['purpose'] = 'move'
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'pending'
+    assert mem['sortie_relaunch']['3-B1'] == 1
+
+
+def test_an_unconfirmed_move_launch_still_relaunches():
+    mem = memory(79599, target='パタゴーヌ')
+    mem['sorties']['3-B1']['status'] = 'launched_unconfirmed'
+    mem['sorties']['3-B1']['purpose'] = 'move'
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'pending'
+    assert mem['sortie_relaunch']['3-B1'] == 1
+
+
+def test_a_move_known_only_by_the_order_snapshot_is_settled_too():
+    """Sorties written before the launch record carried ``purpose`` still
+    resolve through launched_orders."""
+    mem = memory(79599, target='パタゴーヌ')
+    mem['launched_orders']['3-B1']['purpose'] = 'move'
+    O.next_order(mem)
+    assert mem['orders']['3-B1'] == 'failed'
+    assert decisions(mem, 'sortie_move_overdue_settled')
+
+
 def test_relaunches_are_bounded_per_step():
     mem = memory(79599, lost=['パタゴーヌ'])
     for n in range(1, O.BOSS_RELAUNCH_LIMIT + 1):
