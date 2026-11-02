@@ -109,6 +109,15 @@ class ProjectionTests(unittest.TestCase):
                         "PRIVATE": "DO NOT EMIT",
                     },
                 },
+                "corners": {
+                    "corner_rotation": {
+                        "status": "waiting",
+                        "pending": False,
+                        "queued_manual": True,
+                        "request_id": "DO-NOT-EMIT",
+                        "reason": "DO-NOT-EMIT",
+                    },
+                },
                 "PRIVATE": "DO NOT EMIT",
             }
         }
@@ -127,7 +136,13 @@ class ProjectionTests(unittest.TestCase):
         self.assertTrue(out["recent"]["boss_roster_reprobe"])
         self.assertTrue(out["recent"]["order_start"])
         self.assertFalse(out["recent"]["order_launched"])
+        self.assertEqual(out["rotation"], {
+            "status": "waiting",
+            "pending": False,
+            "queued_manual": True,
+        })
         self.assertNotIn("PRIVATE", json.dumps(out))
+        self.assertNotIn("DO-NOT-EMIT", json.dumps(out))
 
     def test_unknown_values_fail_closed_to_fixed_tokens(self):
         payload = self.payload()
@@ -135,11 +150,30 @@ class ProjectionTests(unittest.TestCase):
         tactical["status"] = "PRIVATE_STATUS"
         tactical["policy"]["active"] = "PRIVATE_ACTIVE"
         tactical["policy"]["orders"]["4-B1"] = "PRIVATE_STATE"
+        rotation = payload["diagnostics"]["corners"]["corner_rotation"]
+        rotation["status"] = "PRIVATE_ROTATION"
+        rotation["pending"] = "yes"
+        rotation["queued_manual"] = 1
         out = self.status.project(payload)
         self.assertEqual(out["status"], "unknown")
         self.assertIsNone(out["active"])
         self.assertEqual(out["orders"]["4-B1"], "unknown")
+        self.assertEqual(out["rotation"], {
+            "status": "unknown",
+            "pending": None,
+            "queued_manual": None,
+        })
         self.assertNotIn("PRIVATE", json.dumps(out))
+
+    def test_missing_rotation_projection_stays_unknown_without_failing_status(self):
+        payload = self.payload()
+        payload["diagnostics"].pop("corners")
+        out = self.status.project(payload)
+        self.assertEqual(out["rotation"], {
+            "status": "unknown",
+            "pending": None,
+            "queued_manual": None,
+        })
 
     def test_reply_contains_only_projection_and_fixed_metadata(self):
         out = self.status.project(self.payload())
@@ -153,7 +187,11 @@ class ProjectionTests(unittest.TestCase):
         text = reply["body"]
         self.assertIn("`4-B2=launched_unconfirmed`", text)
         self.assertIn("`boss_roster_reprobe=yes`", text)
+        self.assertIn("`status=waiting`", text)
+        self.assertIn("`pending=no`", text)
+        self.assertIn("`queued_manual=yes`", text)
         self.assertNotIn("PRIVATE", text)
+        self.assertNotIn("DO-NOT-EMIT", text)
 
 
 class WorkflowTests(unittest.TestCase):
