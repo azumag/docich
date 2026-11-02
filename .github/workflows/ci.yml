@@ -1,16 +1,10 @@
 name: CI
 
 on:
+  # No paths filter: main requires the ci-required check below, and a required
+  # check that never starts blocks a pull request forever. test-scope decides
+  # what each change needs, which is nothing for a documentation change.
   pull_request:
-    paths:
-      - '.node-version'
-      - 'src/**/*.py'
-      - 'tests/**/*.py'
-      - 'conftest.py'
-      - 'requirements*.txt'
-      - '.github/workflows/ci.yml'
-      - '.github/scripts/ci_test_scope.py'
-      - '.github/scripts/ci_trigger_paths.py'
   # A push to main does not re-run this suite: the per-area workflows in this
   # directory still run for the areas a push actually touched. Hanjuku-only
   # pull requests run a smaller suite (see test-scope below), so this nightly
@@ -30,6 +24,8 @@ concurrency:
 
 jobs:
   python-syntax:
+    needs: test-scope
+    if: needs.test-scope.outputs.suite != 'none'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -62,6 +58,7 @@ jobs:
   full-suite:
     name: ${{ needs.test-scope.outputs.suite == 'hanjuku' && 'hanjuku-suite' || 'full-suite' }}
     needs: test-scope
+    if: needs.test-scope.outputs.suite != 'none'
     # Hermetic full-suite contract (issue #79): every tests/test_*.py runs
     # green through the canonical pytest runner on the supported Python,
     # with no submodules, no network, and no ambient PYTHONPATH.
@@ -116,3 +113,22 @@ jobs:
         # pytest-xdist worker carries an execnet receiver thread, so this file
         # cannot run in a worker and stays on the serial runner.
         run: python3 -m pytest -q tests/test_hanjuku_scene_process.py
+
+  ci-required:
+    # The one check main's ruleset requires. The test job has two names and may
+    # be skipped, so branch protection cannot name it directly.
+    if: ${{ always() }}
+    needs: [test-scope, python-syntax, full-suite]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every job that had to run to have passed
+        env:
+          SUITE: ${{ needs.test-scope.outputs.suite }}
+          SCOPE_RESULT: ${{ needs.test-scope.result }}
+          SYNTAX_RESULT: ${{ needs.python-syntax.result }}
+          TESTS_RESULT: ${{ needs.full-suite.result }}
+        run: |
+          expected=success
+          if [ "$SUITE" = none ]; then expected=skipped; fi
+          [ "$SCOPE_RESULT" = success ] && [ "$SYNTAX_RESULT" = "$expected" ] && [ "$TESTS_RESULT" = "$expected" ]

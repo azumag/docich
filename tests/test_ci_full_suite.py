@@ -56,17 +56,48 @@ def test_single_thread_sensitive_file_runs_on_the_serial_runner():
     assert f'run: python3 -m pytest -q {ignored}\n' in text
 
 
-def test_dependency_changes_gate_pull_requests_only():
+def test_ci_starts_on_every_pull_request_because_main_requires_it():
     text = WORKFLOW.read_text().split('\npermissions:', 1)[0]
-    for pattern in ('src/**/*.py', 'tests/**/*.py', 'conftest.py',
-                    'requirements*.txt', '.github/workflows/ci.yml'):
-        assert text.count(f"      - '{pattern}'") == 1
+    # A required check that never starts leaves a pull request blocked forever,
+    # so the relevance of a change is decided in test-scope, not by a paths filter.
+    assert '\n    paths:' not in text
+    assert '\n  pull_request:\n' in text
     # A push to main does not re-run the full suite: the per-area workflows
     # cover the areas a push actually touched, the nightly schedule covers the
     # whole suite, and workflow_dispatch is the manual entry point.
     assert '\n  push:' not in text
     assert '\n  schedule:' in text
     assert '\n  workflow_dispatch:' in text
+
+
+def _gate() -> str:
+    text = WORKFLOW.read_text().split('  ci-required:\n', 1)[1]
+    assert '    if: ${{ always() }}\n' in text
+    assert '    needs: [test-scope, python-syntax, full-suite]\n' in text
+    return '\n'.join(line[10:] for line in text.split('        run: |\n', 1)[1].splitlines())
+
+
+@pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
+@pytest.mark.parametrize('suite,scope,syntax,tests,passes', [
+    ('full', 'success', 'success', 'success', True),
+    ('hanjuku', 'success', 'success', 'success', True),
+    ('none', 'success', 'skipped', 'skipped', True),
+    ('full', 'success', 'success', 'failure', False),
+    ('hanjuku', 'success', 'failure', 'success', False),
+    ('full', 'success', 'success', 'cancelled', False),
+    ('full', 'success', 'skipped', 'skipped', False),   # a skipped suite is not a pass
+    ('hanjuku', 'success', 'success', 'skipped', False),
+    ('', 'failure', 'skipped', 'skipped', False),       # the decision itself failed
+    ('none', 'failure', 'skipped', 'skipped', False),
+    ('none', 'success', 'success', 'failure', False),
+])
+def test_required_check_passes_only_when_every_needed_job_passed(suite, scope, syntax, tests, passes):
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-e', '-c', _gate()],
+        env={'SUITE': suite, 'SCOPE_RESULT': scope, 'SYNTAX_RESULT': syntax, 'TESTS_RESULT': tests},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert (result.returncode == 0) is passes, result.stderr
 
 
 def test_parallel_collection_ids_are_deterministic():

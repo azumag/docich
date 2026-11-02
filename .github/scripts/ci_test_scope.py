@@ -5,8 +5,8 @@ Usage:
     python3 .github/scripts/ci_test_scope.py decide --base SHA --head SHA
     python3 .github/scripts/ci_test_scope.py targets {full|hanjuku}
 
-``decide`` prints ``suite=full`` or ``suite=hanjuku`` on stdout, ready for
-``$GITHUB_OUTPUT``, and the reason on stderr. ``targets`` prints the pytest
+``decide`` prints ``suite=full``, ``suite=hanjuku`` or ``suite=none`` on stdout,
+ready for ``$GITHUB_OUTPUT``, and the reason on stderr. ``targets`` prints the pytest
 arguments of that suite.
 
 About four in five pull requests change Hanjuku and nothing else, and the rest of
@@ -20,6 +20,10 @@ The Hanjuku suite is ``tests/test_hanjuku*.py`` plus every other test file that
 names Hanjuku, so no test list has to be maintained. Retro corner regressions and
 Hanjuku prediction contracts still start on these pull requests, and a nightly run
 on main covers the whole suite.
+
+A change that touches none of ``TEST_RELEVANT`` runs no tests. CI still starts on
+every pull request, because main requires its ``ci-required`` check and a required
+check that never starts blocks the pull request forever.
 
 Whatever cannot be decided, including any error in this script, means ``full``.
 """
@@ -37,6 +41,18 @@ from ci_trigger_paths import path_selected  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = 'src/docich'
 HANJUKU_MODULES = [f'{PACKAGE}/hanjuku*.py', f'{PACKAGE}/hanjuku/**']
+TEST_RELEVANT = [
+    '.node-version',
+    'src/**/*.py',
+    'tests/**/*.py',
+    'conftest.py',
+    'requirements*.txt',
+    'brains/**',
+    'config/games/**',
+    '.github/workflows/ci.yml',
+    '.github/scripts/ci_test_scope.py',
+    '.github/scripts/ci_trigger_paths.py',
+]
 HANJUKU_ONLY = [
     *HANJUKU_MODULES,
     'tests/test_hanjuku*.py',
@@ -134,6 +150,8 @@ def seam_modules(root: Path = ROOT) -> set[str]:
 def choose_suite(changed: list[str], seams: set[str]) -> tuple[str, str]:
     if not changed:
         return 'full', 'no changed files reported'
+    if not any(path_selected(TEST_RELEVANT, path) for path in changed):
+        return 'none', f'{len(changed)} changed files, none relevant to tests/'
     outside = [path for path in changed if not path_selected(HANJUKU_ONLY, path)]
     if outside:
         return 'full', f'changes outside Hanjuku: {outside[:5]}'
