@@ -213,7 +213,12 @@ def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
            'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
-    assert list(candidates) == ['move_1']
+    # The boss chain is held and unbeaten, so a wave sortie at けっかい joins
+    # the staging move (#3203, owner 2026-11-02 余剰兵力の連続投入).
+    assert list(candidates) == ['move_1', 'attack_2']
+    wave = candidates['attack_2']
+    assert wave['target'] == 'けっかい' and wave['purpose'] == 'attack'
+    assert wave['cards'] == []            # wave sorties never wait on a kit
     move = candidates['move_1']
     # #2985: captured=all normals puts this mem in the post-conquest boss wait,
     # so a priority source parts with its weakest spare, not the list head.
