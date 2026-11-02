@@ -38,7 +38,8 @@ def test_a_jump_cut_by_the_month_and_a_battle_opens_again():
 def test_a_view_that_closes_right_away_still_walks():
     mem = memory(tick=100 + nav.Y_JUMP_OPEN_GRACE)
     assert nav._drop_stale_y_jump(target_map(), mem) is False
-    assert mem['y_jump_last'] == {'step': ORDER['step'], 'mode': 'target', 'moves': 0, 'why': 'view_closed'}
+    assert mem['y_jump_last'] == {'step': ORDER['step'], 'mode': 'target', 'moves': 0, 'why': 'view_closed',
+                               'foreground_interrupted': False}
     assert mem['cursor'] == [520, 528]
     assert mem['_records'][-1]['decision'] == 'y_jump_failed'
     assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
