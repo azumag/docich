@@ -195,6 +195,14 @@ Git bundle は `ops/vm_actions/prune_bundles.py` と `.github/workflows/vm-bundl
 
 インストール済みgatewayは `/usr/local/libexec/azumag-vm-ops/gateway.py` を実行するため、gateway sourceを更新したmainをproductionへdeployしただけでは実行ファイルは切り替わりません。既存のowner-only運用経路でroot-owned installed copyを明示更新し、repo sourceとの一致とproduction statusの新フィールドを確認してから反映済みと扱います。
 
+## OpenCode / runtime reclaim helpers（#3109 / #3122 / #3140）
+
+いずれも **dry-run 既定**です。apply は reviewed plan の sha256（`--expect-plan` / `EXPECT_PLAN`）が一致したときだけ実行し、唯一の例外は `opencode_session_file_reclaim.py` の `--auto-apply`（既定 OFF・2-pass 連続性の機械検証）です。VM への適用は owner 確認後の別作業です。
+
+- `opencode_session_file_reclaim.py`（#3140 / ADR 0006）: `~/.local/share/opencode/` の `snapshot/<session>/` と `storage/session_diff/*.json` のうち cutoff（既定 24h）超のものだけを plan します。`tool-output/`・`log/`・`repos/`・`shell/`・`auth.json`・`storage/migration`・`opencode.db*` は対象外、symlink/非 regular は fail-closed。hourly `docich-opencode-retention.service` の DB pass 直後に **dry-run のみ**で配線済みで、`--state-file`（mode 0600、store 外）に plan を保存します。`--auto-apply` は「前 pass の plan に載り、全 stamp が不変で、今回も cutoff 超」のエントリだけを削除する continuity モードで、既定 OFF・owner 有効化待ちです。削減効果は `opencode_default_{snapshot,storage,tool_output,log,other}` の allocated bytes で観測します（`other` は未知サブパスの検知用）。
+- `runtime_bulky_reclaim.py`（#3109）: 完了済み runtime 世代の `hanjuku_commentary.jsonl` / `hanjuku_narration.jsonl` だけを対象にします。`RUN_ID`・canonical state（active/retiring 除外）・`terminal_identity` のゲートを通し、世代ディレクトリ自体、ログ、frames は削除しません。
+- `runtime_browser_profile_reclaim.py`（#3122）: 完了済み世代の `*-browser-profile` のみを対象にします。最新 `--keep-recent` 世代と `--min-age-hours`（既定 24h）未満の profile は残し、hanjuku ログと frames は削除しません。`browser_profile_reclaim_now.sh` が owner 同意の 2 段階（dry-run → `EXPECT_PLAN` 指定 apply）wrapper です。
+
 ## Operational notes
 
 ### Ubuntu 24.04 の unprivileged user namespace 制限（preview sandbox）
