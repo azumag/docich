@@ -568,3 +568,55 @@ def test_a_transfer_still_marching_is_waited_for_before_the_list_is_opened():
     assert routes.incoming(mem, 'アイアイエー')
     assert not routes.arrival_probe_due(mem, 'アイアイエー', cooldown=True)
     assert first_candidate(mem).get('source_probe') is not True
+
+
+# g1097 2026-11-03: the mechanical plan is rebuilt under the same request id whenever
+# gold/month/order states change, and again hours later when the situation recurs.
+# Positional ids M1..Mn named a different order each time, so a stale 'launched'
+# kept カルーン (M1, 6.5 h) and クロチェット (M3) from ever starting.
+def plan_steps(mem):
+    return {o['target']: o['step'] for o in (mem.get('chart_plan') or {}).get('orders') or []}
+
+
+def rebuild(mem):
+    mem['route_probe_read_tick']['アイアイエー'] = mem['tick']      # its list was read: no probe order
+    mem['chart_plan'] = None
+    replan._mechanical_chart(mem, mem.setdefault('chart_adjust', {}), '0123456789abcdef', 'digest')
+    return plan_steps(mem)
+
+
+def test_a_plan_step_id_names_the_order_not_its_position():
+    mem = aiaie_stall()
+    first = rebuild(mem)
+    assert len(set(first.values())) == len(first) >= 3
+    assert not any(step.rsplit(':', 1)[-1] in ('M1', 'M2', 'M3', 'M4') for step in first.values())
+    mem['tick'] += 50
+    mem['garrison']['アルマムーン'] = mem['garrison']['アルマムーン'][::-1]   # a rebuild with other leads
+    assert rebuild(mem) == first                       # same order -> same id, whatever its position
+
+
+def test_an_old_launched_flag_does_not_block_an_order_the_plan_offers_again():
+    mem = aiaie_stall()
+    steps = rebuild(mem)
+    karun = steps['カルーン']
+    mem['orders'][karun] = 'launched'
+    mem['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
+                             'status': 'arrived', 'tick': mem['tick'] - 17000}
+    mem['general_override'] = {karun: 'キッシュ'}
+    mem['order_context'] = {karun: {'actual_general': 'キッシュ'}}
+    rebuild(mem)
+    assert mem['orders'][karun] == 'pending'
+    assert karun not in mem['general_override'] and karun not in mem['order_context']
+    assert mem['_records'][-1]['decision'] in ('plan_step_released', 'chart_adjust_applied')
+    assert any(r['decision'] == 'plan_step_released' and r['chart_step'] == karun for r in mem['_records'])
+
+
+def test_an_order_really_marching_keeps_its_launched_flag():
+    mem = aiaie_stall()
+    steps = rebuild(mem)
+    step = steps['ジュメルズ']
+    mem['orders'][step] = 'launched'
+    mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ジュメルズ', 'general': 'セルリアク',
+                            'status': 'en_route', 'tick': mem['tick'] - 100}
+    rebuild(mem)
+    assert mem['orders'][step] == 'launched'

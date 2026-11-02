@@ -6,6 +6,8 @@ one answers, and records every deviation.
 """
 from __future__ import annotations
 
+import hashlib
+
 from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
                  hanjuku_reference as reference)
 from ..decision_log import _record
@@ -639,9 +641,10 @@ def _mechanical_chart(mem, state, rid, digest):
         return
     chapter = mem.get('chapter') or 0
     orders = []
-    for i, (label, order) in enumerate(candidates.items(), 1):
+    used = set()
+    for label, order in candidates.items():
         orders.append({
-            'step': 'M%d' % i,
+            'step': _mechanical_step(order, used),
             'general': order['general'],
             'source': order['source'],
             'target': order['target'],
@@ -658,7 +661,61 @@ def _mechanical_chart(mem, state, rid, digest):
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     validated = dict(validated, request_digest=digest)
+    _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
     _adopt_plan(mem, validated, rid)
+
+
+def _mechanical_step(order, used):
+    """Local step id named by what the order does, not by its list position.
+
+    g1097 2026-11-03: the plan is rebuilt whenever gold, month or an order
+    state changes, under the same request id while the captures are unchanged
+    (and again hours later when the situation recurs). Positional ids M1..Mn
+    then named different orders each time: M3 (クロチェット retake) inherited
+    'launched' from an earlier M3 (a move to アイアイエー) and never ran, M1
+    (カルーン) stayed 'launched' for 6.5 hours, so only the one order whose id
+    was unused went out at a time. The id must identify the order's content.
+    """
+    key = '%s>%s:%s' % (order.get('source'), order.get('target'), order.get('purpose') or '')
+    step = 'M' + hashlib.sha1(key.encode()).hexdigest()[:6]
+    while step in used:
+        step = 'M' + hashlib.sha1((step + key).encode()).hexdigest()[:6]
+    used.add(step)
+    return step
+
+
+RELEASE_KEYS = ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                'sortie_actor_miss', 'launched_orders', 'target_cancel')
+
+
+def _release_stale_steps(mem, steps):
+    """An order the plan offers again is not in flight: forget its old 'launched'.
+
+    The candidates exclude every target with a recent unit en route, so a step
+    marked launched whose sortie is not marching any more (arrived, overdue,
+    never recorded) describes an earlier attempt. Keeping it made the order
+    unstartable for as long as the situation id stayed the same.
+    """
+    from .orders import BOSS_ARRIVAL_LIMIT, _drop_spent_sortie_attempt
+    now = int(mem.get('tick') or 0)
+    status = mem.setdefault('orders', {})
+    for step in steps:
+        if status.get(step) != 'launched':
+            continue
+        sortie = (mem.get('sorties') or {}).get(step) or {}
+        if (sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('tick')) is int and 0 <= now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+            continue
+        for key in RELEASE_KEYS:
+            (mem.get(key) or {}).pop(step, None)
+        _drop_spent_sortie_attempt(mem, step)
+        status[step] = 'pending'
+        _record(mem, 'plan_step_released', chart_step=step,
+                observed_metric={'sortie_status': sortie.get('status'), 'general': sortie.get('general'),
+                                 'target': sortie.get('target'),
+                                 'age': (now - sortie['tick']) if type(sortie.get('tick')) is int else None},
+                reason='計画が再び出した指示に、行軍中でない過去の「出撃済み」が残っていたため未発射に戻す')
 
 
 def _adjust_situation(mem):
