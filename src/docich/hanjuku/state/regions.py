@@ -16,11 +16,14 @@ FlowResult 契約にした。C 段階は残る共有状態 ``mem`` のフラッ�
 - ``FLOW``   手順自身が所有するセッション状態 (departure_request・
              departure_miss 等)。手順終了・中断・章遷移で死ぬ。
 
-段階1では出撃ドメインの予約・会計帳・receipt だけを実移行する。
-帰還 (recall) 系と ``sortie_attempt``・``launch_probe`` 系は参照面が広く、
-レビュー可能な差分を保つため ``migrated=False`` の宣言に留め、
-段階2で同じスキーマに沿って追従移行する (振り分け案:
+段階2で出撃・帰還ドメインの手順セッション状態を実移行済み (migrated=True)。
+world/plan キーは観測層・戦略層の所有物として宣言のみのまま (振り分け案:
 issue #3193 issuecomment-6585024310)。
+
+``flow(mem)``/``journal(mem)`` の戻り値は遅延ビュー: 読み取りのみの経路で
+空領域を ``mem`` に実体化しない。呼び出し側は戻り値を保持せず、都度
+アクセサ経由で参照・更新する (ビューは実体化時に mem へ取り付くが、
+他経路で領域が作られると古いビューは参照先を失う)。
 """
 from __future__ import annotations
 
