@@ -916,6 +916,7 @@ def _relaunch_overdue_march(mem):
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue
+        en_route = sortie.get('status') == 'en_route'
         sortie['status'] = 'overdue'
         _drop_spent_sortie_attempt(mem, step)
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
@@ -925,6 +926,23 @@ def _relaunch_overdue_march(mem):
             _record(mem, 'sortie_march_overdue_settled', chart_step=step,
                     observed_metric=observed,
                     reason='出撃が上限の観測内に決着しないため、保留中のままの行軍を済ませたものとして片付ける')
+            continue
+        order = (mem.get('launched_orders') or {}).get(step) or {}
+        if (en_route and target in _owned(mem)
+                and (sortie.get('purpose') or order.get('purpose')) == 'move'):
+            # g1097 2026-11-02: a move into our own castle has no arrival
+            # report and nothing reads the destination's list on a
+            # schedule, so every relaunch simply drained the donor —
+            # アルマムーン sent ジェラート, チコリ, ピオーネ, ピスタチオ into
+            # アイアイエー one after another while the earlier movers were
+            # already sitting there. Close the confirmed march's order; the
+            # castle stays off the move list via routes.unread_dispatches
+            # until its own general list is read. An unconfirmed launch
+            # still retries through the normal relaunch budget.
+            status[step] = 'failed'
+            _record(mem, 'sortie_move_overdue_settled', chart_step=step,
+                    general=sortie.get('general'), observed_metric=observed,
+                    reason='自城への移動の入城は行先の一覧でしか観測できず、出し直しても同じ確認漏れになるため、指示を閉じて行先一覧の確認へ委ねる')
             continue
         if relaunches.get(step, 0) >= MARCH_RELAUNCH_LIMIT:
             _record(mem, 'sortie_march_relaunch_exhausted', chart_step=step,

@@ -316,6 +316,34 @@ def test_a_read_list_in_chapter_4_makes_an_empty_castle_a_move_target_again():
     assert [o['source'] for o in moves_into(mem, 'ビクトリア')] == ['アルマムーン']
 
 
+def test_an_overdue_move_still_suppresses_refills_and_binds_on_later_read():
+    """g1097 2026-11-02: the overdue march relaunch popped the sortie's
+    launched_orders record, so the dispatch stopped counting as unread and
+    the same "empty" castle received move after move (アルマムーン→アイアイエー
+    x4+). An overdue move keeps suppressing refills until the castle's own
+    list is read, and that read binds the arrival."""
+    mem = victoria_drain()
+    step = 'I:0fa434:2'
+    mem['sorties'][step].update(status='overdue', purpose='move')
+    mem['launched_orders'].pop(step)                  # relaunch pops the snapshot
+    assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {
+        'I:0fa434:2', 'I:49a839:1'}
+    assert not moves_into(mem, 'ビクトリア')
+    routes.observed_roster(mem, 'ビクトリア', ['アポロン'])
+    assert mem['sorties'][step]['status'] == 'arrived'
+    assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
+
+
+def test_an_overdue_non_move_march_is_not_an_unread_dispatch():
+    mem = victoria_drain()
+    step = 'I:0fa434:2'
+    mem['sorties'][step].update(status='overdue')
+    mem['launched_orders'][step]['purpose'] = 'attack'
+    assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {'I:49a839:1'}
+    routes.observed_roster(mem, 'ビクトリア', ['アポロン'])
+    assert mem['sorties'][step]['status'] == 'overdue'
+
+
 def test_lost_castle_gating_the_boss_path_is_retaken_first():
     """Owner 2026-11-02 (g1097): 5-C4 waits on captured バスカビル while minor
     retakes cycle — a lost castle gating the boss chain outranks the rest."""

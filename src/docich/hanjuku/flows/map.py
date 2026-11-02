@@ -786,6 +786,7 @@ def _commit_departure(mem, order, context, snapshot):
     mem.setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
+        'purpose': snapshot.get('purpose'),
         'evidence': deepcopy({k: v for k, v in
             ((mem.get('order_context') or {}).get(order['step']) or {}).items()
             if k != 'departure_order'}),
