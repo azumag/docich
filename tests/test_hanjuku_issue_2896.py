@@ -1,4 +1,5 @@
 """Regression tests for issue #2896 (full-HP melee advantage latch)."""
+import pytest
 from copy import deepcopy
 from pathlib import Path
 import sys
@@ -6,6 +7,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.hanjuku.judgment import battle as rules
 from docich.hanjuku.os_layer.world import NAME
+
+
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
 
 
 def base_cur(**changes):

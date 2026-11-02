@@ -8,6 +8,15 @@ from docich.hanjuku_screen import Battle, Screen
 from test_hanjuku_survival import menu
 
 
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+
+
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
            ally_hp=22, soldiers=(0, 6), side='attack'):
     mem = {'chapter': 1, 'tick': 12, 'battle': {
@@ -37,22 +46,6 @@ def assert_not_spent(mem):
     cur = mem['battle']
     assert cur['cards_selected'] == cur['cards_used'] == cur['cards_unclassified'] == []
     assert not mem.get('kit_spent')
-
-
-def test_zenmain_soldier_absorption_blocks_final_a_without_consuming():
-    mem = memory()
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
-    assert_not_spent(mem)
-    assessment = mem['battle']['card_assessment']
-    assert assessment['raw_damage_min'] == 32
-    assert assessment['enemy_soldier_hp_upper'] == 60
-    assert assessment['damage_lower_bound'] == 0
-    assert assessment['remaining_hp_upper'] == 27
-    assert assessment['lethal'] is assessment['allowed'] is False
-    assert assessment['reason'] == 'nonlethal_egg_risk'
-    assert mem['last_card_assessment'] == {**assessment, 'tick': 12}
-    assert mem['battle']['card_flow'] is None
-    assert mem['_records'][0]['resulting_event'] == 'card_not_selected'
 
 
 @pytest.mark.parametrize('hp,enemy_soldiers,allowed,damage', [

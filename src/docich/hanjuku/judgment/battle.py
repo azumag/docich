@@ -415,6 +415,20 @@ def _enemy_egg_reach(mem, cur, context, estimate):
     return bound
 
 
+def _card_wears_down_enemy(estimate):
+    """A plain hit that reaches the general or removes a soldier.
+
+    Owner 2026-11-02: damage the soldiers absorb is not lost, the army gap it
+    opens wins the melee. Halving, healing and self-harm keep their own rules.
+    """
+    raw, pool = estimate['raw_damage_min'], estimate['enemy_soldier_hp_upper']
+    soldiers = estimate['enemy_soldiers_upper']
+    if (estimate['effect_kind'] not in CLASH_SAFE_EFFECTS or estimate['self_harm']
+            or type(raw) is not int or raw <= 0 or type(pool) is not int):
+        return False
+    return raw > pool or (soldiers > 0 and raw >= pool / soldiers)
+
+
 def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     """A selection gate, separate from use, hit, kill and egg-loss receipts.
 
@@ -439,8 +453,13 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
               'estimate': estimate, 'enemy_egg_threat': threat,
               'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
               'egg_reach': reach, 'listed_followups': []}
-    if (cur.get('card_context_unclassified')
-            or any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
+    finished = any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
+    if (not finished and cur.get('card_context_unclassified') and not summoned
+            and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
+        # 卵落 depends on the generals' max HP, not on this panel. g1097 07:11:
+        # ミックミー would have dropped the egg and was refused as unclassified.
+        result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
+    elif (cur.get('card_context_unclassified') or finished
             or (summoned and cur.get('card_summon_observed') is not True)):
         result['role'] = 'damage_or_egg_risk_unclassified'
     elif summoned:
@@ -455,6 +474,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         result.update(allowed=True, role='enemy_egg_triggers_unreachable')
     elif drop and drop.get('drops'):
         result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
+    elif _card_wears_down_enemy(estimate):
+        # Owner 2026-11-02: a card need not finish the enemy in one hit. Holding
+        # it does not stop the enemy's egg either; the melee reaches the same
+        # triggers. g1097 07:05: ミックミー was refused four times with ヴィーナス
+        # at 41 (7 left at most), and ココット fell with the card in hand.
+        result.update(allowed=True, role='damage_not_a_kill')
     elif listed_cards is None:
         result.update(needs_live_list=True, role='inspect_live_inventory_before_selection')
     elif card in CARD_CONTROL_SETUP:
@@ -552,7 +577,7 @@ def _card_gate_choice(mem, cur, candidates, names):
         choice = 'エンジェリン'
     else:
         choice = None
-        for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill',
+        for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
                      'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
