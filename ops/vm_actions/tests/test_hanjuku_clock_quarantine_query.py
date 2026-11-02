@@ -3,8 +3,8 @@ import pathlib
 import unittest
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
-PATH = ROOT / "authorize_hanjuku_clock_quarantine_query.py"
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+PATH = ROOT / "ops/vm_actions/authorize_hanjuku_clock_quarantine_query.py"
 SPEC = importlib.util.spec_from_file_location("authorize_hanjuku_clock_quarantine_query", PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
