@@ -114,8 +114,15 @@ class ProjectionTests(unittest.TestCase):
                         "status": "waiting",
                         "pending": False,
                         "queued_manual": True,
+                        "manual_pending": True,
+                        "manual_pending_corner": "hanjuku-hero",
                         "request_id": "DO-NOT-EMIT",
                         "reason": "DO-NOT-EMIT",
+                    },
+                    "game_switch": {
+                        "phase": "ready",
+                        "active_game": "sorengame",
+                        "PRIVATE": "DO-NOT-EMIT",
                     },
                 },
                 "PRIVATE": "DO NOT EMIT",
@@ -140,9 +147,19 @@ class ProjectionTests(unittest.TestCase):
             "status": "waiting",
             "pending": False,
             "queued_manual": True,
+            "manual_pending": True,
+            "manual_pending_hanjuku": True,
+            "active_hanjuku": False,
         })
         self.assertNotIn("PRIVATE", json.dumps(out))
         self.assertNotIn("DO-NOT-EMIT", json.dumps(out))
+
+    def test_active_hanjuku_is_derived_without_exposing_game_name(self):
+        payload = self.payload()
+        payload["diagnostics"]["corners"]["game_switch"]["active_game"] = "hanjuku-hero"
+        out = self.status.project(payload)
+        self.assertTrue(out["rotation"]["active_hanjuku"])
+        self.assertNotIn("active_game", json.dumps(out))
 
     def test_unknown_values_fail_closed_to_fixed_tokens(self):
         payload = self.payload()
@@ -154,6 +171,9 @@ class ProjectionTests(unittest.TestCase):
         rotation["status"] = "PRIVATE_ROTATION"
         rotation["pending"] = "yes"
         rotation["queued_manual"] = 1
+        rotation["manual_pending"] = "yes"
+        rotation["manual_pending_corner"] = {"PRIVATE": True}
+        payload["diagnostics"]["corners"]["game_switch"]["active_game"] = None
         out = self.status.project(payload)
         self.assertEqual(out["status"], "unknown")
         self.assertIsNone(out["active"])
@@ -162,6 +182,9 @@ class ProjectionTests(unittest.TestCase):
             "status": "unknown",
             "pending": None,
             "queued_manual": None,
+            "manual_pending": None,
+            "manual_pending_hanjuku": None,
+            "active_hanjuku": None,
         })
         self.assertNotIn("PRIVATE", json.dumps(out))
 
@@ -173,6 +196,9 @@ class ProjectionTests(unittest.TestCase):
             "status": "unknown",
             "pending": None,
             "queued_manual": None,
+            "manual_pending": None,
+            "manual_pending_hanjuku": None,
+            "active_hanjuku": None,
         })
 
     def test_reply_contains_only_projection_and_fixed_metadata(self):
@@ -190,8 +216,12 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn("`status=waiting`", text)
         self.assertIn("`pending=no`", text)
         self.assertIn("`queued_manual=yes`", text)
+        self.assertIn("`manual_pending=yes`", text)
+        self.assertIn("`manual_pending_hanjuku=yes`", text)
+        self.assertIn("`active_hanjuku=no`", text)
         self.assertNotIn("PRIVATE", text)
         self.assertNotIn("DO-NOT-EMIT", text)
+        self.assertNotIn("active_game", text)
 
 
 class WorkflowTests(unittest.TestCase):
