@@ -17,7 +17,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
-                               DEFENDER_EGG_OPEN_LIMIT, _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
+                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT,
+                               _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
@@ -1333,6 +1334,69 @@ def _egg_retreat_return(screen, mem, battle):
     return None
 
 
+def _defender_summon_egg_menu(screen, mem, battle):
+    """おくのて in the egg-battle command box: a 4th row reached by scrolling.
+
+    v359 sent B to open the rescue menu, but B on this box does nothing
+    (v361 live: same frame 3 times, battle_okunote_summon_open_failed, fell
+    back to こうげき). Owner-confirmed layout: こうげき / もうこうげき /
+    たまごをつかう (greyed, unread by OCR) / おくのて — the 3-row box scrolls
+    to show the last row. Move the cursor down until おくのて is readable,
+    never B, never A on an unread row.
+    """
+    guard = battle.get('okunote_summon_preempt')
+    if isinstance(guard, dict) and guard.get('selected'):
+        # The parent A was sent; a repeated egg menu is still the wait for
+        # the candidate list, never another confirmation on this box.
+        attempt = battle.get('okunote_attempt')
+        if isinstance(attempt, dict) and attempt.get('phase') == 'parent_selected':
+            waits = int(guard.get('selected_waits') or 0)
+            if waits < 8:
+                guard['selected_waits'] = waits + 1
+                return [{'type': 'wait', 'ms': 50}]
+        guard['exhausted'] = True
+        return None
+    window = _defender_summon_preempt(mem, battle)
+    if not window:
+        return None
+    guard = battle.setdefault('okunote_summon_preempt', {'opens': 0})
+    labels = [w for _, _, w in _options(screen)]
+    from . import okunote
+    if 'おくのて' in labels:
+        move = _battle_menu_to(screen, 'おくのて')
+        if move == 'here':
+            if not guard.get('recorded'):
+                guard['recorded'] = True
+                _record(mem, 'battle_okunote_summon_preempt', **_battle_labels(battle),
+                        observed_metric={**window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        resulting_event='irreversible_risk_accepted',
+                        reason='敵の召喚獣が出ていて味方の卵・札が使えないため、卵戦コマンドのおくのてを選ぶ。自傷リスクは残る')
+            guard.update(selected=True, stage='selected')
+            _survival_state(mem, battle)['exhausted'] = True
+            _record(mem, 'battle_okunote_select', **_battle_labels(battle), choice='おくのて',
+                    observed_metric={'options': labels},
+                    reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
+            okunote.selected(mem, battle, candidate=False)
+            return [pad('a')]
+        if move is not None:
+            return [move]
+        # Cursor unread: keep scrolling like the no-label case, never confirm.
+    downs = int(guard.get('downs') or 0)
+    if downs < DEFENDER_SUMMON_SCROLL_LIMIT:
+        guard['downs'] = downs + 1
+        guard['stage'] = 'scrolling'
+        _record(mem, 'battle_okunote_summon_scroll', **_battle_labels(battle),
+                observed_metric={'cursor_y': screen.menu_cursor, 'visible': labels,
+                                 'down_attempt': downs + 1},
+                reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
+        return [pad('down')]
+    guard['exhausted'] = True
+    _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
+            observed_metric={**window, 'down_attempts': downs},
+            reason='有界な下方スクロールでもおくのて行が表示されないため、未知の行を確定せず既存の応戦へ戻る')
+    return None
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -1567,13 +1631,18 @@ def egg_battle_step(screen: Screen, mem):
                 and len(enemy_rows) == 1 and not cards_left
                 and (empty_egg or 'たまごをつかう' not in screen.text)):
             battle['summon_egg_unavailable'] = True
-            from .battle import _defender_summon_open
-            opening = _defender_summon_open(mem, battle)
+            opening = _defender_summon_egg_menu(screen, mem, battle)
             if opening is not None:
                 return opening
         label = 'もうこうげき' if fierce else 'こうげき'
         move = _battle_menu_to(screen, label)
         if move is None:
+            visible = {w for _, _, w in _options(screen)}
+            if (screen.menu_cursor is not None and label not in visible
+                    and visible.intersection({'もうこうげき', 'おくのて'})):
+                # おくのて探索で箱がスクロールしたままなら、上へ戻して
+                # こうげき行を再観測する (見えない行をAで確定しない)。
+                return [pad('up')]
             if empty_egg:
                 return [pad('b')]  # never confirm the empty egg at an unread cursor
             # Never confirm a previously selected fierce row blindly.

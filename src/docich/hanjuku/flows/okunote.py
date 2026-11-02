@@ -75,10 +75,14 @@ def combat_return(screen, mem, cur, *, summon=None):
                 and all(type(v) is int and v > 0 for v in (b.ally_hp, b.enemy_hp)))
     if not ordinary and not (screen.kind == 'egg_battle_menu' and summon):
         return
-    if ordinary and (cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt')):
-        # The enemy general lived through this draw: the egg window may draw again.
+    if (ordinary or (screen.kind == 'egg_battle_menu' and summon)) and (
+            cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt')):
+        # The enemy lived through this draw: a preempt may draw again, bounded
+        # by OKUNOTE_REDRAW_LIMIT (owner 2026-11-02 積極利用, extended v362 to
+        # the egg-battle-menu return of the summon preempt).
         cur['okunote_draws'] = int(cur.get('okunote_draws') or 0) + 1
     for key in ('okunote_attempt', 'okunote_flow', 'okunote_egg_preempt',
+                'okunote_summon_preempt',
                 'okunote_last_resort_selected', 'okunote_last_resort_recorded',
                 'okunote_last_resort_reopened'):
         cur.pop(key, None)
