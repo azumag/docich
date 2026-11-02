@@ -11,7 +11,7 @@ from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..os_layer.roster import run_identity
 from ..os_layer.world import NAME
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 
 def _role_cards(raw, cards):
@@ -100,7 +100,7 @@ def execution_order(mem, step):
             and type(attempt.get('confirmation_tick')) is int
             and attempt.get('confirmation_tick') == confirmed['departure_binding']['confirm_tick']):
         return {**deepcopy(confirmed), '_execution_bound': True}
-    snapshot = (mem.get('launched_orders') or {}).get(step)
+    snapshot = (_world(mem).get('launched_orders') or {}).get(step)
     sortie = (mem.get('sorties') or {}).get(step) or {}
     if ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
             and _valid_departure(snapshot, mem)
@@ -138,7 +138,7 @@ def departure_snapshot(order, mem, general, source):
 def execution_claimed(mem, step):
     """A stale tagged execution must not fall through to a new plan's actor."""
     attempt = _flow(mem).get('sortie_attempt') or {}
-    snapshot = (mem.get('launched_orders') or {}).get(step) or {}
+    snapshot = (_world(mem).get('launched_orders') or {}).get(step) or {}
     return ((attempt.get('step') == step and 'confirmation_tick' in attempt)
             or ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
                 and 'departure_binding' in snapshot))

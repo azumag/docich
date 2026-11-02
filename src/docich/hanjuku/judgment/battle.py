@@ -6,6 +6,7 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from dataclasses import asdict
 
@@ -47,7 +48,7 @@ def _battle_context(mem, ally):
                 'context': 'unclassified_location'}
     if en_route:
         return {'castle': None, 'side': None, 'step': None, 'context': 'ambiguous_sortie'}
-    for castle, info in (mem.get('launched') or {}).items():
+    for castle, info in (_world(mem).get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
             return {'castle': None, 'side': None, 'step': info.get('step'),
                     'context': 'unclassified_location'}

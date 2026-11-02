@@ -16,7 +16,7 @@ from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 
 # ---------------------------------------------------------------- orders
@@ -626,7 +626,7 @@ def _order_for_step(mem, step):
         return None  # foreign/stale execution is not a fresh plan or actor
     return (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
                   if o['step'] == step), None)
-            or (mem.get('launched_orders') or {}).get(step))
+            or (_world(mem).get('launched_orders') or {}).get(step))
 
 
 def _plan_pending(mem) -> bool:
@@ -840,8 +840,9 @@ def _relaunch_overdue_boss(mem):
                     reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
-                    'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss', 'launched_orders'):
+                    'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        (_world(mem).get('launched_orders') or {}).pop(step, None)
         status[step] = 'pending'
         _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
@@ -872,7 +873,7 @@ def _redirect_blocked_sources(mem):
     overrides = mem.setdefault('source_override', {})
     status = mem.get('orders') or {}
     seen = set()
-    for order in [*_orders(mem), *(mem.get('launched_orders') or {}).values()]:
+    for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
         if (not step or step in seen or step in overrides
                 or status.get(step) != 'pending'):
@@ -928,7 +929,7 @@ def _relaunch_overdue_march(mem):
                     observed_metric=observed,
                     reason='出撃が上限の観測内に決着しないため、保留中のままの行軍を済ませたものとして片付ける')
             continue
-        order = (mem.get('launched_orders') or {}).get(step) or {}
+        order = (_world(mem).get('launched_orders') or {}).get(step) or {}
         if (en_route and target in _owned(mem)
                 and (sortie.get('purpose') or order.get('purpose')) == 'move'):
             # g1097 2026-11-02: a move into our own castle has no arrival
@@ -953,8 +954,9 @@ def _relaunch_overdue_march(mem):
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
                     'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                    'sortie_actor_miss', 'launched_orders'):
+                    'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        (_world(mem).get('launched_orders') or {}).pop(step, None)
         status[step] = 'pending'
         _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
@@ -970,7 +972,7 @@ def next_order(mem):
     steps = {o['step'] for o in current}
     # A launched order put back to pending by a lost battle keeps its retry
     # even if a newer plan replaced the one it came from.
-    retries = [o for step, o in (mem.get('launched_orders') or {}).items()
+    retries = [o for step, o in (_world(mem).get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
     # A lost attack's retry is pending until it runs again; another order may
@@ -1148,7 +1150,7 @@ def _sortie_reserved_target(mem, step, sortie):
     if sortie.get('status') == 'launched_unconfirmed':
         # Reserve the intended destination without claiming observed arrival.
         # An interrupted target selection must not dispatch reinforcements.
-        return ((mem.get('launched_orders') or {}).get(step) or {}).get('target')
+        return ((_world(mem).get('launched_orders') or {}).get(step) or {}).get('target')
     return None
 
 
@@ -1525,7 +1527,7 @@ def _match_sortie(mem, castle, general):
         return candidates[0], 'matched'
     if candidates:
         return None, 'ambiguous'
-    launched = (mem.get('launched') or {}).get(castle) or {}
+    launched = (_world(mem).get('launched') or {}).get(castle) or {}
     step = _long_march(sorties, castle, general, now, retired)
     if step is not None:
         return step, 'matched'

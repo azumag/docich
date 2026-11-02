@@ -4,6 +4,7 @@ Detects chapter changes from observed castles and generals, resets
 chapter-scoped state and repairs legacy home-castle labels.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_debut_chapter
@@ -159,7 +160,7 @@ def _repair_home_alias_failures(mem):
         return
     mem['home_alias_repaired'] = True
     status = mem.get('orders') or {}
-    launched = mem.get('launched_orders') or {}
+    launched = _world(mem).get('launched_orders') or {}
     home = chart.home_castle(1)
     restored = []
     for order in chart.orders(1):

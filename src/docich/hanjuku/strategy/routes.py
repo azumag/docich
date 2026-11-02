@@ -5,6 +5,7 @@ march can cross the cliffs. Keep the chart's legs, stop inside owned castles,
 and read the actual roster before forwarding a reinforcement. A chart leg may
 be retraced to an owned castle to bring a rear garrison back toward the front.
 """
+from ..state.regions import world as _world
 from collections import deque
 
 from ... import hanjuku_chart as chart
@@ -69,7 +70,7 @@ def _moves_into(mem, castle):
     for step, sortie in (mem.get('sorties') or {}).items():
         if not isinstance(sortie, dict):
             continue
-        order = (mem.get('launched_orders') or {}).get(step) or {}
+        order = (_world(mem).get('launched_orders') or {}).get(step) or {}
         purpose = order.get('purpose') or sortie.get('purpose')
         tick = sortie.get('tick')
         if (purpose == 'move' and sortie.get('status') in ('en_route', 'overdue')

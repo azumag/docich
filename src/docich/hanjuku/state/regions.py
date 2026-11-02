@@ -65,14 +65,14 @@ KEY_OWNERSHIP = {
     # --- 出撃/帰還が観測する WorldState ---
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
     'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
-    'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
-    'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     # --- ラン同一性は常に ExecutionJournal ---
     '_run_identity':   {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
 }
 
-_REGION_KEY = {FLOW: 'flow', JOURNAL: 'journal'}
+_REGION_KEY = {WORLD: 'world', FLOW: 'flow', JOURNAL: 'journal'}
 
 # 実移行したキー → 収容領域 (migrate_legacy_state の対象表)。
 _MIGRATED = {key: spec['region'] for key, spec in KEY_OWNERSHIP.items()
@@ -132,6 +132,12 @@ def region(mem, name):
     if isinstance(store, dict):
         return store
     return _LazyRegion(mem, name)
+
+
+def world(mem):
+    """WorldState: 観測層が書き、手順は読むのみの観測事実。"""
+    migrate_legacy_state(mem)
+    return region(mem, WORLD)
 
 
 def flow(mem):

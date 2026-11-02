@@ -32,6 +32,7 @@ from docich import hanjuku_commentary
 from docich import hanjuku_policy as policy
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import Frame
+from docich.hanjuku.state.regions import world as _world
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 RETIRED = 'ほんじょう'
@@ -86,7 +87,7 @@ def test_migrate_legacy_labels_renames_keys_values_and_notes():
 
     policy_state = state['policy']
     assert policy_state['garrison'] == {HOME: ['どうし'], 'キカンドン': []}
-    order = policy_state['launched_orders']['1-A1']
+    order = _world(policy_state)['launched_orders']['1-A1']
     assert order['source'] == HOME and order['target'] == 'ジョンリギ'
     assert order['note'] == 'アルマムーン駐留のどうしでゴーメンへ'
     assert policy_state['lost'] == [HOME]
@@ -114,7 +115,7 @@ def test_decide_renames_state_written_before_the_label_change():
                                                      'cards': []}}}}
     _, updated = decide(FRAME, state)
     assert updated['policy']['garrison'] == {HOME: ['どうし']}
-    assert updated['policy']['launched_orders']['1-A1']['source'] == HOME
+    assert updated['policy']['world']['launched_orders']['1-A1']['source'] == HOME
     assert RETIRED not in json.dumps(updated, ensure_ascii=False)
 
 

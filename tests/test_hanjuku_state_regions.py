@@ -84,3 +84,8 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
     # but the owning layer migrates them in a later stage.
     assert KEY_OWNERSHIP['sorties']['migrated'] is False
     assert KEY_OWNERSHIP['orders']['migrated'] is False
+    # W1 (C後続): launched/launched_orders は world 領域へ実移行。
+    assert KEY_OWNERSHIP['launched']['region'] == WORLD
+    assert KEY_OWNERSHIP['launched_orders']['region'] == WORLD
+    assert KEY_OWNERSHIP['launched']['migrated'] is True
+    assert KEY_OWNERSHIP['launched_orders']['migrated'] is True

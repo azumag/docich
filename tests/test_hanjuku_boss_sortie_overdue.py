@@ -12,6 +12,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy.campaign import _enter_chapter
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 CHAPTER = 3
 LAUNCH = 76407
@@ -49,8 +50,8 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     assert record['chart_step'] == '3-B1' and record['general'] == 'アポロン'
     assert record['observed_metric'] == {'general': 'アポロン', 'source': 'パタゴーヌ',
                                          'marching': 79599 - LAUNCH, 'relaunches': 0}
-    for key in ('general_override', 'launched_orders'):
-        assert '3-B1' not in mem[key]
+    assert '3-B1' not in mem['general_override']
+    assert '3-B1' not in _world(mem)['launched_orders']
 
 
 def test_once_every_castle_is_ours_the_chart_boss_order_runs_again():
@@ -97,8 +98,8 @@ def test_an_entry_whose_fight_left_no_result_is_sent_again():
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['resulting_event'] == 'relaunch:1'
-    for key in ('general_override', 'launched_orders'):
-        assert '3-B1' not in mem[key]
+    assert '3-B1' not in mem['general_override']
+    assert '3-B1' not in _world(mem)['launched_orders']
 
 
 def test_an_entry_with_a_live_fight_is_not_sent_again():
@@ -206,7 +207,7 @@ def test_a_move_known_only_by_the_order_snapshot_is_settled_too():
     """Sorties written before the launch record carried ``purpose`` still
     resolve through launched_orders."""
     mem = memory(79599, target='パタゴーヌ')
-    mem['launched_orders']['3-B1']['purpose'] = 'move'
+    _world(mem)['launched_orders']['3-B1']['purpose'] = 'move'
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'failed'
     assert decisions(mem, 'sortie_move_overdue_settled')

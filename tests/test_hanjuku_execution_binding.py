@@ -12,6 +12,7 @@ from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory():
@@ -64,8 +65,8 @@ def test_confirmed_attempt_does_not_follow_later_plan_overrides():
 
 def test_unconfirmed_departure_saves_actual_actor_source_and_unknown_destination():
     mem = memory(); confirm(mem); mutate_plan(mem); interrupt(mem)
-    assert mem['launched_orders']['1-A3']['general'] == 'ゼウス'
-    assert mem['launched_orders']['1-A3']['source'] == 'カストーラ'
+    assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
+    assert _world(mem)['launched_orders']['1-A3']['source'] == 'カストーラ'
     assert mem['sorties']['1-A3']['target'] is None
     assert mem['sorties']['1-A3']['planned_target'] == 'スペンソニア'
     assert_frozen(json.loads(json.dumps(mem)))
@@ -94,7 +95,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
     assert mem['orders']['1-A3'] == 'pending'
     assert 'ゼウス' in mem['garrison']['カストーラ']
-    assert not mem.get('sorties') and not mem.get('launched_orders')
+    assert not mem.get('sorties') and not _world(mem).get('launched_orders')
     assert_frozen(mem)
 
 
@@ -120,7 +121,7 @@ def test_foreign_or_corrupt_saved_execution_cannot_fall_back_to_the_hero(change)
     elif change == 'serial': mem['sorties']['1-A3']['confirmation_tick'] = True
     else:
         key = {'actor': 'general', 'source': 'source', 'cards': 'cards'}[change]
-        mem['launched_orders']['1-A3'][key] = {'actor': 'どうし', 'source': 'ゴーメン',
+        _world(mem)['launched_orders']['1-A3'][key] = {'actor': 'どうし', 'source': 'ゴーメン',
                                             'cards': ['イッテツーン']}[change]
     assert p._order_for_step(mem, '1-A3') is None
     assert not p._tactics(mem, '1-A3')
@@ -137,8 +138,8 @@ def test_legacy_context_can_record_metadata_but_does_not_gain_a_bound_execution(
     mem['order_context']['1-A3'] = {'actual_general': 'ゼウス'}
     _flow(mem)['sortie_attempt'] = {'step': '1-A3', 'target_seen': True}
     interrupt(mem)
-    assert mem['launched_orders']['1-A3']['general'] == 'ゼウス'
-    assert 'departure_binding' not in mem['launched_orders']['1-A3']
+    assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
+    assert 'departure_binding' not in _world(mem)['launched_orders']['1-A3']
 
 
 @pytest.mark.parametrize('field,value', [('general','unknown'), ('source','unknown'),
@@ -210,5 +211,5 @@ def test_strong_card_role_is_same_owner_and_same_execution():
 def test_boolean_generation_one_is_not_an_integer_run_identity():
     mem = memory(); mem['_run_identity']['generation'] = 1
     confirm(mem); interrupt(mem); _flow(mem).pop('sortie_attempt')
-    mem['launched_orders']['1-A3']['departure_binding']['identity']['generation'] = True
+    _world(mem)['launched_orders']['1-A3']['departure_binding']['identity']['generation'] = True
     assert p._order_for_step(mem, '1-A3') is None
