@@ -372,3 +372,21 @@ def test_legacy_tree_cleanup_reaps_child_mirror_and_preserves_shared_process(tmp
     finally:
         terminate_process_tree(owned+[shared.pid])
         for process in (guardian,game,shared):process.wait(timeout=3)
+
+
+def test_process_scans_treat_a_process_exiting_mid_read_as_gone(monkeypatch):
+    from pathlib import Path as RealPath
+    from docich import presentation_recovery as recovery
+
+    effects = recovery.LinuxEffects.__new__(recovery.LinuxEffects)
+    vanished, alive = RealPath('/proc/111'), RealPath('/proc/222')
+
+    def read_text(self, *args, **kwargs):
+        if self.parent == vanished:
+            raise ProcessLookupError(3, 'No such process')
+        return '222 (x) S 1 7 7 0 0'
+
+    monkeypatch.setattr(RealPath, 'iterdir', lambda self: iter([vanished, alive]))
+    monkeypatch.setattr(RealPath, 'read_text', read_text)
+    assert effects.group_members(7) == [222]
+    assert effects.process(111) is None

@@ -119,7 +119,7 @@ class LinuxEffects:
             return dict(pid=pid, start=fields[19], parent=int(fields[1]),
                         group=int(fields[2]), uid=uid,
                         executable=(base/'exe').resolve().name)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return None
 
     def group_members(self, group):
@@ -129,7 +129,7 @@ class LinuxEffects:
                 continue
             try:
                 raw = (entry/'stat').read_text()
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue
             fields = raw[raw.rfind(')')+2:].split()
             if fields[0] != 'Z' and int(fields[2]) == group:
