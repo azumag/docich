@@ -1085,6 +1085,47 @@ def castles(chapter: int) -> dict:
     return {**measured, **static} if measured else static
 
 
+MARCH_BLOCK_RADIUS = 48    # px: an own castle this near the straight march stops it
+
+
+def march_blocker(chapter, source, target, owned):
+    """The own castle nearest ``target`` lying on the source→target march.
+
+    g1097 2026-11-02 (owner: オトラントから出ないとかいけつにならない):
+    every アルマムーン→クロチェット march was absorbed at オトラント — the
+    own castle sitting on the path — while the only measured arrival was the
+    オトラント-launched 5-Z2; アルマムーン→プトレマイス stalled at バスカビル
+    the same way. Blocking is checked geometrically from measured coords.
+    """
+    castles_ = castles(chapter)
+    try:
+        sx, sy = castles_[source]
+        tx, ty = castles_[target]
+    except (KeyError, TypeError):
+        return None
+    dx, dy = tx - sx, ty - sy
+    seg2 = dx * dx + dy * dy
+    if not seg2:
+        return None
+    best = None
+    for c in owned - {source, target}:
+        pos = castles_.get(c)
+        if not pos:
+            continue
+        cx, cy = pos
+        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
+        if not 0.05 < t < 0.95:
+            continue
+        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
+            if best is None or t > best[0]:
+                best = (t, c)
+    return best[1] if best else None
+
+
+def march_blocked(chapter, source, target, owned):
+    return march_blocker(chapter, source, target, owned) is not None
+
+
 def purchases(chapter: int):
     """Month purchase plans as a tuple of dicts (chapter 1 is one plan)."""
     if chapter == 1:
