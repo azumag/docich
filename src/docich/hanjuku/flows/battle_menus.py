@@ -1033,9 +1033,18 @@ def okunote_step(screen, mem):
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
-        if cur.get('okunote_egg_preempt'):
-            cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
-        return [pad('b')]
+        # g1097 22:28: the earlier unconfirmed phase burned ticks past 16
+        # before the rescue menu became readable, so the budgeted B ran
+        # forever. B is a no-op on the sole-command rescue menu: once a
+        # preempt/last-resort was recorded the only way forward is the
+        # おくのて row below, never another cancel attempt.
+        committed = (cur.get('okunote_last_resort_recorded')
+                     or (cur.get('okunote_summon_preempt') or {}).get('recorded')
+                     or (cur.get('okunote_egg_preempt') or {}).get('recorded'))
+        if not (committed and cur.get('okunote_only_observed')):
+            if cur.get('okunote_egg_preempt'):
+                cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
+            return [pad('b')]
     if screen.hidden_battle_commands:
         _record(mem, 'battle_okunote_scroll', **_battle_labels(cur),
                 observed_metric={'cursor_y': screen.menu_cursor},

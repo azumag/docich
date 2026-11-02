@@ -360,3 +360,22 @@ def test_unconfirmed_counter_resets_when_the_panel_binds_again():
     # A later bindable observation must not inherit stale unconfirmed counts.
     mem['battle']['okunote_summon_unconfirmed'] = None
     assert int(mem['battle'].get('okunote_summon_unconfirmed') or 0) == 0
+
+
+# ---- g1097 22:28: 照合不能期間が ticks を使い切り救済メニューでBループ ----
+# 召喚照合が付くまでの入力で okunote_flow.ticks > 16 に達した後、実メニュー
+# (おくのてのみ有効) が読めると親メニュー予算が毎 tick B を返した。この箱
+# では B は効かないため無言のBループになった。preempt / last_resort が記録
+# 済みなら予算を超えてもおくのて行へ進む。
+def test_a_burned_menu_budget_never_bs_out_of_a_committed_rescue():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': 20}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+
+
+def test_an_uncommitted_menu_still_uses_the_budgeted_b_close():
+    mem = memory(side='attack', castle='けっかい', ally_hp=90)
+    mem['battle']['okunote_flow'] = {'ticks': 20}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
