@@ -428,3 +428,31 @@ def test_a_clear_pending_order_keeps_its_baked_source():
            'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     orders.next_order(mem)
     assert 'source_override' not in mem or 'A:x:J1' not in mem['source_override']
+
+
+def test_boss_order_unlocks_when_its_chain_is_held_despite_a_side_loss():
+    """Owner 2026-11-02: クロシェット取り返し中でも並行でボス城に攻め込める —
+    all_captured no longer waits on castles off the boss chain."""
+    b1 = next(o for o in chart.all_orders(5) if o['step'] == '5-B1')
+    mem = {'chapter': 5, 'month': '40-2', 'tick': 100,
+           'captured': ['アルマムーン', 'テラビル', 'ヒュペルボレア', 'カルーン',
+                        'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
+                        'バスカビル', 'プトレマイス'],
+           'lost': ['クロチェット'],
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
+           '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    assert orders._boss_path_captured(mem)
+    assert orders._ready(b1, mem)
+
+
+def test_boss_order_still_waits_when_its_chain_is_broken():
+    b1 = next(o for o in chart.all_orders(5) if o['step'] == '5-B1')
+    mem = {'chapter': 5, 'month': '40-2', 'tick': 100,
+           'captured': ['アルマムーン', 'テラビル', 'ヒュペルボレア', 'カルーン',
+                        'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
+                        'プトレマイス', 'クロチェット'],
+           'lost': ['バスカビル'],
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
+           '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    assert not orders._boss_path_captured(mem)
+    assert not orders._ready(b1, mem)
