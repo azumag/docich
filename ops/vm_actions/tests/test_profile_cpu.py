@@ -239,20 +239,20 @@ class SampleTests(unittest.TestCase):
         p = self.proc
         p.host = [100, 900, 0, 5000, 10000]
         p.write_host()
-        p.put(600, ["/opt/weird/opencode"], ticks=100, comm="opencode")
+        p.put(600, ["/opt/weird/weirdproc"], ticks=100, comm="weirdproc")
         p.put(601, ["/opt/weird/" + SECRET], ticks=100, comm="sk-live-" + SECRET)
 
         def step():
             p.uptime += 1
             p.write_host()
-            p.put(600, ["/opt/weird/opencode"], ticks=140, comm="opencode")
+            p.put(600, ["/opt/weird/weirdproc"], ticks=140, comm="weirdproc")
             p.put(601, ["/opt/weird/" + SECRET], ticks=130, comm="sk-live-" + SECRET)
 
         report = self.run_sample([step])
         comms = {r["comm"]: r for r in report["other_comms"]}
-        self.assertIn("opencode", comms)
+        self.assertIn("weirdproc", comms)
         self.assertIn("redacted", comms)
-        self.assertEqual(comms["opencode"]["cpu_pct"], 40.0)
+        self.assertEqual(comms["weirdproc"]["cpu_pct"], 40.0)
         self.assertEqual(comms["redacted"]["cpu_pct"], 30.0)
         self.assertNotIn(SECRET, json.dumps(report))
 

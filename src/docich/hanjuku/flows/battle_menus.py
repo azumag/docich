@@ -5,6 +5,8 @@ selects the option the judgment layer chose.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
@@ -15,7 +17,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
-                               _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               DEFENDER_EGG_OPEN_LIMIT, _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
@@ -24,9 +26,11 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first,
+                               _monster_chikyu_choice, _monster_lampkin_choice, _lampkin_menu, _lampkin_forced_kind,
                                _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
+from ..judgment.omedetori import omedetori_assessment, omedetori_command_selected
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -51,7 +55,7 @@ def orphan_battle_menu_step(screen, mem):
         return None
     if not parent and screen.kind not in {
             'unknown', 'text', 'battle_menu_pending', 'okunote_menu',
-            'monster_menu', 'egg_choice_menu', 'egg_battle_menu'}:
+            'monster_menu', 'monster_menu_pending', 'egg_choice_menu', 'egg_battle_menu'}:
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_menu_reobserved',
@@ -272,6 +276,22 @@ def _survival_menu(screen, mem, cur):
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
           and not _own_egg_empty(mem, cur)):
         label = 'たまごをつかう'
+    elif ('たまごをつかう' in labels and critical
+          and cur.get('side') == 'defense'
+          and cur.get('castle') in chart.castles(mem.get('chapter') or 0)
+          and not rescue.get('egg_break_bait') and _own_egg_empty(mem, cur)):
+        # A spent-but-intact egg on a losing defender: pull the shell out so
+        # the next hit breaks it, then おくのて becomes the only usable row
+        # (チコリ died at 0 uses before the shell ever cracked). The row may
+        # be greyed and inert — the bait flag bounds this to one try, after
+        # which melee resumes and a landed hit still cracks the held shell.
+        # Castle defense only: an attacker's egg bait has no defensive need.
+        label = 'たまごをつかう'
+        rescue['egg_break_bait'] = True
+        _record(mem, 'battle_egg_break_bait', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                resulting_event='selection_planned_not_yet_confirmed',
+                reason='卵残0で使えず敗勢のため、卵を出して敵の一撃で殻を割らせ、おくのてを使える状態にする')
     else:
         rescue['exhausted'] = True
         _record(mem, 'battle_survival_unavailable', **_battle_labels(cur),
@@ -381,6 +401,150 @@ def _survival_card_list(screen, mem, cur, flow, names):
             reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
                     else 'HP低下に対処する切り札を選択。消費は未確定'))
     return [pad('a')]
+
+# The skill box settles within about a second of sliding or panning in. A box
+# still half drawn after this many observations goes back to the ordinary
+# default rather than holding the battle.
+MONSTER_MENU_PENDING_MAX = 8
+
+
+def _unchosen_turn_candidate(screen, mem):
+    """Our summon's box, seen moving while we have not chosen this turn."""
+    if mem.get('monster_own_choice'):
+        return              # the box leaving after our own choice
+    panel = {row.side: row for row in screen.egg_rows if row.side}
+    ally, enemy = panel.get('ally'), panel.get('enemy')
+    skills = [skill.replace(' ', '') for skill in reference.MONSTER_SKILLS.get(ally.name, ())] if ally else []
+    words = [word for line in screen.lines if line.y >= 176
+             for x, word in line.spans() if x >= 176 and len(word) >= 2]
+    if not any(skill.startswith(word) for skill in skills for word in words):
+        return              # not our monster's box (or its owner unread)
+    mem['monster_unchosen'] = {'ally': ally.name, 'enemy': enemy.name if enemy else None,
+                               'enemy_hp': enemy.hp if enemy else None}
+
+
+def count_unchosen_monster_turn(mem, *, sent_frame=None):
+    """Count a turn our summon spent on its top skill without our choice.
+
+    The skill box can take a press that left before it appeared: an A decided
+    on a dialogue frame arrived as the box slid in (g1075 18:27:47, 18:43:30)
+    and confirmed the top row. The cursor starts every turn on the top row
+    (ラビットサタン and ガートルード needed a down for skill 2 on each turn),
+    so that turn spent skill 1. Count it so the stall switch still comes after
+    MONSTER_STALL_TURNS uses of a skill that never moves the enemy HP.
+    """
+    seen = mem.pop('monster_unchosen', None)
+    if not isinstance(seen, dict) or not seen.get('ally'):
+        return
+    stall = mem.get('monster_stall')
+    enemy, enemy_hp = seen.get('enemy'), seen.get('enemy_hp')
+    if isinstance(stall, dict) and isinstance(stall.get('scope'), list) and stall['scope'][:1] == [seen['ally']]:
+        enemy = enemy or stall['scope'][1]
+        enemy_hp = enemy_hp if type(enemy_hp) is int else stall.get('enemy_hp')
+    if not enemy or type(enemy_hp) is not int:
+        return
+    scope = [seen['ally'], enemy]
+    if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy_hp:
+        stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy_hp, 'turns': {}}
+    turns = stall.setdefault('turns', {})
+    turns['skill1'] = turns.get('skill1', 0) + 1
+    if seen['ally'] == 'あけまつ':
+        # g1075 19:24:41: a stray A sent ごあいさつ and the next own turn sent
+        # it again; a second exchange undoes the first.
+        akematsu_command_selected(mem, SimpleNamespace(name=seen['ally']), SimpleNamespace(name=enemy),
+                                  'skill1', cursor_confirmed=False)
+    observed = {'ally': seen['ally'], 'enemy': enemy, 'enemy_hp': enemy_hp, 'turns': dict(turns)}
+    if sent_frame:
+        observed['sent_frame_sha256'] = sent_frame
+    _record(mem, 'monster_turn_unchosen', observed_metric=observed,
+            reason=('会話画面で決めたAが送信時には技メニューに届いていたため、最上段の1技目を使ったターンとして数える'
+                    if sent_frame else
+                    '技メニューが出たのにこちらが選ばないまま次の画面へ進んだため、最上段の1技目を使ったターンとして数える'))
+
+
+def count_overtaken_monster_turn(screen, mem, sent_frame):
+    """Count the turn an A decided on a dialogue page spent on our summon's box.
+
+    g1075 18:58:48.87: the A decided on 「ウッドボールは すばやく よけた!」 was
+    sent after the corner had captured ガートルード's box sliding in and chose
+    であい; the agent's next frame was already the enemy's menu, so the box was
+    never in a decision. The sender journal names the frame each input reached
+    (bot.py hands over its snapshot), and that frame shows whose box took it.
+    """
+    mem.pop('monster_own_choice', None)     # this A was decided on a dialogue page
+    _unchosen_turn_candidate(screen, mem)
+    if mem.get('monster_unchosen'):
+        count_unchosen_monster_turn(mem, sent_frame=sent_frame)
+        mem['monster_own_choice'] = True    # spent: the same box leaving is not another turn
+
+
+def monster_menu_pending_step(screen, mem):
+    """Hold the confirm until a summon battle's box settles; its own step decides."""
+    _summon_scene(mem)
+    _unchosen_turn_candidate(screen, mem)
+    ticks = mem['monster_menu_pending_ticks'] = mem.get('monster_menu_pending_ticks', 0) + 1
+    if ticks == 1:
+        _record(mem, 'monster_menu_drawing',
+                reason='召喚戦の技・コマンド欄が表示途中のため、既定のAで最上段を確定せず表示を待つ')
+    if ticks <= MONSTER_MENU_PENDING_MAX:
+        return []
+    mem.pop('monster_menu_pending_ticks', None)
+    _record(mem, 'monster_menu_incomplete', observed_metric={'held': ticks - 1},
+            reason='召喚獣の技メニューが観測上限まで表示途中のままのため、既定の入力に戻す')
+    return None
+
+
+def _summon_scene(mem):
+    """Mark this battle as one with a summon on the field."""
+    if isinstance(mem.get('battle'), dict):
+        mem['battle']['summon_scene'] = True
+
+
+# Summon dialogue advances by itself (19:57:04: the last page went to the box
+# with no A). A page still there after this many looks gets its A.
+SUMMON_DIALOGUE_LOOKS = 4
+
+
+def summon_dialogue_pace(screen, mem, phase, kind, actions, digest):
+    """Send a summon battle's dialogue A only when a page has stayed for a while.
+
+    g1075 2026-10-29: every stray A that confirmed a box's top row in a summon
+    battle was decided on the first look at the page before that box (18:43:30,
+    18:58:48, 19:07:16, 19:22:38, 19:24:40, 19:25:59, 19:26:11). Those last pages
+    stayed 0.3-0.7 s, and the A sent about 0.3 s after the look reached the
+    skill box instead: the top skill ran past the two-turn switch, and
+    あけまつ greeted twice. A page that is still there on the next look gets
+    its A; one that leaves by itself never sends a press into the next box.
+    Two looks were not enough (v314): at 19:57:14.20 and 20:14:43.52 the A sent
+    on the second look at the last page was followed 0.2 s later by the skill
+    box, and the turn went on without our choice. The box takes a press that
+    meets the page's own advance, so the page is left to advance by itself.
+    An egg monster's entrance page starts the scene: at 19:53:46 the bot's own
+    たまごをつかう brought あけまつ in, and its first box took the A decided on
+    the page before it because no box had been seen yet.
+    """
+    battle = mem.get('battle')
+    if (isinstance(battle, dict) and kind == 'text' and screen.text
+            and 'エッグモンスター' in screen.text.replace(' ', '')):
+        _summon_scene(mem)
+    if (actions != [pad('a')] or phase != 'dialogue' or kind not in ('text', 'unknown')
+            or not isinstance(battle, dict) or not battle.get('summon_scene')):
+        mem.pop('summon_dialogue', None)
+        return actions
+    key = f'text:{screen.text}' if kind == 'text' and screen.text else digest
+    seen = mem.get('summon_dialogue')
+    looks = (seen['looks'] + 1 if isinstance(seen, dict) and seen.get('key') == key
+             and type(seen.get('looks')) is int else 1)
+    if looks >= SUMMON_DIALOGUE_LOOKS:
+        mem.pop('summon_dialogue', None)
+        return actions
+    mem['summon_dialogue'] = {'key': key, 'looks': looks}
+    if not battle.get('summon_dialogue_paced'):
+        battle['summon_dialogue_paced'] = True
+        _record(mem, 'summon_dialogue_paced',
+                reason='召喚戦の会話は自動で進むため、同じページが続くときだけAを送り、最後のページへのAが次の技・コマンド欄を確定しないようにする')
+    return []
+
 
 def battle_menu_pending_step(mem):
     if not mem.get('battle'):
@@ -678,9 +842,27 @@ def defender_egg_pending_step(screen, mem):
         # An explicit short wait also prevents the generic no-input fallback
         # from accepting the still-unread command with A.
         return [{'type': 'wait', 'ms': 50}]
+    from . import okunote
+    if okunote.candidate_chosen(mem, cur):
+        # g1075 14:35:52: リューキシもどき was chosen and its effect dialogue
+        # filled these frames (ビシソワーズ 13 -> 0, a win). The inputs stay;
+        # only the record no longer reports an unread menu.
+        guard.update(exhausted=True, stage='unavailable', close_pending=True)
+        _record(mem, 'battle_okunote_effect_text_limit', **_battle_labels(cur),
+                reason='奥の手の候補を選んだ後の演出テキストが観測上限まで続いたためBで送る。メニュー未読ではない')
+        return [pad('b')]
+    # #2953 実例A: an unread menu is not a refusal of the rescue. Close the
+    # unread box and reopen it through the same bounded opening budget.
+    if guard.get('opens', 0) < DEFENDER_EGG_OPEN_LIMIT:
+        guard.update(stage=None, unread_ticks=0, close_pending=True)
+        _record(mem, 'battle_okunote_egg_menu_retry', **_battle_labels(cur),
+                observed_metric={'open_attempt': guard.get('opens', 0), 'limit': DEFENDER_EGG_OPEN_LIMIT},
+                reason='召喚前の奥の手メニューを読み取れなかったため、Bで閉じて同じ開く回数の範囲内で再度開く')
+        return [pad('b')]
     guard.update(exhausted=True, stage='unavailable', close_pending=True)
     _record(mem, 'battle_okunote_egg_menu_unread', **_battle_labels(cur),
-            reason='召喚前の奥の手メニューを読み取れない観測が上限に達したため、未知の行を確定せず戻る')
+            observed_metric={'open_attempt': guard.get('opens', 0), 'limit': DEFENDER_EGG_OPEN_LIMIT},
+            reason='召喚前の奥の手メニューを読み取れない観測が上限に達し、再度開く回数も使い切ったため、未知の行を確定せず戻る')
     return [pad('b')]
 
 
@@ -716,24 +898,38 @@ def okunote_step(screen, mem):
         # chart inventory/house state cannot prove the currently usable menu.
         cur['okunote_only_observed'] = ((screen.hidden_battle_commands or 'おくのて' in labels)
             and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
-        guard = cur.get('okunote_egg_preempt') or {}
+        guard = cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt') or {}
         if guard.get('selected'):
             return [pad('b')]  # a repeated parent frame is not another lottery
         if guard and cur['okunote_only_observed']:
             # A real menu can arrive after the bounded B opening expired.
             # It authorizes a current cursor check, never another blind B loop.
             guard.update(exhausted=False, stage='menu', unread_ticks=0)
-        egg_window = _defender_egg_window(mem, cur)
+        egg_window = _defender_egg_window(mem, cur, menu_open=cur['okunote_only_observed'])
         egg_preempt = bool(egg_window and egg_window['due'])
+        summon_window = _defender_summon_preempt(mem, cur)
+        summon_preempt = bool(summon_window and summon_window['due'])
         if egg_window and not egg_preempt:
             rescue = _survival_state(mem, cur)
             rescue['exhausted'] = True
+            # #2953 実例B: this latch waits for the enemy's summon. The summon
+            # onset re-arms it once so the egg battle can judge the rescue again.
+            rescue['egg_window_latch'] = True
             if not flow.get('egg_window_waited'):
                 flow['egg_window_waited'] = True
                 _record(mem, 'battle_okunote_egg_wait', **_battle_labels(cur),
                         observed_metric=egg_window,
                         reason='奥の手だけが有効だが召喚前の期限には未到達のため、白兵のHPと位置リスクを再観測する')
             return [pad('b')]
+        if summon_preempt and not egg_preempt:
+            guard = cur.setdefault('okunote_summon_preempt', {'opens': 0})
+            guard.update(reason=summon_window['reason'], stage='menu')
+            if not guard.get('recorded'):
+                guard['recorded'] = True
+                _record(mem, 'battle_okunote_summon_preempt', **_battle_labels(cur),
+                        observed_metric={**summon_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        resulting_event='irreversible_risk_accepted',
+                        reason='敵の召喚獣が出ていて味方の卵・札が使えないため、開いている救済メニューで奥の手を選ぶ。自傷リスクは残る')
         if egg_preempt:
             guard = cur.setdefault('okunote_egg_preempt', {'opens': 0})
             guard.update(reason=egg_window['reason'], stage='menu')
@@ -742,7 +938,11 @@ def okunote_step(screen, mem):
                 _record(mem, 'battle_okunote_egg_preempt', **_battle_labels(cur),
                         observed_metric={**egg_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                         resulting_event='irreversible_risk_accepted',
-                        reason='敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る')
+                        reason=('敵卵あり・味方卵と札は実メニューで使用不能・接触召喚の位置は未校正のため、開いている救済メニューで奥の手を選ぶ。自傷リスクは残る'
+                                if egg_window['reason'] == 'menu_open_contact_unmeasured' else
+                                '前の奥の手で敵将軍が残ったため、召喚より先に奥の手を引き直す。自傷リスクは残る'
+                                if egg_window['reason'] == 'okunote_redraw' else
+                                '敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る'))
         last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
                        else _defender_last_resort(mem, cur))
         if last_resort and not cur.get('okunote_last_resort_recorded'):
@@ -754,7 +954,7 @@ def okunote_step(screen, mem):
                                      'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                     resulting_event='irreversible_risk_accepted',
                     reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
-        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt):
+        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt or summon_preempt):
             rescue = _survival_state(mem, cur)
             # Re-arm exhausted on tide change.
             _rescue_rearm(mem, cur, {'owner': 'ally'})
@@ -773,6 +973,17 @@ def okunote_step(screen, mem):
                     _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
                             observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                             reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+                rescue['exhausted'] = True
+                return [pad('b')]
+            # Conserve: healthy melee advantage despite low HP -> keep okunote closed.
+            if _hold_melee_egg(mem, cur, visible):
+                if not flow.get('risk_conserved'):
+                    flow['risk_conserved'] = True
+                    _record(mem, 'battle_okunote_risk_conserved', **_battle_labels(cur),
+                            observed_metric={'ally_hp': hp, 'safe_candidates': safe,
+                                             'melee_balance': _melee_balance(cur)},
+                            reason='低HPだが白兵優位のため奥の手を温存し白兵へ戻る')
+                flow['risk_declined'] = True
                 rescue['exhausted'] = True
                 return [pad('b')]
             # safe candidate exists: fall through to open okunote
@@ -794,7 +1005,8 @@ def okunote_step(screen, mem):
     if screen.kind == 'battle_menu' and 'おくのて' in names:
         label = 'おくのて'
     else:
-        candidates = [w for w in OKUNOTE_CHOICES if w in names]
+        from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES as _sd
+        candidates = [w for w in OKUNOTE_CHOICES if w in names and w not in _sd]
         if not candidates:
             return []
         label = candidates[-1]
@@ -806,9 +1018,12 @@ def okunote_step(screen, mem):
         return [move] if move else []
     if label == 'おくのて' and cur.get('okunote_last_resort_recorded'):
         cur['okunote_last_resort_selected'] = True
-    if label == 'おくのて' and (cur.get('okunote_egg_preempt') or {}).get('recorded'):
-        cur['okunote_egg_preempt'].update(selected=True, stage='selected')
-        _survival_state(mem, cur)['exhausted'] = True
+    if label == 'おくのて':
+        for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
+            guard = cur.get(key) or {}
+            if guard.get('recorded'):
+                cur[key].update(selected=True, stage='selected')
+                _survival_state(mem, cur)['exhausted'] = True
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
@@ -826,6 +1041,7 @@ def card_list_step(screen: Screen, mem):
     rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
     if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
             and flow and flow.get('stage') == 'list'
+            and not flow.get('announce_retried')
             and not _critical_safe_card(mem, cur, rescue)
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
@@ -915,6 +1131,21 @@ def card_list_step(screen: Screen, mem):
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
         flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
         if flow['announce_ticks'] > CARD_ANNOUNCE_LIMIT:
+            # Owner 2026-11-02 (VSヴィーナス at オトラント): a timed-out
+            # announce means the list is still open — the carry may never
+            # have fired, so retreating here leaves the card unused.
+            # Re-enter the same card once: a consumed row falls into the
+            # missing-card path; a still-carried row gets one more A.
+            if not flow.get('announce_retried'):
+                flow['announce_retried'] = True
+                flow.update(stage='list', selection_planned=False,
+                            announce_ticks=0, cursor_ticks=0, list_observations=0)
+                _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
+                        card=flow['card'],
+                        expected_metric='実使用告知または一覧からの消失',
+                        resulting_event='card_retry_not_yet_confirmed',
+                        reason='切り札の使用告知が確認できないままなので、消費を断定せず同じ札をもう一度選択する')
+                return []
             _card_use_unclassified(mem, cur, '切り札の告知待ち上限に達したため選択画面から戻る')
             return [pad('b')]
         # No live frame/parser signature has calibrated a use receipt yet.
@@ -949,6 +1180,7 @@ def egg_choice_step(screen: Screen, mem):
     names = egg_choice_names(screen)
     if not names or screen.menu_cursor not in (176, 192, 208):
         return []
+    _summon_scene(mem)
     key = tuple(names)
     flow = mem.get('egg_choice')
     if not flow or tuple(flow.get('names') or ()) != key:
@@ -1149,6 +1381,7 @@ def egg_battle_step(screen: Screen, mem):
                             '敵コマンド表示の再観測上限。味方の卵や攻撃を推測入力せず、既存の画面停滞検出へ委ねる'))
         return []
     mem.pop('enemy_general_menu', None)
+    _summon_scene(mem)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
     from . import okunote
@@ -1196,6 +1429,12 @@ def egg_battle_step(screen: Screen, mem):
                          <= egg_evidence['enemy_melee_score'] * BEHIND_EGG_RATIO_TENTHS))
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
+        rescue = battle.get('survival') or {}
+        if rescue.pop('egg_window_latch', False):
+            rescue['exhausted'] = False
+            _record(mem, 'battle_survival_rearm', **_battle_labels(battle),
+                    observed_metric={'ally_hp': battle.get('ally_hp'), 'enemy_hp': battle.get('enemy_hp')},
+                    reason='召喚前の期限待ちで止めた救済を、召喚の発生を契機に再評価する（#2953）')
         exp = mem.get('_experience')
         key = experience.situation_key('egg_summon', mem)
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
@@ -1304,6 +1543,20 @@ def egg_battle_step(screen: Screen, mem):
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
                   and len(enemy_rows) == 1 and not cards_left
                   and (empty_egg or 'たまごをつかう' not in screen.text))
+        # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
+        # defender facing an enemy summon with the egg row dead and no card left
+        # takes the lottery instead of attacking into it (g1097 18:06 ペコリーノ
+        # died to ローラーキラー by もうこうげき with おくのて never tried).
+        # The latch lets the summon preempt see the egg is gone once the
+        # command menu replaces this panel.
+        if (isinstance(mem.get('battle'), dict) and battle.get('side') == 'defense'
+                and len(enemy_rows) == 1 and not cards_left
+                and (empty_egg or 'たまごをつかう' not in screen.text)):
+            battle['summon_egg_unavailable'] = True
+            from .battle import _defender_summon_open
+            opening = _defender_summon_open(mem, battle)
+            if opening is not None:
+                return opening
         label = 'もうこうげき' if fierce else 'こうげき'
         move = _battle_menu_to(screen, label)
         if move is None:
@@ -1340,6 +1593,89 @@ def egg_battle_step(screen: Screen, mem):
 # window (g344 kept the same menu for 31 s) and far below the 300 s stasis
 # limit, yet bounded so a stuck screen cannot freeze the corner.
 MONSTER_MENU_HOLD_LIMIT = 30
+# Own turns one skill may spend while the enemy panel HP never moves. g1075
+# 2026-10-29 13:37-13:57: a defending おめでとり used ミカンをおす 30 times,
+# its HP 1000 -> 603, while ラズベリー stayed at 45 HP; あたためる was never tried.
+# With 4 turns (v289) the switch came at 14:13, ~10 minutes and 190 HP later,
+# and one あたためる took ラズベリー from 45 to 0.
+MONSTER_STALL_TURNS = 2
+# A menu redraw re-decides the same turn on the next observation (14:13:28
+# and :29 both chose あたためる); decisions this close count as one turn.
+MONSTER_STALL_SAME_TURN_TICKS = 3
+
+
+def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
+    """Try the other skill once the chosen one has not moved the enemy's HP.
+
+    Counts our own decided turns per skill while the enemy panel HP stays the
+    same for this ally/enemy pair; any HP change starts over. When both skills
+    have spent their turns the choice is kept (returning the summon exposes
+    its general) and the stall is recorded once.
+    """
+    if owner != 'ally' or ally is None or enemy is None or skill_count < 2:
+        return action
+    if action not in ('skill1', 'skill2') or type(enemy.hp) is not int:
+        return action
+    scope = [ally.name, enemy.name]
+    stall = mem.get('monster_stall')
+    if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy.hp:
+        stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy.hp, 'turns': {}}
+    turns = stall['turns']
+    tick = mem.get('tick')
+    if (type(tick) is int and type(stall.get('tick')) is int and stall.get('last') in ('skill1', 'skill2')
+            and 0 <= tick - stall['tick'] <= MONSTER_STALL_SAME_TURN_TICKS):
+        return stall['last']                  # the same turn, redrawn: keep its choice
+    other = 'skill2' if action == 'skill1' else 'skill1'
+    if turns.get(action, 0) >= MONSTER_STALL_TURNS:
+        if turns.get(other, 0) < MONSTER_STALL_TURNS:
+            if not turns.get(other):
+                _record(mem, 'monster_skill_stall', strategy_variant=f'monster_stall_{other}',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns), 'from': action, 'to': other},
+                        reason=f'{MONSTER_STALL_TURNS}ターン使っても敵のHPが変わらないため、もう一方の技を試す')
+            action = other
+        elif not stall.get('recorded'):
+            stall['recorded'] = True
+            _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_both',
+                    observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                     'turns': dict(turns)},
+                    reason='両方の技で敵のHPが変わらないが、召喚獣を戻すと将軍が出るため選択を維持する')
+    stall['last'], stall['tick'] = action, tick
+    turns[action] = turns.get(action, 0) + 1
+    return action
+
+
+LAMPKIN_PERIOD = 4        # かぼちゃ once, then へんなおどり x3, repeated (owner 2026-11-02)
+LAMPKIN_SEND_WINDOW = 4   # observations in which one confirm is still the same turn
+
+
+def lampkin_cycle_choice(mem, enemy):
+    """The cycle's skill for this turn: skill2 (かぼちゃ) on 0, 4, 8..., else skill1.
+
+    The count advances only when a command is sent (``lampkin_command_selected``),
+    so a menu that flickers or is redrawn between the decision and the press
+    cannot skip ahead. For a few observations after a send the sent skill stays
+    latched, so a menu still on screen does not change the pending turn.
+    """
+    name = enemy.name if enemy is not None else None
+    cyc = mem.get('lampkin_cycle')
+    if not isinstance(cyc, dict) or cyc.get('enemy') != name:
+        cyc = mem['lampkin_cycle'] = {'enemy': name, 'n': 0}   # a new opponent restarts it
+    tick, sent = int(mem.get('tick') or 0), cyc.get('sent_tick')
+    if type(sent) is int and 0 <= tick - sent < LAMPKIN_SEND_WINDOW and cyc.get('latched'):
+        return cyc['latched']
+    return 'skill2' if cyc.get('n', 0) % LAMPKIN_PERIOD == 0 else 'skill1'
+
+
+def lampkin_command_selected(mem, enemy, action):
+    cyc = mem.get('lampkin_cycle')
+    if not isinstance(cyc, dict) or cyc.get('enemy') != (enemy.name if enemy is not None else None):
+        return
+    tick, sent = int(mem.get('tick') or 0), cyc.get('sent_tick')
+    if (type(sent) is int and 0 <= tick - sent < LAMPKIN_SEND_WINDOW
+            and cyc.get('latched') == action):
+        return                                    # the same confirm, seen again
+    cyc.update(n=int(cyc.get('n') or 0) + 1, sent_tick=tick, latched=action)
 
 
 def monster_menu_step(screen: Screen, mem):
@@ -1390,7 +1726,48 @@ def monster_menu_step(screen: Screen, mem):
     if mem.get('battle') and enemy and type(enemy.hp) is int and enemy.hp > 0:
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
+        if enemy.name in reference.MONSTER_SKILLS:
+            # A normal battle reading resets card_summon_observed every frame;
+            # latch the enemy-side summon so the okunote preempt survives the
+            # melee that follows (owner 2026-11-02).
+            mem['battle']['enemy_summon_observed'] = True
+    cur = mem.get('battle')
+    if isinstance(cur, dict) and enemy is not None:
+        opening_scope = cur.get('melee_opening_scope')
+        opening_enemy = opening_scope[2] if isinstance(opening_scope, (list, tuple)) and len(opening_scope) >= 5 else None
+        opening_enemy_hp = opening_scope[4] if isinstance(opening_scope, (list, tuple)) and len(opening_scope) >= 5 else None
+        transformed = False
+        if isinstance(enemy.name, str) and isinstance(opening_enemy, str) and enemy.name != opening_enemy:
+            transformed = True
+        if (type(enemy.hp) is int and type(opening_enemy_hp) is int
+                and enemy.hp > opening_enemy_hp):
+            transformed = True
+        if any('たまごにもどれ' in str(t) for t in row_texts):
+            transformed = True
+        if transformed and not cur.get('enemy_transform_recorded'):
+            cur['enemy_transform_recorded'] = True
+            cur['enemy_transform_observed'] = True
+            try:
+                _record(mem, 'battle_enemy_transform_observed', **_battle_labels(cur),
+                        enemy=enemy.name, enemy_hp=enemy.hp,
+                        observed_metric={'opening_enemy': opening_enemy,
+                                        'opening_enemy_hp': opening_enemy_hp,
+                                        'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                        'transform_skill': any('たまごにもどれ' in str(t) for t in row_texts)},
+                        reason='敵が卵を使用して変身したため開幕の卵温存判断を無効化する')
+            except Exception:
+                pass
+            rescue = cur.get('survival')
+            if isinstance(rescue, dict):
+                rescue.pop('conserving_melee', None)
+                rescue.pop('conserved_labels', None)
+                rescue.pop('conserved_army_recheck', None)
     owner = _monster_owner(skill_lines, ally, enemy)
+    _summon_scene(mem)
+    if owner == 'ally':
+        mem.pop('monster_unchosen', None)       # our own turn: this step decides it
+    else:
+        count_unchosen_monster_turn(mem)
     scope = [owner, ally.name if ally else None, enemy.name if enemy else None]
     if mem.get('monster_menu_choice_scope') != scope:
         mem.pop('monster_menu_choice', None)
@@ -1435,6 +1812,13 @@ def monster_menu_step(screen: Screen, mem):
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     damage_first = _monster_damage_first(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    # #3071: ちきゅうちゃん self-destructs only into a lone general.
+    chikyu = _monster_chikyu_choice(
+        owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    lampkin_skills = [''.join(line.known.split()) for line in skill_lines]
+    lampkin_forced = _monster_lampkin_choice(owner, ally, enemy, lampkin_skills)
+    lampkin_cycle = (_lampkin_menu(owner, ally, lampkin_skills) and lampkin_forced is None)
+    lampkin = lampkin_forced or (lampkin_cycle_choice(mem, enemy) if lampkin_cycle else None)
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
     # Each named monster has an ordered two-skill table. When one label is
     # partly unreadable, requiring both exact OCR matches accidentally falls
@@ -1448,17 +1832,25 @@ def monster_menu_step(screen: Screen, mem):
                       and ally.name == 'あけまつ' and len(skill_lines) == 2
                       and (_fold_skill(skill_lines[0].known) == _fold_skill('ごあいさつ')
                            or _fold_skill(skill_lines[1].known) == _fold_skill('おもてなし')))
+    omedetori_cycle = (owner == 'ally' and ally is not None
+                       and ally.name == 'おめでとり' and len(skill_lines) == 2
+                       and (_fold_skill(skill_lines[0].known) == _fold_skill('ミカンをおす')
+                            or _fold_skill(skill_lines[1].known) == _fold_skill('あたためる')))
     akematsu = akematsu_assessment(mem, ally, enemy) if akematsu_cycle else None
-    special_cycle = balloon_cycle or akematsu_cycle
+    omedetori = omedetori_assessment(mem, ally, enemy) if omedetori_cycle else None
+    special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261016-balloon-akematsu-v2'
+    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
+            or (omedetori_cycle and mem.get('monster_menu_choice') != omedetori['action'])
             or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
-            or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))):
+            or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))
+            or (chikyu and mem.get('monster_menu_choice') not in (chikyu, 'retreat'))
+            or (lampkin and mem.get('monster_menu_choice') not in (lampkin, 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
@@ -1476,6 +1868,10 @@ def monster_menu_step(screen: Screen, mem):
             default = 'skill1'
         elif damage_second:
             default = 'skill2'
+        elif chikyu:
+            default = chikyu
+        elif lampkin:
+            default = lampkin
         elif balloon_cycle:
             # Measured hits use a three-turn reserve; absent measurements,
             # a conservative explicitly-unproven reserve prevents 9999 loops.
@@ -1485,6 +1881,9 @@ def monster_menu_step(screen: Screen, mem):
             # Switching abilities a second time undoes the first exchange.
             # After issuing one observed ごあいさつ, summon with おもてなし.
             default = akematsu['action']
+        elif omedetori_cycle:
+            # One ミカンをおす, then the self-destruct あたためる at the next decision.
+            default = omedetori['action']
         elif heal_first:
             # Generic heal-first monsters still use the best HP observed in
             # this menu session as their recovery target.
@@ -1511,8 +1910,8 @@ def monster_menu_step(screen: Screen, mem):
         #     attack pick, matching policy 1-3 which assume a non-behind
         #     position for the summoned monster's own attack.
         #   - `not heal_first` keeps heal-first monsters on their recovery path.
-        if (not special_cycle and not damage_first and not damage_second
-                and not powerless and len(skill_lines) >= 2
+        if (not special_cycle and not damage_first and not damage_second and not chikyu
+                and not lampkin and not powerless and len(skill_lines) >= 2
                 and default == 'skill1' and not heal_first and not behind):
             policy_default = _monster_attack_policy_default(
                 owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
@@ -1524,13 +1923,15 @@ def monster_menu_step(screen: Screen, mem):
         # retreat/experience: Balloon Finch survival and Akematsu one-shot swap.
         action = (default if special_cycle else
                   'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
-                  else experience.preferred(exp, key, default=default, kind='monster_menu'))
+                  else chikyu or lampkin or experience.preferred(exp, key, default=default, kind='monster_menu'))
         # HP pools alone do not establish that this monster cannot win: a
         # living summon can attack, heal or disable the opponent. Returning
         # also exposes its general. Discard saved/learned HP-only retreats;
         # retain the explicit, measured two-useless-skills exception.
         if action == 'retreat' and not powerless:
             action = default
+        if not special_cycle and not damage_first and not damage_second and not chikyu and not lampkin:
+            action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines))
         # Keep the existing telemetry shape. The general's exposure risk is
         # still reported, but useful summons no longer request a return that
         # needs to be blocked by that separate guard.
@@ -1579,6 +1980,33 @@ def monster_menu_step(screen: Screen, mem):
                        '同じ技の無限試行を防ぎ「おもてなし」に切り替える')
             else:
                 why = '「ごあいさつ」を1回送信済みのため、以降は「おもてなし」で別の召喚獣を呼ぶ'
+        elif omedetori_cycle:
+            label = second if action == 'skill2' else first
+            if action == 'skill1':
+                why = '「ミカンをおす」はこの戦闘で1回だけ送信し、その後は「あたためる」へ進む'
+            elif omedetori['rule'] == 'unscoped_mikan_hold':
+                why = '戦闘の同一性が読めないため自爆の「あたためる」を選ばず「ミカンをおす」で待つ'
+            elif omedetori['rule'] == 'warm_after_unverified_attempt':
+                why = ('カーソル未読で「ミカンをおす」を1回試みたため、送信成功は未確認だが'
+                       '同じ技の無限試行を防ぎ「あたためる」に切り替える')
+            else:
+                why = '「ミカンをおす」を1回送信済みのため、次の選択で自爆の「あたためる」を選ぶ'
+        elif lampkin:
+            label = second if action == 'skill2' else first
+            kind = _lampkin_forced_kind(enemy)
+            if kind == 'boss':
+                why = 'ボスモンスターに「かぼちゃ」はきかないため、つねに「へんなおどり」を選ぶ（オーナー 2026-11-02）'
+            elif kind == 'hp1':
+                why = '相手のHPが1でそのまま押し切れるため、「かぼちゃ」を使わず「へんなおどり」を選ぶ（オーナー 2026-11-02）'
+            else:
+                n = int((mem.get('lampkin_cycle') or {}).get('n') or 0)
+                why = (f'「かぼちゃ」1回→「へんなおどり」{LAMPKIN_PERIOD - 1}回の繰り返し'
+                       f'（{n % LAMPKIN_PERIOD + 1}/{LAMPKIN_PERIOD}ターン目、オーナー 2026-11-02）')
+        elif chikyu:
+            label = second if action == 'skill2' else first
+            why = ('自爆は将軍と兵士を確定で全滅させるため、敵将軍だけの今ハルマゲドンで決着させる'
+                   if action == 'skill2' else
+                   '自爆は召喚獣に自分の残りHP分・ボスに最大HPの1/8しか効かないため、だいじしんで敵を半減し続ける')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -1589,7 +2017,12 @@ def monster_menu_step(screen: Screen, mem):
         else:
             label, why = first, ('敵召喚獣には混乱技の反復より実ダメージの1技目を優先する'
                                  if damage_first else '先手を取れる1技目を続ける')
-        if not special_cycle and action != default and action != 'retreat':
+        stalled = (mem.get('monster_stall') or {}).get('turns') or {}
+        if (not special_cycle and action != default and action != 'retreat'
+                and stalled.get(default, 0) >= MONSTER_STALL_TURNS):
+            label = first if action == 'skill1' else second
+            why = f'{MONSTER_STALL_TURNS}ターン使っても敵のHPが変わらない技の代わりに試す（既定 {default}）'
+        elif not special_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
@@ -1600,7 +2033,10 @@ def monster_menu_step(screen: Screen, mem):
                                  'target_hp': balloon['target_hp'] if balloon_cycle else None,
                                  'balloon_survival': balloon if balloon_cycle else None,
                                  'akematsu_exchange': akematsu if akematsu_cycle else None,
+                                 'omedetori_cycle': omedetori if omedetori_cycle else None,
                                  'damage_first': damage_first,
+                                 'chikyu_choice': chikyu,
+                                 'lampkin_choice': lampkin,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
@@ -1608,6 +2044,8 @@ def monster_menu_step(screen: Screen, mem):
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')
+    if owner == 'ally':
+        mem['monster_own_choice'] = True
     if action == 'retreat':
         if return_index is None:
             return []
@@ -1637,4 +2075,11 @@ def monster_menu_step(screen: Screen, mem):
         akematsu_command_selected(
             mem, ally, enemy, action,
             cursor_confirmed=(screen.menu_cursor == target))
+    if omedetori_cycle and action == 'skill1':
+        # Same contract as ごあいさつ: a predicted cursor is only an attempt.
+        omedetori_command_selected(
+            mem, ally, enemy, action,
+            cursor_confirmed=(screen.menu_cursor == target))
+    if lampkin_cycle and action in ('skill1', 'skill2'):
+        lampkin_command_selected(mem, enemy, action)
     return [pad('a')]

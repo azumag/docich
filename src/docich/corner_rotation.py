@@ -505,6 +505,44 @@ class CornerRotationManager:
                 result["trigger_at"] = requested_trigger
             return result
 
+    def clear_manual_clock_quarantine(self, game='hanjuku-hero'):
+        """Clear a clock-gap hold for one already-queued manual corner.
+
+        The hold is a downtime safety, not a game switch. This operator only
+        removes clock_hold_until after proving the ledger is waiting on that
+        hold, no reservation is live, the clock has not regressed, and the
+        durable queue names this corner. The normal tick then processes the
+        queue through the existing reservation/game-boundary gates.
+        """
+        if game != 'hanjuku-hero':
+            raise RotationError(
+                'unsupported manual clock quarantine', reason_code='invalid_value'
+            )
+        with self.locked() as acquired:
+            if not acquired:
+                return {'status': 'busy'}
+            now = timestamp(self.clock())
+            state = self.load(now)
+            if now < state.get('last_seen_at', 0):
+                return {'status': 'clock_regressed'}
+            if state.get('status') == 'recovery_required':
+                return {'status': 'recovery_required'}
+            if (state.get('status') == 'running' or state.get('pending') is not None
+                    or state.get('manual_pending') is not None):
+                return {'status': 'busy'}
+            if state.get('reason') != 'clock-gap-quarantine':
+                return {'status': 'not_quarantined'}
+            hold = state.get('clock_hold_until')
+            if type(hold) not in (int, float) or not hold > now:
+                return {'status': 'not_held'}
+            queued = state.get('queued_manual')
+            if not isinstance(queued, dict) or queued.get('corner') != game:
+                return {'status': 'not_queued'}
+            state.pop('clock_hold_until', None)
+            state.update(status='waiting', reason='manual-clock-hold-cleared')
+            self.save(state)
+            return {'status': 'cleared', 'corner': game}
+
     def cancel_scheduled_manual(self, game):
         """Cancel only a still-in-inbox scheduled request.
 

@@ -9,9 +9,25 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
-from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
+from . import routes
+from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
+                               _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
-                               _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
+                               _defense_move_pick, _defense_priority_castles, _defense_score,
+                               _post_conquest_wait,
+                               _source_list_open, _source_location_recheck, _source_location_recheck_due,
+                               _unplaced_castle_generals)
+
+
+def _march_blocked(chapter, source, target, owned):
+    # Chapter 3 marches follow the road table (``routes``), not the straight
+    # line — an own castle off the road is no blocker even when it sits on
+    # the segment.
+    return chapter != 3 and chart.march_blocked(chapter, source, target, owned)
+
+
+def _march_blocker(chapter, source, target, owned):
+    return chart.march_blocker(chapter, source, target, owned) if chapter != 3 else None
 
 
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
@@ -31,19 +47,44 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     garrison = mem.get('garrison') or {}
     busy = busy | set(mem.get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
+    sole = len(owned) == 1          # owner: a single castle may leave the hero alone
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
+    if chapter == 3:
+        owned = {c for c in owned if routes.allowed(mem, c, target)}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
-    # castle that keeps somebody behind is required, then the nearest goes.
+    # castle that keeps somebody behind is required. Owner 2026-11-02: an
+    # own castle lying on the march stops the army inside (アルマムーン →
+    # クロチェット enters オトラント; every measured アルマムーン-launch
+    # stalled while the only arrival was オトラント-launched 5-Z2), so a
+    # source whose path crosses another own castle ranks behind a clear one.
     need = 1 if allow_sole else 2
     excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
                 if allow_sole else set())
     staffed = sorted((c for c in owned if len(set(free[c])) >= need
-                      and set(free[c]) - unavailable_for_attack and c not in excluded),
-                     key=lambda c: _distance(chapter, c, target))
+                      and _spares(free[c], unavailable_for_attack, sole) and c not in excluded),
+                     key=lambda c: (_march_blocked(chapter, c, target, owned),
+                                    _distance(chapter, c, target)))
     if staffed:
-        present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
-        present.sort(key=lambda g: g == NAME)          # risk the hero last
-        return staffed[0], present[0]
+        best = staffed[0]
+        if _march_blocked(chapter, best, target, owned):
+            # A march from the only staffed source just stops inside the
+            # blocking own castle — sortie from it instead (owner 2026-11-02:
+            # オトラントから出ないとかいけつにならない). Its spare leaves even
+            # when the list is thin: the march would only deliver the general
+            # there anyway. An unread list is opened as a probe.
+            blocker = _march_blocker(chapter, best, target, owned)
+            if blocker:
+                spares = _spares([g for g in free.get(blocker) or ()
+                                  if g not in unavailable_for_attack],
+                                 unavailable_for_attack, sole)
+                if spares:
+                    return blocker, spares[0]
+                if garrison.get(blocker) is None:
+                    return blocker, MOVE_ANY_GENERAL
+        return best, _spares(free[best], unavailable_for_attack, sole)[0]
+    probes = sorted(c for c in owned if routes.probe_due(mem, c))
+    if probes:
+        return probes[0], MOVE_ANY_GENERAL
     recheck = sorted((c for c in owned if _source_location_recheck_due(mem, c)),
                      key=lambda c: (_distance(chapter, c, target), c))
     if recheck:
@@ -51,13 +92,26 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     unplaced = [g for g in _unplaced_castle_generals(mem)
                 if g not in busy and g not in unavailable_for_attack]
     arrival = _arrival_castle(mem, owned)
-    if unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None:
+    if (unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None
+            and not chart_adjust.hero_guard_short([*(garrison.get(arrival) or ()), *unplaced],
+                                                  unplaced[0], busy, sole_castle=sole)):
         # Joiners stand in the hero's castle; the sortie list is the reading
         # and still cancels if fewer than two are really there.
         return arrival, unplaced[0]
     general = chart_order['general'] if chart_order else NAME
-    if general in busy or general in unavailable_for_attack:
+    if general in unavailable_for_attack:
         return None
+    if general in busy:
+        # A marching or unlocated general is waited for. One missing from this
+        # month's complete roster has left the army: g1075 02:34-02:43, 4-C1's
+        # ココット kept the retake of アルカ off the unread hero castle and a
+        # sole defender left マラコビア instead. The read list picks a spare.
+        roster = mem.get('recruit_roster') or {}
+        if not (roster.get('complete') is True and roster.get('chapter') == chapter
+                and roster.get('month') == mem.get('month')
+                and general not in (roster.get('names') or ())):
+            return None
+        general = MOVE_ANY_GENERAL
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
             return source, general
@@ -91,6 +145,74 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
 
 
+def _spares(free, unavailable=(), sole=False):
+    """Generals a castle may send, the hero last and only when alone.
+
+    The hero's castle keeps ``HERO_CASTLE_GUARD`` other generals (owner
+    2026-10-29) unless it is our only castle (``sole``); when they would leave
+    it thin, the hero is not sent instead.
+    """
+    others = [g for g in free if g != NAME and g not in unavailable
+              and not chart_adjust.hero_guard_short(free, g, sole_castle=sole)]
+    if others:
+        return others
+    return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
+
+
+def _defense_rebalance(mem, owned, busy, heading):
+    """Boss-wait moves that staff a weak priority castle (#2985).
+
+    Only a measured list can qualify a castle, and only a spare strictly
+    stronger than its best defender is sent, so the moves stop once every
+    priority castle holds the best available general. A donor's remaining
+    best must not drop below the target it relieves, which keeps two weak
+    castles from trading generals forever. The hero is not counted as a
+    defender: it may sortie at any time, so weak non-hero garrisons still
+    qualify for reinforcement.
+    """
+    chapter = mem.get('chapter') or 0
+    garrison = mem.get('garrison') or {}
+    home = chart.home_castle(chapter)
+    priority = _defense_priority_castles(mem)
+    unlocated = set(mem.get('general_location_unknown') or ())
+    free = {c: [g for g in (garrison.get(c) or ())
+                if g not in busy and g not in unlocated] for c in owned}
+    out = []
+    for target in sorted(priority, key=lambda c: _distance(chapter, home, c)):
+        if (target in heading or garrison.get(target) is None
+                or routes.unread_dispatches(mem, target)):
+            continue
+        best = max((_defense_score(mem, g) for g in free[target] if g != NAME),
+                   default=None)
+        donors = []
+        for source in sorted(owned, key=lambda c: _distance(chapter, c, target)):
+            if source == target or len(free[source]) < 2:
+                continue
+            sendable = [g for g in _spares(free[source]) if g != NAME]
+            if not sendable:
+                continue
+            top = sorted(sendable, key=lambda g: _defense_score(mem, g),
+                         reverse=True)[0]
+            top_score = _defense_score(mem, top)
+            if best is not None and top_score <= best:
+                continue
+            rest_best = max((_defense_score(mem, g)
+                             for g in free[source] if g != top),
+                            default=(0, 0, 0))
+            if best is not None and rest_best < best:
+                continue
+            donors.append((top_score, -_distance(chapter, source, target),
+                           source, top))
+        if not donors:
+            continue
+        _, _, source, general = max(donors)
+        out.append({'general': general, 'target': target, 'cards': [],
+                    'source': source, 'after': None, 'purpose': 'move',
+                    'defense_rebalance': True,
+                    'note': f'暫定: ボス出撃待ちの防衛優先として{general}を{source}から{target}へ移動'})
+    return out
+
+
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
 
 
@@ -119,10 +241,56 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
     lost = [c for c in mem.get('lost') or () if c in castles]
-    lost.sort(key=lambda c: c != home)          # a lost home castle is retaken first
+    # Owner 2026-11-02: a lost castle that gates the boss path must come back
+    # before unrelated retakes — otherwise the bot keeps re-taking minor
+    # castles while the boss chain's `after` preconditions can never fire
+    # (g1097: 5-C4 バスカビル→プトレマイス対チキータ waited on captured
+    # バスカビル while interim orders took アイアイエー/ボッサール/ジュメルズ).
+    # The boss order (5-B1 プトレマイス→ボス) is gated out of ``orders()``, so
+    # the path is walked on ``all_orders``: seed from its boss targets, then
+    # back through each boss-path order's source (ボス ← プトレマイス ←
+    # バスカビル ← アイアイエー).
+    mechanical = not chart.speedrun_enabled(chapter)
+    all_orders = chart.all_orders(chapter)
+    boss_path = {o.get('target') for o in all_orders
+                 if chart.is_boss_castle(o.get('target'))}
+    while True:
+        grow = {o.get('source') for o in all_orders
+                if o.get('target') in boss_path and o.get('source') not in boss_path}
+        if not grow:
+            break
+        boss_path |= grow
+    if mechanical:
+        # No chart chain: the boss assault waits for every other castle.
+        boss_path = {c for c in castles if not chart.is_boss_castle(c)} | {chart.boss_castle(chapter)}
+    boss_gate = {after[1] for order in all_orders
+                 if order.get('target') in boss_path
+                 for after in (order.get('after'),)
+                 if isinstance(after, (list, tuple)) and len(after) == 2
+                 and after[0] == 'captured' and after[1] in lost}
+    if mechanical:
+        # No chart chain to gate on: the home castle first, then nearest an owned castle.
+        lost.sort(key=lambda c: (c != home,
+                                 min((_distance(chapter, o, c) for o in owned), default=0), c))
+    else:
+        lost.sort(key=lambda c: (c != home, c not in boss_gate))  # home first, then the boss gate
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
+    if mechanical:
+        # Owner 2026-11-02 (スピードランチャート廃止): lost castles first (home,
+        # then the rest), then the others nearest an owned castle first.
+        rest = sorted((c for c in targets if c not in lost),
+                      key=lambda c: (min((_distance(chapter, o, c) for o in owned), default=0), c))
+        targets = [*(c for c in targets if c in lost), *rest]
+    # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
+    # held and the boss unbeaten, send every spare general at it in successive
+    # waves — the charted single sortie is not the only assault.
+    boss = chart.boss_castle(chapter)
+    if (boss in castles and boss_path
+            and all(c in owned or c == home for c in boss_path - {boss})
+            and not (mem.get('boss_victories') or {})):
+        targets = [*targets, boss]
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
     # attacked twice and the candidate list would never advance. Only recent
@@ -154,14 +322,50 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
+        if chart.is_boss_castle(target):
+            cards = []   # 波: strict kit waits for nobody — carry what is there
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
             **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     garrison = mem.get('garrison') or {}
     moves = []
+    if chapter == 3:
+        # Stage spare generals along chart legs rather than aiming a distant
+        # enemy straight across a cliff. Every stage ends at an owned castle.
+        seen_legs = set()
+        for target in targets:
+            options = []
+            for donor in sorted(owned):
+                free = [g for g in garrison.get(donor) or () if g not in busy
+                        and g not in (mem.get('general_location_unknown') or ())]
+                probe = routes.probe_due(mem, donor)
+                if len(free) < 2 and not probe:
+                    continue
+                if len(free) >= 2 and not [g for g in _spares(free) if g != NAME]:
+                    continue
+                route = routes.path(mem, donor, target, owned)
+                if route and len(route) > 2 and route[1] not in heading:
+                    options.append((len(route), donor, route, free, probe))
+            if not options:
+                continue
+            _, donor, route, free, probe = min(options, key=lambda v: (v[0], v[1]))
+            leg = (donor, route[1])
+            if leg in seen_legs:
+                continue
+            seen_legs.add(leg)
+            general = (MOVE_ANY_GENERAL if len(free) < 2
+                       else (_defense_move_pick(mem, donor, route[1],
+                                                _spares(free)) or _spares(free)[0]))
+            moves.append({'general': general, 'source': donor, 'target': route[1],
+                          'cards': [], 'after': None, 'purpose': 'move',
+                          'note': f'暫定: {target}への中継として{route[1]}へ移動',
+                          **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+    # A castle that was sent a move after its list was last read is not known
+    # to be empty: past the busy window it was picked again and again (#3037).
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
-             if garrison.get(c) == [] and c not in heading]
+             if garrison.get(c) == [] and c not in heading
+             and not routes.unread_dispatches(mem, c)]
     for target in empty:
         # A castle whose list was never read may hold several generals: the
         # bot reads lists only when it sorties, so g407 knew one castle while
@@ -169,26 +373,82 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # the reading; with fewer than two there the move is cancelled
         # (deploy_step), which records the list and drops the donor.
         known = [c for c in owned if c != target
-                 and len([g for g in garrison.get(c) or () if g not in busy]) >= 2]
-        unread = [c for c in owned if c != target and garrison.get(c) is None]
+                 and routes.allowed(mem, c, target)
+                 and len(spare := [g for g in garrison.get(c) or () if g not in busy]) >= 2
+                 and [g for g in _spares(spare) if g != NAME]]
+        unread = [c for c in owned if c != target and garrison.get(c) is None
+                  and routes.allowed(mem, c, target)]
         donors = (sorted(known, key=lambda c: _distance(chapter, c, target))
                   + sorted(unread, key=lambda c: _distance(chapter, c, target)))
         if not donors:
             continue
         spare = [g for g in garrison.get(donors[0]) or () if g not in busy]
-        spare.sort(key=lambda g: g == NAME)
-        general = spare[0] if spare else MOVE_ANY_GENERAL
+        spare = _spares(spare) if len(spare) >= 2 else []
+        general = _defense_move_pick(mem, donors[0], target, spare) or MOVE_ANY_GENERAL
         moves.append({
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
             'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
+    # A pending 四季王 site order with no companion needs an egg pair at one
+    # castle: move a spare general to join a lone egg-holder (or the hero's
+    # castle) so one can sortie while an egg-holder stays. g1075 held every
+    # site order pending for an hour while a lone egg-holder guarded each
+    # castle (owner 2026-10-30: 城に戻って出撃できる人員を探す).
+    pending_sites = [o for o in chart.orders(chapter)
+                     if o['target'] in chart.boss_sites(4)
+                     and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')]
+    if pending_sites and all(_boss_companion_source(o, mem) is None for o in pending_sites):
+        unavailable = busy | set(mem.get('general_location_unknown') or ())
+        present = {c: [g for g in garrison.get(c) or () if g not in unavailable]
+                   for c in owned}
+        paired = False
+        for site in sorted(pending_sites, key=lambda o: o['step']):
+            if paired:
+                break
+            for sink in sorted(present, key=lambda c: _distance(chapter, c, site['target'])):
+                if paired or sink in heading or not present.get(sink):
+                    continue
+                egg_sink = sink != home and any(_holds_egg(mem, g) for g in present[sink])
+                home_sink = (sink == home and NAME in present[sink]
+                             and len(present[sink]) - 1 >= chart_adjust.HERO_CASTLE_GUARD)
+                if not (egg_sink or home_sink):
+                    continue
+                for donor in sorted(present, key=lambda c: _distance(chapter, c, sink)):
+                    if donor == sink or len(present[donor]) < 2:
+                        continue
+                    free = [g for g in present[donor] if g != NAME
+                            and (home_sink or _holds_egg(mem, g))]
+                    if not free:
+                        continue
+                    general = free[0]
+                    moves.append({
+                        'general': general, 'target': sink, 'cards': [], 'source': donor,
+                        'after': None, 'purpose': 'move',
+                        'note': f"暫定: {general}を{donor}から{sink}へ移動しボス出撃の同伴者を揃える"})
+                    paired = True
+                    break
+    # Post-conquest boss wait: reinforce weak priority castles with the
+    # strongest sendable spare instead of whoever the list happens to hold
+    # (#2985: the home castle waited out a boss sortie with its weakest
+    # general while stronger ones sat at border castles). Targets already
+    # covered by an ordinary move above are not duplicated.
+    if _post_conquest_wait(mem):
+        moved = {o['target'] for o in moves}
+        moves.extend(o for o in _defense_rebalance(mem, owned, busy, heading)
+                     if o['target'] not in moved)
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
     out = {}
     known_retakes = [o for o in sorties['retake'] if not o.get('source_probe')]
     unread_retakes = [o for o in sorties['retake'] if o.get('source_probe')]
-    for order in (*known_retakes, *moves, *unread_retakes, *sorties['attack']):
+    # Owner 2026-11-02 (余剰兵力をボスへ連続投入): boss waves ride right after
+    # the front candidate so the boss is hit in parallel rather than waiting
+    # behind the whole retake/move queue — listing attacks last starved it.
+    waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
+    attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
+    lead = [*known_retakes, *moves, *unread_retakes]
+    for order in (*lead[:1], *waves, *lead[1:], *attacks):
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
@@ -206,9 +466,8 @@ def _sole_starved(mem):
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
-    boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
-    if not owned or not [c for c in castles if c not in owned and c != boss]:
+    if not owned or not [c for c in castles if c not in owned and not chart.is_boss_castle(c)]:
         return False
     busy, _ = _en_route(mem)
     busy = busy | set(mem.get('general_location_unknown') or ())
@@ -282,7 +541,12 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     interim = state.get('interim_order')
     status = mem.get('orders') or {}
     busy = (interim and status.get(interim['step']) in (None, 'pending')
-            and _source(interim, mem) in _owned(mem))
+            and _source(interim, mem) in _owned(mem)
+            and routes.order_allowed(mem, interim, _source(interim, mem))
+            # ``next_order`` never starts an order whose source list is closed
+            # (read empty, no probe due); waiting on it held every other
+            # candidate (g1075 2026-10-29 11:38-11:47, リグア retake).
+            and _source_list_open(interim, mem))
     if busy:
         return
     candidates = interim_candidates(mem, allow_sole)
@@ -298,6 +562,9 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                     jev_status='no_candidates',
                     deviation_reason='interim_no_candidates',
                     reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
+            from . import goals
+            for goal in goals.pending(mem, {'retake', 'move'}):
+                goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     label, order = next(iter(candidates.items()))
     if allow_sole and len(set(((mem.get('garrison') or {}).get(order['source']) or ()))) < 2:
@@ -370,6 +637,7 @@ def _adjust_situation(mem):
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)
     return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+            'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],
             'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
@@ -396,6 +664,33 @@ def _adopt_plan(mem, doc, rid):
             request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
             local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
             reason='調整チャートを受信したため独自の指示列で出撃を再開')
+
+
+def _off_chart_mechanical(mem, state, rid, gate):
+    """Speedrun chart abolished: take castles mechanically, ask no model.
+
+    The same stand-in the adjusted-chart path uses while an answer is pending,
+    but nothing is requested and no model answer is ever adopted, so the next
+    sortie is always the first deterministic candidate.
+    """
+    status = mem.get('orders') or {}
+    fields = {'request_id': rid, 'off_chart_reason': 'mechanical',
+              'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
+              'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
+    digest = chart_adjust.request_digest(fields)
+    if state.get('request_id') != rid:
+        state.clear()
+        state['request_id'] = rid
+    if state.get('request_digest') != digest:
+        state['request_digest'] = digest
+        if (mem.get('chart_plan') or {}).get('source') == 'mechanical':
+            mem['chart_plan'] = None     # built for an older situation
+    if _plan_pending(mem):
+        return
+    if gate == 'break':
+        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+    else:
+        _mechanical_chart(mem, state, rid, digest)
 
 
 def _off_chart(mem):
@@ -430,6 +725,8 @@ def _off_chart(mem):
         return  # wait for a second general: no model request, no per-tick churn
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
+    if not chart.speedrun_enabled(mem.get('chapter') or 0):
+        return _off_chart_mechanical(mem, state, rid, gate)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
     status = mem.get('orders') or {}
     blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
@@ -486,4 +783,7 @@ def _off_chart(mem):
         # Fall back to the single interim sortie for exhausted adopted plans.
         _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
         return
-    _mechanical_chart(mem, state, rid, digest)
+    if gate == 'break':
+        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+    else:
+        _mechanical_chart(mem, state, rid, digest)

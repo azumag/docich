@@ -6,12 +6,15 @@ last-castle guard. Returns plans and records; never pad input.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
-from ...hanjuku_egg_reference import general_max_hp
+from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
 from . import edition
+from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
 
 
@@ -42,32 +45,98 @@ def _hero_alternatives(mem, names):
     return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
 
 
-def _order_hero_alternatives(order, mem, names):
+def _order_hero_alternatives(order, mem, names, relaxed=True):
+    # Duplicate names are ambiguous for a selection receipt. The unmeasured
+    # egg-holder seat below iterates ``names`` directly, so reject here too.
+    if not names or len(names) != len(set(names)):
+        return []
     candidates = _hero_alternatives(mem, names)
     if not _is_boss_order(order, mem):
         return candidates
+    site = order.get('target') in chart.boss_sites(4)
+    if site:
+        # Owner 2026-10-30: a 四季王 sortie still leaves HERO_CASTLE_GUARD
+        # generals beside the hero when it leaves the hero's castle. The
+        # 四季王 fights as a summoned monster from the first turn with no
+        # きりふだ row (g1075 08:27:56 サマカンテ), so a general without an
+        # egg can only melee it (カペリーニ/ミュスカデ were sent so).
+        # Owner 2026-10-30 (1人残す): any other castle keeps one general too;
+        # g1075 lost フヌイヌム (08:34) and ミヒラギアン (08:47) after their
+        # lone ミュスカデ/アルテミス left for the sites.
+        # Owner 2026-10-30 (卵持ちを残す): that one holds an egg; g1075 lost
+        # アルカ (09:01:32) when the egg-less キール, kept as ヴィーナス left,
+        # met リーキ's おーでーん summon.
+        unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+        present = set(names or ()) - unavailable
+        candidates = [g for g in candidates if _holds_egg(mem, g)
+                      and not chart_adjust.hero_guard_short(names, g, unavailable)
+                      and (NAME in present or any(_holds_egg(mem, s) for s in present - {g}))]
+        if relaxed and not candidates and NAME in present:
+            # Owner 2026-10-30 (定常的にボス城へ進行): strict guards may leave
+            # no sortie-able general even at the hero's castle - g1075 held
+            # every site order pending for an hour while a lone egg-holder
+            # guarded each castle. An egg-holder still goes when the hero
+            # keeps one other general beside him. Only the hero's castle
+            # relaxes: an egg-less guard elsewhere lost アルカ to a summon.
+            candidates = [g for g in _hero_alternatives(mem, names)
+                          if g in present and _holds_egg(mem, g)
+                          and len(present - {g, NAME}) >= 1]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
-    boss = (reference.general_strength(chart.BOSSES.get(mem.get('chapter')))
-            or reference.general_strength('しゅじんこう'))
-    if boss is None:
+    if _boss_stats(mem) is None:
         return []
     fit = [name for name in candidates
            if reference.general_strength(name) is not None and not _boss_companion_unfit(mem, name)]
-    strong = [name for name in fit
-              if (stats := reference.general_strength(name)) is not None
-              and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
-              and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+    strong = [name for name in fit if _boss_comparable(mem, name)]
     if strong:
-        return strong
+        # Owner 2026-10-30 (四季王): 強い将軍から, so the strongest leads.
+        return sorted(strong, key=_strength, reverse=True) if site else strong
     # Owner (2026-10-14): waiting for a comparable companion left the boss
     # castle unattacked for a whole run while healthy generals sat in other
     # castles. A fit but weaker substitute still attacks, strongest first.
     # The hero is never sent (owner: 主人公boss禁止), and an injured or
     # egg-depleted substitute is still left to recover.
-    return sorted(fit, key=lambda name: (reference.general_strength(name) or (0, 0))[:2],
-                  reverse=True)
+    weak = sorted(fit, key=_strength, reverse=True)
+    # Owner (2026-10-30): 弱い将軍をたくさん送って少しずつ削る選択肢も狭めない.
+    # An egg-holder absent from the strength table is a valid last seat on an
+    # attrition sortie; it only goes after every measured general and still
+    # honours the site egg rule, the hero-castle guard and the unfit list.
+    # A broken/depleted egg or a heavy injury keeps recovering as before —
+    # a dead sortie chips nothing and can feed the enemy a defector.
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    present = set(names or ()) - unavailable
+    unknown = [g for g in names or ()
+               if g not in weak and g != NAME and g not in unavailable
+               and _holds_egg(mem, g) and not _boss_companion_unfit(mem, g)
+               and (not site or (not chart_adjust.hero_guard_short(names, g, unavailable)
+                                 and (NAME in present
+                                      or any(_holds_egg(mem, o) for o in present - {g}))))]
+    return weak + unknown
+
+
+def _strength(name):
+    return (reference.general_strength(name) or (0, 0))[:2]
+
+
+def _boss_stats(mem):
+    return (reference.general_strength(chart.BOSSES.get(mem.get('chapter')))
+            or reference.general_strength('しゅじんこう'))
+
+
+def _boss_comparable(mem, name):
+    boss, stats = _boss_stats(mem), reference.general_strength(name)
+    return (boss is not None and stats is not None
+            and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
+            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP)
+
+
+def _holds_egg(mem, name):
+    """An egg the sortie screen showed, else the roster's own (GENERAL_EGGS);
+    a rotten egg or a read count of 0 is none."""
+    kind = (mem.get('egg_types') or {}).get(name)
+    held = kind != 'くさってる' if kind is not None else bool((GENERAL_EGGS.get(name) or (False,))[0])
+    return held and (mem.get('egg_uses') or {}).get(name) != 0
 
 
 def _boss_companion_unfit(mem, name):
@@ -84,7 +153,28 @@ def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = mem.get('garrison') or {}
     source = _source(order, mem)
-    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    chapter = mem.get('chapter') or 0
+    owned = _owned(mem) & set(chart.castles(chapter))
+    if order.get('target') in chart.boss_sites(4):
+        # Owner 2026-10-30: 強い将軍から. Every read list's strongest companion
+        # competes, not the chart source's first fit one (g1075 08:20-08:25
+        # sent each source's lone アルテミス 49/7, カペリーニ 63/7, ミュスカデ
+        # 57/9). The hero's castle, where joiners stand, is read first while
+        # no read list holds one as strong as the hero.
+        best = {c: names[0] for c in owned
+                if (names := _order_hero_alternatives(order, mem, garrison.get(c), relaxed=False))}
+        if not best:
+            # Strict guards that leave no sortie-able general anywhere relax
+            # to keeping one present defender (owner 2026-10-30: 定常的に
+            # ボス城へ進行). Still never an empty castle.
+            best = {c: names[0] for c in owned
+                    if (names := _order_hero_alternatives(order, mem, garrison.get(c)))}
+        home = chart.home_castle(chapter)
+        if (home in owned and garrison.get(home) is None
+                and not any(_boss_comparable(mem, g) for g in best.values())):
+            return home
+        return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
+                   default=None)
     castles = [source] + sorted(owned - {source})
     return next((castle for castle in castles if castle in owned
                  and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
@@ -173,6 +263,12 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
     return True
 
 
+def _gate_names(names):
+    # The policy is JSON between observations, so a stored tuple comes back
+    # as a list (g1075 01:20-01:29: A:6d0149e9:J1 was re-issued 11 times).
+    return tuple(names) if isinstance(names, list) else names
+
+
 def _source_defender_suppressed(order, mem) -> bool:
     step = order.get('step')
     gates, _ = _gate_dicts(mem, 'sortie_held_source_defender_gates', 'source_defender_cancel_gates',
@@ -195,7 +291,7 @@ def _source_defender_suppressed(order, mem) -> bool:
         return False
     current_present = (mem.get('garrison') or {}).get(source)
     current_present_tuple = tuple(sorted(current_present)) if isinstance(current_present, list) else None
-    if current_present_tuple != gate.get('present'):
+    if current_present_tuple != _gate_names(gate.get('present')):
         gates.pop(step, None)
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
@@ -206,7 +302,7 @@ def _source_defender_suppressed(order, mem) -> bool:
     current_available = None
     if isinstance(current_present, list):
         current_available = tuple(sorted(set(current_present) - unavailable))
-    if current_available != gate.get('available'):
+    if current_available != _gate_names(gate.get('available')):
         gates.pop(step, None)
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
@@ -219,7 +315,7 @@ def _source_defender_suppressed(order, mem) -> bool:
     return True
 
 
-def _record_source_defender_cancel(mem, order, present=None, available=None):
+def _record_source_defender_cancel(mem, order, present=None, available=None, gate=True):
     step = order.get('step')
     if not step:
         return
@@ -251,6 +347,8 @@ def _record_source_defender_cancel(mem, order, present=None, available=None):
     if count >= limit:
         gates.pop(step, None)
         mem.setdefault('orders', {})[step] = 'failed'
+    elif not gate:
+        gates.pop(step, None)     # a location recheck reopens the same list at once
     else:
         gates[step] = {'source': source, 'month': month, 'present': present_tuple,
                        'available': available, 'count': count}
@@ -307,13 +405,116 @@ def _broken_hero_order(order, mem):
 
 def _all_normal_captured(mem):
     """Boss unlock covers the chapter's full names, including unmeasured ones."""
+    return _normal_missing(mem) == 0
+
+
+def _normal_missing(mem):
     chapter = mem.get('chapter')
     chapter_names = chart.CASTLE_NAMES.get(chapter) if type(chapter) is int else None
     captured = mem.get('captured', [])
     if not chapter_names or not isinstance(captured, (list, tuple, set, frozenset)):
-        return False
+        return len(chart.CASTLE_NAMES.get(chapter) or ()) + 1
     chapter_castles = set(chapter_names) - {chart.home_castle(chapter), chart.boss_castle(chapter)}
-    return chapter_castles <= set(captured)
+    return len(chapter_castles - set(captured))
+
+
+# Owner 2026-10-30 (全城条件は厳しいため緩和): a 四季王 site may start while
+# one normal castle is missing or lost; two or more still waits for retakes.
+SEASON_SITE_MISSING_LIMIT = 1
+
+
+def _season_site_ready(order, mem):
+    if ((mem.get('chapter') or 0) != 4 or order.get('target') not in chart.boss_sites(4)
+            or chart.home_castle(4) in (mem.get('lost') or ())):
+        return False
+    return _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
+
+
+def _boss_path_captured(mem):
+    """Every castle on the order chain toward the boss is held.
+
+    Owner 2026-11-02 (クロシェット取り返し中でも同時にボス城に攻め込める):
+    ``all_captured`` gated the boss order behind side castles that have
+    nothing to do with the boss route — the assault may run in parallel
+    with their retakes once every castle the chain marches through is held.
+    """
+    chapter = mem.get('chapter') or 0
+    all_orders = chart.all_orders(chapter)
+    path = {o.get('target') for o in all_orders
+            if chart.is_boss_castle(o.get('target'))}
+    boss_targets = set(path)
+    while True:
+        grow = {o.get('source') for o in all_orders
+                if o.get('target') in path and o.get('source') not in path}
+        if not grow:
+            break
+        path |= grow
+    captured = set(mem.get('captured') or ()) | {chart.home_castle(chapter)}
+    chain = path - boss_targets
+    return bool(chain) and all(c in captured for c in chain)
+
+
+def _post_conquest_wait(mem):
+    """All normal castles held while the boss fight is still ahead (#2985).
+
+    Chapter 4's 四季王 sites open while one normal castle is still missing
+    (owner 2026-10-30, SEASON_SITE_MISSING_LIMIT), so the same wait window
+    starts at that readiness too.
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or chapter not in chart.CASTLE_NAMES:
+        return False
+    if _all_normal_captured(mem):
+        return True
+    return chapter == 4 and _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
+
+
+def _defense_priority_castles(mem):
+    """Castles whose garrison must stay strong while the boss is awaited:
+    the owned home castle plus the owned castle(s) nearest the boss castle
+    (the frontier a boss sortie reaches first)."""
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    boss = chart.boss_castle(chapter)
+    owned = _owned(mem) & set(cells)
+    if not owned:
+        return set()
+    home = chart.home_castle(chapter)
+    if boss not in cells:
+        return {home} if home in owned else set()
+    nearest = min(_distance(chapter, c, boss) for c in owned)
+    return {c for c in owned
+            if c == home or _distance(chapter, c, boss) == nearest}
+
+
+def _defense_score(mem, name):
+    """(has a usable egg, HP, combat); unmeasured stats fall back to (0, 0)."""
+    hp, combat = (reference.general_strength(name) or (0, 0))[:2]
+    return (1 if _holds_egg(mem, name) else 0, hp, combat)
+
+
+def _defense_move_pick(mem, source, target, sendable):
+    """Which sendable general a move order takes.
+
+    Boss wait only (#2985): a priority castle parts with its weakest general
+    so the strongest stays, and a weak priority castle is reinforced with the
+    donor's strongest spare. Outside the wait the list head goes, as before.
+    The sort is stable, so tied scores keep the observed order — a roster
+    whose strength is unmeasured never sends someone the head pick would
+    have kept. The hero is sendable only when alone.
+    """
+    if not sendable:
+        return None
+    if not _post_conquest_wait(mem):
+        return sendable[0]
+    priority = _defense_priority_castles(mem)
+    pool = [g for g in sendable if g != NAME] or sendable
+    ranked = sorted(pool, key=lambda g: _defense_score(mem, g), reverse=True)
+    if source in priority:
+        return ranked[-1]
+    if target in priority:
+        return ranked[0]
+    return sendable[0]
 
 
 def _boss_target_unlocked(order, mem):
@@ -322,12 +523,36 @@ def _boss_target_unlocked(order, mem):
     if not chart.is_boss_castle(order.get('target')):
         return True
     chapter = mem.get('chapter')
-    if chapter == 9 or (chapter == 4 and order.get('target') not in chart.boss_sites(4)):
+    if chapter == 9 or (chapter == 4 and (order.get('target') not in chart.boss_sites(4)
+                                          or _season_site_held(order, mem))):
         return False
-    return _is_boss_order(order, mem) and _all_normal_captured(mem)
+    if _season_site_ready(order, mem):
+        return True
+    # Parallel assault while side castles are retaken: the boss target is
+    # unlocked once every castle on its own chain is held (owner 2026-11-02).
+    return _is_boss_order(order, mem) and (_all_normal_captured(mem)
+                                         or _boss_path_captured(mem))
+
+
+def _season_site_held(order, mem):
+    """A 四季王 site waits for every retake and is not attacked again once won.
+
+    Owner 2026-10-30: 奪還を先 - a lost castle is taken back before the next
+    site sortie starts; one already marching goes on. The same owner relaxed
+    it later that day: a single lost castle no longer holds the sites (全城
+    条件は厳しい), two or more still waits for retakes.
+    """
+    won = {v.get('site') for v in (mem.get('boss_victories') or {}).values() if isinstance(v, dict)}
+    lost = mem.get('lost') or ()
+    return (chart.home_castle(mem.get('chapter') or 0) in lost
+            or len(lost) > SEASON_SITE_MISSING_LIMIT or order.get('target') in won)
 
 
 def _ready(order, mem) -> bool:
+    if (mem.get('chapter') == 3 and not chart.is_boss_castle(order.get('target'))
+            and not routes.order_allowed(mem, order,
+                                         _source(order, mem) if 'step' in order else order.get('source'))):
+        return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
@@ -358,6 +583,13 @@ def _ready(order, mem) -> bool:
     if after[0] == 'captured':
         return after[1] in captured
     if after[0] == 'all_captured':
+        if _season_site_ready(order, mem):
+            return True
+        # The boss assault may run while side castles are still being
+        # retaken — only the castles on its own chain must be held
+        # (owner 2026-11-02: クロシェット取り返し中でも並行で攻め込める).
+        if chart.is_boss_castle(order.get('target')) and _boss_path_captured(mem):
+            return True
         return _all_normal_captured(mem)
     return False
 
@@ -419,21 +651,274 @@ def _plan_pending(mem) -> bool:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
         return (_ready(o, mem) and _source(o, mem) in owned
-                and garrison.get(_source(o, mem)) != []
+                and _source_list_open(o, mem)
                 and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
 
+def _source_list_open(order, mem) -> bool:
+    """The order's source list may be opened.
+
+    A list last read empty is never opened (g407: the plan's どうし/ヴィーナス
+    from an empty home; g438: dead ココット's J1), except by a probe order for
+    a castle a transfer was sent into (chapter 3 ``routes.probe_due``): that
+    list is the only receipt of the arrival. g1075 2026-10-29 11:38: the
+    interim retake of リグア from グリン (recorded empty, two moves just sent
+    there) was built as a probe but never started.
+    """
+    source = _source(order, mem)
+    if (mem.get('garrison') or {}).get(source) != []:
+        return True
+    return order.get('source_probe') is True and routes.probe_due(mem, source)
+
+
 def _boss_retry_due(order, mem) -> bool:
     """A boss sortie failed only by cancelled targets gets its remaining retries
-    (g421 13:48: the tower-roof check cancelled どうし twice before #1251)."""
-    return ((mem.get('orders') or {}).get(order['step']) == 'failed'
-            and order.get('target') == chart.boss_castle(mem.get('chapter') or 0)
-            and 0 < (mem.get('target_cancel') or {}).get(order['step'], 0) < BOSS_TARGET_CANCEL_LIMIT)
+    (g421 13:48: the tower-roof check cancelled どうし twice before #1251).
+
+    The cancels belong to the boss cell they were counted at. A cell the chart
+    no longer holds, or cancels recorded before cells were kept, leave the
+    current cell untried (g1075 2026-10-29: four cancels at the cave)."""
+    chapter = mem.get('chapter') or 0
+    if ((mem.get('orders') or {}).get(order['step']) != 'failed'
+            or not chart.is_boss_castle(order.get('target'))):
+        return False
+    cancels = (mem.get('target_cancel') or {}).get(order['step'], 0)
+    cell = list(chart.castles(chapter).get(order['target']) or ())
+    if cancels and (mem.get('boss_cancel_cell') or {}).get(order['step']) != cell:
+        return True
+    return 0 < cancels < BOSS_TARGET_CANCEL_LIMIT
+
+
+BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
+BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
+BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
+# A site march starts from a corner castle and can outlive two relaunch
+# cycles. Keep an unentered attempt bindable after its step is sent again, so
+# a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
+SITE_LATE_ENTRY_TICKS = 8 * SORTIE_BUSY_TICKS
+RETIRED_SORTIES_PER_STEP = 3
+
+
+def _retire_unentered_sortie(mem, step, sortie):
+    """Archive an unentered boss march before its sortie record is replaced.
+
+    The sorties map holds one record per step. Re-sending an overdue march
+    used to overwrite the old general, so his late entry matched nothing and
+    the site fight never reached boss_victories (g1075: four 4-B steps cycled
+    overdue for hours). Only boss targets are archived; normal castle entries
+    are already bounded by the short march window.
+    """
+    target = sortie.get('target') or sortie.get('planned_target')
+    if not chart.is_boss_castle(target) or sortie.get('status') == 'arrived':
+        return
+    retired = mem.get('retired_sorties')
+    if not isinstance(retired, dict):
+        retired = mem['retired_sorties'] = {}
+    rows = retired.setdefault(step, [])
+    if not isinstance(rows, list):
+        rows = retired[step] = []
+    rows.append(deepcopy(sortie))
+    del rows[:-RETIRED_SORTIES_PER_STEP]
+
+
+def _site_king_down(mem, target):
+    """A 四季王 site whose king's defeat is already measured."""
+    return any(isinstance(victory, dict) and victory.get('site') == target
+               for victory in (mem.get('boss_victories') or {}).values())
+
+
+def _boss_fight_live(mem, step):
+    """The boss order's entry still has an attack or battle record running."""
+    return any(isinstance(record, dict) and record.get('step') == step
+               for record in (mem.get('attack'), mem.get('battle')))
+
+
+def parked_boss_steps(mem):
+    """Boss steps whose march has been overdue past the stale cooldown.
+
+    A step is parked when its order still says launched, its sortie is
+    overdue (or an entered fight left no result), its bounded relaunch budget
+    is spent, and the stale cooldown has elapsed. At that point only
+    _relaunch_overdue_boss can restart it, so a caller stuck in a menu can
+    prioritize returning to the field map.
+    """
+    now = int(mem.get('tick') or 0)
+    orders_status = mem.get('orders') or {}
+    relaunches = mem.get('boss_relaunch') or {}
+    out = []
+    for step, sortie in (mem.get('sorties') or {}).items():
+        if not isinstance(sortie, dict):
+            continue
+        target = sortie.get('target') or sortie.get('planned_target')
+        status = sortie.get('status')
+        if (orders_status.get(step) != 'launched' or not chart.is_boss_castle(target)
+                or status not in ('overdue', 'arrived')
+                or (status == 'arrived' and _boss_fight_live(mem, step))
+                or type(sortie.get('tick')) is not int
+                or relaunches.get(step, 0) < BOSS_RELAUNCH_LIMIT
+                or now - sortie['tick'] < BOSS_STALE_COOLDOWN):
+            continue
+        out.append(step)
+    return sorted(out)
+
+
+def _relaunch_overdue_boss(mem):
+    """Send a boss order again when its march never entered the boss castle,
+    or when its entry ended without a measured result.
+
+    Only an entry ends a launched boss march (``_bind_sortie`` marks it
+    arrived). g1075 2026-10-29: the v293 marker landed 6 px outside the boss
+    building, アポロン camped beside it at 15:00, and 3-B1 stayed launched and
+    en route for over 3000 observations with nothing left to start it. The
+    order goes back to pending like a lost boss battle: its unlock, source
+    and companion checks run again, and the old march stops counting.
+
+    An arrived sortie is sent again too once its fight is over: g1075
+    2026-10-30 had 4-B1 アルテミス enter 四季王城(南西) at 08:27 and 4-B4
+    ヴィーナス enter 北西 at 08:41, and both steps stayed 'launched' past
+    12:30 — their fights predate the season-king panel record, so no win or
+    loss could ever reset them. A live battle for the step or a king already
+    measured defeated keeps the sortie out of this rule.
+    """
+    now = int(mem.get('tick') or 0)
+    status = mem.setdefault('orders', {})
+    for step, sortie in (mem.get('sorties') or {}).items():
+        # An unconfirmed launch keeps its cell in planned_target only; g1075
+        # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
+        target = sortie.get('target') or sortie.get('planned_target')
+        if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
+                or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+            continue
+        relaunches = mem.setdefault('boss_relaunch', {})
+        # Owner 2026-10-30: a spent relaunch budget must not park a site
+        # forever. After a very long wait past the normal limit the step
+        # re-arms once - the counter still bounds rapid cycles, but a chapter
+        # whose kings are unmeasured can never be abandoned mid-attrition.
+        stale = (sortie.get('status') == 'overdue'
+                 and relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT)
+        if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                and not (sortie.get('status') == 'arrived'
+                         and not _site_king_down(mem, target)
+                         and not _boss_fight_live(mem, step))
+                and not (stale and now - sortie['tick'] >= BOSS_STALE_COOLDOWN)):
+            continue
+        entered = sortie.get('status') == 'arrived'
+        sortie['status'] = 'overdue'
+        observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
+                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
+        if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
+            if not stale:
+                _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
+                        reason='ボス出撃の出し直しが上限に達したため保留')
+                continue
+            relaunches[step] = 0
+            _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
+                    reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
+        relaunches[step] = relaunches.get(step, 0) + 1
+        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
+                    'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss', 'launched_orders'):
+            (mem.get(key) or {}).pop(step, None)
+        status[step] = 'pending'
+        _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
+                observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
+                reason=('ボス城への突入後に勝敗の実測が残らず上限を超えたため、チャートの指示から出し直す'
+                        if entered else
+                        'ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す'))
+
+
+MARCH_RELAUNCH_LIMIT = 2                       # non-boss sorties sent again per step
+
+
+def _redirect_blocked_sources(mem):
+    """Re-point a pending order whose baked source lies behind an own castle.
+
+    Owner 2026-11-02 (g1097): orders planned with source アルマムーン keep
+    re-launching into オトラント, which absorbs every march toward
+    クロチェット — the blocker is the real launch point, exactly the way a
+    transit-continue re-issues an order from the castle its general stopped
+    in. Interim candidates already prefer a clear source; this fixes orders
+    whose source was baked before that preference (or by an older plan).
+    Chapter 3 marches follow the road table, not the straight line, so the
+    geometric check does not apply there.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter == 3:
+        return
+    owned = _owned(mem) & set(chart.castles(chapter))
+    overrides = mem.setdefault('source_override', {})
+    status = mem.get('orders') or {}
+    seen = set()
+    for order in [*_orders(mem), *(mem.get('launched_orders') or {}).values()]:
+        step = order.get('step')
+        if (not step or step in seen or step in overrides
+                or status.get(step) != 'pending'):
+            continue
+        seen.add(step)
+        source, target = order.get('source'), order.get('target')
+        blocker = (source and target
+                   and chart.march_blocker(chapter, source, target, owned))
+        if blocker:
+            overrides[step] = blocker
+            _record(mem, 'sortie_source_march_block', chart_step=step,
+                    expected_metric={'source': source, 'target': target},
+                    observed_metric={'blocker': blocker},
+                    reason='出撃元と目標の間に自城があり行軍がそこに吸収されるため、その城を発射元にする')
+
+
+def _relaunch_overdue_march(mem):
+    """Settle a non-boss march that never arrived, the way the boss rule does.
+
+    Only an enemy-castle entry (a battle) or an own-castle roster sighting
+    (transit continue) ends a recorded march. A general who died or stopped
+    somewhere never observed leaves the sortie 'en_route' and the order
+    'launched' forever — g1097 2026-11-02: 26 stale marches up to 40k ticks
+    held a month with launches stuck at 60 while generals sat garrisoned or
+    nowhere. The order goes back to pending like the boss relaunch: source,
+    companion and readiness checks run again, and a missing general is simply
+    not listed at the source so the launch picks somebody else. Sorties with
+    no launched order (house/move) are just closed so they stop counting as
+    busy marches.
+    """
+    now = int(mem.get('tick') or 0)
+    status = mem.setdefault('orders', {})
+    relaunches = mem.setdefault('sortie_relaunch', {})
+    for step, sortie in (mem.get('sorties') or {}).items():
+        target = sortie.get('target') or sortie.get('planned_target')
+        if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+            continue
+        sortie['status'] = 'overdue'
+        observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
+                    'target': target, 'marching': now - sortie['tick'],
+                    'relaunches': relaunches.get(step, 0)}
+        if status.get(step) != 'launched':
+            _record(mem, 'sortie_march_overdue_settled', chart_step=step,
+                    observed_metric=observed,
+                    reason='出撃が上限の観測内に決着しないため、保留中のままの行軍を済ませたものとして片付ける')
+            continue
+        if relaunches.get(step, 0) >= MARCH_RELAUNCH_LIMIT:
+            _record(mem, 'sortie_march_relaunch_exhausted', chart_step=step,
+                    observed_metric=observed,
+                    reason='出撃の出し直しが上限に達したため、以後の行軍は行先の喪失確認に委ねる')
+            continue
+        relaunches[step] = relaunches.get(step, 0) + 1
+        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                    'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                    'sortie_actor_miss', 'launched_orders'):
+            (mem.get(key) or {}).pop(step, None)
+        status[step] = 'pending'
+        _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
+                observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
+                reason='敵城への出撃が上限の観測内に入城も経由も観測されないため、オーダーを未発射に戻す')
 
 
 def next_order(mem):
+    _relaunch_overdue_boss(mem)
+    _relaunch_overdue_march(mem)
+    _redirect_blocked_sources(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
@@ -442,6 +927,21 @@ def next_order(mem):
     retries = [o for step, o in (mem.get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    # A lost attack's retry is pending until it runs again; another order may
+    # take the castle first. g1075 2026-10-29: レモン took リグア at 13:22, yet
+    # ポセイドン's I:b59ab6:3 retry (lost 13:07) sent ジェラート into our own
+    # リグア at 13:27, ahead of the boss sortie 3-B1 (started 13:30). Two older
+    # retakes of our own ドンダム were still pending. A retry whose target is
+    # ours has nothing left to win; moves aim at our own castles by design.
+    retired = mem.setdefault('retries_retired', [])
+    stale = [o for o in retries if o.get('target') in owned and o.get('purpose') != 'move']
+    for order in stale:
+        if order['step'] not in retired:
+            retired.append(order['step'])
+            _record(mem, 'order_retry_retired', chart_step=order['step'],
+                    general=order.get('general'), target=order.get('target'),
+                    reason='再試行の目標城は既に自軍のため再出撃せず、次の指示へ進む')
+    retries = [o for o in retries if o not in stale]
     garrison = mem.get('garrison') or {}
     # The base chart's remaining orders follow an adopted plan that cannot run
     # (g438 03:48: the plan's only order sent the dead ココット from an empty
@@ -459,8 +959,9 @@ def next_order(mem):
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
-                # the order (g407: the plan's どうし/ヴィーナス from an empty home).
-                and garrison.get(_source(order, mem)) != []
+                # the order (g407: the plan's どうし/ヴィーナス from an empty home),
+                # unless a transfer into it is due to be read (probe).
+                and _source_list_open(order, mem)
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and not _retake_reserved(order, mem)
                 and not _source_spare_missing(order, mem, allow_probe=True)
@@ -686,9 +1187,18 @@ def _unplaced_castle_generals(mem):
     month = mem.get('month')
     placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
     busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
-    return sorted(name for name, info in (mem.get('house_eggs') or {}).items()
-                  if isinstance(info, dict) and info.get('location') == 'castle'
-                  and info.get('month') == month and name not in placed and name not in busy)
+    names = {name for name, info in (mem.get('house_eggs') or {}).items()
+             if isinstance(info, dict) and info.get('location') == 'castle' and info.get('month') == month}
+    # g1075 2026-10-30 11:48 (#3077): chapter 4 recorded no house statuses,
+    # while this month's roster named six generals no read castle list held.
+    # An unread list is opened by its own probe, so the roster counts only
+    # once every owned castle's list has been read.
+    roster = mem.get('recruit_roster') or {}
+    garrison = mem.get('garrison') or {}
+    if (roster.get('chapter') == mem.get('chapter') and roster.get('month') == month
+            and all(garrison.get(c) is not None for c in _owned(mem))):
+        names |= {name for name in roster.get('names') or () if name != NAME}
+    return sorted(name for name in names if name not in placed and name not in busy)
 
 
 def _arrival_castle(mem, owned):
@@ -759,6 +1269,12 @@ def _finish_order(mem, state, **fields):
             (mem.get('kit_spent') or {}).pop(step, None)
             (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
+        if state == 'failed':
+            from . import goals
+            order = _order_for_step(mem, step) or {}
+            goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
+            if goal_kind:
+                goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
     mem['active'] = None
     mem['picked'] = []
 
@@ -812,7 +1328,14 @@ def _near_goal(mem, order, name, mode):
 
 
 def _recall_goal(mem, flags=None):
-    """Nearest owned castle; hero's castle wins ties or supplies an unknown origin."""
+    """Nearest owned castle to the recalled unit's own position.
+
+    The bound ``origin`` cell wins first; without one, each recalled sortie's
+    recorded departure castle serves as the unit's position proxy so the goal
+    follows the recalling unit instead of fixing on the hero's garrison
+    (#2907). Only when neither is known does the hero's castle apply, then
+    the sole owned castle. ``hero_castle`` keeps the distance tie-break.
+    """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
     owned = sorted(c for c in _owned(mem) if c in cells
@@ -828,13 +1351,48 @@ def _recall_goal(mem, flags=None):
         # nearer castle behind a farther one. Squaring avoids rounding ties.
         return min(owned, key=lambda c: (sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1)),
                                          c != hero_castle, c)) if owned else None
+    # origin が束縛できない場合は、帰還する本人の出撃元を代理の現在地として
+    # 距離判定へ使う（issue #2907 の方向 b）。出撃元が自軍城でなくなって
+    # いても座標は有効なので、そこへ最も近い自軍城を選べる。
+    sources = [cells[s] for s in
+               (((mem.get('sorties') or {}).get(step) or {}).get('source')
+                 for step in (state.get('sorties') or ()))
+               if s in cells]
+    if sources:
+        # 複数の出撃元を持つ場合は合計距離が最小の城（重心に近い）を選ぶ。
+        return min(owned, key=lambda c: (sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1))
+                                             for o in sources),
+                                         c != hero_castle, c)) if owned else None
     if hero_castle:
         return hero_castle
-    for step in (mem.get('recall') or {}).get('sorties') or ():
-        source = ((mem.get('sorties') or {}).get(step) or {}).get('source')
-        if source in owned:
-            return source
     return owned[0] if len(owned) == 1 else None
+def _fort_recall_goal(mem, state):
+    """A castle to send a 砦's general to when his own position cannot be bound.
+
+    g1097 2026-11-02 17:25-17:33 (ヘパイストス, HP19/49, in a 砦 with キール): the
+    picker opened on the 砦 with no own castle in view and ``_recall_goal``
+    returned None (no two-roof origin out there, no recorded recall sorties,
+    several owned castles), so the Y jump never started and the same
+    しゅつげき was cancelled and retried for good. His last sortie's departure
+    castle stands in for his position (the #2907 proxy); otherwise the home
+    castle, then the first owned one. Any own castle supplies him.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    owned = sorted(c for c in _owned(mem) if c in cells)
+    if not owned:
+        return None
+    general = state.get('general')
+    sorties = [s for s in (mem.get('sorties') or {}).values()
+               if isinstance(s, dict) and general and s.get('general') == general
+               and s.get('source') in cells and type(s.get('tick')) is int]
+    if sorties:
+        x, y = cells[max(sorties, key=lambda s: s['tick'])['source']]
+        return min(owned, key=lambda c: ((cells[c][0] - x) ** 2 + (cells[c][1] - y) ** 2, c))
+    home = chart.home_castle(chapter)
+    return home if home in owned else owned[0]
+
+
 BOSS_TARGET_CANCEL_LIMIT = 4   # the boss sortie is worth more retries
 
 
@@ -906,6 +1464,8 @@ def _match_sortie(mem, castle, general):
     arrived, and no further sortie could start.
     """
     sorties = mem.get('sorties') or {}
+    retired = mem.get('retired_sorties')
+    retired = retired if isinstance(retired, dict) else {}
     now = int(mem.get('tick') or 0)
     candidates = [step for step, sortie in sorties.items()
                   if sortie.get('status') in ('en_route', 'launched_unconfirmed')
@@ -920,13 +1480,85 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (mem.get('launched') or {}).get(castle) or {}
+    step = _long_march(sorties, castle, general, now, retired)
+    if step is not None:
+        return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
         return launched.get('step'), 'legacy'
     return None, 'none'
 
 
-def _bind_sortie(mem, step, castle):
+LONG_MARCH_TICKS = 4 * SORTIE_BUSY_TICKS   # ~35 min; chapter 3 marches measured up to 677
+
+
+def _long_march(sorties, castle, general, now, retired=None):
+    """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
+
+    g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
+    The entry fell outside the bound, so the battle had no step: it ran as
+    side 'enemy' without the carried egg-drop cards, ヴィーナス summoned and
+    ポセイドン retreated at 43/85 HP. A general is one unit, so only his newest
+    sortie can still be marching; older unread records never compete here.
+    A sortie whose target was left unconfirmed counts by its planned target.
+    A retired boss attempt stays here for the longer site window, so the
+    general who enters after the step was sent again still matches its site.
+    """
+    mine = [(key, other) for key, other in sorties.items()
+            if isinstance(other, dict) and other.get('general') == general]
+    for key, rows in (retired or {}).items():
+        mine.extend((key, other) for other in rows or ()
+                    if isinstance(other, dict) and other.get('general') == general)
+    if not mine or any(type(other.get('tick')) is not int for _, other in mine):
+        return None
+    newest = max(other['tick'] for _, other in mine)
+    latest = [(key, other) for key, other in mine if other['tick'] == newest]
+    if len(latest) != 1:
+        return None
+    step, sortie = latest[0]
+    target = sortie.get('target')
+    boss = chart.is_boss_castle(castle)
+    site = castle in chart.boss_sites(4)
+    statuses = ('en_route', 'launched_unconfirmed', 'overdue') if boss else ('en_route', 'launched_unconfirmed')
+    limit = SITE_LATE_ENTRY_TICKS if site else LONG_MARCH_TICKS
+    if (sortie.get('status') not in statuses
+            or not (target == castle or (target is None and sortie.get('planned_target') == castle))
+            or not 0 <= now - newest < limit):
+        return None
+    return step
+
+
+def _promote_retired_sortie(mem, step, castle, general):
+    """Make a retired attempt the step's current record before binding it.
+
+    The newest launch may still be marching while an older shot at the same
+    site enters. Promoting the retired record keeps the arriving general, his
+    source and his site together; the replaced attempt stays retired so its
+    own late entry can still bind.
+    """
+    retired = mem.get('retired_sorties')
+    rows = retired.get(step) if isinstance(retired, dict) else None
+    if not isinstance(rows, list):
+        return None
+    for index, old in enumerate(rows):
+        if not isinstance(old, dict) or old.get('general') != general:
+            continue
+        target = old.get('target') or old.get('planned_target')
+        if target not in (None, castle):
+            continue
+        current = (mem.setdefault('sorties', {})).pop(step, None)
+        rows.pop(index)
+        if isinstance(current, dict):
+            rows.append(current)
+            del rows[:-RETIRED_SORTIES_PER_STEP]
+        mem['sorties'][step] = old
+        return old
+    return None
+
+
+def _bind_sortie(mem, step, castle, general=None):
     sortie = (mem.get('sorties') or {}).get(step)
+    if general and (sortie is None or sortie.get('general') != general):
+        sortie = _promote_retired_sortie(mem, step, castle, general) or sortie
     if sortie:
         if sortie.get('target') is None:
             _record(mem, 'sortie_arrival_confirmed', chart_step=step, general=sortie['general'],
@@ -938,6 +1570,11 @@ def _bind_sortie(mem, step, castle):
             if (mem.get('sortie_attempt') or {}).get('step') == step:
                 mem.pop('sortie_attempt', None)
         sortie.update(status='arrived', target=castle)
+        if chart.is_boss_castle(castle):
+            # A measured boss entry re-arms the relaunch budget: the cap
+            # counts cycles that never produced an entry, not attempts that
+            # actually reached the castle and fought.
+            (mem.get('boss_relaunch') or {}).pop(step, None)
 
 
 def _transit_sorties(mem, castle, names):
@@ -949,9 +1586,13 @@ def _transit_sorties(mem, castle, names):
     only measurement. A general still recorded as marching to another castle
     while his name is on this list has arrived here instead.
     """
-    now = int(mem.get('tick') or 0)
     listed = set(names or ())
     out = []
+    # No sortie-age bound (owner 2026-11-02): a roster is only read when this
+    # castle is visited, so a sortie older than SORTIE_BUSY_TICKS whose
+    # general stopped inside was never continued — g1097 held 26 stale
+    # en_route marches (up to 40k ticks) whose generals sat garrisoned at
+    # テラビル/バスカビル/オトラント while their targets still needed them.
     for step, sortie in (mem.get('sorties') or {}).items():
         source = sortie.get('source')
         if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
@@ -962,8 +1603,7 @@ def _transit_sorties(mem, castle, names):
                 # its own source never departed, and the source verification
                 # owns that case. An unrecorded source is not route evidence.
                 or not source or source == castle
-                or sortie.get('tick') is None
-                or not 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS):
+                or sortie.get('tick') is None):
             continue
         out.append(step)
     return out

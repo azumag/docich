@@ -58,13 +58,13 @@ def test_chapter_three_initial_routes_unlock_only_from_measured_castles(monkeypa
 
     The planted cells are synthetic: this checks which orders the gate exposes
     once home and the three initial targets exist. The real cells (isolated
-    probe, 2026-10-28) unlock every ordinary order; the unmeasured boss keeps
-    3-B1 out.
+    probe, 2026-10-28; boss from the live Y view, 2026-10-29) expose every
+    order, and 3-B1 still waits for ``all_captured``.
     """
     chapter = 3
-    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter]) - {'ボス'}
+    assert set(chart.castles(chapter)) == set(chart.CASTLE_NAMES[chapter])
     assert [o['step'] for o in chart.orders(chapter)] == [
-        o['step'] for o in chart.all_orders(chapter) if o['target'] != 'ボス']
+        o['step'] for o in chart.all_orders(chapter)]
 
     home = chart.home_castle(chapter)
     # Home plus グリン alone unlocks only the first initial route.
@@ -164,7 +164,10 @@ def test_ready_all_captured_keeps_unmeasured_castles_locked(monkeypatch):
     # the chapter's unmeasured normal castles are still unconquered.
     assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured)})
     assert not policy._ready(order, {'chapter': chapter, 'captured': set(measured) - {boss}})
-    assert not policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {sorted(normal)[0]}})
+    # Owner 2026-11-02 (並行で攻め込める): a castle off the boss chain no
+    # longer gates it — chapter 3's chain is アルマムーン→パタゴーヌ→ボス only.
+    assert policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {sorted(normal)[0]}})
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set(normal) - {'パタゴーヌ'}})
     assert policy._ready(order, {'chapter': chapter, 'captured': set(normal)})
 
 
@@ -273,6 +276,40 @@ def test_chapter_3_cells_put_every_enemy_flag_on_the_y_view_grid():
     assert chart.Y_JUMP_OFFSET[3] == chart.Y_JUMP_OFFSET[2]
 
 
+def test_chapter_3_boss_cell_puts_the_marker_on_the_building_under_the_skull():
+    # Live g1075 2026-10-29 JST, every ordinary castle captured: the skull at
+    # Y view (101-107, 64-69) marks ❾完熟プリンス城, a tall building. The v293
+    # aim at the skull centre, G read at (104.5, 66.5), left the field marker
+    # centred at (138, 123), 6 px right of the building (98-125 x 82-142), and
+    # the general camped. The aim moves by the gap to the building centre.
+    # The first cell aimed at the cave inside the cliff ring, (137.5, 127.5).
+    # No A press confirmed the name (read-only runtime).
+    from docich.hanjuku.strategy.orders import _ready
+    ox, oy = chart.Y_JUMP_OFFSET[3]
+    bx, by = chart.CASTLES[3]['ボス']
+    assert (bx / 8 + ox, by / 8 + oy) == (101.25, 65.125)
+    landed = ((104.5 - ox) * 8, (66.5 - oy) * 8)        # the v293 jump's cell
+    gap = (111.5 - 138, 112 - 123)                      # marker centre -> building centre
+    assert abs(bx - (landed[0] + gap[0])) <= 0.5 and by == landed[1] + gap[1]
+    fx, fy = chart.WORLD_MAP_OFFSET[3]
+    boss_flag = (round(bx / 8 + fx), round(by / 8 + fy))
+    for name, (x, y) in chart.CASTLES[3].items():
+        if name != 'ボス':
+            # The owner-flag boxes (8x7 view px) of the boss and of every
+            # ordinary castle never overlap on the Y view.
+            assert max(abs(round(x / 8 + fx) - boss_flag[0]), abs(round(y / 8 + fy) - boss_flag[1])) >= 8, name
+    assert chart.castles(3)['ボス'] == (bx, by) and chart.boss_castle(3) == 'ボス'
+    boss_order = next(o for o in chart.orders(3) if o['step'] == '3-B1')
+    assert boss_order['target'] == 'ボス' and boss_order['after'] == ('all_captured',)
+    ordinary = [n for n in chart.CASTLE_NAMES[3] if n not in (chart.home_castle(3), 'ボス')]
+    assert len(ordinary) == 8
+    # Owner 2026-11-02 (並行で攻め込める): the boss gate only covers its own
+    # chain (アルマムーン→パタゴーヌ→ボス) — a side castle may lag behind.
+    assert _ready(boss_order, {'chapter': 3, 'captured': ordinary[:-1]})
+    assert not _ready(boss_order, {'chapter': 3, 'captured': [c for c in ordinary if c != 'パタゴーヌ']})
+    assert _ready(boss_order, {'chapter': 3, 'captured': ordinary})
+
+
 # WRAM 0x1700 castle records ([id, x, y, ...], 16 bytes, 8 px tiles) read from
 # isolated probe savestates on 2026-10-28, in record order.
 WRAM_TILES = {
@@ -296,10 +333,20 @@ def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them(
                     8 * (v + d) for v, d in zip(SOURCE_CASTLES[chapter][name], (1, 3)))
                 limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
                 assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
+    measured = set(chart.SEASON_SITE_CELLS) | {
+        n for cells in chart.DEMON_CASTLE_CELLS.values() for n in cells}
     for chapter in range(4, 13):
-        assert chart.CASTLES[chapter] == {
+        # Chapter 4's 四季王 sites and chapter 5's 完熟大魔城 come from the
+        # live Y view, not the table.
+        ordinary = {n: c for n, c in chart.CASTLES[chapter].items() if n not in measured}
+        assert ordinary == {
             n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
-        assert 'ボス' not in chart.CASTLES[chapter]
+        extra = set(chart.CASTLES[chapter]) - set(ordinary)
+        expected = (set(chart.boss_sites(4)) if chapter == 4 else
+                    set(chart.DEMON_CASTLE_CELLS.get(chapter) or ()))
+        assert extra == expected
         assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
         assert chart.orders(chapter)
-        assert not any(o['target'] == 'ボス' for o in chart.orders(chapter))
+        # Only a chapter whose boss cell was measured lists its boss order.
+        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter))
+                == (chapter in chart.DEMON_CASTLE_CELLS))

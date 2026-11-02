@@ -174,13 +174,16 @@ def test_measured_global_roster_scrolls_across_pages_then_wraps_to_first():
     for index,name in enumerate(names):
         page=names[:6] if index<6 else names[6:]
         offset=index if index<6 else index-6
-        assert feed(mem,roster(page,offset))==[p.pad('a')]
+        if index==0:assert feed(mem,roster(page,offset))==[p.pad('a')]
         assert feed(mem,status(name,egg='エラベルエッグ4'))==[p.pad('b')]
         assert feed(mem,roster(page,offset))==[p.pad('down')]
         next_index=(index+1)%len(names)
         next_page=names[:6] if next_index<6 else names[6:]
         next_offset=next_index if next_index<6 else next_index-6
-        assert feed(mem,roster(next_page,next_offset))==[]
+        # Issue #3194: the moved cursor is acted on in the same observation,
+        # so the next row's A (or the wrapped list's B) comes straight away.
+        want=[p.pad('a')] if next_index else [p.pad('b')]
+        assert feed(mem,roster(next_page,next_offset))==want
     assert feed(mem,roster(names[:6],0))==[p.pad('b')]
     assert house.step(Screen([],None,'',kind='map'),mem,None)==[]
     got=r.fresh(mem)
@@ -329,13 +332,15 @@ def _drive_survey(state, names, month):
     assert actions==[p.pad('a')]
     for i,name in enumerate(names):
         frame=_survey_header(roster(names,i),month)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
+        if i==0 or len(names)==1:
+            actions,state=decide(frame,state);assert actions==[p.pad('a')]
         actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),month),state)
         assert actions==[p.pad('b')]
         actions,state=decide(frame,state);assert actions==[p.pad('down')]
         if len(names)>1:
             actions,state=decide(_survey_header(roster(names,(i+1)%len(names)),month),state)
-            assert actions==[]
+            # Issue #3194: acts on the moved cursor in the same observation.
+            assert actions==([p.pad('a')] if i+1<len(names) else [p.pad('b')])
         else:
             for _ in range(6):actions,state=decide(frame,state)
             assert actions==[p.pad('b')]

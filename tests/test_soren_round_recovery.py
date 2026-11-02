@@ -720,3 +720,77 @@ def test_fixed_entry_refusal_does_not_publish_exception_details(monkeypatch, cap
     assert exit_info.value.code == 1
     assert json.loads(output.out)["reason"] == "recovery_refused"
     assert "private" not in output.out + output.err
+def test_move_frozen_with_gameover_observation_is_allowed(topo):
+    import json
+    state = topo.root / "game_state.json"
+    state.write_text(json.dumps({"state": "MOVE", "score": 42, "makeSorenCount": 1, "pieces": [1]}))
+    os.utime(state, (CLOCK - 1200, CLOCK - 1200))
+    (topo.root / "tmp/state/game_observation.json").write_text(json.dumps(
+        {"schema": 1, "game_id": "bridge", "board": {"state": "GAMEOVER"}, "observed_epoch": CLOCK}))
+    inventory = topo.effects.preflight()
+    assert inventory["board"]["state"] == "MOVE"
+    assert not topo.sent
+
+
+def test_move_frozen_without_gameover_observation_is_refused(topo):
+    import json
+    state = topo.root / "game_state.json"
+    state.write_text(json.dumps({"state": "MOVE", "score": 42, "makeSorenCount": 1, "pieces": [1]}))
+    os.utime(state, (CLOCK - 1200, CLOCK - 1200))
+    with pytest.raises(RecoveryRefused):
+        topo.effects.preflight()
+    assert not topo.sent
+
+
+
+def _stat_row(ppid=1):
+    return "1 (python3) " + " ".join(["S", str(ppid), *["0" * 1] * 17, "77", "0"]) + "\n"
+
+
+def _effects_with_proc(tmp_path):
+    proc = tmp_path / "proc"
+    for pid in (111, 222):
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(pid) / "stat").write_text(_stat_row())
+        (proc / str(pid) / "cmdline").write_bytes(b"")
+    return proc, LinuxRecoveryEffects(tmp_path, tmp_path / "evidence", proc=proc)
+
+
+def _stat_read_raises(monkeypatch, path, error):
+    read_text = Path.read_text
+    def fail_for_one_file(self, *args, **kwargs):
+        if self == path:
+            raise error
+        return read_text(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", fail_for_one_file)
+
+
+def test_process_exiting_during_inventory_is_skipped(tmp_path, monkeypatch):
+    # /proc/<pid>/stat is ESRCH, not ENOENT, when the process exits mid-read
+    # (CI run 41410246774 refused a recovery over an unrelated short-lived process).
+    proc, effects = _effects_with_proc(tmp_path)
+    _stat_read_raises(monkeypatch, proc / "222/stat", ProcessLookupError(3, "No such process"))
+    assert set(effects._rows()) == {111}
+
+
+def test_unreadable_process_still_refuses_the_inventory(tmp_path, monkeypatch):
+    proc, effects = _effects_with_proc(tmp_path)
+    _stat_read_raises(monkeypatch, proc / "222/stat", PermissionError(13, "Permission denied"))
+    with pytest.raises(RecoveryRefused, match="process inventory incomplete"):
+        effects._rows()
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_pinned_process_exiting_during_the_birth_check_is_a_disappeared_root(tmp_path, monkeypatch, missing):
+    proc, effects = _effects_with_proc(tmp_path)
+    fd = os.open(os.devnull, os.O_RDONLY)
+    monkeypatch.setattr(os, "pidfd_open", lambda pid: fd, raising=False)
+    _stat_read_raises(monkeypatch, proc / "222/stat", ProcessLookupError(3, "No such process"))
+    row = dict(pid=222, birth=77)
+    if missing:
+        assert effects._pin(row, missing=True) is None
+    else:
+        with pytest.raises(RecoveryRefused, match="game root disappeared"):
+            effects._pin(row)
+    with pytest.raises(OSError):
+        os.fstat(fd)  # the pin must not leak its descriptor

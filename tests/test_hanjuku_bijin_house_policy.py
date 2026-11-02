@@ -126,3 +126,38 @@ def test_item_menu_hold_ends_with_the_cheapest_item_after_the_bound():
     assert (record['item'], record['price']) == ('こうすい', 100)
     assert record['deviation_reason'] == 'bijin_item_hold_bound'
     assert 'bijin_gift_waits' not in mem
+
+
+# ------------------------------------------------- issue #3011: level 14 cap
+
+@pytest.mark.parametrize('level', [14, 15, 16])
+def test_level_cap_declines_the_request_regardless_of_gold(level):
+    mem = {'hanjuku_level': level}
+    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 2000G'), {'policy': dict(mem)})
+    assert actions == [policy.pad('down')]
+    actions, state = decide_bijin(bijin_pixels(gold='1ねん 6のつき 2000G', selected=1), state)
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'decline_bijin_level_cap'
+
+
+@pytest.mark.parametrize('level', [None, 0, 13])
+def test_below_the_level_cap_keeps_buying_the_house(level):
+    mem = {} if level is None else {'hanjuku_level': level}
+    for selected in (0, 1):
+        assert policy.gift_step(parse(gifts(2000, selected)), mem) == [policy.pad('down')]
+    assert policy.gift_step(parse(gifts(2000, 2)), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'bijin_house'
+    assert mem['_records'][-1]['item'] == 'いえ'
+
+
+def test_level_cap_gift_menu_buys_the_cheapest_non_house_item():
+    # The item menu has no refusal row: at the cap the event ends with the
+    # cheapest non-earning item instead of いえ.
+    mem = {'hanjuku_level': 14}
+    assert policy.gift_step(parse(gifts(2000, 2)), mem) == [policy.pad('up')]
+    assert policy.gift_step(parse(gifts(2000, 1)), mem) == [policy.pad('up')]
+    assert policy.gift_step(parse(gifts(2000, 0)), mem) == [policy.pad('a')]
+    record = mem['_records'][-1]
+    assert record['strategy_variant'] == 'bijin_level_cap'
+    assert (record['item'], record['price']) == ('こうすい', 100)
+    assert record['observed_metric']['hanjuku_level'] == 14

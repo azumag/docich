@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v11";
+export const BRAIN_VERSION = "tsuitate-brain-v13";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -468,6 +468,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
         - pathRisk(observation, candidate);
     return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
+  // A drop needs its destination to be empty, while a path-safe non-king move
+  // to the same unknown square can capture a hidden occupant. Defer only that
+  // fragile drop for one trial; if the move itself fouls, it is excluded on the
+  // retry and the drop returns to the normal pool. This is ordering only and
+  // never treats the hidden square as occupied or the move as legal.
+  const pathSafeMoveDestinations = new Set(scored.filter((candidate) => candidate.usi[1] !== "*"
+    && candidate.role !== "K" && pathRisk(observation, candidate) === 0)
+    .map((candidate) => candidate.usi.slice(2, 4)));
+  for (const candidate of scored) {
+    if (candidate.usi[1] === "*" && pathSafeMoveDestinations.has(candidate.usi.slice(2, 4))) {
+      candidate.priority = -1;
+    }
+  }
   // 王手時は、新鮮な証拠（自分の駒が消えたマス）への幾何応手を先頭にする。
   // そこが実際の王手駒なら捕獲で王手が解ける。打駒は捕獲できないので含めない。
   if (observation.inCheck === true && evidenceResponses.length) {

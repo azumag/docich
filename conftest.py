@@ -297,3 +297,19 @@ def pytest_configure(config: pytest.Config) -> None:
             _env_int("DOCICH_TEST_LOCK_WAIT", _DEFAULT_LOCK_WAIT_SECONDS, 0),
             stderr=_UncapturedStderr(config),
         )
+
+
+# Some test modules read the chart at import (collection) time, before any
+# fixture runs, so the legacy chart is also on for collection.
+os.environ.setdefault("DOCICH_HANJUKU_SPEEDRUN_CHART", "1")
+
+
+@pytest.fixture(autouse=True)
+def _legacy_speedrun_chart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests of the chart machinery keep the speedrun chart on.
+
+    Production abolished it on 2026-11-02 (orders are then taken mechanically,
+    nearest castle first); ``tests/test_hanjuku_mechanical_conquest.py`` runs
+    with it off, which is the production default.
+    """
+    monkeypatch.setenv("DOCICH_HANJUKU_SPEEDRUN_CHART", "1")

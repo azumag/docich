@@ -8,7 +8,7 @@ on:
         required: true
         default: start
         type: choice
-        options: [start, finish, status, recover, diagnose, recover-diagnose, refresh-bridge, recover-bridge]
+        options: [start, finish, status, recover, preflight, diagnose, recover-diagnose, refresh-bridge, recover-bridge]
       confirm:
         description: Type production
         required: true
@@ -139,6 +139,26 @@ jobs:
           echo "::notice::JEV preflight diagnostic exit=${code} (fixed category vocabulary)"
           (( code == 0 ))
 
+      - name: Preflight fixed JEV corner config
+        id: preflight
+        if: ${{ steps.auth.outputs.operation == 'preflight' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -uo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          printf '%s\n' '/home/ubuntu/docich/bin/docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml preflight' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          code=$?
+          set -e
+          echo "::notice::JEV preflight exit=${code} (fixed category vocabulary)"
+          (( code == 0 ))
+
       - name: Diagnose stopped bridge recovery preflight
         id: recover_diagnose
         if: ${{ steps.auth.outputs.operation == 'recover-diagnose' }}
@@ -243,6 +263,12 @@ jobs:
         if: ${{ steps.start.outcome == 'failure' }}
         run: |
           echo '::error::JEV corner start failed'
+          exit 1
+
+      - name: Fail unsuccessful JEV preflight
+        if: ${{ steps.preflight.outcome == 'failure' }}
+        run: |
+          echo '::error::JEV preflight failed'
           exit 1
 
       - name: Fail unsuccessful JEV preflight diagnosis

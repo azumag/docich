@@ -15,11 +15,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import docich.mystery_participation as participation
 from docich.mystery_participation import (
     LEDGER_SCHEMA,
     MAX_BYTES,
     MAX_HISTORY_ENTRIES,
-    MAX_PARTICIPANTS,
     MAX_USER_ID,
     OUTCOMES,
     ParticipationError,
@@ -34,6 +34,18 @@ from docich.mystery_participation import (
     trim_ledger,
     winner,
 )
+
+
+# record_vote scans the voter's bucket, so filling the real 100,000-seat limit
+# costs quadratic time (about 35 s per test on a CI worker). The limit logic does
+# not depend on its size.
+TEST_PARTICIPANT_LIMIT = 300
+
+
+@pytest.fixture
+def participant_limit(monkeypatch):
+    monkeypatch.setattr(participation, "MAX_PARTICIPANTS", TEST_PARTICIPANT_LIMIT)
+    return TEST_PARTICIPANT_LIMIT
 
 
 # --- vote tally (trpg core: idempotent, last vote wins) ---------------------
@@ -66,20 +78,20 @@ def test_record_vote_rejects_invalid_input():
     assert votes == {} and order == {}
 
 
-def test_record_vote_bounds_participants():
+def test_record_vote_bounds_participants(participant_limit):
     votes, order = {}, {}
-    for i in range(MAX_PARTICIPANTS):
+    for i in range(participant_limit):
         record_vote(votes, order, f"u{i}", i % 3)
     with pytest.raises(ParticipationError):
         record_vote(votes, order, "overflow-user", 0)
 
 
-def test_record_vote_rejection_leaves_state_byte_identical():
+def test_record_vote_rejection_leaves_state_byte_identical(participant_limit):
     """Over-limit rejection must not mutate anything (the trpg core's
     post-write check let an ignored newcomer's vote linger and even score —
     owner-verified 2026-10-18; this port checks before any write)."""
     votes, order = {}, {}
-    for i in range(MAX_PARTICIPANTS):
+    for i in range(participant_limit):
         record_vote(votes, order, f"u{i}", i % 3)
     before = (json.dumps(votes, sort_keys=True), json.dumps(order, sort_keys=True))
     with pytest.raises(ParticipationError):
@@ -88,9 +100,9 @@ def test_record_vote_rejection_leaves_state_byte_identical():
     assert before == after
 
 
-def test_existing_participant_can_resubmit_at_the_limit():
+def test_existing_participant_can_resubmit_at_the_limit(participant_limit):
     votes, order = {}, {}
-    for i in range(MAX_PARTICIPANTS):
+    for i in range(participant_limit):
         record_vote(votes, order, f"u{i}", i % 3)
     # An existing participant at the limit may move their vote (last wins).
     record_vote(votes, order, "u0", 2)

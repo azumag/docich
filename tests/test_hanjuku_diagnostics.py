@@ -308,9 +308,11 @@ def test_recent_decisions_are_fixed_tokens_only(tmp_path):
     active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
     rows = [
         {'schema': 1, **active, 'event': 'action_plan', 'decision': 'situation_held',
-         'screen_kind': 'map', 'at': 105, 'reason': 'DO NOT EMIT', 'chart_step': '3-Z1'},
+         'screen_kind': 'map', 'at': 105, 'reason': 'DO NOT EMIT', 'chart_step': '3-Z1',
+         'strategy_variant': 'sortie_menu_unclassified'},
         {'schema': 1, **active, 'event': 'action_plan', 'decision': 'order_start',
-         'screen_kind': 'map', 'at': 108, 'reason': 'DO NOT EMIT'},
+         'screen_kind': 'map', 'at': 108, 'reason': 'DO NOT EMIT',
+         'strategy_variant': 'DO NOT EMIT'},
     ]
     (file.parent / 'hanjuku_decisions.jsonl').write_text(
         '\n'.join(json.dumps(row, ensure_ascii=False) for row in rows) + '\n')
@@ -318,5 +320,6 @@ def test_recent_decisions_are_fixed_tokens_only(tmp_path):
     recent = out['policy']['recent_decisions']
     assert [row['decision'] for row in recent] == ['situation_held', 'order_start']
     assert [row['screen_kind'] for row in recent] == ['map', 'map']
+    assert [row['strategy_variant'] for row in recent] == ['sortie_menu_unclassified', None]
     text = json.dumps(out, ensure_ascii=False)
     assert 'DO NOT EMIT' not in text and '3-Z1' not in text

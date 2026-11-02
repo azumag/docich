@@ -33,6 +33,15 @@ def test_battle_win_does_not_claim_castle_ownership():
     assert commentary.evidence_kind(owned) == 'observation'
 
 
+def test_okunote_risk_accepted_speaks_only_observed_values():
+    observed = {'decision': 'battle_okunote_risk_accepted',
+                'observed_metric': {'ally_hp': 12, 'safe_candidates': ['a', 'b']}}
+    assert commentary.compose(observed)[1] == '味方HP12、安全候補2体を観測したため、おくのてを開きます。'
+    unread = {'decision': 'battle_okunote_risk_accepted',
+              'observed_metric': {'ally_hp': None, 'safe_candidates': ['a']}}
+    assert commentary.compose(unread)[1] == '味方HPは読めず、安全候補1体を観測したため、おくのてを開きます。'
+
+
 @pytest.mark.parametrize('plan,age,same,expected', [
     (True,0,True,'enqueued'), (True,6,True,'skipped:stale'),
     (True,0,False,'skipped:plan_superseded'),

@@ -44,6 +44,10 @@ class SorenCoordinatorAdapter:
         self.agent_enabled = False
         self.requires_round_boundary = True
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
+        if (isinstance(self.round_boundary_timeout_s, (int, float))
+                and not isinstance(self.round_boundary_timeout_s, bool)
+                and self.round_boundary_timeout_s > 3600):
+            self.round_boundary_timeout_s = 3600.0
         raw = game.raw.get("soren") or {}
         if not isinstance(raw, dict):
             raise AdapterError("[soren] はテーブルである必要があります")
@@ -390,7 +394,33 @@ class SorenCoordinatorAdapter:
         rc, payload = self._run(
             [str(self.control), "cancel", request_id], deadline, cancel
         )
-        return rc == 0 and self._ack(payload).get("status") == "cancelled"
+        if rc == 0:
+            return self._ack(payload).get("status") == "cancelled"
+        # A refused cancel is not proof that a boundary ack can still arrive.
+        # The broker answers ``missing``/conflict when it holds no pending
+        # request for this id (a request that never reached the broker after
+        # a busy/conflict refusal, or one already cancelled and archived).
+        # Verify through ``status`` that the live request is absent, belongs
+        # to another request, or already carries a terminal ack: then this
+        # exact request can never deliver a delayed boundary acknowledgement
+        # and the expired drain is safe to release -- the same "absent record
+        # is a clean cancel" contract cli_game/retroarch already implement.
+        # A live non-terminal request for this id, and any unreadable state,
+        # stays fail-closed.
+        try:
+            observed = self._status(deadline, cancel)
+        except AdapterError:
+            return False
+        request = observed.get("request")
+        if not isinstance(request, dict):
+            return request is None
+        if request.get("request_id") != request_id:
+            return True
+        ack = observed.get("ack")
+        return isinstance(ack, dict) and ack.get("status") in {
+            "stopped", "cancelled", "failed", "timeout",
+            "unsupported", "resumed", "committed",
+        }
 
     def _diagnostic_log_path(self) -> Path | None:
         """State-dir log file for lifecycle controller output (failures only)."""

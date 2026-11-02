@@ -99,7 +99,10 @@ SOURCE_BOSS_SITES: dict[int, tuple[str, ...]] = {
 }
 RANDOM_BOSS_OCCUPANTS = frozenset({4})
 MOVING_BOSS_CHAPTERS = frozenset({9})
-SEASON_KINGS = frozenset({'スプリミリョーネ', 'サマカンテ', 'フォーリシア', 'ウイナッツォ'})
+# The game draws the spring king as スプリミョーネ (g1075 2026-10-30 08:44:38
+# summon panel, parsed by screen._egg_rows; hanjuku_reference.MONSTER_SKILLS
+# spells it the same), not the guide's スプリミリョーネ.
+SEASON_KINGS = frozenset({'スプリミョーネ', 'サマカンテ', 'フォーリシア', 'ウイナッツォ'})
 
 
 def source_page(chapter: int) -> str:

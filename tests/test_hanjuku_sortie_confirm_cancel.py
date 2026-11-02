@@ -70,11 +70,14 @@ def test_strict_mismatch_is_bounded_without_dropping_stock_or_spending():
         mem['tick'] += 1
         assert deploy.deploy_step(screen, mem) == []
     mem['tick'] += 1
-    assert deploy.deploy_step(screen, mem) == [pad('down')]
-    assert mem['active'] is None and mem['orders']['1-B1'] == 'pending'
-    assert mem['boss_stock_cancelled']['decline_reads'] == 1
+    # Owner 2026-11-02 (切り札不足でも延期しない, #3201): a readable carried
+    # kit is approved even when it mismatches the strict boss kit — the
+    # assault is no longer cancelled for cards that cannot be bought anyway.
+    assert deploy.deploy_step(screen, mem) == [pad('a')]
+    confirm = [r for r in mem['_records'] if r['decision'] == 'sortie_confirm']
+    assert confirm and confirm[-1]['observed_metric'] != confirm[-1]['expected_metric']
+    assert not mem.get('boss_stock_cancelled')
     assert {key: mem[key] for key in before} == before
-    assert not any(r['decision'] == 'sortie_confirm' for r in mem['_records'])
 
 
 def test_direction_then_later_read_no_allows_one_refusal_a_not_departure():
@@ -198,7 +201,12 @@ def test_unconfirmed_sent_sortie_never_becomes_pending_or_loses_receipts(status)
     mem = memory(); mem['orders']['1-B1'] = status
     mem['sorties'] = {'1-B1': {'status': status, 'general': 'ゼウス'}}
     receipt = deepcopy(mem['sorties'])
-    for _ in range(20): assert deploy.deploy_step(panel(), mem) == []
+    # Owner 2026-11-02 (#3201): a readable mismatched kit is approved after
+    # the bounded hold instead of declined; sent-sortie receipts still stay
+    # untouched and the order is never re-queued.
+    for _ in range(deploy.SORTIE_CONFIRM_LIMIT - 1):
+        assert deploy.deploy_step(panel(), mem) == []
+    assert deploy.deploy_step(panel(), mem) == [pad('a')]
     assert mem['orders']['1-B1'] == status and mem['sorties'] == receipt
     assert not mem.get('boss_stock_cancelled')
 
@@ -218,9 +226,12 @@ def test_full_decide_cancels_with_changing_rgb_and_does_not_use_generic_a():
         for i in range(deploy.SORTIE_CONFIRM_LIMIT):
             frame = Frame(256, 224, bytes([i + 1]) * (256 * 224 * 3))
             actions, state = orchestrator.decide(frame, json.loads(json.dumps(state)))
-    assert actions == [pad('down')]
-    assert state['policy'].get('boss_stock_cancelled')
-    assert not any(r['decision'] == 'sortie_confirm' for r in state['_records'])
+    # #3201: a readable mismatched kit is approved (a) — never a generic or
+    # fallback press — and no decline/cancel owner is armed.
+    assert actions == [pad('a')]
+    assert not state['policy'].get('boss_stock_cancelled')
+    assert any(r['decision'] == 'sortie_confirm' for r in state['_records'])
+    assert not any(r['decision'] == 'no_input_fallback' for r in state['_records'])
 
 
 @pytest.mark.parametrize('change', ['actor', 'tick_gap', 'same_tick', 'missing_tick'])
@@ -273,8 +284,13 @@ def test_hotloaded_high_no_input_streak_cannot_override_a_new_cancel_owner(phase
     with patch.object(orchestrator, 'classify', return_value=phase), patch(
             'docich.hanjuku.os_layer.screen.parse', return_value=screen):
         actions, state = orchestrator.decide(frame, state)
-    assert actions == [] and state['policy'].get('boss_stock_cancelled')
-    assert not any(r['decision'] in {'sortie_confirm', 'no_input_fallback'} for r in state['_records'])
+    # #3201: an unreadable carried kit still fails the order (b,b via
+    # order_failed); a hotloaded streak must not turn that into a generic
+    # fallback press or a stale cancel owner.
+    assert actions == [pad('b'), pad('b')]
+    assert not state['policy'].get('boss_stock_cancelled')
+    assert any(r['decision'] == 'order_failed' for r in state['_records'])
+    assert not any(r['decision'] == 'no_input_fallback' for r in state['_records'])
 
 
 @pytest.mark.parametrize('hand', [(78, 121, 96, 134), (118, 121, 136, 134),

@@ -50,6 +50,8 @@ direct_enabled = false
 direct_agents = ""
 timeout_s = 180
 max_attempts = 2
+# provider が rate_limit を返した生成は attempts を消費せず、この秒数は revision が変わっても生成を止める（#2936）。
+rate_limit_cooldown_s = 300
 interim_jev = true
 interim_timeout_ms = 1500
 

@@ -65,8 +65,10 @@ h1{font-size:25px;line-height:1.05;letter-spacing:.04em;margin:0;font-weight:800
 #page-dots{display:flex;gap:6px;align-items:center}.page-dot{width:7px;height:7px;border-radius:50%;background:#3d2c38}.page-dot.on{background:#c98f8f}
 #unavailable{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:#0a0d12ee;color:#f0d9ad;text-align:center;font-size:20px;line-height:1.7;padding:40px}
 #unavailable[hidden]{display:none}
+canvas#scene{position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none}
 </style>
 <div id="stage">
+<canvas id="scene"></canvas>
 <header>
 <div><span class="eyebrow">COMMUNIST LAW SIMULATOR</span><h1 id="title">共産主義法律シミュレーター</h1><div class="sub" id="republic"></div></div>
 <span class="syn">合成シミュレーション・非本番</span>
@@ -87,8 +89,52 @@ h1{font-size:25px;line-height:1.05;letter-spacing:.04em;margin:0;font-weight:800
 'use strict';
 const COLORS={production:'#7fd48a',support:'#7fc9d4',discipline:'#e8c96a',reserves:'#8fa8e8',blackMarket:'#e87f7f',planProgress:'#c99fe8'};
 const METRIC_KEYS=['production','support','discipline','reserves','blackMarket','planProgress'];
-function fit(){const el=document.getElementById('stage');const s=Math.min(innerWidth/960,innerHeight/540);el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
+function fit(){const el=document.getElementById('stage');const s=Math.max(innerWidth/960,innerHeight/540);el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
 addEventListener('resize',fit);fit();
+const SCENE=document.getElementById('scene');
+const SCTX=SCENE.getContext('2d');
+SCENE.width=960;SCENE.height=540;
+let sceneFrame=0;let sceneTimer=null;
+function drawScene(metrics){
+ if(!SCTX)return;
+ const w=SCENE.width,h=SCENE.height;
+ SCTX.clearRect(0,0,w,h);
+ const g=SCTX.createLinearGradient(0,0,0,h);
+ g.addColorStop(0,'#2a1c1c');g.addColorStop(1,'#0a0d12');
+ SCTX.fillStyle=g;SCTX.fillRect(0,0,w,h);
+ const prod=(metrics&&metrics.production)||0;
+ const plan=(metrics&&metrics.planProgress)||0;
+ const bars=6;const bw=w/bars;
+ for(let i=0;i<bars;i++){
+  const heightFactor=(prod/100)*(0.4+0.6*Math.sin((sceneFrame+i)/8));
+  const bh=h*0.35*heightFactor;
+  SCTX.fillStyle='rgba(127,212,138,0.35)';
+  SCTX.fillRect(i*bw+4,h-bh-60,bw-8,bh);
+ }
+ SCTX.strokeStyle='#c99fe8';SCTX.lineWidth=6;SCTX.beginPath();
+ SCTX.arc(w/2,h/2,60,-Math.PI/2,-Math.PI/2+Math.PI*2*(plan/100));
+ SCTX.stroke();
+ const bm=(metrics&&metrics.blackMarket)||0;
+ if(bm>50){SCTX.fillStyle='rgba(232,127,127,0.15)';SCTX.fillRect(0,0,w,h);}
+}
+function sceneMetrics(){
+ if(!data)return null;
+ const f=data.frames&&data.frames[page];
+ if(!f)return data.initialMetrics;
+ if(f.kind==='turn')return data.turns[f.index-1].metricsAfter;
+ if(f.kind==='end')return data.finalMetrics;
+ return data.initialMetrics;
+}
+function sceneTick(){
+ if(document.hidden)return;
+ sceneFrame++;
+ drawScene(sceneMetrics()||{});
+}
+function startScene(){if(sceneTimer)clearInterval(sceneTimer);sceneTimer=setInterval(sceneTick,250);}
+function stopScene(){if(sceneTimer){clearInterval(sceneTimer);sceneTimer=null;}}
+document.addEventListener('visibilitychange',function(){if(document.hidden)stopScene();else startScene();});
+startScene();
+
 function showUnavailable(on){document.getElementById('unavailable').hidden=!on;}
 function bars(metrics,labels){
  const host=document.getElementById('bars');host.replaceChildren();

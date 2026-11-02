@@ -79,6 +79,11 @@ if [[ -n "${DOCICH_FFMPEG_CONFIGURE_ARGS:-}" ]]; then
   read -r -a extra_configure <<<"$DOCICH_FFMPEG_CONFIGURE_ARGS"
 fi
 
+# The capability check below requires the pulse indev, so the build must ask
+# for it deterministically instead of relying on configure's autodetect to
+# happen to find libpulse (#2868). --enable-libpulse also fails configure
+# early with a clear error when libpulse headers are missing, rather than
+# silently producing a binary that fails the post-build check.
 (
   cd "$ffmpeg_source"
   PKG_CONFIG_PATH="$caption_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
@@ -88,6 +93,7 @@ fi
       --disable-doc \
       --enable-gpl \
       --enable-libx264 \
+      --enable-libpulse \
       --extra-cflags="-I$caption_prefix/include" \
       --extra-ldflags="-L$caption_prefix/lib" \
       --extra-libs=-lcaption \

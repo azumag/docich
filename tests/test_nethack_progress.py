@@ -137,8 +137,12 @@ def test_severe_status_dominates_movement_and_offers_the_reviewed_prayer(conditi
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
 def test_starvation_dominates_the_intent_and_still_waits(condition, hp):
     # owner decision 2026-09-23: a complete frame may spend one `.` wait turn.
+    # #2806: a food emergency probes the visible inventory first; with nothing
+    # safe the reviewed wait turn resumes unchanged.
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
     agent = brain()
+    if act(agent, text) == ["i"]:
+        assert act(agent, CORPSE_LISTING) == ["Escape"]
     assert act(agent, text) == ["."]
     assert agent.last_decision.intent == "food_emergency"
     assert agent.last_progress_decision.intent == "rest_turn"
@@ -159,6 +163,10 @@ def test_weak_spends_one_explicit_wait_turn_instead_of_freezing(hp):
     # waits instead of holding input-free (owner decision 2026-09-23).
     text = frame(hp=hp, condition="Weak")
     agent = brain()
+    # #2806: a food emergency probes the visible inventory first; with nothing
+    # safe the reviewed wait turn resumes unchanged.
+    assert act(agent, text) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
     assert act(agent, text) == ["."]
     assert agent.last_decision.intent == "food_emergency"
     assert agent.last_progress_decision.intent == "rest_turn"
@@ -169,6 +177,8 @@ def test_weak_beside_a_visible_creature_still_spends_a_wait_turn():
     # falls through to the explicit wait turn (owner decision 2026-09-23).
     text = frame({"k": "d"}, hp="16(16)", condition="Weak")
     agent = brain()
+    assert act(agent, text) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
     assert act(agent, text) == ["."]
     assert agent.last_decision.intent == "food_emergency"
     assert agent.last_progress_decision.intent == "rest_turn"
@@ -187,10 +197,16 @@ def test_impairment_never_moves_or_bumps_but_may_wait(condition, hp):
 
 
 def test_hungry_explores_when_possible_and_waits_when_not():
-    # terrain first (seek_food keeps exploring) ...
-    assert act(brain(), frame({"n": "#"}, condition="Hungry")) == ["n"]
+    # #2806: a Hungry frame first probes the visible inventory; with nothing
+    # safe to eat the reviewed terrain/wait behaviour resumes unchanged.
+    agent = brain()
+    assert act(agent, frame({"n": "#"}, condition="Hungry")) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
+    assert act(agent, frame({"n": "#"}, condition="Hungry")) == ["n"]
     # ... otherwise one explicit wait turn instead of a permanent hold
     agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
     assert act(agent, frame(condition="Hungry")) == ["."]
     assert agent.last_progress_decision.intent == "rest_turn"
 
@@ -228,8 +244,9 @@ def test_wrapped_prompt_never_sends_diagonal_or_confirmation_n(message, wrap):
     # is tested with an eligible canonical state, not masked by its owner gate.
     text = frame({"n": "#", "k": "d"}, message=message, hp="4(16)")
     assert normalize_tty(text).prompt == "unknown"
-    # The unknown prompt is cancelled with Escape; neither diagonal nor 'n' is sent.
-    assert act(brain(), text, canonical=READY) == ["Escape"]
+    # The unknown prompt yields no reviewed action; brain stays in sync with
+    # base policy (no fallback keystroke). Neither diagonal nor 'n' is sent.
+    assert act(brain(), text, canonical=READY) == []
 
 
 def test_full_width_attack_with_continuation_never_authorizes_decline():
@@ -237,7 +254,7 @@ def test_full_width_attack_with_continuation_never_authorizes_decline():
     assert len(message) == 79
     text = frame({"n": "#"}, message=message + "\ny")
     assert normalize_tty(text).prompt == "unknown"
-    assert act(brain(), text, canonical=READY) == ["Escape"]
+    assert act(brain(), text, canonical=READY) == []
 
 
 def test_map_yes_no_glyphs_do_not_block_diagonal_progress():
@@ -262,12 +279,12 @@ def test_long_normal_message_and_next_map_row_keep_progress(length, map_row):
 
 @pytest.mark.parametrize("message", ["Really", "Really save", "Really attack the kitten", "Would you like to inspect"])
 def test_incomplete_question_stem_never_sends_map_or_decline_key(message):
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
 
 
 def test_hard_wrapped_unknown_stem_never_sends_map_key():
     message = "An unusual object " + "x" * 62 + "\ncontinue?"
-    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == ["Escape"]
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
 
 
 @pytest.mark.parametrize("message,intent", [
@@ -451,7 +468,15 @@ def test_locked_door_is_marked_failed_and_not_retried():
 ])
 def test_door_opening_is_available_at_low_hp_and_food_emergency(hp, condition):
     agent = brain()
-    assert act(agent, frame({"l": "+"}, hp=hp, condition=condition)) == ["o"]
+    text = frame({"l": "+"}, hp=hp, condition=condition)
+    # #2806: hunger tiers probe the visible inventory first (a critical-HP
+    # frame decides survival_emergency instead and still opens directly); a
+    # no-food probe leaves the reviewed door opening unchanged.
+    keys = act(agent, text)
+    if keys == ["i"]:
+        assert act(agent, CORPSE_LISTING) == ["Escape"]
+        keys = act(agent, text)
+    assert keys == ["o"]
     assert agent.last_progress_decision.intent == "open_door_start"
 
 
@@ -582,11 +607,21 @@ def test_real_tty_severe_condition_spelling_is_normalized(condition):
 
 @pytest.mark.parametrize("hp", ["4(16)", "8(16)", "16(16)"])
 def test_hungry_at_any_hp_uses_terrain_then_bump_then_wait(hp):
-    assert act(brain(), frame({"n": "#", "k": "d"}, hp=hp, condition="Hungry")) == ["n"]
-    assert act(brain(), frame({"n": "#"}, hp=hp, condition="Hungry")) == ["n"]
-    assert act(brain(), frame({"k": "d"}, hp=hp, condition="Hungry")) == ["k"]
+    # #2806: a Hungry frame probes first (a critical-HP frame decides
+    # survival_emergency instead); after a no-food probe the
+    # terrain/bump/wait order resumes unchanged.
+    for text, key in [(frame({"n": "#", "k": "d"}, hp=hp, condition="Hungry"), "n"),
+                      (frame({"n": "#"}, hp=hp, condition="Hungry"), "n"),
+                      (frame({"k": "d"}, hp=hp, condition="Hungry"), "k")]:
+        agent = brain()
+        if act(agent, text) == ["i"]:
+            assert act(agent, CORPSE_LISTING) == ["Escape"]
+        assert act(agent, text) == [key]
     # nothing left to move onto: one explicit wait turn (owner decision 2026-09-23)
-    assert act(brain(), frame(hp=hp, condition="Hungry")) == ["."]
+    agent = brain()
+    if act(agent, frame(hp=hp, condition="Hungry")) == ["i"]:
+        assert act(agent, CORPSE_LISTING) == ["Escape"]
+    assert act(agent, frame(hp=hp, condition="Hungry")) == ["."]
     rest = PolicyDecision("tactical", "rest_turn", "test", (Action(type="text", text="."),))
     # allowed on a complete frame ...
     assert_production_safe(rest, normalize_tty(frame(hp=hp, condition="Hungry")))
@@ -1181,3 +1216,95 @@ def test_changed_frame_resets_answered_prompt_resend_budget():
     adapter.observe.return_value = observation(frame(message="Another message --More--"))
     assert _run_iteration(adapter, agent, 1500) == 1
     assert agent.progress._answered_prompt_resends == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #2806: production hunger -> bounded inventory probe -> reviewed eat
+
+
+def listing_frame(lines):
+    """A tty inventory-menu frame: no map, no status block, no player glyph."""
+    return "\n".join(lines + [""] * 6)
+
+
+EAT_LISTING = listing_frame([
+    "a - a food ration",
+    "b - a scroll labeled ZELGO MER",
+])
+
+CORPSE_LISTING = listing_frame([
+    "a - a newt corpse",
+    "b - a scroll labeled ZELGO MER",
+])
+
+EAT_PROMPT = frame(message="What do you want to eat? [ab or ?*]", condition="")
+EAT_PROMPT_NO_A = frame(message="What do you want to eat? [b or ?*]", condition="")
+
+
+def test_hungry_probes_inventory_then_eats_only_the_probed_safe_item():
+    agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["i"]
+    assert agent.last_progress_decision.intent == "open_inventory"
+    assert act(agent, EAT_LISTING) == ["Escape"]
+    assert agent.last_progress_decision.intent == "close_inventory"
+    # The probed letter is spent only back on a complete gameplay frame.
+    assert act(agent, frame(condition="Hungry", turn=13)) == ["e"]
+    assert agent.last_progress_decision.intent == "eat_start"
+    assert act(agent, EAT_PROMPT) == ["a"]
+    assert agent.last_progress_decision.intent == "eat_select"
+    # The meal is an occupation: rest while Hungry persists, never step/bump.
+    for turn in range(14, 18):
+        assert act(agent, frame(condition="Hungry", turn=turn)) == ["."]
+        assert agent.last_progress_decision.intent == "food_recovery"
+
+
+def test_hungry_with_no_safe_food_falls_closed_into_food_acquisition():
+    agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["i"]
+    # Corpses and unproven descriptions are not food candidates.
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
+    keys = act(agent, frame({"n": "."}, condition="Hungry", turn=13))
+    assert agent.last_decision.intent == "seek_food"
+    assert agent.last_progress_decision.intent in {
+        "food_acquisition", "explore_step", "retreat_step", "rest_turn"}
+    # It keeps exploring for food; it never guesses an eat key.
+    assert not any(key in {"e", "a", "b"} for key in keys)
+
+
+def test_hungry_with_empty_inventory_also_falls_closed():
+    agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["i"]
+    empty = frame(message="You are empty-handed.", condition="")
+    act(agent, empty)
+    # Empty listing -> no letter -> no eat command, ever.
+    act(agent, frame(condition="Hungry", turn=13))
+    assert agent.last_progress_decision.intent != "eat_start"
+
+
+def test_eat_prompt_that_lost_the_probed_letter_is_cancelled():
+    agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["i"]
+    assert act(agent, EAT_LISTING) == ["Escape"]
+    assert act(agent, frame(condition="Hungry", turn=13)) == ["e"]
+    # The bracket no longer offers 'a' (dropped/eaten between frames):
+    # abort via Escape, never answer with a different letter.
+    assert act(agent, EAT_PROMPT_NO_A) == ["Escape"]
+    assert agent.last_progress_decision.intent == "close_inventory"
+    after = frame(condition="Hungry", turn=14)
+    keys = act(agent, after)
+    assert keys != ["a"]
+
+
+def test_blocking_prompt_still_wins_over_the_hunger_probe():
+    agent = brain()
+    more = frame(message="A message --More--", condition="Hungry")
+    keys = act(agent, more)
+    # The pager is answered by the reviewed path; no 'i' is sent at a prompt.
+    assert keys == [" "]
+    assert agent.last_progress_decision.intent == "advance_message"
+
+
+def test_food_emergency_also_probes_before_any_eat():
+    agent = brain()
+    assert act(agent, frame(condition="Weak", hp="4(16)")) == ["i"]
+    assert agent.last_progress_decision.intent == "open_inventory"

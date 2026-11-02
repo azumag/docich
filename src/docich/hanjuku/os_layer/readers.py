@@ -14,7 +14,9 @@ from .screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmati
 # screen.parse keeps its own binding, as in the single-module policy.
 from .screen import own_camps  # noqa: F401
 from .font import TextLine, UNKNOWN
+from .pixels import bit_points, near_bits
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
+from ...hanjuku_egg_reference import GENERAL_HP
 from ...hanjuku_egg_stock import observed_uses
 
 
@@ -34,7 +36,8 @@ ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
 
 # ---------------------------------------------------------------- menus
 def _options(screen: Screen) -> list[tuple[int, int, str]]:
-    return [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
+    return [(x, line.y, _canonical_general(word))
+            for line in screen.lines for x, word in line.spans()]
 
 
 def _current(screen: Screen):
@@ -74,7 +77,7 @@ def _general_visible(screen, general):
     """Exact name with no adjacent unknown glyph; ignore hand/border pixels."""
     for line in screen.lines:
         for x, word in line.spans():
-            if x <= 100 or word != general:
+            if x <= 100 or _canonical_general(word) != general:
                 continue
             neighbors = (x - 8, x + 8 * len(word))
             if not any(ch == UNKNOWN and cx in neighbors
@@ -105,12 +108,19 @@ def world_flags(frame, chapter, cursor=None):
 
     A flag under the Y cursor is not read: the sortie cursor's G is the same
     blue as an enemy flag (isolated probe: the home flag read as enemy).
+
+    The boss castle is not read either. Chapter 3 draws it as a skull with no
+    flag, and g1075 15:10:55 read ボス as own from the face of アポロン, camped
+    beside it, whose (230,56,90) pixels fell into the box. Its owner is never
+    taken from flags (captures and losses skip it), so nothing is lost.
     """
     offset = WORLD_MAP_OFFSET.get(chapter)
     if not offset or frame is None:
         return {}
     out = {}
     for name, (wx, wy) in chart.castles(chapter).items():
+        if chart.is_boss_castle(name):      # chapter 4's four sites are skulls too
+            continue
         mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
         if cursor and abs(mx + 2 - cursor[0]) <= 10 and abs(my + 1 - cursor[1]) <= 10:
             continue
@@ -133,8 +143,7 @@ def world_markers(frame) -> list:
     """
     if frame is None:
         return []
-    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
-           if _near_colour(frame.pixel(x, y), WORLD_MARKER)]
+    pts = bit_points(frame, near_bits(frame, WORLD_MARKER, WORLD_COLOUR_TOL))
     seen, out = set(), []
     for p in sorted(pts):
         if p in seen:
@@ -164,8 +173,86 @@ _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
            if 100 <= dx * dx + dy * dy <= 169]          # radius 5-6.5 px, half-pixel units
 
 
+def _is_blue_pixel(pixel) -> bool:
+    r, g, b = pixel
+    return r <= 40 and g <= 80 and b >= 150 and b - g >= 100
+
+
+def _is_black_pixel(pixel) -> bool:
+    r, g, b = pixel
+    return r <= 70 and g <= 70 and b <= 70
+
+
 def world_cursor(frame):
-    """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
+    """Centre of the Y view's cursor.
+
+    Detection order:
+      1. chapter-3 whole map: 3x3 blue centre dot inside a black dashed ring
+         (radius 8-9 px) (g1075);
+      2. gold G corners (chapter 1/2 sortie cursor);
+      3. white dashed ring (chapter 2 boss / snowy maps).
+    """
+    if frame is None:
+        return None
+    # 1. Blue-dotted black dashed ring. The white ring vote cannot see this
+    # cursor, and the gold map frame would otherwise be misread as a G.
+    blue_pixels = [(x, y) for x in range(40, 220) for y in range(40, 200)
+                   if _is_blue_pixel(frame.pixel(x, y))]
+    blue_set = set(blue_pixels)
+    seen = set()
+    components = []
+    for seed in blue_pixels:
+        if seed in seen:
+            continue
+        stack = [seed]
+        seen.add(seed)
+        comp = []
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                           (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                nxt = (x + dx, y + dy)
+                if nxt in blue_set and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        components.append(comp)
+    # Blue-dotted black-ring candidates are normally single on a frame;
+    # when more than one appears, the largest ring is taken (g1075 has one).
+    best_ring = 0
+    best_center = None
+    best_size = 0
+    for comp in components:
+        if len(comp) < 8 or len(comp) > 10:
+            continue
+        xs = [p[0] for p in comp]
+        ys = [p[1] for p in comp]
+        if max(xs) - min(xs) > 2 or max(ys) - min(ys) > 2:
+            continue
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        ring = 0
+        ix = int(round(cx))
+        iy = int(round(cy))
+        for x in range(ix - 11, ix + 12):
+            for y in range(iy - 11, iy + 12):
+                if not (0 <= x < frame.width and 0 <= y < frame.height):
+                    continue
+                dx = x - cx
+                dy = y - cy
+                r2 = dx * dx + dy * dy
+                if 56 <= r2 <= 110 and _is_black_pixel(frame.pixel(x, y)):
+                    ring += 1
+        if ring < 50:
+            continue
+        if ring > best_ring or (ring == best_ring and len(comp) > best_size):
+            best_ring = ring
+            best_size = len(comp)
+            best_center = (cx, cy)
+    if best_center is not None:
+        return best_center
+
+    # 2. gold G corners
     gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
             if _near_colour(frame.pixel(x, y), (255, 182, 0))]
     # Only the compact G corners (~15 px box): the map's gold edge arrows are
@@ -183,6 +270,7 @@ def world_cursor(frame):
         xs = [x for x, _ in best]; ys = [y for _, y in best]
         if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
             return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    # 3. white dashed ring
     votes = {}
     for x in range(40, 220):
         for y in range(40, 200):
@@ -192,12 +280,17 @@ def world_cursor(frame):
                     votes[key] = votes.get(key, 0) + 1
     # The ring only appears inside the island view (sea 64-191 x 47-174);
     # the ornate frame's highlights just outside voted as strongly (g419 10:49,
-    # a frame where the blinking ring was off).
-    votes = {k: v for k, v in votes.items() if 140 <= k[0] <= 372 and 106 <= k[1] <= 338}
+    # a frame where the blinking ring was off). The window is the whole sea:
+    # the narrower 70-186 x 53-169 lost real rings at the sea's edge (g1075
+    # 2026-10-29 12:20: centre (65, 81.5) west of リグア, 24 votes, so the
+    # source jump closed as unreadable; a ring at (153, 50.5) likewise). On
+    # every saved Y view the added band held no other centre above 1 vote.
+    votes = {k: v for k, v in votes.items() if 128 <= k[0] <= 382 and 94 <= k[1] <= 348}
     if not votes:
         return None
     key, count = max(votes.items(), key=lambda kv: kv[1])
     return (key[0] / 2, key[1] / 2) if count >= 18 else None
+
 
 
 UNDER_CURSOR_PX = 8            # roof target vs cursor cell when standing on a castle
@@ -219,6 +312,24 @@ def _roof_under_cursor(screen, frame) -> bool:
 def is_camp_menu(screen) -> bool:
     """Our tent's menu: いどう/ステータス/キャンプ/きかん (isolated probe, g436 22:04)."""
     return all(word in screen.text for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
+
+
+def is_fort_menu(screen) -> bool:
+    """A 砦 (two or more generals camped together, drawn as a dome).
+
+    Measured on g1097 (live 2026-11-01 19:24/19:33 and the isolated probe of
+    its start state): A on the dome opens しゅつげき/こうかん, not the tent's
+    いどう/ステータス/キャンプ/きかん, and the list of the generals inside opens
+    beside it (``fort_list_open``). A castle menu also says しゅつげき, but it
+    always has ステータス and is classified ``castle_menu``.
+    """
+    return (screen.kind == 'text' and screen.text.startswith('しゅつげき')
+            and 'こうかん' in screen.text and 'ステータス' not in screen.text)
+
+
+def fort_list_open(screen) -> bool:
+    """The generals' list beside the 砦 menu: the hand moved to the right panel."""
+    return is_fort_menu(screen) and bool(screen.hand) and screen.hand[0] > 100
 
 
 def _empty_sortie_inventory(screen):
@@ -532,3 +643,16 @@ _KANA_FOLD = str.maketrans(
 
 def _fold_skill(text: str) -> str:
     return text.replace(' ', '').replace('！', '!').replace('？', '?').translate(_KANA_FOLD)
+
+
+# The same tile reader drops a voicing mark on general names too
+# (g1075 2026-10-31: ポセイドン→ポセイトン, キャンディー→キャンティー,
+# アマンディーヌ→アマンティーヌ stayed in the walked list and held the 4-B1
+# sortie ~10 min until input_stalled). Folded roster names are unique, so an
+# unknown reading maps back to exactly one general; anything else passes
+# through unchanged.
+_GENERAL_BY_FOLD = {name.translate(_KANA_FOLD): name for name in GENERAL_HP}
+
+
+def _canonical_general(word: str) -> str:
+    return _GENERAL_BY_FOLD.get(word.translate(_KANA_FOLD), word)

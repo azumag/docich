@@ -238,9 +238,9 @@ def load_catalog(g) -> tuple[Corner, ...]:
                 raise CornerCatalogError(
                     "lawsim requires id=communist-law-simulator and game=lawsim-view"
                 )
-            if item.fetch_on_start or item.audio_enabled is not False:
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
                 raise CornerCatalogError(
-                    "lawsim accepts neither fetch_on_start nor audio_enabled (speech is not wired yet)"
+                    "lawsim accepts no fetch_on_start; audio_enabled is a boolean opt-in (speech wired via lawsim_narration)"
                 )
             if item.duration_minutes is not None and (
                     type(item.duration_minutes) is not int

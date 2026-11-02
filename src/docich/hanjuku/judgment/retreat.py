@@ -20,6 +20,7 @@ STRONG_RETREAT_HP = 18
 STRONG_RETREAT_PERCENT = 50
 EXPENDABLE_RETREAT_HP = 4
 EXPENDABLE_RETREAT_PERCENT = 20
+HOPELESS_MELEE_RATIO = 4
 
 
 def _strength(name):
@@ -97,6 +98,30 @@ def _dominant_melee(cur, balance, hp_floor):
             and values[0] > 2 * values[1] and values[2] > 2 * values[3])
 
 
+def _hopeless_attack_melee(cur, balance):
+    """#3042: spent resources against a far stronger defender is not a risk to take.
+
+    g1075 2026-10-30 00:57: ビシソワーズ (27, combat 3) attacking ゼウス
+    (85, combat 13) had used her egg and cards; the open menu offered
+    たいきゃく at HP 27 (melee score 81 vs 949), but the HP threshold waited.
+    HP fell 27 -> 18 -> 8 -> 0 in about two seconds. Attacks won at about
+    2x behind, so only a 4x measured gap retreats. Owner 2026-10-30: weak
+    generals retreat here too, ahead of the expendable HP-4 tolerance.
+    """
+    if (cur.get('side') != 'attack' or cur.get('ally') in (None, NAME, 'しゅじんこう')
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('event_duel') or (cur.get('hero_retreat') or {}).get('selected')
+            or not _resources_exhausted(cur)):
+        return False
+    ours, theirs = balance.get('ally_melee_score'), balance.get('enemy_melee_score')
+    hp = cur.get('ally_hp')
+    return (type(hp) is int and hp > 0 and type(ours) is int and type(theirs) is int
+            and ours > 0 and theirs >= HOPELESS_MELEE_RATIO * ours)
+
+
 def _result(cur, profile, needed, reason, *, active=False, hp_floor=None, percent=None):
     # A fresh assessment is diagnostic state, never a cached permission.
     # All values are bounded policy labels/numbers; no new input/log channel.
@@ -114,6 +139,8 @@ def retreat_needed(cur):
 
     profile = retreat_profile(cur)
     baseline = rules._default_retreat_needed(cur)
+    if _hopeless_attack_melee(cur, rules._melee_balance(cur)):
+        return _result(cur, profile, True, 'hopeless_attack_melee', active=True)
     if not _live_melee(cur):
         return _result(cur, profile, baseline, 'existing_guard_unclassified_or_special')
 

@@ -25,6 +25,7 @@ VERSION = 'hanjuku-scene-v1'
 SCENE_FILE = 'hanjuku_scene.json'
 WORKER_FILE = 'hanjuku_scene_worker.json'
 LOCK_FILE = 'hanjuku_scene_worker.lock'
+LAUNCH_ERR_FILE = 'hanjuku_scene_worker.err'
 LOG_NAME = 'hanjuku_scene_commentary'
 KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 RECENT = 64
@@ -266,12 +267,18 @@ def start_worker(repo_root, runtime, snapshot, cfg, *, now=None, popen=None):
         atomic_write_json(runtime / WORKER_FILE, previous)
         env = dict(os.environ)
         env['PYTHONPATH'] = str(Path(repo_root) / 'src')
-        (popen or subprocess.Popen)(
-            [sys.executable, '-m', 'docich.hanjuku_scene_worker', '--runtime', str(runtime),
-             '--lock-fd', str(fd)], cwd=str(repo_root), env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True, pass_fds=(fd,),
-        )
+        # Keep only the latest launch's stderr: a silent early exit (import,
+        # config, path or fence check) must leave a traceback to inspect.
+        err_fd = os.open(runtime / LAUNCH_ERR_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            (popen or subprocess.Popen)(
+                [sys.executable, '-m', 'docich.hanjuku_scene_worker', '--runtime', str(runtime),
+                 '--lock-fd', str(fd)], cwd=str(repo_root), env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err_fd,
+                start_new_session=True, close_fds=True, pass_fds=(fd,),
+            )
+        finally:
+            os.close(err_fd)
         return True
     finally:
         os.close(fd)

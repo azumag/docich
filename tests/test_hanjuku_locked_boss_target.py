@@ -59,8 +59,14 @@ def test_complete_unlock_can_be_revoked_by_a_new_enemy_flag():
     order, mem = memory()
     mem['captured'] = list(set(chart.CASTLE_NAMES[1]) - {order['source'], order['target']})
     assert p._ready(order, mem)
-    castle = mem['captured'][0]
-    p._apply_world_flags(mem, {castle: 'enemy'})
+    # A castle off the boss route does not gate the boss order (#3199, owner
+    # 2026-11-02), so losing it must not revoke the unlock; the old test took
+    # ``captured[0]`` of a set and passed or failed with the hash seed.
+    side = deepcopy(mem)
+    p._apply_world_flags(side, {'カストーラ': 'enemy'})
+    assert p._ready(order, side)
+    # A castle the chain marches through does revoke it.
+    p._apply_world_flags(mem, {'ゴーメン': 'enemy'})
     assert not p._ready(order, mem)
 
 

@@ -21,7 +21,7 @@ def memory(step='A:guard001:J1'):
         'chapter': 1, 'tick': 100, 'captured': ['カストーラ', 'キカンドン'],
         'lost': [], 'active': step, 'picked': [], '_records': [],
         'garrison': {
-            'アルマムーン': ['ゼウス', 'どうし'],
+            'アルマムーン': ['ゼウス', 'アルテミス'],
             'カストーラ': ['ヴィーナス'], 'キカンドン': ['ココット'],
         },
         'orders': {}, 'chart_plan': {'orders': [order]},
@@ -91,7 +91,7 @@ def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch
     assert mem['orders'].get(order['step']) in (None, 'pending')
 
     # A measured reinforcement releases the same order, not a new generation.
-    mem['garrison']['アルマムーン'].append('どうし')
+    mem['garrison']['アルマムーン'].append('アルテミス')
     assert p._plan_pending(mem)
     assert p.next_order(mem) is order
 
@@ -119,44 +119,44 @@ def test_hotloaded_adjusted_order_is_rechecked_after_source_changes(kind):
 def test_busy_spare_does_not_count_even_in_cached_live_list(status):
     mem = memory()
     mem['sorties'] = {
-        'earlier': {'general': 'どうし', 'target': 'ジョンリギ',
+        'earlier': {'general': 'アルテミス', 'target': 'ジョンリギ',
                     'status': status, 'tick': 99},
     }
     assert p._source_spare_missing(p._order(mem), mem)
-    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('b'), p.pad('b')]
+    assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('b'), p.pad('b')]
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
 def test_location_unknown_spare_is_excluded_without_fresh_roster(kind):
     mem = memory()
-    mem['general_location_unknown'] = ['どうし']
+    mem['general_location_unknown'] = ['アルテミス']
     assert p._source_spare_missing(p._order(mem), mem)
     assert p.deploy_step(Screen(kind=kind, lines=[], hand=None, text=''), mem) == [p.pad('b'), p.pad('b')]
 
 
 def test_fresh_roster_can_resolve_unknown_spare_and_release_guard():
     mem = memory()
-    mem['general_location_unknown'] = ['どうし']
+    mem['general_location_unknown'] = ['アルテミス']
     assert p._source_spare_missing(p._order(mem), mem)
     # Actual re-observation is new evidence; stale unknown must not block forever.
-    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
-    assert 'どうし' not in (mem.get('general_location_unknown') or ())
+    assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
+    assert 'アルテミス' not in (mem.get('general_location_unknown') or ())
     assert not p._source_spare_missing(p._order(mem), mem)
 
 
 def test_live_spare_allows_dispatch_without_claiming_departure():
     mem = memory()
     assert not p._source_spare_missing(p._order(mem), mem)
-    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
-    assert mem['garrison']['アルマムーン'] == ['ゼウス', 'どうし']
+    assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
+    assert mem['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
     assert not mem.get('sorties')
 
 
 def test_second_adjusted_attack_cannot_drain_source_after_departure(monkeypatch):
     mem = memory('A:guard001:J2')
-    p._garrison_move(mem, 'どうし', source='アルマムーン')
+    p._garrison_move(mem, 'アルテミス', source='アルマムーン')
     mem['sorties'] = {
-        'A:guard001:J1': {'general': 'どうし', 'target': 'ジョンリギ',
+        'A:guard001:J1': {'general': 'アルテミス', 'target': 'ジョンリギ',
                          'status': 'en_route', 'tick': 99},
     }
     monkeypatch.setattr(p.chart, 'orders', lambda _chapter: ())

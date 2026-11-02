@@ -210,13 +210,24 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
 def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
-           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス'], 'キカンドン': [],
+           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
-    assert list(candidates) == ['move_1']
+    # The boss chain is held and unbeaten, so a wave sortie at けっかい joins
+    # the staging move (#3203, owner 2026-11-02 余剰兵力の連続投入).
+    assert list(candidates) == ['move_1', 'attack_2']
+    wave = candidates['attack_2']
+    assert wave['target'] == 'けっかい' and wave['purpose'] == 'attack'
+    assert wave['cards'] == []            # wave sorties never wait on a kit
     move = candidates['move_1']
+    # #2985: captured=all normals puts this mem in the post-conquest boss wait,
+    # so a priority source parts with its weakest spare, not the list head.
     assert (move['general'], move['source'], move['target'], move['purpose']) == (
-        'ゼウス', 'アルマムーン', 'キカンドン', 'move')
+        'クミン', 'アルマムーン', 'キカンドン', 'move')
+    # v305: the hero keeps two others; with only two there nobody leaves him.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
+    moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+    assert all(c['source'] != 'アルマムーン' for c in moves)
     # A lone general is never pulled out of its castle; only an unread list
     # (opened and checked by the move itself) may be the donor then.
     mem['garrison']['アルマムーン'] = ['ゼウス']
@@ -308,6 +319,77 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
     assert mem['uncertain'] is True and home != tuple(mem['cursor'])
 
 
+def test_unanchored_map_frames_keep_integrating_measured_motion(monkeypatch):
+    """#2935 g1075: after SELECT seeded the hero castle, the estimate froze at
+    [571,282] while the real cursor walked to the west edge; left was pressed
+    for 95 minutes. Continuous map frames are measured even while unanchored."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    goal = chart.castles(3)['リグア']
+    mem = {'chapter': 3, 'cursor': [571, 282], 'uncertain': True, '_records': [],
+           'tick': 101,
+           'nav_last': {'screen': [8, 180], 'expected': [-28, 0], 'search': False,
+                        'tick': 100, 'kind': 'map'}}
+    for expected_x in (543, 515, 487):
+        actions = policy.nav_step(map_screen(8, 180), mem, FRAME, goal)
+        assert [a['buttons'][0] for a in actions] == ['left']
+        assert mem['cursor'] == [expected_x, 282]
+        mem['tick'] += 1
+    assert not decisions(mem, 'nav_stuck')
+    # The same frame after an off-map observation is not a measured step.
+    stale = {'chapter': 3, 'cursor': [571, 282], 'uncertain': True, '_records': [],
+             'tick': 140,
+             'nav_last': {'screen': [8, 180], 'expected': [-28, 0], 'search': False,
+                          'tick': 100, 'kind': 'map'}}
+    policy.nav_step(map_screen(8, 180), stale, FRAME, goal)
+    assert stale['cursor'] == [571, 282]
+
+
+def test_nav_select_recoveries_are_bounded_per_order_step(monkeypatch):
+    """#2935 g1075: SELECT re-placed the estimate every ~6 s and the same hold
+    walked the cursor back to the screen edge. Recoveries are bounded per step."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'cursor': [500, 500],
+           'uncertain': True, 'nav_search': True}
+    goal = CASTLES['アルマムーン']
+    for _ in range(policy.NAV_RECOVER_LIMIT):
+        mem.pop('select_used', None)
+        assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal,
+                               step='X1') == [policy.pad('select')]
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal, step='X1') == 'infeasible'
+    assert len(decisions(mem, 'select_to_hero')) == policy.NAV_RECOVER_LIMIT
+    # Another step keeps its own budget; without a step nothing is counted.
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal, step='X2') == [policy.pad('select')]
+    mem.pop('select_used', None)
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal) == [policy.pad('select')]
+
+
+def test_map_step_abandons_a_step_that_keeps_needing_select(monkeypatch):
+    """#2935 g1075: 05:52-07:28 spent 1,967 s in nav_stuck bursts without a sortie.
+    Past the bound the step is failed so the picker can choose another one."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    step = 'I:9bacc4:10'
+    order = {'step': step, 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 'test', 'purpose': 'move'}
+    mem = {'chapter': 1, 'captured': [], 'orders': {}, 'picked': [], '_records': [], 'tick': 100,
+           'active': step, 'launched_orders': {step: order}, 'cursor': [500, 500],
+           'uncertain': True, 'unanchored': policy.SELECT_AFTER, 'select_used': True,
+           'garrison': {'アルマムーン': [chart.HERO]},
+           # A jump that closed with 0 moves is not reopened: keep Y out of the way.
+           'y_jump_last': {'step': step, 'mode': 'map', 'moves': 0, 'why': 'cursor_stationary'}}
+    for _ in range(policy.NAV_RECOVER_LIMIT):
+        mem['tick'] += policy.SELECT_EVERY + 1
+        assert policy.map_step(map_screen(8, 180), mem, FRAME) == [policy.pad('select')]
+    mem['tick'] += policy.SELECT_EVERY + 1
+    assert policy.map_step(map_screen(8, 180), mem, FRAME) == []
+    assert mem['orders'][step] == 'failed' and mem['active'] is None
+    assert decisions(mem, 'order_failed')
+    [record] = decisions(mem, 'nav_infeasible')
+    assert record['chart_step'] == step
+    assert record['observed_metric']['recoveries'] == policy.NAV_RECOVER_LIMIT
+
+
 def test_moving_cursor_or_leaving_the_map_never_counts_as_stuck(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
     order = {'step': 'X1', 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
@@ -389,10 +471,14 @@ def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
 
 
 def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
-    """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran."""
+    """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran.
+
+    v305: the hero keeps two others, so キカンドン holds two more spares here.
+    """
     mem = {'chapter': 1, 'orders': {}, '_records': [],
            'captured': ['キカンドン', 'ジョンリギ'], 'lost': ['ナキューメラ'],
-           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス'], 'ジョンリギ': ['ココット']}}
+           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス', 'クミン', 'タルタル'],
+                        'ジョンリギ': ['ココット']}}
     candidates = policy.interim_candidates(mem)
     purposes = [c['purpose'] for c in candidates.values()]
     assert purposes[0] == 'retake' and purposes[1] == 'move'
@@ -479,11 +565,25 @@ def _move_memory():
 
 def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
     mem = _move_memory()
-    actions = policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ']), mem)
+    names = [chart.HERO, 'キャラウェイ', 'ココット', 'クミン']
+    # A four-name list is walked to its end first (#3077); this one already was.
+    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': names, 'tick': mem.get('tick') or 0}
+    actions = policy.deploy_step(_move_list(names), mem)
     assert mem['general_override']['I:m:1'] == 'キャラウェイ'
-    assert mem['garrison']['ジョンリギ'] == [chart.HERO, 'キャラウェイ']
+    assert mem['garrison']['ジョンリギ'] == names
     assert decisions(mem, 'move_general_picked')
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
+
+
+def test_a_move_never_leaves_the_hero_with_fewer_than_two_others():
+    """v305 (owner 2026-10-29): the game ends when the hero's castle falls on him."""
+    mem = _move_memory()
+    assert policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ', 'ココット']), mem) == [
+        policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['I:m:1'] == 'failed'
+    assert decisions(mem, 'sortie_held_hero_guard')
+    assert not mem.get('general_override', {}).get('I:m:1')
 
 
 def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
