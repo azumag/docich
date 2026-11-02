@@ -116,7 +116,7 @@ def _proc_identity(pid: int) -> dict[str, int | str] | None:
     """Read PID, process-group, session and start-time identity from procfs."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError:
         return {}
