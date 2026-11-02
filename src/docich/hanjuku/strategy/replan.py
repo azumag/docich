@@ -320,6 +320,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
+    # #3266: a concrete general chosen for one target is already unavailable
+    # to later targets in the same plan; otherwise every retake names the first spare.
+    planned_busy = set()
+    planned_probe_sources = set()
     def _boss_wave_pick(mem, owned, busy, allow_sole):
         """(source, general) of the strongest sendable spare for the boss.
 
@@ -350,12 +354,33 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         _, source, general = choices[0]
         return source, general
     for target in targets:
-        picked = (_boss_wave_pick(mem, owned, busy, allow_sole)
-                  if chart.is_boss_castle(target) else
-                  _interim_source(mem, target, chart_orders.get(target), owned, busy, allow_sole))
+        def pick(candidate_busy):
+            return (_boss_wave_pick(mem, owned, candidate_busy, allow_sole)
+                    if chart.is_boss_castle(target) else
+                    _interim_source(mem, target, chart_orders.get(target), owned, candidate_busy, allow_sole))
+        planning_busy = busy | planned_busy
+        picked = pick(planning_busy)
+        reused_planned_actor = False
+        if picked is None and planned_busy:
+            # The candidate list also describes later sequential work. Once all
+            # simultaneously sendable spares are reserved, retain those later
+            # targets with the old selection semantics instead of dropping them.
+            picked = pick(busy)
+            reused_planned_actor = picked is not None
         if picked is None:
             continue
         source, general = picked
+        if general == MOVE_ANY_GENERAL:
+            # An unread source is evidence gathering; one probe per source is enough.
+            if source in planned_probe_sources:
+                continue
+            planned_probe_sources.add(source)
+        else:
+            # Reserve only an actor measured in this source castle. Unread chart
+            # actors are alternative future candidates, not simultaneous commitments.
+            present = (mem.get('garrison') or {}).get(source) or ()
+            if not reused_planned_actor and general in present:
+                planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
                 else f"暫定: {general}で{target}を攻撃")
