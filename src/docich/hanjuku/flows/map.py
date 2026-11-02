@@ -553,6 +553,8 @@ def map_step(screen: Screen, mem, frame):
                           if not k.startswith(f"{order['step']}:")}
         _forget_failed_jump(mem, order['step'])
         mem.pop('castle_verified', None)
+        if order.get('source_probe') is True:
+            mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),

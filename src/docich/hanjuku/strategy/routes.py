@@ -104,12 +104,31 @@ def unread_dispatches(mem, castle):
             if last is None or sortie['tick'] > int(last)]
 
 
+def arrival_probe_due(mem, castle, *, cooldown=False):
+    """Transfers sent into ``castle`` have left the busy window and its list was
+    not read since: that list is the only receipt of their arrival.
+
+    g1097 2026-11-03 (chapter 5): アイアイエー was recorded empty from a reading
+    26k ticks old while 14 moves had gone there. No list was ever opened, so the
+    generals who stood there never sortied. ``cooldown`` spaces the probe
+    *orders* a candidate builder mints; the order already running is not
+    affected (``_source_list_open`` calls without it).
+    """
+    if incoming(mem, castle) or not unread_dispatches(mem, castle):
+        return False
+    if cooldown:
+        asked = (mem.get('arrival_probe_tick') or {}).get(castle)
+        return asked is None or int(mem.get('tick') or 0) - int(asked) >= PROBE_INTERVAL
+    return True
+
+
 def probe_due(mem, castle):
     """A dispatched transfer permits opening a list, never guessing arrival."""
+    if mem.get('chapter') != 3:
+        return arrival_probe_due(mem, castle)
     now = int(mem.get('tick') or 0)
     last = (mem.get('route_probe_read_tick') or {}).get(castle)
-    return (mem.get('chapter') == 3
-            and bool(incoming(mem, castle) or unread_dispatches(mem, castle))
+    return (bool(incoming(mem, castle) or unread_dispatches(mem, castle))
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 

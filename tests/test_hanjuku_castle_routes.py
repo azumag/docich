@@ -305,7 +305,9 @@ def test_a_castle_sent_moves_since_its_last_reading_is_not_refilled_in_chapter_4
     assert routes.incoming(mem, 'ビクトリア') == []        # both moves are past the busy window
     assert len(routes.unread_dispatches(mem, 'ビクトリア')) == 2
     assert not moves_into(mem, 'ビクトリア')
-    assert not routes.probe_due(mem, 'ビクトリア')          # no list probe outside chapter 3
+    # Outside chapter 3 the list is opened once by a probe instead (g1097 2026-11-03):
+    # the moved generals are otherwise invisible and never sortie.
+    assert routes.probe_due(mem, 'ビクトリア')
 
 
 def test_a_read_list_in_chapter_4_makes_an_empty_castle_a_move_target_again():
@@ -484,3 +486,85 @@ def test_boss_order_still_waits_when_its_chain_is_broken():
            '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     assert not orders._boss_path_captured(mem)
     assert not orders._ready(b1, mem)
+
+
+def aiaie_stall():
+    """g1097 2026-11-03 00:25 JST, chapter 5: ジュメルズ/クロチェット/カルーン are lost,
+    アルマムーン holds six, アイアイエー is recorded empty from a reading 26k ticks
+    old, and 14 moves went there (most settled 'overdue'). Nobody ever sortied
+    from アイアイエー."""
+    mem = {'chapter': 5, 'month': '42-6', 'tick': 100774,
+           'captured': ['テラビル', 'ヒュペルボレア', 'ボッサール', 'アイアイエー',
+                        'バスカビル', 'プトレマイス', 'オトラント'],
+           'lost': ['ジュメルズ', 'クロチェット', 'カルーン'], 'orders': {},
+           'garrison': {'アイアイエー': [],
+                        'アルマムーン': ['どうし', 'ペコリーノ', 'クランベリー', 'マスカット',
+                                   'デーメーテール', 'ミルフィーユ'],
+                        'オトラント': ['マンゴスチン'], 'テラビル': ['リースリング'],
+                        'バスカビル': ['マカデミア'], 'ヒュペルボレア': ['ピスタチオ'],
+                        'プトレマイス': ['キャンディー'], 'ボッサール': ['ポセイドン']},
+           'route_probe_read_tick': {'アイアイエー': 74177},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    for step, general, tick, status in (('A:0ca8ce6a:M1', 'ジェラート', 88300, 'overdue'),
+                                        ('A:d0871b56:M2', 'ピスタチオ', 93200, 'overdue'),
+                                        ('A:86477f11:M3', 'ラビオリ', 99900, 'overdue')):
+        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'アイアイエー',
+                                'general': general, 'status': status, 'tick': tick,
+                                'purpose': 'move'}
+        mem['orders'][step] = 'failed'
+    return mem
+
+
+def first_candidate(mem):
+    return next(iter(replan.interim_candidates(mem).values()))
+
+
+def test_moved_generals_are_found_by_opening_the_castle_they_were_sent_into():
+    mem = aiaie_stall()
+    assert routes.incoming(mem, 'アイアイエー') == []
+    assert len(routes.unread_dispatches(mem, 'アイアイエー')) == 3
+    assert routes.arrival_probe_due(mem, 'アイアイエー', cooldown=True)
+    first = first_candidate(mem)
+    # The list of the castle the moves went into is opened before アルマムーン
+    # sends yet another sortie: it is the only arrival receipt.
+    assert (first['source'], first['general'], first['source_probe']) == (
+        'アイアイエー', replan.MOVE_ANY_GENERAL, True)
+    assert first['purpose'] in ('retake', 'attack')
+    assert not moves_into(mem, 'アイアイエー')                  # and nobody is sent there again
+
+
+def test_the_probe_order_may_open_the_list_while_its_cooldown_holds_back_a_new_one():
+    mem = aiaie_stall()
+    step, candidate = next(iter(replan.interim_candidates(mem).items()))
+    order = {**candidate, 'step': step}
+    mem['arrival_probe_tick'] = {'アイアイエー': mem['tick'] - 3}
+    assert routes.probe_due(mem, 'アイアイエー')                # the running probe keeps its source open
+    assert orders._source_list_open(order, mem)
+    assert not routes.arrival_probe_due(mem, 'アイアイエー', cooldown=True)
+    assert first_candidate(mem)['source'] == 'アルマムーン'      # no second probe within the interval
+    mem['tick'] += routes.PROBE_INTERVAL
+    assert first_candidate(mem)['source'] == 'アイアイエー'
+
+
+def test_a_read_list_ends_the_probe_and_the_found_generals_sortie_from_there():
+    mem = aiaie_stall()
+    mem['tick'] += 5
+    routes.observed_roster(mem, 'アイアイエー', ['ピオーネ', 'ココット', 'ラビオリ'])
+    mem['garrison']['アイアイエー'] = ['ピオーネ', 'ココット', 'ラビオリ']
+    assert routes.unread_dispatches(mem, 'アイアイエー') == []
+    assert not routes.probe_due(mem, 'アイアイエー')
+    first = first_candidate(mem)
+    assert first.get('source_probe') is not True
+    assert first['general'] in ('ピオーネ', 'ココット', 'ラビオリ') or first['source'] == 'アルマムーン'
+
+
+def test_a_transfer_still_marching_is_waited_for_before_the_list_is_opened():
+    mem = aiaie_stall()
+    mem['sorties']['A:86477f11:M3'].update(status='en_route', tick=mem['tick'] - 50)
+    mem['launched_orders']['A:86477f11:M3'] = {
+        'purpose': 'move', 'source': 'アルマムーン', 'target': 'アイアイエー',
+        'general': 'ラビオリ', 'step': 'A:86477f11:M3'}
+    assert routes.incoming(mem, 'アイアイエー')
+    assert not routes.arrival_probe_due(mem, 'アイアイエー', cooldown=True)
+    assert first_candidate(mem).get('source_probe') is not True
