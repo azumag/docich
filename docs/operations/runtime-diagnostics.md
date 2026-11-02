@@ -165,6 +165,7 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
 
 - `status` は `ok` / `warn` / `critical` に正規化する。
 - critical: required worker の停止（pause 中を除く）/ required の stale PID。
+- lifecycle_handover: lifecycle_pause.active=true かつ waiting_for="lifecycle_handover" の required worker 停止は証拠ありで warn、証拠なしで critical（fail-safe）。
 - warn: paused worker、未登録 PID、重複、zombie、stale lock、直近 all_failed /
   queue give-up、改善ループの stale・retry 滞留、
   および `corners.corner_rotation.status == "recovery_required"`
