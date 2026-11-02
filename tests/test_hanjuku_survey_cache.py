@@ -472,3 +472,23 @@ def test_input_free_hop_never_chains_a_second_pad_in_one_observation():
     mem['house']['phase'] = 'roster_next'
     assert house.step(parse(status('ゼウス')), mem, None) == []
     assert mem['house']['phase'] == 'roster_next'
+def test_observation_cost_tally_counts_status_opens_and_stays_bounded():
+    """Issue #3194 (36): counts only, capped in keys and generals."""
+    mem = {}
+    for i in range(house.TALLY_GENERALS + 10):
+        house._tally(mem, 'status_open_full', f'g{i}')
+    assert mem['obs_cost']['status_open_full']['n'] == house.TALLY_GENERALS + 10
+    assert len(mem['obs_cost']['status_open_full']['by_general']) == house.TALLY_GENERALS
+    for i in range(house.TALLY_KEYS + 5):
+        house._tally(mem, f'k{i}')
+    assert len(mem['obs_cost']) == house.TALLY_KEYS
+
+
+def test_partial_status_read_is_tallied_per_general():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'status', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'ゼウス'}
+    house.step(parse(status('ゼウス', 'エラベルエッグ4')), mem, None)
+    assert mem['obs_cost']['status_open_partial']['by_general'] == {'ゼウス': 1}

@@ -204,6 +204,26 @@ def _record(mem, event, **fields):
             strategy_variant='broken_egg_repair', **fields)
 
 
+TALLY_KEYS = 12      # distinct counters kept
+TALLY_GENERALS = 40  # distinct generals kept per counter
+
+
+def _tally(mem, key, general=None):
+    """Issue #3194 (36): bounded counters of what observing costs.
+
+    Counts only (no frames or text), capped in both dimensions, so it cannot
+    grow without limit. It never feeds a decision.
+    """
+    tally = mem.setdefault('obs_cost', {})
+    if key not in tally and len(tally) >= TALLY_KEYS:
+        return
+    entry = tally.setdefault(key, {'n': 0, 'by_general': {}})
+    entry['n'] += 1
+    if general is not None and (general in entry['by_general']
+                                or len(entry['by_general']) < TALLY_GENERALS):
+        entry['by_general'][general] = entry['by_general'].get(general, 0) + 1
+
+
 def _phase(state, phase, **fields):
     state.update(phase=phase, age=0, **fields)
 
@@ -795,6 +815,7 @@ def step(screen, mem, frame):
         if (actions != [] or after_state is None or after_state is not house_state
                 or (before, after_state.get('phase')) not in INPUT_FREE_HOPS):
             return actions
+        _tally(mem, 'input_free_hop')
         _record(mem, 'input_free_hop', observed_metric={'from': before, 'to': after_state['phase']},
                 reason='入力を伴わない内部遷移を同じ観測内で進め、観測周期の消費を省く')
     return actions
@@ -1170,6 +1191,7 @@ def _step_once(screen, mem, frame):
         if not info or info['general'] != state.get('selected'):
             return []
         name = info['general']
+        _tally(mem, 'status_open_partial' if state.get('from_survey') else 'status_open_full', name)
         receipts.wage(mem, info)
         state['seen'].append(name)
         if info['broken'] and name not in state['pending']:
