@@ -14,7 +14,7 @@ PROBE_INTERVAL = 40
 
 
 def legs(chapter):
-    return {(o['source'], o['target']) for o in chart.orders(chapter)
+    return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
 

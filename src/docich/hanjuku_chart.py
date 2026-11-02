@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import os
 import re
 
 from . import hanjuku_map_sources as map_sources
@@ -1015,19 +1016,39 @@ def boss_castle(chapter: int) -> str:
     return BOSS_CASTLES.get(chapter, BOSS_CASTLES[1])
 
 
-def orders(chapter: int):
-    """Base orders for ``chapter``.
+# Owner 2026-11-02: the speedrun chart's order list was misleading progress
+# (orders waiting on conditions while castles stayed uncaptured), so castles
+# are taken mechanically, nearest first (``replan.interim_candidates``).
+# Chapters 4 (four boss sites) and 9 (a moving boss) have no generic boss
+# castle, so their boss assault still comes from the chart.
+# DOCICH_HANJUKU_SPEEDRUN_CHART=1 restores the chart everywhere.
+SPEEDRUN_CHART_ENV = 'DOCICH_HANJUKU_SPEEDRUN_CHART'
+CHART_ONLY_CHAPTERS = frozenset({4, 9})
+
+
+def speedrun_enabled(chapter=None) -> bool:
+    """Whether the speedrun chart's orders drive ``chapter`` (default: no)."""
+    return os.environ.get(SPEEDRUN_CHART_ENV) == '1' or chapter in CHART_ONLY_CHAPTERS
+
+
+def measured_orders(chapter: int):
+    """The chart's measured orders, whether or not they drive the run.
 
     Returns an empty tuple for an unmeasured chapter. In a partially measured
     chapter, filters out each order whose source or target is absent, so no
     navigation can use unmeasured coordinates. Fully measured chapters
-    return all their chart orders.
+    return all their chart orders. Chapter 3's road table is read from here.
     """
     cells = castles(chapter)
     if not cells:
         return ()
     return tuple(o for o in _ORDERS.get(chapter, ())
                  if o['source'] in cells and o['target'] in cells)
+
+
+def orders(chapter: int):
+    """The speedrun chart orders in force for ``chapter`` (none once abolished)."""
+    return measured_orders(chapter) if speedrun_enabled(chapter) else ()
 
 
 def boss_sites(chapter: int) -> tuple[str, ...]:

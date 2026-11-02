@@ -250,6 +250,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # the path is walked on ``all_orders``: seed from its boss targets, then
     # back through each boss-path order's source (ボス ← プトレマイス ←
     # バスカビル ← アイアイエー).
+    mechanical = not chart.speedrun_enabled(chapter)
     all_orders = chart.all_orders(chapter)
     boss_path = {o.get('target') for o in all_orders
                  if chart.is_boss_castle(o.get('target'))}
@@ -259,15 +260,29 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if not grow:
             break
         boss_path |= grow
+    if mechanical:
+        # No chart chain: the boss assault waits for every other castle.
+        boss_path = {c for c in castles if not chart.is_boss_castle(c)} | {chart.boss_castle(chapter)}
     boss_gate = {after[1] for order in all_orders
                  if order.get('target') in boss_path
                  for after in (order.get('after'),)
                  if isinstance(after, (list, tuple)) and len(after) == 2
                  and after[0] == 'captured' and after[1] in lost}
-    lost.sort(key=lambda c: (c != home, c not in boss_gate))  # home first, then the boss gate
+    if mechanical:
+        # No chart chain to gate on: the home castle first, then nearest an owned castle.
+        lost.sort(key=lambda c: (c != home,
+                                 min((_distance(chapter, o, c) for o in owned), default=0), c))
+    else:
+        lost.sort(key=lambda c: (c != home, c not in boss_gate))  # home first, then the boss gate
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
+    if mechanical:
+        # Owner 2026-11-02 (スピードランチャート廃止): lost castles first (home,
+        # then the rest), then the others nearest an owned castle first.
+        rest = sorted((c for c in targets if c not in lost),
+                      key=lambda c: (min((_distance(chapter, o, c) for o in owned), default=0), c))
+        targets = [*(c for c in targets if c in lost), *rest]
     # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
     # held and the boss unbeaten, send every spare general at it in successive
     # waves — the charted single sortie is not the only assault.
@@ -645,6 +660,33 @@ def _adopt_plan(mem, doc, rid):
             reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
+def _off_chart_mechanical(mem, state, rid, gate):
+    """Speedrun chart abolished: take castles mechanically, ask no model.
+
+    The same stand-in the adjusted-chart path uses while an answer is pending,
+    but nothing is requested and no model answer is ever adopted, so the next
+    sortie is always the first deterministic candidate.
+    """
+    status = mem.get('orders') or {}
+    fields = {'request_id': rid, 'off_chart_reason': 'mechanical',
+              'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
+              'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
+    digest = chart_adjust.request_digest(fields)
+    if state.get('request_id') != rid:
+        state.clear()
+        state['request_id'] = rid
+    if state.get('request_digest') != digest:
+        state['request_digest'] = digest
+        if (mem.get('chart_plan') or {}).get('source') == 'mechanical':
+            mem['chart_plan'] = None     # built for an older situation
+    if _plan_pending(mem):
+        return
+    if gate == 'break':
+        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+    else:
+        _mechanical_chart(mem, state, rid, digest)
+
+
 def _off_chart(mem):
     """No order is ready: request an adjusted chart, or adopt one that answered.
 
@@ -677,6 +719,8 @@ def _off_chart(mem):
         return  # wait for a second general: no model request, no per-tick churn
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
+    if not chart.speedrun_enabled(mem.get('chapter') or 0):
+        return _off_chart_mechanical(mem, state, rid, gate)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
     status = mem.get('orders') or {}
     blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
