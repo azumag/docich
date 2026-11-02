@@ -176,6 +176,12 @@ def roles(raw):
 def invalidate(mem):
     mem.pop('recruit_roster', None)
     mem.pop('roster_survey_scope', None)
+    # Issue #3194 (07): membership changing (a recruit, a new name) must not
+    # also throw away what was read about everyone else. Keep the survey
+    # aside; carry_forward() validates it again (run, chapter, month) and
+    # reuses its rows once this month's names are counted anew.
+    if isinstance(mem.get('roster_survey'), dict):
+        mem['roster_survey_stash'] = mem['roster_survey']
     mem.pop('roster_survey', None)
     mem.pop('roster_status_walk', None)
     mem.pop('house_status_recheck', None)
@@ -411,21 +417,31 @@ def carry_forward(mem):
     identity = run_identity(mem.get('_run_identity'))
     chapter, month = mem.get('chapter'), mem.get('month')
     previous = _previous_month(month)
-    prev = mem.get('roster_survey')
     receipt = fresh(mem, include_completed=False)
-    if (identity is None or previous is None or not isinstance(prev, dict)
-            or prev.get('schema') != 1 or prev.get('identity') != identity
-            or prev.get('scope') != [chapter, previous]
-            or not isinstance(prev.get('statuses'), dict) or not isinstance(prev.get('dirty'), dict)
+    prev = next((c for c in (mem.get('roster_survey'), mem.get('roster_survey_stash'))
+                 if isinstance(c, dict) and c.get('schema') == 1 and c.get('identity') == identity
+                 and c.get('scope') in ([chapter, previous], [chapter, month])
+                 and isinstance(c.get('statuses'), dict) and isinstance(c.get('dirty'), dict)), None)
+    if (identity is None or previous is None or prev is None
             or receipt is None or receipt.get('complete') is not True
             or not isinstance(receipt.get('wages'), dict)):
         return None
+    # Same month (a recruit changed membership): every row read this month and
+    # untouched since is still good, wherever the general stands. A previous
+    # month only carries healthy castle residents (see _carry_eligible).
+    same_month = prev['scope'] == [chapter, month]
     rtick = receipt['tick']
     statuses, dirty, carried, reopen = {}, {}, [], []
     carried_rows = {}
     for name in receipt['names']:
         row = prev['statuses'].get(name)
-        if _carry_eligible(row, prev['dirty'].get(name)):
+        if same_month and isinstance(row, dict) and row.get('general') == name and not prev['dirty'].get(name) \
+                and row.get('month') == month and row.get('observed_chapter') == chapter:
+            new = deepcopy(row)
+            new['observed_tick'] = max(int(row.get('observed_tick') or 0), rtick)
+            statuses[name] = carried_rows[name] = new
+            carried.append(name)
+        elif not same_month and _carry_eligible(row, prev['dirty'].get(name)):
             new = deepcopy(row)
             new.update(month=month, observed_chapter=chapter, observed_tick=rtick,
                        carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
@@ -438,11 +454,13 @@ def carry_forward(mem):
                               'uses': None, 'wage': receipt['wages'].get(name)}
             dirty[name] = ['hp', 'location', 'egg']
             reopen.append(name)
-    saved = {k: deepcopy(mem.get(k)) for k in ('roster_survey', 'roster_status_walk', 'house_eggs')}
+    saved = {k: deepcopy(mem.get(k)) for k in ('roster_survey', 'roster_survey_stash',
+                                               'roster_status_walk', 'house_eggs')}
     mem['roster_survey'] = {'schema': 1, 'identity': identity, 'scope': [chapter, month],
                             'receipt': deepcopy(receipt), 'statuses': statuses, 'dirty': dirty,
                             'dirty_revisions': {n: 1 for n in dirty}, 'read_revisions': {}}
     mem.pop('roster_status_walk', None)
+    mem.pop('roster_survey_stash', None)
     if reusable_survey(mem) is None:  # any invalid shape: leave everything as it was
         for k, v in saved.items():
             if v is None:

@@ -680,3 +680,61 @@ def test_carry_over_needs_this_months_complete_names_only_count(carry_on):
     mem.update(month='1-7', tick=900)                  # no new roster count yet
     assert r.carry_forward(mem) is None
     assert r.reusable_survey(mem) is None
+
+
+# ---- Issue #3194 (07): a recruit changes membership, not what we read of the others ----
+def test_a_recruit_in_the_same_month_reuses_the_rows_of_everyone_already_read(carry_on):
+    mem = completed()
+    r.invalidate(mem)                                   # what a paid recruit does
+    assert r.reusable_survey(mem) is None and mem['roster_survey_stash']
+    mem = _next_month(mem, month='1-6', names=NAMES + ['ヴィーナス'], tick=600)
+    out = r.carry_forward(mem)
+    assert out == {'carried': NAMES, 'reopen': ['ヴィーナス']}
+    assert r.recheck_targets(mem) == ['ヴィーナス']     # only the new member is opened
+    row = mem['house_eggs']['ゼウス']
+    assert row['month'] == '1-6' and 'carried_from' not in row and 'carry_depth' not in row
+    assert 'roster_survey_stash' not in mem            # consumed
+
+
+def test_same_month_reuse_still_reopens_a_general_with_an_event_since_the_read(carry_on):
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'], fields=('egg',))
+    r.invalidate(mem)
+    mem = _next_month(mem, month='1-6', names=NAMES + ['ヴィーナス'], tick=600)
+    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス', 'ヴィーナス']}
+
+
+def test_same_month_reuse_keeps_a_general_standing_in_the_field(carry_on):
+    # Unlike a month boundary, a row read this very month stays good wherever he stands.
+    mem = completed()
+    mem['roster_survey']['statuses']['ゼウス'].update(location='field', hp=1)
+    r.invalidate(mem)
+    mem = _next_month(mem, month='1-6', names=NAMES + ['ヴィーナス'], tick=600)
+    assert r.carry_forward(mem)['carried'] == NAMES
+
+
+def test_the_stash_is_not_used_across_runs_chapters_or_with_the_kill_switch(monkeypatch):
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)
+    mem = completed(); r.invalidate(mem)
+    mem['roster_survey_stash']['identity'] = {**IDENTITY, 'runtime_id': 'other'}
+    assert r.carry_forward(_next_month(mem, month='1-6', tick=600)) is None
+    mem = completed(); r.invalidate(mem)
+    mem = _next_month(mem, month='1-6', tick=600); mem['chapter'] = 2
+    assert r.carry_forward(mem) is None
+    mem = completed(); r.invalidate(mem)
+    monkeypatch.setenv(r.MONTH_CARRY_ENV, '0')
+    assert r.carry_forward(_next_month(mem, month='1-6', tick=600)) is None
+
+
+def test_an_invalidated_previous_month_survey_still_feeds_the_month_boundary_carry(carry_on):
+    mem = completed()
+    r.invalidate(mem)                                   # recruit happened before the next month's walk
+    mem = _next_month(mem, month='1-7', tick=900)
+    assert r.carry_forward(mem) == {'carried': NAMES, 'reopen': []}
+
+
+def test_a_chapter_change_drops_the_stash():
+    from docich.hanjuku.strategy import campaign
+    mem = completed(); r.invalidate(mem)
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert 'roster_survey_stash' not in mem
