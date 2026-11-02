@@ -764,6 +764,24 @@ def parked_boss_steps(mem):
     return sorted(out)
 
 
+def _drop_spent_sortie_attempt(mem, step):
+    """Clear a departure attempt the overdue march already spent.
+
+    g1097 2026-11-02: チコリ's アイアイエー sortie confirmed departure at tick
+    89608, the interrupted attempt was never reconciled, and the march went
+    overdue at 90408. The order went back to pending and was re-picked, but
+    ``execution_claimed`` still saw the attempt's ``confirmation_tick`` and
+    resolved the step to ``None`` — so every castle menu was backed out of
+    with a silent B and the same ``order_start`` looped for a whole month
+    (launches stuck at 93). An attempt only claims its step while it carries
+    a confirmation tick; an overdue sortie can never complete that attempt,
+    so drop it with the rest of the launch-time state.
+    """
+    attempt = mem.get('sortie_attempt') or {}
+    if attempt.get('step') == step and 'confirmation_tick' in attempt:
+        mem.pop('sortie_attempt', None)
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -788,6 +806,8 @@ def _relaunch_overdue_boss(mem):
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
         target = sortie.get('target') or sortie.get('planned_target')
+        if sortie.get('status') == 'overdue':
+            _drop_spent_sortie_attempt(mem, step)
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
                 or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue
@@ -806,6 +826,7 @@ def _relaunch_overdue_boss(mem):
             continue
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
+        _drop_spent_sortie_attempt(mem, step)
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
@@ -886,11 +907,17 @@ def _relaunch_overdue_march(mem):
     relaunches = mem.setdefault('sortie_relaunch', {})
     for step, sortie in (mem.get('sorties') or {}).items():
         target = sortie.get('target') or sortie.get('planned_target')
+        if sortie.get('status') == 'overdue':
+            # Already settled: still drop a spent attempt that claims the
+            # step, or a re-picked pending order cancels in the menu forever.
+            _drop_spent_sortie_attempt(mem, step)
+            continue
         if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
             continue
         sortie['status'] = 'overdue'
+        _drop_spent_sortie_attempt(mem, step)
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'target': target, 'marching': now - sortie['tick'],
                     'relaunches': relaunches.get(step, 0)}
