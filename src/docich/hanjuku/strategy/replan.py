@@ -320,6 +320,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
     targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
+    # #3266: a concrete general chosen for one target is already unavailable
+    # to later targets in the same plan; otherwise every retake names the first spare.
+    planned_busy = set()
+    planned_probe_sources = set()
     def _boss_wave_pick(mem, owned, busy, allow_sole):
         """(source, general) of the strongest sendable spare for the boss.
 
@@ -350,12 +354,24 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         _, source, general = choices[0]
         return source, general
     for target in targets:
-        picked = (_boss_wave_pick(mem, owned, busy, allow_sole)
+        picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
                   if chart.is_boss_castle(target) else
-                  _interim_source(mem, target, chart_orders.get(target), owned, busy, allow_sole))
+                  _interim_source(mem, target, chart_orders.get(target), owned,
+                                  busy | planned_busy, allow_sole))
         if picked is None:
             continue
         source, general = picked
+        if general == MOVE_ANY_GENERAL:
+            # An unread source is evidence gathering; one probe per source is enough.
+            if source in planned_probe_sources:
+                continue
+            planned_probe_sources.add(source)
+        else:
+            # Reserve only an actor measured in this source castle. Unread chart
+            # actors are alternative future candidates, not simultaneous commitments.
+            present = (mem.get('garrison') or {}).get(source) or ()
+            if general in present:
+                planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
                 else f"暫定: {general}で{target}を攻撃")
@@ -370,6 +386,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
             **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+    # #3266: a general already committed to a sortie above is busy for the
+    # staging/refill moves below as well — one plan must not book him twice.
+    busy = busy | planned_busy
     garrison = mem.get('garrison') or {}
     moves = []
     if chapter == 3:

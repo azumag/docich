@@ -210,7 +210,7 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
 def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
-           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン'], 'キカンドン': [],
+           'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン', 'ポセイドン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
     # The boss chain is held and unbeaten, so a wave sortie at けっかい joins
@@ -477,14 +477,16 @@ def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
     """
     mem = {'chapter': 1, 'orders': {}, '_records': [],
            'captured': ['キカンドン', 'ジョンリギ'], 'lost': ['ナキューメラ'],
-           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス', 'クミン', 'タルタル'],
+           'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス', 'クミン', 'タルタル',
+                                                     'ジェラート', 'エピィ', 'ポセイドン'],
                         'ジョンリギ': ['ココット']}}
     candidates = policy.interim_candidates(mem)
     purposes = [c['purpose'] for c in candidates.values()]
     assert purposes[0] == 'retake' and purposes[1] == 'move'
     assert set(purposes[2:]) == {'attack'}
     move = candidates['move_2']
-    assert (move['general'], move['source'], move['target']) == ('ゼウス', 'キカンドン', 'アルマムーン')
+    # #3266: ゼウス is already booked by the retake and クミン/タルタル by the attacks.
+    assert (move['general'], move['source'], move['target']) == ('ジェラート', 'キカンドン', 'アルマムーン')
     # With nothing to retake, the move is the first candidate (the fallback).
     mem['lost'] = []
     first_label, first = next(iter(policy.interim_candidates(mem).items()))

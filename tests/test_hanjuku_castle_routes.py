@@ -24,7 +24,9 @@ def state():
 def test_route_uses_owned_castles_and_never_the_home_to_dondam_diagonal():
     mem = state()
     # v305: the hero keeps two others, so one of three spares moves.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート']
+    # #3266: the boss wave books one spare, so a fourth non-hero general is
+    # needed for the staging move to still have somebody to send.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ']
     owned = set(mem['garrison'])
     assert not routes.allowed(mem, 'アルマムーン', 'ドンダム')
     assert routes.path(mem, 'アルマムーン', 'ドンダム', owned) == (
@@ -86,7 +88,7 @@ def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     assert routes.probe_due(mem, 'コラダイン')
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
-    mem['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ']
+    mem['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ']
     routes.observed_roster(mem, 'コラダイン', mem['garrison']['コラダイン'])
     assert mem['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
@@ -166,7 +168,7 @@ def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypa
 def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
     mem = state()
     mem['garrison']['グリン'] = []
-    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー']
+    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
     # The live layout has no spare at home or the front, only at the end of
     # a chart branch. A directed-only graph would strand this reinforcement.
     route = routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']))
@@ -182,7 +184,7 @@ def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
 
 def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     mem = state()
-    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー']
+    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
     old = {'step': 'I:old:1', 'source': 'リグア', 'target': 'ドンダム',
            'general': 'ヘラ', 'purpose': 'retake', 'cards': [], 'after': None}
     mem['orders'][old['step']] = 'pending'
@@ -249,12 +251,14 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
     # ... and it no longer holds a startable replacement: a spare at home
     # stages the next general toward グリン instead of waiting on the old probe.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート']   # v305: two stay
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート',
+                                   'エピィ']   # v305: two stay; #3266: a booked spare stays busy
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
     new = state_['interim_order']
     assert new['step'] != 'I:b59ab6:2'
+    # #3266: the boss wave books ゼウス first, so the staged mover is the next spare.
     assert (new['general'], new['source'], new['target'], new['purpose']) == (
-        'ゼウス', 'アルマムーン', 'グリン', 'move')
+        'ミルフィーユ', 'アルマムーン', 'グリン', 'move')
     # A new transfer sent after that reading reopens the list once due.
     mem['tick'] += 5
     step = add_transfer(mem, 'アルマムーン', 'グリン', general='ゼウス')
@@ -282,7 +286,8 @@ def victoria_drain():
            'captured': ['ビクトリア', 'ミヒラギアン', 'マラコビア', 'アルカ'],
            'lost': ['フヌイヌム', 'ネクスドリア'], 'orders': {},
            'garrison': {'アルカ': ['ブカティーニ'], 'ビクトリア': [], 'マラコビア': ['ラズベリー'],
-                        'アルマムーン': ['どうし', 'バーミセリ', 'トレビス', 'ココット'],
+                        'アルマムーン': ['どうし', 'バーミセリ', 'トレビス', 'ココット', 'ゼウス',
+                                   'ミルフィーユ', 'ジェラート'],
                         'ミヒラギアン': ['アテナ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
@@ -361,7 +366,10 @@ def test_lost_castle_gating_the_boss_path_is_retaken_first():
     cands = list(replan.interim_candidates(mem).values())
     retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
     assert retakes[:2] == ['バスカビル', 'アイアイエー']
-    assert set(retakes) == {'ボッサール', 'バスカビル', 'アイアイエー', 'オトラント'}
+    # #3266: a general planned for one sortie is busy for the rest of the plan.
+    # アルマムーン can spare two here (hero + HERO_CASTLE_GUARD stay), so the
+    # remaining lost castles wait for the next plan rather than reusing them.
+    assert set(retakes) == {'バスカビル', 'アイアイエー'}
 
 
 def test_boss_gate_ordering_is_scoped_to_lost_castles():
@@ -390,8 +398,10 @@ def test_source_past_an_own_castle_on_the_march_is_avoided():
     mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
            'captured': ['アルマムーン', 'オトラント', 'テラビル'],
            'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
-           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
-                        'オトラント': ['グレナデン', 'バジル'],
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
+                                   'ポセイドン'],
+                        'オトラント': ['グレナデン', 'バジル', 'マンゴスチン', 'キャンディー',
+                                   'リースリング', 'クミン'],
                         'テラビル': ['ラビオリ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
@@ -418,7 +428,10 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
     mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
            'captured': ['アルマムーン', 'オトラント', 'テラビル'],
            'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
-           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
+           # #3266: generals named for earlier targets are planned-busy, so
+           # アルマムーン needs enough depth to still be staffed at クロチェット.
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
+                                   'ポセイドン', 'クミン'],
                         'オトラント': ['グレナデン'],      # only the stopped general
                         'テラビル': ['ラビオリ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],

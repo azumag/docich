@@ -95,7 +95,11 @@ def test_chapter_three_still_marches_along_the_measured_road_table():
 
 
 def test_lost_castles_are_retaken_nearest_an_owned_castle_first():
-    mem = memory(captured=('キカンドン',), lost=['スペンソニア', 'ゴーメン', 'ナキューメラ'])
+    # #3266: each retake books a different general, so キカンドン needs three
+    # sendable spares (it used to name the same head-of-list actor every time).
+    mem = memory(captured=('キカンドン',), lost=['スペンソニア', 'ゴーメン', 'ナキューメラ'],
+                 garrison={'アルマムーン': ['どうし', 'ゼウス', 'ヴィーナス'],
+                           'キカンドン': ['ココット', 'リーキ', 'ヘラ', 'アテナ']})
     retakes = [o['target'] for o in replan.interim_candidates(mem).values() if o['purpose'] == 'retake']
     nearest = lambda c: min(_distance(1, o, c) for o in ('アルマムーン', 'キカンドン'))
     assert retakes == sorted(retakes, key=lambda c: (nearest(c), c)) and len(retakes) == 3
