@@ -1,6 +1,7 @@
 """Global list completion from native end markers, never a stalled input."""
 from pathlib import Path
 import pytest
+from docich import hanjuku_policy as p
 from docich.hanjuku.flows import house
 from docich.hanjuku.os_layer import roster as r
 from docich.hanjuku_screen import parse, Screen
@@ -147,3 +148,35 @@ def test_native_unknown_unselected_row_does_not_block_known_next_member():
     assert mem['recruit_roster']['names'] == seen
     assert 'シャルトネ' not in mem['recruit_roster']['names']
     assert not mem['recruit_roster']['complete']
+
+
+def test_a_misread_row_does_not_leave_the_monthly_scan_unfinished():
+    """g1097 2026-11-02: every list reached its end, but ポセイトン stayed in seen."""
+    from test_hanjuku_house import roster
+    mem = {'chapter': 1, 'month': '1-6', 'tick': 500, '_records': []}
+    state = mem['house'] = {'phase': 'roster', 'chapter': 1, 'month_scan': True, 'seen': [],
+                            'pending': [], 'age': 0, 'total': 0}
+    r.begin(mem, state)
+    names = ['どうし', 'ポセイドン', 'ゼウス']
+    screen = parse(roster(names))
+    r.page(mem, house.roster(screen))
+    state['seen'] = list(names)
+    state['month_moved'] = True
+    misread = parse(roster(['どうし', 'ポセイトン', 'ゼウス']))
+    assert house._month_count(misread, mem, state, None) == [p.pad('b')]
+    assert state['seen'] == names
+    assert r.complete(mem, state)
+
+
+def test_a_folded_name_alone_is_not_proof_of_membership():
+    from test_hanjuku_house import roster
+    mem = {'chapter': 1, 'month': '1-6', 'tick': 500, '_records': []}
+    state = mem['house'] = {'phase': 'roster', 'chapter': 1, 'month_scan': True, 'seen': [],
+                            'pending': [], 'age': 0, 'total': 0}
+    r.begin(mem, state)
+    misread = parse(roster(['どうし', 'ポセイトン', 'ゼウス']))
+    r.page(mem, house.roster(misread))
+    assert house._month_count(misread, mem, state, None) == [p.pad('b')]
+    assert 'ポセイドン' in state['seen']
+    assert not r.complete(mem, state)
+

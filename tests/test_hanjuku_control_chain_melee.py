@@ -41,6 +41,7 @@ def test_original_post_control_panel_pursues_without_reopening_menu():
     mem = selected()
     # Preserve the real nine-observation delay, including an unclassified
     # selection timeout. This never fabricates a use announcement.
+    mem['battle']['card_flow']['announce_retried'] = True  # post-retry exit
     for _ in range(p.CARD_ANNOUNCE_LIMIT + 1):
         mem['tick'] += 1
         p.card_list_step(native('card-list'), mem)

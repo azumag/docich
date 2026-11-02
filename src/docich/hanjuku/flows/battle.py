@@ -1112,8 +1112,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     mem['attack'] = None
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
     if ally_hp == 0:
-        from ..os_layer.roster import invalidate
-        invalidate(mem)  # HP defeat makes membership uncertain; it is not proof of death.
+        from ..os_layer.roster import defeated
+        defeated(mem, cur.get('ally'))  # uncertain for this general; not proof of death
     if enemy_hp == 0 and ally_hp not in (None, 0):
         outcome = 'win'
     elif ally_hp == 0 and enemy_hp not in (None, 0):
