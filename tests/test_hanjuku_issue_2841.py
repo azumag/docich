@@ -1,4 +1,4 @@
-"""Issue #2841: cancelled sorties must not be reissued unchanged."""
+"""Issue #2841/#3265: cancelled sorties must not be reissued unchanged."""
 import sys
 from pathlib import Path
 
@@ -54,3 +54,66 @@ def test_source_defender_cancel_is_not_reissued_while_defender_state_stays():
     screen = _screen(['ゼウス'])
     assert _keep_sortie_defender(screen, mem, order) is not None
     assert not p._ready(order, mem)
+
+
+def test_equivalent_source_defender_cancel_survives_a_new_execution_step():
+    """#3265: a replan must not reset #2841 by changing A:<request>:<step>."""
+    old = {'step': 'A:old00001:Mabc123', 'general': 'ゼウス',
+           'source': 'アルマムーン', 'target': 'ゴーメン', 'cards': [],
+           'after': None, 'purpose': 'attack'}
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
+           'garrison': {'アルマムーン': ['ゼウス']},
+           'orders': {old['step']: 'pending'}, 'picked': [], 'active': old['step'],
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+    assert p._keep_sortie_defender(_screen(['ゼウス']), mem, old) is not None
+
+    new = dict(old, step='A:new00002:Mabc123')
+    mem['orders'][new['step']] = 'pending'
+    assert not p._ready(new, mem)
+    assert any(r['decision'] == 'sortie_equivalent_suppressed' and
+               r.get('chart_step') == new['step'] for r in mem['_records'])
+
+    # A real roster change releases the logical-route guard immediately.
+    mem['garrison']['アルマムーン'] = ['ゼウス', 'ヴィーナス']
+    assert p._ready(new, mem)
+    assert any(r['decision'] == 'sortie_equivalent_released' for r in mem['_records'])
+
+
+def _launch_order(step):
+    return {'step': step, 'general': 'ゼウス', 'source': 'アルマムーン',
+            'target': 'ゴーメン', 'cards': [], 'after': None, 'purpose': 'attack'}
+
+
+def _arm_unverified_launch(mem, step):
+    order = _launch_order(step)
+    mem.setdefault('orders', {})[step] = 'launched'
+    mem.setdefault('launched_orders', {})[step] = dict(order)
+    mem.setdefault('sorties', {})[step] = {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
+        'status': 'en_route', 'tick': mem['tick'], 'purpose': 'attack'}
+    mem.setdefault('launched', {})['ゴーメン'] = {'step': step, 'general': 'ゼウス'}
+    mem['garrison']['アルマムーン'] = ['どうし']
+    return {'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
+            'reads': p.LAUNCH_PROBE_READS, 'baseline': [], 'tick': mem['tick']}
+
+
+def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
+    """#3261's two-miss bound is logical-route scoped, not execution-id scoped."""
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
+           'garrison': {'アルマムーン': ['どうし']},
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+
+    first = 'A:old00001:Mabc123'
+    p._rollback_unverified_launch(mem, first, _arm_unverified_launch(mem, first), [])
+    assert mem['orders'][first] == 'pending'
+    assert mem['launch_miss'][first] == 1
+
+    # A rebuilt mechanical/adjusted plan gives the same sortie another
+    # execution id. Before #3265 this reset launch_miss to 1 and could repeat.
+    second = 'A:new00002:Mabc123'
+    p._rollback_unverified_launch(mem, second, _arm_unverified_launch(mem, second), [])
+    assert mem['launch_miss'][second] == p.LAUNCH_MISS_LIMIT
+    assert mem['orders'][second] == 'failed'
+    failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
+    assert failed and failed[-1]['chart_step'] == second
+    assert failed[-1]['observed_metric']['misses'] == p.LAUNCH_MISS_LIMIT
