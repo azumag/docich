@@ -796,8 +796,60 @@ def _relaunch_overdue_boss(mem):
                         'ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す'))
 
 
+MARCH_RELAUNCH_LIMIT = 2                       # non-boss sorties sent again per step
+
+
+def _relaunch_overdue_march(mem):
+    """Settle a non-boss march that never arrived, the way the boss rule does.
+
+    Only an enemy-castle entry (a battle) or an own-castle roster sighting
+    (transit continue) ends a recorded march. A general who died or stopped
+    somewhere never observed leaves the sortie 'en_route' and the order
+    'launched' forever — g1097 2026-11-02: 26 stale marches up to 40k ticks
+    held a month with launches stuck at 60 while generals sat garrisoned or
+    nowhere. The order goes back to pending like the boss relaunch: source,
+    companion and readiness checks run again, and a missing general is simply
+    not listed at the source so the launch picks somebody else. Sorties with
+    no launched order (house/move) are just closed so they stop counting as
+    busy marches.
+    """
+    now = int(mem.get('tick') or 0)
+    status = mem.setdefault('orders', {})
+    relaunches = mem.setdefault('sortie_relaunch', {})
+    for step, sortie in (mem.get('sorties') or {}).items():
+        target = sortie.get('target') or sortie.get('planned_target')
+        if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+            continue
+        sortie['status'] = 'overdue'
+        observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
+                    'target': target, 'marching': now - sortie['tick'],
+                    'relaunches': relaunches.get(step, 0)}
+        if status.get(step) != 'launched':
+            _record(mem, 'sortie_march_overdue_settled', chart_step=step,
+                    observed_metric=observed,
+                    reason='出撃が上限の観測内に決着しないため、保留中のままの行軍を済ませたものとして片付ける')
+            continue
+        if relaunches.get(step, 0) >= MARCH_RELAUNCH_LIMIT:
+            _record(mem, 'sortie_march_relaunch_exhausted', chart_step=step,
+                    observed_metric=observed,
+                    reason='出撃の出し直しが上限に達したため、以後の行軍は行先の喪失確認に委ねる')
+            continue
+        relaunches[step] = relaunches.get(step, 0) + 1
+        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                    'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                    'sortie_actor_miss', 'launched_orders'):
+            (mem.get(key) or {}).pop(step, None)
+        status[step] = 'pending'
+        _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
+                observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
+                reason='敵城への出撃が上限の観測内に入城も経由も観測されないため、オーダーを未発射に戻す')
+
+
 def next_order(mem):
     _relaunch_overdue_boss(mem)
+    _relaunch_overdue_march(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
@@ -1438,9 +1490,13 @@ def _transit_sorties(mem, castle, names):
     only measurement. A general still recorded as marching to another castle
     while his name is on this list has arrived here instead.
     """
-    now = int(mem.get('tick') or 0)
     listed = set(names or ())
     out = []
+    # No sortie-age bound (owner 2026-11-02): a roster is only read when this
+    # castle is visited, so a sortie older than SORTIE_BUSY_TICKS whose
+    # general stopped inside was never continued — g1097 held 26 stale
+    # en_route marches (up to 40k ticks) whose generals sat garrisoned at
+    # テラビル/バスカビル/オトラント while their targets still needed them.
     for step, sortie in (mem.get('sorties') or {}).items():
         source = sortie.get('source')
         if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
@@ -1451,8 +1507,7 @@ def _transit_sorties(mem, castle, names):
                 # its own source never departed, and the source verification
                 # owns that case. An unrecorded source is not route evidence.
                 or not source or source == castle
-                or sortie.get('tick') is None
-                or not 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS):
+                or sortie.get('tick') is None):
             continue
         out.append(step)
     return out
