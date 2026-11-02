@@ -310,7 +310,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
-                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories'):
+                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories', 'obs_cost'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
