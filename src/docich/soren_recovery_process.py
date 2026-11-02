@@ -45,7 +45,7 @@ class LinuxRecoveryEffects:
                 cwd = self._cwd(entry) if args and entry.stat().st_uid == os.getuid() else ""
                 rows[int(entry.name)] = dict(pid=int(entry.name), birth=int(fields[19]),
                     ppid=int(fields[1]), state=fields[0], cwd=cwd, args=args)
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue  # Short-lived children commonly exit during inventory.
             except (OSError, ValueError, IndexError) as exc:
                 raise RecoveryRefused("process inventory incomplete") from exc
@@ -270,7 +270,7 @@ class LinuxRecoveryEffects:
                     os.close(fd)
                     return None
                 raise RecoveryRefused("PID birth changed")
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             os.close(fd)
             if missing:
                 return None
