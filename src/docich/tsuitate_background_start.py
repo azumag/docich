@@ -65,6 +65,15 @@ def _install_control_environment(path: Path = ENV_FILE) -> None:
     os.environ.update(controls)
 
 
+def hourly_run_id(now: dt.datetime | None = None) -> str:
+    """Legacy deterministic id retained for callers/tests that inject a clock."""
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    current = current.astimezone(dt.timezone.utc)
+    return "hourly-" + current.strftime("%Y%m%d%H")
+
+
 def background_run_id(now: dt.datetime | None = None) -> str:
     """Return a timestamped run id so separate owner requests cannot alias."""
     current = now or dt.datetime.now(dt.timezone.utc)
@@ -77,13 +86,15 @@ def background_run_id(now: dt.datetime | None = None) -> str:
 def start_one_background_match(*, now: dt.datetime | None = None) -> str:
     """Start exactly one background run when the singleton is ready.
 
-    Returns the unique run id.  Another active run is never stopped, reset, or
-    replaced.  A paused run is deliberately not reported as started: it
-    requires the existing explicit recovery path before any next run.
+    Production invocations use a unique timestamped id.  ``now`` remains a
+    deterministic test/compatibility hook for the pre-existing hourly-id
+    contract.  Another active run is never stopped, reset, or replaced.
     """
     _install_control_environment()
-    run_id = background_run_id(now)
+    run_id = hourly_run_id(now) if now is not None else background_run_id()
     status = call_beta_control("status")
+    if status.get("runId") == run_id and status.get("state") in STARTED_STATES:
+        return run_id
     if status.get("state") == "paused":
         raise BackgroundStartError("control_state_requires_attention")
     if status.get("readyForNextRun") is not True or status.get("state") in ACTIVE_STATES:
