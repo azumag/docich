@@ -17,6 +17,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
 from .judgment import battle as battle_judgment
 from .strategy import campaign, edition, goals
 from .os_layer import readers
+from .os_layer.navigation import observe_jump_foreground
 from .os_layer.phase import classify, shop_exit_confirmation
 from .version import BOT_VERSION
 
@@ -360,6 +361,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         battle_menus_flow.count_overtaken_monster_turn(parse(sent[1], phase=classify(sent[1])), mem, sent[0])
     if prompts_flow.summer_bonus_continue(screen,mem):
         screen.kind='summer_bonus'
+    observe_jump_foreground(screen, mem)
     prompts_flow.observe_events(screen,mem)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     # Reconcile the deferred-goal ledger with the facts this observation just
