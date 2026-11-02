@@ -40,7 +40,8 @@ from .hanjuku.flows import (battle as _flow_battle, battle_menus as _flow_battle
                             camp_recheck as _flow_camp_recheck,
                             deploy as _flow_deploy, egg_recovery as _flow_egg_recovery, map as _flow_map,
                             month as _flow_month, name as _flow_name, prompts as _flow_prompts,
-                            recall as _flow_recall, shop as _flow_shop)
+                            recall as _flow_recall, shop as _flow_shop,
+                            sortie_retry_guard as _flow_sortie_retry_guard)
 from .hanjuku.judgment import battle as _judgment_battle, events as _judgment_events
 from .hanjuku.os_layer import (commands as _os_commands, navigation as _os_navigation,
                                readers as _os_readers, world as _os_world)
