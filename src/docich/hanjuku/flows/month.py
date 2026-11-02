@@ -74,7 +74,11 @@ def army_count_pending_step(screen, mem):
         refill_outcome(mem, mem['shop'], 'unverified', screen=screen.kind,
                        reason='兵数確認・補充の画面を有限回読めないため当月の補充を中止。購入はしていない')
         mem['shop']['soldiers_done'] = True
-    return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+    if _army_count_increment(state, 'exit_presses', 4) <= 3:
+        return [pad('b')]
+    if screen.kind == 'text':
+        return _month_text_advance(screen, mem, 'へいしほじゅう') or []
+    return []
 
 
 def _month_army_count_check(screen, mem, shop):
@@ -120,7 +124,11 @@ def _month_army_count_check(screen, mem, shop):
             state['stage'] = ('measured' if state.get('result') == 'measured'
                               and _soldier_count_current(mem, screen.header) else 'unverified')
             return None
-        return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+        if _army_count_increment(state, 'exit_presses', 4) <= 3:
+            return [pad('b')]
+        # g1097 43-3: a leftover plain-text message over the menu ignores B
+        # and only A dismisses it; without this the check held [] forever.
+        return _month_text_advance(screen, mem, 'へいしほじゅう') or []
     if state.get('stage') == 'quantity_requested':
         # The real stock question needs one A to reach the digit editor.
         # Repeating that A on a delayed editor could confirm its default 01.

@@ -778,3 +778,52 @@ def test_idle_observations_are_counted_by_screen_text_and_stay_bounded():
         o._tally_observation(mem, 'unknown', Screen([], None, f'もじ{i}', kind='unknown'), [])
     assert len(cost['idle_text']['by_text']) <= o.IDLE_TEXT_KEYS
     assert all(len(k) <= len('unknown:') + o.IDLE_TEXT_HEAD for k in cost['idle_text']['by_text'])
+
+
+# ---- Issue #3194 (36 の残り): purpose split, fields, cache hit/miss, ticks ----
+def test_tally_status_open_counts_purpose_fields_and_miss():
+    """Every deliberate open is a cache_miss and records the fields it read."""
+    mem = {}
+    info = {'general': 'ゼウス', 'hp': 40, 'max_hp': 80, 'uses': 3,
+            'location_observed': False}
+    house._tally_status_open(mem, 'dispatch', info, ticks=7)
+    cost = mem['obs_cost']
+    assert cost['status_open_dispatch'] == {'n': 1, 'ticks': 7, 'by_general': {'ゼウス': 1}}
+    assert cost['cache_miss']['by_general'] == {'ゼウス': 1}
+    # egg is mandatory for a parse; location was not observed on this panel.
+    assert cost['status_fields_read']['by_general'] == {'egg': 1, 'hp': 1}
+
+
+def test_partial_status_read_tallies_purpose_ticks_fields_and_miss():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'status', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 4, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'ゼウス'}
+    house.step(parse(status('ゼウス', 'エラベルエッグ4')), mem, None)
+    cost = mem['obs_cost']
+    assert cost['status_open_partial']['n'] == 1
+    # step() bumps age before the phase handler: 4 waiting + 1 read observation.
+    assert cost['status_open_partial']['ticks'] == 5
+    assert cost['cache_miss']['by_general'] == {'ゼウス': 1}
+    assert cost['status_fields_read']['by_general'] == {'egg': 1, 'hp': 1, 'location': 1}
+
+
+def test_a_satisfied_target_is_a_cache_hit():
+    mem = _partial_walk_memory(['ゼウス'])
+    house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)
+    house.step(parse(roster(NAMES)), mem, None)
+    assert mem['obs_cost']['target_satisfied_elsewhere']['n'] == 1
+    assert mem['obs_cost']['cache_hit']['by_general'] == {'ゼウス': 1}
+
+
+def test_leave_roster_tallies_roster_completeness_and_observations():
+    mem = completed()
+    mem['house'] = {'phase': 'leave_roster', 'chapter': 1, 'roster_month': '1-6',
+                    'month_scan': False, 'age': 0, 'total': 17,
+                    'seen': list(NAMES), 'pending': [], 'from_survey': True}
+    house.step(MAP, mem, None)
+    assert mem['obs_cost']['roster_complete']['n'] == 1
+    rec = next(r for r in mem['_records'] if r['decision'] == 'house_scan_complete')
+    # total counts this closing observation too: 17 earlier + the map frame.
+    assert rec['observed_metric']['observations'] == 18

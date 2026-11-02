@@ -506,6 +506,8 @@ def _named_step(screen, mem, frame, state):
             return _wait(mem, state, '帰還後の本人の現名簿ステータスが未確認', close=True)
         if type(info.get('hp')) is not int or info['hp'] < 0:
             return _wait(mem, state, '帰還後の本人HPが未確認', close=True)
+        # Issue #3194 (36): one deliberate open, counted once on the confirmed read.
+        house._tally_status_open(mem, 'recall', info)
         if info['hp'] == 0:
             _invalidate(mem, '帰還後再確認で本人HP0を観測。死亡や到着は断定しない', actor)
             return [pad('b')]
@@ -568,6 +570,8 @@ def _named_step(screen, mem, frame, state):
         if not state.get('anonymous_recheck') and info['general'] != actor:
             _defer(mem, state, '指定本人と実ステータスが異なるため数量や帰還を更新しない')
             return [pad('b')]
+        # Issue #3194 (36): one deliberate open, counted once on the confirmed read.
+        house._tally_status_open(mem, 'recall', info)
         house.observe_hero_repair_status(info, mem, in_camp=True)
         if info.get('location') != 'castle':
             _observe_egg(mem, info)  # a blocked return must not discard an actual zero
@@ -1003,6 +1007,8 @@ def camp_hp_probe_step(screen, mem, frame):
                                               and line.span(88, 136) == 'しょうぐん' for line in screen.lines)
         if not main_panel or info['general'] != actor or type(info.get('hp')) is not int or info['hp'] < 0:
             return _probe_abort(mem)
+        # Issue #3194 (36): one deliberate open, counted once on the confirmed read.
+        house._tally_status_open(mem, 'camp_probe', info)
         _record(mem, 'camp_hp_observation', chart_step=None, general=actor,
                 observed_metric={'hp': info['hp'], 'max_hp': info.get('max_hp'), 'tick': mem['tick'],
                                  'read': mem['camp_hp_probe_counts'][probe['key']]},
