@@ -53,6 +53,11 @@ TEST_RELEVANT = [
     '.github/scripts/ci_test_scope.py',
     '.github/scripts/ci_trigger_paths.py',
     '.github/scripts/ci_shard.py',
+    # ops/vm_actions has its own lane (vm-operations-ci runs its unittest
+    # discover), but a change there must not leave the required ci.yml checks
+    # skipped: mapping it to the full suite keeps ci-required meaningful for
+    # operation/wiring pull requests (docich#3122 wiring follow-up).
+    'ops/vm_actions/**',
 ]
 HANJUKU_ONLY = [
     *HANJUKU_MODULES,

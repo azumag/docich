@@ -74,7 +74,7 @@ def test_the_policy_facade_does_not_turn_all_of_hanjuku_into_seams(seams):
 @pytest.mark.parametrize('changed', [
     ['docs/hanjuku_script_bot.md'],
     ['README.md', 'docs/operations/ops-brief.md'],
-    ['ops/vm_actions/gateway.py'],
+    ['ops/local/handoff_rotate.py'],
     ['.github/workflows/vm-operations.yml'],
     ['tests/fixtures/hanjuku/g1097-map-sortie-starved.png'],
     ['games/soviet_now'],
@@ -90,6 +90,19 @@ def test_a_change_no_test_can_see_runs_no_tests(changed, seams):
 ])
 def test_one_relevant_file_runs_tests_even_beside_documentation(relevant, seams):
     assert scope.choose_suite(['docs/a.md', relevant], seams)[0] == 'full'
+
+
+@pytest.mark.parametrize('changed', [
+    ['ops/vm_actions/authorize.py'],
+    ['ops/vm_actions/browser_profile_reclaim_now.sh'],
+    ['ops/vm_actions/tests/test_browser_profile_reclaim_wiring.py'],
+    # The #3255-shaped mix: a vm-operations workflow plus ops/vm_actions files
+    # must not silently skip the required checks (docich#3122 follow-up).
+    ['.github/workflows/vm-operations.yml', 'ops/vm_actions/authorize.py',
+     'ops/vm_actions/tests/test_diagnostics.py'],
+])
+def test_vm_actions_changes_run_the_full_suite(changed, seams):
+    assert scope.choose_suite(changed, seams)[0] == 'full'
 
 
 def test_no_change_list_gets_the_full_suite(seams):
