@@ -55,15 +55,27 @@ def path(mem, source, target, owned):
 
 
 def _moves_into(mem, castle):
-    """Unconfirmed transfers sent into ``castle`` along a chart leg."""
+    """Unconfirmed transfers sent into ``castle`` along a chart leg.
+
+    An 'overdue' move is still a dispatch that was sent here and whose
+    arrival was never read: g1097 2026-11-02 drained five generals into
+    アイアイエー because the overdue march relaunch popped
+    ``launched_orders`` and the sortie stopped counting as an unread
+    dispatch, so the next plan moved somebody else into the same castle.
+    The purpose lives on the sortie itself (written at launch) so the
+    check survives the snapshot's removal.
+    """
     now = int(mem.get('tick') or 0)
     for step, sortie in (mem.get('sorties') or {}).items():
         if not isinstance(sortie, dict):
             continue
         order = (mem.get('launched_orders') or {}).get(step) or {}
+        purpose = order.get('purpose') or sortie.get('purpose')
         tick = sortie.get('tick')
-        if (order.get('purpose') == 'move' and sortie.get('status') == 'en_route'
-                and all(order.get(k) == sortie.get(k) for k in ('source', 'target', 'general'))
+        if (purpose == 'move' and sortie.get('status') in ('en_route', 'overdue')
+                and (not order
+                     or all(order.get(k) == sortie.get(k)
+                            for k in ('source', 'target', 'general')))
                 and sortie.get('target') == castle and sortie.get('source') != castle
                 and allowed(mem, sortie.get('source'), castle)
                 and type(tick) is int and 0 <= now - tick):
@@ -92,12 +104,31 @@ def unread_dispatches(mem, castle):
             if last is None or sortie['tick'] > int(last)]
 
 
+def arrival_probe_due(mem, castle, *, cooldown=False):
+    """Transfers sent into ``castle`` have left the busy window and its list was
+    not read since: that list is the only receipt of their arrival.
+
+    g1097 2026-11-03 (chapter 5): アイアイエー was recorded empty from a reading
+    26k ticks old while 14 moves had gone there. No list was ever opened, so the
+    generals who stood there never sortied. ``cooldown`` spaces the probe
+    *orders* a candidate builder mints; the order already running is not
+    affected (``_source_list_open`` calls without it).
+    """
+    if incoming(mem, castle) or not unread_dispatches(mem, castle):
+        return False
+    if cooldown:
+        asked = (mem.get('arrival_probe_tick') or {}).get(castle)
+        return asked is None or int(mem.get('tick') or 0) - int(asked) >= PROBE_INTERVAL
+    return True
+
+
 def probe_due(mem, castle):
     """A dispatched transfer permits opening a list, never guessing arrival."""
+    if mem.get('chapter') != 3:
+        return arrival_probe_due(mem, castle)
     now = int(mem.get('tick') or 0)
     last = (mem.get('route_probe_read_tick') or {}).get(castle)
-    return (mem.get('chapter') == 3
-            and bool(incoming(mem, castle) or unread_dispatches(mem, castle))
+    return (bool(incoming(mem, castle) or unread_dispatches(mem, castle))
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 
@@ -105,7 +136,11 @@ def observed_roster(mem, castle, names):
     # Every chapter: chapter 4 recorded ビクトリア empty, never read it, and
     # sent five moves there (g1075 2026-10-29, #3037).
     mem.setdefault('route_probe_read_tick', {})[castle] = int(mem.get('tick') or 0)
-    for step, sortie in incoming(mem, castle):
+    # The busy window bounds "still marching", not arrival evidence: an
+    # overdue move's general standing in this list is arrival observed.
+    overdue = [(step, sortie) for step, sortie in _moves_into(mem, castle)
+               if sortie.get('status') == 'overdue']
+    for step, sortie in [*incoming(mem, castle), *overdue]:
         if sortie.get('general') in names:
             sortie['status'] = 'arrived'
             from ..decision_log import _record
