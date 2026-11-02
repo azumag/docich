@@ -130,3 +130,113 @@ def test_released_request_cycles_are_bounded_then_fail():
         assert p.target_step(TARGET, mem, None) in ([], [p.pad('b')])
     assert mem['orders']['1-A3'] == 'failed'
     assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
+
+
+WORLD = Screen([], None, '', kind='world_map')
+FLAGS = {'カストーラ': 'own', 'スペンソニア': 'enemy', 'アルマムーン': 'own'}
+
+
+def commit(mem):
+    """Run the real commit path and return the armed launch probe."""
+    req = request(mem)
+    req['request_trace'] = dict(TRACE)
+    sent(mem, 1)
+    p.observe_sortie_transition(FIELD, mem, 'map_target')
+    assert mem['orders']['1-A3'] == 'launched'
+    probe = (mem.get('launch_probe') or {}).get('1-A3')
+    assert isinstance(probe, dict) and probe.get('source') == 'カストーラ'
+    return probe
+
+
+def survey(monkeypatch, mem, markers):
+    monkeypatch.setattr(p, 'world_flags', lambda *_: dict(FLAGS))
+    monkeypatch.setattr(p, 'world_markers', lambda _, list=list: list(markers))
+    p.world_map_step(WORLD, mem, None)
+
+
+def marker_at(castle, dx=0, dy=0):
+    x, y = chart.castles(1)[castle]
+    ox, oy = chart.WORLD_MAP_OFFSET[1]
+    cx, cy = x / 8 + ox + dx, y / 8 + oy + dy
+    return (cx - 3, cy - 3, cx + 3, cy + 3)
+
+
+def test_committed_departure_arms_launch_probe():
+    mem = memory(); confirm(mem); commit(mem)
+    assert mem['launch_probe']['1-A3']['target'] == 'スペンソニア'
+    assert mem['world_map_due'] is True
+
+
+def test_new_marker_near_source_confirms_launch(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    survey(monkeypatch, mem, [marker_at('カストーラ', dx=8)])
+    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+
+
+def test_unseen_unit_rolls_the_launch_back_to_pending(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'pending'
+    assert '1-A3' not in (mem.get('sorties') or {})
+    assert '1-A3' not in (mem.get('launched_orders') or {})
+    # The general the ledger sent out was never seen leaving: back home.
+    assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
+    assert mem['launch_miss']['1-A3'] == 1
+    assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_repeatedly_unseen_launches_fail_the_order(monkeypatch):
+    mem = memory(); confirm(mem)
+    for cycle in range(p.LAUNCH_MISS_LIMIT):
+        if cycle:
+            # A reopened order that confirmed again arms the same probe.
+            mem.setdefault('launch_probe', {})['1-A3'] = {
+                'general': 'ゼウス', 'source': 'カストーラ', 'target': 'スペンソニア',
+                'reads': 0, 'baseline': [], 'tick': mem['tick']}
+            mem['orders']['1-A3'] = 'launched'
+            mem.setdefault('sorties', {})['1-A3'] = {'status': 'en_route'}
+        else:
+            commit(mem)
+        for _ in range(p.LAUNCH_PROBE_READS):
+            survey(monkeypatch, mem, [])
+    assert mem['orders']['1-A3'] == 'failed'
+    assert any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])
+
+
+def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    mem['sorties']['1-A3']['status'] = 'arrived'
+    survey(monkeypatch, mem, [])
+    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert not mem.get('launch_miss')
+    assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_stale_baseline_marker_alone_does_not_confirm(monkeypatch):
+    mem = memory(); confirm(mem)
+    stale = marker_at('アルマムーン')
+    survey(monkeypatch, mem, [stale])         # baseline survey before the order
+    commit(mem)
+    # The same marker at the same place is not the new unit.
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [stale])
+    assert mem['orders']['1-A3'] == 'pending'
+    assert mem['launch_miss']['1-A3'] == 1
+
+
+def test_fresh_marker_anywhere_confirms_once_a_baseline_exists(monkeypatch):
+    mem = memory(); confirm(mem)
+    survey(monkeypatch, mem, [marker_at('アルマムーン')])
+    commit(mem)
+    # A unit seen marching mid-field, far from both castles, is proof enough
+    # once an older survey established what was already out.
+    survey(monkeypatch, mem, [marker_at('アルマムーン'), marker_at('カストーラ', dx=40, dy=40)])
+    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
