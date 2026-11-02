@@ -112,14 +112,29 @@ def test_attack_side_preempts_once_own_egg_is_observed_empty():
 # ---- owner 2026-11-02: 城防衛で対召喚獣戦、卵もない時はおくのて ----
 # g1097 18:03-18:06 ジュメルズ: ペコリーノ(卵なし)は敵の召喚獣ローラーキラーに
 # 卵戦で応戦し、卵が使えなくなった後も もうこうげき で HP0 まで戦った。
-def egg_menu_screen(mem, *, egg_row=False):
+# v362: B は卵戦メニューでは効かない (v361 実測)。おくのては灰色の
+# たまごをつかうの下の4行目で、カーソルを下げて箱をスクロールさせて選ぶ。
+def egg_menu_screen(mem, *, egg_row=False, labels=None, cursor=176, ally_hp=40,
+                    ys=None):
     from dataclasses import replace
     from test_hanjuku_naruto_damage import native
     s = native(8549)
     s.kind = 'egg_battle_menu'
-    s.text = 'こうげきもうこうげき' + ('たまごをつかう' if egg_row else '')
+    shown = list(labels if labels is not None else ('こうげき', 'もうこうげき'))
+    s.text = ''.join(shown) + ('たまごをつかう' if egg_row else '')
     s.hand = None
-    s.egg_rows = [replace(r, name=mem['battle']['ally'], hp=40) if r.side == 'ally'
+    s.menu_cursor = cursor
+    if ys is None:
+        ys = [176 + 16 * i for i in range(len(shown))]
+    rows = [TextLine(y, tuple((176 + 8 * j, ch) for j, ch in enumerate(label)))
+            for y, label in zip(ys, shown)]
+    if egg_row:
+        y = 176 + 16 * len(rows)
+        rows.append(TextLine(y, tuple((176 + 8 * j, ch)
+                                      for j, ch in enumerate('たまごをつかう'))))
+    s.lines = rows
+    s.menu_rows = rows
+    s.egg_rows = [replace(r, name=mem['battle']['ally'], hp=ally_hp) if r.side == 'ally'
                   else replace(r, name='ローラーキラー', hp=308) for r in s.egg_rows]
     return s
 
@@ -132,30 +147,145 @@ def egg_fight_memory(**battle):
     return mem
 
 
-def test_spent_egg_in_a_castle_defense_summon_fight_opens_the_okunote_menu():
+def no_b(actions):
+    return all(a != p.pad('b') for a in actions)
+
+
+def test_spent_egg_in_a_castle_defense_summon_fight_scrolls_down_never_b():
     mem = egg_fight_memory()
     actions = p.egg_battle_step(egg_menu_screen(mem), mem)
     cur = mem['battle']
-    assert actions == [p.pad('b')]
+    assert actions == [p.pad('down')]
     assert cur['summon_egg_unavailable'] is True
-    assert cur['okunote_summon_preempt']['opens'] == 1
-    assert any(r['decision'] == 'battle_okunote_summon_open' for r in mem['_records'])
+    assert cur['okunote_summon_preempt']['downs'] == 1
+    assert cur['okunote_summon_preempt']['stage'] == 'scrolling'
+    scroll = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_summon_scroll']
+    assert scroll and scroll[-1]['observed_metric']['down_attempt'] == 1
     assert p._defender_summon_preempt(mem, cur)['resources_basis'] == 'summon_menu_egg_unavailable'
 
 
-def test_the_open_is_bounded_and_then_the_old_attack_resumes():
+def test_the_scrolled_box_selects_okunote_under_the_cursor():
     mem = egg_fight_memory()
-    opens = 0
-    for _ in range(10):
-        actions = p.egg_battle_step(egg_menu_screen(mem), mem)
-        if actions == [p.pad('b')] and mem['battle']['okunote_summon_preempt']['opens'] > opens:
-            opens = mem['battle']['okunote_summon_preempt']['opens']
-        elif mem['battle']['okunote_summon_preempt'].get('exhausted'):
+    s = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'), ys=(176, 208), cursor=208)
+    assert p.egg_battle_step(s, mem) == [p.pad('a')]
+    cur = mem['battle']
+    guard = cur['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+    assert cur['okunote_attempt']['phase'] == 'parent_selected'
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'battle_okunote_summon_preempt' in decisions
+    assert 'battle_okunote_select' in decisions
+    assert cur['survival']['exhausted'] is True
+
+
+def test_a_visible_okunote_is_moved_to_not_confirmed_blindly():
+    mem = egg_fight_memory()
+    s = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'), ys=(176, 208), cursor=176)
+    assert p.egg_battle_step(s, mem) == [p.pad('down')]
+    assert not any(r['decision'] == 'battle_okunote_summon_scroll' for r in mem['_records'])
+    assert not mem['battle']['okunote_summon_preempt'].get('selected')
+
+
+def test_the_scroll_is_bounded_and_then_the_old_attack_resumes():
+    mem = egg_fight_memory(ally_hp=50)  # 50*2 > max 88: the old path picks こうげき
+    seen = []
+    for _ in range(8):
+        actions = p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
+        seen += actions
+        if mem['battle']['okunote_summon_preempt'].get('exhausted'):
             break
-    assert opens == p.DEFENDER_SUMMON_OPEN_LIMIT
-    # Exhausted: no further B is planned for the okunote from this panel.
-    assert mem['battle']['okunote_summon_preempt']['exhausted']
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['exhausted'] and guard['downs'] == p.DEFENDER_SUMMON_SCROLL_LIMIT
     assert any(r['decision'] == 'battle_okunote_summon_open_failed' for r in mem['_records'])
+    # Exhausted: the old attack path runs and never sends B on this box.
+    actions = p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
+    assert actions == [p.pad('a')]
+    assert no_b(seen + actions)
+
+
+def test_a_repeated_frame_after_selection_never_resends_a():
+    mem = egg_fight_memory()
+    s = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'), ys=(176, 208), cursor=208)
+    assert p.egg_battle_step(s, mem) == [p.pad('a')]
+    for _ in range(8):
+        actions = p.egg_battle_step(s, mem)
+        assert actions != [p.pad('a')] and no_b(actions)
+
+
+def summon_defense_memory():
+    """An egg battle whose general panel also proves the summon reading."""
+    from copy import deepcopy
+    ID = {'game': 'hanjuku-hero', 'runtime_id': 'okunote-test',
+          'generation': 1, 'lease_id': 'test'}
+    mem = memory(chapter=1, enemy='ヘーゼル', ally='アルテミス', ally_hp=49,
+                 castle='ゴーメン')
+    mem['battle'].update(egg_battle=True)
+    mem['egg_battle'] = True
+    mem['_run_identity'] = deepcopy(ID)
+    mem['battle'].update(summon_general_reading={
+        'identity': deepcopy(ID), 'ally': 'アルテミス', 'enemy': 'ヘーゼル',
+        'hp': 49, 'max_hp': 49})
+    return mem
+
+
+def summon_egg_screen(mem):
+    """egg_battle_menu with the native g684 panel rows and the scrolled box."""
+    s = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'), ys=(176, 208), cursor=208)
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    from pathlib import Path
+    s.egg_rows = parse(read_png(
+        Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png')).egg_rows
+    return s
+
+
+def candidate_menu():
+    from test_hanjuku_defender_egg_preempt import menu as choice_menu
+    s = choice_menu(('ヤケクソ', 'あやまる', 'しんだフリ'))
+    s.kind = 'okunote_menu'
+    return s
+
+
+def test_candidate_then_egg_menu_return_redraws_within_the_fight():
+    mem = summon_defense_memory()
+    s = summon_egg_screen(mem)
+    assert p.egg_battle_step(s, mem) == [p.pad('a')]
+    assert p.okunote_step(candidate_menu(), mem) == [p.pad('a')]
+    # Returning to the egg menu ends the attempt: the preempt guard is cleared
+    # and the draw counted, so the next turn selects おくのて again.
+    assert p.egg_battle_step(s, mem) == [p.pad('a')]
+    cur = mem['battle']
+    assert cur['okunote_draws'] == 1
+    assert any(r['decision'] == 'battle_okunote_combat_return' for r in mem['_records'])
+    assert cur['okunote_summon_preempt']['selected']  # a fresh guard, selected again
+    # At the redraw limit the preempt stops and the old fight resumes.
+    cur['okunote_draws'] = p.OKUNOTE_REDRAW_LIMIT
+    mem['battle'].pop('okunote_summon_preempt')
+    mem['battle'].pop('okunote_attempt', None)
+    actions = p.egg_battle_step(s, mem)
+    assert actions != [p.pad('a')] and no_b(actions)
+
+
+def test_scrolled_egg_box_classifies_as_egg_battle_menu():
+    # 灰色のたまごをつかう行が OCR に残らず、箱が下へスクロールした表示。
+    from pathlib import Path
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    from test_hanjuku_chart_bot import Canvas
+    native_frame = read_png(
+        Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png')
+    c = Canvas(); c.rgb = bytearray(native_frame.rgb)
+    for y in range(167, 216):
+        for x in range(144, 248):
+            c.put(x, y, (16, 72, 57))
+    c.text(176, 176, 'もうこうげき')
+    c.text(176, 208, 'おくのて')
+    for y in range(200, 212):
+        for x in range(152, 164):
+            c.put(x, y, (230, 105, 74))
+    s = parse(c.frame())
+    assert s.kind == 'egg_battle_menu'
+    assert len(s.egg_rows) == 2
 
 
 def test_a_usable_egg_row_keeps_the_egg_fight_and_never_opens_the_okunote():

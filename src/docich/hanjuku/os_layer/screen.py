@@ -1081,6 +1081,12 @@ def classify_text(s: Screen) -> str:
         return 'okunote_menu'
     if egg_choice_names(s):
         return 'egg_choice_menu'
+    if (s.egg_rows and any(r.spans() == [(176, 'もうこうげき')] for r in s.menu_rows)
+            and any(r.spans() == [(176, 'おくのて')] for r in s.menu_rows)):
+        # 卵戦コマンド箱を1行下へスクロールした表示: 灰色のたまごをつかうの下に
+        # おくのてが見える。おくのてだけの救済メニューや敵将軍の左箱 (x40) と
+        # 誤認しないよう、両行が自軍の箱位置 x176 のときだけ認める (v362)。
+        return 'egg_battle_menu'
     if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box or s.mixed_item_box:
         return 'battle_menu'
     if _partial_human_commands(s):

@@ -1925,6 +1925,10 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
 
 
 DEFENDER_SUMMON_OPEN_LIMIT = 3
+# The egg-battle command box shows 3 rows; おくのて is a 4th row below the
+# greyed たまごをつかう (owner-confirmed layout, v362). Bounded downward
+# presses until it is visible.
+DEFENDER_SUMMON_SCROLL_LIMIT = 4
 
 
 def _defender_summon_preempt(mem, cur):
