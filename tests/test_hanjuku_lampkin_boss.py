@@ -71,3 +71,89 @@ def test_enemy_owned_or_partial_menu_never_forces_skill1():
                                    ['かぼちゃ', 'へんなおどり']) is None
     s2 = menu('クイーン', 500, skills=['へんなおどり', 'かぼちゃ'])
     assert _monster_lampkin_choice('enemy', panel(s2)['ally'], panel(s2)['enemy'], SKILLS) is None
+
+
+# ---- owner 2026-11-02: かぼちゃ1回→へんなおどり3回の繰り返し / HP1は一択 ----
+from docich.hanjuku.judgment.battle import reset_battle_controls
+
+ROW_Y = {'skill1': 176, 'skill2': 192}
+
+
+def turn(m, enemy='ニンフ', enemy_hp=50, tick=None, ally_hp=95):
+    """One menu session: decide, put the cursor on the chosen row, confirm."""
+    if tick is not None:
+        m['tick'] = tick
+    s = menu(enemy, enemy_hp, ally_hp=ally_hp)
+    monster_menu_step(s, m)                     # decide (may move the cursor)
+    s = menu(enemy, enemy_hp, ally_hp=ally_hp)
+    s.menu_cursor = ROW_Y[m['monster_menu_choice']]
+    assert monster_menu_step(s, m) == [pad('a')]
+    return m['monster_menu_choice']
+
+
+def leave_menu(m):
+    """What the orchestrator does when the menu is no longer on screen."""
+    for key in ('monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        m.pop(key, None)
+
+
+@pytest.mark.parametrize('enemy', ['ニンフ', 'レモン'])   # an ordinary monster and a general
+def test_kabocha_once_then_three_hennaodori_repeatedly(enemy):
+    m = memory()
+    seq = []
+    for i in range(9):
+        seq.append(turn(m, enemy, tick=100 + 10 * i))
+        leave_menu(m)
+    assert seq == ['skill2', 'skill1', 'skill1', 'skill1'] * 2 + ['skill2']
+    assert 'かぼちゃ' in [r for r in m['_records'] if r['decision'] == 'monster_menu_choice'][0]['reason']
+
+
+def test_the_same_confirm_seen_again_is_one_turn_not_two():
+    m = memory()
+    assert turn(m, tick=100) == 'skill2'
+    assert m['lampkin_cycle']['n'] == 1
+    # The menu is still up (or redrawn) a moment after the A: same pending turn.
+    leave_menu(m)
+    assert turn(m, tick=101) == 'skill2'
+    assert m['lampkin_cycle']['n'] == 1
+    leave_menu(m)
+    assert turn(m, tick=110) == 'skill1'          # a real next turn
+    assert m['lampkin_cycle']['n'] == 2
+
+
+def test_boss_is_always_hennaodori_and_does_not_advance_the_cycle():
+    m = memory()
+    for i in range(5):
+        assert turn(m, 'クイーン', 500, tick=100 + 10 * i) == 'skill1'
+        leave_menu(m)
+    assert m.get('lampkin_cycle', {}).get('n', 0) == 0
+
+
+def test_enemy_at_one_hp_is_hennaodori_and_the_cycle_resumes_after():
+    m = memory()
+    assert turn(m, enemy_hp=40, tick=100) == 'skill2'; leave_menu(m)
+    assert turn(m, enemy_hp=1, tick=110) == 'skill1'; leave_menu(m)     # HP 1: no pumpkin
+    assert m['lampkin_cycle']['n'] == 1                                   # that turn was not counted
+    assert 'HPが1' in [r for r in m['_records'] if r['decision'] == 'monster_menu_choice'][-1]['reason']
+    assert turn(m, enemy_hp=30, tick=120) == 'skill1'; leave_menu(m)
+    assert turn(m, enemy_hp=20, tick=130) == 'skill1'; leave_menu(m)
+    assert turn(m, enemy_hp=10, tick=140) == 'skill1'; leave_menu(m)
+    assert turn(m, enemy_hp=9, tick=150) == 'skill2'                      # 4 counted turns later
+
+
+def test_a_new_opponent_or_the_end_of_the_battle_restarts_the_cycle():
+    m = memory()
+    assert turn(m, 'ニンフ', tick=100) == 'skill2'; leave_menu(m)
+    assert turn(m, 'ニンフ', tick=110) == 'skill1'; leave_menu(m)
+    assert turn(m, 'レモン', tick=120) == 'skill2'; leave_menu(m)         # another opponent
+    reset_battle_controls(m)
+    assert 'lampkin_cycle' not in m
+    assert turn(m, 'レモン', tick=130) == 'skill2'
+
+
+def test_only_our_two_skill_lampkin_menu_uses_the_cycle():
+    m = memory()
+    s = menu('ニンフ', 50, skills=['かぼちゃ', 'へんなおどり'])           # not the owned pair/order
+    monster_menu_step(s, m)
+    assert 'lampkin_cycle' not in m
