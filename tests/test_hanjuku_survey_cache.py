@@ -538,3 +538,39 @@ def test_full_status_walk_never_spends_an_observation_without_input(count):
     steps = _walk_cost(names)
     assert len(steps) == 3 * count + 1
     assert all(len(actions) == 1 for actions in steps)
+
+
+def _partial_walk_memory(targets):
+    mem = completed()
+    r.dirty_status(mem, targets)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': list(r.recheck_targets(mem))}
+    return mem
+
+
+def test_target_read_on_another_screen_is_dropped_from_the_partial_walk():
+    """Issue #3194 (05/16): do not open a status that was already re-read."""
+    mem = _partial_walk_memory(['ゼウス'])
+    assert mem['house']['status_targets'] == ['ゼウス']
+    # A different flow reads ゼウス completely while this walk is waiting.
+    assert house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)['general'] == 'ゼウス'
+    assert r.recheck_targets(mem) == []
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+    assert mem['obs_cost']['target_satisfied_elsewhere']['n'] == 1
+
+
+def test_unsatisfied_targets_are_kept_and_walked_as_before():
+    mem = _partial_walk_memory(['ゼウス'])
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('down')]
+    assert mem['house']['status_targets'] == ['ゼウス']
+    assert 'target_satisfied_elsewhere' not in mem.get('obs_cost', {})
+
+
+def test_only_the_satisfied_target_is_dropped_when_two_are_pending():
+    names = ['どうし', 'ゼウス']
+    mem = _partial_walk_memory(names)
+    house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)
+    house.step(parse(roster(NAMES)), mem, None)
+    assert mem['house']['status_targets'] == ['どうし']

@@ -1168,6 +1168,16 @@ def _step_once(screen, mem, frame):
             return []
         if state.get('from_survey'):
             targets = state.get('status_targets') or []
+            # Issue #3194 (05/16): another screen (battle panel, camp status)
+            # may have read a target since this walk began. recheck_targets()
+            # is the live "still needs a read" set, so a satisfied target is
+            # dropped instead of opening a status screen that adds nothing.
+            satisfied = [t for t in targets if t not in set(receipts.recheck_targets(mem))]
+            if satisfied:
+                targets[:] = [t for t in targets if t not in satisfied]
+                _tally(mem, 'target_satisfied_elsewhere')
+                _record(mem, 'target_satisfied_elsewhere', observed_metric={'generals': satisfied},
+                        reason='別の画面で本人の状態を読み終えたため、この部分再確認から外して詳細を開き直さない')
             if not targets:
                 _phase(state, 'leave_roster')
                 return [pad('b')]
