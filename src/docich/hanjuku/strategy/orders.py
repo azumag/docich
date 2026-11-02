@@ -764,6 +764,38 @@ def parked_boss_steps(mem):
     return sorted(out)
 
 
+def _drop_attempt(mem, step):
+    """Release the confirmed-departure binding of a step handed back to pending.
+
+    ``execution_claimed`` keeps a tagged ``sortie_attempt`` from falling through
+    to a fresh plan's actor, so one left behind when the order is relaunched
+    makes ``_order_for_step`` answer None: every castle menu of the re-picked
+    order is then "a menu we did not open" and gets a bare B (g1097 2026-11-02
+    20:39-21:05, A:d0871b56:M2: A, B, A, B every 3 s, no sortie for 25 minutes).
+    """
+    if (mem.get('sortie_attempt') or {}).get('step') == step:
+        mem.pop('sortie_attempt', None)
+
+
+def _release_orphan_attempt(mem):
+    """Free an attempt whose confirmed departure is gone and whose order waits.
+
+    A real attempt is created together with ``order_context[step]
+    ['departure_order']`` (deploy ``sortie_confirm``); a pending order whose
+    context lost it was relaunched, so nothing can ever resolve the attempt.
+    State written before ``_drop_attempt`` existed still carries such orphans.
+    """
+    attempt = mem.get('sortie_attempt') or {}
+    step = attempt.get('step')
+    if (step and 'confirmation_tick' in attempt
+            and (mem.get('orders') or {}).get(step) == 'pending'
+            and 'departure_order' not in ((mem.get('order_context') or {}).get(step) or {})):
+        mem.pop('sortie_attempt', None)
+        _record(mem, 'sortie_attempt_orphan_released', chart_step=step,
+                observed_metric={'confirmation_tick': attempt.get('confirmation_tick')},
+                reason='出し直し待ちの指示に確認済み出撃の根拠がなく、古い出撃試行が指示の解決を妨げるため解放する')
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -820,6 +852,7 @@ def _relaunch_overdue_boss(mem):
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
                     'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss', 'launched_orders'):
             (mem.get(key) or {}).pop(step, None)
+        _drop_attempt(mem, step)
         status[step] = 'pending'
         _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
@@ -909,6 +942,7 @@ def _relaunch_overdue_march(mem):
                     'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
                     'sortie_actor_miss', 'launched_orders'):
             (mem.get(key) or {}).pop(step, None)
+        _drop_attempt(mem, step)
         status[step] = 'pending'
         _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
@@ -916,6 +950,7 @@ def _relaunch_overdue_march(mem):
 
 
 def next_order(mem):
+    _release_orphan_attempt(mem)
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
     _redirect_blocked_sources(mem)

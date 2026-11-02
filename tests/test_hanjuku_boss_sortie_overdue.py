@@ -214,3 +214,55 @@ def test_an_unconfirmed_site_launch_goes_overdue_by_its_planned_target():
     mem = site_memory('マラコビア')
     O._relaunch_overdue_boss(mem)
     assert mem['sorties']['4-B2']['status'] == 'en_route'
+
+
+# g1097 2026-11-02 20:39-21:05: A:d0871b56:M2 (チコリ, アルマムーン→アイアイエー) went
+# overdue and back to pending, but its sortie_attempt (with a confirmation_tick)
+# stayed. execution_claimed() then made _order_for_step() return None, so every
+# castle menu of the re-picked order was "a menu we did not open" and got a bare
+# B: A, B, A, B ... every 3 s for 25 minutes, never a sortie.
+STEP = '3-B1'
+
+
+def with_stale_attempt(mem):
+    mem['sortie_attempt'] = {'step': STEP, 'confirmation_tick': LAUNCH - 6,
+                             'interrupted': True, 'target_seen': True}
+    return mem
+
+
+def test_a_relaunched_march_gives_up_its_old_attempt():
+    mem = with_stale_attempt(memory(79599, target='パタゴーヌ'))
+    O.next_order(mem)
+    assert mem['orders'][STEP] == 'pending'
+    assert 'sortie_attempt' not in mem
+    assert O._order_for_step(mem, STEP) is not None     # not "foreign/stale execution"
+
+
+def test_a_relaunched_boss_march_gives_up_its_old_attempt():
+    mem = with_stale_attempt(memory(79599, lost=['パタゴーヌ']))
+    O.next_order(mem)
+    assert mem['orders'][STEP] == 'pending'
+    assert mem['sorties'][STEP]['status'] == 'overdue'
+    assert 'sortie_attempt' not in mem
+
+
+def test_an_orphan_attempt_left_by_an_earlier_relaunch_is_released():
+    """The live state: the sortie is already 'overdue' and the order pending, so
+    no relaunch fires again; only the sweep can free the order."""
+    mem = with_stale_attempt(memory(79599, target='パタゴーヌ'))
+    mem['sorties'][STEP]['status'] = 'overdue'
+    mem['orders'][STEP] = 'pending'
+    for key in ('general_override', 'launched_orders'):
+        mem[key].pop(STEP, None)
+    assert O._order_for_step(mem, STEP) is None          # the live bug
+    O.next_order(mem)
+    assert 'sortie_attempt' not in mem
+    assert O._order_for_step(mem, STEP) is not None
+
+
+def test_an_attempt_with_its_confirmed_departure_is_kept():
+    mem = with_stale_attempt(memory(LAUNCH + 10, target='パタゴーヌ'))
+    mem['orders'][STEP] = 'pending'
+    mem['order_context'] = {STEP: {'actual_general': 'アポロン', 'departure_order': {'step': STEP}}}
+    O.next_order(mem)
+    assert mem['sortie_attempt']['step'] == STEP
