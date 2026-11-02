@@ -15,6 +15,10 @@ import sys
 STEPS = ("4-B1", "4-B2", "4-B3", "4-B4")
 ORDER_STATES = frozenset({"pending", "launched_unconfirmed", "launched", "done", "failed"})
 TACTICAL_STATUSES = frozenset({"ok", "unsupported_chapter", "unavailable", "identity_changed", "output_omitted"})
+ROTATION_STATUSES = frozenset({
+    "ready", "waiting", "starting", "active", "restoring", "preparing",
+    "recovery_required", "failed",
+})
 RECENT_DECISIONS = (
     "boss_roster_reprobe",
     "boss_relaunch_stale_retry",
@@ -26,6 +30,18 @@ BASE = "https://github.com/azumag/docich"
 
 def _bounded_int(value, low=0, high=10**7):
     return value if type(value) is int and low <= value <= high else None
+
+
+def _fixed_bool(value):
+    return value if type(value) is bool else None
+
+
+def _bool_token(value):
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
 
 
 def project(payload):
@@ -64,6 +80,17 @@ def project(payload):
             if decision in recent_seen:
                 recent_seen[decision] = True
 
+    # A manual Hanjuku start may be safely queued before the bot process exists.
+    # In that state hanjuku_tactical legitimately has no chapter, so expose the
+    # existing diagnostics collector's already-sanitized rotation booleans as
+    # fixed tokens. This distinguishes "reservation is still waiting" from a
+    # missing/active bot without leaking request ids, timestamps or free text.
+    corners = diagnostics.get("corners") if isinstance(diagnostics.get("corners"), dict) else {}
+    rotation = corners.get("corner_rotation") if isinstance(corners.get("corner_rotation"), dict) else {}
+    rotation_status = rotation.get("status")
+    if rotation_status not in ROTATION_STATUSES:
+        rotation_status = "unknown"
+
     return {
         "status": status,
         "chapter": chapter,
@@ -71,6 +98,11 @@ def project(payload):
         "active": active,
         "orders": projected_orders,
         "recent": recent_seen,
+        "rotation": {
+            "status": rotation_status,
+            "pending": _fixed_bool(rotation.get("pending")),
+            "queued_manual": _fixed_bool(rotation.get("queued_manual")),
+        },
     }
 
 
@@ -86,11 +118,17 @@ def reply(projected, env):
             raise ValueError("invalid_reply_metadata")
 
     orders = projected["orders"]
+    rotation = projected["rotation"]
     lines = [
         "Hanjuku live boss status: success",
         f"SHA: `{sha}`",
         f"Chapter: `{projected['chapter'] if projected['chapter'] is not None else 'unknown'}`",
         f"Diagnostics: `{projected['status']}` / age `{projected['age_sec'] if projected['age_sec'] is not None else 'unknown'}s`",
+        "Rotation: " + ", ".join((
+            f"`status={rotation['status']}`",
+            f"`pending={_bool_token(rotation['pending'])}`",
+            f"`queued_manual={_bool_token(rotation['queued_manual'])}`",
+        )),
         "Boss orders: " + ", ".join(f"`{step}={orders[step]}`" for step in STEPS),
         f"Active boss order: `{projected['active'] or 'none'}`",
         "Recent fixed signals: " + ", ".join(
