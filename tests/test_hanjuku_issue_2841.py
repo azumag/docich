@@ -97,6 +97,14 @@ def _arm_unverified_launch(mem, step):
             'reads': p.LAUNCH_PROBE_READS, 'baseline': [], 'tick': mem['tick']}
 
 
+def _launch_misses(mem):
+    """#3274 migrated launch_miss into flow; old hotloads may still be flat."""
+    flow = mem.get('flow')
+    if isinstance(flow, dict) and 'launch_miss' in flow:
+        return flow['launch_miss']
+    return mem.get('launch_miss') or {}
+
+
 def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     """#3261's two-miss bound is logical-route scoped, not execution-id scoped."""
     mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
@@ -106,13 +114,13 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     first = 'A:old00001:Mabc123'
     p._rollback_unverified_launch(mem, first, _arm_unverified_launch(mem, first), [])
     assert mem['orders'][first] == 'pending'
-    assert mem['launch_miss'][first] == 1
+    assert _launch_misses(mem)[first] == 1
 
     # A rebuilt mechanical/adjusted plan gives the same sortie another
     # execution id. Before #3265 this reset launch_miss to 1 and could repeat.
     second = 'A:new00002:Mabc123'
     p._rollback_unverified_launch(mem, second, _arm_unverified_launch(mem, second), [])
-    assert mem['launch_miss'][second] == p.LAUNCH_MISS_LIMIT
+    assert _launch_misses(mem)[second] == p.LAUNCH_MISS_LIMIT
     assert mem['orders'][second] == 'failed'
     failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
     assert failed and failed[-1]['chart_step'] == second
