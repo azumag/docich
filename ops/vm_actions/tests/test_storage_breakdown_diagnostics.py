@@ -624,9 +624,33 @@ class StorageBreakdownV2Tests(unittest.TestCase):
             "opencode_default_storage",
             "opencode_default_tool_output",
             "opencode_default_log",
+            "opencode_default_other",
         ):
             self.assertFalse(result[key]["present"])
             self.assertTrue(result[key]["scan_complete"])
+
+    def test_opencode_other_is_total_minus_known_parts(self):
+        # The derived remainder makes a new data-dir sub-path visible before
+        # an opencode upgrade silently grows it (docich#3140 DSH review).
+        self.write(self.home / ".local/share/opencode/snapshot/aa/obj/ff", 2000)
+        self.write(self.home / ".local/share/opencode/storage/session_diff/s1.json", 3000)
+        self.write(self.home / ".local/share/opencode/tool-output/t1", 4000)
+        self.write(self.home / ".local/share/opencode/log/opencode.log", 5000)
+        self.write(self.home / ".local/share/opencode/repos/cache.bin", 7000)
+        self.write(self.home / ".local/share/opencode/opencode.db", 1000)
+
+        result = self.collect()
+        other = result["opencode_default_other"]
+        total = result["opencode_default_total"]
+        self.assertTrue(other["present"])
+        self.assertTrue(other["scan_complete"])
+        self.assertGreaterEqual(other["allocated_bytes"], 7000)
+        self.assertGreaterEqual(other["count"], 2)
+        known_bytes = result["opencode_default"]["allocated_bytes"]
+        for key in ("opencode_default_snapshot", "opencode_default_storage",
+                    "opencode_default_tool_output", "opencode_default_log"):
+            known_bytes += result[key]["allocated_bytes"]
+        self.assertEqual(other["allocated_bytes"], total["allocated_bytes"] - known_bytes)
 
 
 class StorageSummaryTests(unittest.TestCase):
@@ -873,6 +897,13 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertIn("opencode_default_snapshot_complete=1", context)
         self.assertIn("opencode_default_snapshot_bytes=2000", context)
         self.assertIn("opencode_default_snapshot_count=40", context)
+
+        breakdown["opencode_default_other"] = {**leaf, "allocated_bytes": 3000, "count": 5}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_other_complete=1", context)
+        self.assertIn("opencode_default_other_bytes=3000", context)
+        self.assertIn("opencode_default_other_count=5", context)
 
         breakdown["opencode_default_snapshot"]["scan_complete"] = False
         _a, incomplete, context = summary.render({"storage_breakdown": breakdown})

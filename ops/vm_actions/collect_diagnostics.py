@@ -521,6 +521,32 @@ def _storage_base_result():
     }
 
 
+def _storage_remaining_usage(total, parts):
+    """Derived remainder of disjoint fixed parts of one measured tree.
+
+    ``parts`` must be non-overlapping children (or the db family at the root)
+    of ``total``. The result is clamped at zero so a scan that lost entries
+    cannot manufacture negative bytes. Completeness is true only when the
+    total and every part completed, so the caller can tell a real zero from a
+    partial scan.
+    """
+    complete = isinstance(total, dict) and total.get("scan_complete") is True
+    remaining = _storage_base_result()
+    remaining["present"] = bool(isinstance(total, dict) and total.get("present"))
+    count = int(total.get("count", 0)) if isinstance(total, dict) else 0
+    allocated = int(total.get("allocated_bytes", 0)) if isinstance(total, dict) else 0
+    for part in parts:
+        if not isinstance(part, dict) or part.get("scan_complete") is not True:
+            complete = False
+            continue
+        count -= int(part.get("count", part.get("present_count", 0)) or 0)
+        allocated -= int(part.get("allocated_bytes", 0) or 0)
+    remaining["scan_complete"] = complete
+    remaining["count"] = max(0, count)
+    remaining["allocated_bytes"] = max(0, allocated)
+    return remaining
+
+
 def _storage_tree_usage(path, *, max_entries=STORAGE_MAX_ENTRIES):
     path = Path(path)
     result = _storage_base_result()
@@ -1089,31 +1115,46 @@ def _collect_storage_breakdown(
     swap_file = Path(swap_file)
     default_db = home / ".local" / "share" / "opencode" / "opencode.db"
     worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
+    default_total = _storage_tree_usage(default_db.parent, max_entries=max_entries)
+    default_family = _storage_db_family(default_db)
+    default_snapshot = _storage_tree_usage(
+        default_db.parent / "snapshot", max_entries=max_entries
+    )
+    default_storage = _storage_tree_usage(
+        default_db.parent / "storage", max_entries=max_entries
+    )
+    default_tool_output = _storage_tree_usage(
+        default_db.parent / "tool-output", max_entries=max_entries
+    )
+    default_log = _storage_tree_usage(
+        default_db.parent / "log", max_entries=max_entries
+    )
 
     return {
         "version": 2,
         "categories_overlap": True,
         "max_entries_per_tree": int(max_entries),
-        "opencode_default": _storage_db_family(default_db),
+        "opencode_default": default_family,
         "opencode_worker": _storage_db_family(worker_db),
-        "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
+        "opencode_default_total": default_total,
         "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
         # Subtrees of the opencode default data dir (azumag/docich#3140): the
         # session-file store outside opencode.db, split per fixed sub-path so
         # the retention baseline attributes growth without SSH. Same opt-in
         # shape as the gateway_state subtrees (optional keys, never charged
         # to the shared incomplete flag).
-        "opencode_default_snapshot": _storage_tree_usage(
-            default_db.parent / "snapshot", max_entries=max_entries
-        ),
-        "opencode_default_storage": _storage_tree_usage(
-            default_db.parent / "storage", max_entries=max_entries
-        ),
-        "opencode_default_tool_output": _storage_tree_usage(
-            default_db.parent / "tool-output", max_entries=max_entries
-        ),
-        "opencode_default_log": _storage_tree_usage(
-            default_db.parent / "log", max_entries=max_entries
+        "opencode_default_snapshot": default_snapshot,
+        "opencode_default_storage": default_storage,
+        "opencode_default_tool_output": default_tool_output,
+        "opencode_default_log": default_log,
+        # Derived remainder (DSH review, azumag/docich#3140): total minus the
+        # known subtrees and the db family. It makes a new opencode data-dir
+        # sub-path visible before an upgrade silently grows it, and is a
+        # precondition for enabling automatic file retention.
+        "opencode_default_other": _storage_remaining_usage(
+            default_total,
+            (default_family, default_snapshot, default_storage,
+             default_tool_output, default_log),
         ),
         "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
         "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),

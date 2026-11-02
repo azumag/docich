@@ -86,6 +86,7 @@ OPENCODE_SUBTREE_CATEGORIES = (
     "opencode_default_storage",
     "opencode_default_tool_output",
     "opencode_default_log",
+    "opencode_default_other",
 )
 
 SUPPORTED_BREAKDOWN_VERSIONS = (1, 2)
