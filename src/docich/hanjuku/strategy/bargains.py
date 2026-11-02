@@ -22,6 +22,31 @@ BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイ�
 BARGAIN_CASH_BUFFER = 30
 BARGAIN_MONTHLY_GOLD = 200
 BARGAIN_MONTHLY_COPIES = 8
+# A cart that sells the strong cards at about half price after the month's own
+# merchant visit (g1097 2026-11-03 00:57: クースカン12 ゼンマイン16 ミックミー20
+# against 24/32/40, right after the monthly duel) is a chance, not a second
+# month: the single listing pass of the month was already spent and the bot
+# left in the same observation with 9987G unused. It gets one pass of its own
+# with larger caps; every payment check below still applies.
+CHEAP_VENDOR_RATIO = 0.6
+CHEAP_VENDOR_GOLD = 1000
+CHEAP_VENDOR_COPIES = 16
+CHEAP_VENDOR_TARGET_FACTOR = 2
+
+
+def _caps(shop):
+    """(monthly gold, monthly copies, per-card target factor) for this visit."""
+    if isinstance(shop, dict) and shop.get('cheap_vendor') is True:
+        return CHEAP_VENDOR_GOLD, CHEAP_VENDOR_COPIES, CHEAP_VENDOR_TARGET_FACTOR
+    return BARGAIN_MONTHLY_GOLD, BARGAIN_MONTHLY_COPIES, 1
+
+
+def cheap_listing(listed):
+    """Target cards the cart sells at or below CHEAP_VENDOR_RATIO of the known price."""
+    if not isinstance(listed, dict):
+        return []
+    return [name for name in BARGAIN_TARGETS
+            if type(listed.get(name)) is int and 0 < listed[name] <= KNOWN_PRICES[name] * CHEAP_VENDOR_RATIO]
 
 
 def _necessities_pending(mem, shop):
@@ -70,7 +95,7 @@ def bargain_spendable(mem, shop, header):
             return None
         if row[0] in extras:
             spent += row[1] * row[2]
-    return max(0, min(BARGAIN_MONTHLY_GOLD - spent,
+    return max(0, min(_caps(shop)[0] - spent,
                       cash - max(soldiers, before_recruit) - committed - BARGAIN_CASH_BUFFER))
 
 
@@ -93,7 +118,8 @@ def merchant_card_spendable(mem, shop, header, name, price):
     bought = shop.get('bought', [])  # validated by bargain_spendable
     used = sum(q for n, q, _ in bought if n in extras)
     same = sum(q for n, q, _ in bought if n == name)
-    copies = max(0, min(BARGAIN_MONTHLY_COPIES - used, BARGAIN_TARGETS[name] - same))
+    _, copy_cap, factor = _caps(shop)
+    copies = max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same))
     return min(cash, copies * price)
 
 
@@ -106,13 +132,19 @@ def plan_bargains(mem, shop, header, *, listed=None):
     earlier provisional candidate was unavailable. Neither pass is rearmed
     after a rejected quote, a purchase, or JSON save/hotload.
     """
-    if (not isinstance(shop, dict) or shop.get('merchant_done') or shop.get('closed')
-            or shop.get('want') or mem.get('month_sub')
+    cheap_pass = (isinstance(shop, dict) and listed is not None
+                  and shop.get('bargain_listing_planned') is True
+                  and shop.get('cheap_vendor_planned') is not True
+                  and bool(cheap_listing(listed)))
+    if (not isinstance(shop, dict) or shop.get('want') or mem.get('month_sub')
             or not isinstance(header, dict)
             or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
-            or (listed is None and shop.get('bargain_planned'))
-            or (listed is not None and shop.get('bargain_listing_planned'))):
+            or (not cheap_pass and (shop.get('merchant_done') or shop.get('closed')
+                                    or (listed is None and shop.get('bargain_planned'))
+                                    or (listed is not None and shop.get('bargain_listing_planned'))))):
         return shop
+    if cheap_pass:
+        shop['cheap_vendor'] = True          # caps of this pass; one pass per month
     receipt = shop.get('soldier_receipt')
     if (receipt and (not isinstance(receipt, dict) or receipt.get('status') != 'paid')):
         return shop
@@ -128,6 +160,7 @@ def plan_bargains(mem, shop, header, *, listed=None):
     if listed is not None and (not isinstance(listed, dict) or not listed
             or any(not isinstance(n, str) or type(p) is not int or p <= 0
                    for n, p in listed.items())):
+        shop.pop('cheap_vendor', None)
         return shop
     stock = mem.get('card_stock', {})
     if not isinstance(stock, dict):
@@ -141,16 +174,18 @@ def plan_bargains(mem, shop, header, *, listed=None):
     for name, qty, _ in shop.get('bought', []):
         bought[name] = bought.get(name, 0) + qty
     added, copies = [], 0
+    _, copy_cap, factor = _caps(shop)
     for name, target in BARGAIN_TARGETS.items():
-        if name in queued or name in bought:
+        if name in queued or (name in bought and not cheap_pass):
             continue  # chart quantities and already-attempted purchases stay untouched
-        seen = stock.get(name, 0)
+        seen = stock.get(name, 0) + (bought.get(name, 0) if cheap_pass else 0)
+        target = target * factor
         price = KNOWN_PRICES[name] if listed is None else listed.get(name)
         if (type(seen) is not int or seen < 0 or type(price) is not int
                 or not 0 < price <= KNOWN_PRICES[name]):
             continue
         need = max(0, target - seen)
-        qty = min(need, BARGAIN_MONTHLY_COPIES - copies, budget // price)
+        qty = min(need, copy_cap - copies, budget // price)
         if qty:
             added.append([name, qty])
             budget -= qty * price
@@ -158,7 +193,12 @@ def plan_bargains(mem, shop, header, *, listed=None):
     shop['bargain_planned'] = True
     if listed is not None:
         shop['bargain_listing_planned'] = True
+    if cheap_pass:
+        shop['cheap_vendor_planned'] = True
     shop['bargain_cards'] = [name for name, _ in added]
+    if cheap_pass:
+        # Earlier extras bought this month keep counting against the caps.
+        shop['bargain_cards'] = list(dict.fromkeys([*shop['bargain_cards'], *previous]))
     if added:
         items.extend(added)
         _record(mem, 'bargain_plan', month=shop.get('key'),
