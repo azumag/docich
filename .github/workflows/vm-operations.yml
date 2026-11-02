@@ -13,7 +13,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause, browser_profile_reclaim]
       target:
         description: VM target
         required: true
@@ -1325,6 +1325,31 @@ jobs:
           if [[ "${LEGACY_OUTCOME}" == "failure" ]]; then
             echo "::warning::legacy storage_reclaim.sh failed; see staged stage= lines above for per-stage results"
           fi
+
+      - name: Run browser-profile reclaim dry-run plan (phase 1 only)
+        if: ${{ steps.auth.outputs.operation == 'browser_profile_reclaim' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Phase 1 of the reviewed two-phase wrapper (docich#3122, #3146):
+          # the fixed script is piped with no arguments, so it can only emit
+          # the dry-run plan JSON (plan_sha256 / entries_planned /
+          # bytes_planned). The --apply phase is deliberately NOT wired here:
+          # it needs the owner-supplied EXPECT_PLAN digest and stays a
+          # separate, later operation. The wrapper's own preconditions
+          # (run-soren-live state dir, game_switch.json and
+          # locks/game-switch.lock present and non-symlink) keep this
+          # fail-closed on the VM.
+          bash -n control/ops/vm_actions/browser_profile_reclaim_now.sh
+          echo "browser_profile_reclaim phase=dry-run"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          out="$RUNNER_TEMP/browser-profile-reclaim.out"
+          cat control/ops/vm_actions/browser_profile_reclaim_now.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" | tee "$out"
+          grep -E 'plan_sha256|entries_planned|bytes_planned' "$out" >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Manage market-paper systemd units (opt-in stocks/FX paper corners)
         if: ${{ steps.auth.outputs.operation == 'market_paper' }}
