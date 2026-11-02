@@ -783,10 +783,21 @@ def _battle(mem, enemy, ally, hp_seq):
     return out
 
 
-def _launch(monkeypatch, mem):
-    """target_step with the cursor on the goal: the sortie is confirmed."""
+def _launch(monkeypatch, mem, *, observe_departure=True):
+    """target_step with the cursor on the goal: the sortie A is requested.
+
+    ``observe_departure`` (default) also drives the send boundary that
+    commits the reservation: a journaled A plus the field map returning
+    (docich#3193 A). Tests that exercise the picker itself pass False.
+    """
     monkeypatch.setattr(policy, 'nav_step', lambda *a, **k: 'arrived')
-    return policy.target_step(_text_screen('', 'map_target'), mem, FRAME)
+    actions = policy.target_step(_text_screen('', 'map_target'), mem, FRAME)
+    if observe_departure and actions == [policy.pad('a')] and mem.get('departure_request'):
+        trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+        mem['departure_request']['request_trace'] = trace
+        mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+        policy.observe_sortie_transition(_text_screen('', 'map'), mem, 'map_target')
+    return actions
 
 
 def _adopt(mem, orders):

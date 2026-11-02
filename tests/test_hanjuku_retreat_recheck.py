@@ -921,6 +921,9 @@ def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch,
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('a')]
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
     assert not mem.get('retreat_rechecks')  # A alone
+    trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    mem['departure_request']['request_trace'] = trace
+    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     mem = json.loads(json.dumps(mem)); mem['tick'] = 201
     p.observe_sortie_transition(Screen([], None, '', kind=return_kind), mem, 'map_target')
     if return_kind == 'unknown':

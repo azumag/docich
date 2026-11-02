@@ -186,13 +186,21 @@ def test_confirmed_card_names_record_selected_and_planned_generals_separately():
     assert context['observed_metric'] == {'general': 'ゼウス', 'cards': ['フットバース']}
 
 
+def commit_departure(mem):
+    """The sender-journal receipt plus the field map returning (docich#3193 A)."""
+    trace = {'decision_id': 'test:1:1', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    mem['departure_request']['request_trace'] = trace
+    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    policy.observe_sortie_transition(Screen([], None, '', kind='map'), mem, 'map_target')
+
+
 def test_launch_record_uses_selected_general_and_keeps_chart_general(monkeypatch):
     mem = memory()
     mem.update(active='1-A2', orders={'1-A2': 'pending'}, general_override={'1-A2': 'ゼウス'})
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'order_launched'
+    commit_departure(mem)
+    rec = next(r for r in mem['_records'] if r['decision'] == 'order_launched')
     assert rec['general'] == mem['launched']['ゴーメン']['general'] == 'ゼウス'
     assert rec['planned_general'] == 'どうし'
     assert rec['strategy_variant'] == 'substitute_general' and rec['deviation_reason']
@@ -263,6 +271,7 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
     mem['general_override'] = {'1-B1': 'どうし'}
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
+    commit_departure(mem)
     assert mem['launched']['けっかい']['general'] == 'ゼウス'
 
 
@@ -309,6 +318,15 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
     seen = set()
     for step, screen in enumerate(screens):
         mem['_records'] = []
+        if screen.kind == 'map_target' and mem.get('departure_request') is not None:
+            # The send boundary: a readable journal without this request's A.
+            trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+            if mem['departure_request'].get('request_trace'):
+                mem['_departure_input'] = {'request_trace': mem['departure_request']['request_trace'],
+                                           'a_inputs': 0}
+            else:
+                mem['departure_request']['request_trace'] = trace
+                mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 0}
         actions = (policy.target_step(screen, mem, None) if screen.kind == 'map_target'
                    else policy.deploy_step(screen, mem))
         assert actions
@@ -326,7 +344,7 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
         else:
             assert plan['strategy_variant'] == 'chart' and plan['deviation_reason'] is None
         seen.update(record['decision'] for record in records)
-    assert {'card_pick', 'sortie_confirm', 'order_launched'} <= seen
+    assert {'card_pick', 'sortie_confirm', 'sortie_departure_requested'} <= seen
     if retry:
         assert 'sortie_input' in seen
         assert mem['order_context']['1-A2']['expected_metric'] == context['expected_metric']
@@ -1005,6 +1023,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     mem['general_override']['1-B1'] = 'どうし'
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
+    commit_departure(mem)
     assert mem['sorties']['1-B1']['general'] == mem['launched']['けっかい']['general'] == 'ゼウス'
     launch = mem['_records'][-1]
     assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
