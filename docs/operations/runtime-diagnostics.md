@@ -1435,3 +1435,32 @@ path・ファイル名・内容・権限情報は出力しません。
 - `/var/lib/docker` は意図的に対象外です: collector の uid が traverse できず、恒久的に
   unreadable な root は共通の incomplete フラグを永久に立てるため bytes の帰属になりません。
   `/tmp` の一時 `.so` family は既存の tmp shared objects 投影が担当します。
+
+### opencode session ファイルのサブパス指標（#3140）
+
+`storage_breakdown` の version 2 には、opencode 既定データディレクトリ（`~/.local/share/opencode/`）
+の固定サブパス指標が optional で含まれます。旧 collector の payload には存在せず、共通の
+incomplete フラグにも影響しません。
+
+- `opencode_default_snapshot`（`snapshot/`）、`opencode_default_storage`（`storage/`）、
+  `opencode_default_tool_output`（`tool-output/`）、`opencode_default_log`（`log/`）:
+  `present` / `scan_complete` / `count` / `allocated_bytes`。
+- `opencode_default_other`: `opencode_default_total` から上記 4 サブパスと db family を引いた残差。
+  未知サブパスの検知用ですが、**減算指標のため truncate 時は数値が意味を持ちません**。
+  `scan_complete=false` のときは `_complete=0` だけを描画し、`_bytes` / `_count` 行は出しません
+  （欠落 = unknown。数値を出すと「未知の増加」または「回収済み」と逆誤読されるため）。
+  100,000 entry の scan cap は意図的な bound で、`complete=1` への復帰は初回 apply で
+  tree が縮んだ後に monitor で確認します。
+
+### opencode session ファイル retention の status 投影（#3140）
+
+`opencode_session_file` は、hourly retention の **file pass** が残す
+`soren/tmp/state/opencode_session_file_retention.json`（mode 0600）を固定 field だけで投影します。
+helper の dry-run JSON に含まれる plan（session path を含む）は転記しません。
+
+- `present` / `readable`: status file の有無と schema 一致。
+- `status`（`completed` / `failed` / `gate_timeout`）、`mode`（`dry-run` / `apply`）、
+  `reason`（helper の固定理由コード。未知値は `unknown`）、`age_sec` / `stale`（3 時間）。
+- `entries_planned` / `entries_confirmed` / `entries_selected` / `bytes_planned` /
+  `bytes_removed` / `truncated` / `state_written` / `auto_apply` / `cutoff_seconds`。
+- status file の書き込みは best-effort で、失敗しても retention unit の成否は変わりません。

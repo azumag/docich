@@ -283,6 +283,30 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+# File-stage retention status projection (azumag/docich#3140). The helper
+# writes only these fixed fields; anything else is dropped, so a compromised
+# or future status file can never widen the diagnostics payload.
+SESSION_FILE_STATUS_SCHEMA = 1
+SESSION_FILE_MAX_AGE_SEC = 3 * 60 * 60
+SESSION_FILE_ENUMS = {
+    "status": {"completed", "failed", "gate_timeout"},
+    "mode": {"dry-run", "apply"},
+    "reason": {
+        "ok", "gate_timeout", "invalid_batch", "invalid_gate_wait",
+        "invalid_mode", "state_required", "manifest_required",
+        "state_in_store", "manifest_in_store", "state_unreadable",
+        "state_invalid", "state_policy_mismatch", "state_write",
+        "manifest_invalid", "manifest_write", "plan_mismatch",
+        "source_changed", "unsafe_entry", "tree_scan", "tree_scan_limit",
+        "top_scan_limit", "io_error",
+    },
+}
+SESSION_FILE_NUMBERS = (
+    "completed_at", "cutoff_seconds", "entries_planned",
+    "entries_confirmed", "entries_selected", "bytes_planned",
+    "bytes_removed",
+)
+SESSION_FILE_BOOLEANS = ("auto_apply", "truncated", "state_written")
 # Fixed on-disk formats of the strategy permanent archive (by_hash). "plain" is
 # what the soviet_now readers open today; "compressed" is what a reviewed
 # reclaim step may produce once every reader can fall back to it. Bounded
@@ -1077,6 +1101,51 @@ def _sweep_sys_tmp_reclaim_candidates(
     except Exception:
         # The collector must never raise; partial proven counts are kept.
         result["scan_complete"] = False
+    return result
+
+
+def _collect_opencode_session_file(soren, now):
+    """Project the file-stage status file with fixed fields only.
+
+    The helper writes ``tmp/state/opencode_session_file_retention.json`` with
+    enums and non-negative integers only (never plan paths or content). A
+    missing/old/foreign file degrades to ``present``/``readable`` booleans, so
+    an old collector or a pre-deploy VM stays complete.
+    """
+    path = Path(soren) / "tmp" / "state" / "opencode_session_file_retention.json"
+    result = {"present": False, "readable": False}
+    try:
+        st = path.lstat()
+        result["present"] = True
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > 4096:
+            return result
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                raise ValueError()
+            data = json.loads(handle.read(4097))
+        if not isinstance(data, dict) or data.get("schema") != SESSION_FILE_STATUS_SCHEMA:
+            return result
+        result["readable"] = True
+        for key, allowed in SESSION_FILE_ENUMS.items():
+            value = data.get(key)
+            if isinstance(value, str):
+                result[key] = value if value in allowed else "unknown"
+        for key in SESSION_FILE_NUMBERS:
+            value = data.get(key)
+            if type(value) is int and 0 <= value < 2**63:
+                result[key] = value
+        for key in SESSION_FILE_BOOLEANS:
+            value = data.get(key)
+            if type(value) is bool:
+                result[key] = value
+        stamp = result.get("completed_at")
+        if stamp is not None:
+            result["age_sec"] = max(0, int(now - stamp))
+            result["stale"] = stamp > now + 60 or now - stamp > SESSION_FILE_MAX_AGE_SEC
+    except (OSError, ValueError):
+        pass
     return result
 
 
@@ -14794,6 +14863,7 @@ def main(argv):
             now,
         ),
         "opencode_retention": _collect_opencode_retention(soren, now),
+        "opencode_session_file": _collect_opencode_session_file(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
         "cc_translation_adapter": _collect_cc_translation_adapter(),

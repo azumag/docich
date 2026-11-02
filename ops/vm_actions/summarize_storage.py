@@ -162,7 +162,14 @@ def render(data):
             item = breakdown.get(category)
             if not isinstance(item, dict):
                 continue
-            parts.append(f"{category}_complete={int(item.get('scan_complete') is True)}")
+            complete = item.get("scan_complete") is True
+            parts.append(f"{category}_complete={int(complete)}")
+            if category == "opencode_default_other" and not complete:
+                # The remainder is derived by subtraction. When any input was
+                # truncated it is meaningless, so emit no bytes/count at all:
+                # absent = unknown. Publishing a number here reads either as
+                # new growth or as reclamation, both of which are wrong.
+                continue
             parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
             parts.append(f"{category}_count={_uint(item, 'count')}")
 
@@ -234,6 +241,25 @@ def render(data):
         if state not in {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"}:
             state = "unknown"
         parts.append(f"retention_{label}={state}")
+
+    # File-stage retention (azumag/docich#3140). Only fixed enums and numbers
+    # are rendered; the helper's plan paths never reach diagnostics.
+    session_file = data.get("opencode_session_file") or {}
+    state = session_file.get("status")
+    if state not in {"completed", "failed", "gate_timeout"}:
+        state = "unknown"
+    reason = session_file.get("reason")
+    if not isinstance(reason, str) or not reason.replace("_", "").isalnum():
+        reason = "unknown"
+    mode = session_file.get("mode")
+    if mode not in {"dry-run", "apply"}:
+        mode = "unknown"
+    parts.append(f"session_file_retention={state}")
+    parts.append(f"session_file_retention_reason={reason}")
+    parts.append(f"session_file_retention_mode={mode}")
+    parts.append(f"session_file_retention_age_sec={_uint(session_file, 'age_sec')}")
+    parts.append(f"session_file_retention_planned={_uint(session_file, 'entries_planned')}")
+    parts.append(f"session_file_retention_removed_bytes={_uint(session_file, 'bytes_removed')}")
     return 1, int(incomplete), ",".join(parts)
 
 
