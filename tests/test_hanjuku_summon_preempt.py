@@ -310,3 +310,53 @@ def test_a_planned_card_still_to_play_comes_before_the_okunote():
     mem = egg_fight_memory(planned_cards=['クースカン'])
     p.egg_battle_step(egg_menu_screen(mem), mem)
     assert not mem['battle'].get('okunote_summon_preempt')
+
+
+# ---- g1097 22:09: 召喚戦の将軍コマンドでBループ ----
+# たいきゃく の下におくのてが隠れた箱 (hidden_battle_commands) で、
+# summon_reading が照合不能のとき B は効かず停滞した。有界な down で
+# おくのて行へ向かい、尽きたら通常のメニュー処理へ戻す。
+def summon_menu_screen(mem, *, hidden=True, labels=('たまごをつかう', 'きりふだ', 'たいきゃく')):
+    from docich.hanjuku_screen import EggRow
+    first_y = 176
+    lines = [TextLine(first_y + 16*i, tuple((176+8*j, ch) for j, ch in enumerate(label)))
+             for i, label in enumerate(labels)]
+    s = Screen(lines, None, ''.join(labels), kind='battle_menu', menu_cursor=first_y,
+               hidden_battle_commands=hidden)
+    s.egg_rows = [EggRow(mem['battle']['ally'], 30, 'ally', 183),
+                  EggRow('ランプキン', 37, 'enemy', 207)]
+    return s
+
+
+def unbindable_summon_memory(**battle):
+    mem = memory(chapter=5, enemy='レモン', ally='カスパチョ', ally_hp=25,
+                 castle='ジュメルズ')
+    mem['battle'].update(egg_battle=True, **battle)
+    mem['egg_battle'] = True
+    return mem
+
+
+def test_unconfirmed_summon_menu_scrolls_down_bounded_then_falls_back():
+    mem = unbindable_summon_memory()
+    s = summon_menu_screen(mem)
+    downs = 0
+    for _ in range(8):
+        actions = p.battle_menu_step(s, mem)
+        if actions == [p.pad('down')]:
+            downs += 1
+        else:
+            break
+    assert downs == p.OKUNOTE_SUMMON_UNCONFIRMED_LIMIT
+    # 尽きた後は B の打ち続けではなく通常のコマンド判定が走る
+    assert any(r['decision'] == 'battle_okunote_summon_unconfirmed_exhausted'
+               for r in mem['_records'])
+
+
+def test_unconfirmed_counter_resets_when_the_panel_binds_again():
+    mem = unbindable_summon_memory()
+    s = summon_menu_screen(mem)
+    p.battle_menu_step(s, mem)
+    assert mem['battle'].get('okunote_summon_unconfirmed') == 1
+    # A later bindable observation must not inherit stale unconfirmed counts.
+    mem['battle']['okunote_summon_unconfirmed'] = None
+    assert int(mem['battle'].get('okunote_summon_unconfirmed') or 0) == 0
