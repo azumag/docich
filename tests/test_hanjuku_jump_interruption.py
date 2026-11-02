@@ -19,7 +19,12 @@ def test_zero_move_jump_interrupted_by_foreground_can_retry_without_confirming()
     mem = state()
     nav._start_y_jump(mem, {'step': 'X'}, 'アルマムーン', 'map')
     nav.observe_jump_foreground(screen('text'), mem)
-    mem['tick'] += 70  # live event owned the screen for more than a minute
+    # Seen by nobody for longer than Y_JUMP_OPEN_GRACE but shorter than
+    # Y_JUMP_INTERRUPTED_TICKS: the foreground receipt path. A longer cut
+    # takes the y_jump_interrupted branch (#3067), which reopens Y and drops
+    # the stale cursor instead (test_hanjuku_y_jump_interrupted.py).
+    mem['tick'] += nav.Y_JUMP_OPEN_GRACE + 4
+    assert nav.Y_JUMP_OPEN_GRACE < mem['tick'] - 100 < nav.Y_JUMP_INTERRUPTED_TICKS
     assert nav._drop_stale_y_jump(screen('map'), mem) is False
     assert mem['y_jump_last']['foreground_interrupted'] is True
     assert nav._want_y_jump(mem, {'step': 'X'}, 'アルマムーン', 'map')
