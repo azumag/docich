@@ -6645,6 +6645,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v366-okunote-parent-resend",
             "hanjuku-chart-v367-okunote-committed-select",
             "hanjuku-chart-v368-merchant-exit-log",
+            "hanjuku-chart-v369-house-entry-retry",
             "hanjuku-chart-v370-move-overdue-settle",
             "hanjuku-chart-v371-probe-moved-into-castle",
             "hanjuku-chart-v129-battle-card-progress",
