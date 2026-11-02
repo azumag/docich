@@ -760,3 +760,21 @@ def test_the_kill_switch_keeps_no_waiting_rows(monkeypatch):
     mem = completed()
     r.observed_member(mem, NAMES + ['ヴィーナス'])
     assert 'roster_carry_source' not in mem
+
+
+# ---- Issue #3194 (36): which observations send nothing, and while on what ----
+def test_idle_observations_are_counted_by_screen_text_and_stay_bounded():
+    from docich.hanjuku import orchestrator as o
+    mem = {}
+    screen = Screen([], None, 'ロックフォールしょうぐんがてきとそうぐうしました!!', kind='text')
+    for _ in range(3):
+        o._tally_observation(mem, 'text', screen, [])
+    o._tally_observation(mem, 'text', screen, [p.pad('a')])        # sent something: not idle
+    o._tally_observation(mem, 'map', Screen([], None, '', kind='map'), [])   # idle, but not text
+    cost = mem['obs_cost']
+    assert cost['observations']['n'] == 5 and cost['idle_text']['n'] == 3
+    assert cost['idle_text']['by_text'] == {'text:ロックフォールしょうぐんがてきと': 3}
+    for i in range(o.IDLE_TEXT_KEYS + 10):
+        o._tally_observation(mem, 'unknown', Screen([], None, f'もじ{i}', kind='unknown'), [])
+    assert len(cost['idle_text']['by_text']) <= o.IDLE_TEXT_KEYS
+    assert all(len(k) <= len('unknown:') + o.IDLE_TEXT_HEAD for k in cost['idle_text']['by_text'])
