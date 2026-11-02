@@ -38,6 +38,7 @@ LOCK_FILE = "locks/jev-corner.lock"
 FIXED_MAX_REQUESTS_PER_RUN = 500
 FIXED_DECISION_BUDGET_MS = 1500
 FIXED_HTTP_TIMEOUT_MS = 1000
+FIXED_BRIDGE_STUCK_MOVE_AGE_S = 7200.0
 ACTIVE_STATUSES = frozenset({"preparing", "active", "restoring", "recovery_required"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "idle"})
 PRECOMMIT_CAPABILITY_ERROR = "Soren player_policy_v1 capabilityを確認できません"
@@ -68,6 +69,7 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_state_invalid": 53,
     "player_state_invalid": 54,
     "player_policy_jev": 55,
+    "player_policy_jev_bridge_stuck_live": 97,
     "lifecycle_boundary": 56,
     "lifecycle_stop_requested": 57,
     "lifecycle_stopping": 58,
@@ -517,6 +519,8 @@ def recover_bridge_diagnose(g: GlobalConfig) -> str:
     ):
         return "player_state_invalid"
     if player_state is not None and player_state.get("policy") == "jev":
+        if _check_jev_bridge_stuck_live(g, manager):
+            return "player_policy_jev_bridge_stuck_live"
         return "player_policy_jev"
 
     corner_path = Path(g.state_dir) / STATE_FILE
@@ -672,6 +676,120 @@ def refresh_bridge(g: GlobalConfig) -> None:
         raise JevCornerError("Soren bridge capabilityを確認できません")
 
 
+def _check_jev_bridge_stuck_live(g: GlobalConfig, manager: "JevCornerManager") -> bool:
+    """JEV-active bridgeがスタックし、recover_bridgeで復旧可能かを判定する。
+
+    以下の全条件を満たす場合のみ True:
+
+    - corner state が active で policy == "jev"
+    - player_state が存在し policy == "jev"
+    - corner state の request_id が有効な UUID で、corner state の run_id が
+      player_state の run_id と一致する（同一runの対応証拠）
+    - run_id が有効な UUID
+    - game_state.json が MOVE凍結 (mtime 経過 >= FIXED_BRIDGE_STUCK_MOVE_AGE_S) または不在
+    - capability pid が生存
+    - 他コーナー busy なし
+    - finish 失敗記録あり (last_error 設定済み)
+
+    新しい lifecycle request は作らず、配信・音声・encoder には触れない。
+    """
+    root = manager.adapter.root
+    player_path = root / "tmp/state/game_lifecycle/player_state.json"
+    player_state = _read_json(player_path)
+    if player_state is None:
+        return False
+    if (
+        player_state.get("schema") != 1
+        or player_state.get("game") != GAME_NAME
+        or player_state.get("policy") != "jev"
+        or type(player_state.get("player_generation")) is not int
+        or player_state.get("player_generation") < 0
+    ):
+        return False
+    run_id = player_state.get("run_id")
+    if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
+        return False
+
+    corner_path = Path(g.state_dir) / STATE_FILE
+    corner_state = _read_json(corner_path)
+    if corner_state is None:
+        return False
+    if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
+        return False
+    if corner_state.get("status") not in ACTIVE_STATUSES:
+        return False
+    if corner_state.get("policy") != "jev":
+        return False
+    if corner_state.get("player_generation") != player_state.get("player_generation"):
+        return False
+    # fail-closed: a stale or corrupt corner snapshot must not combine with
+    # another run's player_state to authorize stuck-live recovery. Require a
+    # UUID request_id plus the same-run correspondence evidence.
+    request_id = corner_state.get("request_id")
+    if not isinstance(request_id, str) or not UUID_RE.fullmatch(request_id):
+        return False
+    if corner_state.get("run_id") != run_id:
+        return False
+    if not corner_state.get("last_error"):
+        return False
+
+    if _program_busy_reason(g) is not None:
+        return False
+
+    # A pending lifecycle transaction owns the boundary; an in-flight
+    # request/ack must not race the bridge relaunch.
+    lifecycle_dir = root / "tmp/state/game_lifecycle"
+    if (lifecycle_dir / "request.json").exists() or (lifecycle_dir / "ack.json").exists():
+        return False
+
+    # A live runner could still be dispatching moves to this board; the
+    # frozen-board evidence only holds once the runner has exited.
+    runner = _read_json(root / "tmp/state/main_strategy_runner_active.json") or {}
+    runner_pid = runner.get("pid")
+    if type(runner_pid) is int and runner_pid > 0:
+        try:
+            os.kill(runner_pid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        else:
+            return False
+
+    capability_path = root / "tmp/state/game_lifecycle/player_capabilities.json"
+    capability = _read_json(capability_path)
+    pid = capability.get("pid") if isinstance(capability, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+    game_state_path = root / "game_state.json"
+    if game_state_path.is_file():
+        board = _read_json(game_state_path)
+        if not isinstance(board, dict) or board.get("state") != "MOVE":
+            return False
+        try:
+            age = time.time() - game_state_path.stat().st_mtime
+        except OSError:
+            return False
+        if age < FIXED_BRIDGE_STUCK_MOVE_AGE_S:
+            return False
+        # The stale mtime already proves score/pieces unchanged for the whole
+        # window; sample once more so a write landing between the two reads
+        # cannot slip a live board through.
+        time.sleep(1.0)
+        board_again = _read_json(game_state_path)
+        if (
+            not isinstance(board_again, dict)
+            or board_again.get("score") != board.get("score")
+            or board_again.get("pieces") != board.get("pieces")
+        ):
+            return False
+
+    return True
+
+
 def recover_bridge(g: GlobalConfig) -> None:
     """Recover the game-only runtime left stopped by a failed bridge refresh."""
 
@@ -680,6 +798,25 @@ def recover_bridge(g: GlobalConfig) -> None:
         raise JevCornerError("他programコーナー稼働中のため復旧しません")
     root = _soren_root(g)
     manager = JevCornerManager(g)
+    # JEV-active bridge stuck live: player_policy_jev_bridge_stuck_live.
+    # _assert_stopped_bridge_recovery は policy=="jev" で拒否するため、
+    # 独立したゲートで許可判定を行い、新ライフサイクル request を作らずに
+    # bridge 再起動 + materialize + readiness だけを実行する。
+    if _check_jev_bridge_stuck_live(g, manager):
+        deadline = time.monotonic() + 600.0
+        try:
+            manager.adapter.preflight(deadline, None)
+            _run_bridge_relaunch(root)
+            manager.adapter.materialize_runtime(deadline, None)
+            manager.adapter.readiness(deadline, None)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise JevCornerError("停止済みSoren game bridgeの復旧に失敗しました") from exc
+        except Exception as exc:
+            raise JevCornerError("停止済みSoren game runtimeの安全な復旧に失敗しました") from exc
+        capability = root / "tmp/state/game_lifecycle/player_capabilities.json"
+        if not capability.is_file():
+            raise JevCornerError("Soren bridge capabilityを復旧後に確認できません")
+        return
     payload = _assert_stopped_bridge_recovery(g, manager)
     deadline = time.monotonic() + 600.0
     try:
