@@ -61,7 +61,7 @@ def install(facade_name: str, modules) -> None:
     # exists. Both production (hanjuku_bot) and legacy policy callers cross
     # this facade boundary, while ordinary layer/chart imports stay lazy.
     if facade_name in ('docich.hanjuku_policy', 'docich.hanjuku_bot'):
-        from . import sortie_retry_guard as _sortie_retry_guard  # noqa: F401
+        from .flows import sortie_retry_guard as _sortie_retry_guard  # noqa: F401
 
     facade = sys.modules[facade_name]
     namespace = facade.__dict__
