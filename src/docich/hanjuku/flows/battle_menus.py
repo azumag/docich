@@ -693,7 +693,10 @@ def battle_menu_step(screen: Screen, mem):
         return probe
     if screen.hidden_battle_commands or screen.has('おくのて'):
         cur.pop('card_damage_list_blocked', None)
-        return okunote_step(screen, mem)
+        res = okunote_step(screen, mem)
+        if res is not None:
+            return res
+        # 照合不能な召喚戦メニューへのBが尽きたため、通常のコマンド判定へ進む
     retreat = _hero_retreat_menu(screen, mem, cur)
     if retreat is not None:
         return retreat
@@ -867,6 +870,12 @@ def defender_egg_pending_step(screen, mem):
     return [pad('b')]
 
 
+# Bounded B attempts to close an unbindable summon-fight command menu. In that
+# menu B does nothing (g1097 22:09, same frame 40+ observations); the fallback
+# hands the screen back to the ordinary menu logic instead of looping.
+OKUNOTE_SUMMON_UNCONFIRMED_LIMIT = 3
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -883,9 +892,28 @@ def okunote_step(screen, mem):
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
             if summon is None:
+                # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
+                # おくのて行を持つ (hidden_battle_commands)。B は効かず、同じ
+                # 画面が40観測以上続いた。照合不能でもおくのて行へ向かうため、
+                # 既存のスクロールと同じく有界な down を送り、尽きたら通常の
+                # メニュー処理へ委ねる (オーナー指摘 2026-11-02)。
+                unconfirmed = int(cur.get('okunote_summon_unconfirmed') or 0)
+                cur['okunote_summon_unconfirmed'] = unconfirmed + 1
                 _record(mem, 'battle_okunote_summon_unconfirmed', **_battle_labels(cur),
+                        observed_metric={'attempts': unconfirmed + 1,
+                                         'limit': OKUNOTE_SUMMON_UNCONFIRMED_LIMIT,
+                                         'cursor_y': screen.menu_cursor},
                         reason='現在の本人HP・敵召喚獣・自軍コマンドを同じ戦闘に照合できず奥の手を開かない')
-                return [pad('b')]
+                if unconfirmed + 1 <= OKUNOTE_SUMMON_UNCONFIRMED_LIMIT:
+                    if screen.hidden_battle_commands:
+                        return [pad('down')]
+                    return [pad('b')]
+                _record(mem, 'battle_okunote_summon_unconfirmed_exhausted',
+                        **_battle_labels(cur),
+                        observed_metric={'attempts': unconfirmed + 1},
+                        reason='照合不能な召喚戦メニューへの入力が有界回数を超えてもおくのて行を確認できないため、以後は通常のコマンド判定へ戻す')
+                return None
+            cur.pop('okunote_summon_unconfirmed', None)
             _egg_general_reading(screen, mem, cur)
             hp = summon['ally_hp']
         # g482: パプリカ34 entered the irreversible random choices and chose
