@@ -2,9 +2,8 @@
 
 This is the owner-operated background path.  It reads only the two reviewed
 beta-control capability values from the existing WebUI env file, checks the
-singleton status, and asks the Worker for at most one run for the current UTC
-hour.  Re-running within the same hour is idempotent and never queues a second
-match.
+singleton status, and asks the Worker for at most one run per invocation.
+Another active run is never stopped, reset, or replaced.
 """
 from __future__ import annotations
 
@@ -66,26 +65,25 @@ def _install_control_environment(path: Path = ENV_FILE) -> None:
     os.environ.update(controls)
 
 
-def hourly_run_id(now: dt.datetime | None = None) -> str:
+def background_run_id(now: dt.datetime | None = None) -> str:
+    """Return a timestamped run id so separate owner requests cannot alias."""
     current = now or dt.datetime.now(dt.timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=dt.timezone.utc)
     current = current.astimezone(dt.timezone.utc)
-    return "hourly-" + current.strftime("%Y%m%d%H")
+    return "background-" + current.strftime("%Y%m%d%H%M%S%f")
 
 
 def start_one_background_match(*, now: dt.datetime | None = None) -> str:
-    """Start or confirm this hour's one background run.
+    """Start exactly one background run when the singleton is ready.
 
-    Returns the deterministic run id.  Another active run is never stopped,
-    reset, or replaced.  A paused run is deliberately not reported as started:
-    it requires the existing explicit recovery path before any next run.
+    Returns the unique run id.  Another active run is never stopped, reset, or
+    replaced.  A paused run is deliberately not reported as started: it
+    requires the existing explicit recovery path before any next run.
     """
     _install_control_environment()
-    run_id = hourly_run_id(now)
+    run_id = background_run_id(now)
     status = call_beta_control("status")
-    if status.get("runId") == run_id and status.get("state") in STARTED_STATES:
-        return run_id
     if status.get("state") == "paused":
         raise BackgroundStartError("control_state_requires_attention")
     if status.get("readyForNextRun") is not True or status.get("state") in ACTIVE_STATES:
