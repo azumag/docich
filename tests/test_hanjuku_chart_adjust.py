@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_chart_adjust as adjust
 from docich import hanjuku_policy as policy
+from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 
@@ -1348,8 +1349,13 @@ def g514_locked_plan():
     return receipt, mem
 
 
-def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
+def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkeypatch):
     receipt, mem = g514_locked_plan()
+    # Since 2026-11-02 the boss order opens once its own chain is captured
+    # (PR #3199); this fixture's chain is complete, so the boss order would
+    # be live. Gate it to preserve the scenario under test — an adopted
+    # plan whose remaining orders are all waiting.
+    monkeypatch.setattr(_orders_mod, '_boss_path_captured', lambda m: False)
     before = copy.deepcopy(mem)
     rid = adjust.request_id(mem)
     assert rid == mem['chart_plan']['request_id'] == mem['chart_adjust']['request_id']
@@ -1372,6 +1378,9 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
                                             (['ヴィーナス'], False), (None, False)])
 def test_g514_recovered_retake_still_requires_a_readable_spare_defender(monkeypatch, present, allows):
     _, mem = g514_locked_plan()
+    # PR #3199: the boss order would be live on this fixture's complete chain;
+    # gate it so the retake flow under test still picks the interim order.
+    monkeypatch.setattr(_orders_mod, '_boss_path_captured', lambda m: False)
     mem['chart_adjust']['interim_count'] = 2
     policy._off_chart(mem)
     order = policy.next_order(mem)

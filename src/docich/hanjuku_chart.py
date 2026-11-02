@@ -170,6 +170,18 @@ SEASON_SITE_CELLS = {
 }
 CASTLES[4].update(SEASON_SITE_CELLS)
 
+# Chapter 5's 完熟大魔城, measured 2026-11-02 from the live g1097 Y view with
+# every ordinary castle ours (the castle spawns only then; GCGX: 全ての城を
+# 制圧すると完熟大魔城が出現する). The skull sits at view ~(159, 82.5), the
+# same sprite as chapter 3's boss skull — chapter 3's cell put its marker
+# 1.45 px left and 3.37 px up of the skull centre (v295), so the aim is
+# (157.55, 79.1) and the cell is 8x the view difference: (306+55*8, 141+16*8).
+# Production is read-only: no march has entered through this cell yet.
+DEMON_CASTLE_CELLS = {5: {'ボス': (746, 271)}}
+for _chapter, _cells in DEMON_CASTLE_CELLS.items():
+    CASTLES[_chapter].update(_cells)
+del _chapter, _cells
+
 # Independent native-view calibrations. Castle cells are field-cursor top-left
 # coordinates; flags and the Y selection cursor use different pixel anchors.
 # Keep these values separate when registering a chapter from a source map.
