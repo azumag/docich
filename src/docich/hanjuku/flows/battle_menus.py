@@ -26,7 +26,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first,
-                               _monster_chikyu_choice, _monster_attack_policy_default)
+                               _monster_chikyu_choice, _monster_lampkin_choice,
+                               _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
 from ..judgment.omedetori import omedetori_assessment, omedetori_command_selected
@@ -1748,6 +1749,8 @@ def monster_menu_step(screen: Screen, mem):
     # #3071: ちきゅうちゃん self-destructs only into a lone general.
     chikyu = _monster_chikyu_choice(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    lampkin = _monster_lampkin_choice(
+        owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
     # Each named monster has an ordered two-skill table. When one label is
     # partly unreadable, requiring both exact OCR matches accidentally falls
@@ -1778,7 +1781,8 @@ def monster_menu_step(screen: Screen, mem):
             or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
             or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))
-            or (chikyu and mem.get('monster_menu_choice') not in (chikyu, 'retreat'))):
+            or (chikyu and mem.get('monster_menu_choice') not in (chikyu, 'retreat'))
+            or (lampkin and mem.get('monster_menu_choice') not in (lampkin, 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
@@ -1798,6 +1802,8 @@ def monster_menu_step(screen: Screen, mem):
             default = 'skill2'
         elif chikyu:
             default = chikyu
+        elif lampkin:
+            default = lampkin
         elif balloon_cycle:
             # Measured hits use a three-turn reserve; absent measurements,
             # a conservative explicitly-unproven reserve prevents 9999 loops.
@@ -1837,7 +1843,7 @@ def monster_menu_step(screen: Screen, mem):
         #     position for the summoned monster's own attack.
         #   - `not heal_first` keeps heal-first monsters on their recovery path.
         if (not special_cycle and not damage_first and not damage_second and not chikyu
-                and not powerless and len(skill_lines) >= 2
+                and not lampkin and not powerless and len(skill_lines) >= 2
                 and default == 'skill1' and not heal_first and not behind):
             policy_default = _monster_attack_policy_default(
                 owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
@@ -1849,14 +1855,14 @@ def monster_menu_step(screen: Screen, mem):
         # retreat/experience: Balloon Finch survival and Akematsu one-shot swap.
         action = (default if special_cycle else
                   'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
-                  else chikyu or experience.preferred(exp, key, default=default, kind='monster_menu'))
+                  else chikyu or lampkin or experience.preferred(exp, key, default=default, kind='monster_menu'))
         # HP pools alone do not establish that this monster cannot win: a
         # living summon can attack, heal or disable the opponent. Returning
         # also exposes its general. Discard saved/learned HP-only retreats;
         # retain the explicit, measured two-useless-skills exception.
         if action == 'retreat' and not powerless:
             action = default
-        if not special_cycle and not damage_first and not damage_second and not chikyu:
+        if not special_cycle and not damage_first and not damage_second and not chikyu and not lampkin:
             action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines))
         # Keep the existing telemetry shape. The general's exposure risk is
         # still reported, but useful summons no longer request a return that
@@ -1917,6 +1923,9 @@ def monster_menu_step(screen: Screen, mem):
                        '同じ技の無限試行を防ぎ「あたためる」に切り替える')
             else:
                 why = '「ミカンをおす」を1回送信済みのため、次の選択で自爆の「あたためる」を選ぶ'
+        elif lampkin:
+            label = first
+            why = 'ボスモンスターに「かぼちゃ」はきかないため、つねに「へんなおどり」を選ぶ（オーナー 2026-11-02）'
         elif chikyu:
             label = second if action == 'skill2' else first
             why = ('自爆は将軍と兵士を確定で全滅させるため、敵将軍だけの今ハルマゲドンで決着させる'
@@ -1951,6 +1960,7 @@ def monster_menu_step(screen: Screen, mem):
                                  'omedetori_cycle': omedetori if omedetori_cycle else None,
                                  'damage_first': damage_first,
                                  'chikyu_choice': chikyu,
+                                 'lampkin_choice': lampkin,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
