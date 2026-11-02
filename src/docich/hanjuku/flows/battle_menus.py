@@ -704,7 +704,10 @@ def battle_menu_step(screen: Screen, mem):
         return probe
     if screen.hidden_battle_commands or screen.has('おくのて'):
         cur.pop('card_damage_list_blocked', None)
-        return okunote_step(screen, mem)
+        res = okunote_step(screen, mem)
+        if res is not None:
+            return res
+        # 照合不能な召喚戦メニューへのBが尽きたため、通常のコマンド判定へ進む
     retreat = _hero_retreat_menu(screen, mem, cur)
     if retreat is not None:
         return retreat
@@ -878,6 +881,15 @@ def defender_egg_pending_step(screen, mem):
     return [pad('b')]
 
 
+# Bounded B attempts to close an unbindable summon-fight command menu. In that
+# menu B does nothing (g1097 22:09, same frame 40+ observations); the fallback
+# hands the screen back to the ordinary menu logic instead of looping.
+OKUNOTE_SUMMON_UNCONFIRMED_LIMIT = 3
+# A committed rescue may continue scrolling past the 16-tick parent budget,
+# but never forever: past this total the おくのて row is treated as unread.
+OKUNOTE_COMMITTED_TICKS_LIMIT = 48
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -894,9 +906,28 @@ def okunote_step(screen, mem):
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
             if summon is None:
+                # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
+                # おくのて行を持つ (hidden_battle_commands)。B は効かず、同じ
+                # 画面が40観測以上続いた。照合不能でもおくのて行へ向かうため、
+                # 既存のスクロールと同じく有界な down を送り、尽きたら通常の
+                # メニュー処理へ委ねる (オーナー指摘 2026-11-02)。
+                unconfirmed = int(cur.get('okunote_summon_unconfirmed') or 0)
+                cur['okunote_summon_unconfirmed'] = unconfirmed + 1
                 _record(mem, 'battle_okunote_summon_unconfirmed', **_battle_labels(cur),
+                        observed_metric={'attempts': unconfirmed + 1,
+                                         'limit': OKUNOTE_SUMMON_UNCONFIRMED_LIMIT,
+                                         'cursor_y': screen.menu_cursor},
                         reason='現在の本人HP・敵召喚獣・自軍コマンドを同じ戦闘に照合できず奥の手を開かない')
-                return [pad('b')]
+                if unconfirmed + 1 <= OKUNOTE_SUMMON_UNCONFIRMED_LIMIT:
+                    if screen.hidden_battle_commands:
+                        return [pad('down')]
+                    return [pad('b')]
+                _record(mem, 'battle_okunote_summon_unconfirmed_exhausted',
+                        **_battle_labels(cur),
+                        observed_metric={'attempts': unconfirmed + 1},
+                        reason='照合不能な召喚戦メニューへの入力が有界回数を超えてもおくのて行を確認できないため、以後は通常のコマンド判定へ戻す')
+                return None
+            cur.pop('okunote_summon_unconfirmed', None)
             _egg_general_reading(screen, mem, cur)
             hp = summon['ally_hp']
         # g482: パプリカ34 entered the irreversible random choices and chose
@@ -912,6 +943,28 @@ def okunote_step(screen, mem):
             and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
         guard = cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt') or {}
         if guard.get('selected'):
+            # g1097 23:06: 親メニュー (きりふだ/たいきゃく/おくのて) が実は
+            # 残ったまま — 前の A は届かず B は無効。この無記録 B が ~200 回
+            # 続いた。おくのて行が見えるなら「もう一度A」は再抽選ではなく
+            # 未受付の再送なので、有界でカーソルを合わせて送る。
+            if 'おくのて' in labels:
+                retries = int(guard.get('parent_retries') or 0)
+                if retries < 4:
+                    move = _battle_menu_to(screen, 'おくのて')
+                    if move == 'here':
+                        guard['parent_retries'] = retries + 1
+                        _record(mem, 'battle_okunote_parent_resend', **_battle_labels(cur),
+                                observed_metric={'retry': retries + 1, 'cursor_y': screen.menu_cursor},
+                                reason='おくのて選択のAが届かず親メニューが残っているため、カーソル確認済みのAを有界で再送する')
+                        return [pad('a')]
+                    guard['parent_retries'] = retries + 1
+                    if move is not None:
+                        return [move]
+                    return [pad('down')]
+                _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
+                        observed_metric={'parent_retries': retries},
+                        reason='確定済み救済のおくのて行を有界回数再送してもメニューが残るため、以後は戻る')
+                return None
             return [pad('b')]  # a repeated parent frame is not another lottery
         if guard and cur['okunote_only_observed']:
             # A real menu can arrive after the bounded B opening expired.
@@ -1005,9 +1058,35 @@ def okunote_step(screen, mem):
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
-        if cur.get('okunote_egg_preempt'):
-            cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
-        return [pad('b')]
+        # g1097 22:28: the earlier unconfirmed phase burned ticks past 16
+        # before the rescue menu became readable, so the budgeted B ran
+        # forever. B is a no-op on the sole-command rescue menu: once a
+        # preempt/last-resort was recorded the only way forward is the
+        # おくのて row below, never another cancel attempt.
+        committed = (cur.get('okunote_last_resort_recorded')
+                     or (cur.get('okunote_summon_preempt') or {}).get('recorded')
+                     or (cur.get('okunote_egg_preempt') or {}).get('recorded'))
+        committed_active = committed and cur.get('okunote_only_observed')
+        # g1097 23:40: with ``ticks <= LIMIT`` inside the first condition the
+        # unread limit below was unreachable — past it the budgeted B always
+        # returned first, looping a button this box ignores. A おくのて row
+        # that is readable *and* has a readable cursor must still be selected
+        # below at any tick count; the limit still bounds navigation toward a
+        # row whose label or cursor cannot be confirmed.
+        if not committed_active:
+            if cur.get('okunote_egg_preempt'):
+                cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
+            return [pad('b')]
+        okunote_row_ready = ('おくのて' in {w for _, _, w in _options(screen)}
+                             and screen.menu_cursor is not None)
+        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT and not okunote_row_ready:
+            for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
+                if cur.get(key):
+                    cur[key].update(exhausted=True, stage='unavailable', close_pending=True)
+            _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
+                    observed_metric={'ticks': flow['ticks']},
+                    reason='確定済み救済メニューのおくのて行を有界観測しても読めないため、以後は未知の行を確定せず戻る')
+            return [pad('b')]
     if screen.hidden_battle_commands:
         _record(mem, 'battle_okunote_scroll', **_battle_labels(cur),
                 observed_metric={'cursor_y': screen.menu_cursor},

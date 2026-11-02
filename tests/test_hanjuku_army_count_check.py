@@ -444,3 +444,28 @@ def test_skipped_egg_priority_refills_a_measured_positive_but_insufficient_army(
     assert mem['shop']['soldiers']==40 and mem['shop']['soldiers_done'] is False
     assert mem['shop']['reserve']==0 and mem['shop']['egg']=='skipped'
     assert mem['soldiers_seen']==10 and not mem['shop'].get('soldier_receipt')
+
+
+def test_closing_stage_advances_leftover_plain_text_with_a():
+    # g1097 43-3: the closing stage pressed its bounded Bs against a leftover
+    # plain-text message over the month menu, then held [] forever. A is the
+    # only key that dismisses such a message; choices/unread stay guarded.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう')
+    assert s.kind == 'month_menu' and monthly._month_dialog_body(s)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    for _ in range(3):
+        assert monthly._month_army_count_check(s, mem, mem['shop']) == [p.pad('a')]
+    assert any(r['decision'] == 'month_text_advance' for r in mem['_records'])
+    # A real choice is never confirmed by this recovery path.
+    mem2 = memory()
+    mem2['month'] = '1-11'
+    s2 = text_menu(on='へいしほじゅう', choices=True)
+    scope2 = economy._soldier_count_scope(mem2, s2.header)
+    mem2['army_count_check'] = {'scope': scope2, 'stage': 'closing',
+                                'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s2, mem2, mem2['shop']) == []

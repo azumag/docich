@@ -331,6 +331,8 @@ def world_map_step(screen, mem, frame):
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
     markers = world_markers(frame)
+    _probe_launch_markers(mem, markers)
+    mem['_world_units_prev'] = [list(b) for b in markers]
     if markers:
         _record(mem, 'world_map_units', observed_metric={'count': len(markers),
                 'boxes': [list(m) for m in markers]},
@@ -553,6 +555,8 @@ def map_step(screen: Screen, mem, frame):
                           if not k.startswith(f"{order['step']}:")}
         _forget_failed_jump(mem, order['step'])
         mem.pop('castle_verified', None)
+        if order.get('source_probe') is True:
+            mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -786,6 +790,7 @@ def _commit_departure(mem, order, context, snapshot):
     mem.setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
+        'purpose': snapshot.get('purpose'),
         'evidence': deepcopy({k: v for k, v in
             ((mem.get('order_context') or {}).get(order['step']) or {}).items()
             if k != 'departure_order'}),
@@ -793,6 +798,20 @@ def _commit_departure(mem, order, context, snapshot):
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
            if 'departure_binding' in snapshot else {})}
     ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+    chapter = mem.get('chapter') or 0
+    castles = chart.castles(chapter)
+    if (WORLD_MAP_OFFSET.get(chapter) and order['target'] in castles
+            and snapshot['source'] in castles):
+        # A sent A plus a closed picker is still not proof the unit left.
+        # g1097: three committed sorties produced no world-map ▲ at all
+        # (the same marker idled for 40 min) and rotted into march_overdue.
+        # The next surveys must show a unit the baseline did not have.
+        mem.setdefault('launch_probe', {})[order['step']] = {
+            'general': general, 'source': snapshot['source'],
+            'target': order['target'], 'reads': 0,
+            'baseline': deepcopy(mem.get('_world_units_prev') or []),
+            'tick': int(mem.get('tick') or 0)}
+        mem['world_map_due'] = True
 
 
 TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
@@ -801,6 +820,98 @@ DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A a
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
+LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before rollback
+LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
+LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
+
+
+def _marker_near_castle(mem, marker, castle):
+    offset = WORLD_MAP_OFFSET.get(mem.get('chapter') or 0)
+    cell = chart.castles(mem.get('chapter') or 0).get(castle)
+    if not offset or not cell:
+        return False
+    mx, my = (marker[0] + marker[2]) / 2, (marker[1] + marker[3]) / 2
+    return (abs(mx - (cell[0] / 8 + offset[0])) <= LAUNCH_PROBE_RADIUS
+            and abs(my - (cell[1] / 8 + offset[1])) <= LAUNCH_PROBE_RADIUS)
+
+
+def _probe_launch_markers(mem, markers):
+    """Verify a committed departure left a unit marker on the world map.
+
+    The picker closing after a journaled A commits the sortie, but g1097
+    showed that combination firing with no unit ever appearing. A marker the
+    launch-time baseline did not have is the launch's first hard evidence:
+    near the source or target it always counts, anywhere else it counts once
+    a baseline exists. A sortie settled by another path (arrival, battle,
+    overdue) drops the probe instead of being rolled back.
+    """
+    probes = mem.get('launch_probe') or {}
+    if not probes:
+        return
+    for step, probe in list(probes.items()):
+        sortie = (mem.get('sorties') or {}).get(step)
+        if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
+            probes.pop(step, None)
+            continue
+        baseline = probe.get('baseline') or []
+        fresh = [b for b in markers
+                 if not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                            and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                            for o in baseline)]
+        near = [b for b in fresh
+                if _marker_near_castle(mem, b, probe.get('source'))
+                or _marker_near_castle(mem, b, probe.get('target'))]
+        if near or (baseline and fresh):
+            probes.pop(step, None)
+            _record(mem, 'sortie_launch_confirmed', chart_step=step,
+                    general=probe.get('general'),
+                    observed_metric={'markers': [list(b) for b in markers],
+                                     'new_markers': [list(b) for b in fresh]},
+                    reason='出撃コミット後の全体マップに基準に無い部隊▲を確認')
+            continue
+        probe['reads'] = int(probe.get('reads') or 0) + 1
+        if probe['reads'] >= LAUNCH_PROBE_READS:
+            probes.pop(step, None)
+            _rollback_unverified_launch(mem, step, probe, markers)
+
+
+def _rollback_unverified_launch(mem, step, probe, markers):
+    """A committed departure produced no unit marker: return it to pending.
+
+    Mirrors the march-overdue reset so the order re-confirms from scratch,
+    but leaves the observed garrison consistent: the general the ledger sent
+    out was never seen leaving, so they go back onto the source roster.
+    """
+    misses = mem.setdefault('launch_miss', {})
+    misses[step] = misses.get(step, 0) + 1
+    for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                'sortie_actor_miss', 'launched_orders'):
+        (mem.get(key) or {}).pop(step, None)
+    (mem.get('sorties') or {}).pop(step, None)
+    for target, entry in list((mem.get('launched') or {}).items()):
+        if entry.get('step') == step:
+            mem['launched'].pop(target, None)
+    general, source = probe.get('general'), probe.get('source')
+    garrison = mem.get('garrison') or {}
+    if general and isinstance(garrison.get(source), list) and general not in garrison[source]:
+        garrison[source].append(general)
+    observed = {'general': general, 'source': source, 'target': probe.get('target'),
+                'markers': [list(b) for b in markers], 'reads': probe.get('reads'),
+                'misses': misses[step]}
+    if misses[step] >= LAUNCH_MISS_LIMIT:
+        mem.setdefault('orders', {})[step] = 'failed'
+        _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
+                deviation_reason='出撃確定後に部隊が現れない',
+                observed_metric=observed,
+                reason='出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
+        return
+    if mem.setdefault('orders', {}).get(step) == 'launched':
+        mem['orders'][step] = 'pending'
+    _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
+            observed_metric=observed, resulting_event='order_reopened',
+            reason='出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')
 
 
 def _departure_receipt_sent(mem, request):

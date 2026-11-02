@@ -19,6 +19,24 @@ def menu_pending(screen, mem, cur):
             or attempt.get('phase') not in ('parent_selected', 'candidate_selected')):
         return [pad('b')] if screen.kind == 'battle_menu' else [{'type': 'wait', 'ms': 50}]
     if screen.kind == 'battle_menu':
+        # g1097 23:06: 親メニュー (きりふだ/たいきゃく/おくのて) が残ったまま —
+        # 前の A は届かず B はこの箱では無効 (~200回の無記録ループ)。おくのて
+        # 行が見えるなら「再抽選」ではなく未受付の再送。カーソルを確認して
+        # 有界に送り直し、尽きたら通常判定へ戻す。
+        _rows = screen.menu_rows or screen.lines
+        if attempt.get('phase') == 'parent_selected' and any(
+                w == 'おくのて' for r in _rows for _, w in r.spans()):
+            resends = int(attempt.get('resends') or 0)
+            if resends < 4:
+                attempt['resends'] = resends + 1
+                from ..os_layer.commands import _battle_menu_to
+                move = _battle_menu_to(screen, 'おくのて')
+                if move == 'here':
+                    return [pad('a')]
+                if move is not None:
+                    return [move]
+                return [pad('down')]
+            return None
         return [pad('b')]  # no observed completion, including a repeated parent
     if attempt['phase'] == 'candidate_selected':
         return [{'type': 'wait', 'ms': 50}]  # selection is not an effect/return receipt

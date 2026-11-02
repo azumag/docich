@@ -70,8 +70,9 @@ def test_native_okunote_only_menu_is_taken_instead_of_closed_to_wait():
     selected = native('g1075-okunote-parent-4.png')
     assert p.battle_menu_step(selected, mem) == [p.pad('a')]
     assert cur['okunote_egg_preempt']['selected']
-    # A repeated parent frame is not another lottery.
-    assert p.battle_menu_step(selected, mem) == [p.pad('b')]
+    # A repeated parent frame means the A never landed: resend bounded A,
+    # never another lottery (g1097 23:06 B-loop fix, v366).
+    assert p.battle_menu_step(selected, mem) == [p.pad('a')]
     assert len(decisions(mem, 'battle_okunote_egg_preempt')) == 1
 
 

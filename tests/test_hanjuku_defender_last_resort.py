@@ -25,7 +25,10 @@ def test_g510_trevis_losing_no_resource_defense_selects_last_chance_once():
     cur = mem['battle']
     assert cur['okunote_last_resort_selected']
     assert any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
-    # A repeat/fading parent cannot enter another irreversible lottery.
+    # A repeat/fading parent cannot enter another irreversible lottery, but
+    # v366 resends an undelivered A boundedly while the row stays readable.
+    for _ in range(4):
+        assert p.okunote_step(menu(), mem) == [p.pad('a')]
     assert p.okunote_step(menu(), mem) == [p.pad('b')]
     assert sum(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records']) == 1
 

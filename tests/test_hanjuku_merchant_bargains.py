@@ -197,3 +197,72 @@ def test_unreadable_merchant_exit_is_recorded_not_silent(ready):
     assert record['decision'] == 'shop_list_exit'
     assert record['observed_metric']['reason'] == 'spendable_unreadable'
     assert ready['shop'].get('bought') in (None, [])
+
+
+def test_unwanted_listing_exit_records_the_merchant_stock(ready):
+    # g1097 2026-11-02: the merchant left with no record at all when the
+    # listing matched no wanted card; the silent B hid why nothing was bought.
+    screen = listing(999, rows=(('バルムンク', 90), ('グリンボー', 30)))
+    ready['shop']['bargain_listing_planned'] = False
+    assert p.shop_step(screen, ready) == [p.pad('b')]
+    record = ready['_records'][-1]
+    assert record['decision'] == 'shop_list_exit'
+    assert record['observed_metric']['reason'] == 'nothing_planned'
+    assert record['observed_metric']['listed'] == {'バルムンク': 90, 'グリンボー': 30}
+
+
+# g1097 2026-11-03 00:57: a cart selling the strong cards at half price came up
+# right after the monthly duel. The month's single listing pass was already
+# spent (and the shop closed), so the bot left in the same observation with
+# 9987G unused.
+HALF = (('ノリウツール', 8), ('クースカン', 12), ('ゼンマイン', 16), ('ミックミー', 20))
+
+
+def month_pass_spent(mem):
+    mem['shop'].update(bargain_planned=True, bargain_listing_planned=True,
+                       merchant_done=True, closed=True, items=[], want=None)
+    return mem
+
+
+def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
+    month_pass_spent(ready)
+    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('a')]       # selects a card to buy
+    shop = ready['shop']
+    assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
+    assert shop['cheap_vendor_planned'] is True
+    planned = dict(HALF)
+    assert sum(planned[n] * q for n, q in shop['items']) <= b.CHEAP_VENDOR_GOLD
+    assert 0 < sum(q for _, q in shop['items']) <= b.CHEAP_VENDOR_COPIES
+    assert not shop.get('bought')                       # selecting is not payment
+
+
+def test_the_larger_caps_are_only_for_that_pass_and_still_bound_the_spend(ready):
+    month_pass_spent(ready)
+    prices = {name: 1 for name in b.BARGAIN_TARGETS}            # absurdly cheap: only the caps bind
+    b.plan_bargains(ready, ready['shop'], listing(9999).header, listed=prices)
+    assert sum(q for _, q in ready['shop']['items']) == b.CHEAP_VENDOR_COPIES
+    assert sum(prices[n] * q for n, q in ready['shop']['items']) <= b.CHEAP_VENDOR_GOLD
+
+
+def test_a_normally_priced_cart_after_the_month_pass_is_still_skipped(ready):
+    month_pass_spent(ready)
+    full = (('ノリウツール', 18), ('クースカン', 24), ('ゼンマイン', 32), ('ミックミー', 40))
+    assert p.shop_step(listing(9987, full), ready) == [p.pad('b')]
+    assert not ready['shop'].get('cheap_vendor')
+    assert ready['shop']['items'] == []
+
+
+def test_the_half_price_pass_is_taken_once_per_month(ready):
+    month_pass_spent(ready)
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['cheap_vendor_planned'] is True
+    ready['shop']['items'] = []
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['items'] == []                 # no third pass in the same month
+
+
+def test_a_cheap_pass_still_respects_necessities_and_the_cash_reserve(ready):
+    month_pass_spent(ready)
+    ready['shop'].update(egg='pending', egg_priority=True)       # recovery comes first
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['items'] == [] and not ready['shop'].get('cheap_vendor_planned')

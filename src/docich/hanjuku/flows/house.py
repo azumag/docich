@@ -29,6 +29,15 @@ HOUSE_ROOF_DELTA = (12, -8)
 # expected delta is the house, not an own castle (a castle's marker
 # anchor sits on its own cell, not HOUSE_ROOF_DELTA away).
 HOUSE_ROOF_MATCH = 28
+# Alternate entry after an unconfirmed arrival: put the marker on the
+# house's own cell (delta (0,0) to the roof anchor) instead of the charted
+# offset, which can land on a neighbouring tree tile (g1097 ch5).
+HOUSE_OWN_CELL_DELTA = (0, 0)
+
+
+def _entry_delta(mem):
+    misses = (mem.get('house_entry_miss') or {}).get(mem.get('chapter'), 0)
+    return HOUSE_OWN_CELL_DELTA if type(misses) is int and misses % 2 == 1 else HOUSE_ROOF_DELTA
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
@@ -204,27 +213,71 @@ def _record(mem, event, **fields):
             strategy_variant='broken_egg_repair', **fields)
 
 
-TALLY_KEYS = 12      # distinct counters kept
+TALLY_KEYS = 24      # distinct counters kept
 TALLY_GENERALS = 40  # distinct generals kept per counter
 
 
-def _tally(mem, key, general=None):
+def _tally(mem, key, general=None, ticks=0):
     """Issue #3194 (36): bounded counters of what observing costs.
 
     Counts only (no frames or text), capped in both dimensions, so it cannot
-    grow without limit. It never feeds a decision.
+    grow without limit. It never feeds a decision. ``ticks`` accumulates the
+    observations a single open waited on its screen (``state['age']``), the
+    closest bounded proxy for elapsed time available inside the decider.
     """
     tally = mem.setdefault('obs_cost', {})
     if key not in tally and len(tally) >= TALLY_KEYS:
         return
     entry = tally.setdefault(key, {'n': 0, 'by_general': {}})
     entry['n'] += 1
+    if ticks:
+        entry['ticks'] = entry.get('ticks', 0) + ticks
     if general is not None and (general in entry['by_general']
                                 or len(entry['by_general']) < TALLY_GENERALS):
         entry['by_general'][general] = entry['by_general'].get(general, 0) + 1
 
 
+def _tally_status_open(mem, purpose, info, ticks=0):
+    """Issue #3194 (36): one deliberately opened status panel, by purpose.
+
+    The revised triage requires the purpose split of status opens, the fields
+    each open actually yielded, and a cache hit/miss pair. Every open is a
+    cache_miss (the receipt store could not serve the need); hits are tallied
+    where a need was dropped without opening (target_satisfied_elsewhere,
+    carried rows, reused survey rows). Only the three screen-derived fields
+    are counted: the egg row is mandatory for a parse, hp needs both ints,
+    and location needs an observed sentence. ``wage`` comes from the fixed
+    reference table, not the screen, so it is excluded. Counts only; never
+    read by a decision.
+    """
+    name = (info or {}).get('general')
+    _tally(mem, 'status_open_' + purpose, name, ticks=ticks)
+    _tally(mem, 'cache_miss', name)
+    if not isinstance(info, dict):
+        return
+    _tally(mem, 'status_fields_read', 'egg')
+    if type(info.get('hp')) is int and type(info.get('max_hp')) is int:
+        _tally(mem, 'status_fields_read', 'hp')
+    if info.get('location_observed') is True:
+        _tally(mem, 'status_fields_read', 'location')
+
+
+def _tally_open_once(mem, state, purpose, info):
+    """Issue #3194 (36): count a phase's first confirmed status read once.
+
+    Several phases re-parse the same still-open panel on every observation
+    while a later check keeps failing. Without this flag the same open would
+    be tallied once per observation and drown the per-purpose split.
+    ``_phase`` clears the flag, so each fresh open is counted again.
+    """
+    if state.get('_open_counted'):
+        return
+    _tally_status_open(mem, purpose, info, ticks=state.get('age'))
+    state['_open_counted'] = True
+
+
 def _phase(state, phase, **fields):
+    state.pop('_open_counted', None)  # Issue #3194 (36): per-phase open tally
     state.update(phase=phase, age=0, **fields)
 
 
@@ -285,7 +338,15 @@ def _finish(mem):
     for key in stale:
         mem['sorties'][key]['status'] = 'closed'
     if stale:
-        _record(mem, 'sortie_closed', observed_metric={'sorties': stale},
+        # The registered entry cell can sit on a neighbouring impassable
+        # tile in some chapters (g1097 ch5: the general stopped beside the
+        # tree next to the house). Alternate the next attempt between the
+        # charted cell and the house's own cell (see _entry_delta).
+        misses = mem.setdefault('house_entry_miss', {})
+        chapter = mem.get('chapter')
+        misses[chapter] = int(misses.get(chapter) or 0) + 1
+        _record(mem, 'sortie_closed', observed_metric={'sorties': stale,
+                'entry_miss': misses[chapter]},
                 reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
     # A session that ends before its repairs leaves every still-broken target
@@ -484,7 +545,7 @@ def _house_route_problem(mem):
     return None
 
 
-def _house_roof_delta(screen, mem, frame):
+def _house_roof_delta(screen, mem, frame, expected=HOUSE_ROOF_DELTA):
     """Marker-to-house-roof screen delta, or None with no house in view.
 
     The house flies an own-coloured flag, so ``castle_roofs`` reports it as
@@ -506,7 +567,7 @@ def _house_roof_delta(screen, mem, frame):
         if roof.get('clipped') or roof.get('kind') != 'own':
             continue
         delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
-        if all(abs(delta[a] - HOUSE_ROOF_DELTA[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
+        if all(abs(delta[a] - expected[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
             if best is not None:
                 return None
             best = delta
@@ -729,6 +790,9 @@ def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
     _record(mem, 'survey_reused', observed_metric={'status_targets': dirty,
             'broken': pending, 'missing_incomes': missing},
             reason='同月・同ランで読めた本人の情報を引き継ぎ、変化した本人や未読の城収入だけ確認する')
+    for _name in survey['statuses']:
+        if _name not in dirty:
+            _tally(mem, 'cache_hit', _name)
     if dirty:
         return True, [pad('x')]
     if not missing:
@@ -927,9 +991,12 @@ def _step_once(screen, mem, frame):
         if not monthly:
             carry = receipts.carry_forward(mem)
             if carry is not None:
-                for _ in carry['carried']:
+                for _name in carry['carried']:
                     _tally(mem, 'carried_rows')
-                for _ in carry['reopen']:
+                    _tally(mem, 'cache_hit', _name)
+                for _name in carry['reopen']:
+                    # Not a cache_miss here: the open that follows already
+                    # records it, so mirroring would count one need twice.
                     _tally(mem, 'reopened_rows')
                 _record(mem, 'survey_carried', observed_metric=carry,
                         reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
@@ -1029,8 +1096,10 @@ def _step_once(screen, mem, frame):
         if phase in ('leave_roster', 'close'):
             if phase == 'leave_roster':
                 complete = receipts.complete(mem, state)
+                _tally(mem, 'roster_complete' if complete else 'roster_incomplete')
                 _record(mem, 'month_scan_complete', observed_metric={'roster_complete': complete,
-                        'generals': state['seen']}, reason='当月の実一覧を確認して月初メニューへ戻る')
+                        'generals': state['seen'], 'observations': state.get('total')},
+                        reason='当月の実一覧を確認して月初メニューへ戻る')
             _finish(mem)
             return []
         if phase == 'month_open':
@@ -1192,6 +1261,8 @@ def _step_once(screen, mem, frame):
             if satisfied:
                 targets[:] = [t for t in targets if t not in satisfied]
                 _tally(mem, 'target_satisfied_elsewhere')
+                for _name in satisfied:
+                    _tally(mem, 'cache_hit', _name)
                 _record(mem, 'target_satisfied_elsewhere', observed_metric={'generals': satisfied},
                         reason='別の画面で本人の状態を読み終えたため、この部分再確認から外して詳細を開き直さない')
             if not targets:
@@ -1235,7 +1306,7 @@ def _step_once(screen, mem, frame):
         if not info or info['general'] != state.get('selected'):
             return []
         name = info['general']
-        _tally(mem, 'status_open_partial' if state.get('from_survey') else 'status_open_full', name)
+        _tally_open_once(mem, state, 'partial' if state.get('from_survey') else 'full', info)
         receipts.wage(mem, info)
         state['seen'].append(name)
         if info['broken'] and name not in state['pending']:
@@ -1294,8 +1365,10 @@ def _step_once(screen, mem, frame):
         if screen.kind == 'map':
             complete = (receipts.completed_survey(mem) is not None if state.get('from_survey')
                         else receipts.complete(mem, state))
+            _tally(mem, 'roster_complete' if complete else 'roster_incomplete')
             _record(mem, 'scan_complete', observed_metric={'generals': list(state['seen']), 'broken': list(state['pending']),
-                                                         'roster_complete': complete},
+                                                         'roster_complete': complete,
+                                                         'observations': state.get('total')},
                     reason='一覧で確認した将軍の卵状態から修理対象を決定')
             # Reuse measured castle navigation/status paths to acquire only
             # missing incomes. No sortie or paid action is part of this survey.
@@ -1519,6 +1592,7 @@ def _repair_step(screen, mem, frame):
         info = general_status(screen)
         if info is None:
             return []
+        _tally_open_once(mem, state, 'dispatch', info)
         if info['general'] != name or not info['broken']:
             return _exit(mem, '出撃画面で対象本人の卵割れを確認できないため派遣しない')
         if not _repair_hp_ready(info):
@@ -1529,6 +1603,8 @@ def _repair_step(screen, mem, frame):
         if screen.kind != 'sortie_confirm':
             return []
         info = general_status(screen)
+        if info is not None:
+            _tally_open_once(mem, state, 'dispatch', info)
         if (not info or info['general'] != name or not info['broken']
                 or not _empty_sortie_inventory(screen)):
             return []
@@ -1569,10 +1645,11 @@ def _repair_step(screen, mem, frame):
             # evidence: walk the marker onto the building itself rather
             # than the registered cell, which can sit a tile off on
             # source-derived chapters.
-            roof_delta = _house_roof_delta(screen, mem, frame)
+            entry = _entry_delta(mem)
+            roof_delta = _house_roof_delta(screen, mem, frame, entry)
             if roof_delta is not None:
-                err = [HOUSE_ROOF_DELTA[a] - roof_delta[a] for a in (0, 1)]
-                position = [roof_delta[a] + target[a] - HOUSE_ROOF_DELTA[a] for a in (0, 1)]
+                err = [entry[a] - roof_delta[a] for a in (0, 1)]
+                position = [roof_delta[a] + target[a] - entry[a] for a in (0, 1)]
                 delta, accept, basis = err, 4, 'house_roof_delta'
             elif position is None:
                 reads = state.get('alignment_unread', 0)
@@ -1717,6 +1794,7 @@ def _repair_step(screen, mem, frame):
         info = general_status(screen)
         if not info or info['general'] != name:
             return []
+        _tally_open_once(mem, state, 'verify', info)
         buy = state['purchase']
         gold = (screen.header or {}).get('gold')
         if type(gold) is int and gold == buy['gold_before'] - buy['cost'] and mem.get('month') == buy['month']:
@@ -1828,6 +1906,7 @@ def _field_step(screen, mem, frame):
         info = general_status(screen)
         if info is None:
             return []
+        _tally_open_once(mem, state, 'dispatch', info)
         if info['general'] != name or (not state.get('returning') and not info['broken']):
             return _exit(mem, '本人の卵割れまたは帰還対象を確認できないため操作を中止')
         field_panel = any(r.y == 31 and r.span(16, 80).strip() == name
