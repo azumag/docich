@@ -17,7 +17,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
-                               DEFENDER_EGG_OPEN_LIMIT, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               DEFENDER_EGG_OPEN_LIMIT, _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
@@ -898,7 +898,7 @@ def okunote_step(screen, mem):
         # chart inventory/house state cannot prove the currently usable menu.
         cur['okunote_only_observed'] = ((screen.hidden_battle_commands or 'おくのて' in labels)
             and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
-        guard = cur.get('okunote_egg_preempt') or {}
+        guard = cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt') or {}
         if guard.get('selected'):
             return [pad('b')]  # a repeated parent frame is not another lottery
         if guard and cur['okunote_only_observed']:
@@ -907,6 +907,8 @@ def okunote_step(screen, mem):
             guard.update(exhausted=False, stage='menu', unread_ticks=0)
         egg_window = _defender_egg_window(mem, cur, menu_open=cur['okunote_only_observed'])
         egg_preempt = bool(egg_window and egg_window['due'])
+        summon_window = _defender_summon_preempt(mem, cur)
+        summon_preempt = bool(summon_window and summon_window['due'])
         if egg_window and not egg_preempt:
             rescue = _survival_state(mem, cur)
             rescue['exhausted'] = True
@@ -919,6 +921,15 @@ def okunote_step(screen, mem):
                         observed_metric=egg_window,
                         reason='奥の手だけが有効だが召喚前の期限には未到達のため、白兵のHPと位置リスクを再観測する')
             return [pad('b')]
+        if summon_preempt and not egg_preempt:
+            guard = cur.setdefault('okunote_summon_preempt', {'opens': 0})
+            guard.update(reason=summon_window['reason'], stage='menu')
+            if not guard.get('recorded'):
+                guard['recorded'] = True
+                _record(mem, 'battle_okunote_summon_preempt', **_battle_labels(cur),
+                        observed_metric={**summon_window, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        resulting_event='irreversible_risk_accepted',
+                        reason='敵の召喚獣が出ていて味方の卵・札が使えないため、開いている救済メニューで奥の手を選ぶ。自傷リスクは残る')
         if egg_preempt:
             guard = cur.setdefault('okunote_egg_preempt', {'opens': 0})
             guard.update(reason=egg_window['reason'], stage='menu')
@@ -943,7 +954,7 @@ def okunote_step(screen, mem):
                                      'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
                     resulting_event='irreversible_risk_accepted',
                     reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
-        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt):
+        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not (last_resort or egg_preempt or summon_preempt):
             rescue = _survival_state(mem, cur)
             # Re-arm exhausted on tide change.
             _rescue_rearm(mem, cur, {'owner': 'ally'})
@@ -1007,9 +1018,12 @@ def okunote_step(screen, mem):
         return [move] if move else []
     if label == 'おくのて' and cur.get('okunote_last_resort_recorded'):
         cur['okunote_last_resort_selected'] = True
-    if label == 'おくのて' and (cur.get('okunote_egg_preempt') or {}).get('recorded'):
-        cur['okunote_egg_preempt'].update(selected=True, stage='selected')
-        _survival_state(mem, cur)['exhausted'] = True
+    if label == 'おくのて':
+        for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
+            guard = cur.get(key) or {}
+            if guard.get('recorded'):
+                cur[key].update(selected=True, stage='selected')
+                _survival_state(mem, cur)['exhausted'] = True
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
@@ -1665,6 +1679,11 @@ def monster_menu_step(screen: Screen, mem):
     if mem.get('battle') and enemy and type(enemy.hp) is int and enemy.hp > 0:
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
+        if enemy.name in reference.MONSTER_SKILLS:
+            # A normal battle reading resets card_summon_observed every frame;
+            # latch the enemy-side summon so the okunote preempt survives the
+            # melee that follows (owner 2026-11-02).
+            mem['battle']['enemy_summon_observed'] = True
     cur = mem.get('battle')
     if isinstance(cur, dict) and enemy is not None:
         opening_scope = cur.get('melee_opening_scope')
