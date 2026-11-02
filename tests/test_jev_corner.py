@@ -408,10 +408,12 @@ one_game = true
             "capabilities": ["player_policy_v1"],
         }), encoding="utf-8")
         self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        self.request_id = "9f3f5a7e-1c2b-4d8e-9a0b-1c2d3e4f5a6b"
         (self.g.state_dir / "jev_corner.json").write_text(json.dumps({
             "schema_version": 1, "status": "recovery_required",
             "game": "sorengame", "policy": "jev",
-            "request_id": self.run_id, "player_generation": 4,
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4,
             "last_error": "boundary deadline expired",
         }), encoding="utf-8")
         self.board = self.soren_root / "game_state.json"
@@ -452,8 +454,8 @@ one_game = true
         (self.g.state_dir / "jev_corner.json").write_text(json.dumps({
             "schema_version": 1, "status": "active",
             "game": "sorengame", "policy": "jev",
-            "request_id": self.run_id, "player_generation": 4,
-            "last_error": None,
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4, "last_error": None,
         }), encoding="utf-8")
         manager, _adapter = self._fake_manager()
         with patch.object(jev_mod, "JevCornerManager", return_value=manager):
@@ -477,6 +479,55 @@ one_game = true
         with patch.object(jev_mod, "JevCornerManager", return_value=manager):
             self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
                              "player_policy_jev")
+
+    def _write_corner(self, **overrides):
+        corner = {
+            "schema_version": 1, "status": "recovery_required",
+            "game": "sorengame", "policy": "jev",
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4,
+            "last_error": "boundary deadline expired",
+        }
+        corner.update(overrides)
+        (self.g.state_dir / "jev_corner.json").write_text(
+            json.dumps(corner), encoding="utf-8")
+
+    def _assert_stuck_live_refused(self):
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def test_diagnose_refuses_when_corner_request_id_missing(self):
+        self._freeze_board()
+        self._write_corner(request_id=None)
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_request_id_malformed(self):
+        self._freeze_board()
+        self._write_corner(request_id="not-a-uuid")
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_run_id_missing(self):
+        self._freeze_board()
+        self._write_corner(run_id=None)
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_run_id_mismatch(self):
+        self._freeze_board()
+        self._write_corner(run_id="00000000-0000-4000-8000-000000000001")
+        self._assert_stuck_live_refused()
+
+    def test_recover_bridge_refuses_when_corner_run_id_mismatch(self):
+        self._freeze_board()
+        self._write_corner(run_id="00000000-0000-4000-8000-000000000001")
+        manager, adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            with patch.object(jev_mod, "_run_bridge_relaunch") as relaunch:
+                with self.assertRaises(JevCornerError):
+                    jev_mod.recover_bridge(self.g)
+                relaunch.assert_not_called()
+        self.assertEqual(adapter.calls, [])
 
     def test_recover_bridge_relaunches_only_when_gate_opens(self):
         self._freeze_board()

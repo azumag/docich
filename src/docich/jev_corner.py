@@ -683,6 +683,8 @@ def _check_jev_bridge_stuck_live(g: GlobalConfig, manager: "JevCornerManager") -
 
     - corner state が active で policy == "jev"
     - player_state が存在し policy == "jev"
+    - corner state の request_id が有効な UUID で、corner state の run_id が
+      player_state の run_id と一致する（同一runの対応証拠）
     - run_id が有効な UUID
     - game_state.json が MOVE凍結 (mtime 経過 >= FIXED_BRIDGE_STUCK_MOVE_AGE_S) または不在
     - capability pid が生存
@@ -719,6 +721,14 @@ def _check_jev_bridge_stuck_live(g: GlobalConfig, manager: "JevCornerManager") -
     if corner_state.get("policy") != "jev":
         return False
     if corner_state.get("player_generation") != player_state.get("player_generation"):
+        return False
+    # fail-closed: a stale or corrupt corner snapshot must not combine with
+    # another run's player_state to authorize stuck-live recovery. Require a
+    # UUID request_id plus the same-run correspondence evidence.
+    request_id = corner_state.get("request_id")
+    if not isinstance(request_id, str) or not UUID_RE.fullmatch(request_id):
+        return False
+    if corner_state.get("run_id") != run_id:
         return False
     if not corner_state.get("last_error"):
         return False
