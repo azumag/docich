@@ -18,7 +18,7 @@ from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ... import hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
-from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+from ..judgment.battle import (DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
@@ -27,6 +27,7 @@ from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, 
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               _defender_summon_preempt,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
@@ -864,6 +865,8 @@ def battle_step(screen: Screen, mem):
                     resulting_event='card_planned')
             return [pad('b')]
     preempt = _defender_egg_open(mem, cur)
+    if preempt is None:
+        preempt = _defender_summon_open(mem, cur)
     if preempt is not None:
         return preempt
     if (_defender_last_resort(mem, cur)
@@ -1073,6 +1076,25 @@ def _hero_retreat_open(mem, cur):
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return _human_menu_open(cur, 'retreat', mem)
+
+
+def _defender_summon_open(mem, cur):
+    window = _defender_summon_preempt(mem, cur)
+    if not window:
+        return None
+    guard = cur.setdefault('okunote_summon_preempt', {'opens': 0})
+    if guard['opens'] >= DEFENDER_SUMMON_OPEN_LIMIT:
+        guard['exhausted'] = True
+        _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(cur),
+                observed_metric=window,
+                reason='敵召喚への奥の手メニューを有限回試したが確認できず、入力を止めず既存戦闘へ戻る')
+        return None
+    guard.update(opens=guard['opens'] + 1, reason=window['reason'], stage='opening')
+    _record(mem, 'battle_okunote_summon_open', **_battle_labels(cur),
+            observed_metric={**window, 'open_attempt': guard['opens']},
+            expected_metric='実メニューの奥の手と現在カーソルを確認して選択',
+            reason='敵の召喚獣が出ていて味方の卵・札が使えないため、連打を止めて奥の手を確認する')
+    return _human_menu_open(cur, 'defender_summon', mem)
 
 
 def _defender_egg_open(mem, cur):

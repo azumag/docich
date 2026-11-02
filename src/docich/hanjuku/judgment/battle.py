@@ -1801,6 +1801,7 @@ def _command_open_wait(mem, cur):
     if not pending:
         return None
     owner_flow = cur.get({'survival': 'survival', 'retreat': 'hero_retreat',
+                          'defender_summon': 'okunote_summon_preempt',
                           'defender_egg': 'okunote_egg_preempt'}.get(pending.get('owner'), '')) or {}
     if owner_flow.get('exhausted') or owner_flow.get('unavailable'):
         cur.pop('command_open_pending', None)
@@ -1865,6 +1866,7 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             or cur.get('castle') not in (*chart.castles(chapter), *chart.CASTLE_NAMES.get(chapter, ()))
             or cur.get('ally') in (None, 'だいじん') or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            or cur.get('enemy_summon_observed')
             or not cur.get('okunote_only_observed')
             or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
         return None
@@ -1912,6 +1914,49 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             'hold_count': holds, 'hold_hp_bled': start - hp, 'hold_hp_budget': hp_budget,
             'okunote_draws': draws, 'reason': reason, 'due': reason is not None,
             'short_burst': enemy <= critical_hp + 2 * margin}
+
+
+DEFENDER_SUMMON_OPEN_LIMIT = 3
+
+
+def _defender_summon_preempt(mem, cur):
+    """Bounded okunote against an enemy summon our resources cannot answer.
+
+    Owner 2026-11-02: 敵の召喚獣が出たら味方もおくのてで対抗したい. The
+    summon is already observed (``card_summon_observed`` or the latched
+    ``enemy_summon_observed``), so this is not the
+    pre-summon HP deadline of ``_defender_egg_window``: a general whose own
+    egg is gone/empty and who carries no usable cards opens the command menu
+    boundedly and takes the lottery. Our own egg still fighting, bosses, an
+    unbounded menu, unknown context, and HP at/below the worst self-damage
+    keep the old policy. The worst-case self-damage does not gate this path:
+    like ``_defender_egg_window``, an unanswered summon is the worse outcome,
+    and the menu-side HP decline/last-resort rules still run first.
+    """
+    chapter = mem.get('chapter')
+    guard = cur.get('okunote_summon_preempt') or {}
+    if (type(chapter) is not int or chapter not in range(1, 13)
+            or cur.get('side') not in ('defense', 'attack')
+            or (cur.get('side') == 'defense'
+                and cur.get('castle') not in (*chart.castles(chapter),
+                                             *chart.CASTLE_NAMES.get(chapter, ())))
+            or (cur.get('side') == 'attack' and not _own_egg_empty(mem, cur))
+            or cur.get('ally') in (None, 'だいじん')
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            or not (cur.get('card_summon_observed') or cur.get('enemy_summon_observed'))
+            or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
+        return None
+    resources_free = (cur.get('okunote_only_observed')
+                      or (_own_egg_empty(mem, cur) and not cur.get('planned_cards')))
+    hp = cur.get('ally_hp')
+    draws = int(cur.get('okunote_draws') or 0)
+    if not resources_free or draws >= OKUNOTE_REDRAW_LIMIT:
+        return None
+    return {'resources_basis': ('observed_okunote_only' if cur.get('okunote_only_observed')
+                                else 'own_egg_empty_no_cards'),
+            'enemy': cur.get('enemy'), 'ally_hp': hp, 'okunote_draws': draws,
+            'reason': 'enemy_summon_present', 'due': True}
 
 
 def _defender_last_resort(mem, cur):
