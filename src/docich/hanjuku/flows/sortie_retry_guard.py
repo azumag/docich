@@ -163,6 +163,13 @@ def _logical_launch_budget(mem, step, probe):
     return key, fingerprint, row
 
 
+def _is_bounded_location_recheck(decision, observed) -> bool:
+    """Do not turn the intentional finite source re-read into a permanent hold."""
+    return (decision == 'sortie_held_source_defender'
+            and isinstance(observed, dict)
+            and observed.get('location_recheck_attempts') is not None)
+
+
 def install() -> None:
     """Patch the loaded layered policy once; direct layer imports see it too."""
     if getattr(_orders, '_equivalent_sortie_guard_installed', False):
@@ -182,7 +189,7 @@ def install() -> None:
 
     def hold(mem, order, decision, reason, observed):
         actions = original_hold(mem, order, decision, reason, observed)
-        if decision in _CANCEL_DECISIONS:
+        if decision in _CANCEL_DECISIONS and not _is_bounded_location_recheck(decision, observed):
             _remember_cancel(order, mem, decision)
         return actions
 
