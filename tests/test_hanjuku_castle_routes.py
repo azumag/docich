@@ -379,3 +379,20 @@ def test_march_blocked_geometry():
                                      {'アルマムーン', 'オトラント'})
     assert not replan._march_blocked(5, 'アルマムーン', 'オトラント',
                                      {'アルマムーン', 'オトラント', 'カルーン'})
+
+
+def test_blocked_only_source_sorties_from_the_blocking_castle():
+    """When every staffed source sits behind an own castle, the blocking
+    castle itself is the real launch point — its sole listed general goes
+    (the march would only deliver him there anyway)."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'],
+           'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
+                        'オトラント': ['グレナデン'],      # only the stopped general
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    kuro = next(c for c in cands if c.get('target') == 'クロチェット')
+    assert (kuro['source'], kuro['general']) == ('オトラント', 'グレナデン')
