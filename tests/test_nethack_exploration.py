@@ -102,7 +102,7 @@ class TestP3bPolicy(unittest.TestCase):
         self.assertEqual(decision.actions, ())
 
     def test_p3b_guard_rejects_attack_or_item_key(self) -> None:
-        for key in ("a", "q", ">", "o"):
+        for key in ("Q", "S", "!", "F"):
             with self.subTest(key=key):
                 bad = PolicyDecision(
                     layer="midlevel",

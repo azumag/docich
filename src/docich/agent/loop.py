@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 
 from . import brains
+from . import telemetry as telemetry_mod
 from ..adapters import make_adapter
 from ..config import GlobalConfig, load_game
 from .fence import (
@@ -21,7 +22,25 @@ def _check_loop_fence(fence: AgentFence, state_dir) -> None:
     check_fence(fence, active_fence(state_dir))
 
 
-def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=None) -> int:
+def _flush_telemetry(tel, *, force: bool = False) -> None:
+    # Telemetry is observation-side: a failed state write must never stop gameplay.
+    try:
+        tel.flush(force=force)
+    except OSError as exc:
+        print(f"[agent] 警告: telemetry の書き出しに失敗しました: {exc}", flush=True)
+
+
+def _timed_observe(adapter, tel):
+    start = tel.now()
+    try:
+        return adapter.observe()
+    finally:
+        tel.add_time("observe_s", start)
+        tel.count("observes")
+
+
+def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=None,
+                   telemetry=None) -> int:
     """Run a single observe -> decide -> act cycle, returning the action count.
 
     When a fence is bound, the canonical state is resolved first: a worker
@@ -35,20 +54,26 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     caller (run_agent), which owns the catch-log-continue policy so a single bad
     cycle never kills the loop.
     """
+    tel = telemetry if telemetry is not None else telemetry_mod.DISABLED
+    tel.count("cycles")
     if fence is not None:
         if resolve_fence(fence, read_canonical(state_dir)) != "run":
+            tel.count("awaits")
             time.sleep(max(interval_ms, 0) / 1000)
             return 0
+
+        lock_start = tel.now()
 
         def _observe():
             # Re-check only after the shared lock is held so a coordinator
             # transition cannot begin between the fence check and observation.
+            tel.add_time("fence_lock_s", lock_start)
             _check_loop_fence(fence, state_dir)
-            return adapter.observe()
+            return _timed_observe(adapter, tel)
 
         obs = shared_section(state_dir, _observe)
     else:
-        obs = adapter.observe()
+        obs = _timed_observe(adapter, tel)
 
     # #1469: durably publish the Hanjuku logic generation this agent executed,
     # so the corner can prove both observers share one generation before it
@@ -58,16 +83,24 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     # not as a legacy runtime, and holds the new-policy stall teardown until the
     # publication lands.
     from .. import hanjuku_hotload
+    publish_start = tel.now()
     try:
         hanjuku_hotload.publish_observation(obs, 'agent')
     except Exception as exc:
+        tel.count("hotload_publish_failures")
         print(f"[agent] 警告: Hanjuku logic generation を公開できませんでした: {exc}", flush=True)
+    finally:
+        tel.add_time("hotload_publish_s", publish_start)
 
+    decide_start = tel.now()
     acts = brain.decide(obs)
+    tel.add_time("decide_s", decide_start)
+    tel.count("decides")
     # This opt-in is deliberately limited to the stateful NetHack brain.
     # Other brains retain their existing observation/action protocol.
     guarded = isinstance(brain, brains.NethackPolicyBrain)
     completed = 0
+    act_start = tel.now()
     try:
         if fence is not None:
             _check_loop_fence(fence, state_dir)
@@ -75,8 +108,11 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
         for action in acts:
             if action.type == "wait":
                 time.sleep(max(action.ms, 0) / 1000)
+                tel.count("waits")
                 completed += 1
                 continue
+
+            tel.count("acts")
 
             def _act(single=action):
                 # Fresh capture, context check, send and acknowledgement share
@@ -100,8 +136,10 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
             locked_send = fence is not None or (guarded and state_dir is not None)
             sent = shared_section(state_dir, _act) if locked_send else _act()
             completed += int(sent)
+        tel.count("actions_completed", completed)
         return completed
     finally:
+        tel.add_time("act_s", act_start)
         if guarded:
             # Includes fresh rejection, observe/act errors and terminal fence
             # loss. None of those creates an unsent pending/blocked move.
@@ -129,12 +167,15 @@ def run_agent(
     adapter = make_adapter(g, game, fence=fence)
     interval_ms = game.agent.interval_ms or g.agent.default_interval_ms
     brain = brains.build_brain(g, game)
+    # #2832 Stage 1: opt-in via DOCICH_AGENT_TELEMETRY (default off, no-op).
+    tel = telemetry_mod.AgentTelemetry.from_env(g.state_dir, name, game.agent.brain)
 
     while True:
         t0 = time.monotonic()
         effective_interval = interval_ms
         try:
-            n = _run_iteration(adapter, brain, interval_ms, fence=fence, state_dir=g.state_dir)
+            n = _run_iteration(adapter, brain, interval_ms, fence=fence, state_dir=g.state_dir,
+                               telemetry=tel)
             next_interval = getattr(brain, "observation_interval_ms", None)
             if type(next_interval) is int and next_interval in (500, 1500):
                 effective_interval = next_interval
@@ -146,11 +187,13 @@ def run_agent(
             # Terminal: this worker's activation is gone.  Exit with the
             # distinct code instead of re-entering the supervise restart loop.
             print(f"[agent] fence を失いました。終了します: {exc.detail}", flush=True)
+            _flush_telemetry(tel, force=True)
             raise
         except Exception as exc:
             # observe/act/brain のいずれの例外もここで一括して握りつぶし、次のイテレーションへ進む。
             print(f"[agent] 警告: {game.name} のループでエラーが発生しました: {exc}", flush=True)
 
+        _flush_telemetry(tel)
         elapsed_s = time.monotonic() - t0
         remaining_s = max(effective_interval / 1000 - elapsed_s, 0)
         time.sleep(remaining_s)

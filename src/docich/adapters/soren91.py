@@ -36,6 +36,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from .. import procs
@@ -66,6 +67,10 @@ LISTENER_POLL_INTERVAL_S = 0.5
 STATUS_POLL_INTERVAL_S = 0.5
 CDP_POLL_INTERVAL_S = 1.0
 CDP_WAIT_BUDGET_S = 180.0
+# How often the renderer is re-checked while the presenter viewer wait runs.
+RENDERER_WATCH_INTERVAL_S = 2.0
+# Clock slack when comparing the agent's lastExit timestamp with our start time.
+RENDERER_EXIT_SLACK_S = 30.0
 # Extra headroom inside the coordinator's materialize step for everything
 # around the CDP wait (listener wait, agent start, bot launch).  The
 # coordinator caps materialize_runtime at step_timeouts.start_s (60s) unless
@@ -264,6 +269,13 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self.soren_root = str(raw.get("soren_root", "/home/ubuntu/soren") or "").strip()
         self.games_dir = str(raw.get("games_dir", "/home/ubuntu/docich/config/games") or "").strip()
         self._twitch_synced = False
+        # Renderer watch (#2260): once the Mac CDP proxy answered for this
+        # runtime, a later stop/exit of the renderer fails the viewer wait early.
+        self._renderer_up_seen = False
+        self._watch_renderer = False
+        self._in_renderer_check = False
+        self._renderer_checked_at = 0.0
+        self._renderer_start_at: float | None = None
         bot_path = raw.get("bot_path", "")
         if bot_path is None:
             bot_path = ""
@@ -522,11 +534,34 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 f"{self._label(host)} agent に到達できません ({type(exc).__name__})"
             ) from exc
 
-    def _agent_running(self, deadline: float, cancel) -> bool:
+    def _agent_status_payload(self, deadline: float, cancel) -> dict:
         _status, payload = self._agent_request("GET", "/v1/status", deadline, cancel)
         settings = payload.get("captureSettings")
         self._agent_capture_settings = settings if isinstance(settings, dict) else None
-        return payload.get("running") is True
+        return payload
+
+    def _agent_running(self, deadline: float, cancel) -> bool:
+        return self._agent_status_payload(deadline, cancel).get("running") is True
+
+    def _exited_since_start(self, payload: dict) -> bool:
+        """True when the agent's lastExit is at or after this runtime's start.
+
+        The status reports the last exit of the renderer child. An exit that
+        happened after we asked for the start means the renderer did not stay
+        up, even if it has not yet been observed as stopped.
+        """
+        started_at = self._renderer_start_at
+        last_exit = payload.get("lastExit")
+        if started_at is None or not isinstance(last_exit, dict):
+            return False
+        at = last_exit.get("at")
+        if not isinstance(at, str):
+            return False
+        try:
+            exited_at = datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False
+        return exited_at >= started_at - RENDERER_EXIT_SLACK_S
 
     @staticmethod
     def _capture_profile_requested() -> bool:
@@ -755,6 +790,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             body = {"srtUrl": self.caller_srt_url()}
             if diagnostic_profile:
                 body["captureProfile"] = "rejected_png_v1"
+            self._renderer_start_at = time.time()
             _status, payload = self._agent_request(
                 "POST", "/v1/start", deadline, cancel, body=body
             )
@@ -768,13 +804,69 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             # back to a standalone browser (no remote stream ever starts).
             self._check_active(deadline, cancel)
             self._wait_cdp_proxy(deadline, cancel)
+            self._renderer_up_seen = True
             self._check_active(deadline, cancel)
+
+    def _check_renderer_responsive(self, deadline: float, cancel) -> None:
+        """Fail now if the chosen renderer host is unreachable or has stopped.
+
+        Unreachable or unopened endpoints fail at once. Once the CDP proxy has
+        answered (``_renderer_up_seen``), a later stop or exit also fails here,
+        so the presenter's viewer wait is not spent on a dead renderer. A host
+        that answers but is not running yet (before it came up) keeps the
+        polling loop in readiness().
+        """
+        host = self._host_for_call()
+        self._renderer_checked_at = time.monotonic()
+        try:
+            payload = self._agent_status_payload(deadline, cancel)
+            cdp_ok = (not self.agent_enabled) or self._cdp_proxy_ready()
+        except AdapterError as exc:
+            raise ReadinessTimeoutError(
+                f"{exc} (viewer 待ち前に失敗: renderer host {host})"
+            ) from exc
+        running = payload.get("running") is True
+        if not running and self._exited_since_start(payload):
+            raise ReadinessTimeoutError(
+                f"{self._label(host)} renderer が起動後に終了しました "
+                "(lastExit が start 以後; viewer 待ち前に失敗)"
+            )
+        if self._renderer_up_seen and (not running or not cdp_ok):
+            raise ReadinessTimeoutError(
+                f"{self._label(host)} renderer が起動後に停止しました "
+                f"(running={running}, cdp_proxy={cdp_ok}; viewer 待ち前に失敗)"
+            )
+        if self.agent_enabled and not cdp_ok:
+            raise ReadinessTimeoutError(
+                f"{self._label(host)} CDP proxy が応答しません (viewer 待ち前に失敗: renderer host {host})"
+            )
+
+    def _check_active(self, deadline: float, cancel) -> None:
+        super()._check_active(deadline, cancel)
+        # _check_renderer_responsive calls _agent_request, which calls back
+        # into this method: the watch must not re-enter itself.
+        if not self._watch_renderer or self._in_renderer_check:
+            return
+        if time.monotonic() - self._renderer_checked_at < RENDERER_WATCH_INTERVAL_S:
+            return
+        self._in_renderer_check = True
+        try:
+            self._check_renderer_responsive(deadline, cancel)
+        finally:
+            self._in_renderer_check = False
 
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
         # must report running, and our listener port must accept — all three
         # before the coordinator may commit. Anything else fails closed.
-        super().readiness(deadline, cancel)
+        # The renderer is probed first and watched during the presenter's
+        # viewer wait: an absent or exited host must not wait out the 240s.
+        self._check_renderer_responsive(deadline, cancel)
+        self._watch_renderer = True
+        try:
+            super().readiness(deadline, cancel)
+        finally:
+            self._watch_renderer = False
         while True:
             try:
                 running = self._agent_running(deadline, cancel)

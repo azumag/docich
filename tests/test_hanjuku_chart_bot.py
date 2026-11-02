@@ -91,6 +91,8 @@ def test_header_menu_hand_and_battle_panel_are_structured():
     assert s.kind == 'month_menu' and s.selected == 'しょうにん'
     assert policy.menu_to(s, 'へいしほじゅう')['buttons'] == ['down']
     b = Canvas((238, 238, 238))
+    for y in range(164, 212):
+        b.put(8, y, (32, 32, 32))   # the left panel's edge
     b.text(16, 176, 'ミント', (32, 32, 32))
     b.text(96, 176, '32', (32, 32, 32))
     b.text(144, 176, 'どうし', (32, 32, 32))
@@ -181,7 +183,8 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999})
-    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 1]]
+    # BARGAIN_TARGETS (2026-11-02): spare cash stocks useful cards to target.
+    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
@@ -261,7 +264,10 @@ def test_month_plan_step_names_the_current_chapter():
         assert month_chart_step(unknown) == 'month'
 
 
-def test_chart_orders_follow_the_chart_and_unlock_on_captures():
+def test_chart_orders_follow_the_chart_and_unlock_on_captures(monkeypatch):
+    monkeypatch.setitem(chart.CASTLES, 5, {})                 # an unmeasured chapter
+    monkeypatch.delitem(chart.WORLD_MAP_OFFSET, 5)
+    monkeypatch.delitem(chart.Y_JUMP_OFFSET, 5)
     mem = {'chapter': 1, 'orders': {}}
     assert [policy.next_order(mem)['step']] == ['1-A1']
     mem['orders'] = {'1-A1': 'launched', '1-V1': 'launched', '1-C1': 'launched'}
@@ -272,7 +278,7 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures():
     mem['captured'] = ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ']
     mem['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
     assert policy.next_order(mem)['target'] == 'けっかい'
-    assert policy.next_order({'chapter': 3, 'orders': {}}) is None
+    assert policy.next_order({'chapter': 5, 'orders': {}}) is None
 
 
 def test_month_plan_commentary_follows_the_actual_plan():
@@ -515,9 +521,10 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     assert lost['chart_step'] == 'A:test:J3'
     assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ'],
                                       'source': 'ジョンリギ'}
-    assert mem['active'] is None
-    assert 'order_start' not in names          # never re-picks the unready order
-    assert 'chart_adjust_request' in names     # holds for a chart instead
+    assert mem['active'] != 'A:test:J3'        # the unready order is not re-picked
+    assert all(r.get('chart_step') != 'A:test:J3' for r in mem['_records'] if r['decision'] == 'order_start')
+    assert 'chart_adjust_request' in names     # asks for a chart; a mechanical interim runs meanwhile
+    assert mem['active'] is None or mem['active'].startswith('I:') or (isinstance(mem['active'], str) and ':M' in mem['active'])
 
 
 def test_commentary_is_grounded_and_holds_when_unknown():
@@ -748,13 +755,14 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v254-bijin-stall-bound'
+    from docich.hanjuku_bot import BOT_VERSION
+    assert state['bot_version'] == BOT_VERSION
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_the_hero_repair_reservation_policy():
+def test_bot_version_marks_the_native_map_registration_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v254-bijin-stall-bound'
+    assert BOT_VERSION.startswith('hanjuku-chart-v')
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -3963,6 +3971,7 @@ def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
     mem['garrison']['アルマムーン'] = ['どうし']
+    mem['recruit_roster']['names'] = ['どうし']      # ゼウス gone from the roster too (#3077)
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 
 

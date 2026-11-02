@@ -34,3 +34,4 @@ games/roms/*
 
 # Installed JavaScript dependencies are rebuilt from package-lock.json.
 node_modules/
+.gh-cache/

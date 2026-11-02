@@ -27,11 +27,13 @@ from pathlib import Path
 from .nethack_canary_rules import (
     DIRECTION_KEY,
     attackable_neighbors,
+    category_item,
     door_key,
+    equipped_item,
     food_item,
     openable_neighbors,
 )
-from .nethack_exploration import NethackExplorer
+from .nethack_exploration import NethackExplorer, OPEN_DOOR_GLYPHS
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation, Vitals, normalize_tty
 
@@ -54,6 +56,22 @@ REVIEWED_EFFECTS = frozenset(
         "eat_item",
         "explore_step",
         "directional_travel",
+        # Standard item commands (#2745 stage 2).  Each resolves one visible
+        # inventory letter from public category text and emits the same fixed
+        # key sequence the game expects.
+        "apply_item",
+        "read_item",
+        "quaff_item",
+        "zap_wand",
+        "throw_item",
+        "wear_item",
+        "wield_item",
+        "takeoff_item",
+        # Door / staircase / recovery commands that need a visible or
+        # remembered tile rather than a guessed direction.
+        "close_door",
+        "kick_door",
+        "pray",
     }
 )
 
@@ -66,6 +84,17 @@ EFFECT_KEY_PATTERNS: dict[str, tuple[str, ...] | None] = {
     "eat_item": ("e", "{item_letter}"),
     "explore_step": ("{direction}",),
     "directional_travel": ("{direction}",),
+    "apply_item": ("a", "{item_letter}"),
+    "read_item": ("r", "{item_letter}"),
+    "quaff_item": ("q", "{item_letter}"),
+    "zap_wand": ("z", "{item_letter}"),
+    "throw_item": ("t", "{item_letter}", "{direction}"),
+    "wear_item": ("W", "{item_letter}"),
+    "wield_item": ("w", "{item_letter}"),
+    "takeoff_item": ("T", "{item_letter}"),
+    "close_door": ("c", "{direction}"),
+    "kick_door": ("\x04", "{direction}"),
+    "pray": ("#", "p", "r", "a", "y", "\r"),
 }
 
 # Placeholders allowed in a key pattern.  ``{direction}`` stands for one of the
@@ -131,7 +160,36 @@ class ActionContext:
     observation: NethackObservation
     inventory: tuple[VisibleInventoryItem, ...] = ()
     failed_doors: frozenset[tuple[int, int, int]] = frozenset()
+    # Closed doors already kicked once.  A failed kick must cost one turn at
+    # most, never become a repeat command that freezes the canary.
+    failed_kicks: frozenset[tuple[int, int, int]] = frozenset()
     explorer: NethackExplorer = field(default_factory=NethackExplorer)
+
+
+def visible_memory_door(
+    obs: NethackObservation, ctx: ActionContext
+) -> tuple[int, int] | None:
+    """Return an adjacent doorway that is visibly open and was seen closed."""
+    if obs.player is None:
+        return None
+    doors = ctx.explorer.memory.doors_at(obs.vitals.dungeon_level)
+    for dx, dy in DIRECTION_KEY:
+        pos = (obs.player[0] + dx, obs.player[1] + dy)
+        if pos in doors and _glyph_at(obs, dx, dy) in OPEN_DOOR_GLYPHS:
+            return pos
+    return None
+
+
+def _glyph_at(obs: NethackObservation, dx: int, dy: int) -> str:
+    if obs.player is None:
+        return " "
+    x, y = obs.player[0] + dx, obs.player[1] + dy
+    if y < 0 or y >= len(obs.map_rows):
+        return " "
+    row = obs.map_rows[y]
+    if x < 0 or x >= len(row):
+        return " "
+    return row[x]
 
 
 # --- preconditions -----------------------------------------------------------
@@ -167,8 +225,36 @@ def precondition(name: str, ctx: ActionContext) -> bool:
         )
     if head == "inventory_food":
         return food_item(ctx.inventory) is not None
+    if head == "inventory_tool":
+        return category_item(ctx.inventory, "tool") is not None
+    if head == "inventory_readable":
+        return category_item(ctx.inventory, "scroll") is not None
+    if head == "inventory_potion":
+        return category_item(ctx.inventory, "potion") is not None
+    if head == "inventory_wand":
+        return category_item(ctx.inventory, "wand") is not None
+    if head in {"inventory_wieldable", "inventory_throwable"}:
+        return category_item(ctx.inventory, "weapon", equipped=False) is not None
+    if head == "inventory_wearable":
+        return category_item(ctx.inventory, "armor", equipped=False) is not None
+    if head == "inventory_worn":
+        return equipped_item(ctx.inventory, "armor") is not None
+    if head == "no_equipped_weapon":
+        return equipped_item(ctx.inventory, "weapon") is None
+    if head == "no_equipped_armor":
+        return equipped_item(ctx.inventory, "armor") is None
     if head == "on_down_stairs":
         return ctx.explorer.memory.standing_on_down_stairs(obs)
+    if head == "on_up_stairs":
+        return ctx.explorer.memory.standing_on_up_stairs(obs)
+    if head == "adjacent_open_door":
+        return visible_memory_door(obs, ctx) is not None
+    if head == "adjacent_kickable_door":
+        for dx, dy, _glyph in openable_neighbors(obs):
+            key = door_key(obs, dx, dy)
+            if key in ctx.failed_doors and key not in ctx.failed_kicks:
+                return True
+        return False
     if head == "safe_step":
         # A direction prompt blocks plan_step, but the observable map is the
         # same; evaluate as if no prompt were up.
@@ -277,6 +363,9 @@ def validate_action_catalog(specs: tuple[ActionSpec, ...]) -> None:
             elif len(token) != 1:
                 raise ValueError(f"{spec.id}: key token must be one character: {token!r}")
         _validate_effect_contract(spec)
+        reason = denied_key_reason(spec.key_pattern)
+        if reason is not None:
+            raise ValueError(f"{spec.id}: denied production command {reason}")
         for name in spec.preconditions:
             # Raises ValueError for an unknown name.
             precondition(name, _NullContext())
@@ -301,6 +390,34 @@ def _validate_effect_contract(spec: ActionSpec) -> None:
             f"{spec.id}: effect {spec.effect!r} requires key_pattern "
             f"{list(required)!r}, got {list(spec.key_pattern)!r}"
         )
+
+
+def denied_key_reason(key_pattern: tuple[str, ...]) -> str | None:
+    """Return the production denylist reason a pattern would emit, if any.
+
+    The production denylist (#2744) is the single source of truth for commands
+    that must never be generated automatically (quit/save/shell/force-fight/
+    explore mode).  A catalog candidate is data, so it must not be able to
+    reintroduce one of them through a literal key or through an extended
+    command such as ``#quit`` spelled as individual characters.
+    """
+    from .nethack_policy import PRODUCTION_DENIED_COMMANDS
+
+    for token in key_pattern:
+        if token in PRODUCTION_DENIED_COMMANDS:
+            return f"{token!r}: {PRODUCTION_DENIED_COMMANDS[token]}"
+    if key_pattern and key_pattern[0] == "#":
+        name = "".join(
+            token for token in key_pattern[1:] if len(token) == 1 and (token.isalnum() or token == "!")
+        )
+        if not name:
+            return None
+        if name.lower().startswith("wiz"):
+            return "#wiz*: wizard-mode commands are not production actions"
+        extended = f"#{name.lower()}"
+        if extended in PRODUCTION_DENIED_COMMANDS:
+            return f"{extended!r}: {PRODUCTION_DENIED_COMMANDS[extended]}"
+    return None
 
 
 def _null_observation() -> NethackObservation:
@@ -394,6 +511,14 @@ def verify_action_spec(
         return SpecVerification(
             spec.id, STATUS_KEYS, f"keys {keys!r} do not match pattern {spec.key_pattern!r}"
         )
+    inventory_letters = {entry.letter for entry in inventory}
+    for pattern, key in zip(spec.key_pattern, keys):
+        if pattern == "{item_letter}" and key not in inventory_letters:
+            return SpecVerification(
+                spec.id,
+                STATUS_PRECONDITION,
+                f"item letter {key!r} is not in the recorded inventory",
+            )
     for name in spec.postconditions:
         if not postcondition(name, before, after):
             return SpecVerification(

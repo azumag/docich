@@ -35,7 +35,13 @@ fi
 
 "$root/ops/container_host/verify_container_host.sh"
 
-install -d -o "$user" -g "$(id -gn "$user")" -m 0700 "$state" "$state/results"
+group="$(id -gn "$user")"
+# Root-run install must set ownership on every XDG state parent explicitly;
+# install -d does not propagate -o/-g to intermediate directories it creates.
+install -d -o "$user" -g "$group" -m 0755 /home/ubuntu/.local
+install -d -o "$user" -g "$group" -m 0755 /home/ubuntu/.local/state
+install -d -o "$user" -g "$group" -m 0755 /home/ubuntu/.local/state/docich
+install -d -o "$user" -g "$group" -m 0700 "$state" "$state/results"
 
 tmp_service="$(mktemp)"
 tmp_path="$(mktemp)"

@@ -57,9 +57,20 @@ _INTRO_TEXT = (
 _INVESTIGATE_TEXT = "現場調査です。「{room}」を調べました。見つかったのは{clue}。"
 _INTERROGATE_TEXT = "{suspect}を尋問しました。アリバイは「{alibi}」。"
 _DEDUCTION_TEXT = "そろそろ推理の時間です。手がかりを整理して、犯人だと思う容疑者を予想で選んでください。"
+_DEDUCTION_SUMMARY_TEXT = (
+    "推理タイムです。{rooms}室の手がかりと、容疑者{count}人ぶんのアリバイがそろいました。"
+    "時刻のついた手がかりが残された場所と、それぞれの証言の場所を突き合わせてください。"
+    "食い違うのは、ただ一人だけのはずです。"
+)
 _REVEAL_TEXT = (
     "答えの開示です。犯人は{culprit}。手法は{method}、動機は{motive}でした。"
     "開示した種で誰でも事件を再計算できます。みなさんの推理は当たったでしょうか。"
+)
+_REVEAL_STORY_LEAD = "事件の全容です。"
+_REVEAL_REASONING_LEAD = "決め手はここです。"
+_REVEAL_EXCLUSION_TAIL = (
+    "残る{n}人は、いずれも申告した部屋にいたことを、時刻つきの手がかりと証言の"
+    "両方で裏づけられていて、事件の現場とは重なりません。"
 )
 _NO_CONTEST_TEXT = "予想は対立投票がなく成立しなかったため、返金処理になりました。"
 _RESULT_HIT_TEXT = "視聴者の指名は的中しました。犯人は{culprit}でした。"
@@ -99,8 +110,51 @@ def deduction_text() -> str:
     return _DEDUCTION_TEXT[:MAX_SPEECH]
 
 
+def deduction_summary_text(case) -> str:
+    """The organised review: what is now on the board and how to read it."""
+    return _fit(_DEDUCTION_SUMMARY_TEXT.format(
+        rooms=len(case.rooms), count=len(case.suspects)))
+
+
 def reveal_text(culprit_name: str, method: str, motive: str) -> str:
     return _REVEAL_TEXT.format(culprit=culprit_name, method=method, motive=motive)[:MAX_SPEECH]
+
+
+def reveal_story_text(case) -> str:
+    """Reveal part 2: the timeline and how the method was executed."""
+    from .mystery_case import timeline
+
+    body = _REVEAL_STORY_LEAD + "".join(timeline(case))
+    body += f"手法は{case.method}。証拠は{case.method_evidence}です。"
+    return _fit(body)
+
+
+def reveal_motive_text(case) -> str:
+    """Reveal part 3: why the culprit did it, and what proves the link."""
+    body = (f"動機は{case.motive}。{case.motive_reason}ためです。"
+            f"その証拠は{case.motive_room}で見つかった"
+            f"「{case.motive_evidence}」で、{case.culprit.name}の名が残っていました。")
+    return _fit(body)
+
+
+def reveal_reasoning_text(case) -> str:
+    """Reveal part 4: the decisive contradiction and why the rest are cleared."""
+    from .mystery_case import contradiction_text
+
+    body = (_REVEAL_REASONING_LEAD + contradiction_text(case)
+            + _REVEAL_EXCLUSION_TAIL.format(n=len(case.suspects) - 1))
+    return _fit(body)
+
+
+def _fit(text: str) -> str:
+    """Bound one utterance, cutting at a sentence end when possible."""
+    if len(text) <= MAX_SPEECH:
+        return text
+    head = text[:MAX_SPEECH]
+    cut = max(head.rfind("。"), head.rfind("！"), head.rfind("？"))
+    if cut > MAX_SPEECH // 2:
+        return head[:cut + 1]
+    return head
 
 
 def prediction_result_text(*, resolved: bool, hit: bool | None, culprit_name: str) -> str:

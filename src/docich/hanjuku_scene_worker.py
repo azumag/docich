@@ -302,6 +302,10 @@ def consume(g, runtime, *, cfg=None, generate_fn=None, deliver_fn=None):
     try:
         ident = scene.identity(raw)
     except ValueError:
+        # A scene file that never satisfies identity leaves the worker
+        # permanently silent (#2951): leave one bounded marker per launch
+        # instead of nothing at all.
+        record(runtime, {'schema': 1}, 'skipped', reason='unavailable')
         return 'unavailable'
     state = read_record(Path(runtime) / scene.WORKER_FILE, limit=32768) or {}
     if not scene.same_identity(state, ident):
@@ -314,9 +318,14 @@ def consume(g, runtime, *, cfg=None, generate_fn=None, deliver_fn=None):
         request = snapshot['request']
         now = time.time()
         if request['seq'] <= (scene.number(state.get('last_request_seq'), 10**9) or 0):
+            # Launches are seq-gated, so reaching this again means the claim
+            # was lost between launches; record the gate so a stuck loop is
+            # diagnosable instead of invisible.
+            record(runtime, state, 'skipped', reason='duplicate')
             return 'duplicate'
         last_at = scene.stamp(state.get('last_attempt_at'))
         if last_at is not None and now - last_at < cfg['cooldown_s']:
+            record(runtime, state, 'skipped', reason='cooldown')
             return 'cooldown'
         state['last_request_seq'] = request['seq']
         if request['event_key'] in state.get('seen_keys', []):

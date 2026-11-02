@@ -60,8 +60,8 @@ def test_losing_hero_melee_reopens_the_menu_instead_of_mashing_to_death():
     # アテナ's panel has not moved, so a trade we keep losing must not be
     # mashed to death: the unopened command menu is reopened instead.
     assert policy.battle_step(panel(ally_hp=54), mem) == [policy.pad('b')]
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'battle_hero_survival_recheck'
+    rec = next(r for r in reversed(mem['_records'])
+               if r['decision'] == 'battle_hero_survival_recheck')
     assert rec['reason']
     assert rec['observed_metric']['episode'] == 1
     assert rec['observed_metric']['limit'] == policy.HERO_SURVIVAL_REOPEN_LIMIT
@@ -72,7 +72,7 @@ def test_hero_recheck_is_bounded_per_fight():
     start_battle(mem)
     failed_open_budget(mem)
     assert policy.battle_step(panel(ally_hp=81), mem) == MASH
-    actions = [policy.battle_step(panel(ally_hp=54), mem) for _ in range(30)]
+    actions = [policy.battle_step(panel(ally_hp=54), mem) for _ in range(50)]
     rechecks = [rec for rec in mem['_records'] if rec.get('decision') == 'battle_hero_survival_recheck']
     assert len(rechecks) == policy.HERO_SURVIVAL_REOPEN_LIMIT
     assert rechecks[0]['observed_metric']['episode'] == 1

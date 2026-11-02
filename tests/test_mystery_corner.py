@@ -29,11 +29,13 @@ from docich import mystery_case
 from docich import mystery_narration
 from docich.mystery_corner import (
     DEFAULT_DURATION_MINUTES,
+    INVESTIGATE_ROUNDS,
     MAX_DURATION_MINUTES,
     MysteryCornerError,
     MysteryCornerManager,
     PROGRAM_FLAG_NAME,
     PROGRAM_FLAG_TTL_S,
+    REVEAL_PARTS,
     _noop_status_overlay_control,
 )
 from docich.mystery_participation import load_ledger
@@ -352,14 +354,19 @@ def test_mystery_corner_runs_a_solo_case_then_always_reveals_and_restores(tmp_pa
     session = state["session"]
     case = mystery_case.generate(session["seed"])
     assert session["revealed"] is True
-    assert len(session["revealed_rooms"]) == 1
-    assert len(session["revealed_suspects"]) == 1
+    # #2757 A: the whole dossier (all rooms, all alibis) is public before the
+    # prediction, so two live rounds plus the deduction-phase completion cover
+    # every room and suspect.
+    assert sorted(session["revealed_rooms"]) == sorted(room.id for room in case.rooms)
+    assert sorted(session["revealed_suspects"]) == list(range(len(case.suspects)))
     assert session["prediction"]["status"] == "skipped"
     payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
     assert payload is not None and payload["case"]["reveal"]["seed"] == case.seed
     assert payload["case"]["reveal"]["culprit"]["name"] == case.culprit.name
     kinds = [item["kind"] for item in quiet_narration]
-    assert kinds == ["intro", "investigate", "interrogate", "deduction", "reveal"]
+    assert kinds == ["intro", "investigate", "investigate", "interrogate",
+                     "interrogate", "deduction", "reveal", "reveal", "reveal",
+                     "reveal"]
     assert case.culprit.name in quiet_narration[-1]["overlay"]
 
     # Zero participation still records one completed run (participants 0).
@@ -454,8 +461,10 @@ def test_mystery_corner_polls_drive_the_investigation(tmp_path, quiet_narration)
     session = state["session"]
     case = mystery_case.generate(session["seed"])
     actions = mystery_case.poll_actions(case, "investigate")
-    # votes=[5,1,0,0] → first-max index 0.
-    assert session["revealed_rooms"] == [actions[0][0]]
+    # votes=[5,1,0,0] → first-max index 0 in both live rounds; round 2 cannot
+    # pick the room already revealed, and the deduction phase publishes the rest.
+    assert session["revealed_rooms"][:2] == [actions[0][0], actions[1][0]]
+    assert sorted(session["revealed_rooms"]) == sorted(room.id for room in case.rooms)
     assert poll.created and poll.created[0][2] <= 1800
     assert state["ends_at"] - state["started_at"] == 30 * 60
 
@@ -473,9 +482,12 @@ def test_mystery_corner_zero_votes_falls_back_to_the_seeded_detective(tmp_path, 
     state = json.loads(adapter.state_path.read_text())
     session = state["session"]
     case = mystery_case.generate(session["seed"])
-    rng = random.Random(f"{case.seed}:investigate:solo")
-    expected = mystery_case.ai_detective_choice(case, "investigate", rng)
-    assert session["revealed_rooms"] == [expected]
+    expected = []
+    for round_index in range(INVESTIGATE_ROUNDS):
+        rng = random.Random(f"{case.seed}:investigate:{round_index}:solo")
+        expected.append(mystery_case.ai_detective_choice(
+            case, "investigate", rng, exclude=expected))
+    assert session["revealed_rooms"][:len(expected)] == expected
 
 
 def test_mystery_corner_settles_a_contested_prediction_with_the_engine_answer(
@@ -944,7 +956,7 @@ def test_mystery_corner_displays_the_live_poll_and_its_winner_to_viewers(
     # The participation counters reach the run ledger (counts only).
     ledger = load_ledger(Path(g.state_dir) / "mystery_history.json")
     entry = ledger["entries"][0]
-    assert entry["polls"] == 2 and entry["votes_total"] == 12
+    assert entry["polls"] == 4 and entry["votes_total"] == 24
 
 
 def test_mystery_corner_flags_off_shows_the_designed_solo_poll_state(
@@ -969,3 +981,147 @@ def test_mystery_corner_flags_off_shows_the_designed_solo_poll_state(
     session = json.loads(adapter.state_path.read_text())["session"]
     assert "investigate_poll_id" not in session
     assert "interrogate_poll_id" not in session
+
+
+# --- #2757: deducible material before the prediction, explained reveal -------
+
+
+def _derive_culprit_from_board(board):
+    """Solve the case from the broadcast board alone, like a viewer would.
+
+    Rule the corner states on air: a time-anchored clue names the room a
+    suspect was in at the murder hour; compare it with the room that suspect
+    claims. Exactly one suspect's claim must fail.
+    """
+    contradicted = []
+    for suspect in board["suspects"]:
+        traces = [room["name"] for room in board["rooms"]
+                  if suspect["name"] in (room.get("clue") or "")]
+        if any(room_name != suspect.get("alibi_room") for room_name in traces):
+            contradicted.append(suspect["index"])
+    return contradicted
+
+
+def test_prediction_opens_on_a_complete_and_uniquely_deducible_dossier(
+        tmp_path, quiet_narration):
+    """#2757 A: by the time viewers can bet, the published board alone solves it."""
+    g, now, _factory, store, switch = _setup(tmp_path, duration=30)
+    payloads = []
+
+    def sleep(seconds):
+        payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
+        if payload is not None:
+            payloads.append(payload)
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(duration=30), switch, now, sleep,
+                       prediction_factory=FakePredictionClient())
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    session = json.loads(adapter.state_path.read_text())["session"]
+    case = mystery_case.generate(session["seed"])
+
+    phases = [payload["phase"] for payload in payloads]
+    assert "deduction" in phases and "prediction" in phases
+    assert phases.index("deduction") < phases.index("prediction")
+
+    first_prediction = next(p for p in payloads if p["phase"] == "prediction")
+    board = first_prediction["case"]
+    assert "reveal" not in board
+    # Nothing is left for later: every room's clue and every alibi is public.
+    assert all(room["searched"] and room.get("clue") for room in board["rooms"])
+    assert all(suspect.get("alibi") and suspect.get("alibi_room")
+               for suspect in board["suspects"])
+
+    contradicted = _derive_culprit_from_board(board)
+    assert contradicted == [case.culprit_index]
+    assert mystery_case.solve(case) == case.culprit_index
+
+
+def test_reveal_board_and_speech_explain_the_case(tmp_path, quiet_narration):
+    """#2757 B: board and voice both carry the story, motive and reasoning."""
+    g, now, _factory, store, switch = _setup(tmp_path, duration=30)
+    payloads = []
+
+    def sleep(seconds):
+        payload = read_payload(Path(g.state_dir) / PAYLOAD_FILENAME)
+        if payload is not None:
+            payloads.append(payload)
+        now[0] += seconds
+
+    adapter = _adapter(g, _corner(duration=30), switch, now, sleep,
+                       prediction_factory=FakePredictionClient())
+    assert adapter.manager.run_rotation(str(uuid.uuid4())) == "completed"
+
+    session = json.loads(adapter.state_path.read_text())["session"]
+    case = mystery_case.generate(session["seed"])
+
+    reveal_steps = [payload.get("reveal_step") for payload in payloads
+                    if payload["phase"] == "reveal"]
+    assert reveal_steps[:len(REVEAL_PARTS)] == list(
+        range(1, len(REVEAL_PARTS) + 1))
+
+    final_board = next(p for p in reversed(payloads) if p["phase"] == "reveal")["case"]
+    published = final_board["reveal"]
+    assert mystery_case.verify_reveal(published, case)
+    assert published["timeline"] and published["contradiction"]
+    assert published["method_how"] and published["method_evidence"]
+    assert published["motive_reason"] and published["motive_evidence"]
+    assert len(published["exclusions"]) == len(case.suspects) - 1
+
+    spoken = [item for item in quiet_narration if item["kind"] == "reveal"]
+    assert len(spoken) == len(REVEAL_PARTS)
+    speech_blob = "".join(item["speech"] for item in spoken)
+    overlay_blob = "".join(item["overlay"] for item in spoken)
+    for blob in (speech_blob, overlay_blob):
+        assert case.culprit.name in blob
+        assert case.method_evidence in blob
+        assert case.motive in blob
+        assert "両立しない" in blob
+    # The verification facts ride along with the verdict (board + voice).
+    assert case.commitment[:16] in overlay_blob
+    assert str(case.seed) in overlay_blob
+    assert "種" in speech_blob
+    for line in published["exclusions"]:
+        assert line in overlay_blob
+
+
+def test_reveal_resumes_only_the_missing_parts(tmp_path, quiet_narration):
+    """#2757 B: the four reveal parts are individually at-most-once.
+
+    A crash between parts must not repeat what already played, and a re-entry
+    must still speak the rest (the reason ``_phase_reveal`` is resumable).
+    """
+    g, now, _factory, _store, switch = _setup(tmp_path, duration=30)
+    manager = _adapter(g, _corner(duration=30), switch, now,
+                       lambda seconds: now.__setitem__(0, now[0] + seconds)).manager
+    case = mystery_case.generate(4321)
+    state = {
+        "rotation_request_id": str(uuid.uuid4()),
+        "ends_at": now[0] + 1800,
+        "mystery_runtime_identity": {"game": VIEW_NAME, "runtime_id": "r1",
+                                     "generation": 1, "lease_id": "l1"},
+    }
+
+    def fresh_session(announced=None, done=False):
+        return {"seed": case.seed, "case_version": mystery_case.VERSION,
+                "phase": "prediction", "announced": dict(announced or {}),
+                "revealed_rooms": [], "revealed_suspects": [],
+                "revealed": True, "reveal_done": done}
+
+    session = fresh_session()
+    manager._phase_reveal(state, case, session)
+    assert session["reveal_done"] is True
+    assert [item["kind"] for item in quiet_narration] == ["reveal"] * len(REVEAL_PARTS)
+
+    # Re-entering a finished reveal speaks nothing again.
+    before = len(quiet_narration)
+    manager._phase_reveal(state, case, session)
+    assert len(quiet_narration) == before
+
+    # A run that died after the first two parts speaks exactly the rest.
+    resumed = fresh_session({"reveal:verdict": True, "reveal:story": True})
+    before = len(quiet_narration)
+    manager._phase_reveal(state, case, resumed)
+    assert len(quiet_narration) - before == len(REVEAL_PARTS) - 2
+    assert resumed["reveal_done"] is True

@@ -437,8 +437,8 @@ class TestNethackRunBoundary(NethackCornerTestBase):
         self.assertIs(mgr.status().get("screen_readable"), False)
         mgr._runtime_screen = lambda: "You die..."
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(mgr.status().get("finish_reason"), "terminal")
-        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 0.0)
+        self.assertEqual(mgr.status().get("finish_reason"), "stalled")
+        self.assertEqual(mgr.status().get("screen_unchanged_seconds"), 60.0)
         self.assertIs(mgr.status().get("screen_readable"), True)
 
     def test_queued_restore_preserves_the_original_stall_observation(self):

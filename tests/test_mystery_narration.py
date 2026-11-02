@@ -61,6 +61,48 @@ def test_fallback_texts_are_bounded_and_fact_only():
     assert len(alibi_text) <= MAX_SPEECH
 
 
+def test_reveal_parts_explain_the_whole_case_within_one_utterance():
+    """#2757 B: the reveal is spoken as verdict → story → motive → reasoning."""
+    from docich.mystery_case import contradiction_text
+    from docich.mystery_narration import (
+        deduction_summary_text,
+        reveal_motive_text,
+        reveal_reasoning_text,
+        reveal_story_text,
+    )
+
+    for seed in (7, 21, 99, 2711):
+        case = generate(seed)
+        parts = {
+            "verdict": reveal_text(case.culprit.name, case.method, case.motive),
+            "story": reveal_story_text(case),
+            "motive": reveal_motive_text(case),
+            "reasoning": reveal_reasoning_text(case),
+        }
+        for name, text in parts.items():
+            assert 0 < len(text) <= MAX_SPEECH, name
+            assert text.endswith("。"), name
+        # The story names the when/where/what and the method's execution.
+        assert case.time_label in parts["story"]
+        assert case.method_how in parts["story"]
+        assert case.method_evidence in parts["story"]
+        assert case.victim in parts["story"]
+        # The motive links the culprit to the victim and its evidence.
+        assert case.motive in parts["motive"]
+        assert case.motive_evidence in parts["motive"]
+        assert case.culprit.name in parts["motive"]
+        # The reasoning states the broken alibi and clears the rest.
+        assert contradiction_text(case)[:20] in parts["reasoning"]
+        assert "両立しない" in parts["reasoning"]
+        assert f"残る{len(case.suspects) - 1}人" in parts["reasoning"]
+        # The deduction phase organises the material instead of a stock line.
+        summary = deduction_summary_text(case)
+        assert 0 < len(summary) <= MAX_SPEECH
+        assert f"{len(case.rooms)}室" in summary
+        assert f"{len(case.suspects)}人" in summary
+        assert summary != deduction_text()
+
+
 def test_prediction_result_text_distinguishes_resolve_cancel_and_hit():
     assert "返金" in prediction_result_text(resolved=False, hit=None, culprit_name="X")
     assert "的中" in prediction_result_text(resolved=True, hit=True, culprit_name="X")

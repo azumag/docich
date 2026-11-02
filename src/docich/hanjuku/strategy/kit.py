@@ -12,7 +12,7 @@ from ..decision_log import _record
 
 def _is_boss_order(order, mem) -> bool:
     chapter = mem.get('chapter') or 0
-    return bool(order) and order.get('target') == chart.boss_castle(chapter)
+    return bool(order) and order.get('target') in (chart.boss_castle(chapter), *chart.boss_sites(chapter))
 
 
 # Owner (2026-09-29): 敵にエッグを使わせない. gcgx ai.html: an enemy general
@@ -36,9 +36,15 @@ def _cap_card_ids(cards):
 def _strict_boss_cards(order, mem) -> bool:
     """The base chart's boss sortie carries exactly its charted cards; an
     adjusted/interim boss order may leave an unavailable card behind (g438
-    04:03: J1 wanted ミックミー, none was owned, and card_select held for good)."""
-    return _is_boss_order(order, mem) and any(
-        o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0))
+    04:03: J1 wanted ミックミー, none was owned, and card_select held for good).
+
+    The strict kit relies on the month plan buying its cards back
+    (``strategy.boss_cards``), which covers the single boss order only. A
+    chapter 4 四季王 site has no such plan, so it leaves a missing card behind
+    (g1075 2026-10-30 08:14-08:16: 4-B1 waited for マグネガキン/ファバード past
+    the list's last row and restarted the sortie every ~30 s)."""
+    return (_is_boss_order(order, mem) and order.get('target') not in chart.boss_sites(4)
+            and any(o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0)))
 
 
 def _deploy_cards(order, mem):
@@ -77,6 +83,13 @@ def _deploy_cards(order, mem):
     for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
         if card in cards:
             cards.remove(card)
+    # A card measured out of stock before this attempt began is not searched
+    # for again: every chapter 4 sortie of g1075 (2026-10-29 17:40-17:50)
+    # scrolled and waited 5 readings for エンジェリン at stock 0. A zero read
+    # during the attempt keeps its bounded readings (flows.deploy._drop_card).
+    zero = mem.get('card_zero_at_start')
+    if isinstance(zero, dict) and zero.get('step') == order['step']:
+        cards = [card for card in cards if card not in (zero.get('cards') or ())]
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped

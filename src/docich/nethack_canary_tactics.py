@@ -21,6 +21,7 @@ from .nethack_action_spec import (
     REVIEWED_EFFECTS,
     ActionContext,
     ActionSpec,
+    visible_memory_door,
     keys_match,
     load_action_catalog,
     precondition,
@@ -28,7 +29,9 @@ from .nethack_action_spec import (
 from .nethack_canary_rules import (
     DIRECTION_KEY,
     attackable_neighbors,
+    category_item,
     door_key,
+    equipped_item,
     food_item,
     openable_neighbors,
 )
@@ -49,17 +52,32 @@ SUPPORTED_EFFECTS = frozenset(REVIEWED_EFFECTS)
 # working during the migration.
 SUPPORTED_ACTION_IDS = frozenset(
     {
+        "severe_status_recovery",
         "advance_message",
         "confirm_attack",
         "decline_prompt",
         "directional_travel",
         "eat_food",
+        "pick_up_item",
         "rest_impaired",
         "attack_adjacent",
         "rest_low_hp",
         "open_door",
+        "descend_stairs",
         "explore_step",
+        "search_when_blocked",
         "rest",
+        "wield_weapon",
+        "wear_armor",
+        "quaff_potion",
+        "read_scroll",
+        "zap_wand",
+        "apply_tool",
+        "takeoff_armor",
+        "throw_item",
+        "close_door",
+        "kick_door",
+        "ascend_stairs",
     }
 )
 
@@ -97,6 +115,8 @@ class CanaryTacticalPolicy:
         # (dungeon_level, x, y) of doors whose open attempt did not change the
         # tile; they are never retried so the canary cannot loop on a lock.
         self._failed_doors: set[tuple[int, int, int]] = set()
+        # Doors already kicked once, so a failed kick never repeats.
+        self._failed_kicks: set[tuple[int, int, int]] = set()
 
     # --- effects (reviewed key producers, dispatched by spec.effect) --------
 
@@ -128,6 +148,48 @@ class CanaryTacticalPolicy:
         if spec.effect == "eat_item":
             item = food_item(inventory)
             return ("e", item.letter) if item is not None else None
+        if spec.effect == "apply_item":
+            item = category_item(inventory, "tool")
+            return ("a", item.letter) if item is not None else None
+        if spec.effect == "read_item":
+            item = category_item(inventory, "scroll")
+            return ("r", item.letter) if item is not None else None
+        if spec.effect == "quaff_item":
+            item = category_item(inventory, "potion")
+            return ("q", item.letter) if item is not None else None
+        if spec.effect == "zap_wand":
+            item = category_item(inventory, "wand")
+            return ("z", item.letter) if item is not None else None
+        if spec.effect == "throw_item":
+            item = category_item(inventory, "weapon", equipped=False)
+            neighbors = attackable_neighbors(obs)
+            if item is None or not neighbors:
+                return None
+            dx, dy, _glyph = neighbors[0]
+            return ("t", item.letter, DIRECTION_KEY[(dx, dy)])
+        if spec.effect == "wear_item":
+            item = category_item(inventory, "armor", equipped=False)
+            return ("W", item.letter) if item is not None else None
+        if spec.effect == "wield_item":
+            item = category_item(inventory, "weapon", equipped=False)
+            return ("w", item.letter) if item is not None else None
+        if spec.effect == "takeoff_item":
+            item = equipped_item(inventory, "armor")
+            return ("T", item.letter) if item is not None else None
+        if spec.effect == "close_door":
+            pos = visible_memory_door(obs, ctx)
+            if pos is None or obs.player is None:
+                return None
+            return ("c", DIRECTION_KEY[(pos[0] - obs.player[0], pos[1] - obs.player[1])])
+        if spec.effect == "kick_door":
+            for dx, dy, _glyph in openable_neighbors(obs):
+                key = door_key(obs, dx, dy)
+                if key in ctx.failed_doors and key not in self._failed_kicks:
+                    self._failed_kicks.add(key)
+                    return ("\x04", DIRECTION_KEY[(dx, dy)])
+            return None
+        if spec.effect == "pray":
+            return tuple(spec.key_pattern)
         if spec.effect == "explore_step":
             step = self._base.explorer.plan_step(obs)
             return (step.key,) if step is not None else None
@@ -148,6 +210,7 @@ class CanaryTacticalPolicy:
             observation=obs,
             inventory=inventory,
             failed_doors=frozenset(self._failed_doors),
+            failed_kicks=frozenset(self._failed_kicks),
             explorer=self._base.explorer,
         )
         for spec in self._ordered:
@@ -172,6 +235,11 @@ class CanaryTacticalPolicy:
         # severe status condition): defer to the P3b base policy, which returns
         # an LLM/observation decision and never a canary key.
         return self._base.decide(obs)
+
+    @property
+    def explorer(self) -> NethackExplorer:
+        """Exploration memory used by the catalog predicates (read-only use)."""
+        return self._base.explorer
 
     def assert_safe(self, decision: PolicyDecision) -> None:
         """Re-check a decision against this policy's catalog allowlist."""

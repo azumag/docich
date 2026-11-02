@@ -285,16 +285,90 @@ def test_actual_recovery_not_needed_also_rechecks_the_previous_target_egg_fact()
     assert mem['egg_uses'] == {}
 
 
-def test_join_and_hp_defeat_invalidate_membership_without_inventing_a_headcount_or_death():
+def _defeat(mem, ally='ゼウス'):
+    mem['battle'] = {'ally': ally, 'enemy': 'バジル', 'ally_hp': 0, 'enemy_hp': 2,
+                     'away': 1, 'cards_used': []}
+    p.battle_end(mem, 'map')
+
+
+def test_a_join_invalidates_membership_without_inventing_a_headcount():
     mem = completed()
     p.observe_events(Screen([], None, 'ココットがはいかにくわわった!', kind='text'), mem)
     assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+
+
+def test_hp_defeat_rereads_only_that_general_without_inventing_a_death():
     mem = completed()
-    mem['battle'] = {'ally': 'ゼウス', 'enemy': 'バジル', 'ally_hp': 0, 'enemy_hp': 2,
-                    'away': 1, 'cards_used': []}
-    p.battle_end(mem, 'map')
-    assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+    _defeat(mem)
+    assert mem['roster_survey']['defeated'] == ['ゼウス']
+    assert r.recheck_targets(mem) == ['ゼウス']
+    assert not mem.get('recruit_roster_recheck')
     assert p.summary(mem)['generals_lost'] is None
+
+
+def test_hp_defeat_without_a_survey_entry_still_invalidates_membership():
+    mem = completed()
+    _defeat(mem, ally='ヴィーナス')
+    assert 'roster_survey' not in mem and mem['recruit_roster_recheck'] is True
+
+
+def test_a_defeated_general_still_listed_stays_in_the_survey():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    page = parse(roster(NAMES))
+    assert house.step(page, mem, None) == [p.pad('down')]
+    assert mem['roster_survey']['defeated'] == ['ゼウス']
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_defeated_general_missing_from_the_whole_list_leaves_only_that_name():
+    mem = completed()
+    survey_names = list(mem['roster_survey']['receipt']['names'])
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    page = parse(roster(['どうし']))
+    assert house.step(page, mem, None) == []
+    assert mem['house']['status_targets'] == []
+    assert any(rec['decision'] == 'house_roster_defeated_gone' for rec in mem['_records'])
+    survey = r.completed_survey(mem)
+    assert survey is not None and survey['receipt']['names'] == ['どうし']
+    assert set(survey['statuses']) == {'どうし'} and not survey['dirty']
+    assert survey_names == NAMES and not mem.get('recruit_roster_recheck')
+    assert r.fresh(mem)['names'] == ['どうし']
+
+
+def test_an_undefeated_target_is_never_dropped_from_the_survey():
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'])
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス']}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('down')]
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_walk_not_started_at_the_top_cannot_prove_a_defeated_general_gone():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'walk_names': ['どうし'], 'walk_from_top': False}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('down')]
+    assert 'ゼウス' in mem['roster_survey']['statuses']
+
+
+def test_a_target_passed_on_the_way_down_is_reached_going_up():
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'])
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'walk_names': ['ゼウス']}
+    assert house.step(parse(roster(['どうし'])), mem, None) == [p.pad('up')]
 
 
 def test_unknown_hp_is_a_dirty_field_even_when_membership_is_complete():
@@ -370,3 +444,239 @@ def test_field_reuse_keeps_the_two_attempt_budget_and_unknown_statuses_stay_dirt
         mem['tick'] += house.SCAN_INTERVAL
     assert house.step(MAP, mem, None) is None
     assert mem['roster_survey']['dirty'] == {'ゼウス': ['hp']}
+
+
+def test_partial_survey_roster_next_hop_acts_on_the_same_frame():
+    """Issue #3194 (18): after the status screen closes, the next target is
+    walked toward on the frame that already shows the list, not one idle
+    observation later."""
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster_next', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'どうし'}
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('down')]
+    assert mem['house']['phase'] == 'roster'
+    assert any(rec['decision'] == 'house_input_free_hop' for rec in mem['_records'])
+
+
+def test_input_free_hop_never_chains_a_second_pad_in_one_observation():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster_next', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'どうし'}
+    actions = house.step(parse(roster(NAMES)), mem, None)
+    assert len(actions) == 1
+    # A non-roster frame must not hop: the phase stays until a list is seen.
+    mem['house']['phase'] = 'roster_next'
+    assert house.step(parse(status('ゼウス')), mem, None) == []
+    assert mem['house']['phase'] == 'roster_next'
+def test_observation_cost_tally_counts_status_opens_and_stays_bounded():
+    """Issue #3194 (36): counts only, capped in keys and generals."""
+    mem = {}
+    for i in range(house.TALLY_GENERALS + 10):
+        house._tally(mem, 'status_open_full', f'g{i}')
+    assert mem['obs_cost']['status_open_full']['n'] == house.TALLY_GENERALS + 10
+    assert len(mem['obs_cost']['status_open_full']['by_general']) == house.TALLY_GENERALS
+    for i in range(house.TALLY_KEYS + 5):
+        house._tally(mem, f'k{i}')
+    assert len(mem['obs_cost']) == house.TALLY_KEYS
+
+
+def test_partial_status_read_is_tallied_per_general():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'status', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'ゼウス'}
+    house.step(parse(status('ゼウス', 'エラベルエッグ4')), mem, None)
+    assert mem['obs_cost']['status_open_partial']['by_general'] == {'ゼウス': 1}
+
+
+def test_visible_dirty_target_is_read_before_walking_to_an_offscreen_head():
+    """Issue #3194 (12): registration order carries no urgency."""
+    names = ['どうし', 'ゼウス', 'ヴィーナス', 'ヘルメス']
+    pick = house._nearest_visible_target
+    assert pick(['アポロ', 'ヘルメス', 'ゼウス'], names, 'ヴィーナス') in {'ヘルメス', 'ゼウス'}
+    assert pick(['アポロ', 'ヘルメス', 'どうし'], names, 'ヴィーナス') == 'ヘルメス'
+    # A visible head is never displaced, so the oldest target cannot starve.
+    assert pick(['どうし', 'ヘルメス'], names, 'ヘルメス') == 'どうし'
+    # Nothing visible (or an unreadable cursor) keeps the existing head search.
+    assert pick(['アポロ', 'ゼウス'], ['どうし'], 'どうし') == 'アポロ'
+    assert pick(['アポロ', 'ゼウス'], names, '??') == 'アポロ'
+
+
+def _walk_cost(names):
+    """Observations and inputs of one full status walk on synthetic frames."""
+    from test_hanjuku_house import memory
+    mem = memory('roster')
+    r.begin(mem, mem['house'])
+    steps = []
+
+    def feed(frame):
+        actions = house.step(parse(frame), mem, None)
+        steps.append(actions)
+        return actions
+    feed(roster(names, 0))
+    for i, name in enumerate(names):
+        feed(status(name, 'エラベルエッグ4'))
+        feed(roster(names, i))
+        feed(roster(names, (i + 1) % len(names)))
+    return steps
+
+
+@pytest.mark.parametrize('count', [2, 3, 4])
+def test_full_status_walk_never_spends_an_observation_without_input(count):
+    """Issue #3194 (39): operation-count regression guard.
+
+    The walk reads each general in three observations (A, B, Down) and the
+    wrapped list closes with one B; an observation that issues nothing means a
+    state hop is waiting for a frame it does not need (cf. #3194 item 18).
+    """
+    names = ['どうし', 'ゼウス', 'ヴィーナス', 'ヘルメス'][:count]
+    steps = _walk_cost(names)
+    assert len(steps) == 3 * count + 1
+    assert all(len(actions) == 1 for actions in steps)
+
+
+def _partial_walk_memory(targets):
+    mem = completed()
+    r.dirty_status(mem, targets)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': list(r.recheck_targets(mem))}
+    return mem
+
+
+def test_target_read_on_another_screen_is_dropped_from_the_partial_walk():
+    """Issue #3194 (05/16): do not open a status that was already re-read."""
+    mem = _partial_walk_memory(['ゼウス'])
+    assert mem['house']['status_targets'] == ['ゼウス']
+    # A different flow reads ゼウス completely while this walk is waiting.
+    assert house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)['general'] == 'ゼウス'
+    assert r.recheck_targets(mem) == []
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+    assert mem['obs_cost']['target_satisfied_elsewhere']['n'] == 1
+
+
+def test_unsatisfied_targets_are_kept_and_walked_as_before():
+    mem = _partial_walk_memory(['ゼウス'])
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('down')]
+    assert mem['house']['status_targets'] == ['ゼウス']
+    assert 'target_satisfied_elsewhere' not in mem.get('obs_cost', {})
+
+
+def test_only_the_satisfied_target_is_dropped_when_two_are_pending():
+    names = ['どうし', 'ゼウス']
+    mem = _partial_walk_memory(names)
+    house._observe_status(parse(status('ゼウス', 'エラベルエッグ4')), mem)
+    house.step(parse(roster(NAMES)), mem, None)
+    assert mem['house']['status_targets'] == ['どうし']
+
+
+# ---- Issue #3194 (06/10): month-boundary carry-over (flag, default off) ----
+
+def _next_month(mem, month='1-7', names=NAMES, tick=900):
+    """A new month with its own complete names-only roster count."""
+    mem.update(month=month, tick=tick)
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'month_scan': True, 'seen': [], 'pending': [],
+                    'age': 0, 'total': 0}
+    r.begin(mem, mem['house'])
+    r.page(mem, list(names))
+    mem['recruit_roster']['wages'] = {n: r.fixed_wage(n) or 0 for n in names}
+    mem['recruit_roster']['complete'] = True
+    mem.pop('house')
+    for castle in list(mem.get('castle_income', {})):
+        mem['castle_income'][castle].update(month=month, tick=tick)
+    return mem
+
+
+@pytest.fixture
+def carry_on(monkeypatch):
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)  # on by default
+
+
+def test_month_carry_is_on_by_default_and_the_kill_switch_turns_it_off(monkeypatch):
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)
+    assert r.month_carry_enabled() is True
+    assert r.carry_forward(_next_month(completed())) is not None
+    monkeypatch.setenv(r.MONTH_CARRY_ENV, '0')
+    mem = _next_month(completed())
+    assert r.carry_forward(mem) is None
+    assert r.reusable_survey(mem) is None
+
+
+def test_healthy_castle_residents_are_carried_and_only_the_new_member_is_opened(carry_on):
+    mem = completed()
+    mem = _next_month(mem, names=NAMES + ['ヴィーナス'])
+    out = r.carry_forward(mem)
+    assert out == {'carried': NAMES, 'reopen': ['ヴィーナス']}
+    assert r.recheck_targets(mem) == ['ヴィーナス']
+    assert r.completed_survey(mem) is not None
+    row = mem['house_eggs']['ゼウス']
+    assert row['month'] == '1-7' and row['carried_from'] == '1-6' and row['carry_depth'] == 1
+    assert row['location'] == 'castle' and row['location_observed'] is True
+
+
+def test_everyone_carried_means_no_status_screen_is_opened(carry_on):
+    mem = _next_month(completed())
+    assert r.carry_forward(mem)['reopen'] == []
+    assert r.recheck_targets(mem) == []
+    mem['obs_cost'] = {}
+    assert house.step(MAP, mem, None) is None  # back to the field, no survey walk
+    assert 'house' not in mem or not mem.get('house')
+
+
+def test_a_general_with_an_event_since_the_last_read_is_reopened(carry_on):
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'], fields=('egg',))
+    mem = _next_month(mem)
+    out = r.carry_forward(mem)
+    assert out == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    assert r.recheck_targets(mem) == ['ゼウス']
+
+
+@pytest.mark.parametrize('change', ['hp', 'field', 'broken', 'unobserved'])
+def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on, change):
+    mem = completed()
+    row = mem['roster_survey']['statuses']['ゼウス']
+    if change == 'hp':
+        row['hp'] = row['max_hp'] - 1
+    elif change == 'field':
+        row['location'] = 'field'
+    elif change == 'broken':
+        row['broken'] = True
+    else:
+        row['location_observed'] = False
+    mem = _next_month(mem)
+    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+
+
+def test_a_row_is_carried_at_most_two_months_in_a_row(carry_on):
+    mem = completed()
+    for month, expect in (('1-7', NAMES), ('1-8', NAMES), ('1-9', [])):
+        mem = _next_month(mem, month=month, tick=mem['tick'] + 400)
+        out = r.carry_forward(mem)
+        assert out['carried'] == expect, month
+        assert sorted(out['reopen']) == sorted(set(NAMES) - set(expect))
+        # a real read of everyone ends the reopened ones' streak
+        mem['roster_survey']['dirty'] = {}
+
+
+def test_a_gap_in_months_or_another_run_or_chapter_is_not_carried(carry_on):
+    mem = _next_month(completed(), month='1-8')       # 1-7 was never surveyed
+    assert r.carry_forward(mem) is None
+    mem = completed(); mem['roster_survey']['identity'] = {**IDENTITY, 'runtime_id': 'other'}
+    assert r.carry_forward(_next_month(mem)) is None
+    mem = completed()
+    mem = _next_month(mem); mem['chapter'] = 2
+    assert r.carry_forward(mem) is None
+
+
+def test_carry_over_needs_this_months_complete_names_only_count(carry_on):
+    mem = completed()
+    mem.update(month='1-7', tick=900)                  # no new roster count yet
+    assert r.carry_forward(mem) is None
+    assert r.reusable_survey(mem) is None

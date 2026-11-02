@@ -107,7 +107,7 @@ def test_nonhero_is_included_in_roster_scan_and_healthy_hero_is_skipped():
     assert feed(mem, roster()) == [p.pad('a')]
     assert feed(mem, status('どうし', 'エラベルエッグ4')) == [p.pad('b')]
     assert feed(mem, roster()) == [p.pad('down')]
-    feed(mem, roster(selected=1))
+    # Issue #3194: the moved cursor is acted on in the same observation.
     assert feed(mem, roster(selected=1)) == [p.pad('a')]
     assert feed(mem, status('ゼウス')) == [p.pad('b')]
     assert mem['house']['seen'] == ['どうし', 'ゼウス']
@@ -120,7 +120,9 @@ def test_delayed_roster_cursor_is_not_mistaken_for_full_roster_wrap():
     feed(mem, roster())
     assert mem['house']['phase'] == 'roster_advance'
     feed(mem, roster(selected=1))
-    assert mem['house']['phase'] == 'roster'
+    # Cursor moved: the input-free roster_advance->roster hop continues to the
+    # A press on the same frame (Issue #3194), so the phase is already status.
+    assert mem['house']['phase'] == 'status'
 
 
 def test_only_exact_house_gifts_route_to_purchase():
@@ -638,7 +640,7 @@ def test_fresh_castle_recheck_does_not_allow_a_sole_defender_to_leave():
     with patch.object(p, '_present_generals', return_value=['どうし']), \
             patch.object(p, '_owned', return_value={'アルマムーン'}):
         actions = house.step(screen, mem, Canvas().frame())
-    assert actions != [p.pad('a')]
+    assert actions == []
     assert mem['house']['phase'] == 'close'
 
 

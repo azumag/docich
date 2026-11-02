@@ -33,6 +33,9 @@ docich VM 全体で「何が CPU を使っているか」「どの経路が wake
   （期間内に生まれて観測できた数）、voluntary/nonvoluntary context switch/秒、RSS 合計、
   thread 数合計。CPU 降順。
 - `spawns[]`: 期間内に生まれたプロセスの `component`/`spawner` 別件数。
+- `other_comms[]`: 残余 `other` コンポーネントの comm 別 CPU（最大8、CPU降順）。
+  comm は小文字の固定長ラベル（16字以内）だけを出し、secret-like な名前は
+  `redacted`。argv・パス・PIDは出さない。
 - `top_processes[]`: PID・component・cpu_pct・threads・RSS のみ。
 - `meta.profiler_cpu_sec`: profiler 自身の CPU 消費（計測 overhead の確認用）。
 

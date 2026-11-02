@@ -59,14 +59,16 @@ export async function handleBetaControl(request, env, now = Date.now()) {
     if (!await crypto.subtle.verify("HMAC", key, bytes, signed)) return json(401, { error: "control_authentication_failed" });
     const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     if (!payload || typeof payload !== "object" || Array.isArray(payload)
-        || !["status", "start", "stop", "reconcile"].includes(payload.action)
+        || !["status", "run", "start", "stop", "reconcile"].includes(payload.action)
         || Object.keys(payload).some((key) => !["action", "runId"].includes(key))
         || (payload.action === "status" ? Object.hasOwn(payload, "runId") : typeof payload.runId !== "string" || !ID.test(payload.runId))) {
       return json(400, { error: "invalid_control_request" });
     }
     if (!env.BETA_ARENA) return json(503, { error: "control_not_configured" });
     const actor = env.BETA_ARENA.get(env.BETA_ARENA.idFromName(SINGLETON_NAME));
-    const operation = payload.action === "status" ? actor.status() : actor[payload.action]({ runId: payload.runId });
+    const operation = payload.action === "status" ? actor.status()
+      : payload.action === "run" ? actor.runStatus({ runId: payload.runId })
+      : actor[payload.action]({ runId: payload.runId });
     return json(200, await deadline(operation, 2500));
   } catch (error) {
     const code = error?.message;

@@ -69,6 +69,32 @@ NetHack 5.0.0 は `paranoid_confirmation` の既定が `pray swim trap`（`optio
 入れません（item key の推測は issue 要件に反する）。`food_emergency`・`survival_emergency`
 への適用も既存契約どおり行いません。
 
+## canary の severe recovery 証拠と acceptance（#2650）
+
+canary の candidate arm は本番と同じ `NethackProgressResolver` 経路（observe → decide → resolve → act → sent）を通ります。
+これにより `#pray` の複数キー継続が canary でも駆動されます。baseline arm（`CanaryTacticalPolicy` の catalog）は変更しません。
+
+- worker 結果の `severe_recovery` は次の形です: `acceptance_scenario`（nullまたは scenario 名）、`severe_episodes`、
+  `recovery_started`、`recovery_resolved`、`outcome`。`severe_episodes` は severe status の立ち上がり回数です。
+  `recovery_started` は祈りの `#` を送った回数です。`recovery_resolved` は、祈り開始後に完全な severe-free frame（`turn_ready`）を
+  観測した回数です。#2526 の予算再武装と同じ基準です。
+- `outcome` の意味:
+  - `not_observed`: severe status を一度も観測していない。
+  - `observed_unattempted`: severe status を観測したが祈りを送っていない（fail-closed hold、Gehennom 等）。
+  - `recovery_unresolved`: 祈りを送ったが、終了まで完全な severe-free frame を観測していない。
+  - `resolved`: 祈り後に完全な severe-free frame を観測した。
+- 親 `nethack_canary.py` は `severe_recovery` の形と `outcome` の値を検証し、不正な場合は episode を受理しません。
+
+acceptance episode（#2650 Plan 2）は canary worker の内部だけで使う枠組みです。
+- `acceptance` を要求できるのは candidate arm だけです。scenario 名は `ACCEPTANCE_SCENARIOS` のレビュー済み固定表にある名前だけです。
+- 固定表は現時点で空です。表に scenario が無いため、すべての acceptance 要求は fail-closed で拒否されます。
+- `wizard_mode=False` / `explore_mode=False` / `production_state_must_remain_untouched=True` の要求は緩めません。
+- 本番 brain（`agent/brains.py`、`nethack_progress.py`、`nethack_policy.py`）は canary や acceptance を import しません。
+  テストでこの非接触を検証しています。
+- 通常の canary・smoke の paired 比較からの除外と、acceptance 要求の正規経路（親からの要求生成）は未実装です。
+  scenario の確定と合わせて別途決めます。
+
+
 ## 優先順位
 
 | 観測・状態 | 本番で許可する次の入力 |

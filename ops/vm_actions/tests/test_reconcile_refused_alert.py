@@ -96,6 +96,14 @@ class ClassificationTests(unittest.TestCase):
             "reconcile_refused",
         )
 
+    def test_tracked_vm_drift_is_classified_not_the_fallback(self):
+        # #2681: the 2026-10-23 clean out-of-band HEAD deploy rejection must be
+        # published with its own fixed code, not the generic deploy_failed.
+        self.assertEqual(
+            alert.classify_reason("VM operation rejected: tracked_vm_drift"),
+            "tracked_vm_drift",
+        )
+
     def test_allowlisted_codes_win_over_free_text(self):
         text = "some log line\nnext: reconcile_fetch_failed\nthen more text with secrets"
         self.assertEqual(alert.classify_reason(text), "reconcile_fetch_failed")

@@ -660,6 +660,28 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
+### clock-gap quarantine 中の半熟手動予約（clear-hanjuku-clock-quarantine）
+
+長時間の停止（now - last_seen_at > DAY）を検知した rotation は、cooldown の基準が
+信頼できないため clock_hold_until = now + DAY を保存し、clock-gap-quarantine で待機する。
+この間も queued_manual は保持されるが、timer は予約を処理しない。
+restart-service は state の hold を消さないため、これだけでは解除できない。
+
+canonical operator の固定 operation clear-hanjuku-clock-quarantine は、次を全て満たす
+時だけ clock_hold_until を削除する。ゲームの開始・停止・切替は行わない。
+
+- reason = clock-gap-quarantine
+- clock_hold_until が未来
+- status が running ではなく、pending / manual_pending が無い
+- last_seen_at が現在より未来でない（clock regression でない）
+- queued_manual.corner = hanjuku-hero
+
+解除後は reason = manual-clock-hold-cleared として保存し、既存の timer tick が
+通常の予約・program-slot・game-switch 境界契約を通して queue を処理する。
+clock_hold_until が無い・期限切れ・queue が別 corner の場合は解除せず、operator は非0で
+終了する。これは downtime の安全性を消すのではなく、owner が明示した1件の手動予約に限って
+hold を外す経路である。
+
 ### 予想王コーナー（`yoso` adapter、自動抽選＋手動予約）
 
 `config/docich.soren-live.toml` の catalog に `{ id = "yosou-oh", adapter = "yoso",
@@ -702,8 +724,10 @@ Soren の `twitch_predictions.sh` が追記する
 毎分の timer が台帳を読み直さない。symlink・oversize・契約違反の行は記録せず固定コードを返し、
 台帳の read/write に失敗した tick は cursor を進めないので同じ row を再試行する。
 この tick は best-effort で、失敗しても rotation の tick は止めない。
-診断は `prediction_leaderboard`（rounds/viewers/canceled/soren_canceled の件数のみ）と `soren_predictions`
+診断は `prediction_leaderboard`（件数のみ。キー一覧と閾値は
+`docs/operations/runtime-diagnostics.md` の `prediction` セクションが正本）と `soren_predictions`
 （handoff の存在・行数・cursor の有無）を投影し、視聴者名・title・row 本文は出さない。
+hard ceiling で `corners` が落ちても同じ bounded dict を top-level `prediction` から読める（#2805）。
 
 ### 半熟予想 round の owner-only 復旧（`cancel-prediction` / `sync-prediction`、#2216）
 
@@ -804,12 +828,15 @@ game = "mystery-view", enabled = true, duration_minutes = 30, audio_enabled = tr
 seed から確定し、コミットメント（SHA-256）を配信ボードへ常時表示する。終了時に seed を
 開示し、誰でも公開コードで再計算・照合できる。LLM 出力はゲーム状態・答えにならない。
 
-進行は intro → 調査アンケート（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問アンケート →
-推理タイム → 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
-`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示 の順。アンケート・予想が
+進行は intro → 調査アンケート×2（Twitch polls、`TWITCH_POLLS_ENABLED=1`）→ 尋問
+アンケート×2 → 推理タイム（残りの部屋・容疑者の資料を一括公開し、全手がかりと全アリバイを
+照合表で提示する）→ 犯人予想（チャネルポイント予想、`TWITCH_PREDICTIONS_ENABLED=1`、
+`hanjuku_prediction_api` の共有 Helix クライアントを再利用）→ 開示（判定・全容・動機・
+推理の4部構成）の順。予想を出す時点で全室の手がかりと全容疑者のアリバイが公開済みで、
+そこから犯人が一意に導ける（#2757）。アンケート・予想が
 使えない場合や票が0件の場合は seeded なAI探偵が進行する展示モードで、視聴者0人でも完走する。
 予想は作成後必ず精算または返金する（不成立は #933 の 2026-10-15 オーナー方針どおり
-CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（150秒）を
+CANCELED）。`ends_at` が唯一のハード上限で、全待機は reveal/復帰 reserve（300秒）を
 差し引いた予算内にクランプする。
 
 表示は読み取り専用 view（loopback 8807）で、天気予報・予想王と同じ配信ネイティブ

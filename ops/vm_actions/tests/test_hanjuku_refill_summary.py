@@ -66,6 +66,28 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(result))
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.json')})
 
+    def test_hero_repair_reserve_projects_bounded_amounts_and_release_code(self):
+        refill = self.collect()['refill']
+        self.assertEqual(refill['hero_reserve'], 50)
+        self.assertEqual(refill['general_reserve'], 0)
+        self.assertEqual(refill['hero_deferred'], 'none')
+        self.policy['shop']['hero_repair_deferred'] = 'moving'
+        self.write_records()
+        self.assertEqual(self.collect()['refill']['hero_deferred'], 'moving')
+        self.policy['shop']['hero_repair_deferred'] = 'PRIVATE-reason'
+        self.write_records()
+        refill = self.collect()['refill']
+        self.assertEqual(refill['hero_deferred'], 'unknown')
+        self.assertNotIn('PRIVATE', json.dumps(refill))
+
+    def test_hero_repair_reserve_bool_or_malformed_is_withheld(self):
+        self.policy['shop']['hero_repair_reserve'] = True
+        self.write_records()
+        refill = self.collect()['refill']
+        self.assertIsNone(refill['hero_reserve'])
+        self.assertIsNone(refill['general_reserve'])
+        self.assertEqual(refill['repair'], 'unknown')
+
     def test_current_refill_survives_existing_soft_and_hard_budget_pressure(self):
         refill = self.collect()['refill']
         payload = production_scale_payload(hanjuku_tactical={
@@ -226,7 +248,8 @@ class HanjukuRefillSummaryTests(unittest.TestCase):
         with mock.patch.object(self.module, '_read_hanjuku_record', wraps=original) as read:
             self.assertEqual(self.collect(now=1030)['refill']['scope'], 'current')
         self.assertEqual([Path(call.args[0]).name for call in read.call_args_list],
-                         ['game_switch.json', 'hanjuku_bot.json', 'hanjuku_run.json', 'game_switch.json'])
+                         ['game_switch.json', 'hanjuku_chart_worker.json', 'hanjuku_bot.json',
+                          'hanjuku_run.json', 'game_switch.json'])
         self.assertNotIn('refill', self.collect(now=1030.001))
 
     def test_count_thresholds_and_missing_freshness_are_not_confused(self):

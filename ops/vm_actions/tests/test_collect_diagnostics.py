@@ -54,19 +54,26 @@ def test_soren_game_projection_separates_a_stale_founding_marker(tmp_path):
     marker = tmp_path / "tmp/markers/.soviet_created"
     marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
     observation = tmp_path / "tmp/state/game_observation.json"
-    observation.write_text(json.dumps({
-        "schema": 1, "game_id": "22222222-2222-4222-8222-222222222222"}))
+
+    def live_observation(game_id):
+        # Only a schema-valid, fresh observation describing this same board
+        # counts as live evidence (soviet_now#714).
+        observation.write_text(json.dumps({
+            "schema": 1, "game_id": game_id, "stop_id": None,
+            "board": {"state": "STOP", "score": 1976,
+                      "makeSorenCount": 0, "pieces": None},
+            "observed_epoch": time.time()}))
 
     # The marker belongs to an earlier match: it is present but not evidence
     # for this board (#2345).
+    live_observation("22222222-2222-4222-8222-222222222222")
     output = module._collect_soren_game(tmp_path, 1100)
     assert output["founding_seen"] is True
     assert output["founding_marker_current"] is False
     assert output["founding_marker_stale"] is True
 
     # The same match is still holding its founding board: not stale.
-    observation.write_text(json.dumps({
-        "schema": 1, "game_id": "11111111-1111-4111-8111-111111111111"}))
+    live_observation("11111111-1111-4111-8111-111111111111")
     output = module._collect_soren_game(tmp_path, 1100)
     assert output["founding_marker_current"] is True
     assert output["founding_marker_stale"] is False
@@ -163,6 +170,112 @@ def test_rotation_projection_reports_scheduled_manual_without_request_identity(t
     assert rotation["scheduled_manual_overdue_sec"] is None
     assert rotation["scheduled_manual_blocked_reason"] == "not_due"
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_compact_policy_projects_battle_hp_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 3,
+        'battle': {'enemy': 'ヴィーナス', 'ally': 'どうし', 'start_enemy_hp': 9999,
+                   'start_ally_hp': 90, 'egg_battle': True,
+                   'note': 'DO-NOT-PUBLISH'},
+        'monster_panel': {'ally': 'バルーンフィンチ', 'ally_hp': 120,
+                          'enemy': 'ヴィーナス', 'enemy_hp': 9999,
+                          'note': 'DO-NOT-PUBLISH'}})
+    assert policy['battle']['start_enemy_hp'] == 9999
+    assert policy['battle']['start_ally_hp'] == 90
+    assert policy['battle']['egg_battle'] is True
+    assert policy['monster_panel']['ally_hp'] == 120
+    assert policy['monster_panel']['enemy_hp'] == 9999
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+
+
+def test_compact_policy_exposes_the_observing_bot_version():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy(
+        {'chapter': 4}, {'bot_version': 'hanjuku-chart-v350-stale-retry'})
+    assert policy['bot_version'] == 'hanjuku-chart-v350-stale-retry'
+    assert module._compact_hanjuku_policy(
+        {'chapter': 4, 'bot_version': 'x' * 500})['bot_version'] is None
+
+
+def test_march_projection_relaunch_limit_matches_the_policy():
+    from docich.hanjuku.strategy import orders
+
+    module = load_collector()
+    assert module.HANJUKU_MARCH_RELAUNCH_LIMIT == orders.BOSS_RELAUNCH_LIMIT
+
+
+def test_compact_policy_projects_a_parked_march_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 10000, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(南西)',
+                             'tick': 7000, 'note': 'DO-NOT-PUBLISH'}},
+        'boss_relaunch': {'4-B1': 2},
+        'retries': {'4-B1': 1},
+        'boss_victories': {'サマカンテ': {'site': '四季王城(南西)',
+                                      'note': 'DO-NOT-PUBLISH'}},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'], 'home_lost': True,
+        'boss_defeated': None,
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': '四季王城(南西)',
+        'age_ticks': 3000, 'relaunch': 2}
+    assert policy['march'] == {
+        'state': 'parked', 'overdue': ['4-B1'], 'exhausted': ['4-B1'],
+        'oldest_age_ticks': 3000}
+    assert policy['boss_victories'] == {'count': 1, 'sites': ['四季王城(南西)']}
+    assert policy['retries'] == {'4-B1': 1}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is True
+    assert 'captured' not in policy and 'lost' not in policy
+    assert policy['boss_defeated'] is None
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_keeps_an_overdue_retry_distinct_from_a_parked_one():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 5000, 'active': '4-B2',
+        'orders': {'4-B1': 'launched', '4-B2': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(北東)',
+                             'tick': 4500},
+                    '4-B2': {'status': 'en_route', 'target': '四季王城(南東)',
+                             'tick': 4900}},
+        'boss_relaunch': {'4-B1': 1},
+    })
+    assert policy['march']['state'] == 'active'
+    assert policy['march']['overdue'] == ['4-B1']
+    assert policy['march']['exhausted'] == []
+    assert policy['march']['oldest_age_ticks'] == 500
+    assert policy['sorties']['4-B2']['age_ticks'] == 100
+    assert policy['boss_victories'] == {'count': 0, 'sites': []}
+
+
+def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 100, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': 'x' * 500,
+                             'tick': 'yesterday'}},
+        'boss_relaunch': {'4-B1': -1},
+        'boss_victories': {'x': {'site': 'PRIVATE'}},
+        'retries': {'4-B1': -1},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'],
+        'boss_defeated': 'chapter_4',
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': None, 'age_ticks': None, 'relaunch': None}
+    assert policy['march']['state'] == 'overdue'
+    assert policy['march']['oldest_age_ticks'] is None
+    assert policy['boss_victories'] == {'count': 1, 'sites': []}
+    assert policy['retries'] == {'4-B1': None}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is False
+    assert policy['boss_defeated'] is None
+    assert 'PRIVATE' not in json.dumps(policy)
 
 
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
@@ -478,8 +591,11 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2,
-                    'canceled':1,'soren_canceled':0}
+    assert ledger=={'present':True,'readable':True,'schema':2,'rounds':2,
+                    'graded_rounds':1,'viewers':2,'predictor_rows':2,'canceled':1,
+                    'soren_canceled':0,'viewers_won_gt0':0,'viewers_used_gt0':0,
+                    'viewers_hit_rate_eligible':0,'last_round_ended_at':None,
+                    'last_round_age_sec':-1,'min_rounds':3,'min_participations':1}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
@@ -493,20 +609,29 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         encoding='utf-8')
     legacy=module._collect_programs(state_dir,soren,int(time.time()))
     assert legacy['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':1,'viewers':1,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':True,'schema':1,'rounds':1,'graded_rounds':1,
+        'viewers':1,'predictor_rows':1,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':True,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0,
-        'canceled':0,'soren_canceled':0}
+        'present':False,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
 
     # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
@@ -518,8 +643,166 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         }}),encoding='utf-8')
     soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
     assert soren_canceled['prediction_leaderboard']=={
-        'present':True,'readable':True,'rounds':2,'viewers':0,
-        'canceled':1,'soren_canceled':1}
+        'present':True,'readable':True,'schema':2,'rounds':2,'graded_rounds':1,
+        'viewers':0,'predictor_rows':0,'canceled':1,'soren_canceled':1,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
+
+def test_prediction_ledger_reports_last_round_end_without_names(tmp_path):
+    # #2805: telling "empty when the report was written" from "empty now" needs
+    # the ledger's own newest round end. It is a bounded ISO stamp plus an age,
+    # never a row body: the round title, login and user name stay inside the
+    # corner projection and are not repeated here.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=1792955569  # 2026-10-25T19:12:49Z
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED',
+                  'ended_at':'2026-10-25T18:12:49Z','predictors':[
+                      {'user_id':'u1','user_login':'secret','user_name':'SECRET-NAME',
+                       'used':100,'won':300,'hit':True}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'ended_at':'2026-10-25T19:02:49Z','predictors':[
+                      {'user_id':'u2','used':50,'refunded':50,'hit':None}]},
+        }}),encoding='utf-8')
+
+    entry=module._collect_prediction_leaderboard(state_dir,now)
+
+    assert entry['last_round_ended_at']=='2026-10-25T19:02:49Z'
+    assert entry['last_round_age_sec']==600
+    assert entry['graded_rounds']==1
+    assert entry['rounds']==2 and entry['canceled']==1
+    assert entry['viewers']==2 and entry['predictor_rows']==2
+    assert entry['viewers_won_gt0']==1 and entry['viewers_used_gt0']==2
+    assert entry['viewers_hit_rate_eligible']==0
+    assert entry['min_rounds']==3 and entry['min_participations']==1
+    rendered=json.dumps(entry,ensure_ascii=False)
+    assert 'SECRET' not in rendered and 'secret' not in rendered
+
+
+def test_parse_iso_utc_rounds_nanosecond_precision():
+    # #2925: a nanosecond-precision ledger stamp must not make last_round_age_sec
+    # stay -1.  The fractional part is rounded to microseconds.
+    module = load_collector()
+    nano = module._parse_iso_utc('2026-10-23T20:37:12.961559839Z')
+    micro = module._parse_iso_utc('2026-10-23T20:37:12.961560Z')
+    assert nano is not None
+    assert nano == micro
+
+
+def test_prediction_section_survives_the_hard_ceiling():
+    # #2805: ``corners`` is dropped whole against the collector ceiling and every
+    # 予想王 input (ledger, Soren handoff, HanJuku round, yoso corner run and the
+    # prediction boundary) lives inside it, so the ledger became unobservable
+    # exactly when a report needed it. The top-level ``prediction`` section keeps
+    # the same bounded counts and must never be dropped before the envelope fits.
+    # This covers the whole-section drop order; the largest-first fallback is
+    # covered separately below.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+        'soren_predictions':{'handoff_present':True,'handoff_bytes':2085,
+                             'handoff_rows':2,'handoff_oversized':False,
+                             'cursor_present':True},
+        'hanjuku_predictions':{'present':True,'readable':True,'status':'CANCELED',
+                               'mode':'canceled',
+                               'health':{'present':True,'readable':True,
+                                         'consecutive_errors':0,'last_error':None,
+                                         'last_ok_at':now-8}},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete',
+                       'recovery_required':False,'completed_at':now-2160},
+        'boundary':{'prediction':{'present':True,'readable':True,
+                                  'completed_at':now-1212324}},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    prediction=decoded['prediction']
+    assert prediction['state_dir_found'] is True
+    assert prediction['leaderboard']['rounds']==4
+    assert prediction['leaderboard']['graded_rounds']==0
+    assert prediction['leaderboard']['canceled']==4
+    assert prediction['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert prediction['leaderboard']['last_round_age_sec']==1239
+    assert prediction['leaderboard']['min_rounds']==3
+    assert prediction['leaderboard']['min_participations']==1
+    assert prediction['soren_handoff']['handoff_rows']==2
+    assert prediction['hanjuku']['status']=='CANCELED'
+    assert prediction['hanjuku']['health_ok'] is True
+    assert prediction['hanjuku']['last_ok_age_sec']==8
+    assert prediction['corner']['end_reason']=='audio-complete'
+    assert prediction['corner']['age_sec']==2160
+    assert prediction['boundary']['age_sec']==1212324
+
+
+def test_prediction_section_survives_the_pathological_fallback():
+    # The hard ceiling reduces twice: the whole-section drop order and, when the
+    # envelope is split into many medium sections, a largest-first fallback over
+    # every remaining top-level dict. ``prediction`` is exempt from both (#2805).
+    # Here the fallback is the only reduction that can help, and the prediction
+    # section is the largest remaining dict, so a fallback that ignored
+    # ``_HARD_KEEP`` would replace it first and the 予想王 counts would vanish.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+    }
+    for index in range(320):
+        payload['slice_%03d'%index]={'pad':'x'*180}
+
+    decoded=json.loads(module._diagnostics_budget(payload))
+
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['prediction']['leaderboard']['rounds']==4
+    assert decoded['prediction']['leaderboard']['canceled']==4
+    assert decoded['prediction']['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert decoded['prediction']['state_dir_found'] is True
+    omitted=sum(1 for key,value in decoded.items()
+                if key.startswith('slice_')
+                and isinstance(value,dict)
+                and value.get('status')=='output_omitted')
+    assert omitted>0
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
@@ -609,6 +892,196 @@ def test_lawsim_corner_state_is_collected_without_the_runtime_identity(tmp_path)
     assert entry['end_reason']=='operator-moved-during-lawsim'
     rendered=json.dumps(result,ensure_ascii=False)
     assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
+
+
+def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
+    # #3054 (#2917 項目4): the narration and overlay counters live in
+    # lawsim_corner.json, but ``corners`` is the first section the hard ceiling
+    # drops, so they were never observable in production. The top-level ``lawsim``
+    # section carries integer counts only and must survive the ceiling, like
+    # ``prediction`` (#2805).
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=int(time.time())
+    (state_dir/'lawsim_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'lawsim-view',
+        'end_reason':'operator-moved-during-lawsim','completed_at':now-600,
+        'narration':{'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6,
+                     'text':'DO-NOT-PUBLISH'},
+        'overlay_announcements':{'sent':5,'failed':0,'skipped':1,'title':'DO-NOT-PUBLISH'},
+        'bills':[{'name':'DO-NOT-PUBLISH'}]}),encoding='utf-8')
+    programs=module._collect_programs(state_dir,tmp_path/'soren',now)
+    corners={**programs,'state_dir_found':True}
+    lawsim=module._lawsim_projection({'lawsim_corner':programs['lawsim_corner'],
+                                      'state_dir_found':True},now)
+    assert lawsim['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert lawsim['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    assert lawsim['status']=='completed' and lawsim['game']=='lawsim-view'
+    assert lawsim['end_reason']=='operator-moved-during-lawsim'
+    assert lawsim['present'] is True and lawsim['readable'] is True
+    assert lawsim['state_dir_found'] is True
+    assert lawsim['age_sec']==600
+    assert 'DO-NOT-PUBLISH' not in json.dumps(corners,ensure_ascii=False)
+
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'lawsim':lawsim,
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    # #3149: the omission marker still means the whole section was dropped,
+    # but the bounded switch/ledger skeletons survive inside it.
+    dropped=decoded['corners']
+    assert dropped['status']=='output_omitted' and dropped['reason']=='hard_ceiling'
+    assert dropped['game_switch']['present'] is False
+    assert dropped['corner_rotation']['present'] is False
+    assert decoded['lawsim']['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert decoded['lawsim']['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    # Unknown status/game values never leave the collector.
+    odd=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                                    'status':'SECRET-STATUS','game':'x'}},now)
+    assert odd['status'] is None and odd['game'] is None
+    # "state absent" (not run yet) is distinguishable from "counters all zero".
+    absent=module._lawsim_projection({'lawsim_corner':{'present':False,'readable':False}},now)
+    assert absent['present'] is False and absent['narration'] is None
+    zero=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                    'counters':{'narration':{'enqueued':0,'delivery_failed':0,
+                                                             'skipped':0,'frames':0},
+                                                'overlay_announcements':{'sent':0,'failed':0,
+                                                                         'skipped':0}}}},now)
+    assert zero['present'] is True and zero['narration']['frames']==0
+
+
+def test_corners_fat_entry_stubs_before_whole_section_drop():
+    # #2884: one heavy corners entry must not take the whole section down
+    # with it. The largest entry yields to a lifecycle skeleton first; the
+    # whole-section drop stays the last resort.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','pad':'y'*9000},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting'},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    retro=dec['retro_corner']
+    assert retro['output_omitted']=='hard_ceiling'
+    assert retro['status']=='active' and retro['game']=='hanjuku-hero'
+    assert retro['omitted_bytes']>8000
+    assert 'x'*1000 not in json.dumps(retro)
+    assert dec['yoso_corner']['end_reason']=='audio-complete'
+    assert dec['corner_rotation']['status']=='waiting'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
+
+
+def test_corners_hard_keep_entries_never_stub():
+    # #2884: ``game_switch`` (what is actually on screen) and
+    # ``corner_rotation`` (the ledger read when the rotation wedges) keep
+    # their full projection while other entries stub around them.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero'},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'pad':'c'*8000},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*6000},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    assert dec['corner_rotation']['pad']=='c'*8000
+    assert dec['retro_corner']['output_omitted']=='hard_ceiling'
+
+
+def test_corners_whole_section_drop_keeps_switch_and_ledger_skeleton():
+    # #3149: the whole ``corners`` section is the first whole section the hard
+    # ceiling drops, and dropping it blanked ``game_switch`` and
+    # ``corner_rotation`` -- the switch identity and the failed-corner ledger
+    # an operator opens diagnostics to read when the rotation wedges. The
+    # omission marker now keeps those two bounded entries inside it.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','active_generation':1097},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'failed_corners':[
+                               {'corner':'hanjuku-hero','at':1793411161,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'},
+                               {'corner':'nsnake','at':1793498215,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'}]},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    # Many already-stubbed entries so the skeleton-only envelope is still
+    # over the ceiling: the whole-section drop must fire for this payload.
+    for index in range(160):
+        corners['pad_%03d'%index]={'present':True,'readable':True,
+                                   'status':'failed','game':'nsnake',
+                                   'evidence':'z'*400}
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'w'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert dec['status']=='output_omitted' and dec['reason']=='hard_ceiling'
+    assert 'retro_corner' not in dec and 'yoso_corner' not in dec
+    assert dec['game_switch']['phase']=='ready'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    rows=dec['corner_rotation']['failed_corners']
+    assert [row['corner'] for row in rows]==['hanjuku-hero','nsnake']
+    assert rows[0]['error_kind']=='execution-error'
+    assert rows[0]['reason_code']=='failed-corner-slot-released'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
 
 
 def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
@@ -961,6 +1434,62 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v173-resume-sortie-menu",
                 "hanjuku-chart-v174-status-reuse-hero-guard",
                 "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety")
+    versions += ("hanjuku-chart-v275-battle-opening-dialogue",
+                 "hanjuku-chart-v276-chapter-three-relays",
+                 "hanjuku-chart-v277-nav-motion-continuity",
+                 "hanjuku-chart-v278-chapter-three-boss-cell",
+                 "hanjuku-chart-v280-approx-fallback-source-chapters",
+                 "hanjuku-chart-v286-recall-yields-month-scene",
+                 "hanjuku-chart-v287-retry-owned-target",
+                 "hanjuku-chart-v288-boss-jump-fresh-attempt",
+                 "hanjuku-chart-v289-monster-skill-no-progress",
+                 "hanjuku-chart-v290-monster-stall-faster",
+                 "hanjuku-chart-v291-defense-handoff-win",
+                 "hanjuku-chart-v293-boss-cell-not-cave",
+                 "hanjuku-chart-v295-boss-marker-on-building",
+                 "hanjuku-chart-v297-camp-menu-reopen",
+                 "hanjuku-chart-v298-okunote-effect-label",
+                 "hanjuku-chart-v300-recall-picker-stationary",
+                 "hanjuku-chart-v302-defense-loss-flag",
+                 "hanjuku-chart-v303-boss-flag-not-read",
+                 "hanjuku-chart-v304-boss-sortie-overdue",
+                 "hanjuku-chart-v305-hero-castle-guard",
+                 "hanjuku-chart-v306-dome-camp",
+                 "hanjuku-chart-v307-card-egg-reach",
+                 "hanjuku-chart-v308-snow-field",
+                 "hanjuku-chart-v309-card-stock-skip",
+                 "hanjuku-chart-v310-monster-menu-drawing",
+                 "hanjuku-chart-v311-overtaken-confirm",
+                 "hanjuku-chart-v312-monster-unchosen-turn",
+                 "hanjuku-chart-v313-monster-overtaken-turn",
+                 "hanjuku-chart-v314-summon-box-pace",
+                 "hanjuku-chart-v315-summon-entrance-pace",
+                 "hanjuku-chart-v316-summon-dialogue-wait",
+                 "hanjuku-chart-v317-partial-box-fold",
+                 "hanjuku-chart-v318-nav-recover-bound",
+                 "hanjuku-chart-v319-attack-defender-successor",
+                 "hanjuku-chart-v320-dispatch-not-empty",
+                 "hanjuku-chart-v321-camp-unobserved-skip",
+                 "hanjuku-chart-v322-defense-win-unread-list",
+                 "hanjuku-chart-v323-okunote-open-menu",
+                 "hanjuku-chart-v324-hold-gate-reload",
+                 "hanjuku-chart-v325-lost-chart-general",
+                 "hanjuku-chart-v326-target-jump-settle",
+                 "hanjuku-chart-v327-season-king-sites",
+                 "hanjuku-chart-v328-site-card-kit",
+                 "hanjuku-chart-v329-hopeless-attack-retreat",
+                 "hanjuku-chart-v330-site-strongest-egg",
+                 "hanjuku-chart-v331-site-entry-repeat",
+                 "hanjuku-chart-v333-site-keep-defender",
+                 "hanjuku-chart-v335-y-jump-interrupted",
+                 "hanjuku-chart-v337-site-egg-stays",
+                 "hanjuku-chart-v338-season-king-panel",
+                 "hanjuku-chart-v339-okunote-redraw",
+                 "hanjuku-chart-v340-site-overdue-planned",
+                 "hanjuku-chart-v341-chikyu-harmagedon-general",
+                 "hanjuku-chart-v343-defender-okunote-melee-behind",
+                 "hanjuku-chart-v344-sortie-list-walk",
+                 "hanjuku-chart-v345-roster-unplaced",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -1874,6 +2403,93 @@ class NethackAgentLogTests(unittest.TestCase):
         self.assertEqual(len(entry["lines"]), module.NETHACK_AGENT_LOG_LINES)
         self.assertIn("line 19", entry["lines"][-1])
         self.assertNotIn("sekret", " ".join(entry["lines"]))
+
+
+class SorenBridgeLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-bridge-log-")
+        self.soren = Path(self.tmp.name) / "soren"
+        lifecycle = self.soren / "tmp/state/game_lifecycle"
+        lifecycle.mkdir(parents=True)
+        (lifecycle / "player_capabilities.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "pid": os.getpid()}),
+            encoding="utf-8")
+        (lifecycle / "player_state.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "policy": "jev"}),
+            encoding="utf-8")
+        (self.soren / "tmp/soviet_local.log").write_text(
+            "".join(f"bridge line {i} token=sekret{i}\n" for i in range(40)),
+            encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _freeze_board(self, age=8000.0):
+        board = self.soren / "game_state.json"
+        board.write_text(json.dumps({"state": "MOVE", "score": 1117}),
+                         encoding="utf-8")
+        os.utime(board, (time.time() - age, time.time() - age))
+
+    def test_healthy_run_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board(age=10.0)
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertFalse(entry["projected"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_dead_bridge_pid_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board()
+        (self.soren / "tmp/state/game_lifecycle/player_capabilities.json") \
+            .write_text(json.dumps({"pid": 2**22 - 1}), encoding="utf-8")
+        with mock.patch.object(module.os, "kill",
+                               side_effect=ProcessLookupError):
+            entry = module._collect_soren_bridge_log(
+                self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_frozen_board_projects_bounded_redacted_tail(self):
+        module = load_collector()
+        self._freeze_board()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "move_frozen_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertTrue(entry["readable"])
+        self.assertEqual(entry["source"], "live_log")
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+        self.assertIn("bridge line 39", entry["lines"][-1])
+        self.assertNotIn("bridge line 0 ", " ".join(entry["lines"]))
+        self.assertNotIn("sekret", " ".join(entry["lines"]))
+        self.assertLessEqual(
+            max(len(line) for line in entry["lines"]),
+            module.SOREN_BRIDGE_LOG_LINE_LIMIT)
+
+    def test_hung_evacuation_log_is_preferred(self):
+        module = load_collector()
+        self._freeze_board()
+        hung = self.soren / "tmp/soviet_local.log.hung-20261031-1304"
+        hung.write_text("hung tail line\n", encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["source"], "hung_evacuated")
+        self.assertEqual(entry["lines"], ["hung tail line"])
+
+    def test_absent_board_with_jev_policy_projects_tail(self):
+        module = load_collector()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "jev_board_absent_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+
+    def test_absent_board_without_jev_policy_stays_sealed(self):
+        module = load_collector()
+        (self.soren / "tmp/state/game_lifecycle/player_state.json") \
+            .write_text(json.dumps({"schema": 1, "game": "sorengame",
+                                    "policy": "existing"}), encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
 
 
 class NethackPaneTests(unittest.TestCase):
@@ -4380,3 +4996,58 @@ def test_encoder_survives_the_size_budget():
     with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
         module._diagnostics_budget(payload)
     assert payload['encoder']['frames_sent'] == 1
+
+
+def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
+    # #2936: the worker claim record and history tail must project fixed
+    # classifications only -- request ids, digests and prompt text stay in
+    # the runtime.
+    module=load_collector()
+    runtime=tmp_path/'runtimes'/'g1075-1d5f65e9'
+    runtime.mkdir(parents=True)
+    now=int(time.time())
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'request_id':'SECRET-REQUEST','request_digest':'SECRET-DIGEST',
+        'attempts':2,'rate_limited':1,'at':now-120,
+        'last_status':'invalid_output','last_detail':'invalid source/target castle',
+        'last_at':now-30,'cooldown_until':now+240}),encoding='utf-8')
+    rows=[
+        {'event':'adjust_worker','at':now-400,'status':'invalid_output',
+         'detail':'invalid source/target castle','elapsed_s':171.2,
+         'request_id':'SECRET-REQUEST','prompt':'DO-NOT-PUBLISH'},
+        {'event':'adjust_worker','at':now-200,'status':'generate_failed',
+         'detail':'rc-1:rate_limit','elapsed_s':0.005,'cooldown_s':300,
+         'request_id':'SECRET-REQUEST'},
+        {'event':'adjust_requested','at':now-100,'request_id':'SECRET-REQUEST'},
+        {'event':'not_a_chart_event','at':now-50,'status':'invalid_output'},
+        {'event':'adjust_worker','at':'not-a-time','status':'invalid_output'},
+    ]
+    (runtime/'hanjuku_chart_history.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows)+'\n',encoding='utf-8')
+
+    out=module._project_hanjuku_chart_worker(runtime,now)
+    assert out['present'] is True and out['readable'] is True
+    assert out['attempts']==2 and out['rate_limited']==1
+    assert out['last_status']=='invalid_output'
+    assert out['last_detail']=='invalid source/target castle'
+    assert out['last_age_sec']==30 and out['claim_age_sec']==120
+    assert out['cooldown_remaining_sec']==240
+    assert [e['event'] for e in out['recent']]==[
+        'adjust_worker','adjust_worker','adjust_requested']
+    assert out['recent'][0]['detail']=='invalid source/target castle'
+    assert out['recent'][0]['elapsed_s']==171.2
+    assert out['recent'][1]['status']=='generate_failed'
+    assert out['recent'][1]['cooldown_s']==300
+    rendered=json.dumps(out,ensure_ascii=False)
+    assert 'SECRET-REQUEST' not in rendered and 'SECRET-DIGEST' not in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+    # Unknown statuses/details and a missing file stay distinguishable.
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'last_status':'WEIRD','last_detail':'provider said: DO-NOT-PUBLISH ok?',
+        'attempts':'many'}),encoding='utf-8')
+    odd=module._project_hanjuku_chart_worker(runtime,now)
+    assert odd['last_status'] is None and odd['last_detail'] is None
+    assert odd['attempts'] is None
+    empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
+    assert empty=={'present':False,'readable':False}

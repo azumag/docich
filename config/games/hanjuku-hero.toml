@@ -25,6 +25,11 @@ interval_ms = 1500
 
 [hanjuku]
 script_bot = true
+# 第3〜12話は公開資料の旗bboxから作った近似セル（CASTLES_APPROX）で通常城の
+# 出撃を解放する。ネイティブ実測値ではなく最大6〜8pxの誤差があるため、
+# 城メニュー/屋根の既存確認は維持する。ボスは含めない（第4話4地点・第9話移動）。
+# 正確な座標を実測した章は CASTLES 側が優先される。falseで従来のchart_unavailable。
+approx_map = true
 # チャート版: speedrun（既定・従来の速攻チャート）/ steady（堅実: 基礎チャートの前進でも出撃元に守備1人を残す）/
 # ab（runtime_idのハッシュで半々に割当。世代番号の偶奇は全ゲーム共有で偏るため使わない）。新しいゲームの名前入力完了時に固定し、進行中のゲームは切り替えない。
 chart_edition = "ab"
@@ -45,6 +50,8 @@ direct_enabled = false
 direct_agents = ""
 timeout_s = 180
 max_attempts = 2
+# provider が rate_limit を返した生成は attempts を消費せず、この秒数は revision が変わっても生成を止める（#2936）。
+rate_limit_cooldown_s = 300
 interim_jev = true
 interim_timeout_ms = 1500
 

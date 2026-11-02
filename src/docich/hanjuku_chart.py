@@ -7,13 +7,58 @@ castle's roof anchor; they are chart facts, not live RAM reads. The hero is
 the name the bot enters (``HERO``).
 
 Chapter 1 and 2 coordinates are measured. Chapters 3–12 ship with empty
-``CASTLES`` until ``hanjuku_measure`` records them from labeled frames:
-``orders()`` returns nothing for an unmeasured chapter (``chart_unavailable``),
-so navigation never guesses coordinates. Orders, tactics and purchases for
-those chapters are encoded and activate only when their source/target castles
-are present in ``CASTLES``.
+static ``CASTLES`` plus a source-derived ``CASTLES_APPROX`` seed table. A
+scoped policy call may expose that table only while ``approx_map`` is enabled;
+the values are approximate (public 130x130 flag bboxes, not native cursor
+cells) and are always overridden by measured entries. A scoped policy call may
+also add named native observations from that run's ``map_registration``;
+public source pixels remain search hints. Orders activate only when both
+endpoints have coordinates. See ``docs/hanjuku_map_registration.md`` for the
+evidence and remaining gates.
 """
 from __future__ import annotations
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+import os
+import re
+
+from . import hanjuku_map_sources as map_sources
+from .hanjuku.identity import run_identity
+
+MAP_SCHEMA = 1
+_MAP_DIGEST = re.compile(r'[0-9a-f]{64}\Z')
+
+_MAP_MEMORY = ContextVar('hanjuku_map_memory', default=None)
+_MAP_APPROX = ContextVar('hanjuku_map_approx', default=False)
+
+
+@contextmanager
+def map_context(memory, *, approx=False):
+    """Expose one run's map, and optionally the source seed, per call/thread."""
+    token = _MAP_MEMORY.set(memory)
+    approx_token = _MAP_APPROX.set(bool(approx))
+    try:
+        yield
+    finally:
+        _MAP_MEMORY.reset(token)
+        _MAP_APPROX.reset(approx_token)
+
+
+def approximate_map() -> bool:
+    """Whether the current policy call may use the source seed table."""
+    return bool(_MAP_APPROX.get())
+
+
+def approx_chapter(chapter) -> bool:
+    """Whether ``chapter`` navigates on the source seed table.
+
+    A measured chapter leaves ``CASTLES_APPROX`` (chapter 3 since
+    2026-10-28), so ``approx_map`` alone does not say which table a chapter
+    runs on. The seed-localization fallback in ``flows.map`` is only for
+    chapters that are still on the seed.
+    """
+    return chapter in CASTLES_APPROX
 
 HERO = 'どうし'
 
@@ -52,8 +97,118 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'ハドリバーグ': (742, 732),
         'ボス': (520, 200),
     },
-    # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
+    # Measured 2026-10-28 in the isolated libretro probe from the g1067
+    # chapter 3 savestate (9ねん1のつき): Y jump to each flag (Y cursor =
+    # cell/8 + (63, 47.5), always landing at screen (130, 125)), cursor walked
+    # onto the nearest roof, A showed the castle's own name in its status or
+    # castle menu for all nine. The boss castle is the tall building under
+    # the skull the live g1075 Y view draws in the island's north-west once
+    # every ordinary castle is captured (grey skull view 101-107 x 64-69; the
+    # wiki castle diagram puts ❾完熟プリンス城 in that top row). A Y jump
+    # aimed at the skull centre (104, 66.5) (v293, 14:56:18 JST, G read at
+    # (104.5, 66.5)) left the field marker 6 px right of the building (cursor
+    # centre (138, 123), building 98-125 x 82-142), and アポロン camped there
+    # instead of entering. The cell moves by the measured gap to the building
+    # centre (111.5, 112): -26.5, -11 px, so the Y aim is (101.25, 65.125).
+    # The first cell, (596, 640), was the cave inside the cliff ring (GCGX:
+    # the black ring around the cave is cliff). Production is read-only, so
+    # no A press confirmed the name.
+    3: {
+        'アルマムーン': (710, 144),
+        'グリン': (852, 320),
+        'コラダイン': (661, 409),
+        'イーピヨル': (773, 649),
+        'ドンダム': (568, 832),
+        'メガパタ': (456, 656),
+        'パタゴーヌ': (341, 425),
+        'アバロン': (229, 729),
+        'リグア': (133, 281),
+        'ボス': (306, 141),
+    },
+    # 4–12: from the source flag table below (``SOURCE_CHAPTERS``).
 }
+
+# Public-source seed for chapters 3–12. The 8x + (1,3) model is approximate:
+# measured chapters 1/2 show residuals up to 6 px in x and 8 px in y. These
+# cells are never treated as measured and never include a boss: the source
+# catalog has boss names but no boss coordinates, and chapters 4/9 need
+# special handling. ``approx_map`` exposes them for navigation; a measured
+# CASTLES entry always wins, and map registration remains the authority for
+# exact cells.
+SOURCE_APPROX_CHAPTERS = frozenset(range(4, 13))   # 3 is measured
+CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
+    chapter: {name: (8 * (left + 1), 8 * (top + 3))
+              for name, (left, top) in map_sources.SOURCE_CASTLES[chapter].items()}
+    for chapter in SOURCE_APPROX_CHAPTERS
+}
+
+# Chapters 4–12 come from the GCGX flag table. Its flag top-left is the
+# game's own castle tile + (2, 1): the WRAM castle records at 0x1700
+# ([id, x, y, ...], 16 bytes, x/y in 8 px tiles; isolated probe savestates
+# 2026-10-28) match all 24 ordinary castles of chapters 1–3 exactly. The
+# CASTLES_APPROX cell 8*(flag + (1, 3)) is within 8 px of every probe-measured
+# ordinary cell except chapter 3's large home castle (16 px); a Y jump lands
+# on the cell and the last pixels are walked onto the roof. Bosses are not in
+# the source table: boss cells stay unmeasured (chapter 4 has four sites and
+# chapter 9's boss moves).
+SOURCE_CHAPTERS = frozenset(range(4, 13))
+for _chapter in sorted(SOURCE_CHAPTERS):
+    CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
+del _chapter
+
+# Chapter 4's 四季王 sites, read 2026-10-30 07:44:16 JST from the live g1075 Y
+# view with every ordinary castle ours (owner: register them). The four
+# corner skulls are chapter 3's boss skull sprite pixel for pixel, at
+# (-20, -2), (+72, -2), (-22, +94) and (+74, +96) view px from it. Chapter
+# 3's cell (306, 141) put the marker on the building under its skull (v295),
+# so each site takes that cell plus 8x its skull's offset. Production is
+# read-only: no march has entered a site through these cells yet.
+SEASON_SITE_CELLS = {
+    '四季王城(北西)': (146, 125),
+    '四季王城(北東)': (882, 125),
+    '四季王城(南西)': (130, 893),
+    '四季王城(南東)': (898, 909),
+}
+CASTLES[4].update(SEASON_SITE_CELLS)
+
+# Chapter 5's 完熟大魔城, measured 2026-11-02 from the live g1097 Y view with
+# every ordinary castle ours (the castle spawns only then; GCGX: 全ての城を
+# 制圧すると完熟大魔城が出現する). The skull sits at view ~(159, 82.5). The
+# skull is drawn centred on its castle (unlike a flag, anchored at the pole
+# base): its centre maps straight to the cell — ((159-64.3)*8, (82.5-45.0)*8)
+# = (758, 300). The earlier (746,271) used chapter 3's flag-pole calibration
+# and marched generals camped one cell NW of the castle instead of entering.
+# Production is read-only: no march has entered through this cell yet.
+DEMON_CASTLE_CELLS = {5: {'ボス': (758, 300)}}
+for _chapter, _cells in DEMON_CASTLE_CELLS.items():
+    CASTLES[_chapter].update(_cells)
+del _chapter, _cells
+
+# Independent native-view calibrations. Castle cells are field-cursor top-left
+# coordinates; flags and the Y selection cursor use different pixel anchors.
+# Keep these values separate when registering a chapter from a source map.
+WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0), 3: (64.3, 45.5)}  # ch3: 8 enemy flags, 64.0-64.5 / 45.0-45.9
+Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5), 3: (63.0, 47.5)}
+# The Y view is the same 1/8 island frame in chapters 1–3 (Y cursor offsets
+# identical, flag offsets within 0.6 px); source chapters use their mean.
+for _chapter in sorted(SOURCE_CHAPTERS):
+    WORLD_MAP_OFFSET[_chapter] = (64.3, 45.0)
+    Y_JUMP_OFFSET[_chapter] = (63.0, 47.5)
+del _chapter
+# Heart centres on the native Y view. HOUSE_TARGET separately selects the
+# integer cell; a roster read from the monthly menu needs neither coordinate.
+# Chapter 4's heart was measured on the live g1075 map (2026-10-30 savestate
+# probe): the red heart sprite centres at (134.0, 87.5) on the native Y view.
+# Chapters 3 and 5-12 come from the house heart on GCGX's 130x130 source
+# maps (same catalog as SOURCE_CASTLES): heart top-left + (66.5, 48.5) =
+# the native Y-view heart centre, exact on the measured chapters 1/2 and
+# within 1 px on measured chapter 4. Chapter 9 draws a second heart at
+# source (16, 20) -> view (82.5, 68.5); the registered one is the central
+# heart, re-measure before swapping if dispatches starve on it.
+HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
+              4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
+              7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
+              10: (130.5, 116.5), 11: (144.5, 88.5), 12: (128.5, 96.5)}
 
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
@@ -73,7 +228,7 @@ CASTLE_NAMES: dict[int, tuple[str, ...]] = {
         'バスカビル', 'プトレマイス', 'ボス'),
     6: ('アルマムーン', 'アルブラーカ', 'イカリア', 'カバルッサ', 'オケアナ',
         'バビラリー', 'ダーラント', 'セレーネ', 'グルーポフ', 'ユージア',
-        'アブダレ', 'ボス'),
+        'アブダレ', 'トウトウ', 'ボス'),
     7: ('アルマムーン', 'ベンゴディ', 'レオナール', 'ロキュータ',
         'リデンブロック', 'マンシー', 'プルートー', 'ハシオクラム',
         'フィロメラ', 'ボス'),
@@ -87,7 +242,8 @@ CASTLE_NAMES: dict[int, tuple[str, ...]] = {
          'マランマ', 'タタール', 'クラボニア', 'トリフェ', 'アエンタール',
          'ネペンテ', 'ボス'),
     12: ('アルマムーン', 'ワフェルダ', 'ブラックランド', 'バラタリア', 'ラグナグ',
-         'ユーフォニア', 'アファニア', 'ヘリオポリス', 'ディランダ', 'ボス'),
+         'ユーフォニア', 'アトランテ', 'アファニア', 'ヘリオポリス', 'ファンゴル',
+         'ディランダ', 'ボス'),
 }
 
 HOME_CASTLES: dict[int, str] = {
@@ -325,10 +481,26 @@ CHAPTER_4_ORDERS = (
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
      'target': 'マラコビア', 'after': ('captured', 'ミヒラギアン'),
      'note': '主人公 左下ボス城方面へ'},
-    {'step': '4-B1', 'general': HERO, 'source': 'マラコビア',
+    # 四季王 (owner 2026-10-30): the four sites once every ordinary castle is
+    # ours, never the hero (the boss companion rule picks the strongest fit
+    # general) and never while a castle is lost. Nearest march first: each
+    # site from its closest castle, 323/343/365/377 cells (Manhattan).
+    {'step': '4-B1', 'general': HERO, 'source': 'ミヒラギアン',
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
-     'target': 'ボス', 'after': ('all_captured',),
-     'note': '四季王（季節ボス）へ 乗り込み前にセーブ前提はbot対象外'},
+     'target': '四季王城(南西)', 'after': ('all_captured',),
+     'note': '四季王（南西）へ 乗り込み前にセーブ前提はbot対象外'},
+    {'step': '4-B2', 'general': HERO, 'source': 'ネクスドリア',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(南東)', 'after': ('all_captured',),
+     'note': '四季王（南東）へ'},
+    {'step': '4-B3', 'general': HERO, 'source': 'フヌイヌム',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(北東)', 'after': ('all_captured',),
+     'note': '四季王（北東）へ'},
+    {'step': '4-B4', 'general': HERO, 'source': 'アルカ',
+     'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
+     'target': '四季王城(北西)', 'after': ('all_captured',),
+     'note': '四季王（北西）へ'},
 )
 
 _H5 = HOME_CASTLES[5]
@@ -844,19 +1016,51 @@ def boss_castle(chapter: int) -> str:
     return BOSS_CASTLES.get(chapter, BOSS_CASTLES[1])
 
 
-def orders(chapter: int):
-    """Base orders for ``chapter``.
+# Owner 2026-11-02: the speedrun chart's order list was misleading progress
+# (orders waiting on conditions while castles stayed uncaptured), so castles
+# are taken mechanically, nearest first (``replan.interim_candidates``).
+# Chapters 4 (four boss sites) and 9 (a moving boss) have no generic boss
+# castle, so their boss assault still comes from the chart.
+# DOCICH_HANJUKU_SPEEDRUN_CHART=1 restores the chart everywhere.
+SPEEDRUN_CHART_ENV = 'DOCICH_HANJUKU_SPEEDRUN_CHART'
+CHART_ONLY_CHAPTERS = frozenset({4, 9})
+
+
+def speedrun_enabled(chapter=None) -> bool:
+    """Whether the speedrun chart's orders drive ``chapter`` (default: no)."""
+    return os.environ.get(SPEEDRUN_CHART_ENV) == '1' or chapter in CHART_ONLY_CHAPTERS
+
+
+def measured_orders(chapter: int):
+    """The chart's measured orders, whether or not they drive the run.
 
     Returns an empty tuple for an unmeasured chapter. In a partially measured
     chapter, filters out each order whose source or target is absent, so no
     navigation can use unmeasured coordinates. Fully measured chapters
-    return all their chart orders.
+    return all their chart orders. Chapter 3's road table is read from here.
     """
-    castles = CASTLES.get(chapter) or {}
-    if not castles:
+    cells = castles(chapter)
+    if not cells:
         return ()
     return tuple(o for o in _ORDERS.get(chapter, ())
-                 if o['source'] in castles and o['target'] in castles)
+                 if o['source'] in cells and o['target'] in cells)
+
+
+def orders(chapter: int):
+    """The speedrun chart orders in force for ``chapter`` (none once abolished)."""
+    return measured_orders(chapter) if speedrun_enabled(chapter) else ()
+
+
+def boss_sites(chapter: int) -> tuple[str, ...]:
+    """Location identities, independently of chapter 4's random occupants."""
+    if chapter == 4:
+        from .hanjuku_map_sources import SOURCE_BOSS_SITES
+        return SOURCE_BOSS_SITES[4]
+    return (boss_castle(chapter),)
+
+
+def is_boss_castle(name) -> bool:
+    return name in BOSS_CASTLES.values() or name in boss_sites(4)
 
 
 def all_orders(chapter: int):
@@ -868,8 +1072,92 @@ def tactics(chapter: int):
     return _TACTICS.get(chapter, ())
 
 
+def _map_point(value):
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(v) is int and abs(v) <= 4096 for v in value))
+
+
+def verified_castles(mem, chapter):
+    """Read a bounded run-scoped receipt; never import an observer or flow."""
+    identity = run_identity(mem.get('_run_identity'))
+    data = mem.get('map_registration') or {}
+    if (identity is None or not isinstance(data, dict) or data.get('schema') != MAP_SCHEMA
+            or data.get('identity') != identity or data.get('chapter') != chapter
+            or chapter != mem.get('chapter') or not _MAP_DIGEST.fullmatch(str(data.get('origin_frame', '')))):
+        return {}
+    records = data.get('castles')
+    if not isinstance(records, dict) or len(records) > 32:
+        return {}
+    out = {}
+    for name, proof in records.items():
+        if (name not in map_sources.SOURCE_CASTLES.get(chapter, {}) or not isinstance(proof, dict)
+                or proof.get('name') != name or proof.get('evidence') != 'native_castle_status'
+                or not _map_point(proof.get('position')) or proof.get('readings') != 2
+                or not all(_MAP_DIGEST.fullmatch(str(proof.get(k, '')))
+                           for k in ('field_frame', 'status_frame'))):
+            return {}
+        position = tuple(proof['position'])
+        if any(sum(abs(a-b) for a,b in zip(position, old)) < 24 for old in out.values()):
+            return {}
+        out[name] = position
+    return out
+
+
 def castles(chapter: int) -> dict:
-    return CASTLES.get(chapter, {})
+    static = CASTLES.get(chapter, {})
+    memory = _MAP_MEMORY.get()
+    if _MAP_APPROX.get() and not (isinstance(memory, dict) and memory.get('approx_fallback')):
+        static = {**CASTLES_APPROX.get(chapter, {}), **static}
+    if chapter in (4, 9):
+        # A generic chapter-4 point cannot identify four separate sites.
+        # Chapter 9's moving boss has no reusable static coordinate.
+        static = {n: p for n, p in static.items() if n != boss_castle(chapter)}
+    memory = _MAP_MEMORY.get()
+    if memory is None:
+        return static
+    measured = verified_castles(memory, chapter)
+    return {**measured, **static} if measured else static
+
+
+MARCH_BLOCK_RADIUS = 48    # px: an own castle this near the straight march stops it
+
+
+def march_blocker(chapter, source, target, owned):
+    """The own castle nearest ``target`` lying on the source→target march.
+
+    g1097 2026-11-02 (owner: オトラントから出ないとかいけつにならない):
+    every アルマムーン→クロチェット march was absorbed at オトラント — the
+    own castle sitting on the path — while the only measured arrival was the
+    オトラント-launched 5-Z2; アルマムーン→プトレマイス stalled at バスカビル
+    the same way. Blocking is checked geometrically from measured coords.
+    """
+    castles_ = castles(chapter)
+    try:
+        sx, sy = castles_[source]
+        tx, ty = castles_[target]
+    except (KeyError, TypeError):
+        return None
+    dx, dy = tx - sx, ty - sy
+    seg2 = dx * dx + dy * dy
+    if not seg2:
+        return None
+    best = None
+    for c in owned - {source, target}:
+        pos = castles_.get(c)
+        if not pos:
+            continue
+        cx, cy = pos
+        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
+        if not 0.05 < t < 0.95:
+            continue
+        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
+            if best is None or t > best[0]:
+                best = (t, c)
+    return best[1] if best else None
+
+
+def march_blocked(chapter, source, target, owned):
+    return march_blocker(chapter, source, target, owned) is not None
 
 
 def purchases(chapter: int):

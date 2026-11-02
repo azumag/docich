@@ -46,6 +46,10 @@ REASON_CODES = (
     "reconcile_production_only",
     "projected_submodule_not_at_new_gitlink",
     "projected_submodule_missing_in_parent",
+    # #2681: a clean out-of-band HEAD (the 2026-10-23 drift class) rejects the
+    # deploy with this fixed code; publish it instead of the generic fallback
+    # so the incident is not mistaken for a reconcile-lineage failure.
+    "tracked_vm_drift",
     "operation_rejected",
 )
 FALLBACK_REASON = "deploy_failed"

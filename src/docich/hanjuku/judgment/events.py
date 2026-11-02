@@ -107,3 +107,160 @@ def _monster_damage_first(owner, ally, enemy, skills) -> bool:
             and len(skills) == 2
             and [_fold_skill(s) for s in skills]
             == [_fold_skill(s) for s in reference.MONSTER_SKILLS['なると']])
+
+
+def _monster_chikyu_choice(owner, ally, enemy, skills):
+    """ちきゅうちゃん's skill by opponent: 'skill2', 'skill1' or None (#3071).
+
+    wikiwiki hjksfc 攻撃データ: a self-destruct wipes a general and his
+    soldiers outright, hits a monster for the user's remaining HP and a boss
+    for 1/8 of its max HP. おめでとり's あたためる (g1075 10-29 14:13 to
+    10-30 06:05) won all six times against a lone general and left
+    スプリミョーネ alive at 08:44. ハルマゲドン at HP 1 and 47 left
+    ドラゴンフライ and ニンフ alive (10-30 08:08, 09:22) while だいじしん
+    halves both sides, so a known general takes ハルマゲドン, a monster or
+    boss だいじしん, and an unknown or unread panel keeps the old policy.
+    """
+    if not (owner == 'ally' and ally is not None and enemy is not None
+            and ally.name == 'ちきゅうちゃん'
+            and type(ally.hp) is int and ally.hp > 0
+            and type(enemy.hp) is int and enemy.hp > 0
+            and len(skills) == 2
+            and [_fold_skill(s) for s in skills]
+            == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ちきゅうちゃん']]):
+        return None
+    if _is_monster_opponent(enemy):
+        return 'skill1'
+    if reference.general_strength(enemy.name) is not None:
+        return 'skill2'
+    return None
+
+
+def _lampkin_menu(owner, ally, skills):
+    """Our ランプキン with its owned two-skill menu (へんなおどり, かぼちゃ)."""
+    return bool(owner == 'ally' and ally is not None and ally.name == 'ランプキン'
+                and len(skills) == 2
+                and [_fold_skill(s) for s in skills]
+                == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ランプキン']])
+
+
+def _lampkin_forced_kind(enemy):
+    """Why かぼちゃ is pointless this turn: 'boss' or 'hp1', else None.
+
+    Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので「へんなおどり」
+    一択。相手のHPが1なら、そのまま押し切れるので「へんなおどり」一択。
+    """
+    if enemy is None:
+        return None
+    name = _monster_display_name(enemy.name)
+    if name in chart.BOSSES.values() or name in reference.BOSS_GENERALS:
+        return 'boss'
+    if type(enemy.hp) is int and enemy.hp == 1:
+        return 'hp1'
+    return None
+
+
+def _monster_lampkin_choice(owner, ally, enemy, skills):
+    """ランプキン takes へんなおどり (skill1) when かぼちゃ is pointless.
+
+    A chapter boss / named boss-general opponent, or an opponent left at 1 HP,
+    always takes skill1. Only an owned complete two-skill menu enables the
+    override; any other turn follows the かぼちゃ cycle in ``battle_menus``.
+    """
+    if not _lampkin_menu(owner, ally, skills) or _lampkin_forced_kind(enemy) is None:
+        return None
+    return 'skill1'
+
+
+def _monster_display_name(name):
+    return _MONSTER_DISPLAY_ALIASES.get(name, name)
+
+
+def _is_monster_opponent(enemy):
+    """Egg monsters and chapter bosses both use the 対モ damage column."""
+    if enemy is None:
+        return False
+    name = _monster_display_name(enemy.name)
+    return (name in _MONSTER_SKILLS or name in reference.BOSS_GENERALS
+            or name in chart.BOSSES.values())
+
+
+def _is_self_damage_skill(skill):
+    """Whether a skill damages the user itself.
+
+    Primary source of truth is MONSTER_SELF_DAMAGE_SKILLS (wiki attack-data
+    table rows explicitly marked 自爆 / 自分にNダメージ).  The text
+    heuristics below are a conservative safety net for skills whose table
+    row has not yet been transcribed or whose OCR spelling drifts; they only
+    match obvious self-destruct wording and never turn a normal attack into
+    self-damage.  Upstream label matching is fail-closed, so this only ever
+    sees skill names actually read from the menu.
+    """
+    if not skill:
+        return False
+    if _fold_skill(skill) in {_fold_skill(s) for s in reference.MONSTER_SELF_DAMAGE_SKILLS}:
+        return True
+    text = skill
+    return ('ばくはつ' in text or 'じばく' in text or '自爆' in text
+            or '自滅' in text or '自己ダメージ' in text)
+
+
+def _score_monster_attack(entry, opponent_kind, multiple):
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return 0
+    _name, vs_monster, vs_general, hits = entry[0], entry[1], entry[2], entry[3]
+    is_all = entry[4] if len(entry) > 4 else False
+    self_damage = entry[5] if len(entry) > 5 else False
+    if self_damage:
+        return -1
+    base = vs_monster if opponent_kind == 'monster' else vs_general
+    if opponent_kind == 'general' and not multiple:
+        return base
+    score = base * (hits if isinstance(hits, int) and hits > 0 else 1)
+    if opponent_kind == 'general' and multiple and is_all:
+        score += 100000
+    return score
+
+
+def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, second,
+                                    ally_hp, enemy_hp, mem):
+    """Choose from verified attack data; unread/unknown menus keep old default."""
+    if (owner != 'ally' or ally is None or enemy is None or not second
+            or not (type(ally_hp) is int and ally_hp > 0
+                    and type(enemy_hp) is int and enemy_hp > 0)):
+        return None
+    attack_data = getattr(reference, 'MONSTER_ATTACK_DATA', None)
+    if not isinstance(attack_data, dict):
+        return None
+    data = attack_data.get(ally.name) or attack_data.get(_monster_display_name(ally.name))
+    if not (isinstance(data, dict) and 'skill1' in data and 'skill2' in data):
+        return None
+
+    # Fail closed unless both visible menu labels match the row we are about to
+    # score. OCR/read drift must never turn the reference table into a guessed
+    # button press.
+    expected_first = data['skill1'][0] if data['skill1'] else None
+    expected_second = data['skill2'][0] if data['skill2'] else None
+    if (_fold_skill(first) != _fold_skill(expected_first)
+            or _fold_skill(second) != _fold_skill(expected_second)):
+        return None
+
+    if 0 < enemy_hp <= 10:
+        return 'skill2' if _is_self_damage_skill(first) else 'skill1'
+
+    opponent_kind = 'monster' if _is_monster_opponent(enemy) else 'general'
+    multiple = False
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    if isinstance(battle, dict):
+        es = battle.get('enemy_soldiers')
+        multiple = type(es) is int and es > 0
+
+    s1 = _score_monster_attack(data['skill1'], opponent_kind, multiple)
+    s2 = _score_monster_attack(data['skill2'], opponent_kind, multiple)
+    if s1 < 0 and s2 >= 0:
+        return 'skill2'
+    if s2 < 0 and s1 >= 0:
+        return 'skill1'
+    if s1 != s2:
+        return 'skill1' if s1 > s2 else 'skill2'
+    return None

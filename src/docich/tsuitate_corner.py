@@ -554,9 +554,11 @@ class TsuitateCornerManager:
         corner never fails on it, and the whole show is capped by
         ``tsuitate_show.MAX_SHOW_SECONDS``.
         """
+        from .tsuitate_narration import status_facts
+        from .tsuitate_prose import aggregate_texts
         from .tsuitate_show import (
-            MAX_SHOW_SECONDS, STEP_SECONDS, build_show, chunk_ranges, step_plan,
-            write_show,
+            MAX_CHUNK_SPEECH, MAX_SHOW_SECONDS, STEP_SECONDS, build_show,
+            chunk_ranges, step_plan, write_show,
         )
 
         detail = self._review_kifu(state, terminal)
@@ -572,14 +574,24 @@ class TsuitateCornerManager:
         identity = state.get("view_runtime_identity") or {}
         payload = build_show(moves, color=detail["color"],
                              opponent=(summary or {}).get("opponentName"),
-                             result=result, request_id=request_id,
+                             result=result, status=status_facts(summary),
+                             request_id=request_id,
                              runtime_id=identity.get("runtime_id"),
                              generation=identity.get("generation"))
         commentary = {"ai": 0, "fallback": 0}
+        keys = []
         for start, end in chunk_ranges(payload["move_count"]):
             text, kind = self._chunk_line(moves, start, end)
+            keys.append(str(start))
             payload["commentary"][str(start)] = text
             commentary[kind if kind in commentary else "fallback"] += 1
+        # One flow, not the same sentences per stretch (#2737): a stretch
+        # drops what an earlier stretch already said and only its own
+        # observations remain, so the show reads as the game's progression.
+        ordered = aggregate_texts([payload["commentary"][key] for key in keys],
+                                  limit=MAX_CHUNK_SPEECH)
+        for key, text in zip(keys, ordered):
+            payload["commentary"][key] = text
         write_show(self.g.state_dir, payload)
         started = self.clock()
         plan = step_plan(payload, step_seconds=STEP_SECONDS)

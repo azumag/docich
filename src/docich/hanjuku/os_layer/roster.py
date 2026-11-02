@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 import re
+
+from ..identity import run_identity
 
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
@@ -181,6 +184,42 @@ def invalidate(mem):
         mem['house']['roster_invalidated'] = True
 
 
+def defeated(mem, name):
+    """HP 0 is a question about one general, not about the other seventeen.
+
+    g1097 2026-11-02: all four defeats removed exactly that general from the
+    next walk, and each cost a second full status walk (17-19 reads, two
+    minutes) in the same month. Keep the survey and let the partial walk look
+    for the name. Without a complete survey there is nothing worth keeping.
+    """
+    survey = completed_survey(mem)
+    if survey is None or name not in survey['statuses']:
+        invalidate(mem)
+        return
+    dirty_status(mem, [name])
+    survey['defeated'] = sorted({*(survey.get('defeated') or ()), name})
+
+
+def forget_defeated(mem, name):
+    """The whole list was read and a defeated general is not on it."""
+    survey = completed_survey(mem)
+    if survey is None or name not in (survey.get('defeated') or ()):
+        return False
+    for receipt in (survey['receipt'], mem.get('recruit_roster')):
+        if not isinstance(receipt, dict):
+            continue
+        if isinstance(receipt.get('names'), list) and name in receipt['names']:
+            receipt['names'].remove(name)
+        if isinstance(receipt.get('wages'), dict):
+            receipt['wages'].pop(name, None)
+    survey['statuses'].pop(name, None)
+    for key in ('dirty', 'dirty_revisions', 'read_revisions'):
+        survey.get(key, {}).pop(name, None)
+    survey['defeated'].remove(name)
+    mem['house_status_recheck'] = bool(survey.get('dirty'))
+    return True
+
+
 def _payroll_hold_wages(mem):
     hold = mem.get('payroll_membership_hold')
     identity = run_identity(mem.get('_run_identity'))
@@ -261,15 +300,6 @@ def begin(mem, state):
                              'identity': run_identity(mem.get('_run_identity'))}
 
 
-def run_identity(raw):
-    if (not isinstance(raw, dict) or raw.get('game') != 'hanjuku-hero'
-            or type(raw.get('generation')) is not int or raw['generation'] <= 0
-            or any(not isinstance(raw.get(k), str) or not 1 <= len(raw[k]) <= 256
-                   for k in ('runtime_id', 'lease_id'))):
-        return None
-    return {k: raw[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
-
-
 def _same_scope(chapter, month, mem):
     return (type(chapter) is int and type(mem.get('chapter')) is int
             and chapter > 0 and chapter == mem['chapter']
@@ -332,6 +362,101 @@ def _status_survey(mem, key, *, complete):
     return survey
 
 
+# Issue #3194 (06/10): month-boundary carry-over of unchanged status rows.
+# On by default (owner 2026-11-02: apply on merge). DOCICH_HANJUKU_MONTH_CARRY=0
+# is the kill switch and is read when the brain starts. A row is carried at
+# most MONTH_CARRY_MAX months in a row, then the general is opened again (the
+# periodic cross-check).
+MONTH_CARRY_ENV = 'DOCICH_HANJUKU_MONTH_CARRY'
+MONTH_CARRY_MAX = 2
+
+
+def month_carry_enabled():
+    return os.environ.get(MONTH_CARRY_ENV) != '0'
+
+
+def _previous_month(month):
+    m = re.fullmatch(r'([1-9][0-9]*)-([1-9]|1[0-2])', month) if isinstance(month, str) else None
+    if m is None:
+        return None
+    year, mon = int(m.group(1)), int(m.group(2))
+    return f'{year}-{mon - 1}' if mon > 1 else (f'{year - 1}-12' if year > 1 else None)
+
+
+def _carry_eligible(row, dirty_fields):
+    """Only a healthy, unbroken castle resident with no event since the read."""
+    if not isinstance(row, dict) or dirty_fields:
+        return False
+    hp, maximum = row.get('hp'), row.get('max_hp')
+    depth = row.get('carry_depth', 0)
+    return (row.get('location') == 'castle' and row.get('location_observed') is True
+            and row.get('broken') is False
+            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
+            and type(depth) is int and 0 <= depth < MONTH_CARRY_MAX)
+
+
+def carry_forward(mem):
+    """Start this month's survey from last month's rows, reopening only the rest.
+
+    The roster names come from this month's complete names-only count, so
+    membership is always re-read. A previous-month row is reused only if the
+    general was a healthy, unbroken castle resident whose last read was
+    observed, and no battle/sortie/recall/egg event marked it dirty since.
+    Every other general gets a placeholder row that is dirty in all fields, so
+    the ordinary partial walk opens exactly those. Returns ``None`` when
+    nothing was done, else ``{'carried': [...], 'reopen': [...]}``.
+    """
+    if not month_carry_enabled() or reusable_survey(mem) is not None:
+        return None
+    identity = run_identity(mem.get('_run_identity'))
+    chapter, month = mem.get('chapter'), mem.get('month')
+    previous = _previous_month(month)
+    prev = mem.get('roster_survey')
+    receipt = fresh(mem, include_completed=False)
+    if (identity is None or previous is None or not isinstance(prev, dict)
+            or prev.get('schema') != 1 or prev.get('identity') != identity
+            or prev.get('scope') != [chapter, previous]
+            or not isinstance(prev.get('statuses'), dict) or not isinstance(prev.get('dirty'), dict)
+            or receipt is None or receipt.get('complete') is not True
+            or not isinstance(receipt.get('wages'), dict)):
+        return None
+    rtick = receipt['tick']
+    statuses, dirty, carried, reopen = {}, {}, [], []
+    carried_rows = {}
+    for name in receipt['names']:
+        row = prev['statuses'].get(name)
+        if _carry_eligible(row, prev['dirty'].get(name)):
+            new = deepcopy(row)
+            new.update(month=month, observed_chapter=chapter, observed_tick=rtick,
+                       carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
+            statuses[name] = carried_rows[name] = new
+            carried.append(name)
+        else:
+            statuses[name] = {'general': name, 'month': month, 'observed_chapter': chapter,
+                              'observed_tick': rtick, 'broken': False, 'hp': None, 'max_hp': None,
+                              'location': None, 'location_observed': False, 'egg': None,
+                              'uses': None, 'wage': receipt['wages'].get(name)}
+            dirty[name] = ['hp', 'location', 'egg']
+            reopen.append(name)
+    saved = {k: deepcopy(mem.get(k)) for k in ('roster_survey', 'roster_status_walk', 'house_eggs')}
+    mem['roster_survey'] = {'schema': 1, 'identity': identity, 'scope': [chapter, month],
+                            'receipt': deepcopy(receipt), 'statuses': statuses, 'dirty': dirty,
+                            'dirty_revisions': {n: 1 for n in dirty}, 'read_revisions': {}}
+    mem.pop('roster_status_walk', None)
+    if reusable_survey(mem) is None:  # any invalid shape: leave everything as it was
+        for k, v in saved.items():
+            if v is None:
+                mem.pop(k, None)
+            else:
+                mem[k] = v
+        return None
+    eggs = mem.setdefault('house_eggs', {})
+    for name, row in carried_rows.items():
+        eggs[name] = deepcopy(row)
+    mem['house_status_recheck'] = bool(dirty)
+    return {'carried': carried, 'reopen': reopen}
+
+
 def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     """A change invalidates only the participant's affected status fields."""
     survey = reusable_survey(mem)
@@ -353,6 +478,8 @@ def status_observed(mem, info):
     if survey is None or name not in survey['statuses']:
         return
     survey['statuses'][name] = deepcopy(info)
+    if name in (survey.get('defeated') or ()):
+        survey['defeated'].remove(name)  # still on the list after the defeat
     missing = [] if (type(info.get('hp')) is int and type(info.get('max_hp')) is int
                      and 0 <= info['hp'] <= info['max_hp'] and info['max_hp'] > 0) else ['hp']
     if (info.get('location_observed') is False

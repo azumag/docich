@@ -118,6 +118,33 @@ def test_sanitize_requires_a_sentence_break():
     assert tn.sanitize("あ" * 80) is None
 
 
+def test_sanitize_dedups_repeated_sentences_in_model_output():
+    # The same idea stated twice is spoken once (#2737); what remains must
+    # still stand on its own as one bounded paragraph.
+    repeated = ("相手の駒が見えない中で最後まで粘り、反則を減らす課題が残りました。"
+                "相手の駒が見えない中で最後まで粘り、反則を減らす課題が残りました。"
+                "次の対局もぜひご覧ください。")
+
+    assert tn.sanitize(repeated) == ("相手の駒が見えない中で最後まで粘り、反則を減らす課題が残りました。"
+                                     "次の対局もぜひご覧ください。")
+
+
+def test_sanitize_rejects_output_that_is_only_repetition():
+    assert tn.sanitize("同じ文の繰り返しです。" * 6) is None
+
+
+def test_status_facts_project_only_verified_public_facts():
+    facts = tn.status_facts(SUMMARY)
+
+    assert facts == {"rating": "1005→1003", "clock": "AI計9秒 / 相手計66秒",
+                     "fouls": "AI10回 / 相手0回", "shapes": "成り8回 / 打ち13回"}
+
+    # Without the replay summary there is nothing to add to the result line.
+    assert tn.status_facts(None) is None
+    assert tn.status_facts({"own": None}) == {
+        "clock": "AI計0秒 / 相手計0秒"}
+
+
 def test_fallback_text_is_bounded_and_names_the_reason():
     text = tn.fallback_text(SUMMARY, TERMINAL)
 

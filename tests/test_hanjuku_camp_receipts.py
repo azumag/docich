@@ -138,6 +138,20 @@ def test_receipt_reader_rejects_old_identity_frame_time_and_duplicate_lines(tmp_
     assert module.recall_input_receipts(tmp_path, state, {'hanjuku': ID}) is None
 
 
+def test_card_scroll_receipt_is_bound_to_run_frame_and_delivered_up(tmp_path):
+    module = command_bot()
+    trace = {**ID, 'decision_id': 'synthetic:1', 'frame_sha256': 'a' * 64, 'planned_at': 100}
+    state = {'policy': {'card_upper_boundary': {'await_input': True, 'request_trace': trace}}}
+    good = {'event': 'input_sent', 'decision_id': trace['decision_id'],
+            'decision_frame_sha256': trace['frame_sha256'], 'at': 101,
+            'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}
+    bad = [{**good, 'at': 99}, {**good, 'decision_id': 'different'},
+           {**good, 'decision_frame_sha256': 'b' * 64}, {**good, 'buttons': ['a']}]
+    (tmp_path / 'hanjuku_events.jsonl').write_text('\n'.join(json.dumps(x) for x in bad + [good, good]))
+    assert module.card_scroll_receipt(tmp_path, state, {'hanjuku': ID})['up_inputs'] == 1
+    assert module.card_scroll_receipt(tmp_path, state, {'hanjuku': {**ID, 'lease_id': 'other'}}) is None
+
+
 def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     _, state = pending(); mem = state['policy']; mem['_records'] = []
     view = parse(picker(), phase='field')

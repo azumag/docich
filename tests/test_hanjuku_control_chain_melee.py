@@ -10,6 +10,15 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
 from test_hanjuku_card_damage_gate import cards, memory
 
+
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+
 FIXTURES = Path(__file__).parent / 'fixtures/hanjuku'
 
 
@@ -41,6 +50,7 @@ def test_original_post_control_panel_pursues_without_reopening_menu():
     mem = selected()
     # Preserve the real nine-observation delay, including an unclassified
     # selection timeout. This never fabricates a use announcement.
+    mem['battle']['card_flow']['announce_retried'] = True  # post-retry exit
     for _ in range(p.CARD_ANNOUNCE_LIMIT + 1):
         mem['tick'] += 1
         p.card_list_step(native('card-list'), mem)

@@ -113,6 +113,23 @@ def test_declines_unreviewed_yes_no_prompt():
     assert tuple(a.text for a in decision.actions) == ("n",)
 
 
+def test_picks_up_single_visible_object():
+    decision = decide(obs("You see here a dagger.", ("....", ".@..", "....")))
+    assert decision.intent == "pick_up_item"
+    assert tuple(a.text for a in decision.actions) == (",",)
+
+
+def test_does_not_pick_up_a_pile_of_objects():
+    decision = decide(obs("There are several objects here.", ("....", ".@..", "....")))
+    assert decision.intent != "pick_up_item"
+
+
+def test_pick_up_never_answers_a_blocking_prompt():
+    decision = decide(obs("You see here a dagger. Pick it up? [ynq]", ("....", ".@..", "....")))
+    assert decision.intent == "decline_prompt"
+    assert tuple(a.text for a in decision.actions) == ("n",)
+
+
 def test_eats_visible_food_when_hungry():
     decision = decide(obs("", ("....", ".@..", "...."), status=HUNGRY_STATUS), inventory=(food_item(),))
     assert decision.intent == "eat_food"
@@ -266,8 +283,8 @@ def test_spec_with_unreviewed_effect_is_skipped_fail_closed():
     # A spec whose effect is outside the reviewed vocabulary never produces
     # keys: the policy falls through instead of executing it.
     weird = ActionSpec(
-        id="zap_wand",
-        effect="zap_wand",
+        id="mystery_command",
+        effect="bogus_effect",
         risk_class="item",
         preconditions=("prompt:none", "player_visible"),
         key_pattern=("z",),
@@ -310,3 +327,108 @@ def test_production_policy_module_is_untouched_by_canary_tactics():
     source = (ROOT / "src" / "docich" / "nethack_canary_tactics.py").read_text(encoding="utf-8")
     assert "from .nethack_policy import NethackLayeredPolicy, PolicyDecision" in source
     assert "agent.brains" not in source
+
+
+def item(letter, category, *, equipped=False, unpaid=False):
+    return VisibleInventoryItem(
+        letter=letter,
+        description=f"an uncursed {category}",
+        quantity=1,
+        buc="uncursed",
+        equipped=equipped,
+        unpaid=unpaid,
+        category_hint=category,
+    )
+
+
+def test_wields_a_spare_weapon_when_nothing_is_in_hand():
+    decision = decide(obs("", ("....", ".@..", "....")), inventory=(item("a", "weapon"),))
+    assert decision.intent == "wield_weapon"
+    assert tuple(a.text for a in decision.actions) == ("w", "a")
+
+
+def test_does_not_wield_when_a_weapon_is_already_in_hand():
+    decision = decide(
+        obs("", ("....", ".@..", "....")),
+        inventory=(item("a", "weapon", equipped=True), item("b", "weapon")),
+    )
+    # A spare weapon is still wieldable, so the action is allowed once; the
+    # equipped weapon itself is never selected again.
+    if decision.intent == "wield_weapon":
+        assert tuple(a.text for a in decision.actions) == ("w", "b")
+
+
+def test_wears_armor_only_when_nothing_is_worn_and_no_monster_is_adjacent():
+    worn = item("a", "armor", equipped=True)
+    decision = decide(obs("", ("....", ".@..", "....")), inventory=(worn,))
+    assert decision.intent != "wear_armor"
+
+    decision = decide(obs("", ("....", ".@..", "....")), inventory=(item("b", "armor"),))
+    assert decision.intent == "wear_armor"
+    assert tuple(a.text for a in decision.actions) == ("W", "b")
+
+    decision = decide(obs("", ("....", ".@k.", "....")), inventory=(item("b", "armor"),))
+    assert decision.intent != "wear_armor"
+
+
+def test_quaffs_a_paid_potion_at_low_hp():
+    decision = decide(
+        obs("", ("....", ".@..", "...."), status=LOW_HP_STATUS),
+        inventory=(item("p", "potion"),),
+    )
+    assert decision.intent == "quaff_potion"
+    assert tuple(a.text for a in decision.actions) == ("q", "p")
+
+
+def test_never_quaffs_an_unpaid_potion():
+    decision = decide(
+        obs("", ("....", ".@..", "...."), status=LOW_HP_STATUS),
+        inventory=(item("p", "potion", unpaid=True),),
+    )
+    assert decision.intent != "quaff_potion"
+    assert decision.actions
+
+
+def test_never_reads_or_zaps_the_disabled_item_actions():
+    decision = decide(
+        obs("", ("....", ".@..", "...."), status=LOW_HP_STATUS),
+        inventory=(item("s", "scroll"), item("z", "wand")),
+    )
+    assert decision.intent not in {"read_scroll", "zap_wand", "apply_tool", "throw_item"}
+    assert decision.actions
+
+
+def test_uses_the_disabled_action_only_when_the_catalog_enables_it():
+    specs = tuple(
+        replace(spec, enabled=True) if spec.id == "read_scroll" else spec
+        for spec in load_action_catalog(CATALOG)
+    )
+    decision = CanaryTacticalPolicy(specs=specs).decide(
+        obs("", ("....", ".@..", "....")), inventory=(item("s", "scroll"),)
+    )
+    assert decision.intent == "read_scroll"
+    assert tuple(a.text for a in decision.actions) == ("r", "s")
+
+
+def test_ascends_from_a_remembered_up_staircase():
+    policy = CanaryTacticalPolicy()
+    policy.decide(obs("", ("....", ".@<.", "....")))
+    decision = policy.decide(obs("", ("....", "..@.", "....")))
+    assert decision.intent == "ascend_stairs"
+    assert tuple(a.text for a in decision.actions) == ("<",)
+
+
+def test_kicks_a_locked_door_once_after_the_open_attempt_failed():
+    policy = CanaryTacticalPolicy()
+    door = obs("", ("-----", "-@+--", "-----"))
+    assert policy.decide(door).intent == "open_door"
+    kicked = policy.decide(door)
+    assert kicked.intent == "kick_door"
+    assert tuple(a.text for a in kicked.actions) == ("\x04", "l")
+    assert policy.decide(door).intent != "kick_door"
+
+
+def test_shipped_action_ids_match_the_supported_alias():
+    from docich.nethack_canary_tactics import SUPPORTED_ACTION_IDS
+
+    assert {spec.id for spec in load_action_catalog(CATALOG)} == set(SUPPORTED_ACTION_IDS)

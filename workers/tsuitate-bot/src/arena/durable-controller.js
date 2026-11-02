@@ -100,6 +100,38 @@ export class DurableArenaController {
     });
   }
 
+  async runStatus(options) {
+    if (!options || typeof options !== "object" || Array.isArray(options)
+        || typeof options.runId !== "string" || !RUN_ID.test(options.runId)
+        || Object.keys(options).some((key) => key !== "runId")) {
+      throw new Error("run_mismatch");
+    }
+    return this.storage.transaction(async (tx) => {
+      const current = await tx.get(META_KEY) ?? initial();
+      let receipt;
+      let record;
+      if (current.runId === options.runId) {
+        receipt = this.snapshot(current);
+        record = await tx.get(recordKey(options.runId)) ?? await tx.get(RECORD_KEY);
+      } else {
+        receipt = await tx.get(runKey(options.runId));
+        if (!receipt) throw new Error("run_mismatch");
+        record = await tx.get(recordKey(options.runId));
+      }
+      const terminal = receipt.state === "finished" && receipt.completedGames === 1;
+      if (!terminal) return { ...receipt, terminalResult: null };
+      const normalized = normalizeGameRecord(record);
+      const owner = validBetaGameId(receipt.gameId)
+        ? await tx.get(`beta:game:${receipt.gameId}`) : null;
+      if (!normalized?.completed || normalized.gameId !== receipt.gameId || owner !== options.runId) {
+        throw new Error("recovery_checkpoint_invalid");
+      }
+      const terminalResult = terminalResultProjection(receipt, normalized);
+      if (!terminalResult) throw new Error("recovery_checkpoint_invalid");
+      return { ...receipt, terminalResult };
+    });
+  }
+
   reconcile(options) {
     return this.serialize(async () => {
       if (!options || typeof options.runId !== "string" || !RUN_ID.test(options.runId)

@@ -1,13 +1,16 @@
-"""Bounded external strategist dispatch and proposal evaluation (P3d).
+"""Bounded external strategist dispatch and proposal evaluation (P3d/#2746).
 
 The strategist is intentionally model-provider agnostic: a configured external
 command receives a :class:`StrategicRequest` JSON document on stdin and must
 return one :class:`StrategicProposal` JSON document on stdout.
 
-Crucially, this module does *not* turn proposals into live NetHack keypresses.
-The only wait proposal is explicit ``rest`` and maps to one ``.`` key. Every
-other state-changing proposal remains advisory until a later executor is
-separately implemented, allowlisted, and tested.
+A proposal is never executed from its text alone. :func:`evaluate_proposal`
+re-checks it against the fresh visible state, and :func:`execution_plan` maps
+only the kinds with a reviewed executor to keys: ``rest`` (one ``.``),
+``pray`` (the reviewed recovery command) and ``answer_prompt`` (one answer to
+the visible blocking prompt, see :func:`prompt_answer_action`). The
+brain re-validates the exact frame before sending. Other kinds stay
+advisory until their executor is implemented and tested.
 """
 from __future__ import annotations
 
@@ -217,31 +220,46 @@ def _item_snapshot_still_matches(
     return before == current.public_dict()
 
 
-def _allowed_kinds(intent: str) -> frozenset[str]:
-    if intent == "prompt_decision":
-        return frozenset({"inspect", "answer_prompt"})
-    if intent == "survival_emergency":
-        return frozenset({"rest", "inspect", "consume", "equip", "use"})
-    if intent in {"status_emergency", "status_recovery", "food_emergency"}:
-        return frozenset({"inspect", "consume", "equip", "use", "pray"})
-    if intent == "stairs_decision":
-        return frozenset({"rest", "inspect", "ascend", "descend"})
-    if intent in {"assess_contact", "exploration_blocked"}:
-        return frozenset({"rest", "inspect"})
-    return frozenset({"rest", "inspect"})
+# Escape cancels any NetHack question. It is the only answer accepted for
+# free-text and unrecognized prompts, so the model can never type into them.
+PROMPT_ESCAPE = "ESC"
+# Kinds with a reviewed executor in execution_plan. Only these may be approved.
+EXECUTABLE_KINDS = frozenset({"rest", "pray", "answer_prompt"})
+_DIRECTION_ANSWERS = frozenset({"h", "j", "k", "l", "y", "u", "b", "n", "."})
+_CANCEL_ONLY_PROMPTS = frozenset({"text", "unknown"})
+
+
+def prompt_answer_action(answer: str) -> Action:
+    """Map a validated prompt answer to one literal key (Escape is a special key)."""
+    if answer == PROMPT_ESCAPE:
+        return Action(type="special", key="Escape")
+    return Action(type="text", text=answer)
+
+
+def default_prompt_answer(obs: NethackObservation) -> str | None:
+    """Deterministic safe answer for a visible blocking prompt, or None.
+
+    Used when the strategist is disabled, unavailable, over budget, or its
+    proposal is rejected, so a blocking prompt never leaves the game stuck.
+    """
+    if obs.prompt == "yes_no":
+        return "n"
+    if obs.prompt in _CANCEL_ONLY_PROMPTS or obs.prompt in {"direction", "selection"}:
+        return PROMPT_ESCAPE
+    return None
 
 
 def _prompt_answer_is_compatible(obs: NethackObservation, answer: str | None) -> bool:
-    if answer is None:
+    if answer is None or obs.prompt == "none":
         return False
+    if answer == PROMPT_ESCAPE:
+        return True
     if obs.prompt == "yes_no":
         return answer.lower() in {"y", "n"}
     if obs.prompt == "direction":
-        return answer in {"h", "j", "k", "l", "y", "u", "b", "n", "."}
+        return answer in _DIRECTION_ANSWERS
     if obs.prompt == "selection":
-        return len(answer) == 1 and answer.isascii()
-    if obs.prompt == "text":
-        return 0 < len(answer) <= 32
+        return len(answer) == 1 and answer.isascii() and answer.isprintable() and not answer.isspace()
     return False
 
 
@@ -252,18 +270,12 @@ def evaluate_proposal(
     current_observation: NethackObservation,
     current_inventory: tuple[VisibleInventoryItem, ...] = (),
 ) -> ProposalEvaluation:
-    """Evaluate an advisory proposal against fresh visible state.
+    """Re-check a proposal against fresh visible state.
 
-    Approval here still does not authorize a keypress; it only means that the
-    proposal is internally consistent enough to hand to an executor gate.
+    Approval means the proposal is still consistent with the fresh frame; the
+    keys themselves come from :func:`execution_plan`, and the brain re-checks
+    the exact frame again before sending.
     """
-    if proposal.kind not in _allowed_kinds(request.intent):
-        return ProposalEvaluation(
-            status="rejected",
-            reason=f"proposal kind {proposal.kind!r} is not allowed for intent {request.intent!r}",
-            proposal=proposal,
-        )
-
     if proposal.kind in {"consume", "equip", "use"}:
         assert proposal.inventory_letter is not None
         if not _item_snapshot_still_matches(request, proposal.inventory_letter, current_inventory):
@@ -332,11 +344,18 @@ def evaluate_proposal(
             proposal=proposal,
         )
 
+    if proposal.kind not in EXECUTABLE_KINDS:
+        return ProposalEvaluation(
+            status="rejected",
+            reason=f"proposal kind {proposal.kind!r} has no reviewed executor yet",
+            proposal=proposal,
+        )
+
     return ProposalEvaluation(status="approved", reason="public-state checks passed", proposal=proposal)
 
 
 def execution_plan(evaluation: ProposalEvaluation) -> ExecutionPlan:
-    """Final P3d gate. Only explicit ``rest`` is executable in this phase."""
+    """Final gate: only kinds with a reviewed executor produce keys."""
     if not evaluation.approved:
         return ExecutionPlan(allowed=False, reason=f"proposal rejected: {evaluation.reason}")
     if evaluation.proposal.kind == "rest":
@@ -351,9 +370,16 @@ def execution_plan(evaluation: ProposalEvaluation) -> ExecutionPlan:
             reason="prayer is the reviewed recovery command for severe status",
             actions=(Action(type="text", text=SEVERE_RECOVERY_COMMAND),),
         )
+    if evaluation.proposal.kind == "answer_prompt":
+        assert evaluation.proposal.prompt_answer is not None
+        return ExecutionPlan(
+            allowed=True,
+            reason="answer to the visible blocking prompt, revalidated against fresh state",
+            actions=(prompt_answer_action(evaluation.proposal.prompt_answer),),
+        )
     return ExecutionPlan(
         allowed=False,
         reason=(
-            f"executor for {evaluation.proposal.kind!r} is not implemented/allowlisted in P3d"
+            f"executor for {evaluation.proposal.kind!r} has no reviewed executor yet"
         ),
     )

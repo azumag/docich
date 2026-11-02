@@ -186,7 +186,8 @@ def test_initial_opening_to_failed_menus_to_emergency_is_one_bound_battle():
                       battle=Battle('アテナ', 66, 'ヴィーナス', hp), field_soldiers=(1, 6))
     assert p.battle_step(observed(78), mem) == []
     assert p.battle_step(observed(78), mem) == [p.pad('b')]
-    for hp in (78, 78, 69, 69, 69, 60, 60, 60):
+    # Each failed opening is B plus COMMAND_OPEN_WAITS (4) unanswered waits.
+    for hp in (78, 78, 78, 78, 69, 69, 69, 69, 69, 60, 60, 60, 60, 60):
         p.battle_step(observed(hp), mem)
     assert mem['battle']['survival']['opens'] == 3
     assert not mem['battle'].get('resource_menu_observed')

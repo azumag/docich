@@ -156,7 +156,8 @@ class ReloadWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("github.ref_protected == true", text)
         self.assertIn("github.event.issue.state == 'open'", text)
         self.assertIn("GITHUB_ISSUE_STATE: ${{ github.event.issue.state }}", text)
-        self.assertIn("Require production to equal current protected main", text)
+        self.assertIn("Require production at the deployed reviewed baseline", text)
+        self.assertIn("control/ops/vm_actions/check_operator_parity.py", text)
         self.assertNotIn("inputs.command", text)
         self.assertNotIn("event.comment.body", text)
 

@@ -93,7 +93,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
           printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
 
-      - name: Require production to equal current protected main
+      - name: Require production at the deployed reviewed baseline
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -103,13 +103,7 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
-          python3 - "$status_json" "$SHA" <<'PY'
-          import json, sys
-          data = json.loads(sys.argv[1])
-          expected = sys.argv[2]
-          if data.get('status') != 'configured' or data.get('sha') != expected:
-              raise SystemExit('production is not exactly current protected main')
-          PY
+          python3 -I control/ops/vm_actions/check_operator_parity.py "$status_json" "$SHA" control
 
       - name: Recover only the failed retro corner slot
         if: steps.auth.outputs.operation == 'recover-failed'

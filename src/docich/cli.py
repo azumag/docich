@@ -48,6 +48,7 @@ from .netcmd import send_ra_cmd
 from .trading import cli as trading_cli
 from .trading import paper_ai_canary
 from .state import State
+from .cc_translation_adapter import describe_health, probe_health
 from .stream import (
     CaptionSocketDirectoryError,
     StreamRuntime,
@@ -58,6 +59,7 @@ from .stream import (
     ensure_caption_socket_parent,
     redact_stream_command,
     resolve_runtime,
+    wait_for_caption_socket,
 )
 from .supervise import run_callable_loop, run_loop
 from .tmux import Tmux, TmuxError
@@ -1064,6 +1066,7 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
                 detail = f"{detail}; {socket_detail}"
             print(f"  captions.active: {'はい' if active else 'いいえ'}")
             print(f"  captions.detail: {detail}")
+            print(f"  captions.adapter: {describe_health(probe_health())}")
             print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")
@@ -1564,6 +1567,7 @@ def _run_audio_spawn(g: GlobalConfig) -> int:
 
 def _run_stream(g: GlobalConfig) -> int:
     xkit = XKit(g.display.name)
+    caption_state = {"active": False}
 
     def pre():
         xkit.wait_display()
@@ -1586,17 +1590,37 @@ def _run_stream(g: GlobalConfig) -> int:
                 )
         if g.captions.enabled and not runtime.captions_active:
             print(f"docich: 警告: 字幕を無効化して配信を継続します ({runtime.caption_detail})")
+        caption_state["active"] = runtime.captions_active
         cmd = runtime.command
         env_extra = {}
         if g.audio.enabled:
             env_extra["PULSE_SINK"] = g.audio.sink_name
         return cmd, env_extra
 
+    def post_start(proc):
+        # #2792: the filter can refuse to create the socket (unsupported frame
+        # rate before the fix, bad path, foreign/live socket). Requested CC is
+        # not active CC, so say so at launch instead of failing open silently.
+        if not caption_state["active"]:
+            return
+        ready, detail = wait_for_caption_socket(
+            g.captions.socket_path, is_running=lambda: proc.poll() is None
+        )
+        if ready:
+            print(f"docich: 字幕socket ready ({detail})")
+            return
+        print(
+            "docich: 警告: 字幕を要求しましたがFFmpegが字幕socketを作成しませんでした "
+            f"({detail})。字幕なしで配信を継続します。"
+            "FFmpegログの 'docichcc disabled:' 行を確認してください。"
+        )
+
     run_loop(
         "stream",
         g,
         build,
         pre=pre,
+        post_start=post_start,
         log_command=lambda command: redact_stream_command(command, g),
     )
     return 0

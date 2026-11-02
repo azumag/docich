@@ -1,8 +1,11 @@
-"""Advisory-only strategist integration for the NetHack policy brain (P3e).
+"""Strategist integration for the NetHack policy brain (P3e, #2746).
 
-This module may call an external strategist and may enqueue sparse narration,
-but it never returns gameplay Actions.  The reviewed P3b action surface remains
-the only path that can send keys to NetHack.
+This module may call an external strategist, enqueue sparse narration, and
+return a small set of Actions for the brain to send when the production policy
+holds. Blocking prompts are always answered: with the strategist's approved
+answer when available, otherwise with the deterministic safe default. Every
+returned Action is re-validated against the exact frame by the brain before it
+is sent, and every decision is recorded in the advisory log.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
+from .actions import Action
 from .config import GameConfig, GlobalConfig
 from .nethack_inventory import parse_visible_inventory
 from .nethack_observation import NethackObservation
@@ -22,13 +26,19 @@ from .nethack_strategist import (
     CommandStrategist,
     ProposalEvaluation,
     StrategistDispatchResult,
+    default_prompt_answer,
     dispatch_error_kind_for_exception,
     evaluate_proposal,
     execution_plan,
+    prompt_answer_action,
     safe_dispatch_error_kind,
 )
 from .nethack_strategy import build_strategic_request, should_narrate
 
+
+# Prayer needs the production resolver's timeout bookkeeping (_pray_expected),
+# which advisory keys bypass, so a proposed prayer is logged but never sent.
+_BRAIN_SENDABLE_KINDS = frozenset({"rest", "answer_prompt"})
 
 AdvisoryStatus = Literal[
     "disabled",
@@ -37,6 +47,7 @@ AdvisoryStatus = Literal[
     "budget_exhausted",
     "error",
     "proposed",
+    "suppressed",
 ]
 
 
@@ -61,6 +72,7 @@ class AdvisoryOutcome:
     evaluation_reason: str | None = None
     error: str | None = None
     narrated: bool = False
+    actions: tuple[Action, ...] = ()
 
 
 def _bounded_number(raw: object, *, default: float, minimum: float, maximum: float, name: str) -> float:
@@ -167,6 +179,10 @@ class NethackAdvisoryController:
         self._last_narration_at: float | None = None
         self._last_narration_intent: str | None = None
         self._previous_intent: str | None = None
+        self._last_prompt_log_fingerprint: str | None = None
+        # Visible frame whose blocking prompt was last answered. The same frame
+        # is answered at most once: a frozen screen must not get key after key.
+        self._answered_prompt_fingerprint: str | None = None
 
         if strategist is not None:
             self.strategist = strategist
@@ -256,7 +272,85 @@ class NethackAdvisoryController:
         self._last_narration_intent = decision.intent
         return True
 
+    def _default_prompt_actions(self, obs: NethackObservation) -> tuple[Action, ...]:
+        answer = default_prompt_answer(obs)
+        if answer is None:
+            return ()
+        return (prompt_answer_action(answer),)
+
+    def _answer_prompt_locally(
+        self,
+        obs: NethackObservation,
+        decision: PolicyDecision,
+        *,
+        previous_intent: str | None,
+        status: AdvisoryStatus,
+        call_index: int = 0,
+    ) -> AdvisoryOutcome:
+        """Answer a blocking prompt without the strategist (fail-safe default).
+
+        A blocking prompt must never leave the game stuck, so this runs whenever
+        the strategist is disabled, over budget, cooling down or unavailable.
+        """
+        narrated = self._narrate(decision, previous_intent=previous_intent)
+        actions = self._default_prompt_actions(obs)
+        fingerprint = self._fingerprint(obs, decision)
+        if fingerprint != self._last_prompt_log_fingerprint:
+            self._last_prompt_log_fingerprint = fingerprint
+            self._append_log(
+                {
+                    "schema_version": 1,
+                    "ts": self._wall_time(),
+                    "status": status,
+                    "call_index": call_index,
+                    "intent": decision.intent,
+                    "reason": decision.reason,
+                    "fingerprint": fingerprint,
+                    "prompt": obs.prompt,
+                    "narrated": narrated,
+                    "execution": "default_prompt_answer" if actions else "none",
+                }
+            )
+        return AdvisoryOutcome(
+            status=status,
+            call_index=call_index,
+            narrated=narrated,
+            actions=actions,
+        )
+
     def consider(
+        self,
+        raw_text: str,
+        obs: NethackObservation,
+        decision: PolicyDecision,
+    ) -> AdvisoryOutcome:
+        if decision.intent != "prompt_decision":
+            self._answered_prompt_fingerprint = None
+            return self._consider(raw_text, obs, decision)
+        fingerprint = self._fingerprint(obs, decision)
+        if fingerprint == self._answered_prompt_fingerprint:
+            self._previous_intent = decision.intent
+            if fingerprint != self._last_prompt_log_fingerprint:
+                self._last_prompt_log_fingerprint = fingerprint
+                self._append_log(
+                    {
+                        "schema_version": 1,
+                        "ts": self._wall_time(),
+                        "status": "suppressed",
+                        "intent": decision.intent,
+                        "reason": decision.reason,
+                        "fingerprint": fingerprint,
+                        "prompt": obs.prompt,
+                        "execution": "suppressed_same_frame",
+                    }
+                )
+            return AdvisoryOutcome(status="suppressed")
+        outcome = self._consider(raw_text, obs, decision)
+        if outcome.actions:
+            self._answered_prompt_fingerprint = fingerprint
+        return outcome
+
+    def _consider(
         self,
         raw_text: str,
         obs: NethackObservation,
@@ -264,8 +358,13 @@ class NethackAdvisoryController:
     ) -> AdvisoryOutcome:
         previous_intent = self._previous_intent
         self._previous_intent = decision.intent
+        blocking = decision.intent == "prompt_decision"
 
         if not self.config.enabled or self.strategist is None:
+            if blocking:
+                return self._answer_prompt_locally(
+                    obs, decision, previous_intent=previous_intent, status="disabled"
+                )
             narrated = self._narrate(decision, previous_intent=previous_intent)
             return AdvisoryOutcome(status="disabled", narrated=narrated)
 
@@ -275,6 +374,14 @@ class NethackAdvisoryController:
 
         now = self._monotonic()
         if self._calls >= self.config.max_calls:
+            if blocking:
+                return self._answer_prompt_locally(
+                    obs,
+                    decision,
+                    previous_intent=previous_intent,
+                    status="budget_exhausted",
+                    call_index=self._calls,
+                )
             narrated = self._narrate(decision, previous_intent=previous_intent)
             outcome = AdvisoryOutcome(status="budget_exhausted", call_index=self._calls, narrated=narrated)
             self._append_log(
@@ -295,6 +402,14 @@ class NethackAdvisoryController:
             and self._last_dispatch_intent == decision.intent
             and now - self._last_dispatch_at < self.config.cooldown_s
         ):
+            if blocking:
+                return self._answer_prompt_locally(
+                    obs,
+                    decision,
+                    previous_intent=previous_intent,
+                    status="cooldown",
+                    call_index=self._calls,
+                )
             narrated = self._narrate(decision, previous_intent=previous_intent)
             return AdvisoryOutcome(status="cooldown", call_index=self._calls, narrated=narrated)
 
@@ -318,6 +433,8 @@ class NethackAdvisoryController:
         proposal_kind: str | None = None
         proposal_narration = ""
         proposal_rationale = ""
+        actions: tuple[Action, ...] = ()
+        execution = "advisory_only"
         if result.status == "proposed" and result.proposal is not None:
             proposal = result.proposal
             proposal_kind = proposal.kind
@@ -329,9 +446,14 @@ class NethackAdvisoryController:
                 current_observation=obs,
                 current_inventory=inventory,
             )
-            # Keep P3e advisory-only. The plan is computed for diagnostics but
-            # its Actions are deliberately not returned to the brain.
-            execution_plan(evaluation)
+            plan = execution_plan(evaluation)
+            if plan.allowed and proposal.kind in _BRAIN_SENDABLE_KINDS:
+                actions = plan.actions
+                execution = "strategist_action"
+        if blocking and not actions:
+            # Rejected, errored or non-answer proposals fall back to the safe default.
+            actions = self._default_prompt_actions(obs)
+            execution = "default_prompt_answer"
 
         narrated = self._narrate(
             decision,
@@ -348,6 +470,7 @@ class NethackAdvisoryController:
             evaluation_reason=evaluation.reason if evaluation is not None else None,
             error=result.error,
             narrated=narrated,
+            actions=actions,
         )
         self._append_log(
             {
@@ -371,7 +494,7 @@ class NethackAdvisoryController:
                     else None
                 ),
                 "narrated": narrated,
-                "execution": "advisory_only",
+                "execution": execution,
             }
         )
         return outcome

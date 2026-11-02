@@ -29,7 +29,7 @@ def test_cached_discount_quantity_cannot_exceed_remaining_monthly_copies(monkeyp
     monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
     mem = memory(complete=True)
     mem['shop']['egg'] = 'done'  # isolate card bounds from pending egg recovery
-    bought = [['ノリウツール', 3, 1], ['クースカン', 2, 1]]
+    bought = [['ノリウツール', 3, 1], ['クースカン', 4, 1]]
     mem['shop'].update(bargain_cards=['ノリウツール', 'クースカン', 'ゼンマイン'],
                        items=[['ゼンマイン', 2]], want=['ゼンマイン', 2, 1], bought=bought)
     assert b.merchant_card_spendable(mem, mem['shop'], quote(999).header, 'ゼンマイン', 1) == 1

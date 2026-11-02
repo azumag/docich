@@ -56,26 +56,56 @@ class RecoverSorenGameTests(unittest.TestCase):
             soren, docich, proc = fixture(Path(directory))
             marker = soren / "tmp/markers/.soviet_created"
             observation = soren / "tmp/state/game_observation.json"
+
+            def live_observation(game_id):
+                # Only a schema-valid, fresh observation describing this same
+                # board counts as live evidence (soviet_now#714).
+                observation.write_text(json.dumps({
+                    "schema": 1, "game_id": game_id, "stop_id": None,
+                    "board": {"state": "STOP", "score": None,
+                              "makeSorenCount": 0, "pieces": None},
+                    "observed_epoch": 1100}))
+
             with mock.patch.object(module, "_birth_time", return_value=899):
                 # Marker left by an earlier match while the bridge already
                 # observes another one: it must not block the only recovery
                 # (docich#2345).
                 marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
-                observation.write_text(json.dumps({
-                    "schema": 1, "game_id": "22222222-2222-4222-8222-222222222222"}))
+                live_observation("22222222-2222-4222-8222-222222222222")
                 self.assertEqual(module.eligible(soren, docich, proc, now=1100), (1234, 899))
 
                 # The same match still holds its founding board: refuse.
-                observation.write_text(json.dumps({
-                    "schema": 1, "game_id": "11111111-1111-4111-8111-111111111111"}))
+                live_observation("11111111-1111-4111-8111-111111111111")
                 with self.assertRaisesRegex(ValueError, "founding"):
                     module.eligible(soren, docich, proc, now=1100)
 
-                # Legacy marker older than the board it is read next to: refuse.
+                # A stale observation cannot authorise recovery on a live
+                # id mismatch: the marker stays unproven, so refuse.
+                live_observation("22222222-2222-4222-8222-222222222222")
+                observation.write_text(json.dumps({
+                    **json.loads(observation.read_text()),
+                    "observed_epoch": 1000}))
+                with self.assertRaisesRegex(ValueError, "founding"):
+                    module.eligible(soren, docich, proc, now=1100)
+
+                # A live observation of a *different* board cannot decide
+                # either: contradictory evidence keeps refusing.
+                live_observation("22222222-2222-4222-8222-222222222222")
+                observation.write_text(json.dumps({
+                    **json.loads(observation.read_text()),
+                    "board": {"state": "MOVE", "score": 0,
+                              "makeSorenCount": 0, "pieces": []}}))
+                with self.assertRaisesRegex(ValueError, "founding"):
+                    module.eligible(soren, docich, proc, now=1100)
+
+                # Legacy marker older than the board it is read next to:
+                # the mtime gap alone does not prove a new match (unknown),
+                # so the marker still refuses (soviet_now#714).
                 marker.write_text("189\n")
                 observation.unlink()
                 os.utime(marker, (900, 900))
-                self.assertEqual(module.eligible(soren, docich, proc, now=1100), (1234, 899))
+                with self.assertRaisesRegex(ValueError, "founding"):
+                    module.eligible(soren, docich, proc, now=1100)
 
                 # Legacy marker written together with the board: refuse.
                 os.utime(marker, (1000, 1000))

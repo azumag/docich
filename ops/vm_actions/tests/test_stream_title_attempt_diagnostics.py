@@ -10,6 +10,8 @@ import time
 import unittest
 from unittest import mock
 
+from temp_roots import real_tempdir
+
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
@@ -21,7 +23,7 @@ spec.loader.exec_module(collector)
 
 class StreamTitleAttemptDiagnosticsTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = real_tempdir()
         self.addCleanup(self.tmp.cleanup)
         self.soren = Path(self.tmp.name) / "soren"
         self.state = Path(self.tmp.name) / "state"

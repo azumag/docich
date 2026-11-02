@@ -34,10 +34,21 @@ def settings(g):
 
 
 def scenario(g):
-    # No generated or implicit story: #684 requires human-authored, reviewed input.
-    name = settings(g).get("scenario_file")
+    """Return a cheap preflight story or an explicitly configured static story.
+
+    Production no longer needs a human-authored ``scenario_file``.  When that
+    key is absent, eligibility/preflight use a deterministic preview only; the
+    real per-slot scenario is generated exactly once by :func:`prepare` after
+    GameSwitch has assigned a concrete runtime identity.
+    """
+
+    config = settings(g)
+    if "scenario_file" not in config:
+        from .trpg_generation import preview_scenario
+        return preview_scenario(config)
+    name = config.get("scenario_file")
     if not isinstance(name, str) or not name.strip():
-        raise core.TrpgCornerError("reviewed trpg scenario_file is required")
+        raise core.TrpgCornerError("trpg scenario_file must be a non-empty string")
     path = Path(name)
     if not path.is_absolute():
         path = Path(g.repo_root) / path
@@ -77,8 +88,27 @@ def cursor_at_end(g):
 
 def prepare(g, spec, *, now=None):
     # Materialization prepares a view, not a running clock or an open ballot.
+    # A generated scenario is bound to this runtime once and persisted in the
+    # session; rollback/restoration therefore never regenerates a different one.
+    config = settings(g)
+    if "scenario_file" in config:
+        story = scenario(g)
+        from .trpg_generation import scenario_hash
+        scenario_meta = {
+            "schema": 1,
+            "source": "scenario_file",
+            "status": "static",
+            "failure": "",
+            "runtime_id": spec.runtime_id,
+            "generation": spec.generation,
+            "scenario_sha256": scenario_hash(story),
+        }
+    else:
+        from .trpg_generation import generate_scenario
+        story, scenario_meta = generate_scenario(g, spec, config)
     bound = identity(spec)
-    data = {"schema": 1, **bound, "state": core.new_state(), "scenario": scenario(g),
+    data = {"schema": 1, **bound, "state": core.new_state(), "scenario": story,
+            "scenario_meta": scenario_meta,
             "phase_at": None, "activated_at": None, "cursor": cursor_at_end(g),
             "announced": None, "intro_sent": False, "recorded": False,
             "view_identity": bound, "owners": [bound], "owner_request_id": None}
@@ -237,7 +267,7 @@ def announce(g, data, audio_enabled, path):
              "CHOICE": ("choice", narration.choice_text()),
              "CLIMAX": ("accusation", narration.accusation_text()),
              "REVEAL": ("reveal", narration.reveal_text(view.get("answer", ""), view.get("trick", ""), ""))}
-    messages = ([('intro', narration.intro_text())] if intro else [])
+    messages = ([("intro", narration.intro_text())] if intro else [])
     if state["phase"] in texts:
         messages.append(texts[state["phase"]])
     # Bind the line to this run so a stopped or superseded run is never

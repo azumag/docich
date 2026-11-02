@@ -13,17 +13,42 @@ from ...hanjuku_egg_stock import observed_uses
 from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
+from ..strategy import goals
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
 HOUSE_TARGET = {chapter: (int(x), int(y)) for chapter, (x, y) in HOUSE_VIEW.items()}
+# Marker-minus-roof screen delta expected when the marker sits on the
+# house's entry cell. The same あたしの家 sprite anchors every chapter, so
+# the constant is chapter-independent; measured on the live g1075
+# chapter-4 map (2026-10-30): the roof's bottom-centre anchor sits at
+# field (556, 324) while the entry target is (568, 316).
+HOUSE_ROOF_DELTA = (12, -8)
+# How far the marker may sit from the entry cell and still identify the
+# roof: the Y jump lands near the target cell, so a roof this close to the
+# expected delta is the house, not an own castle (a castle's marker
+# anchor sits on its own cell, not HOUSE_ROOF_DELTA away).
+HOUSE_ROOF_MATCH = 28
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
+# A queued repair goal may spend this many extra field sessions per
+# (chapter, month) scope beyond the two a free survey already allows.
+GOAL_FIELD_EXTRA = 2
+# キャンプしています: the general holds the tent (or the 砦 he founded).
+# キャンプのなかにいます: he stays inside a 砦 another general holds.
+CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのなかにいます'})
+# しんぐんちゅうです is what the game prints for a marching general (probe of
+# g1097, 2026-11-01); いどうしています was never seen on a real status panel.
+MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
+LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
+LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
+LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
 INTERRUPTION_RETRIES = 2
+OPEN_ALIGN_KEYS = {'castle_open': 'HOUSE:source', 'income_open': 'HOUSE:income'}
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
 # This covers a castle footprint/localisation error and either axis-first route;
 # it is not a measured terrain path or permission to invent detour waypoints.
@@ -31,6 +56,17 @@ HOUSE_ROUTE_CLEARANCE = 8
 PRE_DISPATCH_PHASES = frozenset({
     'find_castle', 'castle_view', 'castle_open', 'castle_verify',
     'castle_sortie', 'castle_pick', 'castle_kit', 'castle_confirm'})
+
+
+def location_row(screen):
+    """The main status panel's location sentence, without the roster beside it.
+
+    The right panel keeps listing generals on the same row (x=168, see
+    ``roster``), so reading past it never equals a location sentence: until
+    g1097 2026-11-01 ``キャンプしています`` was compared with
+    ``キャンプしています リースリング`` and no real camp was ever observed.
+    """
+    return next((r.span(24, 168).replace(' ', '') for r in screen.lines if r.y == 151), None)
 
 
 def general_status(screen):
@@ -67,14 +103,13 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = (x == 24 and y == 39 and any(r.y == 151
-                and r.span(24, 232).replace(' ', '') == 'キャンプしています' for r in screen.lines))
+        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
                 'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', 'いどうしています'))}
+                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -169,6 +204,26 @@ def _record(mem, event, **fields):
             strategy_variant='broken_egg_repair', **fields)
 
 
+TALLY_KEYS = 12      # distinct counters kept
+TALLY_GENERALS = 40  # distinct generals kept per counter
+
+
+def _tally(mem, key, general=None):
+    """Issue #3194 (36): bounded counters of what observing costs.
+
+    Counts only (no frames or text), capped in both dimensions, so it cannot
+    grow without limit. It never feeds a decision.
+    """
+    tally = mem.setdefault('obs_cost', {})
+    if key not in tally and len(tally) >= TALLY_KEYS:
+        return
+    entry = tally.setdefault(key, {'n': 0, 'by_general': {}})
+    entry['n'] += 1
+    if general is not None and (general in entry['by_general']
+                                or len(entry['by_general']) < TALLY_GENERALS):
+        entry['by_general'][general] = entry['by_general'].get(general, 0) + 1
+
+
 def _phase(state, phase, **fields):
     state.update(phase=phase, age=0, **fields)
 
@@ -183,6 +238,18 @@ def _choose(screen, label, *, mem=None):
     if isinstance(move, list):
         return move
     return [pad('a')] if move == 'here' else [move] if move else []
+
+
+def _goal_note(mem, state, outcome, name):
+    """One attempt count per (session, actor): a deferral and the close that
+    follows it are a single outcome for the ledger."""
+    if not isinstance(name, str) or not name:
+        return
+    noted = state.setdefault('_goals_noted', {})
+    if name in noted:
+        return
+    noted[name] = True
+    goals.note_attempt(mem, 'repair', outcome, actor=name)
 
 
 def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
@@ -201,6 +268,7 @@ def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
     _record(mem, 'deferred', reason=reason, observed_metric={
         'phase': state['phase'], 'age': state.get('age'), 'total': state.get('total'),
         'limit': limit})
+    _goal_note(mem, state, 'interrupted', state.get('general'))
     _phase(state, 'close')
     return []
 
@@ -220,6 +288,12 @@ def _finish(mem):
         _record(mem, 'sortie_closed', observed_metric={'sorties': stale},
                 reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
+    # A session that ends before its repairs leaves every still-broken target
+    # queued; the ledger keeps it until a later status proves it fixed.
+    interrupted = {name for name in (state.get('pending') or ())} | (
+        {state['general']} if state.get('general') and not state.get('purchased') else set())
+    for name in sorted(interrupted):
+        _goal_note(mem, state, 'interrupted', name)
     # The free monthly roster check never completes or delays field repair.
     # Only a field transaction in its original chapter/month owns this marker.
     scope = [mem.get('chapter'), mem.get('month')]
@@ -312,6 +386,15 @@ def _observe_status(screen, mem):
     return info
 
 
+def _fresh_align_budget(mem, key):
+    """One jump, one budget: ``ALIGN_LIMIT`` bounds a visit, not a chapter.
+
+    The HOUSE keys have no order step to scope them. g1097 2026-11-02 reached
+    838 for 'HOUSE:source', so every later visit idled out unaligned.
+    """
+    (mem.get('align_steps') or {}).pop(key, None)
+
+
 def _view_move(screen, mem, frame, target, next_phase, tolerance=0.6):
     from ..os_layer.commands import pad
     from ..os_layer.readers import world_cursor, world_flags
@@ -330,6 +413,8 @@ def _view_move(screen, mem, frame, target, next_phase, tolerance=0.6):
         if next_phase == 'house_confirm' and _defer_unsafe_house_route(mem):
             return []
         _phase(state, next_phase)
+        if next_phase in OPEN_ALIGN_KEYS:
+            _fresh_align_budget(mem, OPEN_ALIGN_KEYS[next_phase])
         return [pad('a')]
     return [pad('right' if dx > 0 else 'left', min(56, max(1, round(abs(dx) * 2))))] if abs(dx) > tolerance else [
         pad('down' if dy > 0 else 'up', min(56, max(1, round(abs(dy) * 2))))]
@@ -359,7 +444,11 @@ def _house_route_problem(mem):
     chapter = mem.get('chapter')
     source = state.get('source')
     castles = chart.castles(chapter)
-    expected = chart.CASTLE_NAMES.get(chapter)
+    # Boss entries are never ordinary route castles: chapter 4 registers
+    # its boss as four named season-site castles, so 'ボス' is absent from
+    # castles() while every ordinary castle cell is still required.
+    expected = [name for name in (chart.CASTLE_NAMES.get(chapter) or ())
+                if not chart.is_boss_castle(name)]
     if (chapter not in HOUSE_TARGET or chapter not in Y_JUMP_OFFSET
             or not expected or not set(expected) <= castles.keys()):
         return '修理ルートの城配置が未確認のため派遣を保留', []
@@ -395,6 +484,35 @@ def _house_route_problem(mem):
     return None
 
 
+def _house_roof_delta(screen, mem, frame):
+    """Marker-to-house-roof screen delta, or None with no house in view.
+
+    The house flies an own-coloured flag, so ``castle_roofs`` reports it as
+    an 'own' roof; a castle's marker anchor sits on its own cell, not
+    ``HOUSE_ROOF_DELTA`` away, so a roof matching the delta within
+    ``HOUSE_ROOF_MATCH`` is the house itself. The delta is camera-invariant
+    (marker and roof scroll together), so ``HOUSE_ROOF_DELTA - delta`` is
+    the screen move that walks the marker onto the building; a wrong
+    landing leaves no matching roof and defers through the bounded path.
+    """
+    if frame is None or screen.kind != 'map_target':
+        return None
+    from ..os_layer.screen import castle_roofs
+    cursor = screen.marker or screen.cursor
+    if cursor is None:
+        return None
+    best = None
+    for roof in castle_roofs(frame):
+        if roof.get('clipped') or roof.get('kind') != 'own':
+            continue
+        delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
+        if all(abs(delta[a] - HOUSE_ROOF_DELTA[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
+            if best is not None:
+                return None
+            best = delta
+    return best
+
+
 def _defer_unsafe_house_route(mem):
     problem = _house_route_problem(mem)
     if problem is None:
@@ -410,6 +528,7 @@ def _defer_unsafe_house_route(mem):
                              'target': HOUSE_TARGET.get(mem.get('chapter')),
                              'clearance_view_pixels': HOUSE_ROUTE_CLEARANCE},
             reason=reason)
+    _goal_note(mem, state, 'deferred', state.get('general'))
     _exit(mem, reason, diagnostic_code='route_unverified')
     return True
 
@@ -431,6 +550,8 @@ def _next_general(mem):
                 observed_metric={'gold': mem.get('gold'), 'pending': list(pending),
                                  'need': min(cost for _, cost in GIFTS) + WAGE_SPEND_HOLD},
                 reason='所持金では破損卵の修理費（家の贈り物）を賄えないため派遣せず保留（次スキャンで再判定）')
+        for pending_name in pending:
+            _goal_note(mem, state, 'deferred', pending_name)
         _phase(state, 'close')
         return
     name = pending.pop(0)
@@ -453,6 +574,7 @@ def _next_general(mem):
                 observed_metric={'status': marching.get('status'),
                                  'target': marching.get('target')},
                 reason='行軍中の将軍はいどう先を到着まで確定できないため派遣を保留')
+        _goal_note(mem, state, 'deferred', name)
         _next_general(mem)
         return
     if info.get('location') == 'castle':
@@ -475,6 +597,7 @@ def _month_count(screen, mem, state, frame):
     unproven end leaves ``complete`` false and the existing retry cap applies.
     """
     from ..os_layer.commands import pad
+    from ..os_layer.readers import _canonical_general
     names = roster(screen)
     if names is None or screen.selected not in names:
         return []
@@ -483,6 +606,10 @@ def _month_count(screen, mem, state, frame):
         state['roster_first_general'] = selected if selected == 'どうし' and screen.hand[1] == 33 else None
         state['singleton_first_page'] = _singleton_page(screen, frame)
     for name in names:
+        # g1097 2026-11-02: one row read ポセイトン, and that spelling alone left
+        # every monthly scan incomplete. page() still refuses the misread page,
+        # so the general only counts once a clean page has shown the real name.
+        name = _canonical_general(name)
         if name not in state.get('seen', []):
             state.setdefault('seen', []).append(name)
     if _roster_scroll_end(screen, frame):
@@ -502,6 +629,24 @@ def _month_count(screen, mem, state, frame):
     state['month_moved'] = True
     _phase(state, 'roster_advance')
     return [pad('down')]
+
+
+def _nearest_visible_target(targets, names, selected):
+    """Issue #3194 (12): read a target already on screen before walking away.
+
+    ``targets`` keeps registration order, which carries no urgency. The head
+    stays first when it is visible (or nothing else is), so the oldest target
+    is never starved: every read removes one target and the list is finite.
+    Otherwise the visible target with the fewest cursor steps goes first.
+    """
+    head = targets[0]
+    if head in names:
+        return head
+    visible = [t for t in targets if t in names]
+    if not visible or selected not in names:
+        return head
+    here = names.index(selected)
+    return min(visible, key=lambda t: abs(names.index(t) - here))
 
 
 def _month_count_advance(screen, mem, state, frame):
@@ -533,7 +678,20 @@ def _month_count_advance(screen, mem, state, frame):
     return [pad('down')]
 
 
-def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
+def _camp_recall_first(mem, frame):
+    """A camp ready on this map frame goes before a new survey or repair session.
+
+    This flow runs ahead of ``map_step``. g1097 2026-11-01: 23 surveys of about
+    three minutes each took the idle map frames, so a tent in plain view at
+    19:16, 19:19 and 19:23 never reached the recall that the owner rule of
+    2026-09-28 asks for. The recall keeps its own bounded cooldowns, so a camp
+    it cannot serve stops being "ready" and this survey runs on the next frame.
+    """
+    from .camp_recheck import recall_ready
+    return recall_ready(mem, frame)
+
+
+def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick):
     from ..os_layer.commands import pad
     from ..os_layer.readers import STATUS_NAMES
     from ..os_layer.world import _owned
@@ -552,8 +710,17 @@ def _resume_completed_survey(screen, mem, scope, field_count, field_tick):
                if _recruit_shortage(mem) and not mem.get('recruit_payroll_pending') else [])
     if not dirty and not pending and not missing:
         return True, None  # returning to the field is not a status change
-    if field_count >= 2 or int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL:
+    goal_due = goals.repair_dispatch_due(mem)
+    recent = int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL
+    if field_count >= (2 + GOAL_FIELD_EXTRA if goal_due else 2) or (recent and not goal_due):
         return True, None
+    if _camp_recall_first(mem, frame):
+        return True, None
+    if goal_due and (field_count >= 2 or recent):
+        _record(mem, 'goal_dispatch',
+                observed_metric={'goals': [goals._summary(g) for g in goals.pending(mem, 'repair')],
+                                 'field_count': field_count, 'since_field_tick': int(mem.get('tick') or 0) - int(field_tick)},
+                reason='延期されていた卵修理を、出撃・月一の無い空き時間に台帳から再開する')
     state = mem['house'] = {'phase': 'open_roster' if dirty else 'income_next' if missing else 'close',
         'chapter': mem['chapter'], 'roster_month': scope[1], 'month_scan': False,
         'age': 0, 'total': 0, 'seen': [], 'pending': pending, 'from_survey': True,
@@ -603,7 +770,76 @@ def _retry_interrupted_repair(mem):
     return True
 
 
+def _level_given_up(mem):
+    """A page that keeps failing must not cost a visit every month."""
+    missed = mem.get('hanjuku_level_unread') or {}
+    return (missed.get('chapter') == mem.get('chapter')
+            and int(missed.get('count') or 0) >= LEVEL_UNREAD_LIMIT)
+
+
+def _level_due(mem):
+    """This month's country-status level page has not been read yet."""
+    seen = mem.get('hanjuku_level_seen') or {}
+    return (seen.get('scope') != [mem.get('chapter'), mem.get('month')]
+            and not _level_given_up(mem))
+
+
+def _status_row_value(screen, label):
+    """Digits printed after ``label`` on the same status-page row."""
+    for line in screen.lines:
+        joined = line.known.replace(' ', '')
+        idx = joined.find(label)
+        if idx >= 0:
+            m = re.search(r'(\d+)', joined[idx + len(label):])
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _country_status_level(screen):
+    """Second country-status page: たまご count, 半熟レベル, 半熟値, next level.
+
+    The page is identified by both level labels; a lone ``はんじゅくち`` also
+    appears in the あ・た・し♥ event wording and must not pass here.
+    """
+    text = screen.text.replace(' ', '')
+    if 'はんじゅくレベル' not in text or 'つぎのレベル' not in text:
+        return None
+    return {'level': _status_row_value(screen, 'はんじゅくレベル'),
+            'value': _status_row_value(screen, 'はんじゅくち'),
+            'needed': _status_row_value(screen, 'つぎのレベル')}
+
+
+# Issue #3194 (18): phase hops that need no new screen. The hop only re-labels
+# state after a roster frame was already read, so the next handler may run on
+# that same frame instead of waiting a whole observation period (1.5 s).
+INPUT_FREE_HOPS = {('roster_next', 'roster'), ('roster_advance', 'roster')}
+MAX_INPUT_FREE_HOPS = 2
+
+
 def step(screen, mem, frame):
+    """Run one observation; follow input-free phase hops on the same frame.
+
+    A hop is followed only when the handler returned ``[]`` (no pad issued) and
+    moved along ``INPUT_FREE_HOPS``. Any pad, ``None`` (release to another
+    owner) or ended flow stops the chain, so no input follows another input
+    inside one observation and the hop count is bounded.
+    """
+    for _ in range(MAX_INPUT_FREE_HOPS + 1):
+        before = (mem.get('house') or {}).get('phase')
+        house_state = mem.get('house')
+        actions = _step_once(screen, mem, frame)
+        after_state = mem.get('house')
+        if (actions != [] or after_state is None or after_state is not house_state
+                or (before, after_state.get('phase')) not in INPUT_FREE_HOPS):
+            return actions
+        _tally(mem, 'input_free_hop')
+        _record(mem, 'input_free_hop', observed_metric={'from': before, 'to': after_state['phase']},
+                reason='入力を伴わない内部遷移を同じ観測内で進め、観測周期の消費を省く')
+    return actions
+
+
+def _step_once(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
     A repair owns only its bounded menu transaction. Battles and monthly
@@ -652,9 +888,15 @@ def step(screen, mem, frame):
                 # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
                 # The attempt is over either way; only the receipt is unknown.
                 return None
+            level_due = _level_due(mem)
+            # Issue #3011 (owner): the hanjuku level lives on the country
+            # status page. Once the month's shopping is done and the level is
+            # still unread, the monthly visit runs for that page alone.
+            level_trigger = (level_due and shop.get('key') == mem.get('month')
+                             and bool(shop.get('level_scan_wait')))
             if (_recruit_sufficient(mem) or receipts.surveyed(mem)
                     or (receipts.fresh(mem)
-                        and receipts.fresh(mem).get('complete'))):
+                        and receipts.fresh(mem).get('complete'))) and not level_trigger:
                 return None
             attempts = mem.get('recruit_month_scan_attempts') or {}
             scope = [mem.get('chapter'), mem.get('month')]
@@ -675,23 +917,56 @@ def step(screen, mem, frame):
         field_month = (scope[1] if field_done else
                        None if legacy_monthly else mem.get('house_scan_month'))
         if not monthly:
-            reused, actions = _resume_completed_survey(screen, mem, scope, field_count, field_tick)
+            carry = receipts.carry_forward(mem)
+            if carry is not None:
+                for _ in carry['carried']:
+                    _tally(mem, 'carried_rows')
+                for _ in carry['reopen']:
+                    _tally(mem, 'reopened_rows')
+                _record(mem, 'survey_carried', observed_metric=carry,
+                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
+            reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
-        if ((screen.kind != 'map' and not monthly) or mem.get('chapter') not in HOUSE_VIEW
+        # Monthly roster/status reads return to the monthly menu and never
+        # dispatch a repair trip. Only the field route needs a measured house.
+        goal_due = goals.repair_dispatch_due(mem)
+        field_cap = 2 + (GOAL_FIELD_EXTRA if goal_due else 0)
+        recent = tick - int(field_tick) < SCAN_INTERVAL
+        bypassed = (goal_due and not monthly
+                    and (field_count >= 2 or recent or field_month == mem.get('month')))
+        if ((screen.kind != 'map' and not monthly)
+                # g1067 08:40: a chapterless checkpoint restore reached the
+                # monthly menu; the scan's chapter scope raised KeyError on
+                # every observation and the bot sent no input.
+                or mem.get('chapter') is None
+                or (not monthly and mem.get('chapter') not in HOUSE_VIEW)
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
-                or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)
-                or (not monthly and field_count >= 2)
-                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck'))
+                or (not monthly and not goal_due and recent)
+                or (not monthly and field_count >= field_cap)
+                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck')
+                    and not goal_due)
                 or (not monthly and receipts.surveyed(mem) and not _survey_work(mem)
-                    and not mem.get('recruit_roster_recheck'))):
+                    and not mem.get('recruit_roster_recheck'))
+                or (not monthly and _camp_recall_first(mem, frame))):
             return None
+        if bypassed:
+            _record(mem, 'goal_dispatch',
+                    observed_metric={'goals': [goals._summary(g) for g in goals.pending(mem, 'repair')],
+                                     'field_count': field_count, 'field_cap': field_cap,
+                                     'since_field_tick': tick - int(field_tick)},
+                    reason='延期されていた卵修理を、出撃・月一の無い空き時間に台帳から再開する')
         state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
+        if monthly:
+            # Level-only visits read the status page; ordinary roster scans
+            # keep their measured order and never detour.
+            state['level_only'] = bool(level_trigger)
         if not monthly:
             mem['recruit_field_scan_attempts']['count'] = field_count + 1
-        receipts.begin(mem, state)
+        if not (monthly and level_trigger):
+            receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
         return ([pad('a')] if move == 'here' else [move]) if monthly else [pad('x')]
     if state.get('chapter') != mem.get('chapter'):
@@ -731,6 +1006,12 @@ def step(screen, mem, frame):
                     _exit(mem, '月初の前面を読み取れないため募集確認を有限に終了',
                           limit='step' if state['age'] >= STEP_LIMIT else 'session')
             return None
+        if phase in ('level_status', 'leave_status'):
+            # The country-status visit returned to the monthly row; reopen
+            # the information menu and resume at the roster row.
+            state['phase'] = phase = 'month_open'
+            _record(mem, 'status_page_returned',
+                    reason='国のステータス画面から月初メニューへ戻ったため情報メニューへの移動を再開')
         if phase == 'open_roster' and isinstance(menu_to(screen, 'メインメニュー'), dict):
             # v134 could label its recovery A as a successful menu selection.
             # Resume from the observed monthly row, preserving the scan budget.
@@ -823,6 +1104,17 @@ def step(screen, mem, frame):
                     reason='既知のマップへ戻ったままのため、将軍一覧を開くXを有限回再試行')
             return [pad('x')]
         if screen.kind == 'main_menu' and screen.hand:
+            if state.get('level_only'):
+                if not state.get('level_checked'):
+                    # Issue #3011: the country-status page carries this
+                    # month's hanjuku level; read it before leaving.
+                    actions = _choose(screen, 'ステータス')
+                    if actions == [pad('a')]:
+                        state['level_checked'] = True
+                        _phase(state, 'level_status')
+                    return actions
+                _phase(state, 'leave_roster')
+                return [pad('b')]
             # Status reading is free. Repair dispatch still checks funds in
             # _next_general; never keep a stale egg state just because we are poor.
             actions = _choose(screen, 'しょうぐん')
@@ -831,6 +1123,48 @@ def step(screen, mem, frame):
                 _phase(state, 'roster')
             return actions
         return []
+    if phase == 'level_status':
+        read = _country_status_level(screen)
+        if isinstance(read, dict) and type(read['level']) is int:
+            scope = [mem.get('chapter'), mem.get('month')]
+            mem['hanjuku_level'] = read['level']
+            mem['hanjuku_value'] = read.get('value')
+            mem['hanjuku_level_seen'] = {'scope': scope, 'tick': int(mem.get('tick') or 0)}
+            mem.pop('hanjuku_level_unread', None)
+            _record(mem, 'hanjuku_level_observed', screen=screen.kind,
+                    observed_metric={'level': read['level'], 'value': read.get('value'),
+                                     'needed': read.get('needed')},
+                    reason='国のステータス2頁目から当月の半熟レベルと半熟値を読んだ（#3011の閾値判定に使用）')
+            _phase(state, 'leave_status')
+            return [pad('b')]
+        if isinstance(read, dict) or not re.search(r'しゅうにゅう|そうちんぎん', screen.text):
+            # Page 2 without a readable level row, or an unrecognised frame:
+            # wait boundedly instead of pressing past the evidence.
+            state['level_waits'] = int(state.get('level_waits') or 0) + 1
+            if state['level_waits'] >= LEVEL_STATUS_WAIT:
+                _record(mem, 'hanjuku_level_unread', screen=screen.kind,
+                        observed_metric={'text': screen.text[-60:]},
+                        reason='半熟レベルの頁を読み取れないため今回の確認を終える')
+                missed = mem.get('hanjuku_level_unread') or {}
+                count = (int(missed.get('count') or 0) + 1
+                         if missed.get('chapter') == mem.get('chapter') else 1)
+                mem['hanjuku_level_unread'] = {'chapter': mem.get('chapter'), 'count': count}
+                _phase(state, 'leave_status')
+                return [pad('b')]
+            # g1097 2026-11-02 (7 of 7 months): the menu opens on its greeting,
+            # and an A there only brings up the row's help line. The page opens
+            # on the next A, which this wait never sent.
+            if ('じょうたいをみる' in screen.text.replace(' ', '')
+                    and state['level_waits'] % LEVEL_REPRESS_EVERY == 0
+                    and _choose(screen, 'ステータス') == [pad('a')]):
+                return [pad('a')]
+            return []
+        return [pad('a')]   # country status page 1: advance to the level page
+    if phase == 'leave_status':
+        if screen.kind == 'main_menu' and screen.hand:
+            _phase(state, 'open_roster')
+            return []
+        return [pad('b')]
     if phase == 'roster':
         if state.get('month_scan'):
             return _month_count(screen, mem, state, frame)
@@ -842,11 +1176,35 @@ def step(screen, mem, frame):
             return []
         if state.get('from_survey'):
             targets = state.get('status_targets') or []
+            # Issue #3194 (05/16): another screen (battle panel, camp status)
+            # may have read a target since this walk began. recheck_targets()
+            # is the live "still needs a read" set, so a satisfied target is
+            # dropped instead of opening a status screen that adds nothing.
+            satisfied = [t for t in targets if t not in set(receipts.recheck_targets(mem))]
+            if satisfied:
+                targets[:] = [t for t in targets if t not in satisfied]
+                _tally(mem, 'target_satisfied_elsewhere')
+                _record(mem, 'target_satisfied_elsewhere', observed_metric={'generals': satisfied},
+                        reason='別の画面で本人の状態を読み終えたため、この部分再確認から外して詳細を開き直さない')
             if not targets:
                 _phase(state, 'leave_roster')
                 return [pad('b')]
-            target = targets[0]
+            if not state.get('walk_names'):
+                state['walk_from_top'] = selected == 'どうし' and screen.hand[1] == 33
+            walked = state.setdefault('walk_names', [])
+            walked.extend(n for n in names if n not in walked)
+            target = _nearest_visible_target(targets, names, selected)
             if target not in names:
+                if target in walked:
+                    return [pad('up')]  # passed on the way to a lower target
+                if (state.get('walk_from_top')
+                        and (len(names) < receipts.VISIBLE_NAME_ROWS
+                             or _roster_scroll_end(screen, frame))
+                        and receipts.forget_defeated(mem, target)):
+                    targets.remove(target)
+                    _record(mem, 'roster_defeated_gone', observed_metric={'general': target},
+                            reason='一覧を端まで読んでも敗北した将軍が居ないため、この本人だけ名簿から外す')
+                    return []
                 return [pad('down')]  # the existing step budget bounds this search
             actions = _choose(screen, target)
             if actions == [pad('a')]:
@@ -869,6 +1227,7 @@ def step(screen, mem, frame):
         if not info or info['general'] != state.get('selected'):
             return []
         name = info['general']
+        _tally(mem, 'status_open_partial' if state.get('from_survey') else 'status_open_full', name)
         receipts.wage(mem, info)
         state['seen'].append(name)
         if info['broken'] and name not in state['pending']:
@@ -1007,30 +1366,39 @@ def _income_step(screen, mem, frame):
 
 
 def _sole_defender_repair_due(mem, name, source):
-    """Repair immediately unless this is the hero or our last castle.
+    """Repair immediately unless this is the hero or last-castle sole defender.
 
-    Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
-    only defender. A previous-month deferral is not permission to leave
-    the hero or the last castle unprotected, including after a hotload.
+    Issue #2834: owner note (2026-10-11) states broken Venus must be
+    prioritized even as sole defender/last castle. See
+    https://github.com/azumag/docich/issues/2834 for context.
+    A previous-month deferral is not permission to leave the hero
+    unprotected, including after a hotload.
     """
-    from ..os_layer.world import NAME, _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     owned = _owned(mem)
-    return name != NAME and source in owned and len(owned) > 1
+    if name == NAME:
+        return False
+    if name == VENUS_NAME:
+        return source in owned
+    return source in owned and len(owned) > 1
 
 
 def _repair_step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
     from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
-    from ..os_layer.world import _owned
+    from ..os_layer.world import NAME, VENUS_NAME, _owned
     from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
     state = mem['house']
     phase, name = state['phase'], state['general']
     if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
-            and state.get('sole_defender')
-            and not _sole_defender_repair_due(mem, name, state.get('source'))):
-        return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
+            and state.get('sole_defender')):
+        from ..os_layer.world import NAME as _HNAME
+        if name == _HNAME:
+            return _exit(mem, '主人公を修理へ派遣しない')
+        if not _sole_defender_repair_due(mem, name, state.get('source')):
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
@@ -1076,11 +1444,17 @@ def _repair_step(screen, mem, frame):
                 _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
+                from ..os_layer.world import VENUS_NAME as _VENUS_NAME
                 if len(names) < 2:
                     state['sole_defender'] = True
-                    _record(mem, 'repair_sole_defender', castle=source,
-                            observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
-                            reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                    if name == _VENUS_NAME:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+                    else:
+                        _record(mem, 'repair_sole_defender', castle=source,
+                                observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned(mem))},
+                                reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
                 else:
                     state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
@@ -1109,6 +1483,15 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
         if len(present) < 2:
             state['sole_defender'] = True
+            from ..os_layer.world import _owned as _owned_fn, VENUS_NAME as _VENUS_NAME
+            if name == _VENUS_NAME:
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='ヴィーナスの卵破損を最優先し、最終城でも修理に向かわせる')
+            else:
+                _record(mem, 'repair_sole_defender', castle=state['source'],
+                        observed_metric={'month': mem.get('month'), 'owned_castles': len(_owned_fn(mem))},
+                        reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
         else:
             state.pop('sole_defender', None)
         actions = _choose(screen, name)
@@ -1118,6 +1501,13 @@ def _repair_step(screen, mem, frame):
     if phase == 'castle_kit':
         if screen.kind != 'card_select':
             return []
+        from ..os_layer.world import NAME as _NAME
+        if name == _NAME and state.get('sole_defender'):
+            return _exit(mem, '主人公を修理へ派遣しない')
+        if state.get('sole_defender') and not _sole_defender_repair_due(mem, name, state.get('source')):
+            if name == _NAME:
+                return _exit(mem, '主人公を修理へ派遣しない')
+            return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
         info = general_status(screen)
         if info is None:
             return []
@@ -1163,16 +1553,30 @@ def _repair_step(screen, mem, frame):
             # integrated cursor / house_view phase cannot authorize that A.
             position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
             offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
-            if position is None or offset is None or not screen.marker:
+            if offset is None or not screen.marker:
+                return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                             diagnostic_code='position_unread')
+            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
+            # A roof matching the house's own-flag delta is the strongest
+            # evidence: walk the marker onto the building itself rather
+            # than the registered cell, which can sit a tile off on
+            # source-derived chapters.
+            roof_delta = _house_roof_delta(screen, mem, frame)
+            if roof_delta is not None:
+                err = [HOUSE_ROOF_DELTA[a] - roof_delta[a] for a in (0, 1)]
+                position = [roof_delta[a] + target[a] - HOUSE_ROOF_DELTA[a] for a in (0, 1)]
+                delta, accept, basis = err, 4, 'house_roof_delta'
+            elif position is None:
                 reads = state.get('alignment_unread', 0)
                 if type(reads) is not int or not 0 <= reads < 2:
                     return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
                                  diagnostic_code='position_unread')
                 state['alignment_unread'] = reads + 1
                 return []
-            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
-            delta = [target[a] - position[a] for a in (0, 1)]
-            if any(abs(d) > 2 for d in delta):
+            else:
+                delta = [target[a] - position[a] for a in (0, 1)]
+                accept, basis = 2, 'current_two_roof_constellation'
+            if any(abs(d) > accept for d in delta):
                 moves = state.get('alignment_moves', 0)
                 if type(moves) is not int or not 0 <= moves < 8:
                     return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
@@ -1186,7 +1590,7 @@ def _repair_step(screen, mem, frame):
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
                     observed_metric={'view': HOUSE_TARGET[mem['chapter']], 'field_position': position,
-                                     'field_target': target, 'basis': 'current_two_roof_constellation'},
+                                     'field_target': target, 'basis': basis},
                     reason='卵が壊れた本人をあたしの家へ派遣する入力を確定')
             return [pad('a')]
         return []
@@ -1459,6 +1863,7 @@ def _return_step(screen, mem, frame):
             state['return_goal'] = nearby[0]
             if state['phase'] == 'return_view':
                 _phase(state, 'return_confirm')
+                _fresh_align_budget(mem, 'HOUSE:return')
             else:
                 _return_requested(mem)
             return [pad('a')]
