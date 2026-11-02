@@ -136,6 +136,27 @@ def _monster_chikyu_choice(owner, ally, enemy, skills):
     return None
 
 
+def _monster_lampkin_choice(owner, ally, enemy, skills):
+    """ランプキン never wastes a turn on かぼちゃ against a boss.
+
+    Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので、つねに
+    「へんなおどり」をえらぶ. かぼちゃ is skill2 of the reference pair, so a
+    chapter boss or named boss-general opponent always takes skill1. Only an
+    owned complete two-skill menu enables the override; a general, ordinary
+    monster or unread panel keeps the existing policy.
+    """
+    if not (owner == 'ally' and ally is not None and enemy is not None
+            and ally.name == 'ランプキン'
+            and len(skills) == 2
+            and [_fold_skill(s) for s in skills]
+            == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ランプキン']]):
+        return None
+    name = _monster_display_name(enemy.name)
+    if name in chart.BOSSES.values() or name in reference.BOSS_GENERALS:
+        return 'skill1'
+    return None
+
+
 def _monster_display_name(name):
     return _MONSTER_DISPLAY_ALIASES.get(name, name)
 
