@@ -69,6 +69,26 @@ def test_wall_hp_boundary_includes_one_hit_and_observation_latency(chapter):
     assert record['observed_metric']['reason'] == 'wall_hp_window'
 
 
+def test_one_edge_hit_lethal_enemy_needs_no_okunote():
+    # Owner 2026-11-02: 一回ぶつかれば勝てる敵に自傷くじは要らない。
+    # An edge hit costs 4 HP; at or below that the next push kills outright
+    # and the living-HP summon trigger can never fire.
+    mem = memory(enemy_hp=p.EGG_WALL_DAMAGE)
+    window = p._defender_egg_window(mem, mem['battle'])
+    assert window['one_hit_lethal'] and not window['due']
+    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    assert not any(r['decision'] in ('battle_okunote_egg_open', 'battle_okunote_egg_preempt',
+                                     'battle_okunote_select')
+                   for r in mem['_records'])
+    # Even a sticky menu-opening reason yields to a now-lethal melee.
+    mem['battle']['okunote_egg_preempt'] = {'reason': 'wall_hp_window'}
+    assert not p._defender_egg_window(mem, mem['battle'])['due']
+    # One HP above the bound the wall window still fires as before.
+    mem = memory(enemy_hp=p.EGG_WALL_DAMAGE + 1)
+    window = p._defender_egg_window(mem, mem['battle'])
+    assert not window['one_hit_lethal'] and window['due']
+
+
 @pytest.mark.parametrize('enemy', ['ミモザ', 'リーキ', 'キッシュ', 'クミン'])
 def test_castle_defense_overrides_all_four_roster_thoughts(enemy):
     mem = memory(enemy=enemy, enemy_hp=12)
