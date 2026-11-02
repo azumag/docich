@@ -379,3 +379,43 @@ def test_an_uncommitted_menu_still_uses_the_budgeted_b_close():
     mem = memory(side='attack', castle='けっかい', ally_hp=90)
     mem['battle']['okunote_flow'] = {'ticks': 20}
     assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+
+
+# ---- g1097 23:06: 選択済み親メニューが残ったままの無記録Bループ ----
+# guard.selected で親フレームを「再抽選でない」としてBを返していたが、
+# 実画面が親メニュー (きりふだ/たいきゃく/おくのて) のまま残るとBは無効。
+# おくのて行が見えるなら有界でAを再送する。
+def test_a_stuck_selected_parent_menu_resends_a_bounded():
+    mem = memory(egg_empty=True)
+    s = menu()
+    assert p.battle_menu_step(s, mem) == [p.pad('a')]
+    # 選択が届かず親メニューが残る = 同じフレームが繰り返し戻る
+    for _ in range(12):
+        p.battle_menu_step(s, mem)
+    # menu_pending 4回 + guard 4回の有界再送で尽き、以後は戻る
+    assert mem['battle']['okunote_attempt']['resends'] == 4
+    assert mem['battle']['okunote_summon_preempt'].get('parent_retries') == 4
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])
+
+
+# ---- g1097 23:40: ticks上限超過で確定済み救済がBループ化 ----
+# ticks > OKUNOTE_COMMITTED_TICKS_LIMIT では「予算Bを返す」条件が先に
+# 成立し、おくのて行が読めていても永久に選択へ進まなかった (実測: 同じ
+# battle_menu にBを2600観測以上)。読める行は tick 数に関わらず選ぶ。
+def test_a_committed_rescue_past_the_tick_limit_still_selects_okunote():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+
+
+def test_an_unreadable_committed_menu_past_the_limit_marks_unavailable():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(labels=('こうげき',), hidden=True), mem) == [p.pad('b')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['exhausted'] and guard['stage'] == 'unavailable'
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])

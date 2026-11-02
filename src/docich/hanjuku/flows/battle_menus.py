@@ -943,6 +943,28 @@ def okunote_step(screen, mem):
             and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
         guard = cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt') or {}
         if guard.get('selected'):
+            # g1097 23:06: 親メニュー (きりふだ/たいきゃく/おくのて) が実は
+            # 残ったまま — 前の A は届かず B は無効。この無記録 B が ~200 回
+            # 続いた。おくのて行が見えるなら「もう一度A」は再抽選ではなく
+            # 未受付の再送なので、有界でカーソルを合わせて送る。
+            if 'おくのて' in labels:
+                retries = int(guard.get('parent_retries') or 0)
+                if retries < 4:
+                    move = _battle_menu_to(screen, 'おくのて')
+                    if move == 'here':
+                        guard['parent_retries'] = retries + 1
+                        _record(mem, 'battle_okunote_parent_resend', **_battle_labels(cur),
+                                observed_metric={'retry': retries + 1, 'cursor_y': screen.menu_cursor},
+                                reason='おくのて選択のAが届かず親メニューが残っているため、カーソル確認済みのAを有界で再送する')
+                        return [pad('a')]
+                    guard['parent_retries'] = retries + 1
+                    if move is not None:
+                        return [move]
+                    return [pad('down')]
+                _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
+                        observed_metric={'parent_retries': retries},
+                        reason='確定済み救済のおくのて行を有界回数再送してもメニューが残るため、以後は戻る')
+                return None
             return [pad('b')]  # a repeated parent frame is not another lottery
         if guard and cur['okunote_only_observed']:
             # A real menu can arrive after the bounded B opening expired.
@@ -1044,12 +1066,20 @@ def okunote_step(screen, mem):
         committed = (cur.get('okunote_last_resort_recorded')
                      or (cur.get('okunote_summon_preempt') or {}).get('recorded')
                      or (cur.get('okunote_egg_preempt') or {}).get('recorded'))
-        if not (committed and cur.get('okunote_only_observed')
-                and flow['ticks'] <= OKUNOTE_COMMITTED_TICKS_LIMIT):
+        committed_active = committed and cur.get('okunote_only_observed')
+        # g1097 23:40: with ``ticks <= LIMIT`` inside the first condition the
+        # unread limit below was unreachable — past it the budgeted B always
+        # returned first, looping a button this box ignores. A おくのて row
+        # that is readable *and* has a readable cursor must still be selected
+        # below at any tick count; the limit still bounds navigation toward a
+        # row whose label or cursor cannot be confirmed.
+        if not committed_active:
             if cur.get('okunote_egg_preempt'):
                 cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
             return [pad('b')]
-        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT:
+        okunote_row_ready = ('おくのて' in {w for _, _, w in _options(screen)}
+                             and screen.menu_cursor is not None)
+        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT and not okunote_row_ready:
             for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
                 if cur.get(key):
                     cur[key].update(exhausted=True, stage='unavailable', close_pending=True)
