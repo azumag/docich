@@ -163,6 +163,12 @@ def _logical_launch_budget(mem, step, probe):
     return key, fingerprint, row
 
 
+def _launch_state(mem):
+    """Use #3274's flow region when present, while remaining hotload-compatible."""
+    accessor = getattr(_map, '_flow', None)
+    return accessor(mem) if callable(accessor) else mem
+
+
 def _is_bounded_location_recheck(decision, observed) -> bool:
     """Do not turn the intentional finite source re-read into a permanent hold."""
     return (decision == 'sortie_held_source_defender'
@@ -199,12 +205,14 @@ def install() -> None:
 
     def rollback(mem, step, probe, markers):
         key, fingerprint, row = _logical_launch_budget(mem, step, probe)
+        launch_state = _launch_state(mem)
         if isinstance(row, dict):
-            misses = mem.setdefault('launch_miss', {})
+            misses = launch_state.setdefault('launch_miss', {})
             misses[step] = max(int(misses.get(step) or 0), int(row.get('count') or 0))
         result = original_rollback(mem, step, probe, markers)
         if key is not None:
-            count = int((mem.get('launch_miss') or {}).get(step) or 0)
+            launch_state = _launch_state(mem)
+            count = int((launch_state.get('launch_miss') or {}).get(step) or 0)
             mem.setdefault('equivalent_launch_miss', {})[key] = {
                 'fingerprint': fingerprint,
                 'count': count,
@@ -214,14 +222,15 @@ def install() -> None:
 
     def probe(mem, markers):
         before = {}
-        for step, launch in list((mem.get('launch_probe') or {}).items()):
+        launch_state = _launch_state(mem)
+        for step, launch in list((launch_state.get('launch_probe') or {}).items()):
             if not isinstance(launch, dict):
                 continue
             key, fingerprint, _ = _logical_launch_budget(mem, step, launch)
             if key is not None:
                 before[step] = (key, fingerprint)
         result = original_probe(mem, markers)
-        remaining = mem.get('launch_probe') or {}
+        remaining = _launch_state(mem).get('launch_probe') or {}
         for step, (key, fingerprint) in before.items():
             if step in remaining:
                 continue
