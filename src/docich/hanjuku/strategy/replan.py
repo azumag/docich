@@ -442,7 +442,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     out = {}
     known_retakes = [o for o in sorties['retake'] if not o.get('source_probe')]
     unread_retakes = [o for o in sorties['retake'] if o.get('source_probe')]
-    for order in (*known_retakes, *moves, *unread_retakes, *sorties['attack']):
+    # Owner 2026-11-02 (余剰兵力をボスへ連続投入): boss waves ride right after
+    # the front candidate so the boss is hit in parallel rather than waiting
+    # behind the whole retake/move queue — listing attacks last starved it.
+    waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
+    attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
+    lead = [*known_retakes, *moves, *unread_retakes]
+    for order in (*lead[:1], *waves, *lead[1:], *attacks):
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
