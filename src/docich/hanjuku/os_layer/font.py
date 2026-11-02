@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .glyphs import GLYPHS, MARKS
-from .pixels import Frame
+from .pixels import Frame, band_bits
 
 _DAKUTEN = str.maketrans(
     'かきくけこさしすせそたちつてとはひふへほカキクケコサシスセソタチツテトハヒフヘホウ',
@@ -26,6 +26,15 @@ def light(r, g, b):
 
 def dark(r, g, b):
     return max(r, g, b) < 90
+
+
+def white(r, g, b):
+    return min(r, g, b) > 200
+
+
+# Predicates that are one (low, high) band per channel, so row_masks can run
+# them through band_bits. Any other predicate takes the generic per-pixel path.
+_CHANNEL_BANDS = {light: (181, 255), dark: (0, 89), white: (201, 255)}
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,9 @@ def row_masks(frame: Frame, predicate, *, rect=None) -> list[int]:
     context it needs; read_lines includes the preceding eight pixel rows.
     """
     width, rgb = frame.width, frame.rgb
+    band = _CHANNEL_BANDS.get(predicate)
+    if band is not None:
+        return _band_row_masks(frame, band, rect)
     if rect is None or rect == (0, 0, width, frame.height):
         # Preserve the original full-frame hot path for the shared white mask.
         masks = []
@@ -103,6 +115,21 @@ def row_masks(frame: Frame, predicate, *, rect=None) -> list[int]:
             value = (value << 1) | bool(predicate(rgb[i], rgb[i + 1], rgb[i + 2]))
         masks[y] = value << max(0, width - x1)
     return masks
+
+
+def _band_row_masks(frame: Frame, band, rect) -> list[int]:
+    """``row_masks`` for one band shared by all channels, without a Python pixel loop."""
+    width, height = frame.width, frame.height
+    bits = band_bits(frame, band, band, band)
+    x0, y0, x1, y1 = rect or (0, 0, width, height)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(width, x1), min(height, y1)
+    masks = [0] * height
+    if x0 < x1:
+        for y in range(y0, y1):
+            masks[y] = int(bits[y * width + x0:y * width + x1], 2) << (width - x1)
+    return masks
+
 
 def _tile(masks: list[int], width: int, x: int, y: int) -> int:
     shift = width - 8 - x
