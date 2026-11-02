@@ -12,6 +12,7 @@ from unittest.mock import patch
 from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_execution_binding import confirm, memory
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 TRACE = {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime', 'generation': 741,
          'lease_id': 'test-lease', 'decision_id': 'test-runtime:741:20',
@@ -27,15 +28,15 @@ def request(mem):
          patch.object(p, '_target_roof_under_marker', return_value=True), \
          patch.object(p, '_want_y_jump', return_value=False):
         assert p.target_step(TARGET, mem, None) == [p.pad('a')]
-    req = mem.get('departure_request')
+    req = _flow(mem).get('departure_request')
     assert isinstance(req, dict) and req.get('step') == '1-A3'
     return req
 
 
 def sent(mem, a_inputs, trace=None):
     """Inject the sender-journal receipt the orchestrator would supply."""
-    trace = mem['departure_request'].get('request_trace') if trace is None else trace
-    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': a_inputs}
+    trace = _flow(mem)['departure_request'].get('request_trace') if trace is None else trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': a_inputs}
 
 
 def assert_reserved(mem):
@@ -58,7 +59,7 @@ def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
     assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
     assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
@@ -72,7 +73,7 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     assert mem['sorties']['1-A3']['target'] == 'スペンソニア'
     assert mem['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert mem['garrison']['カストーラ'] == ['ヴィーナス']
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
 
 
 def test_journal_proven_unsent_resends_within_bounds():
@@ -82,13 +83,13 @@ def test_journal_proven_unsent_resends_within_bounds():
         sent(mem, 0)
         assert p.target_step(TARGET, mem, None) == [p.pad('a')]
         assert_reserved(mem)
-        assert not mem['departure_request'].get('request_trace')
-        mem['departure_request']['request_trace'] = dict(TRACE)
+        assert not _flow(mem)['departure_request'].get('request_trace')
+        _flow(mem)['departure_request']['request_trace'] = dict(TRACE)
     sent(mem, 0)
     assert p.target_step(TARGET, mem, None) == []      # resend bound reached
     assert_reserved(mem)
-    assert 'departure_request' not in mem
-    assert mem['departure_miss']['1-A3'] == 1
+    assert 'departure_request' not in _flow(mem)
+    assert _flow(mem)['departure_miss']['1-A3'] == 1
 
 
 def test_unverifiable_receipt_never_blind_resends():
@@ -100,7 +101,7 @@ def test_unverifiable_receipt_never_blind_resends():
     # A receipt from a different decision never counts as this request's.
     sent(mem, 1, trace={**TRACE, 'decision_id': 'other'})
     assert p.target_step(TARGET, mem, None) == []
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
     assert_reserved(mem)
 
 
@@ -112,8 +113,8 @@ def test_sent_picker_staying_open_holds_then_releases():
         p.target_step(TARGET, mem, None)
     # A sent A whose picker never closed is released, not committed; the
     # request cycle is bounded and the order may re-confirm.
-    assert 'departure_request' not in mem
-    assert mem['departure_miss']['1-A3'] == 1
+    assert 'departure_request' not in _flow(mem)
+    assert _flow(mem)['departure_miss']['1-A3'] == 1
     assert_reserved(mem)
 
 
@@ -125,7 +126,7 @@ def test_released_request_cycles_are_bounded_then_fail():
         sent(mem, 0)
         for _ in range(p.DEPARTURE_RESEND_LIMIT):
             assert p.target_step(TARGET, mem, None) == [p.pad('a')]
-            mem['departure_request']['request_trace'] = dict(TRACE)
+            _flow(mem)['departure_request']['request_trace'] = dict(TRACE)
         sent(mem, 0)
         assert p.target_step(TARGET, mem, None) in ([], [p.pad('b')])
     assert mem['orders']['1-A3'] == 'failed'
@@ -252,7 +253,7 @@ def test_defense_interruption_releases_reservation_without_committing():
     p.observe_sortie_transition(battle, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
     assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
     assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
@@ -264,7 +265,7 @@ def test_finished_order_releases_stale_reservation():
     mem['orders'].pop('1-A3')
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
 
 
 def test_reservation_of_another_order_owns_nothing():
@@ -274,7 +275,7 @@ def test_reservation_of_another_order_owns_nothing():
     mem = memory(); confirm(mem); req = request(mem)
     req['step'] = '9-Z9'
     p.target_step(TARGET, mem, None)
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
     assert_reserved(mem)
 
 
@@ -284,10 +285,10 @@ def test_chapter_reset_drops_pending_reservation_and_misses():
     # reservations into the next one.
     from docich.hanjuku.strategy import campaign
     mem = memory(); confirm(mem); request(mem)
-    mem['departure_miss'] = {'1-A3': 1}
+    _flow(mem)['departure_miss'] = {'1-A3': 1}
     campaign._enter_chapter(mem, 2, reason='test')
-    assert 'departure_request' not in mem
-    assert 'departure_miss' not in mem
+    assert 'departure_request' not in _flow(mem)
+    assert 'departure_miss' not in _flow(mem)
     assert 'sortie_attempt' not in mem
     assert 'orders' not in mem
 
@@ -303,9 +304,9 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     mem['recall'] = {'stage': 'dest'}
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert_reserved(mem)
-    assert mem.get('departure_request', {}).get('step') == '1-A3'
+    assert _flow(mem).get('departure_request', {}).get('step') == '1-A3'
     mem.pop('recall', None)
     mem['orders'].pop('1-A3')
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)

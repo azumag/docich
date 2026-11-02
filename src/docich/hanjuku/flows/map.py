@@ -23,6 +23,7 @@ from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, upd
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
+from ..state.regions import flow, journal
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -81,7 +82,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             or not order or order['step'] != attempt['step']):
         return
     step = order['step']
-    request = mem.get('departure_request')
+    request = flow(mem).get('departure_request')
     if isinstance(request, dict) and request.get('step') == step:
         if (_departure_receipt_sent(mem, request) and isinstance(request.get('snapshot'), dict)
                 and isinstance(request.get('context'), dict)
@@ -90,7 +91,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 # An ambiguous fade never proves departure; keep observing.
                 request['departure_fades'] = int(request.get('departure_fades') or 0) + 1
                 return
-            mem.pop('departure_request', None)
+            flow(mem).pop('departure_request', None)
             # A journaled A plus the field map returning is the departure
             # observation: only now may the reservation become world state,
             # never at decision time (docich#3193 A).
@@ -98,7 +99,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             attempt['interrupted'] = True
             mem.pop('expect_menu', None)
             return
-        mem.pop('departure_request', None)
+        flow(mem).pop('departure_request', None)
         # The picker closed without a recorded send, or into a screen that
         # is not the field: fall through to the unconfirmed-departure
         # record. The observed garrison fact stays.
@@ -656,7 +657,7 @@ def target_step(screen: Screen, mem, frame):
         return []
     order = _order(mem)
     if order is None:
-        mem.pop('departure_request', None)   # a stale reservation owns nothing
+        flow(mem).pop('departure_request', None)   # a stale reservation owns nothing
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
@@ -678,10 +679,10 @@ def target_step(screen: Screen, mem, frame):
                 or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
-    request = mem.get('departure_request')
+    request = flow(mem).get('departure_request')
     if isinstance(request, dict):
         if request.get('step') != order['step']:
-            mem.pop('departure_request', None)   # a reservation of another order owns nothing
+            flow(mem).pop('departure_request', None)   # a reservation of another order owns nothing
         else:
             return _departure_request_step(screen, mem, order, request).actions
     goal = _measured_goal(mem, order, order['target'])
@@ -748,7 +749,7 @@ def target_step(screen: Screen, mem, frame):
         attempt['target_seen'] = True
         attempt.pop('interrupted', None)     # a new execution, not the old one
         mem['sortie_attempt'] = attempt
-        mem['departure_request'] = {
+        flow(mem)['departure_request'] = {
             'step': order['step'], 'target': order['target'],
             'general': context['general'], 'source': _source(order, mem),
             'context': context, 'snapshot': snapshot,
@@ -917,7 +918,7 @@ def _rollback_unverified_launch(mem, step, probe, markers):
 def _departure_receipt_sent(mem, request):
     """The sender journal proves this exact request left as a pad A."""
     trace = (request or {}).get('request_trace') or {}
-    receipt = mem.get('_departure_input') or {}
+    receipt = journal(mem).get('_departure_input') or {}
     return bool(trace and receipt.get('request_trace') == trace
                 and int(receipt.get('a_inputs') or 0) >= 1)
 
@@ -929,9 +930,9 @@ def _release_departure_request(mem, order, request, reason):
     stays pending and the selection re-confirms within a bounded count.
     """
     step = order['step']
-    mem.pop('departure_request', None)
+    flow(mem).pop('departure_request', None)
     mem.pop('sortie_attempt', None)
-    misses = mem.setdefault('departure_miss', {})
+    misses = flow(mem).setdefault('departure_miss', {})
     misses[step] = int(misses.get(step) or 0) + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
         used = misses.pop(step)
@@ -983,7 +984,7 @@ def _departure_request_step(screen, mem, order, request):
                           '送信済み・受理未確認のため再観測を待つ',
                           retry={'used': reads, 'limit': DEPARTURE_SENT_HOLD_LIMIT},
                           permitted_recovery='reobserve')
-    receipt = mem.get('_departure_input')
+    receipt = journal(mem).get('_departure_input')
     trace = request.get('request_trace') or {}
     if trace and isinstance(receipt, dict) and receipt.get('request_trace') == trace:
         # The journal is readable and holds no send for this trace: the A

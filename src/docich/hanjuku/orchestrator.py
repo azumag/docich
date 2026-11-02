@@ -350,7 +350,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem['_interim']=interim
     mem['_recall_inputs']=recall_inputs
     mem['_card_scroll_input']=card_scroll_input
-    mem['_departure_input']=departure_input
+    from .state.regions import journal as _journal
+    _journal(mem)['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
@@ -385,8 +386,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
@@ -397,8 +399,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
@@ -412,8 +415,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # hours. One bounded B returns to the field map, where next_order can
         # re-arm the stale step; normal flows resume if no step is parked.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input', '_departure_input'):
+        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
             mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
@@ -817,7 +821,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem.pop('_interim',None)
     mem.pop('_recall_inputs',None)
     mem.pop('_card_scroll_input',None)
-    mem.pop('_departure_input',None)
+    _journal(mem).pop('_departure_input',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem

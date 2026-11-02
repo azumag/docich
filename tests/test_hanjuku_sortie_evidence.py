@@ -16,6 +16,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def menu(kind, words, hand=True):
@@ -189,8 +190,8 @@ def test_confirmed_card_names_record_selected_and_planned_generals_separately():
 def commit_departure(mem):
     """The sender-journal receipt plus the field map returning (docich#3193 A)."""
     trace = {'decision_id': 'test:1:1', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-    mem['departure_request']['request_trace'] = trace
-    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    _flow(mem)['departure_request']['request_trace'] = trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     policy.observe_sortie_transition(Screen([], None, '', kind='map'), mem, 'map_target')
 
 
@@ -318,15 +319,15 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
     seen = set()
     for step, screen in enumerate(screens):
         mem['_records'] = []
-        if screen.kind == 'map_target' and mem.get('departure_request') is not None:
+        if screen.kind == 'map_target' and _flow(mem).get('departure_request') is not None:
             # The send boundary: a readable journal without this request's A.
             trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-            if mem['departure_request'].get('request_trace'):
-                mem['_departure_input'] = {'request_trace': mem['departure_request']['request_trace'],
+            if _flow(mem)['departure_request'].get('request_trace'):
+                _journal(mem)['_departure_input'] = {'request_trace': _flow(mem)['departure_request']['request_trace'],
                                            'a_inputs': 0}
             else:
-                mem['departure_request']['request_trace'] = trace
-                mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 0}
+                _flow(mem)['departure_request']['request_trace'] = trace
+                _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 0}
         actions = (policy.target_step(screen, mem, None) if screen.kind == 'map_target'
                    else policy.deploy_step(screen, mem))
         assert actions

@@ -106,7 +106,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     boundary = policy.get('card_upper_boundary') or {}
     if (boundary.get('await_input') is True and actions == [{'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}]):
         boundary['request_trace'] = {**state['decision_trace'], 'planned_at': now}
-    request = policy.get('departure_request') or {}
+    request = (policy.get('flow') or {}).get('departure_request') or {}
     if (request.get('status') == 'requested' and not request.get('request_trace')
             and actions == [CONFIRM]):
         request['request_trace'] = {**state['decision_trace'], 'planned_at': now}
@@ -383,7 +383,7 @@ def departure_input_receipt(runtime, state, meta):
     The policy holds the target A as a reservation only; this receipt is the
     sole writer that may prove the pad press actually left (docich#3193 A).
     """
-    request = (state.get('policy') or {}).get('departure_request') or {}
+    request = ((state.get('policy') or {}).get('flow') or {}).get('departure_request') or {}
     trace = request.get('request_trace') or {}
     if (request.get('status') not in ('requested', 'sent')
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):

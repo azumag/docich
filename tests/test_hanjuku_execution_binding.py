@@ -11,6 +11,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def memory():
@@ -88,7 +89,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     assert actions == [p.pad('a')]
     # The decided A is a reservation only: world state commits on the
     # receipt-backed departure observation, not at decision time.
-    request = mem['departure_request']
+    request = _flow(mem)['departure_request']
     assert request['step'] == '1-A3' and request['target'] == 'スペンソニア'
     assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
     assert mem['orders']['1-A3'] == 'pending'
