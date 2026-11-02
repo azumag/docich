@@ -1,6 +1,6 @@
-"""Version of the deterministic Hanjuku bot, recorded with every decision.
+"""Hot-load marker.
 
 Bump it with every behaviour change so production logs show which policy
 produced a decision (the bot is hot-loaded per observation).
 """
-BOT_VERSION = 'hanjuku-chart-v368-merchant-exit-log'
+BOT_VERSION = 'hanjuku-chart-v369-house-entry-retry'
