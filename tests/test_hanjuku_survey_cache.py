@@ -680,3 +680,83 @@ def test_carry_over_needs_this_months_complete_names_only_count(carry_on):
     mem.update(month='1-7', tick=900)                  # no new roster count yet
     assert r.carry_forward(mem) is None
     assert r.reusable_survey(mem) is None
+
+
+# ---- Issue #3194 (07): a join keeps the rows that were already read ----
+
+def _recount(mem, names):
+    """The names-only count a join forces again inside the same month."""
+    mem['house'] = {'phase': 'roster', 'chapter': 1, 'month_scan': True, 'seen': [], 'pending': [],
+                    'age': 0, 'total': 0}
+    r.begin(mem, mem['house'])
+    r.page(mem, house.roster(parse(roster(list(names)))))
+    state = mem['house']
+    state['seen'] = list(names)
+    state['roster_end_observed'] = True
+    complete = r.complete(mem, state)
+    mem['recruit_roster']['wages'] = {n: r.fixed_wage(n) or 0 for n in names}
+    mem.pop('house')
+    return complete
+
+
+def test_a_join_after_the_carry_still_carries_the_others_on_the_next_count(carry_on):
+    mem = _next_month(completed())
+    assert r.carry_forward(mem)['reopen'] == []
+    joined = NAMES + ['ヴィーナス']
+    r.observed_member(mem, joined)
+    assert r.reusable_survey(mem) is None            # membership is unknown again
+    assert _recount(mem, joined) is True              # and the count can finish (g1097 18:35)
+    assert r.carry_forward(mem) == {'carried': NAMES, 'reopen': ['ヴィーナス']}
+    assert r.recheck_targets(mem) == ['ヴィーナス']
+    row = mem['house_eggs']['ゼウス']
+    assert row['carried_from'] == '1-6' and row['carry_depth'] == 1   # not counted twice
+    assert 'roster_carry_source' not in mem
+
+
+def test_a_join_after_a_full_read_reuses_this_months_rows(carry_on):
+    mem = completed()                                 # read in full this month
+    joined = NAMES + ['ヴィーナス']
+    r.observed_member(mem, joined)
+    assert _recount(mem, joined) is True
+    assert r.carry_forward(mem) == {'carried': NAMES, 'reopen': ['ヴィーナス']}
+    assert 'carried_from' not in mem['house_eggs']['ゼウス']
+
+
+def test_an_event_between_the_join_and_the_count_reopens_that_general(carry_on):
+    mem = completed()
+    joined = NAMES + ['ヴィーナス']
+    r.observed_member(mem, joined)
+    r.dirty_status(mem, ['ゼウス'], fields=('egg',))   # a battle or recovery in between
+    _recount(mem, joined)
+    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス', 'ヴィーナス']}
+
+
+def test_the_waiting_rows_are_dropped_by_other_invalidations_and_by_later_months(carry_on):
+    joined = NAMES + ['ヴィーナス']
+    mem = completed(); r.observed_member(mem, joined)
+    assert 'roster_carry_source' in mem
+    r.defeated(mem, 'ゼウス')                           # no survey to keep: forget everything
+    assert 'roster_carry_source' not in mem
+    mem = completed(); r.observed_member(mem, joined)
+    mem = _next_month(mem, month='1-8')               # a month later: too old to reuse
+    assert r.carry_forward(mem) is None
+    assert 'roster_carry_source' not in mem
+
+
+def test_names_already_on_the_retained_bill_do_not_invalidate_again(carry_on):
+    mem = completed()
+    joined = NAMES + ['ヴィーナス']
+    r.observed_member(mem, joined)
+    hold = deepcopy(mem['payroll_membership_hold'])
+    r.observed_member(mem, joined)                    # a later page of the same count
+    assert mem['payroll_membership_hold'] == hold
+    assert mem['roster_carry_source']['scope'] == [1, '1-6']
+    r.observed_member(mem, joined + ['ミント'])        # a different new name is a new join
+    assert 'ミント' in mem['payroll_membership_hold']['wages']
+
+
+def test_the_kill_switch_keeps_no_waiting_rows(monkeypatch):
+    monkeypatch.setenv(r.MONTH_CARRY_ENV, '0')
+    mem = completed()
+    r.observed_member(mem, NAMES + ['ヴィーナス'])
+    assert 'roster_carry_source' not in mem
