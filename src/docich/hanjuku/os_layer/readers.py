@@ -14,6 +14,7 @@ from .screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmati
 # screen.parse keeps its own binding, as in the single-module policy.
 from .screen import own_camps  # noqa: F401
 from .font import TextLine, UNKNOWN
+from .pixels import bit_points, near_bits
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import GENERAL_HP
 from ...hanjuku_egg_stock import observed_uses
@@ -142,8 +143,7 @@ def world_markers(frame) -> list:
     """
     if frame is None:
         return []
-    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
-           if _near_colour(frame.pixel(x, y), WORLD_MARKER)]
+    pts = bit_points(frame, near_bits(frame, WORLD_MARKER, WORLD_COLOUR_TOL))
     seen, out = set(), []
     for p in sorted(pts):
         if p in seen:

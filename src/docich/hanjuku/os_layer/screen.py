@@ -11,8 +11,8 @@ import collections
 import hashlib
 import re
 
-from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks
-from .pixels import Frame
+from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks, white
+from .pixels import Frame, band_bits, bit_points, near_bits, union_bits
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
@@ -63,15 +63,9 @@ def find_hand(frame: Frame, *, option_positions=None):
             0 <= x - box[2] <= 48 and abs(y - (box[1] + 6)) <= 2
             for x, y in option_positions)
 
-    points = set()
-    rgb, width = frame.rgb, frame.width
-    for y in range(frame.height):
-        base = y * width * 3
-        for x in range(width):
-            i = base + 3 * x
-            pixel = (rgb[i], rgb[i + 1], rgb[i + 2])
-            if pixel[0] >= 195 and any(_near(pixel, c) for c in HAND_COLORS):
-                points.add((x, y))
+    points = set(bit_points(frame, union_bits(*(
+        band_bits(frame, (max(195, r - 10), r + 10), (g - 10, g + 10), (b - 10, b + 10))
+        for r, g, b in HAND_COLORS))))
     if len(points) < 40:
         return None
     xs, ys = zip(*points)
@@ -108,10 +102,10 @@ def find_hand(frame: Frame, *, option_positions=None):
 
 def _target_marker(frame: Frame):
     """The deployment target marker: a 12x12 blue square with a white G."""
-    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
-           if _near(frame.pixel(x, y), (0, 64, 189), 14)]
-    if not 60 <= len(pts) <= 140:
+    bits = near_bits(frame, (0, 64, 189), 14)
+    if not 60 <= bits.count(0x31) <= 140:
         return None
+    pts = bit_points(frame, bits)
     x0, y0 = min(p[0] for p in pts), min(p[1] for p in pts)
     x1, y1 = max(p[0] for p in pts), max(p[1] for p in pts)
     if x1 - x0 > 13 or y1 - y0 > 13:
@@ -220,8 +214,8 @@ def own_camps(frame: Frame) -> list[dict]:
     with the light-blue band) still counts, and the target may sit above
     the screen so the servo scrolls the camera until the flag appears.
     """
-    body = {(x, y) for y in range(frame.height) for x in range(frame.width)
-            if frame.pixel(x, y) in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)}
+    body = set(bit_points(frame, union_bits(*(
+        near_bits(frame, colour) for colour in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)))))
     found, seen = [], set()
     for start in sorted(body):
         if start in seen:
@@ -287,13 +281,8 @@ DOME_BODY = ((131, 198, 222), (115, 149, 197), (205, 206, 246))
 DOME_OUTLINE = (32, 32, 32)
 
 
-def _dome_door(pixel) -> bool:
-    return all(abs(value - base) <= DOME_DOOR_TOLERANCE for value, base in zip(pixel, DOME_DOOR))
-
-
 def _dome_camps(frame: Frame) -> list[dict]:
-    door = {(x, y) for y in range(frame.height) for x in range(frame.width)
-            if _dome_door(frame.pixel(x, y))}
+    door = set(bit_points(frame, near_bits(frame, DOME_DOOR, DOME_DOOR_TOLERANCE)))
     found, seen = [], set()
     for start in sorted(door):
         if start in seen:
@@ -923,8 +912,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         # still be 'event'; do not scan the entire battle art for a map G.
         # Sortie/card/castle panels retain their actual background map reads.
         screen.marker = _target_marker(frame)
-        white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
-        screen.cursor = _free_cursor(white, frame)
+        screen.cursor = _free_cursor(row_masks(frame, white), frame)
     screen.kind = classify_text(screen)
     if screen.kind == 'text':
         screen.prose_attached_marks = attached_mark_cells(
