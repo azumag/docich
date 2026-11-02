@@ -12,6 +12,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 
@@ -36,7 +37,7 @@ def test_native_picker_frames_replay_the_live_presses():
     screen, frame = load('almamoon')
     assert screen.kind == 'world_map'
     assert policy.world_map_step(screen, mem, frame) == [policy.pad('down')]
-    assert mem['recall']['goal'] == 'メガパタ'
+    assert _flow(mem)['recall']['goal'] == 'メガパタ'
     screen, frame = load('grin')
     assert policy.world_map_step(screen, mem, frame) == [policy.pad('left')]
     assert [(s['cursor'], s['press'], s['still']) for s in steps(mem)] == [
@@ -50,7 +51,7 @@ def test_native_ring_that_stays_on_home_tries_left_then_gives_up():
     assert presses == ([[policy.pad('down')]] * policy.PICKER_AXIS_SWITCH
                        + [[policy.pad('left')]] * (policy.PICKER_STILL_LIMIT - policy.PICKER_AXIS_SWITCH))
     assert policy.world_map_step(screen, mem, frame) == [policy.pad('b')]
-    assert not mem.get('recall') and mem['recall_skip'] == {'tick': 100}
+    assert not _flow(mem).get('recall') and _flow(mem)['recall_skip'] == {'tick': 100}
     aborted = [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
     assert [r['resulting_event'] for r in aborted] == ['picker_cursor_stationary']
     assert [s['still'] for s in steps(mem)] == list(range(policy.PICKER_STILL_LIMIT + 1))

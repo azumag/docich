@@ -18,6 +18,7 @@ from docich.hanjuku.flows.recall import DOME_SCREEN_WAIT
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import own_camps
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
 DOMES = {'g1075-boss-target-enclosure.png': (173, 42),
@@ -59,14 +60,14 @@ def test_a_dome_starts_a_recall_and_an_unmeasured_screen_is_closed(monkeypatch):
                                                          'kind': 'dome'}])
     mem = {'chapter': 3, 'tick': 100, '_records': []}
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
-    assert mem['recall']['stage'] == 'menu' and mem['recall']['camp_kind'] == 'dome'
+    assert _flow(mem)['recall']['stage'] == 'menu' and _flow(mem)['recall']['camp_kind'] == 'dome'
     found = [r for r in mem['_records'] if r['decision'] == 'camp_found']
     assert found and found[-1]['observed_metric']['kind'] == 'dome'
     other = Screen([], None, 'ゼウス', kind='general_list')
     for _ in range(DOME_SCREEN_WAIT - 1):
         assert p.camp_recall_step(other, mem, object()) == []
     assert p.camp_recall_step(other, mem, object()) == [p.pad('b')]
-    assert 'recall' not in mem and mem['recall_skip'] == {'tick': 100}
+    assert 'recall' not in _flow(mem) and _flow(mem)['recall_skip'] == {'tick': 100}
     closed = mem['_records'][-1]
     assert closed['decision'] == 'camp_group_screen'
     assert closed['observed_metric']['screen'] == 'general_list'
@@ -79,4 +80,4 @@ def test_a_small_tent_keeps_waiting_on_other_screens(monkeypatch):
     other = Screen([], None, '', kind='text')
     for _ in range(DOME_SCREEN_WAIT + 2):
         assert p.camp_recall_step(other, mem, object()) == []
-    assert mem['recall']['stage'] == 'menu'
+    assert _flow(mem)['recall']['stage'] == 'menu'

@@ -5,6 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
+from ..state.regions import flow as _flow, journal as _journal
 
 import re
 import time
@@ -48,7 +49,7 @@ def _cancel_broken_hero_sortie(mem, order):
             observed_metric={'target': order.get('target'), 'repair': 'unconfirmed',
                              'cancel_count': count},
             reason='主人公の卵破損を観測済みで修復未確認のため攻撃出撃を保留する')
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     alternative = _hero_source_alternative(order, mem)
     if count >= HERO_BROKEN_SORTIE_CANCEL_LIMIT:
         gates.pop(step, None)
@@ -99,7 +100,7 @@ def _verify_sortie_source(screen, mem, order):
             observed_metric=present,
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     mem['active'] = None
     mem['picked'] = []
     return [pad('b'), pad('b')]
@@ -802,7 +803,7 @@ def _hold_locked_boss(mem, order):
     if (status in ('launched', 'launched_unconfirmed')
             or _boss_target_unlocked(order, mem)):
         return None
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     return _hold_guarded_sortie(mem, order, 'boss_target_locked',
             '章内の通常城をすべて制圧した現在の根拠がないため、未解放ボス城への未送信出撃を保留',
             {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or [])})
@@ -814,7 +815,7 @@ def _hold_unrouted_sortie(mem, order):
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
     mem.pop('y_jump', None)
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     return _hold_guarded_sortie(mem, order, 'sortie_route_unverified',
             '第3話の既存城間ルートにない直行を取り消し、中継城経由で選び直す',
             {'source': _source(order, mem), 'target': order.get('target')})
@@ -1540,7 +1541,7 @@ def deploy_step(screen: Screen, mem):
                     inventory_evidence=inventory_evidence,
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
-            mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
+            _flow(mem)['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
                 **({'confirmation_tick': departure['departure_binding']['confirm_tick']}
                    if departure is not None else {})}
             cell = chart.castles(mem['chapter']).get(source)

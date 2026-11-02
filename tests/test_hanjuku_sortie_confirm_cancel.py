@@ -18,6 +18,7 @@ from docich.hanjuku.os_layer.pixels import Frame, read_png
 from docich.hanjuku.os_layer.screen import Screen, parse
 from docich.hanjuku.os_layer.commands import pad
 from test_hanjuku_sortie_evidence import memory, actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURE = Path(__file__).parent / 'fixtures/hanjuku/g700-balmung-kit-confirm.png'
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g889-1234abcd',
@@ -91,7 +92,7 @@ def test_direction_then_later_read_no_allows_one_refusal_a_not_departure():
     assert record['resulting_event'] == 'refusal_planned_not_yet_confirmed'
     for _ in range(20):
         assert observe(panel('no'), mem) == []
-    assert mem.get('boss_stock_cancelled') and not mem.get('sortie_attempt')
+    assert mem.get('boss_stock_cancelled') and not _flow(mem).get('sortie_attempt')
     assert mem['orders']['1-B1'] == 'pending' and not mem.get('sorties')
 
 

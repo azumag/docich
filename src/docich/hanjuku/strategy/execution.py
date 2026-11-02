@@ -11,6 +11,7 @@ from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..os_layer.roster import run_identity
 from ..os_layer.world import NAME
+from ..state.regions import flow as _flow, journal as _journal
 
 
 def _role_cards(raw, cards):
@@ -93,7 +94,7 @@ def confirm_departure_order(order, mem, general, source, cards):
 def execution_order(mem, step):
     """Resolve an in-flight attempt first, then its independently saved sortie."""
     context = (mem.get('order_context') or {}).get(step) or {}
-    attempt = mem.get('sortie_attempt') or {}
+    attempt = _flow(mem).get('sortie_attempt') or {}
     confirmed = context.get('departure_order')
     if (attempt.get('step') == step and _valid_departure(confirmed, mem)
             and type(attempt.get('confirmation_tick')) is int
@@ -136,7 +137,7 @@ def departure_snapshot(order, mem, general, source):
 
 def execution_claimed(mem, step):
     """A stale tagged execution must not fall through to a new plan's actor."""
-    attempt = mem.get('sortie_attempt') or {}
+    attempt = _flow(mem).get('sortie_attempt') or {}
     snapshot = (mem.get('launched_orders') or {}).get(step) or {}
     return ((attempt.get('step') == step and 'confirmation_tick' in attempt)
             or ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')

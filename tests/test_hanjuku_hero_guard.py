@@ -8,6 +8,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_sortie_evidence import selected_list, actor_panel, measured_card_select, measured_loaded_sortie
 from test_hanjuku_survival import menu
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
@@ -98,10 +99,10 @@ def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
     mem['sortie_general'] = {step: p.NAME}
     mem['order_context'] = {step: {'actual_general': p.NAME,
         'observed_metric': {'cards': sorted(order['cards'])}}}
-    mem['sortie_attempt'] = {'step': step, 'target_seen': True}
+    _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True}
     monkeypatch.setattr(p, 'nav_step', lambda *args: pytest.fail('hero target navigation'))
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('b'), p.pad('b')]
-    assert not mem.get('sortie_attempt') and not mem.get('sorties')
+    assert not _flow(mem).get('sortie_attempt') and not mem.get('sorties')
     assert mem['orders'][step] == 'pending'
 
 

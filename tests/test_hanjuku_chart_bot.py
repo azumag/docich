@@ -24,6 +24,7 @@ MASH = [action for _ in range(policy.POWER_TAPS)
 from docich.hanjuku_glyphs import GLYPHS, MARKS
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 CODE = {ch: code for code, ch in GLYPHS.items()}
 MARK = {v: k for k, v in MARKS.items()}
@@ -2713,7 +2714,7 @@ def test_camp_recall_scrolls_the_camera_for_a_tent_clipped_at_the_top():
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
     actions = policy.camp_recall_step(screen, mem, frame)
     assert actions == [policy.pad('up', 8)]
-    assert mem['recall']['stage'] == 'to_camp'
+    assert _flow(mem)['recall']['stage'] == 'to_camp'
 
 
 def camp_menu(selected):
@@ -2729,21 +2730,21 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     mem = {'chapter': 1, '_records': []}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('left', 8)]
-    assert mem['recall']['stage'] == 'to_camp'
+    assert _flow(mem)['recall']['stage'] == 'to_camp'
     assert [r['decision'] for r in mem['_records']] == ['camp_found']
 
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(27, 67))
-    mem['recall']['steps'] = 89                      # the long scroll may eat the budget
+    _flow(mem)['recall']['steps'] = 89                      # the long scroll may eat the budget
     assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('a')]
-    assert mem['recall']['stage'] == 'menu'
-    assert mem['recall']['steps'] == 0               # each stage restarts the budget
+    assert _flow(mem)['recall']['stage'] == 'menu'
+    assert _flow(mem)['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
     for i in range(3):
         assert policy.camp_recall_step(camp_menu(i), mem, frame) == [policy.pad('down')]
     assert policy.camp_recall_step(camp_menu(3), mem, frame) == [policy.pad('a')]
-    assert mem['recall']['stage'] == 'dest'
-    assert mem['recall']['steps'] == 0               # destination gets a full budget too
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert _flow(mem)['recall']['steps'] == 0               # destination gets a full budget too
 
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda frame, exclude=None: [{'kind': 'own', 'target': (165, 117), 'clipped': False}])
@@ -2751,7 +2752,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert policy.camp_recall_step(far, mem, frame) == [policy.pad('down', 6)]
     near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
     assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_requested'
     assert not any(r['decision'] == 'camp_recall' for r in mem['_records'])
 
@@ -2761,7 +2762,7 @@ def test_camp_recall_cancels_when_no_own_castle_is_visible():
     mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
     marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
     assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('b')]
-    assert 'recall' not in mem
+    assert 'recall' not in _flow(mem)
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 
 
@@ -2773,7 +2774,7 @@ def test_map_step_recalls_a_visible_camp_before_any_order():
            'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
-    assert mem['recall']['stage'] == 'to_camp'
+    assert _flow(mem)['recall']['stage'] == 'to_camp'
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_found'
 
 
@@ -2785,7 +2786,7 @@ def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
                       'moves': 0, 'wait': 0, 'tick': 500}}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     policy.map_step(screen, mem, frame)
-    assert 'recall' not in mem
+    assert 'recall' not in _flow(mem)
     assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
 
 
@@ -3979,13 +3980,13 @@ def test_interim_attack_uses_another_general_instead_of_broken_hero():
 def test_hotloaded_broken_hero_sortie_is_cancelled_before_commit(kind):
     mem = _broken_hero_memory()
     mem['active'] = '1-A1'; mem['orders']['1-A1'] = 'pending'
-    mem['sortie_attempt'] = {'step': '1-A1'}
+    _flow(mem)['sortie_attempt'] = {'step': '1-A1'}
     screen = parse(Canvas().frame()); screen.kind = kind
     actions = (policy.target_step(screen, mem, None) if kind == 'map_target'
                else policy.deploy_step(screen, mem))
     assert actions == [policy.pad('b')]
     assert mem['active'] is None and mem['orders']['1-A1'] == 'pending'
-    assert 'sortie_attempt' not in mem
+    assert 'sortie_attempt' not in _flow(mem)
     assert mem['_records'][0]['decision'] == 'hero_broken_egg_sortie_held'
 
 

@@ -9,6 +9,7 @@ from docich import hanjuku_house as house, hanjuku_policy as p
 from docich.hanjuku_screen import Screen, parse
 from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import Frame, read_png
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 class Canvas(BaseCanvas):
@@ -443,9 +444,9 @@ def test_first_postbattle_map_cannot_start_a_chart_sortie_during_house_trip():
 
 def test_emergency_recall_cancels_repair_instead_of_resuming_old_route():
     mem = memory('travel')
-    mem['recall'] = {'stage': 'hero_focus', 'hero': True}
+    _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True}
     assert house.step(Screen([], None, '', kind='map'), mem, None) is None
-    assert 'house' not in mem and mem['recall']['hero']
+    assert 'house' not in mem and _flow(mem)['recall']['hero']
 
 
 def test_nonhero_uses_selected_roster_jump_then_requires_named_unit_status():

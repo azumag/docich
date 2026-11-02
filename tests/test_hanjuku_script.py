@@ -12,6 +12,7 @@ from docich.adapters.base import AdapterError
 from docich.hanjuku_bot import decide, classify, is_squaresoft_splash, _TITLE_ROWS
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 IDENTITY={'game':'hanjuku-hero','runtime_id':'g1-abcdef','generation':1,'lease_id':'lease'}
 

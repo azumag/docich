@@ -9,6 +9,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.flows import map as map_flow
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 SITE = '四季王城(南西)'
 
@@ -66,7 +67,7 @@ def test_the_escape_does_not_preempt_a_map_battle_or_another_owner():
     mem['active'] = '4-B1'
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') is None
     mem = memory()
-    mem['recall'] = {'stage': 'dest'}
+    _flow(mem)['recall'] = {'stage': 'dest'}
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') is None
     mem = memory()
     mem['battle'] = {'step': '4-B1'}
@@ -117,7 +118,7 @@ def test_the_sortie_menu_escape_only_owns_a_boss_order_with_no_action():
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
     mem = memory()
     mem['active'] = '4-B1'
-    mem['recall'] = {'stage': 'dest'}
+    _flow(mem)['recall'] = {'stage': 'dest'}
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
 
 

@@ -1131,7 +1131,7 @@ def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monke
     monkeypatch.setattr(policy, 'world_flags', lambda frame, chapter: {chart.home_castle(chapter): 'own'})
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'アルマムーン'
     # The weak hero's recall ends the same way and cancels his attack march.
     mem = {'chapter': 1, 'tick': 50, '_records': [],
@@ -1139,7 +1139,7 @@ def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monke
            'recall': {'stage': 'dest', 'hero': True, 'steps': 1, 'sorties': ['1-A2']}}
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
     assert mem['sorties']['1-A2']['status'] == 'en_route'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'アルマムーン'
 
@@ -1361,7 +1361,7 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
            'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'source': 'キカンドン',
                                 'status': 'en_route', 'tick': 90}}}
     policy._maybe_recall_weak_hero(mem, {'ally': policy.NAME}, 'win', 14)
-    assert mem['recall']['stage'] == 'hero_focus' and decisions(mem, 'hero_recall_start')
+    assert _flow(mem)['recall']['stage'] == 'hero_focus' and decisions(mem, 'hero_recall_start')
     # A healthy win, or a hero not marching, leaves him alone.
     calm = {**mem, 'recall': None, '_records': []}
     calm.pop('recall')
@@ -1380,7 +1380,7 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     mem.pop('y_jump')
     mem.setdefault('y_jumped', {})['RECALL'] = 'キカンドン'          # the jump confirmed there
     assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch' and mem['sorties']['1-A2']['status'] == 'en_route'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch' and mem['sorties']['1-A2']['status'] == 'en_route'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'キカンドン'
 
 
@@ -1388,7 +1388,7 @@ def test_a_hero_inside_a_castle_is_not_recalled():
     mem = {'chapter': 1, 'tick': 100, '_records': [], 'recall': {'stage': 'menu', 'hero': True, 'steps': 0}}
     castle_menu = Screen(lines=[], hand=(42, 25), text='しゅつげきステータス', kind='castle_menu')
     assert policy.camp_recall_step(castle_menu, mem, FRAME) == [policy.pad('b')]
-    assert 'recall' not in mem and decisions(mem, 'hero_recall_skipped')
+    assert 'recall' not in _flow(mem) and decisions(mem, 'hero_recall_skipped')
 
 
 def test_carried_cards_stay_below_the_enemy_egg_threshold():
@@ -1547,11 +1547,11 @@ def test_recall_picker_never_confirms_enemy_or_unread_flag(monkeypatch):
     monkeypatch.setattr(policy, 'world_flags', lambda frame, chapter: {'キカンドン': 'enemy'})
     screen = Screen([], None, '', kind='world_map')
     assert policy.world_map_step(screen, mem, FRAME) == [policy.pad('right')]
-    assert mem.get('recall')
+    assert _flow(mem).get('recall')
     assert not decisions(mem, 'camp_recall')
-    mem['recall']['picker_observations'] = policy.RECALL_LIMIT - 1
+    _flow(mem)['recall']['picker_observations'] = policy.RECALL_LIMIT - 1
     assert policy.world_map_step(screen, mem, FRAME) == [policy.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     assert decisions(mem, 'camp_recall_aborted')
 
 

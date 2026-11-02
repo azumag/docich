@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as p, hanjuku_house as house, hanjuku_roster as r
 from docich.hanjuku_screen import Screen
 import pytest
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 NAMES = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'バジル', 'ミント',
          'クミン', 'チコリ', 'ビーツ', 'ヘーゼル', 'ラズベリー', 'カシュー',

@@ -16,6 +16,7 @@ from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
+from ..state.regions import flow as _flow, journal as _journal
 
 
 # ---------------------------------------------------------------- orders
@@ -777,9 +778,9 @@ def _drop_spent_sortie_attempt(mem, step):
     a confirmation tick; an overdue sortie can never complete that attempt,
     so drop it with the rest of the launch-time state.
     """
-    attempt = mem.get('sortie_attempt') or {}
+    attempt = _flow(mem).get('sortie_attempt') or {}
     if attempt.get('step') == step and 'confirmation_tick' in attempt:
-        mem.pop('sortie_attempt', None)
+        _flow(mem).pop('sortie_attempt', None)
 
 
 def _relaunch_overdue_boss(mem):
@@ -1385,7 +1386,7 @@ def _recall_goal(mem, flags=None):
     cells = chart.castles(chapter)
     owned = sorted(c for c in _owned(mem) if c in cells
                    and (flags is None or flags.get(c) == 'own'))
-    state = mem.get('recall') or {}
+    state = _flow(mem).get('recall') or {}
     hero = [c for c in owned if NAME in ((mem.get('garrison') or {}).get(c) or ())]
     hero_castle = (hero[0] if len(hero) == 1 and NAME not in _en_route(mem)[0]
                    and NAME not in (mem.get('general_location_unknown') or ()) else None)
@@ -1612,8 +1613,8 @@ def _bind_sortie(mem, step, castle, general=None):
             mem.setdefault('orders', {})[step] = 'launched'
             if mem.get('active') == step:
                 mem['active'] = None
-            if (mem.get('sortie_attempt') or {}).get('step') == step:
-                mem.pop('sortie_attempt', None)
+            if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
+                _flow(mem).pop('sortie_attempt', None)
         sortie.update(status='arrived', target=castle)
         if chart.is_boss_castle(castle):
             # A measured boss entry re-arms the relaunch budget: the cap
@@ -1674,8 +1675,8 @@ def _continue_transit_sorties(mem, castle, names):
         mem.setdefault('orders', {})[step] = 'pending'
         if mem.get('active') == step:
             mem['active'] = None
-        if (mem.get('sortie_attempt') or {}).get('step') == step:
-            mem.pop('sortie_attempt', None)
+        if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
+            _flow(mem).pop('sortie_attempt', None)
         _record(mem, 'sortie_transit_continue', chart_step=step, general=sortie['general'],
                 castle=castle, expected_metric={'target': planned},
                 observed_metric=listed[:8],

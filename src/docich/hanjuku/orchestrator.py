@@ -346,11 +346,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
         campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
                                 reason='ランIDが変わったため旧ランの実測地図と出撃状態を破棄')
+    from .state.regions import flow as _flow, journal as _journal
     mem['_adjusted']=adjusted
     mem['_interim']=interim
-    mem['_recall_inputs']=recall_inputs
+    _journal(mem)['_recall_inputs']=recall_inputs
     mem['_card_scroll_input']=card_scroll_input
-    from .state.regions import journal as _journal
     _journal(mem)['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
@@ -497,7 +497,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                or readers._is_goninja_prompt(screen.text)))
     month_dialog = ((sub.get('kind') == 'recruit' and not readers.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
-    recall = mem.get('recall') or {}
+    recall = _flow(mem).get('recall') or {}
     if (recall and phase == 'concert' and recall.get('stage') != 'await_dispatch'
             and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')):
         # g1075 2026-10-29 13:02: the month rolled over while the camp recall
@@ -507,7 +507,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # meanwhile ポセイドン (HP 1, no soldiers) marched back into リグア and
         # fell. The scene closes the picker anyway: drop the recall and let the
         # scene advance. The camp is found again on the map afterwards.
-        mem.pop('recall', None)
+        _flow(mem).pop('recall', None)
         mem['uncertain'] = True
         decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
                              observed_metric={'stage': recall.get('stage'), 'steps': recall.get('steps')},
@@ -522,7 +522,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         (kind == 'unknown' and (recall.get('fort') or recall_flow.in_fort_route(recall))))))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
-    if mem.get('house') and mem.get('recall'):
+    if mem.get('house') and _flow(mem).get('recall'):
         hanjuku_house.step(screen, mem, frame)
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
@@ -753,8 +753,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    bounded_wait=any(mem.get(k) for k in ('recall','house','month_sub','sortie_attempt','y_jump',
-                                           'resume_egg_ritual'))
+    bounded_wait=(any(_flow(mem).get(k) for k in ('recall','sortie_attempt'))
+                  or any(mem.get(k) for k in ('house','month_sub','y_jump',
+                                           'resume_egg_ritual')))
     hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
               else NO_INPUT_HOLD_MAX)
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
@@ -819,7 +820,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     _tally_observation(mem, kind, screen, actions)
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
-    mem.pop('_recall_inputs',None)
+    _journal(mem).pop('_recall_inputs',None)
     mem.pop('_card_scroll_input',None)
     _journal(mem).pop('_departure_input',None)
     updated['_records']=mem.pop('_records')

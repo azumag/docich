@@ -19,6 +19,7 @@ from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
 from ..os_layer.roster import run_identity
 from ..os_layer.screen import castle_roofs
+from ..state.regions import flow as _flow
 
 SCHEMA = chart.MAP_SCHEMA
 verified_castles = chart.verified_castles
@@ -256,8 +257,9 @@ def step(screen, mem, frame):
                     'reanchor_stationary'):
             state.pop(key, None)
     state['last_tick'] = tick
-    if any(mem.get(k) for k in ('battle', 'recall', 'month_sub', 'house', 'active',
-                               'sortie_attempt', 'y_jump', 'resume_egg_ritual')):
+    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house', 'active',
+                                'y_jump', 'resume_egg_ritual'))
+            or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         state.pop('probe', None)
         state.pop('roof_world', None)
         state.pop('cursor_world', None)
