@@ -885,6 +885,9 @@ def defender_egg_pending_step(screen, mem):
 # menu B does nothing (g1097 22:09, same frame 40+ observations); the fallback
 # hands the screen back to the ordinary menu logic instead of looping.
 OKUNOTE_SUMMON_UNCONFIRMED_LIMIT = 3
+# A committed rescue may continue scrolling past the 16-tick parent budget,
+# but never forever: past this total the おくのて row is treated as unread.
+OKUNOTE_COMMITTED_TICKS_LIMIT = 48
 
 
 def okunote_step(screen, mem):
@@ -1033,9 +1036,27 @@ def okunote_step(screen, mem):
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
-        if cur.get('okunote_egg_preempt'):
-            cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
-        return [pad('b')]
+        # g1097 22:28: the earlier unconfirmed phase burned ticks past 16
+        # before the rescue menu became readable, so the budgeted B ran
+        # forever. B is a no-op on the sole-command rescue menu: once a
+        # preempt/last-resort was recorded the only way forward is the
+        # おくのて row below, never another cancel attempt.
+        committed = (cur.get('okunote_last_resort_recorded')
+                     or (cur.get('okunote_summon_preempt') or {}).get('recorded')
+                     or (cur.get('okunote_egg_preempt') or {}).get('recorded'))
+        if not (committed and cur.get('okunote_only_observed')
+                and flow['ticks'] <= OKUNOTE_COMMITTED_TICKS_LIMIT):
+            if cur.get('okunote_egg_preempt'):
+                cur['okunote_egg_preempt'].update(exhausted=True, stage='unavailable', close_pending=True)
+            return [pad('b')]
+        if flow['ticks'] > OKUNOTE_COMMITTED_TICKS_LIMIT:
+            for key in ('okunote_egg_preempt', 'okunote_summon_preempt'):
+                if cur.get(key):
+                    cur[key].update(exhausted=True, stage='unavailable', close_pending=True)
+            _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
+                    observed_metric={'ticks': flow['ticks']},
+                    reason='確定済み救済メニューのおくのて行を有界観測しても読めないため、以後は未知の行を確定せず戻る')
+            return [pad('b')]
     if screen.hidden_battle_commands:
         _record(mem, 'battle_okunote_scroll', **_battle_labels(cur),
                 observed_metric={'cursor_y': screen.menu_cursor},

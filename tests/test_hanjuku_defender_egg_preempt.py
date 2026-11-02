@@ -238,7 +238,7 @@ def test_failed_opening_is_bounded_and_does_not_restore_an_infinite_hold():
 def test_unknown_cursor_never_confirms_and_menu_navigation_is_bounded():
     mem = memory(enemy_hp=10)
     opening(mem)
-    for _ in range(16):
+    for _ in range(p.OKUNOTE_COMMITTED_TICKS_LIMIT):
         assert p.defender_egg_pending_step(menu(cursor=None), mem) == [p.pad('down')]
     assert p.defender_egg_pending_step(menu(cursor=None), mem) == [p.pad('b')]
     assert not mem['battle']['okunote_egg_preempt'].get('selected')
