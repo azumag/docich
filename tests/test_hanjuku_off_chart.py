@@ -800,6 +800,13 @@ def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch)
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'enemy', 'target': (10, 57), 'clipped': False}])
     assert policy.target_step(marker, mem, FRAME) == [policy.pad('a')]
+    assert decisions(mem, 'sortie_departure_requested')
+    # The reservation commits only on the receipt-backed field return.
+    trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    mem['departure_request']['request_trace'] = trace
+    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    policy.observe_sortie_transition(Screen(lines=[], hand=None, text='', kind='map'),
+                                     mem, 'map_target')
     assert decisions(mem, 'order_launched')
 
 
@@ -1644,6 +1651,13 @@ def test_an_unverified_target_walks_onto_the_enemy_roof_beside_the_marker(monkey
                         lambda *_a, **_k: {'general': 'ソーピニヨン'})
     monkeypatch.setattr(flow_map, '_finish_order', lambda *_a, **_k: None)
     assert flow_map.target_step(on, mem, FRAME) == [policy.pad('a')]
+    # The request is only a reservation until the journaled send plus the
+    # closed picker prove the departure (docich#3193 A).
+    trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    mem['departure_request']['request_trace'] = trace
+    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    flow_map.observe_sortie_transition(Screen(lines=[], hand=None, text='', kind='map'),
+                                       mem, 'map_target')
     assert mem['sorties']['I:1']['target'] == 'グリン'
 
 

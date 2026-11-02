@@ -80,6 +80,27 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             or not order or order['step'] != attempt['step']):
         return
     step = order['step']
+    request = mem.get('departure_request')
+    if isinstance(request, dict) and request.get('step') == step:
+        if (_departure_receipt_sent(mem, request) and isinstance(request.get('snapshot'), dict)
+                and isinstance(request.get('context'), dict)
+                and screen.kind in ('map', 'unknown')):
+            if screen.kind == 'unknown' and int(request.get('departure_fades') or 0) < 3:
+                # An ambiguous fade never proves departure; keep observing.
+                request['departure_fades'] = int(request.get('departure_fades') or 0) + 1
+                return
+            mem.pop('departure_request', None)
+            # A journaled A plus the field map returning is the departure
+            # observation: only now may the reservation become world state,
+            # never at decision time (docich#3193 A).
+            _commit_departure(mem, order, request['context'], request['snapshot'])
+            attempt['interrupted'] = True
+            mem.pop('expect_menu', None)
+            return
+        mem.pop('departure_request', None)
+        # The picker closed without a recorded send, or into a screen that
+        # is not the field: fall through to the unconfirmed-departure
+        # record. The observed garrison fact stays.
     context = (mem.get('order_context') or {}).get(step) or {}
     general = context.get('actual_general')
     if not general:
@@ -630,6 +651,7 @@ def target_step(screen: Screen, mem, frame):
         return []
     order = _order(mem)
     if order is None:
+        mem.pop('departure_request', None)   # a stale reservation owns nothing
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
@@ -651,6 +673,12 @@ def target_step(screen: Screen, mem, frame):
                 or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
+    request = mem.get('departure_request')
+    if isinstance(request, dict):
+        if request.get('step') != order['step']:
+            mem.pop('departure_request', None)   # a reservation of another order owns nothing
+        else:
+            return _departure_request_step(screen, mem, order, request)
     goal = _measured_goal(mem, order, order['target'])
     if goal is None:
         return []
@@ -704,40 +732,161 @@ def target_step(screen: Screen, mem, frame):
         snapshot = departure_snapshot(order, mem, context['general'], _source(order, mem))
         if snapshot is None:
             return []
-        mem.pop('sortie_attempt', None)
         (mem.get('target_miss') or {}).pop(order['step'], None)
-        _finish_order(mem, 'launched', **context, target=order['target'],
-                      cursor=mem.get('cursor'), anchor=mem.get('anchor'),
-                      reason=f"{context['general']}を{order['target']}へ出撃")
-        general = context['general']
-        _garrison_move(mem, general, source=_source(order, mem))
-        mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
-        # Snapshot: the battle, boss entry and retries of this sortie must not
-        # depend on the plan still containing it.
-        mem.setdefault('launched_orders', {})[order['step']] = snapshot
-        # Per execution id: ``launched`` keeps one sortie per castle, so a later
-        # sortie to the same castle must not unbind an earlier unit en route.
-        previous = (mem.get('sorties') or {}).get(order['step'])
-        if previous:
-            _retire_unentered_sortie(mem, order['step'], previous)
-        mem.setdefault('sorties', {})[order['step']] = {
-            'general': general, 'source': snapshot['source'],
-            'target': order['target'], 'status': 'en_route',
-            'evidence': deepcopy({k: v for k, v in
-                ((mem.get('order_context') or {}).get(order['step']) or {}).items()
-                if k != 'departure_order'}),
-            'tick': int(mem.get('tick') or 0),
-            **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
-               if 'departure_binding' in snapshot else {})}
-        ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+        # The decided A is a reservation, not a fact: the fixed actor, source
+        # and carried kit are held while the observed garrison and the order
+        # stay untouched until the journaled send and the closed picker prove
+        # the departure (docich#3193 A). ``sortie_attempt`` stays armed so
+        # leaving this picker remains the departure observation.
+        attempt = mem.get('sortie_attempt') or {}
+        attempt['step'] = order['step']
+        attempt['target_seen'] = True
+        mem['sortie_attempt'] = attempt
+        mem['departure_request'] = {
+            'step': order['step'], 'target': order['target'],
+            'general': context['general'], 'source': _source(order, mem),
+            'context': context, 'snapshot': snapshot,
+            'requested_tick': int(mem.get('tick') or 0),
+            'status': 'requested', 'resends': 0}
         from .camp_recheck import departure_requested
-        departure_requested(mem, general, snapshot.get('departure_binding', {}).get('confirm_tick'))
+        departure_requested(mem, context['general'],
+                            snapshot.get('departure_binding', {}).get('confirm_tick'))
+        _record(mem, 'sortie_departure_requested', chart_step=order['step'],
+                **context, target=order['target'],
+                resulting_event='planned_not_yet_sent',
+                reason=f"{context['general']}を{order['target']}へ出撃するAを要求。送信・受理・出発は未確認のまま在城事実を消さない")
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 
+def _commit_departure(mem, order, context, snapshot):
+    """Departure observed: the fixed request becomes world state exactly once.
+
+    Runs only on receipt-backed evidence (the picker closed after a journaled
+    A). The garrison fact, the launched order and the en-route sortie it
+    creates are identical to what the pre-#3193 code committed eagerly.
+    """
+    (mem.get('target_miss') or {}).pop(order['step'], None)
+    _finish_order(mem, 'launched', **context, target=order['target'],
+                  cursor=mem.get('cursor'), anchor=mem.get('anchor'),
+                  reason=f"{context['general']}を{order['target']}へ出撃")
+    general = context['general']
+    _garrison_move(mem, general, source=_source(order, mem))
+    mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
+    # Snapshot: the battle, boss entry and retries of this sortie must not
+    # depend on the plan still containing it.
+    mem.setdefault('launched_orders', {})[order['step']] = snapshot
+    # Per execution id: ``launched`` keeps one sortie per castle, so a later
+    # sortie to the same castle must not unbind an earlier unit en route.
+    previous = (mem.get('sorties') or {}).get(order['step'])
+    if previous:
+        _retire_unentered_sortie(mem, order['step'], previous)
+    mem.setdefault('sorties', {})[order['step']] = {
+        'general': general, 'source': snapshot['source'],
+        'target': order['target'], 'status': 'en_route',
+        'evidence': deepcopy({k: v for k, v in
+            ((mem.get('order_context') or {}).get(order['step']) or {}).items()
+            if k != 'departure_order'}),
+        'tick': int(mem.get('tick') or 0),
+        **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+           if 'departure_binding' in snapshot else {})}
+    ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+
+
 TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
 TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
+DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A as unaccepted
+DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
+DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
+DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
+
+
+def _departure_receipt_sent(mem, request):
+    """The sender journal proves this exact request left as a pad A."""
+    trace = (request or {}).get('request_trace') or {}
+    receipt = mem.get('_departure_input') or {}
+    return bool(trace and receipt.get('request_trace') == trace
+                and int(receipt.get('a_inputs') or 0) >= 1)
+
+
+def _release_departure_request(mem, order, request, reason):
+    """Release the reservation without touching observed facts.
+
+    The general was never moved out of the garrison, so the order simply
+    stays pending and the selection re-confirms within a bounded count.
+    """
+    step = order['step']
+    mem.pop('departure_request', None)
+    mem.pop('sortie_attempt', None)
+    misses = mem.setdefault('departure_miss', {})
+    misses[step] = int(misses.get(step) or 0) + 1
+    if misses[step] >= DEPARTURE_REQUEST_LIMIT:
+        misses.pop(step, None)
+        context = {k: v for k, v in (request.get('context') or {}).items()
+                   if k != 'deviation_reason'}
+        _finish_order(mem, 'failed', **context, target=order['target'],
+                      deviation_reason='出撃要求が送信・受理されない',
+                      observed_metric={'request_misses': DEPARTURE_REQUEST_LIMIT},
+                      reason='出撃Aが送信・受理されないまま要求の上限に達したため指示を失敗にする')
+        return [pad('b')]
+    _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+            **(request.get('context') or {}),
+            observed_metric={'request_misses': misses[step]},
+            resulting_event='request_released_unconfirmed',
+            reason=reason)
+    return []
+
+
+def _departure_request_step(screen, mem, order, request):
+    """Drive a pending departure request across the send boundary.
+
+    requested -> sent/unknown -> departure_observed -> arrived. While the
+    picker stays open the sender journal decides what is known: a matched
+    receipt may only confirm the send, an empty match may resend within
+    bounds, and an unreadable journal may never resend blindly.
+    """
+    if screen.kind != 'map_target':
+        # Leaving the picker is settled by observe_sortie_transition.
+        return []
+    if _departure_receipt_sent(mem, request):
+        request['status'] = 'sent'
+        request.pop('unknown_reads', None)
+        reads = request['sent_reads'] = int(request.get('sent_reads') or 0) + 1
+        if reads == 1:
+            _record(mem, 'sortie_departure_input_sent', chart_step=order['step'],
+                    **(request.get('context') or {}),
+                    observed_metric={'request_trace': request.get('request_trace')},
+                    resulting_event='sent_not_yet_accepted',
+                    reason='同じラン・判断ID・実画面の出撃A送信記録を確認。受理と出発は未確認')
+        if reads >= DEPARTURE_SENT_HOLD_LIMIT:
+            return _release_departure_request(mem, order, request,
+                '送信記録のある出撃Aの後も出撃先選択が閉じないため、受理を断定せず要求を解放する')
+        return []
+    receipt = mem.get('_departure_input')
+    trace = request.get('request_trace') or {}
+    if trace and isinstance(receipt, dict) and receipt.get('request_trace') == trace:
+        # The journal is readable and holds no send for this trace: the A
+        # verifiably never left, so a bounded resend is not a blind retry.
+        request.pop('sent_reads', None)
+        request.pop('unknown_reads', None)
+        if int(request.get('resends') or 0) < DEPARTURE_RESEND_LIMIT:
+            request['resends'] = int(request.get('resends') or 0) + 1
+            request['status'] = 'requested'
+            request.pop('request_trace', None)   # persist() stamps the new send
+            _record(mem, 'sortie_departure_resend', chart_step=order['step'],
+                    **(request.get('context') or {}),
+                    observed_metric={'resends': request['resends']},
+                    resulting_event='unsent_retry',
+                    reason='送信ジャーナルにこの出撃Aが無いことを確認したため同じ要求を再送する')
+            return [pad('a')]
+        return _release_departure_request(mem, order, request,
+            '出撃Aが送信記録に現れず再送の上限に達したため要求を解放する')
+    reads = request['unknown_reads'] = int(request.get('unknown_reads') or 0) + 1
+    if reads >= DEPARTURE_UNKNOWN_HOLD_LIMIT:
+        return _release_departure_request(mem, order, request,
+            '送信receiptを照合できないまま出撃先選択が残るため要求を解放する')
+    return []
+
 
 
 def _target_roof_under_marker(screen, mem, frame, order) -> bool:
