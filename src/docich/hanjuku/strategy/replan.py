@@ -268,6 +268,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
+    # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
+    # held and the boss unbeaten, send every spare general at it in successive
+    # waves — the charted single sortie is not the only assault.
+    boss = chart.boss_castle(chapter)
+    if (boss in castles and boss_path
+            and all(c in owned or c == home for c in boss_path - {boss})
+            and not (mem.get('boss_victories') or {})):
+        targets = [*targets, boss]
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
     # attacked twice and the candidate list would never advance. Only recent
@@ -299,6 +307,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
+        if chart.is_boss_castle(target):
+            cards = []   # 波: strict kit waits for nobody — carry what is there
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
