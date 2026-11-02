@@ -197,3 +197,15 @@ def test_unreadable_merchant_exit_is_recorded_not_silent(ready):
     assert record['decision'] == 'shop_list_exit'
     assert record['observed_metric']['reason'] == 'spendable_unreadable'
     assert ready['shop'].get('bought') in (None, [])
+
+
+def test_unwanted_listing_exit_records_the_merchant_stock(ready):
+    # g1097 2026-11-02: the merchant left with no record at all when the
+    # listing matched no wanted card; the silent B hid why nothing was bought.
+    screen = listing(999, rows=(('バルムンク', 90), ('グリンボー', 30)))
+    ready['shop']['bargain_listing_planned'] = False
+    assert p.shop_step(screen, ready) == [p.pad('b')]
+    record = ready['_records'][-1]
+    assert record['decision'] == 'shop_list_exit'
+    assert record['observed_metric']['reason'] == 'nothing_planned'
+    assert record['observed_metric']['listed'] == {'バルムンク': 90, 'グリンボー': 30}
