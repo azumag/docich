@@ -4,6 +4,7 @@ import json
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import UNKNOWN
 from test_hanjuku_retake_guard import generals, memory
+from docich.hanjuku.state.regions import world as _world
 
 
 def after_loss():
@@ -26,7 +27,7 @@ def source_retake(mem):
 def select(mem, order):
     order = dict(order, step=order.get('step', 'I:retake:probe'), after=None)
     mem['active'] = order['step']
-    mem.setdefault('launched_orders', {})[order['step']] = order
+    _world(mem).setdefault('launched_orders', {})[order['step']] = order
     mem.setdefault('orders', {})[order['step']] = 'pending'
 
 
@@ -69,7 +70,7 @@ def test_repeated_unknown_rows_have_a_finite_json_persistent_budget():
         assert mem['general_location_unknown'] == ['ゼウス']
         mem = json.loads(json.dumps(mem))
     assert source_retake(mem) is None
-    stale = dict(mem['launched_orders']['I:retake:1'], source_probe=True)
+    stale = dict(_world(mem)['launched_orders']['I:retake:1'], source_probe=True)
     assert p._source_spare_missing(stale, mem, allow_probe=True)
     # Unplaced joiners and a different chart actor cannot bypass this bound.
     mem['house_eggs'] = {'カシュー': {'location': 'castle', 'month': '1-7'}}
@@ -124,7 +125,7 @@ def test_chapter_entry_discards_prior_location_probe_budget():
 
 def test_adjusted_pending_retake_keeps_next_order_reobservation_path():
     mem = after_loss()
-    order = dict(mem['launched_orders']['I:retake:1'], step='A:recheck:J1')
+    order = dict(_world(mem)['launched_orders']['I:retake:1'], step='A:recheck:J1')
     mem['chart_plan'] = {'orders': [order]}
     select(mem, order)
     assert p.deploy_step(generals(['ゼウス' + UNKNOWN, 'アルテミス']), mem) == [p.pad('b'), p.pad('b')]

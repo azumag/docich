@@ -23,7 +23,7 @@ from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, upd
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import flow, journal, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -111,7 +111,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     if snapshot is None:
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
-    mem.setdefault('launched_orders', {})[step] = snapshot
+    _world(mem).setdefault('launched_orders', {})[step] = snapshot
     previous = (mem.get('sorties') or {}).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
@@ -779,10 +779,10 @@ def _commit_departure(mem, order, context, snapshot):
                   reason=f"{context['general']}を{order['target']}へ出撃")
     general = context['general']
     _garrison_move(mem, general, source=_source(order, mem))
-    mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
+    _world(mem).setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
     # Snapshot: the battle, boss entry and retries of this sortie must not
     # depend on the plan still containing it.
-    mem.setdefault('launched_orders', {})[order['step']] = snapshot
+    _world(mem).setdefault('launched_orders', {})[order['step']] = snapshot
     # Per execution id: ``launched`` keeps one sortie per castle, so a later
     # sortie to the same castle must not unbind an earlier unit en route.
     previous = (mem.get('sorties') or {}).get(order['step'])
@@ -888,12 +888,13 @@ def _rollback_unverified_launch(mem, step, probe, markers):
     misses[step] = misses.get(step, 0) + 1
     for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
                 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                'sortie_actor_miss', 'launched_orders'):
+                'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
+    (_world(mem).get('launched_orders') or {}).pop(step, None)
     (mem.get('sorties') or {}).pop(step, None)
-    for target, entry in list((mem.get('launched') or {}).items()):
+    for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
-            mem['launched'].pop(target, None)
+            _world(mem)['launched'].pop(target, None)
     general, source = probe.get('general'), probe.get('source')
     garrison = mem.get('garrison') or {}
     if general and isinstance(garrison.get(source), list) and general not in garrison[source]:

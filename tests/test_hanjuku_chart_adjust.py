@@ -14,6 +14,7 @@ from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 BASE_ORDERS = copy.deepcopy(chart.CHAPTER_1_ORDERS)
@@ -825,7 +826,7 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
                                  'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
     mem['sortie_general'] = {j2: 'ゼウス'}
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
-    assert mem['launched']['けっかい'] == {'general': 'ゼウス', 'step': j2}
+    assert _world(mem)['launched']['けっかい'] == {'general': 'ゼウス', 'step': j2}
     # Unknown general on the measured boss entry text is still refused.
     assert policy.message_step(_text_screen('ココットしょうぐんがボスじょうにせめこんだ!!'), mem) == []
     entry = 'ゼウスしょうぐんがボスじょうにせめこんだ!!'
@@ -881,7 +882,7 @@ def test_an_unclassified_card_use_leaves_the_sortie_kit():
     mem = {'_records': []}
     order = {'step': 'I:x:1', 'general': 'ヴィーナス', 'source': 'スペンソニア',
              'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
-    mem['launched_orders'] = {'I:x:1': order}
+    _world(mem)['launched_orders'] = {'I:x:1': order}
     for _ in range(2):
         policy._card_use_unclassified(
             mem, {'step': 'I:x:1', 'cards_selected': ['イッテツーン'], 'cards_unclassified': [],
@@ -904,7 +905,7 @@ def test_a_second_battle_does_not_replan_a_spent_sortie_card():
     order = {'step': step, 'general': 'ヴィーナス', 'source': 'スペンソニア',
              'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
     mem['orders'] = {step: 'launched'}
-    mem['launched_orders'] = {step: order}
+    _world(mem)['launched_orders'] = {step: order}
     mem['kit_spent'] = {step: ['イッテツーン', 'イッテツーン']}
     mem['_records'] = []
     mem['attack'] = {'general': 'ヴィーナス', 'castle': 'ジョンリギ', 'side': 'attack',
@@ -1000,7 +1001,7 @@ def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch)
     new_j1 = adjust.execution_step(second, 'J1')
     assert second != first and mem['active'] == new_j1
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
-    assert mem['launched']['スペンソニア']['general'] == 'ヴィーナス'
+    assert _world(mem)['launched']['スペンソニア']['general'] == 'ヴィーナス'
     assert policy.message_step(
         _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
     assert mem['attack']['step'] == old_j1
@@ -1028,7 +1029,7 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
         'A:bbbbbbbb:J1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'},
         'A:cccccccc:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'},
         'A:dddddddd:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'}}
-    mem['launched_orders'] = {k: {'step': k, 'general': v['general'], 'target': v['target'],
+    _world(mem)['launched_orders'] = {k: {'step': k, 'general': v['general'], 'target': v['target'],
                                   'source': 'ゴーメン', 'cards': [], 'after': None}
                               for k, v in mem['sorties'].items()}
     assert policy.message_step(
@@ -1062,7 +1063,7 @@ def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
                 'cards': ['クースカン', 'ノリウツール', 'イッテツーン'],
                 'after': ['captured', 'スペンソニア'], 'note': '卵落としにイッテツーンを携行'}
     mem['orders'].update({'1-B1': 'launched', k1: 'launched'})
-    mem['launched_orders'] = {'1-B1': base, k1: adjusted}
+    _world(mem)['launched_orders'] = {'1-B1': base, k1: adjusted}
     # Both waves are still on the road: recent enough to count as marching.
     mem['tick'] = 3000
     mem['sorties'] = {

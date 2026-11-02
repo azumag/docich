@@ -17,6 +17,7 @@ from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 
 def menu(kind, words, hand=True):
@@ -202,7 +203,7 @@ def test_launch_record_uses_selected_general_and_keeps_chart_general(monkeypatch
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
     rec = next(r for r in mem['_records'] if r['decision'] == 'order_launched')
-    assert rec['general'] == mem['launched']['ゴーメン']['general'] == 'ゼウス'
+    assert rec['general'] == _world(mem)['launched']['ゴーメン']['general'] == 'ゼウス'
     assert rec['planned_general'] == 'どうし'
     assert rec['strategy_variant'] == 'substitute_general' and rec['deviation_reason']
     assert 'ゼウス' in rec['reason'] and 'どうしを' not in rec['reason']
@@ -273,7 +274,7 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
-    assert mem['launched']['けっかい']['general'] == 'ゼウス'
+    assert _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
@@ -1025,7 +1026,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
-    assert mem['sorties']['1-B1']['general'] == mem['launched']['けっかい']['general'] == 'ゼウス'
+    assert mem['sorties']['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
     launch = mem['_records'][-1]
     assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
     message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')

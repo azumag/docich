@@ -4,6 +4,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory():
@@ -36,7 +37,7 @@ def test_recent_retake_reserves_target_in_candidates_and_current_order(status):
 def test_interrupted_unknown_target_reserves_only_saved_intent_without_editing_sortie():
     m=memory();m['sorties']={'earlier':{'general':'ヴィーナス','target':None,
                                      'status':'launched_unconfirmed','tick':99}}
-    m['launched_orders']['earlier']={'target':'ジョンリギ'}
+    _world(m)['launched_orders']['earlier']={'target':'ジョンリギ'}
     before=deepcopy(m['sorties']);assert p._retake_reserved(p._order(m),m)
     assert not any(o['target']=='ジョンリギ' for o in p.interim_candidates(m).values())
     assert m['sorties']==before
@@ -89,8 +90,8 @@ def test_old_active_card_menu_is_rechecked_after_hotload():
 
 
 def test_chart_recapture_stays_pending_and_does_not_block_staffing(monkeypatch):
-    m=memory();o=m['launched_orders'].pop('I:retake:1');o['step']='1-A1'
-    m['active']='1-A1';m['launched_orders']['1-A1']=o
+    m=memory();o=_world(m)['launched_orders'].pop('I:retake:1');o['step']='1-A1'
+    m['active']='1-A1';_world(m)['launched_orders']['1-A1']=o
     m['chart_plan']={'orders':[o]};m['garrison']['アルマムーン']=['ゼウス']
     monkeypatch.setattr(p,'_orders',lambda _m:(o,))
     monkeypatch.setattr(p.chart,'orders',lambda _chapter:(o,))

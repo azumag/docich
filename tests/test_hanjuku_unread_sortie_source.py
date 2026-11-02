@@ -5,6 +5,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from test_hanjuku_retake_guard import generals
+from docich.hanjuku.state.regions import world as _world
 
 
 def stalled():
@@ -122,7 +123,7 @@ def test_defender_derived_single_name_is_not_a_complete_castle_list():
     order = next(o for o in p.interim_candidates(mem).values() if o['target'] == 'カストーラ')
     assert order['source'] == 'ジョンリギ' and order['source_probe'] is True
     mem.update(active='I:probe:1', orders={}, launched_orders={})
-    order = dict(order, step=mem['active']); mem['launched_orders'][order['step']] = order
+    order = dict(order, step=mem['active']); _world(mem)['launched_orders'][order['step']] = order
     mem['chart_plan'] = {'orders': [order]}
     assert p.next_order(mem) is order
     assert p._source_spare_missing(order, mem, allow_probe=True) is False

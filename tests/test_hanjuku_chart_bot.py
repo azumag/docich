@@ -25,6 +25,7 @@ from docich.hanjuku_glyphs import GLYPHS, MARKS
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import parse
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 CODE = {ch: code for code, ch in GLYPHS.items()}
 MARK = {v: k for k, v in MARKS.items()}
@@ -1390,7 +1391,7 @@ def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     assert mem['stats']['generals_lost'] is None
     result = next(r for r in mem['_records'] if r['decision'] == 'battle_result')
     assert result['outcome'] == 'loss' and result['observed_metric']['general_loss'] == 'unclassified'
-    mem['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
+    _world(mem)['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
     policy.message_step(Screen(lines=[], hand=None, text='どうししょうぐんがキカンドンじょうにのりこんだ',
                                kind='attack_started'), mem)
     assert mem['attack']['general'] == 'どうし'

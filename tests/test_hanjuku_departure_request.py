@@ -13,6 +13,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_execution_binding import confirm, memory
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 TRACE = {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime', 'generation': 741,
          'lease_id': 'test-lease', 'decision_id': 'test-runtime:741:20',
@@ -42,7 +43,7 @@ def sent(mem, a_inputs, trace=None):
 def assert_reserved(mem):
     assert mem['orders']['1-A3'] == 'pending'
     assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
-    assert not mem.get('sorties') and not mem.get('launched_orders')
+    assert not mem.get('sorties') and not _world(mem).get('launched_orders')
 
 
 def test_unsent_departure_request_never_commits_world_state():
@@ -71,7 +72,7 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     assert mem['orders']['1-A3'] == 'launched'
     assert mem['sorties']['1-A3']['status'] == 'en_route'
     assert mem['sorties']['1-A3']['target'] == 'スペンソニア'
-    assert mem['launched_orders']['1-A3']['general'] == 'ゼウス'
+    assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert mem['garrison']['カストーラ'] == ['ヴィーナス']
     assert 'departure_request' not in _flow(mem)
 
@@ -185,7 +186,7 @@ def test_unseen_unit_rolls_the_launch_back_to_pending(monkeypatch):
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
-    assert '1-A3' not in (mem.get('launched_orders') or {})
+    assert '1-A3' not in (_world(mem).get('launched_orders') or {})
     # The general the ledger sent out was never seen leaving: back home.
     assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
     assert _flow(mem)['launch_miss']['1-A3'] == 1

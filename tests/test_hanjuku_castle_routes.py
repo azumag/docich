@@ -6,6 +6,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import routes, replan, orders
 from docich.hanjuku.flows import deploy, map as map_flow
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def state():
@@ -67,7 +68,7 @@ def add_transfer(mem, source, target, general='ミュスカデ'):
     step = source + '-hop'
     mem['sorties'][step] = {'source': source, 'target': target, 'general': general,
                             'status': 'en_route', 'tick': mem['tick'] - 10}
-    mem['launched_orders'][step] = {'purpose': 'move', 'source': source,
+    _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': source,
                                     'target': target, 'general': general}
     return step
 
@@ -121,11 +122,11 @@ def test_wrong_castle_old_transfer_or_nontransfer_never_confirms_arrival():
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
     assert mem['sorties'][step]['status'] == 'en_route'
     mem['sorties'][step]['tick'] = mem['tick']
-    mem['launched_orders'][step]['purpose'] = 'attack'
+    _world(mem)['launched_orders'][step]['purpose'] = 'attack'
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
     assert mem['sorties'][step]['status'] == 'en_route'
-    mem['launched_orders'][step]['purpose'] = 'move'
-    mem['launched_orders'][step]['target'] = 'グリン'
+    _world(mem)['launched_orders'][step]['purpose'] = 'move'
+    _world(mem)['launched_orders'][step]['target'] = 'グリン'
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
     assert mem['sorties'][step]['status'] == 'en_route'
 
@@ -209,7 +210,7 @@ def rigua_stall():
     for step, general, tick in (('I:380571:2', 'アテナ', 65575), ('I:b59ab6:1', 'ポワソン', 66126)):
         mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'グリン', 'general': general,
                                 'status': 'en_route', 'tick': tick}
-        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+        _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'グリン', 'general': general, 'step': step}
         mem['orders'][step] = 'launched'
     retake = {'step': 'I:b59ab6:2', 'general': 'しょうぐん', 'source': 'グリン', 'target': 'リグア',
@@ -294,7 +295,7 @@ def victoria_drain():
     for step, general, tick in (('I:0fa434:2', 'アポロン', 95400), ('I:49a839:1', 'アルファルファ', 96181)):
         mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
                                 'status': 'en_route', 'tick': tick}
-        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+        _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'ビクトリア', 'general': general, 'step': step}
         mem['orders'][step] = 'launched'
     return mem
@@ -332,7 +333,7 @@ def test_an_overdue_move_still_suppresses_refills_and_binds_on_later_read():
     mem = victoria_drain()
     step = 'I:0fa434:2'
     mem['sorties'][step].update(status='overdue', purpose='move')
-    mem['launched_orders'].pop(step)                  # relaunch pops the snapshot
+    _world(mem)['launched_orders'].pop(step)                  # relaunch pops the snapshot
     assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {
         'I:0fa434:2', 'I:49a839:1'}
     assert not moves_into(mem, 'ビクトリア')
@@ -345,7 +346,7 @@ def test_an_overdue_non_move_march_is_not_an_unread_dispatch():
     mem = victoria_drain()
     step = 'I:0fa434:2'
     mem['sorties'][step].update(status='overdue')
-    mem['launched_orders'][step]['purpose'] = 'attack'
+    _world(mem)['launched_orders'][step]['purpose'] = 'attack'
     assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {'I:49a839:1'}
     routes.observed_roster(mem, 'ビクトリア', ['アポロン'])
     assert mem['sorties'][step]['status'] == 'overdue'
@@ -575,7 +576,7 @@ def test_a_read_list_ends_the_probe_and_the_found_generals_sortie_from_there():
 def test_a_transfer_still_marching_is_waited_for_before_the_list_is_opened():
     mem = aiaie_stall()
     mem['sorties']['A:86477f11:M3'].update(status='en_route', tick=mem['tick'] - 50)
-    mem['launched_orders']['A:86477f11:M3'] = {
+    _world(mem)['launched_orders']['A:86477f11:M3'] = {
         'purpose': 'move', 'source': 'アルマムーン', 'target': 'アイアイエー',
         'general': 'ラビオリ', 'step': 'A:86477f11:M3'}
     assert routes.incoming(mem, 'アイアイエー')

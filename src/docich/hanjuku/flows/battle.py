@@ -5,7 +5,7 @@ tactic or rescue is due, opens the command menu for it and settles the record
 when the battle ends.
 """
 from __future__ import annotations
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 import re
 import time
@@ -1518,7 +1518,7 @@ def message_step(screen: Screen, mem):
         general, castle = m.groups()
         observe_chapter_castle(mem, castle)
         castle = _castle_label(mem, castle)
-        launched = (mem.get('launched') or {}).get(castle) or {}
+        launched = (_world(mem).get('launched') or {}).get(castle) or {}
         current = mem.get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
         if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
