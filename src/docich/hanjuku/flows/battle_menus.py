@@ -26,7 +26,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first,
-                               _monster_chikyu_choice, _monster_lampkin_choice,
+                               _monster_chikyu_choice, _monster_lampkin_choice, _lampkin_menu, _lampkin_forced_kind,
                                _monster_attack_policy_default)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
@@ -1631,6 +1631,39 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
     return action
 
 
+LAMPKIN_PERIOD = 4        # かぼちゃ once, then へんなおどり x3, repeated (owner 2026-11-02)
+LAMPKIN_SEND_WINDOW = 4   # observations in which one confirm is still the same turn
+
+
+def lampkin_cycle_choice(mem, enemy):
+    """The cycle's skill for this turn: skill2 (かぼちゃ) on 0, 4, 8..., else skill1.
+
+    The count advances only when a command is sent (``lampkin_command_selected``),
+    so a menu that flickers or is redrawn between the decision and the press
+    cannot skip ahead. For a few observations after a send the sent skill stays
+    latched, so a menu still on screen does not change the pending turn.
+    """
+    name = enemy.name if enemy is not None else None
+    cyc = mem.get('lampkin_cycle')
+    if not isinstance(cyc, dict) or cyc.get('enemy') != name:
+        cyc = mem['lampkin_cycle'] = {'enemy': name, 'n': 0}   # a new opponent restarts it
+    tick, sent = int(mem.get('tick') or 0), cyc.get('sent_tick')
+    if type(sent) is int and 0 <= tick - sent < LAMPKIN_SEND_WINDOW and cyc.get('latched'):
+        return cyc['latched']
+    return 'skill2' if cyc.get('n', 0) % LAMPKIN_PERIOD == 0 else 'skill1'
+
+
+def lampkin_command_selected(mem, enemy, action):
+    cyc = mem.get('lampkin_cycle')
+    if not isinstance(cyc, dict) or cyc.get('enemy') != (enemy.name if enemy is not None else None):
+        return
+    tick, sent = int(mem.get('tick') or 0), cyc.get('sent_tick')
+    if (type(sent) is int and 0 <= tick - sent < LAMPKIN_SEND_WINDOW
+            and cyc.get('latched') == action):
+        return                                    # the same confirm, seen again
+    cyc.update(n=int(cyc.get('n') or 0) + 1, sent_tick=tick, latched=action)
+
+
 def monster_menu_step(screen: Screen, mem):
     """Our summoned monster's own turn: a skill menu with independent judgment.
 
@@ -1768,8 +1801,10 @@ def monster_menu_step(screen: Screen, mem):
     # #3071: ちきゅうちゃん self-destructs only into a lone general.
     chikyu = _monster_chikyu_choice(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
-    lampkin = _monster_lampkin_choice(
-        owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    lampkin_skills = [''.join(line.known.split()) for line in skill_lines]
+    lampkin_forced = _monster_lampkin_choice(owner, ally, enemy, lampkin_skills)
+    lampkin_cycle = (_lampkin_menu(owner, ally, lampkin_skills) and lampkin_forced is None)
+    lampkin = lampkin_forced or (lampkin_cycle_choice(mem, enemy) if lampkin_cycle else None)
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
     # Each named monster has an ordered two-skill table. When one label is
     # partly unreadable, requiring both exact OCR matches accidentally falls
@@ -1943,8 +1978,16 @@ def monster_menu_step(screen: Screen, mem):
             else:
                 why = '「ミカンをおす」を1回送信済みのため、次の選択で自爆の「あたためる」を選ぶ'
         elif lampkin:
-            label = first
-            why = 'ボスモンスターに「かぼちゃ」はきかないため、つねに「へんなおどり」を選ぶ（オーナー 2026-11-02）'
+            label = second if action == 'skill2' else first
+            kind = _lampkin_forced_kind(enemy)
+            if kind == 'boss':
+                why = 'ボスモンスターに「かぼちゃ」はきかないため、つねに「へんなおどり」を選ぶ（オーナー 2026-11-02）'
+            elif kind == 'hp1':
+                why = '相手のHPが1でそのまま押し切れるため、「かぼちゃ」を使わず「へんなおどり」を選ぶ（オーナー 2026-11-02）'
+            else:
+                n = int((mem.get('lampkin_cycle') or {}).get('n') or 0)
+                why = (f'「かぼちゃ」1回→「へんなおどり」{LAMPKIN_PERIOD - 1}回の繰り返し'
+                       f'（{n % LAMPKIN_PERIOD + 1}/{LAMPKIN_PERIOD}ターン目、オーナー 2026-11-02）')
         elif chikyu:
             label = second if action == 'skill2' else first
             why = ('自爆は将軍と兵士を確定で全滅させるため、敵将軍だけの今ハルマゲドンで決着させる'
@@ -2023,4 +2066,6 @@ def monster_menu_step(screen: Screen, mem):
         omedetori_command_selected(
             mem, ally, enemy, action,
             cursor_confirmed=(screen.menu_cursor == target))
+    if lampkin_cycle and action in ('skill1', 'skill2'):
+        lampkin_command_selected(mem, enemy, action)
     return [pad('a')]

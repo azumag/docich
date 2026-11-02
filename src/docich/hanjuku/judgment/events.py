@@ -136,25 +136,40 @@ def _monster_chikyu_choice(owner, ally, enemy, skills):
     return None
 
 
-def _monster_lampkin_choice(owner, ally, enemy, skills):
-    """ランプキン never wastes a turn on かぼちゃ against a boss.
+def _lampkin_menu(owner, ally, skills):
+    """Our ランプキン with its owned two-skill menu (へんなおどり, かぼちゃ)."""
+    return bool(owner == 'ally' and ally is not None and ally.name == 'ランプキン'
+                and len(skills) == 2
+                and [_fold_skill(s) for s in skills]
+                == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ランプキン']])
 
-    Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので、つねに
-    「へんなおどり」をえらぶ. かぼちゃ is skill2 of the reference pair, so a
-    chapter boss or named boss-general opponent always takes skill1. Only an
-    owned complete two-skill menu enables the override; a general, ordinary
-    monster or unread panel keeps the existing policy.
+
+def _lampkin_forced_kind(enemy):
+    """Why かぼちゃ is pointless this turn: 'boss' or 'hp1', else None.
+
+    Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので「へんなおどり」
+    一択。相手のHPが1なら、そのまま押し切れるので「へんなおどり」一択。
     """
-    if not (owner == 'ally' and ally is not None and enemy is not None
-            and ally.name == 'ランプキン'
-            and len(skills) == 2
-            and [_fold_skill(s) for s in skills]
-            == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ランプキン']]):
+    if enemy is None:
         return None
     name = _monster_display_name(enemy.name)
     if name in chart.BOSSES.values() or name in reference.BOSS_GENERALS:
-        return 'skill1'
+        return 'boss'
+    if type(enemy.hp) is int and enemy.hp == 1:
+        return 'hp1'
     return None
+
+
+def _monster_lampkin_choice(owner, ally, enemy, skills):
+    """ランプキン takes へんなおどり (skill1) when かぼちゃ is pointless.
+
+    A chapter boss / named boss-general opponent, or an opponent left at 1 HP,
+    always takes skill1. Only an owned complete two-skill menu enables the
+    override; any other turn follows the かぼちゃ cycle in ``battle_menus``.
+    """
+    if not _lampkin_menu(owner, ally, skills) or _lampkin_forced_kind(enemy) is None:
+        return None
+    return 'skill1'
 
 
 def _monster_display_name(name):
