@@ -62,6 +62,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
     'sortie_departure_requested','sortie_departure_input_sent','sortie_departure_resend','sortie_departure_not_accepted',
+    'sortie_launch_confirmed','sortie_launch_unverified','sortie_launch_failed',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
