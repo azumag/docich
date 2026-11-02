@@ -1838,6 +1838,25 @@ EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 
 DEFENDER_EGG_OPEN_LIMIT = 3
 
 
+def _one_hit_lethal(cur):
+    """The next push already wins: no okunote, egg or card is worth spending.
+
+    Owner 2026-11-02: 相手のHPが1で、一回ぶつかれば勝てるのでこの場合は
+    おくのても卵も切り札もいらない. An edge hit costs at least
+    ``EGG_WALL_DAMAGE`` HP, so an enemy at or below it dies to one push.
+    Only a complete, current battle panel counts (``_card_battle_reading``
+    clears the unread flags on one): a stale HP, a summon or an egg battle
+    is not evidence that the enemy general is one hit from defeat.
+    """
+    if not isinstance(cur, dict):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
+            and type(hp) is int and hp > EGG_WALL_DAMAGE
+            and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+                     or cur.get('egg_battle') or cur.get('card_summon_observed')))
+
+
 def _defender_egg_window(mem, cur, *, menu_open=False):
     """A measured eggless defender's deadline before the next enemy summon.
 

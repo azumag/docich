@@ -28,6 +28,7 @@ from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _bro
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
                                next_order, parked_boss_steps)
 from ..strategy.replan import _off_chart
+from .result import FlowResult
 
 
 def observe_sortie_transition(screen, mem, previous_kind=None):
@@ -678,7 +679,7 @@ def target_step(screen: Screen, mem, frame):
         if request.get('step') != order['step']:
             mem.pop('departure_request', None)   # a reservation of another order owns nothing
         else:
-            return _departure_request_step(screen, mem, order, request)
+            return _departure_request_step(screen, mem, order, request).actions
     goal = _measured_goal(mem, order, order['target'])
     if goal is None:
         return []
@@ -822,20 +823,24 @@ def _release_departure_request(mem, order, request, reason):
     misses = mem.setdefault('departure_miss', {})
     misses[step] = int(misses.get(step) or 0) + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
-        misses.pop(step, None)
+        used = misses.pop(step)
         context = {k: v for k, v in (request.get('context') or {}).items()
                    if k != 'deviation_reason'}
         _finish_order(mem, 'failed', **context, target=order['target'],
                       deviation_reason='出撃要求が送信・受理されない',
                       observed_metric={'request_misses': DEPARTURE_REQUEST_LIMIT},
                       reason='出撃Aが送信・受理されないまま要求の上限に達したため指示を失敗にする')
-        return [pad('b')]
+        return FlowResult('departure_request', 'release', [pad('b')], reason,
+                          retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
+                          permitted_recovery='none')
     _record(mem, 'sortie_departure_not_accepted', chart_step=step,
             **(request.get('context') or {}),
             observed_metric={'request_misses': misses[step]},
             resulting_event='request_released_unconfirmed',
             reason=reason)
-    return []
+    return FlowResult('departure_request', 'release', [], reason,
+                      retry={'used': misses[step], 'limit': DEPARTURE_REQUEST_LIMIT},
+                      permitted_recovery='reconfirm')
 
 
 def _departure_request_step(screen, mem, order, request):
@@ -848,7 +853,8 @@ def _departure_request_step(screen, mem, order, request):
     """
     if screen.kind != 'map_target':
         # Leaving the picker is settled by observe_sortie_transition.
-        return []
+        return FlowResult('departure_request', 'commit_pending', [],
+                          'ピッカー外への遷移は観測層が確定する', permitted_recovery='none')
     if _departure_receipt_sent(mem, request):
         request['status'] = 'sent'
         request.pop('unknown_reads', None)
@@ -862,7 +868,10 @@ def _departure_request_step(screen, mem, order, request):
         if reads >= DEPARTURE_SENT_HOLD_LIMIT:
             return _release_departure_request(mem, order, request,
                 '送信記録のある出撃Aの後も出撃先選択が閉じないため、受理を断定せず要求を解放する')
-        return []
+        return FlowResult('departure_request', 'hold', [],
+                          '送信済み・受理未確認のため再観測を待つ',
+                          retry={'used': reads, 'limit': DEPARTURE_SENT_HOLD_LIMIT},
+                          permitted_recovery='reobserve')
     receipt = mem.get('_departure_input')
     trace = request.get('request_trace') or {}
     if trace and isinstance(receipt, dict) and receipt.get('request_trace') == trace:
@@ -879,14 +888,20 @@ def _departure_request_step(screen, mem, order, request):
                     observed_metric={'resends': request['resends']},
                     resulting_event='unsent_retry',
                     reason='送信ジャーナルにこの出撃Aが無いことを確認したため同じ要求を再送する')
-            return [pad('a')]
+            return FlowResult('departure_request', 'input', [pad('a')],
+                              '未送信が証明された要求の再送',
+                              retry={'used': request['resends'], 'limit': DEPARTURE_RESEND_LIMIT},
+                              permitted_recovery='resend')
         return _release_departure_request(mem, order, request,
             '出撃Aが送信記録に現れず再送の上限に達したため要求を解放する')
     reads = request['unknown_reads'] = int(request.get('unknown_reads') or 0) + 1
     if reads >= DEPARTURE_UNKNOWN_HOLD_LIMIT:
         return _release_departure_request(mem, order, request,
             '送信receiptを照合できないまま出撃先選択が残るため要求を解放する')
-    return []
+    return FlowResult('departure_request', 'hold', [],
+                      'receipt不明のため盲目再送せず保留',
+                      retry={'used': reads, 'limit': DEPARTURE_UNKNOWN_HOLD_LIMIT},
+                      permitted_recovery='none')
 
 
 

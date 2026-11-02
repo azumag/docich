@@ -22,7 +22,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
-                               _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
+                               _migrate_card_evidence, _one_hit_lethal, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
@@ -678,6 +678,17 @@ def battle_menu_step(screen: Screen, mem):
     _card_battle_reading(screen, cur, mem)
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
+    if _one_hit_lethal(cur):
+        # A menu that is already open (or opened before the HP fell): close it
+        # unused. battle_step opens none while the enemy is one push from death.
+        if (cur.get('card_flow') or {}).get('stage') != 'announce':
+            cur['card_flow'] = None
+        if not cur.get('one_hit_menu_closed'):
+            cur['one_hit_menu_closed'] = True
+            _record(mem, 'battle_one_hit_menu_close', **_battle_labels(cur),
+                    observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
+                    reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る')
+        return [pad('b')]
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
     if any(w in BATTLE_MENU for _, _, w in _options(screen)):
@@ -1066,6 +1077,9 @@ def card_list_step(screen: Screen, mem):
     cur = mem.get('battle') or {}
     _card_battle_reading(screen, cur, mem)
     flow = cur.get('card_flow')
+    if _one_hit_lethal(cur) and not (flow and flow.get('stage') == 'announce'):
+        cur['card_flow'] = None
+        return [pad('b')]  # an unselected list closes unused: the next push wins
     names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
     if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
