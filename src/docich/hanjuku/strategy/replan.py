@@ -19,6 +19,41 @@ from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted
                                _unplaced_castle_generals)
 
 
+MARCH_BLOCK_RADIUS = 48    # px: an own castle this near the straight march stops it
+
+
+def _march_blocked(chapter, source, target, owned):
+    """An own castle lying near the straight march stops the army inside it.
+
+    g1097 2026-11-02 (owner: オトラントから出ないとかいけつにならない):
+    every アルマムーン→クロチェット march was absorbed at オトラント — the
+    own castle sitting on the path — while the only measured arrival was the
+    オトラント-launched 5-Z2; アルマムーン→プトレマイス stalled at バスカビル
+    the same way. Blocking is checked geometrically from measured coords.
+    """
+    castles = chart.castles(chapter)
+    try:
+        sx, sy = castles[source]
+        tx, ty = castles[target]
+    except (KeyError, TypeError):
+        return False
+    dx, dy = tx - sx, ty - sy
+    seg2 = dx * dx + dy * dy
+    if not seg2:
+        return False
+    for c in owned - {source, target}:
+        pos = castles.get(c)
+        if not pos:
+            continue
+        cx, cy = pos
+        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
+        if not 0.05 < t < 0.95:
+            continue
+        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
+            return True
+    return False
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -41,13 +76,18 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     if chapter == 3:
         owned = {c for c in owned if routes.allowed(mem, c, target)}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
-    # castle that keeps somebody behind is required, then the nearest goes.
+    # castle that keeps somebody behind is required. Owner 2026-11-02: an
+    # own castle lying on the march stops the army inside (アルマムーン →
+    # クロチェット enters オトラント; every measured アルマムーン-launch
+    # stalled while the only arrival was オトラント-launched 5-Z2), so a
+    # source whose path crosses another own castle ranks behind a clear one.
     need = 1 if allow_sole else 2
     excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
                 if allow_sole else set())
     staffed = sorted((c for c in owned if len(set(free[c])) >= need
                       and _spares(free[c], unavailable_for_attack, sole) and c not in excluded),
-                     key=lambda c: _distance(chapter, c, target))
+                     key=lambda c: (_march_blocked(chapter, c, target, owned),
+                                    _distance(chapter, c, target)))
     if staffed:
         return staffed[0], _spares(free[staffed[0]], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
