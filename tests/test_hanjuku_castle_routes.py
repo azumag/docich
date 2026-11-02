@@ -396,3 +396,35 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
     cands = list(replan.interim_candidates(mem).values())
     kuro = next(c for c in cands if c.get('target') == 'クロチェット')
     assert (kuro['source'], kuro['general']) == ('オトラント', 'グレナデン')
+
+
+def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():
+    """Owner 2026-11-02 (g1097): a pending order baked with アルマムーン→
+    クロチェット can never arrive — next_order re-points it at オトラント."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'], 'lost': [],
+           'orders': {'A:x:J1': 'pending'},
+           'launched_orders': {'A:x:J1': {'step': 'A:x:J1', 'source': 'アルマムーン',
+                                          'target': 'クロチェット', 'general': 'エピィ',
+                                          'cards': [], 'after': None}},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ'], 'オトラント': ['グレナデン'],
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    orders.next_order(mem)
+    assert mem['source_override']['A:x:J1'] == 'オトラント'
+    rec = next(r for r in mem['_records'] if r['decision'] == 'sortie_source_march_block')
+    assert rec['expected_metric']['source'] == 'アルマムーン'
+    assert rec['observed_metric']['blocker'] == 'オトラント'
+
+
+def test_a_clear_pending_order_keeps_its_baked_source():
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント'], 'lost': [],
+           'orders': {'A:x:J1': 'pending'},
+           'launched_orders': {'A:x:J1': {'step': 'A:x:J1', 'source': 'オトラント',
+                                          'target': 'クロチェット', 'general': 'グレナデン',
+                                          'cards': [], 'after': None}},
+           'garrison': {'アルマムーン': ['どうし'], 'オトラント': ['グレナデン']},
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    orders.next_order(mem)
+    assert 'source_override' not in mem or 'A:x:J1' not in mem['source_override']

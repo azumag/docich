@@ -19,66 +19,15 @@ from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted
                                _unplaced_castle_generals)
 
 
-MARCH_BLOCK_RADIUS = 48    # px: an own castle this near the straight march stops it
-
-
 def _march_blocked(chapter, source, target, owned):
-    """An own castle lying near the straight march stops the army inside it.
-
-    g1097 2026-11-02 (owner: オトラントから出ないとかいけつにならない):
-    every アルマムーン→クロチェット march was absorbed at オトラント — the
-    own castle sitting on the path — while the only measured arrival was the
-    オトラント-launched 5-Z2; アルマムーン→プトレマイス stalled at バスカビル
-    the same way. Blocking is checked geometrically from measured coords.
-    """
-    castles = chart.castles(chapter)
-    try:
-        sx, sy = castles[source]
-        tx, ty = castles[target]
-    except (KeyError, TypeError):
-        return False
-    dx, dy = tx - sx, ty - sy
-    seg2 = dx * dx + dy * dy
-    if not seg2:
-        return False
-    for c in owned - {source, target}:
-        pos = castles.get(c)
-        if not pos:
-            continue
-        cx, cy = pos
-        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
-        if not 0.05 < t < 0.95:
-            continue
-        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
-            return True
-    return False
+    # Chapter 3 marches follow the road table (``routes``), not the straight
+    # line — an own castle off the road is no blocker even when it sits on
+    # the segment.
+    return chapter != 3 and chart.march_blocked(chapter, source, target, owned)
 
 
 def _march_blocker(chapter, source, target, owned):
-    """The own castle nearest the target lying on the march, or None."""
-    castles = chart.castles(chapter)
-    try:
-        sx, sy = castles[source]
-        tx, ty = castles[target]
-    except (KeyError, TypeError):
-        return None
-    dx, dy = tx - sx, ty - sy
-    seg2 = dx * dx + dy * dy
-    if not seg2:
-        return None
-    best = None
-    for c in owned - {source, target}:
-        pos = castles.get(c)
-        if not pos:
-            continue
-        cx, cy = pos
-        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
-        if not 0.05 < t < 0.95:
-            continue
-        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
-            if best is None or t > best[0]:
-                best = (t, c)
-    return best[1] if best else None
+    return chart.march_blocker(chapter, source, target, owned) if chapter != 3 else None
 
 
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):

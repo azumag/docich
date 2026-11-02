@@ -799,6 +799,42 @@ def _relaunch_overdue_boss(mem):
 MARCH_RELAUNCH_LIMIT = 2                       # non-boss sorties sent again per step
 
 
+def _redirect_blocked_sources(mem):
+    """Re-point a pending order whose baked source lies behind an own castle.
+
+    Owner 2026-11-02 (g1097): orders planned with source アルマムーン keep
+    re-launching into オトラント, which absorbs every march toward
+    クロチェット — the blocker is the real launch point, exactly the way a
+    transit-continue re-issues an order from the castle its general stopped
+    in. Interim candidates already prefer a clear source; this fixes orders
+    whose source was baked before that preference (or by an older plan).
+    Chapter 3 marches follow the road table, not the straight line, so the
+    geometric check does not apply there.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter == 3:
+        return
+    owned = _owned(mem) & set(chart.castles(chapter))
+    overrides = mem.setdefault('source_override', {})
+    status = mem.get('orders') or {}
+    seen = set()
+    for order in [*_orders(mem), *(mem.get('launched_orders') or {}).values()]:
+        step = order.get('step')
+        if (not step or step in seen or step in overrides
+                or status.get(step) != 'pending'):
+            continue
+        seen.add(step)
+        source, target = order.get('source'), order.get('target')
+        blocker = (source and target
+                   and chart.march_blocker(chapter, source, target, owned))
+        if blocker:
+            overrides[step] = blocker
+            _record(mem, 'sortie_source_march_block', chart_step=step,
+                    expected_metric={'source': source, 'target': target},
+                    observed_metric={'blocker': blocker},
+                    reason='出撃元と目標の間に自城があり行軍がそこに吸収されるため、その城を発射元にする')
+
+
 def _relaunch_overdue_march(mem):
     """Settle a non-boss march that never arrived, the way the boss rule does.
 
@@ -850,6 +886,7 @@ def _relaunch_overdue_march(mem):
 def next_order(mem):
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
+    _redirect_blocked_sources(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
