@@ -505,3 +505,36 @@ def test_visible_dirty_target_is_read_before_walking_to_an_offscreen_head():
     # Nothing visible (or an unreadable cursor) keeps the existing head search.
     assert pick(['アポロ', 'ゼウス'], ['どうし'], 'どうし') == 'アポロ'
     assert pick(['アポロ', 'ゼウス'], names, '??') == 'アポロ'
+
+
+def _walk_cost(names):
+    """Observations and inputs of one full status walk on synthetic frames."""
+    from test_hanjuku_house import memory
+    mem = memory('roster')
+    r.begin(mem, mem['house'])
+    steps = []
+
+    def feed(frame):
+        actions = house.step(parse(frame), mem, None)
+        steps.append(actions)
+        return actions
+    feed(roster(names, 0))
+    for i, name in enumerate(names):
+        feed(status(name, 'エラベルエッグ4'))
+        feed(roster(names, i))
+        feed(roster(names, (i + 1) % len(names)))
+    return steps
+
+
+@pytest.mark.parametrize('count', [2, 3, 4])
+def test_full_status_walk_never_spends_an_observation_without_input(count):
+    """Issue #3194 (39): operation-count regression guard.
+
+    The walk reads each general in three observations (A, B, Down) and the
+    wrapped list closes with one B; an observation that issues nothing means a
+    state hop is waiting for a frame it does not need (cf. #3194 item 18).
+    """
+    names = ['どうし', 'ゼウス', 'ヴィーナス', 'ヘルメス'][:count]
+    steps = _walk_cost(names)
+    assert len(steps) == 3 * count + 1
+    assert all(len(actions) == 1 for actions in steps)
