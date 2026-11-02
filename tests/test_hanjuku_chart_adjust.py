@@ -1353,9 +1353,11 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     receipt, mem = g514_locked_plan()
     # Since 2026-11-02 the boss order opens once its own chain is captured
     # (PR #3199); this fixture's chain is complete, so the boss order would
-    # be live. Gate it to preserve the scenario under test — an adopted
-    # plan whose remaining orders are all waiting.
+    # be live. Gate it — and the #3203 wave candidate that shares the same
+    # precondition — to preserve the scenario under test: an adopted plan
+    # whose remaining orders are all waiting.
     monkeypatch.setattr(_orders_mod, '_boss_path_captured', lambda m: False)
+    monkeypatch.setattr(chart, 'boss_castle', lambda chapter: None)
     before = copy.deepcopy(mem)
     rid = adjust.request_id(mem)
     assert rid == mem['chart_plan']['request_id'] == mem['chart_adjust']['request_id']
