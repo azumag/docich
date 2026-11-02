@@ -44,6 +44,30 @@ def _bool_token(value):
     return "unknown"
 
 
+def _fixed_hanjuku_pending(rotation):
+    pending = _fixed_bool(rotation.get("manual_pending"))
+    if pending is False:
+        return False
+    if pending is not True:
+        return None
+    corner = rotation.get("manual_pending_corner")
+    if corner == "hanjuku-hero":
+        return True
+    # Only return a negative answer for a collector-projected fixed string.
+    # Missing/non-string data stays unknown rather than becoming permission.
+    return False if isinstance(corner, str) else None
+
+
+def _fixed_active_hanjuku(corners):
+    game_switch = corners.get("game_switch")
+    if not isinstance(game_switch, dict):
+        return None
+    active_game = game_switch.get("active_game")
+    if active_game == "hanjuku-hero":
+        return True
+    return False if isinstance(active_game, str) else None
+
+
 def project(payload):
     if not isinstance(payload, dict):
         raise ValueError("invalid_diagnostics")
@@ -82,14 +106,17 @@ def project(payload):
 
     # A manual Hanjuku start may be safely queued before the bot process exists.
     # In that state hanjuku_tactical legitimately has no chapter, so expose the
-    # existing diagnostics collector's already-sanitized rotation booleans as
-    # fixed tokens. This distinguishes "reservation is still waiting" from a
-    # missing/active bot without leaking request ids, timestamps or free text.
+    # existing diagnostics collector's already-sanitized fixed booleans.  The
+    # manual_pending bit is distinct from pending/queued_manual: omitting it made
+    # a stuck reservation look as if it had left the queue and started (#3279
+    # follow-up).  active_hanjuku is derived as a boolean only; the active game
+    # name itself never crosses this owner-only projection.
     corners = diagnostics.get("corners") if isinstance(diagnostics.get("corners"), dict) else {}
     rotation = corners.get("corner_rotation") if isinstance(corners.get("corner_rotation"), dict) else {}
     rotation_status = rotation.get("status")
     if rotation_status not in ROTATION_STATUSES:
         rotation_status = "unknown"
+    manual_pending = _fixed_bool(rotation.get("manual_pending"))
 
     return {
         "status": status,
@@ -102,6 +129,9 @@ def project(payload):
             "status": rotation_status,
             "pending": _fixed_bool(rotation.get("pending")),
             "queued_manual": _fixed_bool(rotation.get("queued_manual")),
+            "manual_pending": manual_pending,
+            "manual_pending_hanjuku": _fixed_hanjuku_pending(rotation),
+            "active_hanjuku": _fixed_active_hanjuku(corners),
         },
     }
 
@@ -128,6 +158,9 @@ def reply(projected, env):
             f"`status={rotation['status']}`",
             f"`pending={_bool_token(rotation['pending'])}`",
             f"`queued_manual={_bool_token(rotation['queued_manual'])}`",
+            f"`manual_pending={_bool_token(rotation['manual_pending'])}`",
+            f"`manual_pending_hanjuku={_bool_token(rotation['manual_pending_hanjuku'])}`",
+            f"`active_hanjuku={_bool_token(rotation['active_hanjuku'])}`",
         )),
         "Boss orders: " + ", ".join(f"`{step}={orders[step]}`" for step in STEPS),
         f"Active boss order: `{projected['active'] or 'none'}`",
