@@ -27,13 +27,30 @@ def test_full_suite_runs_every_test_on_the_supported_python():
     assert "          python-version: '3.12'\n" in text
     command = next(line.strip()[5:] for line in text.splitlines()
                    if line.strip().startswith('run: python3 -m pytest'))
-    assert command.split() == ['python3', '-m', 'pytest', '-q',
+    assert command.split() == ['python3', '-m', 'pytest', '-q', '-p', 'ci_shard',
                                '$(python3', '.github/scripts/ci_test_scope.py', 'targets',
                                '"$TEST_SUITE")',
                                '--durations=50', '--durations-min=0.1',
                                '-n', '4', '--dist', 'loadfile',
                                '--ignore=tests/test_hanjuku_scene_process.py']
     assert 'continue-on-error:' not in text
+
+
+def test_the_suite_is_cut_into_two_shards_that_each_keep_the_whole_contract():
+    text = WORKFLOW.read_text()
+    job = text.split('\n  full-suite:\n', 1)[1].split('\n  ci-required:', 1)[0]
+    # Two runners, neither of which may cancel the other: a red shard must not hide
+    # a second red shard, and ci-required reads the aggregate result of the matrix.
+    assert '      fail-fast: false\n' in job
+    assert '        shard: [1, 2]\n' in job
+    assert '      CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}\n' in job
+    assert 'PYTHONPATH: .github/scripts' in job
+    # The one-thread file is outside the sharded collection, so exactly one shard runs it.
+    assert job.count('tests/test_hanjuku_scene_process.py') >= 2
+    serial = job.split('      - name: Single-threaded scene-process contracts (serial)\n', 1)[1]
+    assert '        if: matrix.shard == 1\n' in serial.split('        run:', 1)[0]
+    # The shard plugin ships beside the scope script it is loaded from.
+    assert (WORKFLOW.parent.parent / 'scripts/ci_shard.py').is_file()
 
 
 def test_every_run_outside_a_pull_request_is_the_full_suite():

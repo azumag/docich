@@ -56,7 +56,7 @@ jobs:
         run: python3 .github/scripts/ci_test_scope.py decide --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
   full-suite:
-    name: ${{ needs.test-scope.outputs.suite == 'hanjuku' && 'hanjuku-suite' || 'full-suite' }}
+    name: ${{ needs.test-scope.outputs.suite == 'hanjuku' && 'hanjuku-suite' || 'full-suite' }} (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: test-scope
     if: needs.test-scope.outputs.suite != 'none'
     # Hermetic full-suite contract (issue #79): every tests/test_*.py runs
@@ -66,16 +66,23 @@ jobs:
     # tempfile isolation; tests needing live external state (real tmux
     # server, submodules, browsers, /proc identity) must inject fakes or
     # declare an explicit opt-in/skip gate, never fail the suite.
-    # The suite is spread over 4 pytest-xdist workers to match the runner's
-    # 4 vCPUs (2 cores with hyper-threading, and the CPU model varies by run,
-    # which alone moves this step between about 6 and 12 minutes). Collection
-    # must stay deterministic: a test whose node ids
+    # The suite is cut into two file-level shards that run on separate runners
+    # (.github/scripts/ci_shard.py), each spread over 4 pytest-xdist workers to
+    # match the runner's 4 vCPUs (2 cores with hyper-threading, and the CPU model
+    # varies by run, which alone moves one runner between about 6 and 12 minutes).
+    # The repository is public, so a second runner costs no minutes; it halves the
+    # time to a result. Collection must stay deterministic: a test whose node ids
     # depend on uuid4()/time at import time makes the workers disagree and
     # pytest-xdist aborts the entire run.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       TEST_SUITE: ${{ needs.test-scope.outputs.suite }}
+      CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -106,8 +113,12 @@ jobs:
           ffmpeg -version >/dev/null
           ffprobe -version >/dev/null
       - name: Full hermetic test suite (canonical pytest runner)
-        run: python3 -m pytest -q $(python3 .github/scripts/ci_test_scope.py targets "$TEST_SUITE") --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py
+        env:
+          PYTHONPATH: .github/scripts
+        run: python3 -m pytest -q -p ci_shard $(python3 .github/scripts/ci_test_scope.py targets "$TEST_SUITE") --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py
       - name: Single-threaded scene-process contracts (serial)
+        # Runs on shard 1 only; the file is not part of the sharded collection.
+        if: matrix.shard == 1
         # tests/test_hanjuku_scene_process.py proves the scene owner only runs
         # in a process with exactly one thread (/proc/self/task). Every
         # pytest-xdist worker carries an execnet receiver thread, so this file
