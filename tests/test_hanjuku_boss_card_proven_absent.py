@@ -62,15 +62,18 @@ def test_absence_needs_a_readable_id_ordered_proof(names, stocks, remaining, exp
     assert _card_proven_absent('クースカン', inventory) is expected
 
 
-def test_card_that_may_be_scrolled_off_cancels_without_weakening_the_boss_kit():
+def test_card_that_may_be_scrolled_off_is_dropped_without_cancelling_the_boss_kit():
+    """Owner 2026-11-02 (切り札不足でも延期しない): a strict card that cannot
+    be selected is left behind — the assault keeps running, never cancelled."""
     mem = memory()
     names = ('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール')
     mem['card_scroll'] = {'1-B1': policy.CARD_SCROLL_LIMIT}
-    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
-        assert policy.deploy_step(panel(names), mem) == []
-    assert policy.deploy_step(panel(names), mem) == [policy.pad('b'), policy.pad('b')]
-    assert not mem.get('card_drop')
-    assert mem['_records'][-1]['decision'] == 'boss_card_selection_unconfirmed'
+    for _ in range(policy.CARD_MISS_LIMIT + 2):
+        actions = policy.deploy_step(panel(names), mem)
+        assert actions == [] or actions == [policy.pad('b')]
+    assert mem.get('card_drop', {}).get('1-B1')
+    assert mem['active'] == '1-B1' and mem['orders']['1-B1'] == 'pending'
+    assert not mem.get('boss_stock_cancelled')
 
 
 def test_unreadable_boss_panel_cancels_without_dropping_any_card():
@@ -103,11 +106,14 @@ def test_top_boundary_requires_two_delivered_ups_and_unchanged_panel():
     assert mem['card_drop'] == {'1-B1': ['クースカン']}
 
 
-def test_no_input_receipt_never_proves_top_or_drops_required_card():
+def test_an_unselectable_required_card_is_dropped_not_cancelled():
+    """Owner 2026-11-02 (切り札不足でも延期しない): a strict card that stays
+    unselectable is left behind — the assault continues, never cancelled."""
     mem = memory()
     mem['_run_identity'] = {'game': 'hanjuku-hero', 'runtime_id': 'synthetic',
                             'generation': 1, 'lease_id': 'synthetic-lease'}
     screen = panel(('ゼンマイン', 'バルムンク', 'ミックミー', 'グルミー'), selected=0)
     for _ in range(policy.CARD_SCROLL_LIMIT + policy.CARD_UNREADABLE_LIMIT):
         policy.deploy_step(screen, mem)
-    assert not mem.get('card_drop')
+    assert mem.get('card_drop', {}).get('1-B1')
+    assert mem['active'] == '1-B1' and not mem.get('boss_stock_cancelled')

@@ -78,10 +78,16 @@ def test_strict_unverified_stock_or_capacity_has_one_budget_across_json_and_chan
             from test_hanjuku_sortie_evidence import actor_panel
             screen = actor_panel(screen, 'シェーブル')
         actions = p.deploy_step(screen, mem)
-        assert actions == ([] if i + 1 < p.CARD_UNREADABLE_LIMIT else [p.pad('b'), p.pad('b')])
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] is None
-    assert not mem.get('card_drop') and not mem.get('kit_spent')
-    assert p._deploy_cards(boss_order(), mem) == wanted
+        # Unselectable strict cards are dropped now, not cancelled — the
+        # assault continues with what is selectable (owner 2026-11-02:
+        # 切り札不足でも延期しない).
+        assert actions == [] or actions == [p.pad('b')]
+    # The strict kit's unselectable cards are left behind; the sortie
+    # keeps running with the rest — never cancelled for missing stock.
+    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+    assert not mem.get('boss_stock_cancelled')
+    if case != 'alternating':
+        assert mem.get('card_drop', {}).get('1-B1')
 
 
 def test_readable_live_required_card_at_the_deadline_still_uses_normal_selection():

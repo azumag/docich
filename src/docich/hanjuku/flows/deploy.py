@@ -1435,15 +1435,14 @@ def deploy_step(screen: Screen, mem):
                 # buys a short boss card back (strategy.boss_cards).
                 mem.setdefault('card_stock', {})[card] = 0
                 (mem.get(UNSEEN) or {}).pop(card, None)
-            # The base boss kit stays strict unless the panel proves the card
-            # is gone: holding for a card that does not exist never ends.
-            if not _strict_boss_cards(order, mem) or proven:
-                dropped = _drop_card(screen, mem, order, card, inventory)
-                if dropped is not None:
-                    return dropped
-            else:
-                return _hold_boss_card_selection(screen, mem, order,
-                    '必須切り札の正数在庫と携行余枠を確認できないため承認せず保留', card=card)
+            # A strict boss card that cannot be selected is dropped like any
+            # other unselectable card — the assault must not be deferred or
+            # cancelled for stock that cannot be bought anyway (owner
+            # 2026-11-02: マグネやファバードは屋台や中華商人でしか買えず、
+            # 切り札不足でも延期しない).
+            dropped = _drop_card(screen, mem, order, card, inventory)
+            if dropped is not None:
+                return dropped
             return _hold_deploy(screen, mem, order,
                                 '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
         if inventory['selected_y'] == row['y']:
@@ -1484,8 +1483,10 @@ def deploy_step(screen: Screen, mem):
         if ambiguous or got != want:
             misses = mem.setdefault('sortie_confirm_miss', {})
             misses[order['step']] = misses.get(order['step'], 0) + 1
-            if (not _strict_boss_cards(order, mem)
-                    and misses[order['step']] >= SORTIE_CONFIRM_LIMIT):
+            # Strict boss kits approve a readable carried kit too — the
+            # assault must not be cancelled over cards that cannot be bought
+            # anyway (owner 2026-11-02: 切り札不足でも延期しない).
+            if misses[order['step']] >= SORTIE_CONFIRM_LIMIT:
                 if carried is None:
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
