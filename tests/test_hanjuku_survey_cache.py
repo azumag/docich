@@ -492,3 +492,16 @@ def test_partial_status_read_is_tallied_per_general():
                     'status_targets': ['ゼウス'], 'selected': 'ゼウス'}
     house.step(parse(status('ゼウス', 'エラベルエッグ4')), mem, None)
     assert mem['obs_cost']['status_open_partial']['by_general'] == {'ゼウス': 1}
+
+
+def test_visible_dirty_target_is_read_before_walking_to_an_offscreen_head():
+    """Issue #3194 (12): registration order carries no urgency."""
+    names = ['どうし', 'ゼウス', 'ヴィーナス', 'ヘルメス']
+    pick = house._nearest_visible_target
+    assert pick(['アポロ', 'ヘルメス', 'ゼウス'], names, 'ヴィーナス') in {'ヘルメス', 'ゼウス'}
+    assert pick(['アポロ', 'ヘルメス', 'どうし'], names, 'ヴィーナス') == 'ヘルメス'
+    # A visible head is never displaced, so the oldest target cannot starve.
+    assert pick(['どうし', 'ヘルメス'], names, 'ヘルメス') == 'どうし'
+    # Nothing visible (or an unreadable cursor) keeps the existing head search.
+    assert pick(['アポロ', 'ゼウス'], ['どうし'], 'どうし') == 'アポロ'
+    assert pick(['アポロ', 'ゼウス'], names, '??') == 'アポロ'

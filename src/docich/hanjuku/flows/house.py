@@ -631,6 +631,24 @@ def _month_count(screen, mem, state, frame):
     return [pad('down')]
 
 
+def _nearest_visible_target(targets, names, selected):
+    """Issue #3194 (12): read a target already on screen before walking away.
+
+    ``targets`` keeps registration order, which carries no urgency. The head
+    stays first when it is visible (or nothing else is), so the oldest target
+    is never starved: every read removes one target and the list is finite.
+    Otherwise the visible target with the fewest cursor steps goes first.
+    """
+    head = targets[0]
+    if head in names:
+        return head
+    visible = [t for t in targets if t in names]
+    if not visible or selected not in names:
+        return head
+    here = names.index(selected)
+    return min(visible, key=lambda t: abs(names.index(t) - here))
+
+
 def _month_count_advance(screen, mem, state, frame):
     """Follow a list scroll without opening any general's status screen."""
     from ..os_layer.commands import pad
@@ -1157,7 +1175,7 @@ def _step_once(screen, mem, frame):
                 state['walk_from_top'] = selected == 'どうし' and screen.hand[1] == 33
             walked = state.setdefault('walk_names', [])
             walked.extend(n for n in names if n not in walked)
-            target = targets[0]
+            target = _nearest_visible_target(targets, names, selected)
             if target not in names:
                 if target in walked:
                     return [pad('up')]  # passed on the way to a lower target
