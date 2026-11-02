@@ -107,3 +107,76 @@ def test_attack_side_preempts_once_own_egg_is_observed_empty():
     mem = memory(side='attack', castle='けっかい', egg_empty=True)
     window = p._defender_summon_preempt(mem, mem['battle'])
     assert window['due'] and window['resources_basis'] == 'own_egg_empty_no_cards'
+
+
+# ---- owner 2026-11-02: 城防衛で対召喚獣戦、卵もない時はおくのて ----
+# g1097 18:03-18:06 ジュメルズ: ペコリーノ(卵なし)は敵の召喚獣ローラーキラーに
+# 卵戦で応戦し、卵が使えなくなった後も もうこうげき で HP0 まで戦った。
+def egg_menu_screen(mem, *, egg_row=False):
+    from dataclasses import replace
+    from test_hanjuku_naruto_damage import native
+    s = native(8549)
+    s.kind = 'egg_battle_menu'
+    s.text = 'こうげきもうこうげき' + ('たまごをつかう' if egg_row else '')
+    s.hand = None
+    s.egg_rows = [replace(r, name=mem['battle']['ally'], hp=40) if r.side == 'ally'
+                  else replace(r, name='ローラーキラー', hp=308) for r in s.egg_rows]
+    return s
+
+
+def egg_fight_memory(**battle):
+    mem = memory(chapter=5, enemy='ビシソワーズ', ally='ペコリーノ', ally_hp=40,
+                 castle='ジュメルズ')
+    mem['battle'].update(egg_battle=True, **battle)
+    mem['egg_battle'] = True
+    return mem
+
+
+def test_spent_egg_in_a_castle_defense_summon_fight_opens_the_okunote_menu():
+    mem = egg_fight_memory()
+    actions = p.egg_battle_step(egg_menu_screen(mem), mem)
+    cur = mem['battle']
+    assert actions == [p.pad('b')]
+    assert cur['summon_egg_unavailable'] is True
+    assert cur['okunote_summon_preempt']['opens'] == 1
+    assert any(r['decision'] == 'battle_okunote_summon_open' for r in mem['_records'])
+    assert p._defender_summon_preempt(mem, cur)['resources_basis'] == 'summon_menu_egg_unavailable'
+
+
+def test_the_open_is_bounded_and_then_the_old_attack_resumes():
+    mem = egg_fight_memory()
+    opens = 0
+    for _ in range(10):
+        actions = p.egg_battle_step(egg_menu_screen(mem), mem)
+        if actions == [p.pad('b')] and mem['battle']['okunote_summon_preempt']['opens'] > opens:
+            opens = mem['battle']['okunote_summon_preempt']['opens']
+        elif mem['battle']['okunote_summon_preempt'].get('exhausted'):
+            break
+    assert opens == p.DEFENDER_SUMMON_OPEN_LIMIT
+    # Exhausted: no further B is planned for the okunote from this panel.
+    assert mem['battle']['okunote_summon_preempt']['exhausted']
+    assert any(r['decision'] == 'battle_okunote_summon_open_failed' for r in mem['_records'])
+
+
+def test_a_usable_egg_row_keeps_the_egg_fight_and_never_opens_the_okunote():
+    mem = egg_fight_memory()
+    p.egg_battle_step(egg_menu_screen(mem, egg_row=True), mem)
+    assert not mem['battle'].get('summon_egg_unavailable')
+    assert 'okunote_summon_preempt' not in mem['battle']
+
+
+@pytest.mark.parametrize('changes', [
+    {'side': 'attack'},                  # only castle defense
+    {'enemy': 'クイーン'},               # boss kit keeps its own rules
+    {'ally': 'だいじん'},
+])
+def test_other_fights_keep_the_old_egg_battle_policy(changes):
+    mem = egg_fight_memory(**changes)
+    p.egg_battle_step(egg_menu_screen(mem), mem)
+    assert not mem['battle'].get('okunote_summon_preempt')
+
+
+def test_a_planned_card_still_to_play_comes_before_the_okunote():
+    mem = egg_fight_memory(planned_cards=['クースカン'])
+    p.egg_battle_step(egg_menu_screen(mem), mem)
+    assert not mem['battle'].get('okunote_summon_preempt')
