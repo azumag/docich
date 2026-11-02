@@ -8,6 +8,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def memory():
@@ -41,7 +42,7 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
 
 
 def test_hotload_migrates_verified_old_target_without_attempt():
-    mem = memory(); mem.pop('sortie_attempt')
+    mem = memory(); _flow(mem).pop('sortie_attempt')
     p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
     assert mem['orders']['1-A2'] == 'launched_unconfirmed'
 
@@ -54,11 +55,11 @@ def test_marker_return_resumes_same_target(active):
     p.observe_sortie_transition(screen('map_target'), mem, 'unknown')
     assert mem['active'] == '1-A2' and mem['orders']['1-A2'] == 'pending'
     assert not mem['sorties']
-    assert not mem['sortie_attempt'].get('interrupted')
+    assert not _flow(mem)['sortie_attempt'].get('interrupted')
 
 
 def test_confirm_before_any_target_is_not_departure():
-    mem = memory(); mem['sortie_attempt']['target_seen'] = False
+    mem = memory(); _flow(mem)['sortie_attempt']['target_seen'] = False
     p.observe_sortie_transition(screen('unknown'), mem, 'sortie_confirm')
     assert not mem.get('sorties')
 
@@ -71,7 +72,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
     assert mem['attack']['step'] == '1-A2'
     assert mem['orders']['1-A2'] == 'launched'
     assert mem['garrison']['アルマムーン'] == ['どうし']
-    assert not mem.get('sortie_attempt')
+    assert not _flow(mem).get('sortie_attempt')
 
 
 def test_ambiguous_general_does_not_bind_unknown_destination():

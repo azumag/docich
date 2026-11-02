@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
 from docich.trading.events import append_public_event  # noqa: E402
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 from docich.trading.notifications import (  # noqa: E402
     NotificationError,
     deliver_pending_notifications,

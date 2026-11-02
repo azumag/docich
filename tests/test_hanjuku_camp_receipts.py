@@ -15,6 +15,7 @@ from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'g514-8937051b', 'generation': 514, 'lease_id': 'lease-test'}
 
@@ -39,7 +40,7 @@ def pending():
     state = {'policy': {'chapter': 2, 'tick': 50, 'recall': {'stage': 'dest', 'steps': 0}}}
     actions, state = decide(frame, state)
     assert actions == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert state['policy']['recall']['goal'] == 'アルマムーン'
+    assert state['policy']['flow']['recall']['goal'] == 'アルマムーン'
     return actions, state
 
 
@@ -47,7 +48,7 @@ def pending():
 def test_recall_menu_uses_observed_cursor_instead_of_saved_down_count(selected, button):
     mem = {'chapter': 2, '_records': [], 'recall': {'stage': 'menu', 'steps': 0, 'downs': 3}}
     assert p.camp_recall_step(camp_menu(selected), mem, None) == [p.pad(button)]
-    assert mem['recall']['stage'] == ('dest' if selected == 3 else 'menu')
+    assert _flow(mem)['recall']['stage'] == ('dest' if selected == 3 else 'menu')
 
 
 def test_repeated_same_cursor_never_becomes_confirmation_and_stops_finitely():
@@ -56,7 +57,7 @@ def test_repeated_same_cursor_never_becomes_confirmation_and_stops_finitely():
     for _ in range(p.RECALL_LIMIT):
         assert p.camp_recall_step(screen, mem, None) == [p.pad('down')]
     assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
-    assert not mem.get('recall') and mem['recall_skip']['tick'] == 100
+    assert not _flow(mem).get('recall') and _flow(mem)['recall_skip']['tick'] == 100
 
 
 def test_missing_hand_and_partial_menu_never_use_legacy_down_then_a():
@@ -67,7 +68,7 @@ def test_missing_hand_and_partial_menu_never_use_legacy_down_then_a():
     assert p.camp_recall_step(screen, mem, None) == []
     assert p.camp_recall_step(screen, mem, None) == []
     assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     assert sum(r['decision'] == 'camp_menu_unread' for r in mem['_records']) == 1
 
 
@@ -78,7 +79,7 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
            'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}},
            'recall': {'stage': 'dest', 'steps': 0, 'hero': True, 'sorties': ['old']}}
     assert p.world_map_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
     assert mem['sorties']['old']['status'] == 'en_route'
     assert not any(r['decision'] in ('hero_recalled', 'camp_recall') for r in mem['_records'])
     # Same picker after the proposal must not get another pair of A's or Y.
@@ -96,15 +97,15 @@ def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_
     one = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert one['a_inputs'] == 1
     _, first = decide(frame, state, recall_inputs=one)
-    assert not first['policy']['recall'].get('input_sent')
+    assert not first['policy']['flow']['recall'].get('input_sent')
     hanjuku_run.action_sent(tmp_path, ID, action)
     receipt = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert receipt['a_inputs'] == 2
-    mem = state['policy']; mem['_records'] = []; mem['_recall_inputs'] = receipt
+    mem = state['policy']; mem['_records'] = []; _journal(mem)['_recall_inputs'] = receipt
     assert p.camp_recall_step(Screen([], None, '', kind='map'), mem, None) == []
-    assert not mem.get('recall')
-    assert mem['recall_verification']['input_sent'] and mem['recall_verification']['picker_closed']
-    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['recall_verification']['input_sent'] and _flow(mem)['recall_verification']['picker_closed']
+    assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
     assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_unconfirmed']
 
 
@@ -121,7 +122,7 @@ def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_co
 def test_receipt_reader_rejects_old_identity_frame_time_and_duplicate_lines(tmp_path):
     module = command_bot(); _, state = pending()
     trace = {**ID, 'decision_id': 'g514-8937051b:514:1', 'frame_sha256': picker().digest(), 'planned_at': 100}
-    state['policy']['recall']['request_trace'] = trace
+    state['policy']['flow']['recall']['request_trace'] = trace
     good = {'event': 'input_sent', 'decision_id': trace['decision_id'],
             'decision_frame_sha256': trace['frame_sha256'], 'at': 101,
             'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}
@@ -158,9 +159,9 @@ def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     for _ in range(5):
         assert p.world_map_step(view, mem, picker()) == []
     assert p.world_map_step(view, mem, picker()) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert not mem['recall_verification'].get('input_sent')
-    assert mem['recall_verification']['status'] == 'dispatch_unconfirmed'
+    assert not _flow(mem).get('recall')
+    assert not _flow(mem)['recall_verification'].get('input_sent')
+    assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
@@ -169,7 +170,7 @@ def test_unclassified_return_after_recall_does_not_get_legacy_a(monkeypatch,kind
     _,state=pending()
     monkeypatch.setattr(hanjuku_screen,'parse',lambda *_a,**_k:Screen([],None,'',kind=kind))
     actions,state=decide(picker(),state)
-    assert actions==[] and state['policy']['recall']['stage']=='await_dispatch'
+    assert actions==[] and state['policy']['flow']['recall']['stage']=='await_dispatch'
 
 
 @pytest.mark.parametrize('stage',['dest','await_dispatch'])

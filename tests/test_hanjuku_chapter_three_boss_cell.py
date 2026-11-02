@@ -31,6 +31,7 @@ from docich.hanjuku.os_layer.readers import (WORLD_FLAG_ENEMY, WORLD_FLAG_OWN, W
                                              _near_colour, world_cursor, world_flags)
 from docich.hanjuku.os_layer.screen import _target_marker, own_camps, parse
 from docich.hanjuku.strategy.orders import BOSS_TARGET_CANCEL_LIMIT, _boss_retry_due
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
 SKULL_VIEW = FIXTURES / 'g1075-ch3-y-view-boss-skull.png'
@@ -231,24 +232,24 @@ def test_a_tent_menu_that_never_opened_gets_a_second_a():
     mem = camp_menu_mem()
     for _ in range(MENU_OPEN_WAIT - 1):
         assert recall_step(mem) == []
-        assert mem['recall']['stage'] == 'menu'
+        assert _flow(mem)['recall']['stage'] == 'menu'
     assert recall_step(mem) == []
-    assert mem['recall']['stage'] == 'to_camp' and mem['recall']['menu_reopens'] == 1
+    assert _flow(mem)['recall']['stage'] == 'to_camp' and _flow(mem)['recall']['menu_reopens'] == 1
     assert 'camp_menu_not_opened' in recorded(mem)
     assert recall_step(mem) == [pad('a')]                          # the cursor is on the tent
-    assert mem['recall']['stage'] == 'menu' and recorded(mem)[-1] == 'camp_enter'
+    assert _flow(mem)['recall']['stage'] == 'menu' and recorded(mem)[-1] == 'camp_enter'
 
 
 def test_the_second_a_is_bounded_per_recall():
     mem = camp_menu_mem(menu_reopens=MENU_REOPEN_LIMIT)
     for _ in range(MENU_OPEN_WAIT):
         recall_step(mem)
-    assert 'recall' not in mem
-    assert mem['recall_skip'] == {'tick': 76200} and recorded(mem)[-1] == 'camp_recall_aborted'
+    assert 'recall' not in _flow(mem)
+    assert _flow(mem)['recall_skip'] == {'tick': 76200} and recorded(mem)[-1] == 'camp_recall_aborted'
 
 
 def test_the_hero_select_route_keeps_waiting_in_the_menu_stage():
     mem = camp_menu_mem(hero=True, steps=0)
     for _ in range(MENU_OPEN_WAIT + 1):
         assert recall_step(mem) == []
-    assert mem['recall']['stage'] == 'menu' and 'menu_reopens' not in mem['recall']
+    assert _flow(mem)['recall']['stage'] == 'menu' and 'menu_reopens' not in _flow(mem)['recall']

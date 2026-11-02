@@ -144,7 +144,7 @@ def commit(mem):
     sent(mem, 1)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched'
-    probe = (mem.get('launch_probe') or {}).get('1-A3')
+    probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('source') == 'カストーラ'
     return probe
 
@@ -164,14 +164,14 @@ def marker_at(castle, dx=0, dy=0):
 
 def test_committed_departure_arms_launch_probe():
     mem = memory(); confirm(mem); commit(mem)
-    assert mem['launch_probe']['1-A3']['target'] == 'スペンソニア'
+    assert _flow(mem)['launch_probe']['1-A3']['target'] == 'スペンソニア'
     assert mem['world_map_due'] is True
 
 
 def test_new_marker_near_source_confirms_launch(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
     survey(monkeypatch, mem, [marker_at('カストーラ', dx=8)])
-    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
     assert mem['sorties']['1-A3']['status'] == 'en_route'
     assert mem['garrison']['カストーラ'] == ['ヴィーナス']
@@ -182,13 +182,13 @@ def test_unseen_unit_rolls_the_launch_back_to_pending(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
-    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
     assert '1-A3' not in (mem.get('launched_orders') or {})
     # The general the ledger sent out was never seen leaving: back home.
     assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
-    assert mem['launch_miss']['1-A3'] == 1
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
     assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
 
@@ -197,7 +197,7 @@ def test_repeatedly_unseen_launches_fail_the_order(monkeypatch):
     for cycle in range(p.LAUNCH_MISS_LIMIT):
         if cycle:
             # A reopened order that confirmed again arms the same probe.
-            mem.setdefault('launch_probe', {})['1-A3'] = {
+            _flow(mem).setdefault('launch_probe', {})['1-A3'] = {
                 'general': 'ゼウス', 'source': 'カストーラ', 'target': 'スペンソニア',
                 'reads': 0, 'baseline': [], 'tick': mem['tick']}
             mem['orders']['1-A3'] = 'launched'
@@ -214,9 +214,9 @@ def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
     mem['sorties']['1-A3']['status'] = 'arrived'
     survey(monkeypatch, mem, [])
-    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert not mem.get('launch_miss')
+    assert not _flow(mem).get('launch_miss')
     assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
 
@@ -229,7 +229,7 @@ def test_stale_baseline_marker_alone_does_not_confirm(monkeypatch):
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [stale])
     assert mem['orders']['1-A3'] == 'pending'
-    assert mem['launch_miss']['1-A3'] == 1
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
 def test_fresh_marker_anywhere_confirms_once_a_baseline_exists(monkeypatch):
@@ -239,7 +239,7 @@ def test_fresh_marker_anywhere_confirms_once_a_baseline_exists(monkeypatch):
     # A unit seen marching mid-field, far from both castles, is proof enough
     # once an older survey established what was already out.
     survey(monkeypatch, mem, [marker_at('アルマムーン'), marker_at('カストーラ', dx=40, dy=40)])
-    assert '1-A3' not in (mem.get('launch_probe') or {})
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
 
 def test_defense_interruption_releases_reservation_without_committing():
@@ -289,7 +289,7 @@ def test_chapter_reset_drops_pending_reservation_and_misses():
     campaign._enter_chapter(mem, 2, reason='test')
     assert 'departure_request' not in _flow(mem)
     assert 'departure_miss' not in _flow(mem)
-    assert 'sortie_attempt' not in mem
+    assert 'sortie_attempt' not in _flow(mem)
     assert 'orders' not in mem
 
 
@@ -301,11 +301,11 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     mem = memory(); confirm(mem); req = request(mem)
     req['request_trace'] = dict(TRACE)
     sent(mem, 1)
-    mem['recall'] = {'stage': 'dest'}
+    _flow(mem)['recall'] = {'stage': 'dest'}
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert_reserved(mem)
     assert _flow(mem).get('departure_request', {}).get('step') == '1-A3'
-    mem.pop('recall', None)
+    _flow(mem).pop('recall', None)
     mem['orders'].pop('1-A3')
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]

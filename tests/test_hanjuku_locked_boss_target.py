@@ -7,6 +7,7 @@ import pytest
 from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def memory(chapter=1, after=None):
@@ -43,14 +44,14 @@ def test_unsent_hotloaded_boss_marker_cannot_confirm_a_locked_castle(monkeypatch
     actions = p.target_step(Screen([], None, '', kind='map_target'), mem, None)
     assert p.pad('a') not in actions
     assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
-    assert not mem.get('sorties') and not mem.get('sortie_attempt')
+    assert not mem.get('sorties') and not _flow(mem).get('sortie_attempt')
 
 
 def test_unsent_confirmation_is_held_without_changing_a_sent_sortie():
     order, mem = memory(); before = {'general': 'ゼウス', 'status': 'en_route', 'tick': 80}
     mem['sorties'] = {'other': deepcopy(before)}
     p.deploy_step(actor_panel(measured_loaded_sortie(), 'ヴィーナス'), mem)
-    assert mem['active'] is None and not mem.get('sortie_attempt')
+    assert mem['active'] is None and not _flow(mem).get('sortie_attempt')
     assert mem['sorties'] == {'other': before}
     assert mem['_records'][-1]['decision'] == 'boss_target_locked'
 

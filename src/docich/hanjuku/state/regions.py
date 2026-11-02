@@ -35,20 +35,20 @@ KEY_OWNERSHIP = {
     # --- 出撃 ExecutionJournal (段階1: migrated) ---
     '_departure_input':  {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃 FlowSession (段階2へ宣言) ---
-    'sortie_attempt':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'launch_probe':      {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'launch_miss':       {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'sortie_attempt':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'launch_probe':      {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'launch_miss':       {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     # --- 帰還 FlowSession (段階2へ宣言) ---
-    'recall':               {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'recall_verification':  {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'recall_retry':         {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'recall_skip':          {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'recall_skip_target':   {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'recall_skip_ticks':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'retreat_rechecks':     {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'retreat_camp_episode': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    'retreat_anonymous_budget': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
-    '_recall_inputs':       {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
+    'recall':               {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_verification':  {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_retry':         {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_skip':          {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_skip_target':   {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_skip_ticks':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'retreat_rechecks':     {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'retreat_camp_episode': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'retreat_anonymous_budget': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    '_recall_inputs':       {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃/帰還が読む PlanState ---
     'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
@@ -76,10 +76,59 @@ _MIGRATED = {key: spec['region'] for key, spec in KEY_OWNERSHIP.items()
              if spec['migrated']}
 
 
+class _LazyRegion(dict):
+    """まだ実体化していない領域のビュー。
+
+    読み取り系の問い合わせでは ``mem`` を汚さず、最初の実際の変更
+    (``__setitem__``・``setdefault``・削除・``update``) で ``mem`` へ
+    取り付く。``pop`` は対象キーがあるときだけ実体化するので、
+    存在しないキーの no-op ``pop`` は領域を作らない。
+    """
+
+    def __init__(self, mem, name):
+        super().__init__()
+        self._mem, self._name = mem, name
+
+    def _attach(self):
+        self._mem[_REGION_KEY[self._name]] = self
+
+    def __setitem__(self, key, value):
+        self._attach(); super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._attach(); super().__delitem__(key)
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return super().__getitem__(key)
+        self._attach()
+        return super().setdefault(key, default)
+
+    def pop(self, key, *default):
+        if key not in self:
+            if default:
+                return default[0]
+            raise KeyError(key)
+        self._attach()
+        return super().pop(key, *default)
+
+    def update(self, *args, **kwargs):
+        if args or kwargs:
+            self._attach()
+        super().update(*args, **kwargs)
+
+    def clear(self):
+        if self:
+            self._attach()
+        super().clear()
+
+
 def region(mem, name):
-    """領域 dict を返す。未作成なら作り、旧フラットキーを移行する。"""
-    store = mem.setdefault(_REGION_KEY[name], {})
-    return store
+    """領域 dict を返す。存在すれば実体、なければ書込み時に実体化する遅延ビュー。"""
+    store = mem.get(_REGION_KEY[name])
+    if isinstance(store, dict):
+        return store
+    return _LazyRegion(mem, name)
 
 
 def flow(mem):
@@ -105,7 +154,9 @@ def migrate_legacy_state(mem):
     for key, region_name in _MIGRATED.items():
         if key not in mem:
             continue
-        store = mem.setdefault(_REGION_KEY[region_name], {})
+        store = mem.get(_REGION_KEY[region_name])
+        if not isinstance(store, dict):
+            store = mem[_REGION_KEY[region_name]] = {}
         # フラットに残っている値は未移行プロデューサ (旧形式テスト注入・
         # orchestrator の毎判断注入) の最新出力とみなし、領域へ上書きする。
         store[key] = mem[key]

@@ -15,6 +15,7 @@ from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_camp_proof_binding import opened
 from test_hanjuku_house import status
 from test_hanjuku_retreat_recheck import ID, MAP, FRAME, focus, memory, panel_over_map
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def field_status(actor='ゼウス', hp=6):
@@ -38,19 +39,19 @@ def closing(mode):
 @pytest.mark.parametrize('mode', ['named', 'anonymous'])
 def test_decide_delayed_status_close_keeps_owner_and_returns_without_reopening_status(mode):
     actor, state = closing(mode)
-    queue = json.loads(json.dumps(state['policy']['retreat_rechecks']))
-    proof = json.loads(json.dumps(state['policy']['recall']['named_status']))
+    queue = json.loads(json.dumps(state['policy']['flow']['retreat_rechecks']))
+    proof = json.loads(json.dumps(state['policy']['flow']['recall']['named_status']))
     actions, state = decide(field_status(actor), state, run_identity=ID)
     assert actions == []
-    assert state['policy'].get('recall'), 'one delayed B must not abandon the named UI'
+    assert (state['policy'].get('flow') or {}).get('recall'), 'one delayed B must not abandon the named UI'
     state = json.loads(json.dumps(state))
     for selected, expected in [(1, 'down'), (2, 'down'), (3, 'a')]:
         actions, state = decide(panel_over_map(selected=selected), state, run_identity=ID)
         assert actions == [p.pad(expected)]
-    assert state['policy']['recall']['stage'] == 'dest'
-    assert state['policy']['recall']['general'] == actor
-    assert state['policy']['retreat_rechecks'] == queue
-    assert state['policy']['recall']['named_status'] == proof
+    assert state['policy']['flow']['recall']['stage'] == 'dest'
+    assert state['policy']['flow']['recall']['general'] == actor
+    assert state['policy']['flow']['retreat_rechecks'] == queue
+    assert state['policy']['flow']['recall']['named_status'] == proof
     assert not state['policy'].get('garrison')
 
 
@@ -60,33 +61,33 @@ def test_decide_ignored_first_b_has_one_bounded_retry_then_accepts_actual_menu(m
     for expected in ([], [p.pad('b')], []):
         actions, state = decide(field_status(actor), json.loads(json.dumps(state)), run_identity=ID)
         assert actions == expected
-        assert state['policy'].get('recall')
+        assert (state['policy'].get('flow') or {}).get('recall')
     actions, state = decide(panel_over_map(selected=3), state, run_identity=ID)
     assert actions == [p.pad('a')]
-    assert state['policy']['recall']['stage'] == 'dest'
+    assert state['policy']['flow']['recall']['stage'] == 'dest'
 
 
 @pytest.mark.parametrize('mode', ['named', 'anonymous'])
 @pytest.mark.parametrize('kind', ['text', 'unknown'])
 def test_close_wait_has_a_shared_finite_budget_across_json_and_fades(mode, kind):
     actor, state = closing(mode)
-    mem = state['policy']; before = json.loads(json.dumps(mem['retreat_rechecks']))
+    mem = state['policy']; before = json.loads(json.dumps(_flow(mem)['retreat_rechecks']))
     panel = parse(field_status(actor))
     for i in range(4):
         mem = json.loads(json.dumps(mem)); mem['tick'] += 1
         screen = Screen([], None, '', kind='unknown') if kind == 'unknown' and i % 2 else panel
         actions = p.camp_recall_step(screen, mem, FRAME)
         assert actions != [p.pad('a')]
-        assert bool(mem.get('recall')) is (i < 3)
+        assert bool(_flow(mem).get('recall')) is (i < 3)
     for name, row in before.items():
-        assert mem['retreat_rechecks'][name]['attempts'] == row['attempts']
-        assert mem['retreat_rechecks'][name]['tick'] == row['tick']
+        assert _flow(mem)['retreat_rechecks'][name]['attempts'] == row['attempts']
+        assert _flow(mem)['retreat_rechecks'][name]['tick'] == row['tick']
     assert not mem.get('garrison')
 
 
 def test_failed_closes_do_not_replenish_named_attempts_on_requeue(monkeypatch):
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
-    mem = memory(); created = mem['retreat_rechecks']['ゼウス']['tick']
+    mem = memory(); created = _flow(mem)['retreat_rechecks']['ゼウス']['tick']
     for attempt in range(1, 4):
         focus(mem)
         panel = parse(field_status())
@@ -94,14 +95,14 @@ def test_failed_closes_do_not_replenish_named_attempts_on_requeue(monkeypatch):
         for _ in range(4):
             mem = json.loads(json.dumps(mem)); mem['tick'] += 1
             assert p.camp_recall_step(panel, mem, FRAME) != [p.pad('a')]
-        assert not mem.get('recall')
-        assert mem['retreat_rechecks']['ゼウス']['attempts'] == attempt
-        assert mem['retreat_rechecks']['ゼウス']['tick'] == created
+        assert not _flow(mem).get('recall')
+        assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == attempt
+        assert _flow(mem)['retreat_rechecks']['ゼウス']['tick'] == created
         mem['tick'] += 30
     for _ in range(20):
         assert p.camp_recall_step(MAP, mem, FRAME) is None
         mem = json.loads(json.dumps(mem)); mem['tick'] += 1
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
 
 
 @pytest.mark.parametrize('mode', ['named', 'anonymous'])
@@ -110,34 +111,34 @@ def test_another_actor_status_cannot_continue_the_old_close_owner(mode):
     mem = state['policy']
     other = 'ヴィーナス' if actor == 'ゼウス' else 'ゼウス'
     assert p.camp_recall_step(parse(field_status(other)), mem, FRAME) != [p.pad('a')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 @pytest.mark.parametrize('kind', ['yes_no', 'month_menu', 'battle_menu', 'card_select'])
 def test_another_foreground_during_close_is_not_treated_as_the_unit_menu(kind):
     _, state = closing('named'); mem = state['policy']
     assert p.camp_recall_step(Screen([], None, '', kind=kind), mem, FRAME) is None
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 @pytest.mark.parametrize('reads', [True, -1, 5, 1.0, '1', None, 'missing'])
 def test_invalid_saved_close_budget_does_not_restore_permission(reads):
     _, state = closing('named'); mem = state['policy']
-    mem['recall']['reads'] = reads
+    _flow(mem)['recall']['reads'] = reads
     if reads == 'missing':
-        mem['recall'].pop('reads')
+        _flow(mem)['recall'].pop('reads')
     assert p.camp_recall_step(parse(field_status()), mem, FRAME) != [p.pad('a')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 @pytest.mark.parametrize('steps,retained', [(0, True), (2, False)])
 def test_old_saved_menu_migrates_only_an_untouched_close_request(steps, retained):
     _, state = closing('named'); mem = state['policy']
-    mem['recall'].update(stage='menu', steps=steps, reads=0)
-    attempts = mem['retreat_rechecks']['ゼウス']['attempts']
+    _flow(mem)['recall'].update(stage='menu', steps=steps, reads=0)
+    attempts = _flow(mem)['retreat_rechecks']['ゼウス']['attempts']
     assert p.camp_recall_step(parse(field_status()), mem, FRAME) != [p.pad('a')]
-    assert bool(mem.get('recall')) is retained
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == attempts
+    assert bool(_flow(mem).get('recall')) is retained
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == attempts
 
 
 def test_close_wait_hp_zero_invalidates_only_that_actor_without_arrival_claim():
@@ -146,16 +147,16 @@ def test_close_wait_hp_zero_invalidates_only_that_actor_without_arrival_claim():
     camp_recheck.capture(mem, {'ally': 'ヴィーナス', 'side': 'attack', 'ally_hp': 6,
                               'hero_retreat': {'selected': 1}})
     assert p.camp_recall_step(parse(field_status(hp=0)), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall') and 'ゼウス' not in mem['retreat_rechecks']
-    assert mem['retreat_rechecks']['ヴィーナス']['attempts'] == 0
-    assert not mem.get('garrison') and not mem.get('recall_verification')
+    assert not _flow(mem).get('recall') and 'ゼウス' not in _flow(mem)['retreat_rechecks']
+    assert _flow(mem)['retreat_rechecks']['ヴィーナス']['attempts'] == 0
+    assert not mem.get('garrison') and not _flow(mem).get('recall_verification')
 
 
 def test_invalid_proof_never_closes_an_unrelated_text_foreground():
     _, state = closing('named'); mem = state['policy']
-    mem['recall'].pop('named_status')
+    _flow(mem)['recall'].pop('named_status')
     assert p.camp_recall_step(Screen([], None, 'べつのイベント', kind='text'), mem, FRAME) is None
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_house_return_owner_also_waits_for_the_actual_menu_after_b():

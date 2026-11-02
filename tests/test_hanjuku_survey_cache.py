@@ -9,6 +9,7 @@ from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Battle, Screen, parse
 from test_hanjuku_chart_bot import month_canvas
 from test_hanjuku_house import roster, status
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1-synthetic',
             'generation': 1, 'lease_id': 'synthetic-lease'}
@@ -398,10 +399,10 @@ def test_recall_proposal_does_not_reread_status_until_matching_input_receipt():
     p._request_recall(mem, state, 'アルマムーン', [p.pad('a')])
     assert not mem['roster_survey']['dirty']
     state['request_trace'] = {'decision_id': 'synthetic-1'}
-    mem['_recall_inputs'] = {'request_trace': {'decision_id': 'another'}, 'a_inputs': 1}
+    _journal(mem)['_recall_inputs'] = {'request_trace': {'decision_id': 'another'}, 'a_inputs': 1}
     p._recall_dispatch_step(Screen([], None, '', kind='text'), mem, state)
     assert not mem['roster_survey']['dirty']
-    mem['_recall_inputs']['request_trace'] = dict(state['request_trace'])
+    _journal(mem)['_recall_inputs']['request_trace'] = dict(state['request_trace'])
     p._recall_dispatch_step(Screen([], None, '', kind='text'), mem, state)
     assert mem['roster_survey']['dirty'] == {'ゼウス': ['hp', 'location']}
     assert state['input_sent'] is True

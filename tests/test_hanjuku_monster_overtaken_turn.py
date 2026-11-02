@@ -17,6 +17,7 @@ from docich.hanjuku.flows.battle_menus import MONSTER_STALL_SAME_TURN_TICKS
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'hanjuku'

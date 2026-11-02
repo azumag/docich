@@ -4,6 +4,7 @@ from copy import deepcopy
 import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku.strategy import economy as e
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def memory():
@@ -278,4 +279,4 @@ def test_unknown_hp_does_not_hide_positive_movement_or_repaired_egg(repaired):
         assert mem['house_eggs'][p.NAME]['broken'] is False
     else:
         assert mem['hero_repair_deferral']['reason'] == 'moving'
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')

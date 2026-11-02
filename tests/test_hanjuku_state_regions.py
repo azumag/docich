@@ -67,11 +67,20 @@ def test_flow_session_keys_die_with_the_chapter():
     assert 'departure_miss' not in mem
 
 
-def test_declared_unmigrated_keys_stay_flat_this_stage():
-    # Stage-1 honesty check: sortie_attempt / recall are declared
-    # (owner + lifetime fixed) but physically unmigrated.
-    assert KEY_OWNERSHIP['sortie_attempt']['region'] == FLOW
-    assert KEY_OWNERSHIP['sortie_attempt']['migrated'] is False
-    assert KEY_OWNERSHIP['recall']['region'] == FLOW
-    assert KEY_OWNERSHIP['recall']['migrated'] is False
-    assert KEY_OWNERSHIP['_recall_inputs']['region'] == JOURNAL
+def test_migrated_departure_and_recall_keys_live_in_their_regions():
+    # Stage-2: sortie_attempt / launch_probe / recall family moved from
+    # declared-only (stage 1) into their owning regions.
+    for key, region in (('sortie_attempt', FLOW), ('launch_probe', FLOW),
+                        ('launch_miss', FLOW), ('recall', FLOW),
+                        ('recall_verification', FLOW), ('recall_retry', FLOW),
+                        ('recall_skip', FLOW), ('recall_skip_target', FLOW),
+                        ('recall_skip_ticks', FLOW), ('retreat_rechecks', FLOW),
+                        ('retreat_camp_episode', FLOW),
+                        ('retreat_anonymous_budget', FLOW),
+                        ('_recall_inputs', JOURNAL)):
+        assert KEY_OWNERSHIP[key]['region'] == region
+        assert KEY_OWNERSHIP[key]['migrated'] is True
+    # World/plan keys are still declarations only: the procedures read them
+    # but the owning layer migrates them in a later stage.
+    assert KEY_OWNERSHIP['sorties']['migrated'] is False
+    assert KEY_OWNERSHIP['orders']['migrated'] is False

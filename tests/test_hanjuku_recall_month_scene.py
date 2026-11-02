@@ -13,6 +13,7 @@ import pytest
 from docich.hanjuku.orchestrator import decide, pad
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.phase import classify
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'hanjuku'
@@ -61,7 +62,7 @@ def test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen():
     actions, state = decide(read_png(SCENE), recall_state(stage='await_dispatch'))
     assert actions == [pad('a')]
     assert 'camp_recall_interrupted' not in decisions(state)
-    assert state['policy']['recall']['stage'] == 'await_dispatch'
+    assert state['policy']['flow']['recall']['stage'] == 'await_dispatch'
     _, state = decide(read_png(MONTH_MENU), state)
     assert 'camp_recall_unconfirmed' in decisions(state)
     assert 'recall' not in state['policy']

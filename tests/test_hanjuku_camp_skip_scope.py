@@ -2,6 +2,7 @@
 
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 MAP = Screen([], None, '', kind='map', cursor=(120, 100))
@@ -15,9 +16,9 @@ def test_failed_camp_records_a_scoped_cooldown(monkeypatch):
     for _ in range(3):
         assert p.camp_recall_step(MAP, mem, object()) == []
 
-    assert mem['recall_skip'] == {'tick': 100}
-    assert mem['recall_skip_target'] == {'chapter': 1, 'target': [120, 100]}
-    assert 'recall' not in mem
+    assert _flow(mem)['recall_skip'] == {'tick': 100}
+    assert _flow(mem)['recall_skip_target'] == {'chapter': 1, 'target': [120, 100]}
+    assert 'recall' not in _flow(mem)
 
 
 def test_scoped_cooldown_skips_only_the_failed_camp(monkeypatch):
@@ -28,8 +29,8 @@ def test_scoped_cooldown_skips_only_the_failed_camp(monkeypatch):
            'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
 
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 8)]
-    assert mem['recall']['target'] == [200, 100]
-    assert mem['recall_skip_target']['target'] == [120, 100]
+    assert _flow(mem)['recall']['target'] == [200, 100]
+    assert _flow(mem)['recall_skip_target']['target'] == [120, 100]
 
 
 def test_scoped_cooldown_still_blocks_the_same_camp(monkeypatch):
@@ -39,7 +40,7 @@ def test_scoped_cooldown_still_blocks_the_same_camp(monkeypatch):
            'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
 
     assert p.camp_recall_step(MAP, mem, object()) is None
-    assert 'recall' not in mem
+    assert 'recall' not in _flow(mem)
 
 
 def test_legacy_tick_only_cooldown_remains_fail_closed(monkeypatch):
@@ -47,7 +48,7 @@ def test_legacy_tick_only_cooldown_remains_fail_closed(monkeypatch):
     mem = {'chapter': 1, 'tick': 101, 'recall_skip': {'tick': 100}}
 
     assert p.camp_recall_step(MAP, mem, object()) is None
-    assert 'recall' not in mem
+    assert 'recall' not in _flow(mem)
 
 
 def test_expired_scoped_cooldown_allows_the_same_camp_again(monkeypatch):
@@ -57,8 +58,8 @@ def test_expired_scoped_cooldown_allows_the_same_camp_again(monkeypatch):
            'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
 
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
-    assert mem['recall']['stage'] == 'menu'
-    assert 'recall_skip' not in mem
+    assert _flow(mem)['recall']['stage'] == 'menu'
+    assert 'recall_skip' not in _flow(mem)
 
 
 def test_scoped_cooldown_never_crosses_chapters(monkeypatch):
@@ -68,5 +69,5 @@ def test_scoped_cooldown_never_crosses_chapters(monkeypatch):
            'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
 
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
-    assert mem['recall']['stage'] == 'menu'
-    assert 'recall_skip' not in mem
+    assert _flow(mem)['recall']['stage'] == 'menu'
+    assert 'recall_skip' not in _flow(mem)

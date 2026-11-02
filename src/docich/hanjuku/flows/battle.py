@@ -5,6 +5,7 @@ tactic or rescue is due, opens the command menu for it and settles the record
 when the battle ends.
 """
 from __future__ import annotations
+from ..state.regions import flow as _flow, journal as _journal
 
 import re
 import time
@@ -1385,14 +1386,14 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
     SELECT + A opens is the camp menu (g436 22:04), so the camp recall's
     きかん path is reused.
     """
-    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or mem.get('recall'):
+    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or _flow(mem).get('recall'):
         return
     full = int(mem.get('hero_max_hp') or 0)
     limit = max(HERO_RECALL_MIN_HP, full * HERO_RECALL_RATIO_TENTHS // 10)
     marching = _hero_marching(mem)
     if ally_hp > limit or not marching:
         return
-    mem['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
+    _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
     (mem.get('y_jumps') or {}).pop('RECALL:target', None)
     (mem.get('y_jumped') or {}).pop('RECALL', None)
     _record(mem, 'hero_recall_start', observed_metric={'ally_hp': ally_hp, 'full_hp': full,

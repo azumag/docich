@@ -1375,7 +1375,7 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     assert rid == mem['chart_plan']['request_id'] == mem['chart_adjust']['request_id']
     assert not policy._plan_pending(mem) and receipt['plan_pending'] is False
     assert policy.interim_candidates(mem) == receipt['candidates']
-    assert mem.get('active') is None and not mem.get('recall')
+    assert mem.get('active') is None and not _flow(mem).get('recall')
     assert policy.next_order(mem) is None
     policy._off_chart(mem)     # no model answer needed: the first candidate starts
     order = policy.next_order(mem)

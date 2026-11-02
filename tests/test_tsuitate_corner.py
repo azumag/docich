@@ -14,6 +14,7 @@ from docich.corner_catalog import Corner
 from docich.tsuitate_beta_control import ControlError
 from docich.tsuitate_corner import TsuitateCornerError, TsuitateCornerManager
 from docich.tsuitate_view import VIEW_NAME
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 REQ = "11111111-1111-4111-8111-111111111111"

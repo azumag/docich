@@ -23,7 +23,7 @@ from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, upd
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import flow, journal
+from ..state.regions import flow, journal, flow as _flow, journal as _journal
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -42,15 +42,15 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     observe_departure_return(screen, mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
-    if (mem.get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
+    if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
         return
     order = _order(mem)
-    attempt = mem.get('sortie_attempt')
+    attempt = _flow(mem).get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
         context = (mem.get('order_context') or {}).get(order['step']) or {}
         if context.get('actual_general'):
             attempt = {'step': order['step'], 'target_seen': True}
-            mem['sortie_attempt'] = attempt
+            _flow(mem)['sortie_attempt'] = attempt
     if not attempt:
         return
     if (mem.get('y_jump') or {}).get('mode') == 'target' or mem.get('y_jump_return') == 'target':
@@ -161,7 +161,7 @@ def boss_stall_escape_step(mem, kind, phase):
     """
     parked = parked_boss_steps(mem)
     if (not parked or mem.get('active') or mem.get('battle') or mem.get('attack')
-            or mem.get('recall')):
+            or _flow(mem).get('recall')):
         return None
     if kind == 'text':
         if phase not in ('shop', 'month'):
@@ -197,7 +197,7 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     """
     active = mem.get('active')
     if (not active or kind not in BOSS_SORTIE_MENU_KINDS or actions != []
-            or mem.get('battle') or mem.get('attack') or mem.get('recall')):
+            or mem.get('battle') or mem.get('attack') or _flow(mem).get('recall')):
         mem.pop('boss_sortie_menu_hold', None)
         return None
     order = _order_for_step(mem, active)
@@ -250,7 +250,7 @@ def world_map_step(screen, mem, frame):
             if routed is not None:
                 return routed
         return _y_jump_step(mem, frame)
-    recall = mem.get('recall')
+    recall = _flow(mem).get('recall')
     if recall and recall.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, recall)
     if recall and recall.get('stage') == 'dest':
@@ -272,7 +272,7 @@ def world_map_step(screen, mem, frame):
             _record(mem, 'camp_recall_aborted',
                     observed_metric={'goal': recall.get('goal'), 'cursor': cursor},
                     reason='帰還先カーソルが有限回で合わず確定せず取り消す')
-            mem.pop('recall', None)
+            _flow(mem).pop('recall', None)
             mem['uncertain'] = True
             _hold_after_picker(mem, recall)
             return [pad('b')]
@@ -317,9 +317,9 @@ def world_map_step(screen, mem, frame):
                 _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
                         observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},
                         reason='帰還先カーソルが入力しても動かないため取り消して通常の行動に戻る')
-                mem.pop('recall', None)
+                _flow(mem).pop('recall', None)
                 mem['uncertain'] = True
-                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 return [pad('b')]
             return [pad(press)]
         return _request_recall(mem, recall, goal,
@@ -666,7 +666,7 @@ def target_step(screen: Screen, mem, frame):
         return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
-        mem.pop('sortie_attempt', None)
+        _flow(mem).pop('sortie_attempt', None)
         return _hold_guarded_sortie(mem, order, 'boss_companion_required',
             '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
             {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
@@ -744,11 +744,11 @@ def target_step(screen: Screen, mem, frame):
         # stay untouched until the journaled send and the closed picker prove
         # the departure (docich#3193 A). ``sortie_attempt`` stays armed so
         # leaving this picker remains the departure observation.
-        attempt = mem.get('sortie_attempt') or {}
+        attempt = _flow(mem).get('sortie_attempt') or {}
         attempt['step'] = order['step']
         attempt['target_seen'] = True
         attempt.pop('interrupted', None)     # a new execution, not the old one
-        mem['sortie_attempt'] = attempt
+        _flow(mem)['sortie_attempt'] = attempt
         flow(mem)['departure_request'] = {
             'step': order['step'], 'target': order['target'],
             'general': context['general'], 'source': _source(order, mem),
@@ -807,7 +807,7 @@ def _commit_departure(mem, order, context, snapshot):
         # g1097: three committed sorties produced no world-map ▲ at all
         # (the same marker idled for 40 min) and rotted into march_overdue.
         # The next surveys must show a unit the baseline did not have.
-        mem.setdefault('launch_probe', {})[order['step']] = {
+        _flow(mem).setdefault('launch_probe', {})[order['step']] = {
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
@@ -847,7 +847,7 @@ def _probe_launch_markers(mem, markers):
     a baseline exists. A sortie settled by another path (arrival, battle,
     overdue) drops the probe instead of being rolled back.
     """
-    probes = mem.get('launch_probe') or {}
+    probes = _flow(mem).get('launch_probe') or {}
     if not probes:
         return
     for step, probe in list(probes.items()):
@@ -884,7 +884,7 @@ def _rollback_unverified_launch(mem, step, probe, markers):
     but leaves the observed garrison consistent: the general the ledger sent
     out was never seen leaving, so they go back onto the source roster.
     """
-    misses = mem.setdefault('launch_miss', {})
+    misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
     for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
                 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
@@ -931,7 +931,7 @@ def _release_departure_request(mem, order, request, reason):
     """
     step = order['step']
     flow(mem).pop('departure_request', None)
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     misses = flow(mem).setdefault('departure_miss', {})
     misses[step] = int(misses.get(step) or 0) + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
@@ -1073,7 +1073,7 @@ def _unverified_target(screen, mem, order):
             cancels.pop(step, None)
             cells[step] = cell
     cancels[step] = cancels.get(step, 0) + 1
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     limit = BOSS_TARGET_CANCEL_LIMIT if boss else TARGET_CANCEL_LIMIT
     state = 'failed' if cancels[step] >= limit else 'pending'
     _finish_order(mem, state, target=order['target'],

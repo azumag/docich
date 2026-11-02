@@ -26,6 +26,7 @@ from docich.trading.news_paper.manager import (
     FIXTURE_MANAGER_POLICY_V1,
 )
 from docich.trading.news_paper.manager import ManagerPolicy
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 9, 18, 0, 10, 4, tzinfo=UTC)

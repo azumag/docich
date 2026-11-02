@@ -100,7 +100,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     decision_id=f"{identity['runtime_id']}:{identity['generation']}:{state.get('step')}"
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
-    recall = policy.get('recall') or {}
+    recall = (policy.get('flow') or {}).get('recall') or {}
     if recall.get('stage') == 'await_dispatch' and not recall.get('request_trace'):
         recall['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     boundary = policy.get('card_upper_boundary') or {}
@@ -353,7 +353,7 @@ def recall_input_receipts(runtime, state, meta):
     This command process reloads on each observation. No controller restart
     or new controller receipt writer is required for the current live run.
     """
-    recall = (state.get('policy') or {}).get('recall') or {}
+    recall = ((state.get('policy') or {}).get('flow') or {}).get('recall') or {}
     trace = recall.get('request_trace') or {}
     if (recall.get('stage') != 'await_dispatch'
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):

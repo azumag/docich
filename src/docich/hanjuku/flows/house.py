@@ -14,6 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
+from ..state.regions import flow as _flow, journal as _journal
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -761,7 +762,7 @@ def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
     if survey is None:
         return False, None
     if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
-            or any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle'))):
+            or any(mem.get(k) for k in ('active', 'y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         return True, None
     dirty = receipts.recheck_targets(mem)
     pending = [name for name, info in survey['statuses'].items()
@@ -917,7 +918,7 @@ def _step_once(screen, mem, frame):
     if state and screen.kind == 'name_entry':
         _finish(mem)
         return None  # let the caller initialize the new game immediately
-    if state and mem.get('recall'):
+    if state and _flow(mem).get('recall'):
         _record(mem, 'aborted', reason='既存の緊急帰還を優先し、卵修理の移動を中断')
         _finish(mem)
         return None
@@ -927,7 +928,7 @@ def _step_once(screen, mem, frame):
         field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
         if monthly:
-            if any(mem.get(k) for k in ('recall', 'battle')):
+            if mem.get('battle') or _flow(mem).get('recall'):
                 return None
             from .month import army_count_owned
             shop = mem.get('shop') or {}
@@ -1016,7 +1017,7 @@ def _step_once(screen, mem, frame):
                 # every observation and the bot sent no input.
                 or mem.get('chapter') is None
                 or (not monthly and mem.get('chapter') not in HOUSE_VIEW)
-                or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
+                or (not monthly and (any(mem.get(k) for k in ('active', 'y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))))
                 or (not monthly and not goal_due and recent)
                 or (not monthly and field_count >= field_cap)
                 or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck')

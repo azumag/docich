@@ -31,6 +31,7 @@ from docich.hanjuku.flows.battle_menus import (BATTLE_MENU_STALL_RETRIES,  # noq
                                                BATTLE_MENU_STALL_WAIT, _battle_menu_move)
 from docich.hanjuku_font import TextLine  # noqa: E402
 from docich.hanjuku_screen import Screen  # noqa: E402
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = 'ec79c498bbc98f6c1c8401d4d581872d5cb52d3919f4c646e4a9ac1f932ad330'

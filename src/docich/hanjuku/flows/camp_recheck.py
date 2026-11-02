@@ -5,6 +5,7 @@ No game/provider I/O lives here. Only the existing recall sender owns dispatch.
 """
 from ..os_layer import roster as roster_receipts
 from ...hanjuku_egg_stock import observed_uses
+from ..state.regions import flow as _flow, journal as _journal
 
 RETRY_TICKS = 30
 ATTEMPT_LIMIT = 3
@@ -64,7 +65,7 @@ def _owner_shape(mem, state):
 
 
 def owns_dialog(screen, mem):
-    state = mem.get('recall') or {}
+    state = _flow(mem).get('recall') or {}
     return (_new_owner(state) and _owner_shape(mem, state) and isinstance(screen.kind, str)
             and screen.kind in _ALLOWED_KINDS[state['stage']])
 
@@ -74,17 +75,17 @@ def _new_episode(mem):
                               mem.get('chapter'), mem.get('tick'))
     if identity is None or type(chapter) is not int or chapter <= 0 or type(now) is not int or now < 0:
         return None
-    old = mem.get('retreat_camp_episode') or {}
+    old = _flow(mem).get('retreat_camp_episode') or {}
     serial = (old.get('serial') if isinstance(old, dict) and old.get('identity') == identity
               and type(old.get('chapter')) is int and old['chapter'] == chapter
               and type(old.get('serial')) is int and old['serial'] > 0 else 0)
     episode = {'identity': identity, 'chapter': chapter, 'serial': serial + 1, 'started_tick': now}
-    mem['retreat_camp_episode'] = dict(episode)
+    _flow(mem)['retreat_camp_episode'] = dict(episode)
     return episode
 
 
 def _valid_episode(mem, state):
-    episode, current = state.get('camp_episode'), mem.get('retreat_camp_episode')
+    episode, current = state.get('camp_episode'), _flow(mem).get('retreat_camp_episode')
     identity = roster_receipts.run_identity(mem.get('_run_identity'))
     now, chapter = mem.get('tick'), mem.get('chapter')
     return (identity is not None and isinstance(episode, dict) and isinstance(current, dict)
@@ -170,7 +171,7 @@ def _valid_status(mem, state):
 
 def _scope(mem):
     identity = roster_receipts.run_identity(mem.get('_run_identity'))
-    queue, valid = mem.get('retreat_rechecks'), {}
+    queue, valid = _flow(mem).get('retreat_rechecks'), {}
     chapter, now = mem.get('chapter'), mem.get('tick')
     statuses = {'needs_observation', 'dispatch_unconfirmed', 'arrival_unconfirmed',
                 'anonymous_recheck_exhausted'}
@@ -194,10 +195,10 @@ def _scope(mem):
                 clean.pop('camp_observation', None)  # discard malformed suppression, never restore facts
             valid[name] = clean
     if valid:
-        mem['retreat_rechecks'] = valid
+        _flow(mem)['retreat_rechecks'] = valid
     else:
-        mem.pop('retreat_rechecks', None)
-        mem.pop('retreat_anonymous_budget', None)
+        _flow(mem).pop('retreat_rechecks', None)
+        _flow(mem).pop('retreat_anonymous_budget', None)
     return valid
 
 
@@ -210,22 +211,22 @@ def _invalidate(mem, reason, actor=None, *, new_game=False):
         # A changed roster drops every row, so the next status read of a
         # general still camped has to queue him again.
         mem['camp_status_seen']['actors'] = {}
-    raw_state = mem.get('recall')
+    raw_state = _flow(mem).get('recall')
     state = raw_state if isinstance(raw_state, dict) else {}
     affected = bool(queue) if actor is None else actor in queue
     if actor is None:
-        mem.pop('retreat_rechecks', None)
+        _flow(mem).pop('retreat_rechecks', None)
     else:
         queue.pop(actor, None)
         if not queue:
-            mem.pop('retreat_rechecks', None)
+            _flow(mem).pop('retreat_rechecks', None)
     if affected or actor is None:
-        mem.pop('retreat_anonymous_budget', None)
+        _flow(mem).pop('retreat_anonymous_budget', None)
     drop_ui = (bool(raw_state) and (new_game or not isinstance(raw_state, dict)
                                   or state.get('retreat_recheck') or state.get('anonymous_recheck'))
                and (actor is None or state.get('general') in (None, actor)))
     if drop_ui:
-        mem.pop('recall', None)
+        _flow(mem).pop('recall', None)
     if affected or drop_ui:
         _record(mem, 'retreat_recheck_invalidated', chart_step=None, general=actor,
                 resulting_event='intent_invalidated_location_unconfirmed', reason=reason)
@@ -253,7 +254,7 @@ def observe_departure(mem, actor, started_tick):
         return
     _invalidate(mem, '本人の新しい出発を観測したため前任務の在営再確認を終了', actor)
     seen['actors'].pop(actor)
-    verification = mem.get('recall_verification') or {}
+    verification = _flow(mem).get('recall_verification') or {}
     if (isinstance(verification, dict) and verification.get('general') == actor
             and roster_receipts.run_identity(verification.get('identity')) == identity
             and verification.get('chapter') == chapter):
@@ -321,7 +322,7 @@ def observe_camp_status(screen, mem):
             or not _clean_name(info['general'])):
         return
     actor = info['general']
-    owner = mem.get('recall') or mem.get('house') or {}
+    owner = _flow(mem).get('recall') or mem.get('house') or {}
     if isinstance(owner, dict) and owner.get('general') not in (None, actor):
         return  # another actor's requested status cannot adopt this page
     house.observe_hero_repair_status(info, mem)
@@ -360,7 +361,7 @@ def observe_camp_status(screen, mem):
                      'tick': now}
     if actor in queue:
         return
-    verification = mem.get('recall_verification') or {}
+    verification = _flow(mem).get('recall_verification') or {}
     if (isinstance(verification, dict) and verification.get('general') == actor
             and verification.get('input_sent') is True
             and verification.get('status') in ('arrival_unconfirmed', 'dispatch_unconfirmed')
@@ -369,7 +370,7 @@ def observe_camp_status(screen, mem):
         return
     queue[actor] = {'identity': identity, 'chapter': chapter, 'tick': now, 'attempts': 0,
                     'retry_after': now, 'status': 'needs_observation', 'trigger': 'observed_camp_status'}
-    mem['retreat_rechecks'] = queue
+    _flow(mem)['retreat_rechecks'] = queue
     _record(mem, 'camp_status_recall_pending', general=actor,
             resulting_event='camp_observed_position_unconfirmed',
             reason='本人ステータスの在営を確認。位置を推定せず実名簿の本人SELECTから現在tentを探す')
@@ -395,7 +396,7 @@ def capture(mem, battle):
     queue[actor] = {'identity': identity, 'chapter': mem['chapter'], 'tick': mem['tick'],
                     'attempts': 0, 'retry_after': mem['tick'], 'status': 'needs_observation',
                     'trigger': 'planned_retreat_selection'}
-    mem['retreat_rechecks'] = queue
+    _flow(mem)['retreat_rechecks'] = queue
     _record(mem, 'retreat_recheck_pending', chart_step=None, general=actor,
             resulting_event='location_unconfirmed',
             reason='生存する本人の退却選択を記録し、野営化や帰還を断定せず所在を再確認する')
@@ -411,7 +412,7 @@ def _defer(mem, state, reason, *, status='needs_observation'):
             row.update(status='arrival_unconfirmed', retry_after=mem['tick'] + ARRIVAL_RETRY_TICKS)
         if _valid_camp(mem, state):
             row['camp_observation'] = state['camp_observation']
-    mem.pop('recall', None)
+    _flow(mem).pop('recall', None)
     mem['uncertain'] = True
     _record(mem, 'retreat_recheck_unconfirmed', chart_step=None, general=actor,
             resulting_event=status, reason=reason)
@@ -515,9 +516,9 @@ def _named_step(screen, mem, frame, state):
             observation = {'identity': state['identity'], 'chapter': state['chapter'],
                            'general': actor, 'hp': info['hp'], 'tick': mem['tick'],
                            'location': 'castle', 'destination_confirmed': False}
-            verification = mem.get('recall_verification') or {}
+            verification = _flow(mem).get('recall_verification') or {}
             if verification.get('general') == actor:
-                mem['recall_verification'] = {**verification, 'status': 'in_castle_observed',
+                _flow(mem)['recall_verification'] = {**verification, 'status': 'in_castle_observed',
                                               'observation': observation}
             _invalidate(mem, '本人の現在ステータスで城内を観測し再帰還のintentを終了', actor)
             _record(mem, 'recall_in_castle_observed', chart_step=None, general=actor,
@@ -630,7 +631,7 @@ def _hand_over_to_fort(screen, mem, state, frame, enter_fort):
         # If this sortie fails the next status read queues him again; a
         # successful one reads しんぐんちゅうです and stays out of the queue.
         ((mem.get('camp_status_seen') or {}).get('actors') or {}).pop(actor, None)
-    mem['recall'] = recall
+    _flow(mem)['recall'] = recall
     enter_fort(mem, recall)
     _record(mem, 'retreat_recheck_fort', chart_step=None, general=actor,
             observed_metric={'camp': recall['target']}, resulting_event='fort_menu_observed',
@@ -687,14 +688,14 @@ def interrupt(screen, mem):
     if 'がはいかにくわわった!' in screen.text.replace('！', '!'):
         _invalidate(mem, '加入の実表示で名簿が変わったため古い退却intentを再利用しない')
         return True
-    raw_state = mem.get('recall')
+    raw_state = _flow(mem).get('recall')
     if raw_state is not None and not isinstance(raw_state, dict):
         _defer(mem, {}, '再確認のactive state型が不正なため操作権限を破棄')
         return True
     if _new_owner(raw_state) and not _owner_shape(mem, raw_state):
         _defer(mem, raw_state, '再確認の本人・stage・tickの型またはscopeが不正なため操作権限を破棄')
         return True
-    state = mem.get('recall') or {}
+    state = _flow(mem).get('recall') or {}
     if (state.get('retreat_recheck') or state.get('anonymous_recheck')) and (
             mem.get('battle') or mem.get('month_sub') or not owns_dialog(screen, mem)):
         _defer(mem, state, '戦闘や別メニューの割込みで本人UIを失ったため再観測へ戻す')
@@ -729,12 +730,13 @@ def recall_ready(mem, frame):
     """Would the recall act on this idle map frame? Never changes its budgets."""
     from .recall import _filter_recall_skip
     from ..os_layer.readers import own_camps
-    if frame is None or mem.get('recall'):
+    if frame is None or _flow(mem).get('recall'):
         return False
     queue = _scope(mem)
     # The same condition that starts a named search in ``_step_flow``: a row it
     # would not start must not hold a survey back.
-    if not any(mem.get(key) for key in PROBE_BUSY_KEYS) and any(
+    if not any(_flow(mem).get(key) for key in PROBE_FLOW_KEYS) and not any(
+            mem.get(key) for key in PROBE_BUSY_KEYS) and any(
             row['attempts'] < ATTEMPT_LIMIT and mem['tick'] >= row['retry_after']
             and _arrival_request(mem, name, row) is None for name, row in queue.items()):
         return True
@@ -747,9 +749,9 @@ def recall_ready(mem, frame):
 def _anonymous_budget(mem, queue):
     key = {'identity': roster_receipts.run_identity(mem.get('_run_identity')), 'chapter': mem.get('chapter'),
            'pending': sorted([name, row['tick']] for name, row in queue.items())}
-    budget = mem.get('retreat_anonymous_budget') or {}
+    budget = _flow(mem).get('retreat_anonymous_budget') or {}
     if not isinstance(budget, dict) or budget.get('key') != key:
-        budget = mem['retreat_anonymous_budget'] = {'key': key, 'reads': 0}
+        budget = _flow(mem)['retreat_anonymous_budget'] = {'key': key, 'reads': 0}
     if type(budget.get('reads')) is not int or not 0 <= budget['reads'] <= roster_receipts.MAX_GENERALS:
         budget['reads'] = roster_receipts.MAX_GENERALS  # malformed budgets fail closed, never reset into permission
     return budget
@@ -757,7 +759,7 @@ def _anonymous_budget(mem, queue):
 
 def _arrival_request(mem, actor, row):
     """A scoped actual dispatch permits bounded reads, never another return A."""
-    proof = row.get('arrival_request', mem.get('recall_verification'))
+    proof = row.get('arrival_request', _flow(mem).get('recall_verification'))
     identity = roster_receipts.run_identity(mem.get('_run_identity'))
     if (not isinstance(proof, dict) or identity is None
             or proof.get('input_sent') is not True or proof.get('status') != 'arrival_unconfirmed'
@@ -802,16 +804,17 @@ def _step_flow(screen, mem, frame, existing):
     from ..os_layer.commands import pad
     from ..os_layer.readers import is_camp_menu, is_fort_menu
     queue = _scope(mem)
-    state = mem.get('recall') or {}
+    state = _flow(mem).get('recall') or {}
     named = bool(state.get('retreat_recheck'))
     if named and (state.get('general') not in queue
                   or state.get('identity') != queue[state['general']]['identity']
                   or state.get('chapter') != queue[state['general']]['chapter']
                   or state.get('recheck_tick') != queue[state['general']]['tick']):
-        mem.pop('recall', None)
+        _flow(mem).pop('recall', None)
         return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
-    if not state and screen.kind == 'map' and frame is not None and not any(
-            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')):
+    if (not state and screen.kind == 'map' and frame is not None
+            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'attack'))
+            and not _flow(mem).get('sortie_attempt')):
         arrival_actor = next((name for name, row in queue.items()
             if _arrival_request(mem, name, row) is not None
             and type(row.get('arrival_reads', 0)) is int
@@ -832,7 +835,7 @@ def _step_flow(screen, mem, frame, existing):
                         reason='帰還Aの同run送信記録をもとに本人状態を再読する。帰還Aは再送しない')
             else:
                 queue[actor]['attempts'] += 1
-            mem['recall'] = {'stage': 'recheck_roster_open', 'steps': 0, 'general': actor,
+            _flow(mem)['recall'] = {'stage': 'recheck_roster_open', 'steps': 0, 'general': actor,
                              'arrival_check_only': arrival_actor is not None,
                              'retreat_recheck': True, 'identity': queue[actor]['identity'],
                              'chapter': queue[actor]['chapter'], 'recheck_tick': queue[actor]['tick'],
@@ -866,7 +869,7 @@ def _step_flow(screen, mem, frame, existing):
             _advance(state, 'recheck_status')
         if state.get('anonymous_recheck') and (state.get('anonymous_identity') != roster_receipts.run_identity(mem.get('_run_identity'))
                                                or state.get('anonymous_chapter') != mem.get('chapter')):
-            mem.pop('recall', None)
+            _flow(mem).pop('recall', None)
             return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
         if state.get('anonymous_recheck') and state['stage'].startswith('recheck_'):
             return _named_step(screen, mem, frame, state)
@@ -878,7 +881,7 @@ def _step_flow(screen, mem, frame, existing):
                 return _wait(mem, state, '未知前景では帰還menuを選択しない')
         actions = (world_map_step(screen, mem, frame) if screen.kind == 'world_map'
                    else existing(screen, mem, frame, observed_camps=_visible_camps(mem, frame, queue)))
-        current = mem.get('recall') or {}
+        current = _flow(mem).get('recall') or {}
         if queue and current.get('stage') == 'menu' and screen.kind == 'map' and actions == [pad('a')]:
             current['camp_episode'] = _new_episode(mem)
             current['camp_observation'] = _observe_camp(screen, mem, frame, current, 'anonymous_map_open')
@@ -897,17 +900,17 @@ def _step_flow(screen, mem, frame, existing):
     if state['stage'] == 'dest' and screen.kind == 'map_target':
         _defer(mem, state, '名前付き帰還先を実R pickerで確認できないため確定しない')
         return [pad('b')]
-    skip_before = mem.get('recall_skip')
+    skip_before = _flow(mem).get('recall_skip')
     actions = (world_map_step(screen, mem, frame) if screen.kind == 'world_map'
                else existing(screen, mem, frame))
-    if not mem.get('recall'):
+    if not _flow(mem).get('recall'):
         # Preserve only a pre-existing anonymous cooldown; this named failure
         # must never put all other camps on a new 400-observation hold.
         if skip_before is None:
-            mem.pop('recall_skip', None)
+            _flow(mem).pop('recall_skip', None)
         else:
-            mem['recall_skip'] = skip_before
-        verification = mem.get('recall_verification') or {}
+            _flow(mem)['recall_skip'] = skip_before
+        verification = _flow(mem).get('recall_verification') or {}
         status = verification.get('status') if verification.get('general') == state['general'] else None
         row = _scope(mem).get(state['general'])
         if row is not None:
@@ -923,7 +926,10 @@ def _step_flow(screen, mem, frame, existing):
 # revert = set back to False. A read-only observation: it records HP, never changes a decision.
 CAMP_HP_PROBE_ENABLED = True
 CAMP_HP_PROBE_LIMIT = 2  # per retreat: one baseline read plus one change check
-PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack')
+# 'sortie_attempt' lives in the flow region (state/regions.py); checks
+# that use PROBE_BUSY_KEYS must also consult _flow(mem) via PROBE_FLOW_KEYS.
+PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'attack')
+PROBE_FLOW_KEYS = ('sortie_attempt',)
 
 
 def _camp_under_cursor(screen, frame):
@@ -966,9 +972,10 @@ def camp_hp_probe_step(screen, mem, frame):
         return None
     probe = mem.get('camp_hp_probe')
     if probe is None:
-        if mem.get('recall') or screen.kind != 'map' or frame is None or any(mem.get(k) for k in PROBE_BUSY_KEYS):
+        if (_flow(mem).get('recall') or screen.kind != 'map' or frame is None
+            or any(mem.get(k) for k in PROBE_BUSY_KEYS) or any(_flow(mem).get(k) for k in PROBE_FLOW_KEYS)):
             return None
-        if mem.get('recall_skip') or mem.get('recall_skip_target'):
+        if _flow(mem).get('recall_skip') or _flow(mem).get('recall_skip_target'):
             return None  # the flow is deliberately holding this camp in backoff; never enter it
         if _recheck_due(mem):
             return None  # a due retreat recheck always goes first (boundary condition 2)
@@ -985,7 +992,8 @@ def camp_hp_probe_step(screen, mem, frame):
         mem['camp_hp_probe'] = {'stage': 'menu', 'general': actor, 'key': key, 'steps': 0}
         return [pad('a')]
     # Yield mid-probe as well: a recall or a due retreat recheck that appears now takes the frame.
-    if mem.get('recall') or _recheck_due(mem) or any(mem.get(k) for k in PROBE_BUSY_KEYS):
+    if (_flow(mem).get('recall') or _recheck_due(mem) or any(mem.get(k) for k in PROBE_BUSY_KEYS)
+            or any(_flow(mem).get(k) for k in PROBE_FLOW_KEYS)):
         return _probe_abort(mem)
     probe['steps'] = probe.get('steps', 0) + 1
     if probe['steps'] > 6:

@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g713-58fb2ff1',
             'generation': 713, 'lease_id': 'test-lease'}
