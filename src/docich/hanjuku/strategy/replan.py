@@ -54,6 +54,33 @@ def _march_blocked(chapter, source, target, owned):
     return False
 
 
+def _march_blocker(chapter, source, target, owned):
+    """The own castle nearest the target lying on the march, or None."""
+    castles = chart.castles(chapter)
+    try:
+        sx, sy = castles[source]
+        tx, ty = castles[target]
+    except (KeyError, TypeError):
+        return None
+    dx, dy = tx - sx, ty - sy
+    seg2 = dx * dx + dy * dy
+    if not seg2:
+        return None
+    best = None
+    for c in owned - {source, target}:
+        pos = castles.get(c)
+        if not pos:
+            continue
+        cx, cy = pos
+        t = ((cx - sx) * dx + (cy - sy) * dy) / seg2
+        if not 0.05 < t < 0.95:
+            continue
+        if abs((cx - sx) * dy - (cy - sy) * dx) / seg2 ** 0.5 < MARCH_BLOCK_RADIUS:
+            if best is None or t > best[0]:
+                best = (t, c)
+    return best[1] if best else None
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -89,7 +116,23 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                      key=lambda c: (_march_blocked(chapter, c, target, owned),
                                     _distance(chapter, c, target)))
     if staffed:
-        return staffed[0], _spares(free[staffed[0]], unavailable_for_attack, sole)[0]
+        best = staffed[0]
+        if _march_blocked(chapter, best, target, owned):
+            # A march from the only staffed source just stops inside the
+            # blocking own castle — sortie from it instead (owner 2026-11-02:
+            # オトラントから出ないとかいけつにならない). Its spare leaves even
+            # when the list is thin: the march would only deliver the general
+            # there anyway. An unread list is opened as a probe.
+            blocker = _march_blocker(chapter, best, target, owned)
+            if blocker:
+                spares = _spares([g for g in free.get(blocker) or ()
+                                  if g not in unavailable_for_attack],
+                                 unavailable_for_attack, sole)
+                if spares:
+                    return blocker, spares[0]
+                if garrison.get(blocker) is None:
+                    return blocker, MOVE_ANY_GENERAL
+        return best, _spares(free[best], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
         return probes[0], MOVE_ANY_GENERAL
