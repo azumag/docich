@@ -22,3 +22,8 @@ code should import the layer module that owns a name.
 
 Design notes and the migration plan: ``docs/hanjuku_layered_architecture.md``.
 """
+
+# Install the cross-step retry guard before callers import individual layer
+# functions.  It keeps #2841/#3261 retry budgets finite when an equivalent
+# off-chart order is regenerated with a different execution step (#3265).
+from . import sortie_retry_guard as _sortie_retry_guard  # noqa: F401,E402
