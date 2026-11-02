@@ -54,6 +54,15 @@ def install(facade_name: str, modules) -> None:
     Names already defined by the facade itself win; otherwise the first
     module that defines a name provides it.
     """
+    # #3265: the retry guard spans strategy and flow functions, so install it
+    # only after a legacy facade has loaded its layer graph. Importing it from
+    # ``hanjuku.__init__`` is too early: hanjuku_chart itself imports
+    # ``hanjuku.identity`` and would re-enter readers before WORLD_MAP_OFFSET
+    # exists. Both production (hanjuku_bot) and legacy policy callers cross
+    # this facade boundary, while ordinary layer/chart imports stay lazy.
+    if facade_name in ('docich.hanjuku_policy', 'docich.hanjuku_bot'):
+        from . import sortie_retry_guard as _sortie_retry_guard  # noqa: F401
+
     facade = sys.modules[facade_name]
     namespace = facade.__dict__
     for module in modules:
