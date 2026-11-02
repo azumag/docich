@@ -71,6 +71,27 @@ def test_the_policy_facade_does_not_turn_all_of_hanjuku_into_seams(seams):
     assert len(seams) < 30
 
 
+@pytest.mark.parametrize('changed', [
+    ['docs/hanjuku_script_bot.md'],
+    ['README.md', 'docs/operations/ops-brief.md'],
+    ['ops/vm_actions/gateway.py'],
+    ['.github/workflows/vm-operations.yml'],
+    ['tests/fixtures/hanjuku/g1097-map-sortie-starved.png'],
+    ['games/soviet_now'],
+])
+def test_a_change_no_test_can_see_runs_no_tests(changed, seams):
+    assert scope.choose_suite(changed, seams)[0] == 'none'
+
+
+@pytest.mark.parametrize('relevant', [
+    'src/docich/cli.py', 'tests/test_cli.py', 'conftest.py', 'requirements-test.txt', '.node-version',
+    'brains/bastet/bot.py', 'config/games/bastet.toml',
+    '.github/workflows/ci.yml', '.github/scripts/ci_test_scope.py', '.github/scripts/ci_trigger_paths.py',
+])
+def test_one_relevant_file_runs_tests_even_beside_documentation(relevant, seams):
+    assert scope.choose_suite(['docs/a.md', relevant], seams)[0] == 'full'
+
+
 def test_no_change_list_gets_the_full_suite(seams):
     assert scope.choose_suite([], seams)[0] == 'full'
 
