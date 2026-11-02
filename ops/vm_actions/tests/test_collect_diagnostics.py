@@ -2405,6 +2405,93 @@ class NethackAgentLogTests(unittest.TestCase):
         self.assertNotIn("sekret", " ".join(entry["lines"]))
 
 
+class SorenBridgeLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-bridge-log-")
+        self.soren = Path(self.tmp.name) / "soren"
+        lifecycle = self.soren / "tmp/state/game_lifecycle"
+        lifecycle.mkdir(parents=True)
+        (lifecycle / "player_capabilities.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "pid": os.getpid()}),
+            encoding="utf-8")
+        (lifecycle / "player_state.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "policy": "jev"}),
+            encoding="utf-8")
+        (self.soren / "tmp/soviet_local.log").write_text(
+            "".join(f"bridge line {i} token=sekret{i}\n" for i in range(40)),
+            encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _freeze_board(self, age=8000.0):
+        board = self.soren / "game_state.json"
+        board.write_text(json.dumps({"state": "MOVE", "score": 1117}),
+                         encoding="utf-8")
+        os.utime(board, (time.time() - age, time.time() - age))
+
+    def test_healthy_run_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board(age=10.0)
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertFalse(entry["projected"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_dead_bridge_pid_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board()
+        (self.soren / "tmp/state/game_lifecycle/player_capabilities.json") \
+            .write_text(json.dumps({"pid": 2**22 - 1}), encoding="utf-8")
+        with mock.patch.object(module.os, "kill",
+                               side_effect=ProcessLookupError):
+            entry = module._collect_soren_bridge_log(
+                self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_frozen_board_projects_bounded_redacted_tail(self):
+        module = load_collector()
+        self._freeze_board()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "move_frozen_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertTrue(entry["readable"])
+        self.assertEqual(entry["source"], "live_log")
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+        self.assertIn("bridge line 39", entry["lines"][-1])
+        self.assertNotIn("bridge line 0 ", " ".join(entry["lines"]))
+        self.assertNotIn("sekret", " ".join(entry["lines"]))
+        self.assertLessEqual(
+            max(len(line) for line in entry["lines"]),
+            module.SOREN_BRIDGE_LOG_LINE_LIMIT)
+
+    def test_hung_evacuation_log_is_preferred(self):
+        module = load_collector()
+        self._freeze_board()
+        hung = self.soren / "tmp/soviet_local.log.hung-20261031-1304"
+        hung.write_text("hung tail line\n", encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["source"], "hung_evacuated")
+        self.assertEqual(entry["lines"], ["hung tail line"])
+
+    def test_absent_board_with_jev_policy_projects_tail(self):
+        module = load_collector()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "jev_board_absent_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+
+    def test_absent_board_without_jev_policy_stays_sealed(self):
+        module = load_collector()
+        (self.soren / "tmp/state/game_lifecycle/player_state.json") \
+            .write_text(json.dumps({"schema": 1, "game": "sorengame",
+                                    "policy": "existing"}), encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
+
+
 class NethackPaneTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vmops-panes-")

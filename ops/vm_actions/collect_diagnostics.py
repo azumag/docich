@@ -74,6 +74,13 @@ Observed sources (all read-only):
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
     unrelated log body is read.
+  - a bounded, redacted tail (last lines only) of the Soren bridge log
+    (soren_root/tmp/soviet_local.log, or the newest
+    soviet_local.log.hung-<stamp> left by a hung-log evacuation), emitted
+    only while the bridge shows the #3154 stuck-live anomaly signature: the
+    bridge pid is alive while game_state.json sits MOVE-frozen past the
+    stuck window, or a JEV player_state has no board at all. Healthy runs
+    emit no log body.
   - bounded, redacted captures of the committed NetHack runtime's tmux
     windows (window names, the birth/process window TTY, and the agent window)
     so a corner that is active but not progressing stays diagnosable. Never
@@ -10291,6 +10298,171 @@ def _collect_nethack_manual_log(state_dir, now):
     return entry
 
 
+SOREN_BRIDGE_LOG_DIR = "tmp"
+SOREN_BRIDGE_LOG_NAME = "soviet_local.log"
+SOREN_BRIDGE_LOG_ENTRIES = 256
+SOREN_BRIDGE_LOG_TAIL_BYTES = 8192
+SOREN_BRIDGE_LOG_LINES = 24
+SOREN_BRIDGE_LOG_LINE_LIMIT = 240
+SOREN_BRIDGE_LOG_MAX_BYTES = 32 * 1024 * 1024
+SOREN_BRIDGE_STUCK_AGE_S = 7200
+# The stuck-live recovery path renames the hung bridge log to
+# ``soviet_local.log.hung-<stamp>`` before relaunch (#3154). Only that exact
+# name shape is read; anything else under ``tmp/`` is ignored.
+_SOREN_BRIDGE_LOG_HUNG_RE = re.compile(
+    r"^soviet_local\.log\.hung-[0-9A-Za-z._-]{1,64}$")
+
+
+def _soren_bridge_pid_alive(soren):
+    """Whether the persisted bridge capability pid still names a live
+    process. ``None`` means no usable pid was persisted at all."""
+    capability = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_capabilities.json")
+    pid = capability.get("pid") if isinstance(capability, dict) else None
+    if type(pid) is not int or not 0 < pid <= 4194304:
+        return None
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
+def _soren_bridge_stuck_anomaly(soren, now):
+    """The #3154 stuck-live anomaly signature, or None when healthy.
+
+    Mirrors the persisted evidence the recovery gate
+    (``recover-diagnose=player_policy_jev_bridge_stuck_live``, code 97) keys
+    on, without importing docich or running the operator: the bridge pid is
+    still alive while its board evidence stopped advancing -- either a
+    ``game_state.json`` MOVE board frozen for at least
+    ``SOREN_BRIDGE_STUCK_AGE_S`` seconds, or a JEV ``player_state.json``
+    whose board is absent entirely (the gate treats a missing board as
+    frozen-equivalent). Healthy runs return None so no log body leaves.
+    """
+    if _soren_bridge_pid_alive(soren) is not True:
+        return None
+    board_path = Path(soren) / "game_state.json"
+    board = _read_json(board_path)
+    if isinstance(board, dict) and board.get("state") == "MOVE":
+        try:
+            if now - board_path.stat().st_mtime >= SOREN_BRIDGE_STUCK_AGE_S:
+                return "move_frozen_bridge_alive"
+        except OSError:
+            return None
+    player = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_state.json")
+    if (not board_path.is_file() and isinstance(player, dict)
+            and player.get("policy") == "jev"):
+        return "jev_board_absent_bridge_alive"
+    return None
+
+
+def _read_soren_bridge_tail(path, size):
+    """Bounded tail read of one bridge log: O_NOFOLLOW + fstat, regular
+    files only, capped size. Returns (lines, tail_truncated) or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            truncated = size > SOREN_BRIDGE_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - SOREN_BRIDGE_LOG_TAIL_BYTES)
+            raw = handle.read(SOREN_BRIDGE_LOG_TAIL_BYTES)
+    except OSError:
+        return None
+    lines = [line for line in raw.decode("utf-8", errors="replace")
+             .splitlines() if line.strip()]
+    return lines, truncated
+
+
+def _collect_soren_bridge_log(soren, now):
+    """Bounded, redacted bridge-log tail, emitted only on the #3154 anomaly.
+
+    ``tmp/soviet_local.log`` is the bridge's own stdout: its tail is the only
+    read-only evidence that separates "bridge hung inside the page-side
+    evaluate" from a clean stop. Because it is raw log text, the collector
+    contract keeps it sealed on healthy runs and projects just the last few
+    bounded, redacted lines while the stuck-live signature holds -- the same
+    pattern as the NetHack ``agent.log`` tail. When a hung-log evacuation
+    renamed the file, the newest ``soviet_local.log.hung-<stamp>`` is read
+    instead of the fresh post-relaunch log. Symlinks and non-regular files
+    are refused; nothing else under ``tmp/`` is opened.
+    """
+    entry = {
+        "anomaly": None,
+        "projected": False,
+        "source": None,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "tail_truncated": None,
+        "lines": [],
+    }
+    soren = Path(soren)
+    anomaly = _soren_bridge_stuck_anomaly(soren, now)
+    if anomaly is None:
+        return entry
+    entry["anomaly"] = anomaly
+    directory = soren / SOREN_BRIDGE_LOG_DIR
+    # Prefer the newest hung evacuation: its tail is the incident evidence;
+    # the fresh post-relaunch soviet_local.log only documents the new run.
+    name = None
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= SOREN_BRIDGE_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _SOREN_BRIDGE_LOG_HUNG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > SOREN_BRIDGE_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name)
+    except OSError:
+        pass
+    if best is not None:
+        name = best[1]
+        entry["source"] = "hung_evacuated"
+    else:
+        name = SOREN_BRIDGE_LOG_NAME
+        entry["source"] = "live_log"
+    path = directory / name
+    if not path.is_file():
+        return entry
+    entry["present"] = True
+    try:
+        info = path.stat()
+        entry["mtime"] = int(info.st_mtime)
+        entry["bytes"] = int(info.st_size)
+    except OSError:
+        return entry
+    tail = _read_soren_bridge_tail(path, info.st_size)
+    if tail is None:
+        return entry
+    lines, truncated = tail
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    entry["projected"] = True
+    entry["lines"] = [
+        _redact_text(line, SOREN_BRIDGE_LOG_LINE_LIMIT)
+        for line in lines[-SOREN_BRIDGE_LOG_LINES:]
+    ]
+    return entry
+
+
 NETHACK_PANE_LINES = 14
 # NetHack draws its message row -- and therefore ``--More--`` -- on the TOP
 # screen row, which the tail-only capture structurally misses (#2271). The
@@ -14525,6 +14697,7 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "soren_bridge_log": _collect_soren_bridge_log(soren, now),
         "nethack_manual_log": _collect_nethack_manual_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
