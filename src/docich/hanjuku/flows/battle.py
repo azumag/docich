@@ -18,7 +18,7 @@ from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ... import hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
-from ..judgment.battle import (DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
@@ -30,7 +30,7 @@ from ..judgment.battle import (DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIE
                                _defender_summon_preempt,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
-                               _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
+                               _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal, _own_egg_empty,
                                _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
@@ -704,6 +704,8 @@ def battle_step(screen: Screen, mem):
     _card_damage_recheck_resources(mem, cur)
     egg_bait.observe_melee(screen, mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
+    if _one_hit_lethal(cur):
+        return _one_hit_finish_step(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
         return opening_wait
@@ -918,6 +920,25 @@ def battle_step(screen: Screen, mem):
             rescue['menu_ticks'] = 0
             return _human_menu_open(cur, 'survival', mem)
     return _melee_step(mem, cur)
+
+
+def _one_hit_finish_step(mem, cur):
+    """Push through a one-hit-lethal enemy; open no menu and hold no input."""
+    flow = cur.get('card_flow')
+    if flow:
+        if flow.get('stage') == 'announce':
+            _card_use_unclassified(mem, cur, '敵が一撃で倒れるため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
+        else:
+            cur['card_flow'] = None
+    cur['melee_holds'] = 0
+    if not cur.get('one_hit_finish'):
+        cur['one_hit_finish'] = True
+        _record(mem, 'battle_one_hit_finish', **_battle_labels(cur),
+                enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+                observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                                 'wall_damage': EGG_WALL_DAMAGE},
+                reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を使わず白兵で押し切る')
+    return _power_mash(mem, cur)
 
 
 def _melee_step(mem, cur):

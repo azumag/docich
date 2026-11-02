@@ -119,7 +119,7 @@ def test_expired_selection_cannot_disable_survival_on_a_later_panel():
     assert p._card_melee_ready(mem, mem['battle']) is False
 
 
-@pytest.mark.parametrize('hp',[1,33])
+@pytest.mark.parametrize('hp',[8,33])
 def test_unchanged_hp_after_selection_never_claims_measured_drop_or_followup(hp):
     mem=castora()
     mem['battle'].update(enemy_hp=hp,start_enemy_hp=hp)
