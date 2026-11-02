@@ -403,6 +403,19 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_REF="feature").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
 
+    def test_browser_profile_reclaim_is_owner_only_production_main_without_extra_confirm(self):
+        # Phase-1 wiring is a bounded read-only dry-run plan (docich #3122);
+        # same gating shape as diagnostics: owner-only dispatch on
+        # production/main with no confirm=production requirement.
+        proc = self.run_auth(INPUT_OPERATION="browser_profile_reclaim")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("browser_profile_reclaim", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
     def test_loop_pause_release_is_owner_only_production_main_with_confirm(self):
         base = {"INPUT_OPERATION": "release_soren_loop_pause", "INPUT_CONFIRM": "production"}
         proc = self.run_auth(**base)
@@ -437,7 +450,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
             "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, "
-            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]", text
+            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause, browser_profile_reclaim]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
