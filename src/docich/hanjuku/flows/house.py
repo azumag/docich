@@ -772,7 +772,35 @@ def _country_status_level(screen):
             'needed': _status_row_value(screen, 'つぎのレベル')}
 
 
+# Issue #3194 (18): phase hops that need no new screen. The hop only re-labels
+# state after a roster frame was already read, so the next handler may run on
+# that same frame instead of waiting a whole observation period (1.5 s).
+INPUT_FREE_HOPS = {('roster_next', 'roster'), ('roster_advance', 'roster')}
+MAX_INPUT_FREE_HOPS = 2
+
+
 def step(screen, mem, frame):
+    """Run one observation; follow input-free phase hops on the same frame.
+
+    A hop is followed only when the handler returned ``[]`` (no pad issued) and
+    moved along ``INPUT_FREE_HOPS``. Any pad, ``None`` (release to another
+    owner) or ended flow stops the chain, so no input follows another input
+    inside one observation and the hop count is bounded.
+    """
+    for _ in range(MAX_INPUT_FREE_HOPS + 1):
+        before = (mem.get('house') or {}).get('phase')
+        house_state = mem.get('house')
+        actions = _step_once(screen, mem, frame)
+        after_state = mem.get('house')
+        if (actions != [] or after_state is None or after_state is not house_state
+                or (before, after_state.get('phase')) not in INPUT_FREE_HOPS):
+            return actions
+        _record(mem, 'input_free_hop', observed_metric={'from': before, 'to': after_state['phase']},
+                reason='入力を伴わない内部遷移を同じ観測内で進め、観測周期の消費を省く')
+    return actions
+
+
+def _step_once(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
     A repair owns only its bounded menu transaction. Battles and monthly

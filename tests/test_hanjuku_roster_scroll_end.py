@@ -141,9 +141,9 @@ def test_native_unknown_unselected_row_does_not_block_known_next_member():
     mem = memory('roster_advance', selected='ヴィーナス', seen=seen)
     r.begin(mem, mem['house'])
     r.page(mem, seen)
-    assert feed(mem, frame) == []
-    assert mem['house']['phase'] == 'roster'
+    # Issue #3194: the moved cursor is acted on in the same observation.
     assert feed(mem, frame) == [pad('a')]
+    assert mem['house']['phase'] == 'status'
     assert mem['house']['selected'] == 'クランベリー'
     assert mem['recruit_roster']['names'] == seen
     assert 'シャルトネ' not in mem['recruit_roster']['names']

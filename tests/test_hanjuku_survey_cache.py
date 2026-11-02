@@ -444,3 +444,31 @@ def test_field_reuse_keeps_the_two_attempt_budget_and_unknown_statuses_stay_dirt
         mem['tick'] += house.SCAN_INTERVAL
     assert house.step(MAP, mem, None) is None
     assert mem['roster_survey']['dirty'] == {'ゼウス': ['hp']}
+
+
+def test_partial_survey_roster_next_hop_acts_on_the_same_frame():
+    """Issue #3194 (18): after the status screen closes, the next target is
+    walked toward on the frame that already shows the list, not one idle
+    observation later."""
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster_next', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'どうし'}
+    assert house.step(parse(roster(NAMES)), mem, None) == [p.pad('down')]
+    assert mem['house']['phase'] == 'roster'
+    assert any(rec['decision'] == 'house_input_free_hop' for rec in mem['_records'])
+
+
+def test_input_free_hop_never_chains_a_second_pad_in_one_observation():
+    mem = completed()
+    _defeat(mem)
+    mem['house'] = {'phase': 'roster_next', 'chapter': 1, 'roster_month': '1-6', 'month_scan': False,
+                    'age': 0, 'total': 0, 'seen': [], 'pending': [], 'from_survey': True,
+                    'status_targets': ['ゼウス'], 'selected': 'どうし'}
+    actions = house.step(parse(roster(NAMES)), mem, None)
+    assert len(actions) == 1
+    # A non-roster frame must not hop: the phase stays until a list is seen.
+    mem['house']['phase'] = 'roster_next'
+    assert house.step(parse(status('ゼウス')), mem, None) == []
+    assert mem['house']['phase'] == 'roster_next'
