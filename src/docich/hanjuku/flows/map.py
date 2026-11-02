@@ -741,6 +741,7 @@ def target_step(screen: Screen, mem, frame):
         attempt = mem.get('sortie_attempt') or {}
         attempt['step'] = order['step']
         attempt['target_seen'] = True
+        attempt.pop('interrupted', None)     # a new execution, not the old one
         mem['sortie_attempt'] = attempt
         mem['departure_request'] = {
             'step': order['step'], 'target': order['target'],
