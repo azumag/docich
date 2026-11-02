@@ -270,3 +270,5 @@ def note_attempt(mem, kind, outcome, *, actor=None, target=None, reason=None, me
                 observed_metric={**_summary(goal), **(metric or {})},
                 reason=f'{kind}の目標が{goal["attempts"]}回の延期・中断でも達成できていないため飢餓として記録')
     return goal
+
+# temporary line for the scoped CI path check, never merged
