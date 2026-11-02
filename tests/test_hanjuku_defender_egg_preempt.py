@@ -158,8 +158,9 @@ def test_low_hp_including_hero_can_take_one_imminent_summon_chance(ally, hp):
     record = next(r for r in mem['_records'] if r['decision'] == 'battle_okunote_egg_preempt')
     assert record['observed_metric']['max_self_damage'] == 88
     assert record['resulting_event'] == 'irreversible_risk_accepted'
-    # The first A is a plan, not a successful effect or a reason to retry the lottery.
-    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    # A repeated parent frame means the first A never landed: resend bounded
+    # A (not another lottery — B is a no-op on this box, g1097 23:06).
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     assert not p._defender_last_resort(mem, mem['battle'])
 
 
@@ -307,7 +308,8 @@ def test_melee_return_after_candidate_allows_new_bounded_attempt():
     # return after the candidate choice starts a fresh bounded menu attempt.
     assert guard['stage'] == 'opening' and not guard.get('selected')
     assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
-    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    # A repeated parent frame resends the unlanded A (bounded), not a blind B.
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
 
 
 def test_partial_battle_hp_cannot_create_a_damage_margin_or_preemption():

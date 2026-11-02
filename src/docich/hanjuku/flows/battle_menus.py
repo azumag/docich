@@ -943,6 +943,28 @@ def okunote_step(screen, mem):
             and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
         guard = cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt') or {}
         if guard.get('selected'):
+            # g1097 23:06: 親メニュー (きりふだ/たいきゃく/おくのて) が実は
+            # 残ったまま — 前の A は届かず B は無効。この無記録 B が ~200 回
+            # 続いた。おくのて行が見えるなら「もう一度A」は再抽選ではなく
+            # 未受付の再送なので、有界でカーソルを合わせて送る。
+            if 'おくのて' in labels:
+                retries = int(guard.get('parent_retries') or 0)
+                if retries < 4:
+                    move = _battle_menu_to(screen, 'おくのて')
+                    if move == 'here':
+                        guard['parent_retries'] = retries + 1
+                        _record(mem, 'battle_okunote_parent_resend', **_battle_labels(cur),
+                                observed_metric={'retry': retries + 1, 'cursor_y': screen.menu_cursor},
+                                reason='おくのて選択のAが届かず親メニューが残っているため、カーソル確認済みのAを有界で再送する')
+                        return [pad('a')]
+                    guard['parent_retries'] = retries + 1
+                    if move is not None:
+                        return [move]
+                    return [pad('down')]
+                _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
+                        observed_metric={'parent_retries': retries},
+                        reason='確定済み救済のおくのて行を有界回数再送してもメニューが残るため、以後は戻る')
+                return None
             return [pad('b')]  # a repeated parent frame is not another lottery
         if guard and cur['okunote_only_observed']:
             # A real menu can arrive after the bounded B opening expired.

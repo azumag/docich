@@ -379,3 +379,21 @@ def test_an_uncommitted_menu_still_uses_the_budgeted_b_close():
     mem = memory(side='attack', castle='けっかい', ally_hp=90)
     mem['battle']['okunote_flow'] = {'ticks': 20}
     assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+
+
+# ---- g1097 23:06: 選択済み親メニューが残ったままの無記録Bループ ----
+# guard.selected で親フレームを「再抽選でない」としてBを返していたが、
+# 実画面が親メニュー (きりふだ/たいきゃく/おくのて) のまま残るとBは無効。
+# おくのて行が見えるなら有界でAを再送する。
+def test_a_stuck_selected_parent_menu_resends_a_bounded():
+    mem = memory(egg_empty=True)
+    s = menu()
+    assert p.battle_menu_step(s, mem) == [p.pad('a')]
+    # 選択が届かず親メニューが残る = 同じフレームが繰り返し戻る
+    for _ in range(12):
+        p.battle_menu_step(s, mem)
+    # menu_pending 4回 + guard 4回の有界再送で尽き、以後は戻る
+    assert mem['battle']['okunote_attempt']['resends'] == 4
+    assert mem['battle']['okunote_summon_preempt'].get('parent_retries') == 4
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])
