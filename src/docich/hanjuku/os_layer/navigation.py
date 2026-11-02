@@ -253,9 +253,11 @@ def _note_failed_jump(mem, jump, why):
     the view again (g1075 2026-10-28: 69 closes at 0 moves, ~1 minute of Y
     blinking per order while the ring cursor sat still on the sea).
     """
-    mem['y_jump_last'] = {'step': jump.get('step'), 'mode': jump.get('mode'),
-                          'moves': int(jump.get('moves') or 0), 'why': why,
-                          'foreground_interrupted': bool(jump.get('foreground_interrupted'))}
+    last = {'step': jump.get('step'), 'mode': jump.get('mode'),
+            'moves': int(jump.get('moves') or 0), 'why': why}
+    if jump.get('foreground_interrupted'):
+        last['foreground_interrupted'] = True
+    mem['y_jump_last'] = last
 
 
 def _forget_failed_jump(mem, step, mode=None):
@@ -285,12 +287,16 @@ def _drop_stale_y_jump(screen, mem):
     if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) < Y_JUMP_OPEN_GRACE:
         return True                      # the view is still opening: press nothing
     mem.pop('y_jump', None)
-    if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) >= Y_JUMP_INTERRUPTED_TICKS:
+    if (not jump.get('seen') and not jump.get('foreground_interrupted')
+            and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) >= Y_JUMP_INTERRUPTED_TICKS):
         # g1075 2026-10-30 08:51-08:55: the target Y at 08:51:09 was cut by the
         # month turnover and a defense. Back on the target map 4 minutes later
         # it was noted as a 0-move close, so the retake walked from a stale
         # estimate and was cancelled. Nothing refused Y here: let it open
         # again, and drop the estimate the other screens made stale.
+        # A jump a readable foreground event explains instead keeps its
+        # cursor estimate and falls through to the receipted view_closed
+        # path, which permits one retry within the existing budget.
         mem.pop('cursor', None)
         mem['uncertain'] = True
         _record(mem, 'y_jump_interrupted', chart_step=jump.get('step'), target=jump.get('goal'),
