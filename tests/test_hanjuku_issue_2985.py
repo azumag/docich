@@ -69,7 +69,7 @@ def test_unmeasured_stats_keep_observed_order():
 
 def test_rebalance_moves_strongest_into_weak_home():
     garrison = {'アルマムーン': ['セルリアク'],
-                'グリン': ['リースリング', 'アテナ'],
+                'グリン': ['リースリング', 'アテナ', 'ポセイドン'],
                 'リグア': ['レモン', 'ピオーネ'],
                 'コラダイン': ['ミュスカデ'], 'イーピヨル': ['ピオーネ'],
                 'ドンダム': ['ピオーネ'], 'メガパタ': ['デュオニソス'],

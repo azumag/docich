@@ -73,3 +73,18 @@ def test_an_unread_arrival_castle_gets_only_one_probe_per_plan():
     probes = [order for order in candidates
               if order.get('source_probe') is True and order.get('source') == 'アイアイエー']
     assert len(probes) == 1
+
+
+def test_two_spares_cover_only_two_of_three_lost_castles():
+    """DSH review on #3268: when sendable spares run out mid-plan, the remaining
+    target is dropped rather than reusing an already-planned general."""
+    mem = crowded_home()
+    mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
+    mem['garrison']['アルマムーン'] = mem['garrison']['アルマムーン'][:5]
+    # Keep the オトラント march blocker from supplying a third sortie general:
+    # its list was read empty, so no spare may leave there either.
+    mem['garrison']['オトラント'] = []
+    orders = retakes(mem)
+    assert len(orders) == 2
+    generals = [order['general'] for order in orders]
+    assert len(set(generals)) == 2

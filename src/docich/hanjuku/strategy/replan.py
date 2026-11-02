@@ -354,19 +354,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         _, source, general = choices[0]
         return source, general
     for target in targets:
-        def pick(candidate_busy):
-            return (_boss_wave_pick(mem, owned, candidate_busy, allow_sole)
-                    if chart.is_boss_castle(target) else
-                    _interim_source(mem, target, chart_orders.get(target), owned, candidate_busy, allow_sole))
-        planning_busy = busy | planned_busy
-        picked = pick(planning_busy)
-        reused_planned_actor = False
-        if picked is None and planned_busy:
-            # The candidate list also describes later sequential work. Once all
-            # simultaneously sendable spares are reserved, retain those later
-            # targets with the old selection semantics instead of dropping them.
-            picked = pick(busy)
-            reused_planned_actor = picked is not None
+        picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
+                  if chart.is_boss_castle(target) else
+                  _interim_source(mem, target, chart_orders.get(target), owned,
+                                  busy | planned_busy, allow_sole))
         if picked is None:
             continue
         source, general = picked
@@ -379,7 +370,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
             present = (mem.get('garrison') or {}).get(source) or ()
-            if not reused_planned_actor and general in present:
+            if general in present:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
@@ -395,6 +386,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
             **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+    # #3266: a general already committed to a sortie above is busy for the
+    # staging/refill moves below as well — one plan must not book him twice.
+    busy = busy | planned_busy
     garrison = mem.get('garrison') or {}
     moves = []
     if chapter == 3:
