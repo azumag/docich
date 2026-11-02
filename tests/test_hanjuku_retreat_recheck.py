@@ -9,6 +9,7 @@ from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, _camp_frame, camp_menu
 from test_hanjuku_house import roster, status
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'recheck-test', 'generation': 1, 'lease_id': 'lease-test'}
 MAP = Screen([], None, '', kind='map', cursor=(26, 66))
@@ -922,8 +923,8 @@ def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch,
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
     assert not mem.get('retreat_rechecks')  # A alone
     trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-    mem['departure_request']['request_trace'] = trace
-    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    _flow(mem)['departure_request']['request_trace'] = trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     mem = json.loads(json.dumps(mem)); mem['tick'] = 201
     p.observe_sortie_transition(Screen([], None, '', kind=return_kind), mem, 'map_target')
     if return_kind == 'unknown':

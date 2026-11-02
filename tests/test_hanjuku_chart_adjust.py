@@ -13,6 +13,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 BASE_ORDERS = copy.deepcopy(chart.CHAPTER_1_ORDERS)
@@ -792,10 +793,10 @@ def _launch(monkeypatch, mem, *, observe_departure=True):
     """
     monkeypatch.setattr(policy, 'nav_step', lambda *a, **k: 'arrived')
     actions = policy.target_step(_text_screen('', 'map_target'), mem, FRAME)
-    if observe_departure and actions == [policy.pad('a')] and mem.get('departure_request'):
+    if observe_departure and actions == [policy.pad('a')] and _flow(mem).get('departure_request'):
         trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-        mem['departure_request']['request_trace'] = trace
-        mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+        _flow(mem)['departure_request']['request_trace'] = trace
+        _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
         policy.observe_sortie_transition(_text_screen('', 'map'), mem, 'map_target')
     return actions
 

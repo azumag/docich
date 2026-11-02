@@ -1,0 +1,118 @@
+"""領域別の状態所有権: 共有 mem を 4 領域に分割する宣言層 (docich#3193 C).
+
+A 段階で入力成立と観測事実の確定を分離し、B 段階で手順の所有権を
+FlowResult 契約にした。C 段階は残る共有状態 ``mem`` のフラットなキー空間に
+所有者と寿命を与える。本モジュールはその唯一の宣言場所であり、各領域は
+``mem`` 内の専用 dict (``mem['flow']``・``mem['journal']``) として実体化する。
+
+領域と寿命:
+
+- ``WORLD``  観測事実 (garrison・sorties・launched_orders 等)。
+             観測層だけが書き、手順は読むのみ。寿命は章。
+- ``PLAN``   戦略層の指示・計画 (orders・order_context・chart_plan 等)。
+             手順は読むのみ。寿命は章。
+- ``JOURNAL`` orchestrator が注入する送信receipt・ラン同一性。
+             手順は照合するだけで書かない。寿命はラン (runtime identity)。
+- ``FLOW``   手順自身が所有するセッション状態 (departure_request・
+             departure_miss 等)。手順終了・中断・章遷移で死ぬ。
+
+段階1では出撃ドメインの予約・会計帳・receipt だけを実移行する。
+帰還 (recall) 系と ``sortie_attempt``・``launch_probe`` 系は参照面が広く、
+レビュー可能な差分を保つため ``migrated=False`` の宣言に留め、
+段階2で同じスキーマに沿って追従移行する (振り分け案:
+issue #3193 issuecomment-6585024310)。
+"""
+from __future__ import annotations
+
+WORLD, PLAN, JOURNAL, FLOW = 'world', 'plan', 'journal', 'flow'
+
+# lifetime: 'run' はプロセス/ラン単位、'chapter' は章遷移 (_enter_chapter) で消える、
+# 'procedure' は手順の終了・中断で消える (章遷移でも必ず消える)。
+KEY_OWNERSHIP = {
+    # --- 出撃 FlowSession (段階1: migrated) ---
+    'departure_request': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'departure_miss':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    # --- 出撃 ExecutionJournal (段階1: migrated) ---
+    '_departure_input':  {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
+    # --- 出撃 FlowSession (段階2へ宣言) ---
+    'sortie_attempt':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'launch_probe':      {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'launch_miss':       {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    # --- 帰還 FlowSession (段階2へ宣言) ---
+    'recall':               {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'recall_verification':  {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'recall_retry':         {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'recall_skip':          {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'recall_skip_target':   {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'recall_skip_ticks':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'retreat_rechecks':     {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'retreat_camp_episode': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    'retreat_anonymous_budget': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},
+    '_recall_inputs':       {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
+    # --- 出撃/帰還が読む PlanState ---
+    'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'chart_plan':       {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'general_override': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'source_override':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'card_override':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'attack':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    # --- 出撃/帰還が観測する WorldState ---
+    'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    # --- ラン同一性は常に ExecutionJournal ---
+    '_run_identity':   {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
+}
+
+_REGION_KEY = {FLOW: 'flow', JOURNAL: 'journal'}
+
+# 実移行したキー → 収容領域 (migrate_legacy_state の対象表)。
+_MIGRATED = {key: spec['region'] for key, spec in KEY_OWNERSHIP.items()
+             if spec['migrated']}
+
+
+def region(mem, name):
+    """領域 dict を返す。未作成なら作り、旧フラットキーを移行する。"""
+    store = mem.setdefault(_REGION_KEY[name], {})
+    return store
+
+
+def flow(mem):
+    """FlowSession: 手順が所有するセッション状態。"""
+    migrate_legacy_state(mem)
+    return region(mem, FLOW)
+
+
+def journal(mem):
+    """ExecutionJournal: 送信receipt・ラン同一性。"""
+    migrate_legacy_state(mem)
+    return region(mem, JOURNAL)
+
+
+def migrate_legacy_state(mem):
+    """旧フラットキーを宣言領域へ冪等に移す (明示移行)。
+
+    旧スキーマの mem に移行済み宣言キーがフラットに残っていれば領域へ退避
+    し、元キーを除去する。領域側に既に値がある場合は領域を優先して旧値を
+    捨てる (二重所有を残さない)。アクセサから遅延呼びするので、テスト等で
+    旧形式を直接組み立てた mem でも利用側の変更なく動作する。
+    """
+    for key, region_name in _MIGRATED.items():
+        if key not in mem:
+            continue
+        store = mem.setdefault(_REGION_KEY[region_name], {})
+        # フラットに残っている値は未移行プロデューサ (旧形式テスト注入・
+        # orchestrator の毎判断注入) の最新出力とみなし、領域へ上書きする。
+        store[key] = mem[key]
+        del mem[key]
+
+
+def chapter_scoped_keys():
+    """章遷移で消える宣言キー。_enter_chapter のクール対象の宣言元。"""
+    return {key for key, spec in KEY_OWNERSHIP.items()
+            if spec['lifetime'] in ('chapter', 'procedure')}

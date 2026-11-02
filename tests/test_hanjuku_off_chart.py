@@ -16,6 +16,7 @@ from docich import hanjuku_commentary, hanjuku_interim
 from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 CASTLES = chart.castles(1)
@@ -808,8 +809,8 @@ def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch)
     assert decisions(mem, 'sortie_departure_requested')
     # The reservation commits only on the receipt-backed field return.
     trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-    mem['departure_request']['request_trace'] = trace
-    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    _flow(mem)['departure_request']['request_trace'] = trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     policy.observe_sortie_transition(Screen(lines=[], hand=None, text='', kind='map'),
                                      mem, 'map_target')
     assert decisions(mem, 'order_launched')
@@ -1659,8 +1660,8 @@ def test_an_unverified_target_walks_onto_the_enemy_roof_beside_the_marker(monkey
     # The request is only a reservation until the journaled send plus the
     # closed picker prove the departure (docich#3193 A).
     trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
-    mem['departure_request']['request_trace'] = trace
-    mem['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    _flow(mem)['departure_request']['request_trace'] = trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     flow_map.observe_sortie_transition(Screen(lines=[], hand=None, text='', kind='map'),
                                        mem, 'map_target')
     assert mem['sorties']['I:1']['target'] == 'グリン'

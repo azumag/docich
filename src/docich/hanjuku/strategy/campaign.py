@@ -30,7 +30,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
-                'departure_request', 'departure_miss',
+                'departure_request', 'departure_miss', 'flow',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',

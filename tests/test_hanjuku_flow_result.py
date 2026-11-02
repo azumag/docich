@@ -13,6 +13,7 @@ from docich.hanjuku.flows.result import FlowResult
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_departure_request import TRACE, request as make_request, sent
 from test_hanjuku_execution_binding import confirm, memory
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 TARGET = Screen([], None, '', kind='map_target')
 FIELD = Screen([], None, '', kind='map')
@@ -65,4 +66,4 @@ def test_release_reports_reconfirm_or_end():
     sent(mem, 0)
     r = _departure_request_step(TARGET, mem, order, req)
     assert r.disposition == 'release' and r.permitted_recovery == 'reconfirm'
-    assert 'departure_request' not in mem
+    assert 'departure_request' not in _flow(mem)
