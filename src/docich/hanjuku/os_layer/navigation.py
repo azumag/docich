@@ -291,19 +291,13 @@ def _drop_stale_y_jump(screen, mem):
         # it was noted as a 0-move close, so the retake walked from a stale
         # estimate and was cancelled. Nothing refused Y here: let it open
         # again, and drop the estimate the other screens made stale.
+        mem.pop('cursor', None)
+        mem['uncertain'] = True
         _record(mem, 'y_jump_interrupted', chart_step=jump.get('step'), target=jump.get('goal'),
                 screen=screen.kind,
                 observed_metric={'moves': jump.get('moves'),
                                  'waited': int(mem.get('tick') or 0) - int(jump.get('tick') or 0)},
                 reason='全体マップが一度も出ないまま他の画面が続いたため、ジャンプを開き直す')
-        if jump.get('foreground_interrupted'):
-            # A foreground event interrupted the still-unopened view. Keep the
-            # estimate (the event, not the map, stole the frames) and record
-            # the receipt so _want_y_jump permits one bounded retry.
-            _note_failed_jump(mem, jump, 'view_closed')
-        else:
-            mem.pop('cursor', None)
-            mem['uncertain'] = True
         return False
     if jump:
         _note_failed_jump(mem, jump, 'view_closed')
