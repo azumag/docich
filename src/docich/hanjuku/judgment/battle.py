@@ -1852,7 +1852,7 @@ def _one_hit_lethal(cur):
         return False
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
-            and type(hp) is int and hp > 0
+            and type(hp) is int and hp > EGG_WALL_DAMAGE
             and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
                      or cur.get('egg_battle') or cur.get('card_summon_observed')))
 
