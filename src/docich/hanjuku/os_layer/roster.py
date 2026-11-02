@@ -174,6 +174,7 @@ def roles(raw):
 
 
 def invalidate(mem):
+    mem.pop('roster_carry_source', None)  # only observed_member() re-stashes it
     mem.pop('recruit_roster', None)
     mem.pop('roster_survey_scope', None)
     mem.pop('roster_survey', None)
@@ -256,6 +257,13 @@ def observed_member(mem, names):
         return
     if survey is not None and set(names) <= set(survey['receipt']['names']):
         return
+    if survey is None and held is not None and set(names) <= set(held):
+        # Issue #3194: these names are already on the retained bill. Re-
+        # invalidating on every page made every later names-only count in the
+        # month incomplete (g1097 18:35: roster_complete false), so the month
+        # could never be carried and the full status walk ran again.
+        return
+    source = deepcopy(survey) if survey is not None and month_carry_enabled() else None
     wages = dict(held or {})
     if survey is not None:
         receipt = survey['receipt']
@@ -277,6 +285,11 @@ def observed_member(mem, names):
         'scope': [mem.get('chapter'), mem.get('month')],
         'wages': wages, 'saturated': saturated}
     invalidate(mem)
+    if source is not None:
+        # A join adds a general; it does not change what was read about the
+        # others. The rows wait here for this month's next complete names-only
+        # count (carry_forward) instead of costing a second full status walk.
+        mem['roster_carry_source'] = source
 
 
 def surveyed(mem):
@@ -412,10 +425,17 @@ def carry_forward(mem):
     chapter, month = mem.get('chapter'), mem.get('month')
     previous = _previous_month(month)
     prev = mem.get('roster_survey')
+    source = mem.get('roster_carry_source')
+    if isinstance(source, dict) and source.get('scope') not in ([chapter, previous], [chapter, month]):
+        mem.pop('roster_carry_source', None)  # an older month's rows are never reused
+        source = None
+    if (not isinstance(prev, dict) or prev.get('scope') != [chapter, previous]) and source is not None:
+        prev = source  # a join invalidated the survey after it was read/carried
+    same_month = prev is source and isinstance(prev, dict) and prev.get('scope') == [chapter, month]
     receipt = fresh(mem, include_completed=False)
     if (identity is None or previous is None or not isinstance(prev, dict)
             or prev.get('schema') != 1 or prev.get('identity') != identity
-            or prev.get('scope') != [chapter, previous]
+            or (prev.get('scope') != [chapter, previous] and not same_month)
             or not isinstance(prev.get('statuses'), dict) or not isinstance(prev.get('dirty'), dict)
             or receipt is None or receipt.get('complete') is not True
             or not isinstance(receipt.get('wages'), dict)):
@@ -427,8 +447,9 @@ def carry_forward(mem):
         row = prev['statuses'].get(name)
         if _carry_eligible(row, prev['dirty'].get(name)):
             new = deepcopy(row)
-            new.update(month=month, observed_chapter=chapter, observed_tick=rtick,
-                       carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
+            new.update(month=month, observed_chapter=chapter, observed_tick=rtick)
+            if not same_month:  # a same-month row was read (or carried) this month already
+                new.update(carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
             statuses[name] = carried_rows[name] = new
             carried.append(name)
         else:
@@ -454,6 +475,7 @@ def carry_forward(mem):
     for name, row in carried_rows.items():
         eggs[name] = deepcopy(row)
     mem['house_status_recheck'] = bool(dirty)
+    mem.pop('roster_carry_source', None)
     return {'carried': carried, 'reopen': reopen}
 
 
@@ -461,6 +483,12 @@ def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     """A change invalidates only the participant's affected status fields."""
     survey = reusable_survey(mem)
     if survey is None:
+        source = mem.get('roster_carry_source')  # waiting for the next names-only count
+        if isinstance(source, dict) and isinstance(source.get('statuses'), dict):
+            for name in (list(source['statuses']) if names is None else names):
+                if name in source['statuses']:
+                    dirty = set(source.setdefault('dirty', {}).get(name) or [])
+                    source['dirty'][name] = sorted(dirty | set(fields))
         return
     selected = survey['receipt']['names'] if names is None else names
     for name in selected:
