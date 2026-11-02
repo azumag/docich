@@ -595,11 +595,14 @@ def _next_month(mem, month='1-7', names=NAMES, tick=900):
 
 @pytest.fixture
 def carry_on(monkeypatch):
-    monkeypatch.setenv(r.MONTH_CARRY_ENV, '1')
+    monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)  # on by default
 
 
-def test_month_carry_is_off_unless_the_operator_enables_it(monkeypatch):
+def test_month_carry_is_on_by_default_and_the_kill_switch_turns_it_off(monkeypatch):
     monkeypatch.delenv(r.MONTH_CARRY_ENV, raising=False)
+    assert r.month_carry_enabled() is True
+    assert r.carry_forward(_next_month(completed())) is not None
+    monkeypatch.setenv(r.MONTH_CARRY_ENV, '0')
     mem = _next_month(completed())
     assert r.carry_forward(mem) is None
     assert r.reusable_survey(mem) is None

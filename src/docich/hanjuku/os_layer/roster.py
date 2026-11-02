@@ -363,15 +363,16 @@ def _status_survey(mem, key, *, complete):
 
 
 # Issue #3194 (06/10): month-boundary carry-over of unchanged status rows.
-# Off by default; an operator opts in with DOCICH_HANJUKU_MONTH_CARRY=1 and
-# the brain reads it at start. A row is carried at most MONTH_CARRY_MAX months
-# in a row, then the general is opened again (the periodic cross-check).
+# On by default (owner 2026-11-02: apply on merge). DOCICH_HANJUKU_MONTH_CARRY=0
+# is the kill switch and is read when the brain starts. A row is carried at
+# most MONTH_CARRY_MAX months in a row, then the general is opened again (the
+# periodic cross-check).
 MONTH_CARRY_ENV = 'DOCICH_HANJUKU_MONTH_CARRY'
 MONTH_CARRY_MAX = 2
 
 
 def month_carry_enabled():
-    return os.environ.get(MONTH_CARRY_ENV) == '1'
+    return os.environ.get(MONTH_CARRY_ENV) != '0'
 
 
 def _previous_month(month):
