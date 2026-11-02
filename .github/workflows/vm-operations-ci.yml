@@ -142,6 +142,7 @@ jobs:
           ops/vm_actions/start_tsuitate_corner.sh
           ops/vm_actions/storage_reclaim.sh
           ops/vm_actions/storage_reclaim_staged.sh
+          ops/vm_actions/browser_profile_reclaim_now.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh
           ops/vm_actions/ensure_twitch_oauth_refresh_timer.sh
