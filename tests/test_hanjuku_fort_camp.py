@@ -316,3 +316,46 @@ def test_a_changed_roster_lets_a_general_still_camped_queue_again():
     assert 'retreat_rechecks' not in mem
     camp_recheck.observe_camp_status(screen('g1097-status-holds-camp.png'), mem)
     assert 'キッシュ' in mem['retreat_rechecks']
+
+
+# ---- g1097 2026-11-02 17:25-17:33: ヘパイストス could not leave the 砦 ----
+def fort_dest_memory(**extra):
+    return memory(chapter=5, captured=['カルーン', 'バスカビル', 'オトラント'],
+                  recall=fort_recall(stage='dest', fort=True, general='ヘパイストス'), **extra)
+
+
+def test_a_fort_general_with_no_bound_position_still_gets_a_destination_castle(monkeypatch):
+    # No two-roof origin, no recorded recall sorties, several owned castles:
+    # _recall_goal returns None. The fort sortie must still start its Y jump.
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
+    mem = fort_dest_memory(sorties={'5-A1': {'general': 'ヘパイストス', 'source': 'カルーン',
+                                             'target': 'ボス', 'tick': 900, 'status': 'en_route'}})
+    assert recall._recall_goal(mem) is None
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
+    assert mem['y_jump']['goal'] == 'カルーン' and mem['recall']['goal'] == 'カルーン'
+    assert not decisions(mem, 'camp_recall_skipped')
+
+
+def test_the_fort_goal_follows_the_latest_sortie_source_of_that_general():
+    mem = fort_dest_memory(sorties={
+        'old': {'general': 'ヘパイストス', 'source': 'アルマムーン', 'tick': 100},
+        'new': {'general': 'ヘパイストス', 'source': 'バスカビル', 'tick': 800},
+        'other': {'general': 'キール', 'source': 'オトラント', 'tick': 900}})
+    assert orders_goal(mem) == 'バスカビル'
+
+
+def test_without_a_sortie_record_the_fort_goal_is_the_home_castle_then_any_owned():
+    assert orders_goal(fort_dest_memory()) == 'アルマムーン'
+    mem = fort_dest_memory(home_lost=True)
+    assert orders_goal(mem) == 'オトラント'   # sorted first owned castle
+    assert orders_goal(memory(chapter=5, recall=fort_recall(stage='dest', fort=True))) == 'アルマムーン'
+
+
+def test_an_unowned_chapter_start_has_no_fort_goal():
+    mem = memory(chapter=5, home_lost=True, recall=fort_recall(stage='dest', fort=True))
+    assert orders_goal(mem) is None
+
+
+def orders_goal(mem):
+    from docich.hanjuku.strategy.orders import _fort_recall_goal
+    return _fort_recall_goal(mem, mem['recall'])

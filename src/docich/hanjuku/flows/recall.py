@@ -9,7 +9,7 @@ from ..os_layer.commands import menu_to, pad
 from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
 from ..os_layer.world import NAME
-from ..strategy.orders import _recall_goal
+from ..strategy.orders import _fort_recall_goal, _recall_goal
 
 
 MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
@@ -328,6 +328,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                  if frame is not None else [])
         if (state.get('hero') or state.get('fort')) and marker:
             goal = state.get('goal') or _recall_goal(mem)
+            if not goal and state.get('fort'):
+                goal = _fort_recall_goal(mem, state)
             state['goal'] = goal
             jumped = (mem.get('y_jumped') or {}).get('RECALL') == goal
             if goal and jumped and not castle_roofs(frame):
