@@ -27,11 +27,22 @@ def test_full_suite_runs_every_test_on_the_supported_python():
     assert "          python-version: '3.12'\n" in text
     command = next(line.strip()[5:] for line in text.splitlines()
                    if line.strip().startswith('run: python3 -m pytest'))
-    assert command.split() == ['python3', '-m', 'pytest', '-q', 'tests/',
+    assert command.split() == ['python3', '-m', 'pytest', '-q',
+                               '$(python3', '.github/scripts/ci_test_scope.py', 'targets',
+                               '"$TEST_SUITE")',
                                '--durations=50', '--durations-min=0.1',
                                '-n', '4', '--dist', 'loadfile',
                                '--ignore=tests/test_hanjuku_scene_process.py']
     assert 'continue-on-error:' not in text
+
+
+def test_every_run_outside_a_pull_request_is_the_full_suite():
+    text = WORKFLOW.read_text()
+    assert "    - cron: '23 18 * * *'\n" in text
+    # Only a pull request has these, so schedule and dispatch decide on empty SHAs.
+    assert 'BASE_SHA: ${{ github.event.pull_request.base.sha }}' in text
+    assert 'HEAD_SHA: ${{ github.event.pull_request.head.sha }}' in text
+    assert "    needs: test-scope\n" in text
 
 
 def test_single_thread_sensitive_file_runs_on_the_serial_runner():
@@ -51,9 +62,10 @@ def test_dependency_changes_gate_pull_requests_only():
                     'requirements*.txt', '.github/workflows/ci.yml'):
         assert text.count(f"      - '{pattern}'") == 1
     # A push to main does not re-run the full suite: the per-area workflows
-    # cover the areas a push actually touched, and workflow_dispatch is the
-    # manual entry point for a full-suite run on main.
+    # cover the areas a push actually touched, the nightly schedule covers the
+    # whole suite, and workflow_dispatch is the manual entry point.
     assert '\n  push:' not in text
+    assert '\n  schedule:' in text
     assert '\n  workflow_dispatch:' in text
 
 
