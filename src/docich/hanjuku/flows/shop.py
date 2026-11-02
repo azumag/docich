@@ -31,11 +31,13 @@ def _merchant_quote_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
-def _record_shop_exit(mem, shop, screen, reason):
+def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
     """Record a merchant-list exit that spends nothing (diagnostic, no behavior change)."""
     items = (shop or {}).get('items') or []
     _record(mem, 'shop_list_exit', month=(shop or {}).get('key'),
             observed_metric={'reason': reason, 'planned': [list(row) for row in items[:4]],
+                             'listed': dict(listed or {}),
+                             'bargain_cards': list((shop or {}).get('bargain_cards') or []),
                              'header_month': _month_key(screen.header),
                              'mem_month': mem.get('month'), 'merchant_done': (shop or {}).get('merchant_done')},
             reason='商人の品揃えを見ずに一覧から戻ったため、購入せず終了した理由を記録する')
@@ -73,6 +75,7 @@ def shop_step(screen: Screen, mem):
         if m:
             listed[m.group(1)] = int(m.group(2))
     plan_bargains(mem, shop, screen.header, listed=listed)
+    had_items = bool(shop['items'])
     while shop['items']:
         name, qty = shop['items'][0]
         price = listed.get(name)
@@ -90,6 +93,8 @@ def shop_step(screen: Screen, mem):
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
         return [pad('a')] if move == 'here' else [move] if move else []
+    if had_items is False:
+        _record_shop_exit(mem, shop, screen, 'nothing_planned', listed=listed)
     return [pad('b')]
 
 
