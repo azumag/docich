@@ -71,10 +71,14 @@ def test_current_own_general_vs_actual_monster_okunote_routes_through_decide():
     assert cur['ally_hp'] == 49 and cur['enemy_hp'] == 11  # distinct HP pools
 
 
-def test_unchanged_parent_and_candidate_never_resend_a_without_combat_return():
+def test_unchanged_parent_resends_bounded_a_then_stops_and_candidate_never_resends():
     mem = memory(); mem['_run_identity'] = deepcopy(ID)
     assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
-    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    # The unlanded parent A is resent bounded (g1097 23:06), then stops —
+    # it is never another lottery. The irreversible candidate A is never resent.
+    for _ in range(4):
+        assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
     assert p.okunote_step(choices(), mem) == [p.pad('a')]
     for _ in range(20):
         mem = json.loads(json.dumps(mem))
@@ -156,7 +160,11 @@ def test_unfinished_or_foreign_combat_cannot_restore_another_selection(case):
     elif case == 'other_enemy': s.battle = Battle('リーキ', 30, cur['ally'], 22)
     elif case == 'foreign_run': mem['_run_identity']['generation'] = 2
     p.battle_step(s, mem)
-    assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
+    if case == 'parent_only':
+        # The unlanded parent A is resent bounded (g1097 23:06).
+        assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    else:
+        assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
     assert not any(r['decision'] == 'battle_okunote_combat_return' for r in mem['_records'])
 
 

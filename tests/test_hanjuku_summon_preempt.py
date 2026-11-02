@@ -310,3 +310,112 @@ def test_a_planned_card_still_to_play_comes_before_the_okunote():
     mem = egg_fight_memory(planned_cards=['クースカン'])
     p.egg_battle_step(egg_menu_screen(mem), mem)
     assert not mem['battle'].get('okunote_summon_preempt')
+
+
+# ---- g1097 22:09: 召喚戦の将軍コマンドでBループ ----
+# たいきゃく の下におくのてが隠れた箱 (hidden_battle_commands) で、
+# summon_reading が照合不能のとき B は効かず停滞した。有界な down で
+# おくのて行へ向かい、尽きたら通常のメニュー処理へ戻す。
+def summon_menu_screen(mem, *, hidden=True, labels=('たまごをつかう', 'きりふだ', 'たいきゃく')):
+    from docich.hanjuku_screen import EggRow
+    first_y = 176
+    lines = [TextLine(first_y + 16*i, tuple((176+8*j, ch) for j, ch in enumerate(label)))
+             for i, label in enumerate(labels)]
+    s = Screen(lines, None, ''.join(labels), kind='battle_menu', menu_cursor=first_y,
+               hidden_battle_commands=hidden)
+    s.egg_rows = [EggRow(mem['battle']['ally'], 30, 'ally', 183),
+                  EggRow('ランプキン', 37, 'enemy', 207)]
+    return s
+
+
+def unbindable_summon_memory(**battle):
+    mem = memory(chapter=5, enemy='レモン', ally='カスパチョ', ally_hp=25,
+                 castle='ジュメルズ')
+    mem['battle'].update(egg_battle=True, **battle)
+    mem['egg_battle'] = True
+    return mem
+
+
+def test_unconfirmed_summon_menu_scrolls_down_bounded_then_falls_back():
+    mem = unbindable_summon_memory()
+    s = summon_menu_screen(mem)
+    downs = 0
+    for _ in range(8):
+        actions = p.battle_menu_step(s, mem)
+        if actions == [p.pad('down')]:
+            downs += 1
+        else:
+            break
+    assert downs == p.OKUNOTE_SUMMON_UNCONFIRMED_LIMIT
+    # 尽きた後は B の打ち続けではなく通常のコマンド判定が走る
+    assert any(r['decision'] == 'battle_okunote_summon_unconfirmed_exhausted'
+               for r in mem['_records'])
+
+
+def test_unconfirmed_counter_resets_when_the_panel_binds_again():
+    mem = unbindable_summon_memory()
+    s = summon_menu_screen(mem)
+    p.battle_menu_step(s, mem)
+    assert mem['battle'].get('okunote_summon_unconfirmed') == 1
+    # A later bindable observation must not inherit stale unconfirmed counts.
+    mem['battle']['okunote_summon_unconfirmed'] = None
+    assert int(mem['battle'].get('okunote_summon_unconfirmed') or 0) == 0
+
+
+# ---- g1097 22:28: 照合不能期間が ticks を使い切り救済メニューでBループ ----
+# 召喚照合が付くまでの入力で okunote_flow.ticks > 16 に達した後、実メニュー
+# (おくのてのみ有効) が読めると親メニュー予算が毎 tick B を返した。この箱
+# では B は効かないため無言のBループになった。preempt / last_resort が記録
+# 済みなら予算を超えてもおくのて行へ進む。
+def test_a_burned_menu_budget_never_bs_out_of_a_committed_rescue():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': 20}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+
+
+def test_an_uncommitted_menu_still_uses_the_budgeted_b_close():
+    mem = memory(side='attack', castle='けっかい', ally_hp=90)
+    mem['battle']['okunote_flow'] = {'ticks': 20}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+
+
+# ---- g1097 23:06: 選択済み親メニューが残ったままの無記録Bループ ----
+# guard.selected で親フレームを「再抽選でない」としてBを返していたが、
+# 実画面が親メニュー (きりふだ/たいきゃく/おくのて) のまま残るとBは無効。
+# おくのて行が見えるなら有界でAを再送する。
+def test_a_stuck_selected_parent_menu_resends_a_bounded():
+    mem = memory(egg_empty=True)
+    s = menu()
+    assert p.battle_menu_step(s, mem) == [p.pad('a')]
+    # 選択が届かず親メニューが残る = 同じフレームが繰り返し戻る
+    for _ in range(12):
+        p.battle_menu_step(s, mem)
+    # menu_pending 4回 + guard 4回の有界再送で尽き、以後は戻る
+    assert mem['battle']['okunote_attempt']['resends'] == 4
+    assert mem['battle']['okunote_summon_preempt'].get('parent_retries') == 4
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])
+
+
+# ---- g1097 23:40: ticks上限超過で確定済み救済がBループ化 ----
+# ticks > OKUNOTE_COMMITTED_TICKS_LIMIT では「予算Bを返す」条件が先に
+# 成立し、おくのて行が読めていても永久に選択へ進まなかった (実測: 同じ
+# battle_menu にBを2600観測以上)。読める行は tick 数に関わらず選ぶ。
+def test_a_committed_rescue_past_the_tick_limit_still_selects_okunote():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['selected'] and guard['stage'] == 'selected'
+
+
+def test_an_unreadable_committed_menu_past_the_limit_marks_unavailable():
+    mem = memory(egg_empty=True)
+    mem['battle']['okunote_flow'] = {'ticks': p.OKUNOTE_COMMITTED_TICKS_LIMIT + 100}
+    assert p.battle_menu_step(menu(labels=('こうげき',), hidden=True), mem) == [p.pad('b')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['exhausted'] and guard['stage'] == 'unavailable'
+    assert any(r['decision'] == 'battle_okunote_committed_unread'
+               for r in mem['_records'])
