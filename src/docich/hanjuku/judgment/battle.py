@@ -1951,17 +1951,23 @@ def _defender_summon_preempt(mem, cur):
             or (cur.get('side') == 'attack' and not _own_egg_empty(mem, cur))
             or cur.get('ally') in (None, 'だいじん')
             or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            # Our own egg still fighting keeps the old policy; once the egg
+            # row is dead (spent/greyed on the summon menu) it no longer does.
+            or ((cur.get('egg_battle') or mem.get('egg_battle'))
+                and not cur.get('summon_egg_unavailable'))
+            or cur.get('card_flow')
             or not (cur.get('card_summon_observed') or cur.get('enemy_summon_observed'))
             or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
         return None
     resources_free = (cur.get('okunote_only_observed')
-                      or (_own_egg_empty(mem, cur) and not cur.get('planned_cards')))
+                      or ((_own_egg_empty(mem, cur) or cur.get('summon_egg_unavailable'))
+                          and (cur.get('summon_egg_unavailable') or not cur.get('planned_cards'))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
     if not resources_free or draws >= OKUNOTE_REDRAW_LIMIT:
         return None
     return {'resources_basis': ('observed_okunote_only' if cur.get('okunote_only_observed')
+                                else 'summon_menu_egg_unavailable' if cur.get('summon_egg_unavailable')
                                 else 'own_egg_empty_no_cards'),
             'enemy': cur.get('enemy'), 'ally_hp': hp, 'okunote_draws': draws,
             'reason': 'enemy_summon_present', 'due': True}

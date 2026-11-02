@@ -1543,6 +1543,20 @@ def egg_battle_step(screen: Screen, mem):
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
                   and len(enemy_rows) == 1 and not cards_left
                   and (empty_egg or 'たまごをつかう' not in screen.text))
+        # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
+        # defender facing an enemy summon with the egg row dead and no card left
+        # takes the lottery instead of attacking into it (g1097 18:06 ペコリーノ
+        # died to ローラーキラー by もうこうげき with おくのて never tried).
+        # The latch lets the summon preempt see the egg is gone once the
+        # command menu replaces this panel.
+        if (isinstance(mem.get('battle'), dict) and battle.get('side') == 'defense'
+                and len(enemy_rows) == 1 and not cards_left
+                and (empty_egg or 'たまごをつかう' not in screen.text)):
+            battle['summon_egg_unavailable'] = True
+            from .battle import _defender_summon_open
+            opening = _defender_summon_open(mem, battle)
+            if opening is not None:
+                return opening
         label = 'もうこうげき' if fierce else 'こうげき'
         move = _battle_menu_to(screen, label)
         if move is None:
