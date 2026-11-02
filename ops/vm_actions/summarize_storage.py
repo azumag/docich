@@ -69,6 +69,25 @@ V2_TREE_CATEGORIES = (
     "docich_git_objects_pack",
 )
 
+# Subtrees of gateway_state (azumag/docich#365). Optional: emitted only when
+# the collector publishes them, and never charged to the shared incomplete
+# flag, so a collector deployed before this split cannot look incomplete.
+GATEWAY_SUBTREE_CATEGORIES = (
+    "gateway_bundles",
+    "gateway_releases",
+)
+
+# Subtrees of the opencode default data dir (azumag/docich#3140). Same
+# opt-in contract as GATEWAY_SUBTREE_CATEGORIES: emitted only when the
+# collector publishes them, and never charged to the shared incomplete flag,
+# so a collector deployed before this split cannot look incomplete.
+OPENCODE_SUBTREE_CATEGORIES = (
+    "opencode_default_snapshot",
+    "opencode_default_storage",
+    "opencode_default_tool_output",
+    "opencode_default_log",
+)
+
 SUPPORTED_BREAKDOWN_VERSIONS = (1, 2)
 
 # Fixed on-disk formats of the strategy permanent archive. The split is what
@@ -125,6 +144,24 @@ def render(data):
             complete = isinstance(item, dict) and item.get("scan_complete") is True
             incomplete = incomplete or not complete
             parts.append(f"{category}_complete={int(complete)}")
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    if breakdown.get("version") == 2:
+        for category in GATEWAY_SUBTREE_CATEGORIES:
+            item = breakdown.get(category)
+            if not isinstance(item, dict):
+                continue
+            parts.append(f"{category}_complete={int(item.get('scan_complete') is True)}")
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    if breakdown.get("version") == 2:
+        for category in OPENCODE_SUBTREE_CATEGORIES:
+            item = breakdown.get(category)
+            if not isinstance(item, dict):
+                continue
+            parts.append(f"{category}_complete={int(item.get('scan_complete') is True)}")
             parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
             parts.append(f"{category}_count={_uint(item, 'count')}")
 

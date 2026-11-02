@@ -166,10 +166,11 @@ def test_max_bundle_wire_limit_rejects_before_generation(excerpt):
 
 @pytest.mark.parametrize("provider", sorted(DIRECT_CHAT_MODELS))
 def test_provider_wrappers_fit_reserved_metadata_for_every_registered_model(provider):
-    upstream = "x" * 64 if provider != "cloudflare" else ""
+    upstream = "x" * 64 if provider not in {"cloudflare", "sarashina"} else ""
     base = {"openrouter": "https://openrouter.ai/api/v1",
             "vercel": "https://ai-gateway.vercel.sh/v1",
-            "cloudflare": "https://api.cloudflare.com/client/v4/accounts/" + "a"*32 + "/ai/v1"}[provider]
+            "cloudflare": "https://api.cloudflare.com/client/v4/accounts/" + "a"*32 + "/ai/v1",
+            "sarashina": "https://relay.example.test"}[provider]
     prompt = script._prompt("Public topic", "web", "ok", (material('"\\\n界' * 1000),))
     messages = [{"role": "user", "content": prompt}]
     projected_bytes = len(json.dumps({"messages": messages}, ensure_ascii=False).encode())

@@ -22,6 +22,8 @@ from .nethack_exploration import (
     move_target,
     visible_safe_step,
 )
+from .nethack_food import production_food_item
+from .nethack_inventory import parse_visible_inventory
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
     DESCEND_COMMAND, MAX_PRAY_DUNGEON_LEVEL, NethackLayeredPolicy, PRAY_RECOVERY_STEPS,
@@ -35,6 +37,34 @@ DoorKey = tuple[int, int, int]
 MAX_UNCHANGED_DOOR_CAPTURES = 3
 # Acked answers (More / decline) re-sent while the same prompt frame persists.
 MAX_ANSWERED_PROMPT_RESENDS = 3
+# #2806: a key sent to probe the inventory or answer the eat prompt is given
+# this many unchanged captures before the pending flow is abandoned.
+MAX_UNCHANGED_INVENTORY_CAPTURES = 3
+# A probe that found no safe food is not repeated every turn (viewing
+# inventory is free but the listing rarely changes); after an eaten item the
+# meal and the hunger state need a few turns to settle before re-probing.
+INVENTORY_REPROBE_TURNS = 30
+EAT_REPROBE_TURNS = 10
+
+# "What do you want to eat? [ab or ?*]" — the only prompt whose bracket may be
+# answered with a probed food letter.
+_EAT_PROMPT_RE = re.compile(
+    r"What do you want to eat\?\s*\[([a-zA-Z$]+)\s*(?:or\s+\?\*)?\]")
+_EMPTY_INVENTORY_RE = re.compile(
+    r"empty-handed|not carrying anything", re.IGNORECASE)
+
+
+def _eat_prompt_letters(obs: NethackObservation) -> frozenset[str] | None:
+    """Only a whole, unanswered top-line eat prompt exposes answer letters.
+
+    Mirroring ``decline_prompt``: a wrapped or already-answered line, and any
+    prompt that is not exactly this question, stay fail-closed.
+    """
+    raw_lines = obs.raw_text.splitlines()
+    if not raw_lines or raw_lines[0].strip() != obs.message.strip():
+        return None
+    match = _EAT_PROMPT_RE.fullmatch(obs.message.strip())
+    return frozenset(match.group(1)) if match else None
 
 
 @dataclass(frozen=True)
@@ -143,6 +173,8 @@ def assert_production_safe(
     pending_door: _DoorTarget | None = None,
     opened_doors: set[DoorKey] | frozenset[DoorKey] = frozenset(),
     down_stairs: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
+    pending_eat: str | None = None,
+    inventory_pending: bool = False,
 ) -> None:
     """Check the observation as well as key shape at the final action boundary.
 
@@ -151,10 +183,21 @@ def assert_production_safe(
     """
     if not decision.actions:
         return
-    if len(decision.actions) != 1 or decision.actions[0].type != "text":
+    if len(decision.actions) != 1:
+        raise RuntimeError("production action must be one literal key")
+    intent = decision.intent
+    if intent == "close_inventory":
+        # Escape is the cancel default for the inventory menu and for an eat
+        # prompt whose bracket lost the probed letter. It is only produced
+        # while a bounded inventory flow is pending, and never answers an
+        # arbitrary prompt (the pending state, not the frame, authorizes it).
+        if (decision.actions[0].type == "special"
+                and decision.actions[0].key == "Escape" and inventory_pending):
+            return
+        raise RuntimeError("production action violates its observed context")
+    if decision.actions[0].type != "text":
         raise RuntimeError("production action must be one literal text key")
     key = decision.actions[0].text
-    intent = decision.intent
     allowed = False
     if intent == "advance_message":
         allowed = key == " " and obs.prompt == "more"
@@ -203,6 +246,31 @@ def assert_production_safe(
             and key == pending_door.direction
             and _door_target_matches(obs, pending_door)
         )
+    elif intent == "open_inventory":
+        # 'i' is read-only and turn-free; hunger tiers may also include the
+        # food-emergency set, for which eating matters most (#2806).
+        allowed = (
+            key == "i"
+            and turn_ready(obs)
+            and _has_any(obs, {"Hungry"} | NethackLayeredPolicy._FOOD_EMERGENCY)
+        )
+    elif intent == "eat_start":
+        # 'e' may only follow a completed probe that recorded a safe letter.
+        allowed = key == "e" and turn_ready(obs) and pending_eat is not None
+    elif intent == "eat_select":
+        # The letter must be both the probed safe item and currently offered
+        # inside the visible eat prompt's bracket.
+        letters = _eat_prompt_letters(obs)
+        allowed = (
+            pending_eat is not None
+            and key == pending_eat
+            and letters is not None
+            and key in letters
+        )
+    elif intent == "food_recovery":
+        # A meal in progress may only ever spend one wait turn; contact and
+        # step fallbacks stay out so the occupation is never interrupted.
+        allowed = turn_ready(obs) and key == "."
     if not allowed:
         raise RuntimeError("production action violates its observed context")
 
@@ -231,6 +299,18 @@ class NethackProgressResolver:
         self._pray_step: int | None = None
         self._pray_expected: str | None = None
         self._pray_spent = False
+        # #2806 bounded inventory/eat flow. ``_inv_stage`` walks the reviewed
+        # sequence: "open" (i sent, awaiting listing) -> "close" (Escape sent,
+        # awaiting the gameplay frame) -> "eat" (e sent, awaiting the eat
+        # prompt) -> "eaten" (letter sent, awaiting the result frame).
+        self._inv_stage: str | None = None
+        self._inv_raw_text: str | None = None
+        self._inv_unchanged = 0
+        self._food_letter: str | None = None
+        self._inv_no_food = False
+        self._inv_turn: int | None = None
+        self._inv_block_turns = 0
+        self._meal_pending = False
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
         target = self._pending_door
@@ -264,6 +344,13 @@ class NethackProgressResolver:
         self._door_result_pending = None
         self._door_result_raw_text = None
         self._door_result_unchanged_captures = 0
+
+    def _clear_inventory(self) -> None:
+        """Abandon a pending inventory/eat flow; never guess a later key."""
+        self._inv_stage = None
+        self._inv_raw_text = None
+        self._inv_unchanged = 0
+        self._food_letter = None
 
     def observe(self, obs: NethackObservation, explorer) -> None:
         if turn_ready(obs) and not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
@@ -313,6 +400,12 @@ class NethackProgressResolver:
                         explorer.mark_opened_door(target.key)
                     elif glyph == "+":
                         explorer.mark_failed_door(target.key)
+        if self._inv_stage is not None and self._inv_raw_text is not None:
+            # Same frame after an acked probe/eat key: transport ack is not
+            # game acceptance. Bound the wait, then _resolve abandons the flow.
+            if obs.raw_text == self._inv_raw_text:
+                self._inv_unchanged = min(
+                    self._inv_unchanged + 1, MAX_UNCHANGED_INVENTORY_CAPTURES)
         decline = decline_prompt(obs)
         if decline is not None:
             # An observed rejection is causal only if our preceding action
@@ -391,6 +484,8 @@ class NethackProgressResolver:
             pending_door=self._pending_door,
             opened_doors=getattr(explorer, "opened_doors", frozenset()),
             down_stairs=explorer.memory.down_stairs_at(obs.vitals.dungeon_level),
+            pending_eat=self._food_letter,
+            inventory_pending=self._inv_stage is not None,
         )
 
     def sent(self, decision: PolicyDecision, obs: NethackObservation) -> None:
@@ -417,6 +512,37 @@ class NethackProgressResolver:
                 self._door_result_raw_text = self._pending_door_raw_text
                 self._door_result_unchanged_captures = 0
                 self._clear_pending_door()
+                return
+            if decision.intent == "open_inventory":
+                self._inv_stage = "open"
+                self._inv_raw_text = obs.raw_text
+                self._inv_unchanged = 0
+                self._inv_turn = obs.vitals.turn
+                self._meal_pending = False
+                return
+            if decision.intent == "close_inventory":
+                if self._inv_stage not in {"open", "eat"}:
+                    raise RuntimeError("inventory close sent outside a pending flow")
+                if self._inv_stage == "open":
+                    self._inv_stage = "close"
+                else:
+                    self._inv_stage = "abort_eat"
+                self._inv_raw_text = obs.raw_text
+                self._inv_unchanged = 0
+                return
+            if decision.intent == "eat_start":
+                if self._inv_stage != "close" or self._food_letter is None:
+                    raise RuntimeError("eat command sent without a probed safe letter")
+                self._inv_stage = "eat"
+                self._inv_raw_text = obs.raw_text
+                self._inv_unchanged = 0
+                return
+            if decision.intent == "eat_select":
+                if self._inv_stage != "eat" or self._food_letter is None:
+                    raise RuntimeError("eat answer sent without a pending eat prompt")
+                self._inv_stage = "eaten"
+                self._inv_raw_text = obs.raw_text
+                self._inv_unchanged = 0
                 return
             key = decision.actions[0].text
             if decision.intent == "status_recovery":
@@ -453,6 +579,106 @@ class NethackProgressResolver:
         # This is a fail-closed observation state, not a gameplay choice:
         # complete gameplay frames are resolved to an explicit ``.`` below.
         return PolicyDecision("strategic", "progress_blocked", reason, requires_llm=True)
+
+    @staticmethod
+    def _special(intent: str, reason: str, key: str) -> PolicyDecision:
+        return PolicyDecision("tactical", intent, reason, (Action(type="special", key=key),))
+
+    def _inventory_probe_due(self, obs: NethackObservation) -> bool:
+        if self._inv_turn is None or obs.vitals.turn is None:
+            return self._inv_turn is None
+        return obs.vitals.turn - self._inv_turn >= self._inv_block_turns
+
+    def _cooldown_probe(self, obs: NethackObservation, turns: int) -> None:
+        """Pause probing after an abandoned flow so a weird frame cannot
+        re-open the menu every single capture."""
+        if obs.vitals.turn is not None:
+            self._inv_turn = obs.vitals.turn
+        self._inv_block_turns = turns
+
+    def _resolve_inventory(
+        self, decision: PolicyDecision, obs: NethackObservation
+    ) -> PolicyDecision | None:
+        """Advance the bounded inventory/eat flow, or ``None`` once released.
+
+        Every stage verifies the frame it expected; a changed or unexpected
+        screen abandons the flow rather than guessing the next key. Sending
+        updates the stage via ``sent`` -- resolve() only proposes the next key.
+        """
+        stage = self._inv_stage
+        if obs.prompt == "more":
+            # A pager (including the inventory menu's own --More--) is answered
+            # by the existing reviewed answer, never by our pending key.
+            return decision
+        if obs.raw_text == self._inv_raw_text:
+            if self._inv_unchanged >= MAX_UNCHANGED_INVENTORY_CAPTURES:
+                self._cooldown_probe(obs, INVENTORY_REPROBE_TURNS)
+                self._clear_inventory()
+                return self._hold(
+                    "inventory/eat flow produced no changed frame; abandoned")
+            return self._hold("waiting for a fresh frame after the inventory key")
+        if stage == "open":
+            items = parse_visible_inventory(obs.raw_text)
+            if items or _EMPTY_INVENTORY_RE.search(obs.raw_text):
+                food = production_food_item(items)
+                self._food_letter = food.letter if food else None
+                self._inv_no_food = food is None
+                self._inv_block_turns = INVENTORY_REPROBE_TURNS
+                # The listing itself was the expected frame: close the menu.
+                return self._special(
+                    "close_inventory",
+                    "close the inventory listing after probing", "Escape")
+            # Frame changed without a listing (menu closed early, other
+            # screen): abandon, never guess.
+            self._cooldown_probe(obs, MAX_UNCHANGED_INVENTORY_CAPTURES * 2)
+            self._clear_inventory()
+            return None
+        if stage == "close":
+            # The frame changed after Escape. A probed safe letter may only be
+            # spent on a complete gameplay frame; the stage itself advances
+            # only in sent(), so a rejected plan replans this same key.
+            if self._food_letter is None or not turn_ready(obs):
+                self._cooldown_probe(obs, MAX_UNCHANGED_INVENTORY_CAPTURES * 2)
+                self._clear_inventory()
+                return None
+            return self._action(
+                "eat_start", "open the eat prompt for the probed safe food", "e")
+        if stage == "eat":
+            letters = _eat_prompt_letters(obs)
+            if letters is not None:
+                letter = self._food_letter
+                if letter is None or letter not in letters:
+                    # The prompt does not offer the probed item: cancel instead
+                    # of answering with any letter.
+                    return self._special(
+                        "close_inventory",
+                        "abort the eat prompt; probed letter not offered",
+                        "Escape")
+                return self._action(
+                    "eat_select",
+                    "answer the eat prompt with the probed safe food letter",
+                    letter)
+            self._cooldown_probe(obs, MAX_UNCHANGED_INVENTORY_CAPTURES * 2)
+            self._clear_inventory()
+            return None
+        if stage == "abort_eat":
+            # Any changed frame means the prompt closed; nothing was eaten.
+            self._cooldown_probe(obs, MAX_UNCHANGED_INVENTORY_CAPTURES * 2)
+            self._clear_inventory()
+            return None
+        if stage == "eaten":
+            # The result frame is here; hunger improvement (or its absence) is
+            # re-observed by the normal decision cycle, not guessed. The meal
+            # is an occupation that movement would interrupt.
+            self._inv_stage = None
+            self._food_letter = None
+            self._inv_no_food = False
+            self._meal_pending = True
+            self._inv_block_turns = EAT_REPROBE_TURNS
+            if obs.vitals.turn is not None:
+                self._inv_turn = obs.vitals.turn
+            return None
+        return None
 
     def _resolve(self, decision: PolicyDecision, obs: NethackObservation, explorer) -> PolicyDecision:
         # A reviewed prayer command spans several single-character inputs
@@ -534,10 +760,43 @@ class NethackProgressResolver:
             if self._door_result_capture_unchanged(obs) or obs.prompt != "none":
                 return self._hold("door result is pending; waiting for a fresh frame")
             return self._hold("door result is pending; awaiting observation reconciliation")
+        if self._inv_stage is not None:
+            handled = self._resolve_inventory(decision, obs)
+            if handled is not None:
+                return handled
+        # #2806: a Hungry tier first proves what the visible inventory holds.
+        # Viewing is free and read-only; eating itself is gated by the pending
+        # flow and the final-context check, never by a guessed letter.
+        hungry = decision.intent in {"seek_food", "food_emergency"}
+        if (hungry and self._food_letter is None and turn_ready(obs)
+                and self._inventory_probe_due(obs)):
+            return self._action(
+                "open_inventory",
+                "probe the visible inventory before deciding on food",
+                "i",
+            )
+        if hungry and self._meal_pending and not self._inventory_probe_due(obs):
+            # A meal is an occupation: movement would interrupt it and waste
+            # the food. Spend explicit wait turns -- never the generic
+            # contact/bump fallback -- until hunger visibly settles or the
+            # re-probe window opens.
+            return PolicyDecision(
+                "midlevel", "food_recovery",
+                "ate a probed item; waiting for the meal and hunger to settle",
+                (Action(type="text", text="."),),
+            )
+        if hungry and self._inv_no_food and not self._inventory_probe_due(obs):
+            # Probed, nothing safe: keep searching as an explicit goal instead
+            # of silently wandering while hungry (fail-closed diagnosis).
+            decision = PolicyDecision(
+                "midlevel", "food_acquisition",
+                "visible inventory holds no safe food; keep looking for food",
+            )
         if decision.intent in {
             "explore_step",
             "exploration_blocked",
             "seek_food",
+            "food_acquisition",
             "hold_low_hp",
             "survival_emergency",
             "food_emergency",

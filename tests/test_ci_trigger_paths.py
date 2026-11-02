@@ -5,7 +5,8 @@
 change under ``src/docich`` (``src/docich/**``, ``src/docich/adapters/**``).  Their trigger
 lists now name only the modules the tests of that workflow import or load at runtime
 (measured with an audit-hook file trace of the real test run plus the static import graph).
-``full-suite`` in ``ci.yml`` stays the safety net for every ``src/**/*.py`` change.
+``full-suite`` in ``ci.yml`` stays the safety net for every ``src/**/*.py`` change: it runs
+every test, or the Hanjuku suite when ``ci_test_scope.py`` proves the change is Hanjuku-only.
 
 These tests pin the behaviour that matters and the consistency rules a hand edit can break:
 

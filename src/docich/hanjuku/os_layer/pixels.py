@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 from pathlib import Path
 import struct
@@ -47,6 +48,51 @@ class Frame:
         return (b'\x89PNG\r\n\x1a\n'
                 +chunk(b'IHDR',struct.pack('>IIBBBBB',self.width,self.height,8,2,0,0,0))
                 +chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b''))
+
+
+@lru_cache(maxsize=128)
+def _band_table(low: int, high: int) -> bytes:
+    return bytes(0x31 if low <= value <= high else 0x30 for value in range(256))
+
+
+def band_bits(frame: Frame, red, green, blue) -> bytes:
+    """One ASCII '1'/'0' per pixel: '1' when every channel is in its (low, high) band.
+
+    Scanning a frame with a Python predicate costs millions of calls per
+    parsed screen. ``bytes.translate`` plus one big-integer AND does the same
+    comparison in C, and the ASCII digits convert straight into row masks with
+    ``int(row, 2)``. Scan order matches a y-then-x loop over the frame.
+    """
+    pixels = frame.width * frame.height
+    if len(frame.rgb) < pixels * 3:
+        raise IndexError('frame has fewer bytes than its dimensions')
+    rgb = bytes(frame.rgb[:pixels * 3])
+    channels = [int.from_bytes(rgb[start::3].translate(_band_table(*band)), 'big')
+                for start, band in enumerate((red, green, blue))]
+    return (channels[0] & channels[1] & channels[2]).to_bytes(pixels, 'big')
+
+
+def near_bits(frame: Frame, colour, tolerance: int = 0) -> bytes:
+    """``band_bits`` for ``abs(channel - colour[i]) <= tolerance`` on every channel."""
+    return band_bits(frame, *((value - tolerance, value + tolerance) for value in colour))
+
+
+def union_bits(first: bytes, *rest: bytes) -> bytes:
+    """Per-pixel OR of equally long ``band_bits`` results."""
+    value = int.from_bytes(first, 'big')
+    for other in rest:
+        value |= int.from_bytes(other, 'big')
+    return value.to_bytes(len(first), 'big')
+
+
+def bit_points(frame: Frame, bits: bytes) -> list[tuple[int, int]]:
+    """(x, y) of every set pixel of a ``band_bits`` result, in scan order."""
+    points, width = [], frame.width
+    index = bits.find(0x31)
+    while index >= 0:
+        points.append((index % width, index // width))
+        index = bits.find(0x31, index + 1)
+    return points
 
 
 def read_png(path: Path) -> Frame:

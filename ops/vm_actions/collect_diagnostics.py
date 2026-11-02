@@ -74,6 +74,13 @@ Observed sources (all read-only):
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
     unrelated log body is read.
+  - a bounded, redacted tail (last lines only) of the Soren bridge log
+    (soren_root/tmp/soviet_local.log, or the newest
+    soviet_local.log.hung-<stamp> left by a hung-log evacuation), emitted
+    only while the bridge shows the #3154 stuck-live anomaly signature: the
+    bridge pid is alive while game_state.json sits MOVE-frozen past the
+    stuck window, or a JEV player_state has no board at all. Healthy runs
+    emit no log body.
   - bounded, redacted captures of the committed NetHack runtime's tmux
     windows (window names, the birth/process window TTY, and the agent window)
     so a corner that is active but not progressing stays diagnosable. Never
@@ -214,7 +221,7 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction")
+_HARD_KEEP = ("meta", "prediction", "lawsim")
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -313,6 +320,20 @@ TWITCH_OAUTH_SCOPES = frozenset({
     "clips:edit", "channel:manage:polls", "channel:manage:predictions",
     "channel:read:goals",
 })
+KICK_OAUTH_STATUSES = frozenset({
+    "ok", "not_configured", "reauth_required", "network_error",
+    "validate_unavailable", "token_endpoint_unavailable", "token_response_invalid",
+    "env_unreadable", "token_format_rejected", "new_token_not_broadcaster",
+    "new_token_missing_scopes", "new_token_token_invalid",
+    "new_token_token_inactive", "new_token_not_user_token",
+    "new_token_principal_unreadable", "io_error",
+    "consent_denied", "state_missing", "state_mismatch_or_expired",
+    "client_credentials_missing", "client_id_missing", "refresh_token_missing",
+})
+KICK_OAUTH_SCOPES = frozenset({
+    "channel:read", "channel:write",
+})
+KICK_OAUTH_BROADCASTER_RE = re.compile(r"\A[1-9][0-9]{0,18}\Z")
 
 
 def _twitch_oauth_timestamp(value):
@@ -327,7 +348,7 @@ def _twitch_oauth_timestamp(value):
         return None, None
 
 
-def _collect_twitch_oauth(now):
+def _collect_oauth_status(now, subdir, statuses, scopes):
     """Read only the fixed status record, not credentials or live OAuth APIs.
 
     These are historical producer observations, not evidence that a token is
@@ -340,7 +361,7 @@ def _collect_twitch_oauth(now):
     fd = directory = None
     try:
         fd, directory, before = _stream_title_open_fixed(
-            _program_state_dir(), ("twitch_oauth", "status.json"))
+            _program_state_dir(), (subdir, "status.json"))
         result["present"] = True
         if before.st_size > 4096:
             return result
@@ -357,7 +378,7 @@ def _collect_twitch_oauth(now):
             return result
         result["readable"] = True
         status = data.get("status")
-        if isinstance(status, str) and status in TWITCH_OAUTH_STATUSES:
+        if isinstance(status, str) and status in statuses:
             result["status"] = status
         action = data.get("action")
         if isinstance(action, str) and action in {"authorized", "refreshed", "no_change"}:
@@ -368,11 +389,14 @@ def _collect_twitch_oauth(now):
             result["checked_at_future"] = checked > now
             if checked <= now:
                 result["age_sec"] = min(int(now - checked), 2**31 - 1)
-        scopes = data.get("missing_scopes")
-        if (isinstance(scopes, list) and len(scopes) <= len(TWITCH_OAUTH_SCOPES)
-                and all(isinstance(s, str) and s in TWITCH_OAUTH_SCOPES for s in scopes)):
-            result["missing_scopes"] = sorted(set(scopes))
+        missing = data.get("missing_scopes")
+        if (isinstance(missing, list) and len(missing) <= len(scopes)
+                and all(isinstance(s, str) and s in scopes for s in missing)):
+            result["missing_scopes"] = sorted(set(missing))
             result["missing_scopes_known"] = True
+        broadcaster = data.get("broadcaster_user_id")
+        if isinstance(broadcaster, str) and KICK_OAUTH_BROADCASTER_RE.fullmatch(broadcaster):
+            result["broadcaster_user_id"] = broadcaster
     except FileNotFoundError:
         pass
     except (OSError, ValueError, RecursionError, _StreamTitleUnsafe):
@@ -383,6 +407,14 @@ def _collect_twitch_oauth(now):
         if directory is not None:
             os.close(directory)
     return result
+
+
+def _collect_twitch_oauth(now):
+    return _collect_oauth_status(now, "twitch_oauth", TWITCH_OAUTH_STATUSES, TWITCH_OAUTH_SCOPES)
+
+
+def _collect_kick_oauth(now):
+    return _collect_oauth_status(now, "kick_oauth", KICK_OAUTH_STATUSES, KICK_OAUTH_SCOPES)
 
 
 def _collect_opencode_retention(soren, now):
@@ -1066,6 +1098,23 @@ def _collect_storage_breakdown(
         "opencode_worker": _storage_db_family(worker_db),
         "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
         "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
+        # Subtrees of the opencode default data dir (azumag/docich#3140): the
+        # session-file store outside opencode.db, split per fixed sub-path so
+        # the retention baseline attributes growth without SSH. Same opt-in
+        # shape as the gateway_state subtrees (optional keys, never charged
+        # to the shared incomplete flag).
+        "opencode_default_snapshot": _storage_tree_usage(
+            default_db.parent / "snapshot", max_entries=max_entries
+        ),
+        "opencode_default_storage": _storage_tree_usage(
+            default_db.parent / "storage", max_entries=max_entries
+        ),
+        "opencode_default_tool_output": _storage_tree_usage(
+            default_db.parent / "tool-output", max_entries=max_entries
+        ),
+        "opencode_default_log": _storage_tree_usage(
+            default_db.parent / "log", max_entries=max_entries
+        ),
         "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
         "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),
         "say_queue": _storage_tree_usage(soren / "tmp" / ".say_queue", max_entries=max_entries),
@@ -1090,6 +1139,15 @@ def _collect_storage_breakdown(
         # ---- version 2 fixed roots (azumag/docich#2583) ----
         "gateway_state": _storage_tree_usage(
             home / ".local" / "state" / "github-vm-ops", max_entries=max_entries
+        ),
+        # Overlapping subtrees of gateway_state (azumag/docich#365): bundles
+        # are the git bundles, releases are the preview checkouts. Split so
+        # the retention design can measure each without guessing.
+        "gateway_bundles": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "bundles", max_entries=max_entries
+        ),
+        "gateway_releases": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "releases", max_entries=max_entries
         ),
         "alt_checkout_tmp_sync": _storage_tree_usage(
             sys_tmp / "opencode" / "docich-sync", max_entries=max_entries
@@ -6492,7 +6550,81 @@ def _project_corner_state(data):
             "hanjuku-chart-v275-battle-opening-dialogue",
             "hanjuku-chart-v276-chapter-three-relays",
             "hanjuku-chart-v277-nav-motion-continuity",
+            "hanjuku-chart-v278-chapter-three-boss-cell",
             "hanjuku-chart-v279-jump-foreground-retry",
+            "hanjuku-chart-v280-approx-fallback-source-chapters",
+            "hanjuku-chart-v281-probe-empty-relay",
+            "hanjuku-chart-v282-world-map-sea-cursor",
+            "hanjuku-chart-v283-ring-edge-align-half",
+            "hanjuku-chart-v284-long-march-bind",
+            "hanjuku-chart-v285-egg-drop-substitute",
+            "hanjuku-chart-v286-recall-yields-month-scene",
+            "hanjuku-chart-v287-retry-owned-target",
+            "hanjuku-chart-v288-boss-jump-fresh-attempt",
+            "hanjuku-chart-v289-monster-skill-no-progress",
+            "hanjuku-chart-v290-monster-stall-faster",
+            "hanjuku-chart-v291-defense-handoff-win",
+            "hanjuku-chart-v293-boss-cell-not-cave",
+            "hanjuku-chart-v295-boss-marker-on-building",
+            "hanjuku-chart-v297-camp-menu-reopen",
+            "hanjuku-chart-v298-okunote-effect-label",
+            "hanjuku-chart-v300-recall-picker-stationary",
+            "hanjuku-chart-v302-defense-loss-flag",
+            "hanjuku-chart-v303-boss-flag-not-read",
+            "hanjuku-chart-v304-boss-sortie-overdue",
+            "hanjuku-chart-v305-hero-castle-guard",
+            "hanjuku-chart-v306-dome-camp",
+            "hanjuku-chart-v307-card-egg-reach",
+            "hanjuku-chart-v308-snow-field",
+            "hanjuku-chart-v309-card-stock-skip",
+            "hanjuku-chart-v310-monster-menu-drawing",
+            "hanjuku-chart-v311-overtaken-confirm",
+            "hanjuku-chart-v312-monster-unchosen-turn",
+            "hanjuku-chart-v313-monster-overtaken-turn",
+            "hanjuku-chart-v314-summon-box-pace",
+            "hanjuku-chart-v315-summon-entrance-pace",
+            "hanjuku-chart-v316-summon-dialogue-wait",
+            "hanjuku-chart-v317-partial-box-fold",
+            "hanjuku-chart-v318-nav-recover-bound",
+            "hanjuku-chart-v319-attack-defender-successor",
+            "hanjuku-chart-v320-dispatch-not-empty",
+            "hanjuku-chart-v321-camp-unobserved-skip",
+            "hanjuku-chart-v322-defense-win-unread-list",
+            "hanjuku-chart-v323-okunote-open-menu",
+            "hanjuku-chart-v324-hold-gate-reload",
+            "hanjuku-chart-v325-lost-chart-general",
+            "hanjuku-chart-v326-target-jump-settle",
+            "hanjuku-chart-v327-season-king-sites",
+            "hanjuku-chart-v328-site-card-kit",
+            "hanjuku-chart-v329-hopeless-attack-retreat",
+            "hanjuku-chart-v330-site-strongest-egg",
+            "hanjuku-chart-v331-site-entry-repeat",
+            "hanjuku-chart-v333-site-keep-defender",
+            "hanjuku-chart-v335-y-jump-interrupted",
+            "hanjuku-chart-v337-site-egg-stays",
+            "hanjuku-chart-v338-season-king-panel",
+            "hanjuku-chart-v339-okunote-redraw",
+            "hanjuku-chart-v340-site-overdue-planned",
+            "hanjuku-chart-v341-chikyu-harmagedon-general",
+            "hanjuku-chart-v343-defender-okunote-melee-behind",
+            "hanjuku-chart-v344-sortie-list-walk",
+            "hanjuku-chart-v345-roster-unplaced",
+            "hanjuku-chart-v346-thin-flag-camp",
+            "hanjuku-chart-v347-late-boss-entry",
+            "hanjuku-chart-v348-goals-ledger",
+            "hanjuku-chart-v349-boss-attrition-pool",
+            "hanjuku-chart-v350-boss-stale-retry",
+            "hanjuku-chart-v351-boss-stall-recovery",
+            "hanjuku-chart-v352-fort-camp-recall",
+            "hanjuku-chart-v353-sortie-over-repair-retry",
+            "hanjuku-chart-v354-bargains-after-low-army",
+            "hanjuku-chart-v355-camp-read-recalls-now",
+            "hanjuku-chart-v356-status-reads-only-changes",
+            "hanjuku-chart-v357-cards-wear-down",
+            "hanjuku-chart-v358-mechanical-conquest",
+            "hanjuku-chart-v359-okunote-spent-egg-summon",
+            "hanjuku-chart-v360-batch-recruit-no-rescan",
+            "hanjuku-chart-v361-jump-foreground-retry",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -6732,6 +6864,21 @@ def _project_counts(value, keys):
     if not isinstance(value, dict):
         return None
     return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+def _project_lawsim_counters(data):
+    """法案シミュレーター run counters, integers only (#3054).
+
+    ``narration.frames`` is the per-frame scheduling index; the other fields are
+    enqueue / delivery / skip / overlay outcome counts. No narration text, bill
+    names or other lawsim state leave the state file through this projection.
+    """
+    return {
+        "narration": _project_counts(data.get("narration"),
+                                     ("enqueued", "delivery_failed", "skipped", "frames")),
+        "overlay_announcements": _project_counts(data.get("overlay_announcements"),
+                                                 ("sent", "failed", "skipped")),
+    }
 
 
 _GAME_OUTCOMES = frozenset({"win", "loss", "draw", "unknown"})
@@ -7468,6 +7615,8 @@ def _collect_corner_files(state_dir, payload, now):
                 entry.update(_project_tsuitate_corner(data))
             else:
                 entry.update(_project_corner_state(data))
+            if name == "lawsim_corner":
+                entry["counters"] = _project_lawsim_counters(data)
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
@@ -7897,14 +8046,44 @@ def _collect_retro_program_queues(soren):
 
 
 def _parse_iso_utc(value):
-    """Epoch seconds for a Twitch ISO-8601 UTC stamp, else None (#2805)."""
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            parsed = dt.datetime.strptime(value, fmt)
-        except (TypeError, ValueError):
-            continue
-        return parsed.replace(tzinfo=dt.timezone.utc).timestamp()
-    return None
+    """Epoch seconds for an ISO-8601 UTC stamp, else None (#2805, #2925).
+
+    Accepts second, microsecond and nanosecond (or any sub-microsecond)
+    precision.  Fractional seconds with more than six digits are rounded to
+    microseconds (with carry into the seconds field) so stamps such as
+    ``2026-10-23T20:37:12.961559839Z`` parse instead of being dropped.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z",
+        value,
+    )
+    if match is None:
+        return None
+    base, frac = match.group(1), match.group(2)
+    microsecond = 0
+    carry_seconds = 0
+    if frac:
+        if len(frac) <= 6:
+            microsecond = int(frac.ljust(6, "0"))
+        else:
+            denom = 10 ** (len(frac) - 6)
+            microsecond = (int(frac) + denom // 2) // denom
+            if microsecond >= 1000000:
+                microsecond -= 1000000
+                carry_seconds = 1
+    try:
+        parsed = dt.datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    parsed = parsed.replace(microsecond=microsecond, tzinfo=dt.timezone.utc)
+    if carry_seconds:
+        parsed = parsed + dt.timedelta(seconds=carry_seconds)
+    try:
+        return parsed.timestamp()
+    except (OverflowError, ValueError):
+        return None
 
 
 def _collect_prediction_leaderboard(state_dir, now=None):
@@ -8130,6 +8309,40 @@ def _prediction_projection(corners, now):
                              else None),
             "age_sec": _bounded_age(prediction.get("completed_at"), now),
         },
+    }
+
+
+# Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
+_LAWSIM_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "failed", "interrupted"})
+
+
+def _lawsim_projection(corners, now):
+    """The 法案シミュレーター corner's run state and counters as a top-level section (#3054).
+
+    Same reason as ``_prediction_projection`` (#2805): ``corners`` is dropped whole
+    against the hard ceiling, which made the narration and overlay counters
+    unobservable in every production run. This duplicates the already-bounded
+    ``corners.lawsim_corner`` fields under a key the ceiling never takes away.
+    Only enums, counts, timestamps as ages and the fixed game id are emitted.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+    corner = corners.get("lawsim_corner")
+    corner = corner if isinstance(corner, dict) else {}
+    counters = corner.get("counters")
+    counters = counters if isinstance(counters, dict) else {}
+    status = corner.get("status")
+    game = corner.get("game")
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "present": corner.get("present") is True,
+        "readable": corner.get("readable") is True,
+        "status": status if status in _LAWSIM_STATUSES else None,
+        "game": game if game == "lawsim-view" else None,
+        "end_reason": corner.get("end_reason"),
+        "age_sec": _bounded_age(corner.get("completed_at"), now),
+        "narration": counters.get("narration"),
+        "overlay_announcements": counters.get("overlay_announcements"),
     }
 
 
@@ -8621,7 +8834,7 @@ HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
-    "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
+    "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu",
     "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
     "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
     "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
@@ -9513,8 +9726,39 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None):
-    if workers["required_down"] or workers["required_stale"]:
+def _worker_down_severity(workers, lifecycle_pause=None):
+    """Return the severity contributed by required-worker down/stale state.
+
+    Returns "critical" when a required worker is stale or down without evidence
+    of an active lifecycle handover, "warn" when a required worker is down but
+    an active lifecycle handover is proven to be holding it, or None when no
+    required worker is down or stale.
+    """
+    required_down = workers.get("required_down") if isinstance(workers, dict) else None
+    required_down = required_down or []
+    required_stale = workers.get("required_stale") if isinstance(workers, dict) else None
+    required_stale = required_stale or []
+    # Fail-safe: a required worker that is down only becomes a WARN (instead of
+    # CRITICAL) when the lifecycle broker proves an active handover is holding
+    # it.  Without that evidence the original CRITICAL verdict stands, so an
+    # ordinary crash is never hidden behind a lifecycle excuse.
+    lifecycle_handover_active = (
+        isinstance(lifecycle_pause, dict)
+        and lifecycle_pause.get("active") is True
+        and lifecycle_pause.get("waiting_for") == "lifecycle_handover"
+    )
+    if required_stale:
+        return "critical"
+    if not required_down:
+        return None
+    if not lifecycle_handover_active:
+        return "critical"
+    return "warn"
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
+    if worker_down_sev == "critical":
         return "critical"
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
@@ -9528,6 +9772,8 @@ def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=Non
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
     if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
+        return "warn"
+    if worker_down_sev == "warn":
         return "warn"
     if (
         _paused_workers_actionable(workers)
@@ -10053,6 +10299,171 @@ def _collect_nethack_manual_log(state_dir, now):
     entry["lines"] = [
         _redact_text(line, NETHACK_MANUAL_LOG_LINE_LIMIT)
         for line in lines[-NETHACK_MANUAL_LOG_LINES:]
+    ]
+    return entry
+
+
+SOREN_BRIDGE_LOG_DIR = "tmp"
+SOREN_BRIDGE_LOG_NAME = "soviet_local.log"
+SOREN_BRIDGE_LOG_ENTRIES = 256
+SOREN_BRIDGE_LOG_TAIL_BYTES = 8192
+SOREN_BRIDGE_LOG_LINES = 24
+SOREN_BRIDGE_LOG_LINE_LIMIT = 240
+SOREN_BRIDGE_LOG_MAX_BYTES = 32 * 1024 * 1024
+SOREN_BRIDGE_STUCK_AGE_S = 7200
+# The stuck-live recovery path renames the hung bridge log to
+# ``soviet_local.log.hung-<stamp>`` before relaunch (#3154). Only that exact
+# name shape is read; anything else under ``tmp/`` is ignored.
+_SOREN_BRIDGE_LOG_HUNG_RE = re.compile(
+    r"^soviet_local\.log\.hung-[0-9A-Za-z._-]{1,64}$")
+
+
+def _soren_bridge_pid_alive(soren):
+    """Whether the persisted bridge capability pid still names a live
+    process. ``None`` means no usable pid was persisted at all."""
+    capability = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_capabilities.json")
+    pid = capability.get("pid") if isinstance(capability, dict) else None
+    if type(pid) is not int or not 0 < pid <= 4194304:
+        return None
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
+def _soren_bridge_stuck_anomaly(soren, now):
+    """The #3154 stuck-live anomaly signature, or None when healthy.
+
+    Mirrors the persisted evidence the recovery gate
+    (``recover-diagnose=player_policy_jev_bridge_stuck_live``, code 97) keys
+    on, without importing docich or running the operator: the bridge pid is
+    still alive while its board evidence stopped advancing -- either a
+    ``game_state.json`` MOVE board frozen for at least
+    ``SOREN_BRIDGE_STUCK_AGE_S`` seconds, or a JEV ``player_state.json``
+    whose board is absent entirely (the gate treats a missing board as
+    frozen-equivalent). Healthy runs return None so no log body leaves.
+    """
+    if _soren_bridge_pid_alive(soren) is not True:
+        return None
+    board_path = Path(soren) / "game_state.json"
+    board = _read_json(board_path)
+    if isinstance(board, dict) and board.get("state") == "MOVE":
+        try:
+            if now - board_path.stat().st_mtime >= SOREN_BRIDGE_STUCK_AGE_S:
+                return "move_frozen_bridge_alive"
+        except OSError:
+            return None
+    player = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_state.json")
+    if (not board_path.is_file() and isinstance(player, dict)
+            and player.get("policy") == "jev"):
+        return "jev_board_absent_bridge_alive"
+    return None
+
+
+def _read_soren_bridge_tail(path, size):
+    """Bounded tail read of one bridge log: O_NOFOLLOW + fstat, regular
+    files only, capped size. Returns (lines, tail_truncated) or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            truncated = size > SOREN_BRIDGE_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - SOREN_BRIDGE_LOG_TAIL_BYTES)
+            raw = handle.read(SOREN_BRIDGE_LOG_TAIL_BYTES)
+    except OSError:
+        return None
+    lines = [line for line in raw.decode("utf-8", errors="replace")
+             .splitlines() if line.strip()]
+    return lines, truncated
+
+
+def _collect_soren_bridge_log(soren, now):
+    """Bounded, redacted bridge-log tail, emitted only on the #3154 anomaly.
+
+    ``tmp/soviet_local.log`` is the bridge's own stdout: its tail is the only
+    read-only evidence that separates "bridge hung inside the page-side
+    evaluate" from a clean stop. Because it is raw log text, the collector
+    contract keeps it sealed on healthy runs and projects just the last few
+    bounded, redacted lines while the stuck-live signature holds -- the same
+    pattern as the NetHack ``agent.log`` tail. When a hung-log evacuation
+    renamed the file, the newest ``soviet_local.log.hung-<stamp>`` is read
+    instead of the fresh post-relaunch log. Symlinks and non-regular files
+    are refused; nothing else under ``tmp/`` is opened.
+    """
+    entry = {
+        "anomaly": None,
+        "projected": False,
+        "source": None,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "tail_truncated": None,
+        "lines": [],
+    }
+    soren = Path(soren)
+    anomaly = _soren_bridge_stuck_anomaly(soren, now)
+    if anomaly is None:
+        return entry
+    entry["anomaly"] = anomaly
+    directory = soren / SOREN_BRIDGE_LOG_DIR
+    # Prefer the newest hung evacuation: its tail is the incident evidence;
+    # the fresh post-relaunch soviet_local.log only documents the new run.
+    name = None
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= SOREN_BRIDGE_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _SOREN_BRIDGE_LOG_HUNG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > SOREN_BRIDGE_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name)
+    except OSError:
+        pass
+    if best is not None:
+        name = best[1]
+        entry["source"] = "hung_evacuated"
+    else:
+        name = SOREN_BRIDGE_LOG_NAME
+        entry["source"] = "live_log"
+    path = directory / name
+    if not path.is_file():
+        return entry
+    entry["present"] = True
+    try:
+        info = path.stat()
+        entry["mtime"] = int(info.st_mtime)
+        entry["bytes"] = int(info.st_size)
+    except OSError:
+        return entry
+    tail = _read_soren_bridge_tail(path, info.st_size)
+    if tail is None:
+        return entry
+    lines, truncated = tail
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    entry["projected"] = True
+    entry["lines"] = [
+        _redact_text(line, SOREN_BRIDGE_LOG_LINE_LIMIT)
+        for line in lines[-SOREN_BRIDGE_LOG_LINES:]
     ]
     return entry
 
@@ -11045,13 +11456,28 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
                     continue
                 kind = row.get("screen_kind")
                 kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                variant = row.get("strategy_variant")
                 out.append({"event": event, "decision": decision,
-                            "screen_kind": kind, "age_sec": age})
+                            "screen_kind": kind, "age_sec": age,
+                            "strategy_variant": (
+                                variant if isinstance(variant, str)
+                                and re.fullmatch(r"[a-z_]{1,40}", variant) else None)})
             except (ValueError, TypeError, OverflowError, RecursionError):
                 continue
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return []
     return out[-limit:]
+
+
+# Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
+# sortie this many times before parking it. The collector runs as a standalone
+# file on the VM, so a test pins the two values together instead of importing
+# game code at runtime.
+HANJUKU_MARCH_RELAUNCH_LIMIT = 2
+# Fixed chapter-4 site names. A victory record's free-form site label must not
+# become a channel for arbitrary text; only these reviewed labels are emitted.
+HANJUKU_SEASON_SITES = frozenset({
+    '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
 def _compact_hanjuku_policy(mem, state=None):
@@ -11069,9 +11495,15 @@ def _compact_hanjuku_policy(mem, state=None):
     def names(value, limit=12):
         return ([item for item in value if isinstance(item, str)][:limit]
                 if isinstance(value, list) else None)
+    def count(value, maximum=1_000_000):
+        return value if type(value) is int and 0 <= value <= maximum else None
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
     sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
+    victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
+    retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
+    lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11080,8 +11512,41 @@ def _compact_hanjuku_policy(mem, state=None):
     cursor = mem.get('cursor')
     tick = mem.get('tick')
     state = state if isinstance(state, dict) else {}
+    def sortie_row(step, value):
+        # A stalled march is an age, not only a status: the same overdue row
+        # may be waiting for its bounded retry or parked after exhaustion.
+        started = value.get('tick')
+        age = (tick - started if type(tick) is int and type(started) is int
+               and 0 <= tick - started <= 10_000_000 else None)
+        return {'status': text(value.get('status'), 32),
+                'target': text(value.get('target'), 32),
+                'age_ticks': age,
+                'relaunch': count(relaunches.get(step), 1000)}
+    rows = [(text(step, 32) or '?', sortie_row(step, value))
+            for step, value in sorties.items() if isinstance(value, dict)]
+    # Keep overdue marches in the bounded view even when many sorties exist.
+    rows.sort(key=lambda row: (row[1]['status'] != 'overdue', row[0]))
+    overdue = [step for step, row in rows if row['status'] == 'overdue']
+    exhausted = [step for step, row in rows
+                 if row['status'] == 'overdue'
+                 and (row['relaunch'] or 0) >= HANJUKU_MARCH_RELAUNCH_LIMIT]
+    active = text(mem.get('active'), 32)
+    if active:
+        march_state = 'active'
+    elif not rows and not orders:
+        march_state = 'idle'
+    elif [step for step in overdue if orders.get(step) == 'launched']:
+        # Launched with nothing measurable arriving: distinguish a retry
+        # still inside its budget from one parked at the relaunch limit.
+        march_state = 'parked' if exhausted else 'overdue'
+    else:
+        march_state = 'idle'
+    won_sites = sorted({value.get('site') for value in victories.values()
+                        if isinstance(value, dict)
+                        and value.get('site') in HANJUKU_SEASON_SITES})
     return {
         'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'bot_version': text(state.get('bot_version') or mem.get('bot_version'), 64),
         'screen_kind': text(state.get('screen_kind'), 32),
         'phase': text(state.get('phase'), 32),
         'step': state.get('step') if type(state.get('step')) is int else None,
@@ -11096,12 +11561,25 @@ def _compact_hanjuku_policy(mem, state=None):
                    if isinstance(step, str) and isinstance(status, str)},
         'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
                            and len(mem['captured']) <= 64 else None),
+        'castle_loss_count': (len(lost) if isinstance(lost, list) and len(lost) <= 64 else None),
+        'home_taken': mem.get('home_lost') is True,
+        'boss_defeated': count(mem.get('boss_defeated'), 12),
+        'retries': {text(step, 32) or '?': count(value, 1000)
+                    for step, value in list(retries.items())[:20] if isinstance(step, str)},
         'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
                      for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
-        'sorties': {text(step, 32) or '?': {'status': text(value.get('status'), 32),
-                                            'target': text(value.get('target'), 32)}
-                    for step, value in list(sorties.items())[:12]
-                    if isinstance(value, dict)},
+        'sorties': dict(rows[:12]),
+        # Direct march-stall evidence: whether a launched sortie is overdue,
+        # how long it has gone unmeasured and whether its bounded relaunch
+        # budget is exhausted. Only fixed status tokens, castle labels and
+        # counts leave this reader.
+        'march': {'state': march_state,
+                  'overdue': overdue[:12],
+                  'exhausted': exhausted[:12],
+                  'oldest_age_ticks': max((row['age_ticks'] for _, row in rows
+                                            if row['status'] == 'overdue'
+                                            and row['age_ticks'] is not None), default=None)},
+        'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,
@@ -11142,6 +11620,112 @@ def _compact_hanjuku_policy(mem, state=None):
     }
 
 
+HANJUKU_CHART_WORKER_STATUSES = frozenset(
+    {'saved', 'invalid_output', 'generate_failed', 'worker_error', 'superseded'})
+# Same allowlist as the worker's own _DETAIL contract: fixed classifications
+# only (validator constant strings, ``rc-N:kind`` dispatcher kinds), never
+# provider or model text.
+_HANJUKU_WORKER_DETAIL = re.compile(r'[A-Za-z0-9 _/:.\-]{1,80}\Z')
+HANJUKU_CHART_HISTORY_EVENTS = frozenset(
+    {'adjust_worker', 'adjust_requested', 'adjusted_chart_saved',
+     'adjusted_orders_dropped'})
+
+
+def _project_hanjuku_chart_worker(runtime, now):
+    """Bounded view of the LLM chart-adjust worker for the active runtime.
+
+    g1075 recorded ``invalid_output`` 13 times in a row with no readable
+    reason and re-claimed a rate-limited request in 5 ms (#2936): the
+    runtime files held all of it but diagnostics projected none. Keep only
+    the claim counters, the last fixed status/detail classification, and a
+    few recent history rows (event/status/detail/age) -- request ids,
+    digests, prompts and payloads never leave the runtime.
+    """
+    out = {'present': False, 'readable': False}
+    runtime = Path(runtime)
+    try:
+        data, _modified = _read_hanjuku_record(runtime / 'hanjuku_chart_worker.json')
+    except FileNotFoundError:
+        return out
+    except (OSError, ValueError):
+        out['present'] = True
+        return out
+    out['present'] = True
+    out['readable'] = True
+
+    def _enum(value):
+        return value if value in HANJUKU_CHART_WORKER_STATUSES else None
+
+    def _detail(value):
+        return (value if isinstance(value, str)
+                and _HANJUKU_WORKER_DETAIL.fullmatch(value) else None)
+
+    def _count(value):
+        return value if type(value) is int and 0 <= value <= 100000 else None
+
+    def _age(value):
+        return (int(now - value) if type(value) in (int, float)
+                and math.isfinite(value) and 0 <= now - value <= 30 * 86400
+                else None)
+
+    cooldown_until = data.get('cooldown_until')
+    out.update(
+        attempts=_count(data.get('attempts')),
+        rate_limited=_count(data.get('rate_limited')),
+        last_status=_enum(data.get('last_status')),
+        last_detail=_detail(data.get('last_detail')),
+        last_age_sec=_age(data.get('last_at')),
+        claim_age_sec=_age(data.get('at')),
+        cooldown_remaining_sec=(
+            int(cooldown_until - now)
+            if type(cooldown_until) in (int, float)
+            and math.isfinite(cooldown_until)
+            and 0 < cooldown_until - now <= 86400 else None),
+        recent=[],
+    )
+
+    try:
+        fd = _open_hanjuku_scene_source(runtime / 'hanjuku_chart_history.jsonl')
+    except OSError:
+        return out
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return out
+        offset = max(0, info.st_size - 64 * 1024)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+        if offset:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()[-128:]
+    finally:
+        os.close(fd)
+    recent = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (not isinstance(row, dict)
+                or row.get('event') not in HANJUKU_CHART_HISTORY_EVENTS):
+            continue
+        age = _age(row.get('at'))
+        if age is None:
+            continue
+        entry = {'event': row['event'], 'age_sec': age,
+                 'status': _enum(row.get('status')),
+                 'detail': _detail(row.get('detail'))}
+        for key in ('elapsed_s', 'cooldown_s'):
+            value = row.get(key)
+            if (type(value) in (int, float) and math.isfinite(value)
+                    and 0 <= value <= 86400):
+                entry[key] = round(value, 3)
+        recent.append(entry)
+    out['recent'] = recent[-4:]
+    return out
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Fresh fixed castle, card-prediction and monthly-refill records.
 
@@ -11164,6 +11748,7 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
             return out
         runtime = root / 'runtimes' / active['runtime_id']
+        out['chart_worker'] = _project_hanjuku_chart_worker(runtime, now)
         bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
         run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
         trace = bot.get('decision_trace')
@@ -13345,6 +13930,105 @@ def _host_metrics_hard_trim(payload, text):
     return text
 
 
+# Lifecycle fields kept when one corners entry is stubbed at the hard
+# ceiling: enough to read each corner's state without the bounded-but-heavy
+# evidence bodies that pushed the envelope over (#2884).
+_CORNER_STUB_KEYS = (
+    "present", "readable", "status", "game", "previous_game",
+    "end_reason", "finish_reason", "last_error_code", "completed_at",
+    "updated_at", "phase", "active_game",
+)
+# Corners entries that never stub individually: ``game_switch`` is the
+# identity of what is actually on screen and ``corner_rotation`` is the
+# ledger an operator opens diagnostics to check when the rotation wedges.
+# Both are bounded and small, so the whole-section drop keeps them inside
+# the omission marker too (#3149): a fat envelope that still cannot fit
+# must not blank the switch identity and the failed-corner ledger at the
+# same time.
+_CORNER_HARD_KEEP = ("game_switch", "corner_rotation")
+
+
+def _section_omission_stub(key, value):
+    """Marker that replaces a whole dropped section at the hard ceiling.
+
+    ``corners`` is the heaviest section and drops first, but its
+    ``game_switch`` (what is on screen) and ``corner_rotation`` (the ledger
+    an operator opens diagnostics to read when the rotation wedges,
+    including ``failed_corners``) are already bounded, fixed-shape
+    projections. Keeping them inside the omission marker costs a few KiB
+    while the other sections are still being dropped, so a fat envelope
+    can never blank both at once (#3149). Only when the remaining sections
+    still cannot fit does the pathological fallback take this skeleton too.
+    """
+    stub = {"status": "output_omitted", "reason": "hard_ceiling"}
+    if key == "corners" and isinstance(value, dict):
+        for keep in _CORNER_HARD_KEEP:
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+    return stub
+
+
+def _corner_stub(entry):
+    """Minimal lifecycle skeleton of one corners entry (#2884)."""
+    stub = {key: entry[key] for key in _CORNER_STUB_KEYS if key in entry}
+    stub["output_omitted"] = "hard_ceiling"
+    return stub
+
+
+def _corners_hard_trim(payload, text):
+    """Stub the largest corners entries before the whole section is dropped.
+
+    ``corners`` sits first in ``_HARD_DROP_ORDER`` because it is the
+    heaviest section, but its entries are independent state files: one fat
+    entry (a retro run's evidence body, a FIFO scan, a long failed_corners
+    ledger) used to take every other corner's lifecycle summary down with
+    it, which is how #2884 lost the whole section over a few KiB and why
+    prediction/lawsim needed top-level copies. Stub the largest entries
+    first -- keeping each corner's present/readable/status skeleton and
+    recording the omitted size -- so the small corners stay observable
+    until the section truly cannot fit. The whole-section drop in the
+    cascade remains the last resort.
+    """
+    corners = payload.get("corners")
+    if not isinstance(corners, dict):
+        return text
+    stubbed = {}
+    for key, value in corners.items():
+        if (key in _CORNER_HARD_KEEP or not isinstance(value, dict)
+                or value.get("output_omitted") == "hard_ceiling"):
+            stubbed[key] = value
+            continue
+        stub = _corner_stub(value)
+        stub["omitted_bytes"] = len(
+            json.dumps(value, sort_keys=True, ensure_ascii=False))
+        stubbed[key] = stub
+    trial = dict(payload)
+    trial["corners"] = stubbed
+    if len(json.dumps(trial, sort_keys=True, ensure_ascii=False)
+           .encode("utf-8")) > HARD_JSON_BYTES:
+        # Even every entry skeletoned cannot fit: a whole section is dropped
+        # regardless, so do not trade full corner detail for skeletons first
+        # (same rule as the host-metrics floor in _host_metrics_hard_trim).
+        return text
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        candidates = [
+            (len(json.dumps(value, sort_keys=True, ensure_ascii=False)), key)
+            for key, value in corners.items()
+            if key not in _CORNER_HARD_KEEP
+            and isinstance(value, dict)
+            and value.get("output_omitted") != "hard_ceiling"
+        ]
+        if not candidates:
+            break
+        size, key = max(candidates)
+        stub = _corner_stub(corners[key])
+        stub["omitted_bytes"] = size
+        corners[key] = stub
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -13392,6 +14076,9 @@ def _diagnostics_budget(payload):
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
         if isinstance(policy, dict):
             payload['hanjuku_tactical']['policy'] = policy
+        worker = summary.get('chart_worker') if isinstance(summary, dict) else None
+        if isinstance(worker, dict):
+            payload['hanjuku_tactical']['chart_worker'] = worker
         if type(chapter) is int:
             payload['hanjuku_tactical']['chapter'] = chapter
         if type(age_sec) is int:
@@ -13479,6 +14166,12 @@ def _diagnostics_budget(payload):
     # the hard ceiling (and only the oldest samples) before any whole section is
     # dropped, so this section can never evict `corners` for a small overflow.
     text = _host_metrics_hard_trim(payload, text)
+    # #2884: ``corners`` is still the first whole section the drop order takes,
+    # so a single fat entry must not be allowed to cost every other corner its
+    # lifecycle summary once the ring trim above could not make room. Stub the
+    # largest entries to their present/readable/status skeletons before the
+    # whole-section drop below can fire.
+    text = _corners_hard_trim(payload, text)
     # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
     # preserves the evidence its own incident review depends on, but none of them
     # is unconditional: a payload that was still over the ceiling after them was
@@ -13493,7 +14186,7 @@ def _diagnostics_budget(payload):
             break
         if not isinstance(payload.get(key), dict):
             continue
-        payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+        payload[key] = _section_omission_stub(key, payload[key])
         text = _nethack_history_budget(payload)
     # Pathological fallback: a payload whose surviving sections are individually
     # small but numerous. Drop the remaining top-level sections largest-first,
@@ -13506,7 +14199,7 @@ def _diagnostics_budget(payload):
                 key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
             if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
-            payload[key] = {"status": "output_omitted", "reason": "hard_ceiling"}
+            payload[key] = _section_omission_stub(key, value)
             text = _nethack_history_budget(payload)
             if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
                 break
@@ -13961,14 +14654,16 @@ def main(argv):
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
     hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
+    lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume),
+        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause),
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
+        "kick_oauth": _collect_kick_oauth(now),
         "stream_title_attempts": _collect_stream_title_attempts(
             soren, _program_state_dir(), now, title_sync
         ),
@@ -13978,7 +14673,7 @@ def main(argv):
         # and not a config/state_dir value (#2578: reboot-persistent evidence).
         "host_metrics": _collect_host_metrics(_host_metrics_home(), now),
         "workers": workers,
-        "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
+        "lifecycle_pause": lifecycle_pause,
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
@@ -13994,6 +14689,7 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "prediction": _prediction_projection(corners, now),
+        "lawsim": _lawsim_projection(corners, now),
         "hanjuku_resume": hanjuku_resume,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
@@ -14006,6 +14702,7 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "soren_bridge_log": _collect_soren_bridge_log(soren, now),
         "nethack_manual_log": _collect_nethack_manual_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),

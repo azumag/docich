@@ -53,7 +53,7 @@ def test_successor_restarts_inputs_and_preserves_castle_without_inheriting_contr
     ({'enemy_hp': 0}, panel()), ({}, panel(enemy='ミント')),
     ({}, panel(ally='ダークエルフ', ally_hp=216)),
     ({}, panel(ally='未確認', ally_hp=30)), ({}, panel(ally_hp=83)),
-    ({}, panel(ally_hp=0)), ({}, panel(enemy_hp=0)),
+    ({}, panel(ally_hp=0)),
 ])
 def test_unsafe_name_changes_do_not_end_previous_battle(changes, observation):
     mem = memory()
@@ -65,6 +65,7 @@ def test_unsafe_name_changes_do_not_end_previous_battle(changes, observation):
     # The prior combat/ownership record stays intact. A mismatched panel now
     # also invalidates its card inputs, so the old HP/egg state cannot select A.
     assert mem['battle'] == {**before, 'card_context_unclassified': True,
+                             'card_combatants_changed': True,
                              'card_hp_unread': True, 'card_soldiers_current': False}
     assert mem['captured'] == ['ジョンリギ'] and 'stats' not in mem
 

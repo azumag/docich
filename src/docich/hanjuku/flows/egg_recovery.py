@@ -258,6 +258,8 @@ def _egg_recovery_step(screen, mem, sub):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': quoted_cost is not None},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
+            from ..strategy import goals
+            goals.note_attempt(mem, 'egg_recover', 'skipped')
             return [pad('b')]
         move = menu_to(screen, 'うむッ!')
         if move == 'here':

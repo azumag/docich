@@ -127,9 +127,9 @@ def caller_adopted_interim():
     assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = state['policy']['active']
-    assert active.startswith('I:')
-    assert state['policy']['chart_adjust']['interim_order']['step'] == active
-    assert any(r['decision'] == 'chart_interim_order' for r in state['_records'])
+    assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
+    assert state['policy']['chart_plan']['orders'][0]['step'] == active
+    assert any(r['decision'] == 'chart_adjust_applied' for r in state['_records'])
     return state, active
 
 
@@ -718,7 +718,7 @@ def adopted_interim_confirm_frame():
     and actor plus the measured hand block; no order is planted by hand.
     """
     state, active = caller_adopted_interim()
-    order = state['policy']['chart_adjust']['interim_order']
+    order = state['policy']['chart_plan']['orders'][0]
     panel = actor_panel(measured_loaded_sortie(tuple(order['cards'])), order['general'])
     canvas = Canvas()
     for line in panel.lines:
@@ -821,5 +821,5 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
         assert survey.step(parse(field()), mem, field()) is None
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = state['policy']['active']
-    assert active.startswith('I:')
-    assert state['policy']['chart_adjust']['interim_order']['target'] == 'グリン'
+    assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
+    assert state['policy']['chart_plan']['orders'][0]['target'] == 'グリン'

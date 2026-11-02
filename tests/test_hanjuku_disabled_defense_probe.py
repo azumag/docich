@@ -67,20 +67,19 @@ def test_missing_lower_row_stops_after_two_downs_even_through_persistence():
     assert mem['battle']['disabled_defense_probe']['downs'] == 2
 
 
-def test_probe_never_accepts_lottery_before_current_hp_loss_and_real_row():
+def test_probe_takes_the_real_lottery_row_once_for_a_measured_losing_melee():
     mem = memory(); menu = native(30774)
     assert p.battle_menu_step(menu, mem) == [p.pad('down')]
-    # Merely discovering the synthetic real label cannot waive the existing
-    # HP-loss rule or license an irreversible choice at the old opening HP.
-    assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('b')]
-    assert mem['battle']['okunote_only_observed']
-    assert not mem['battle'].get('okunote_last_resort_selected')
-    # Original 30780 shows current HP1/40. The already-observed parent then
-    # gets the existing one-time recheck, followed by the usual row/cursor gate.
-    assert p.battle_step(native(30780), mem) == [p.pad('b')]
-    assert mem['battle']['okunote_last_resort_reopened']
+    # #2864: シェーブル 19x4 against タルタル 40x9 (76 vs 360) is a measured
+    # losing melee; original 30780 later shows HP1/40. The real label takes the
+    # one irreversible chance at the opening HP instead of waiting for HP loss.
     assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('a')]
+    assert mem['battle']['okunote_only_observed']
+    assert mem['battle']['okunote_last_resort_selected']
     assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('b')]
+    # The losing panel no longer needs the one-time recheck.
+    p.battle_step(native(30780), mem)
+    assert not mem['battle'].get('okunote_last_resort_reopened')
 
 
 @pytest.mark.parametrize('changes', [

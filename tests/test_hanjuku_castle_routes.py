@@ -23,7 +23,8 @@ def state():
 
 def test_route_uses_owned_castles_and_never_the_home_to_dondam_diagonal():
     mem = state()
-    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ']
+    # v305: the hero keeps two others, so one of three spares moves.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート']
     owned = set(mem['garrison'])
     assert not routes.allowed(mem, 'アルマムーン', 'ドンダム')
     assert routes.path(mem, 'アルマムーン', 'ドンダム', owned) == (
@@ -190,3 +191,268 @@ def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     new = pending['interim_order']
     assert new['step'] != old['step']
     assert (new['source'], new['target'], new['purpose']) == ('リグア', 'グリン', 'move')
+
+
+def rigua_stall():
+    """g1075 2026-10-29 11:38 JST: every castle but リグア is ours, グリン (the
+    only leg to リグア) is recorded empty, and the two moves sent there have
+    left the busy window without their arrival being read."""
+    mem = state()
+    mem['tick'] = 66558
+    mem['captured'] = sorted(set(chart.castles(3)) - {'リグア', chart.boss_castle(3)})
+    mem['lost'] = ['リグア']
+    mem['garrison'] = {'アバロン': ['ソーピニヨン'], 'アルマムーン': ['どうし'], 'イーピヨル': [],
+                       'グリン': [], 'コラダイン': ['ミュスカデ'], 'ドンダム': ['ピオーネ'],
+                       'パタゴーヌ': ['アポロン'], 'メガパタ': ['デュオニソス']}
+    for step, general, tick in (('I:380571:2', 'アテナ', 65575), ('I:b59ab6:1', 'ポワソン', 66126)):
+        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'グリン', 'general': general,
+                                'status': 'en_route', 'tick': tick}
+        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+                                        'target': 'グリン', 'general': general, 'step': step}
+        mem['orders'][step] = 'launched'
+    retake = {'step': 'I:b59ab6:2', 'general': 'しょうぐん', 'source': 'グリン', 'target': 'リグア',
+              'cards': ['イッテツーン', 'グリンボー', 'グリンボー'], 'after': None,
+              'purpose': 'retake', 'source_probe': True,
+              'note': '暫定: しょうぐんで奪われたリグアを奪還'}
+    mem['chart_adjust'] = {'interim_order': retake}
+    return mem, retake
+
+
+def test_a_castle_recorded_empty_is_probed_after_its_transfers_left_the_busy_window():
+    mem, retake = rigua_stall()
+    assert routes.incoming(mem, 'グリン') == []            # both moves are past the busy window
+    assert {s for s, _ in routes.unread_dispatches(mem, 'グリン')} == {'I:380571:2', 'I:b59ab6:1'}
+    assert routes.probe_due(mem, 'グリン')
+    assert orders._source_list_open(retake, mem)
+    assert orders.next_order(mem)['step'] == 'I:b59ab6:2'
+    # The probe opens the real list; the reading decides, never a guess.
+    candidates = list(replan.interim_candidates(mem).values())
+    assert (candidates[0]['source'], candidates[0]['target'], candidates[0]['purpose']) == (
+        'グリン', 'リグア', 'retake')
+    assert candidates[0]['source_probe'] is True
+
+
+def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
+    mem, retake = rigua_stall()
+    # The list read after both moves shows nobody: no unread dispatch remains,
+    # old transfers are not confirmed, and the source stays closed.
+    routes.observed_roster(mem, 'グリン', [])
+    mem['tick'] += routes.PROBE_INTERVAL
+    assert routes.unread_dispatches(mem, 'グリン') == []
+    assert not routes.probe_due(mem, 'グリン')
+    assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
+    assert not orders._source_list_open(retake, mem)
+    assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
+    # With no other candidate it is left unstarted (a hold is recorded) ...
+    state_ = {'interim_order': retake}
+    replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
+    assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
+    # ... and it no longer holds a startable replacement: a spare at home
+    # stages the next general toward グリン instead of waiting on the old probe.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート']   # v305: two stay
+    replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
+    new = state_['interim_order']
+    assert new['step'] != 'I:b59ab6:2'
+    assert (new['general'], new['source'], new['target'], new['purpose']) == (
+        'ゼウス', 'アルマムーン', 'グリン', 'move')
+    # A new transfer sent after that reading reopens the list once due.
+    mem['tick'] += 5
+    step = add_transfer(mem, 'アルマムーン', 'グリン', general='ゼウス')
+    assert routes.probe_due(mem, 'グリン')
+    assert {s for s, _ in routes.unread_dispatches(mem, 'グリン')} == {step}
+
+
+def test_probe_never_opens_a_castle_whose_list_was_read_after_the_last_dispatch():
+    mem, retake = rigua_stall()
+    mem['route_probe_read_tick'] = {'グリン': 66300}     # read after both moves were sent
+    assert routes.unread_dispatches(mem, 'グリン') == []
+    assert not routes.probe_due(mem, 'グリン')
+    assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
+    # Other chapters never probe, and a non-probe order never opens an empty list.
+    assert not routes.probe_due({**mem, 'chapter': 2}, 'グリン')
+    mem.pop('route_probe_read_tick')
+    assert not orders._source_list_open({**retake, 'source_probe': False}, mem)
+
+
+def victoria_drain():
+    """g1075 2026-10-29 23:03 JST, chapter 4 (#3037): ビクトリア is recorded
+    empty and its list was never read; アポロン and アルファルファ were sent
+    there and have left the busy window, so the same move went out again."""
+    mem = {'chapter': 4, 'tick': 101173,
+           'captured': ['ビクトリア', 'ミヒラギアン', 'マラコビア', 'アルカ'],
+           'lost': ['フヌイヌム', 'ネクスドリア'], 'orders': {},
+           'garrison': {'アルカ': ['ブカティーニ'], 'ビクトリア': [], 'マラコビア': ['ラズベリー'],
+                        'アルマムーン': ['どうし', 'バーミセリ', 'トレビス', 'ココット'],
+                        'ミヒラギアン': ['アテナ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    for step, general, tick in (('I:0fa434:2', 'アポロン', 95400), ('I:49a839:1', 'アルファルファ', 96181)):
+        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
+                                'status': 'en_route', 'tick': tick}
+        mem['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
+                                        'target': 'ビクトリア', 'general': general, 'step': step}
+        mem['orders'][step] = 'launched'
+    return mem
+
+
+def moves_into(mem, castle):
+    return [o for o in replan.interim_candidates(mem).values()
+            if o['purpose'] == 'move' and o['target'] == castle]
+
+
+def test_a_castle_sent_moves_since_its_last_reading_is_not_refilled_in_chapter_4():
+    mem = victoria_drain()
+    assert routes.incoming(mem, 'ビクトリア') == []        # both moves are past the busy window
+    assert len(routes.unread_dispatches(mem, 'ビクトリア')) == 2
+    assert not moves_into(mem, 'ビクトリア')
+    assert not routes.probe_due(mem, 'ビクトリア')          # no list probe outside chapter 3
+
+
+def test_a_read_list_in_chapter_4_makes_an_empty_castle_a_move_target_again():
+    mem = victoria_drain()
+    mem['tick'] += 1
+    routes.observed_roster(mem, 'ビクトリア', [])
+    assert routes.unread_dispatches(mem, 'ビクトリア') == []
+    assert [o['source'] for o in moves_into(mem, 'ビクトリア')] == ['アルマムーン']
+
+
+def test_lost_castle_gating_the_boss_path_is_retaken_first():
+    """Owner 2026-11-02 (g1097): 5-C4 waits on captured バスカビル while minor
+    retakes cycle — a lost castle gating the boss chain outranks the rest."""
+    mem = {'chapter': 5, 'month': '38-10', 'tick': 1000,
+           'captured': ['テラビル', 'ヒュペルボレア', 'カルーン', 'アルマムーン'],
+           'lost': ['ボッサール', 'バスカビル', 'アイアイエー', 'オトラント'],
+           'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ'],
+                        'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
+                        'カルーン': ['セルリアク']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
+    assert retakes[:2] == ['バスカビル', 'アイアイエー']
+    assert set(retakes) == {'ボッサール', 'バスカビル', 'アイアイエー', 'オトラント'}
+
+
+def test_boss_gate_ordering_is_scoped_to_lost_castles():
+    """The gate only reorders castles actually lost — a captured gate castle
+    does not fabricate a retake."""
+    mem = {'chapter': 5, 'month': '38-10', 'tick': 1000,
+           'captured': ['テラビル', 'ヒュペルボレア', 'カルーン', 'アルマムーン',
+                        'バスカビル', 'アイアイエー'],
+           'lost': ['ボッサール', 'オトラント'],
+           'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ'],
+                        'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
+                        'カルーン': ['セルリアク'], 'バスカビル': ['ココット'],
+                        'アイアイエー': ['エシャロット']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
+    assert set(retakes) == {'ボッサール', 'オトラント'}
+
+
+def test_source_past_an_own_castle_on_the_march_is_avoided():
+    """Owner 2026-11-02 (g1097): アルマムーン→クロチェット always stopped at
+    オトラント on the way — a source behind another own castle never reaches
+    the target, so the nearer front-line castle is picked instead."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'],
+           'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
+                        'オトラント': ['グレナデン', 'バジル'],
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    kuro = next(c for c in cands if c.get('target') == 'クロチェット')
+    assert kuro['source'] == 'オトラント'
+
+
+def test_march_blocked_geometry():
+    assert replan._march_blocked(5, 'アルマムーン', 'クロチェット',
+                                 {'アルマムーン', 'オトラント'})
+    assert replan._march_blocked(5, 'アルマムーン', 'プトレマイス',
+                                 {'アルマムーン', 'バスカビル'})
+    assert not replan._march_blocked(5, 'オトラント', 'クロチェット',
+                                     {'アルマムーン', 'オトラント'})
+    assert not replan._march_blocked(5, 'アルマムーン', 'オトラント',
+                                     {'アルマムーン', 'オトラント', 'カルーン'})
+
+
+def test_blocked_only_source_sorties_from_the_blocking_castle():
+    """When every staffed source sits behind an own castle, the blocking
+    castle itself is the real launch point — its sole listed general goes
+    (the march would only deliver him there anyway)."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'],
+           'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート'],
+                        'オトラント': ['グレナデン'],      # only the stopped general
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, 'launched_orders': {}, '_records': [],
+           'house_eggs': {}, 'general_location_unknown': []}
+    cands = list(replan.interim_candidates(mem).values())
+    kuro = next(c for c in cands if c.get('target') == 'クロチェット')
+    assert (kuro['source'], kuro['general']) == ('オトラント', 'グレナデン')
+
+
+def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():
+    """Owner 2026-11-02 (g1097): a pending order baked with アルマムーン→
+    クロチェット can never arrive — next_order re-points it at オトラント."""
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント', 'テラビル'], 'lost': [],
+           'orders': {'A:x:J1': 'pending'},
+           'launched_orders': {'A:x:J1': {'step': 'A:x:J1', 'source': 'アルマムーン',
+                                          'target': 'クロチェット', 'general': 'エピィ',
+                                          'cards': [], 'after': None}},
+           'garrison': {'アルマムーン': ['どうし', 'ミュスカデ'], 'オトラント': ['グレナデン'],
+                        'テラビル': ['ラビオリ']},
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    orders.next_order(mem)
+    assert mem['source_override']['A:x:J1'] == 'オトラント'
+    rec = next(r for r in mem['_records'] if r['decision'] == 'sortie_source_march_block')
+    assert rec['expected_metric']['source'] == 'アルマムーン'
+    assert rec['observed_metric']['blocker'] == 'オトラント'
+
+
+def test_a_clear_pending_order_keeps_its_baked_source():
+    mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
+           'captured': ['アルマムーン', 'オトラント'], 'lost': [],
+           'orders': {'A:x:J1': 'pending'},
+           'launched_orders': {'A:x:J1': {'step': 'A:x:J1', 'source': 'オトラント',
+                                          'target': 'クロチェット', 'general': 'グレナデン',
+                                          'cards': [], 'after': None}},
+           'garrison': {'アルマムーン': ['どうし'], 'オトラント': ['グレナデン']},
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    orders.next_order(mem)
+    assert 'source_override' not in mem or 'A:x:J1' not in mem['source_override']
+
+
+def test_boss_order_unlocks_when_its_chain_is_held_despite_a_side_loss():
+    """Owner 2026-11-02: クロシェット取り返し中でも並行でボス城に攻め込める —
+    all_captured no longer waits on castles off the boss chain."""
+    b1 = next(o for o in chart.all_orders(5) if o['step'] == '5-B1')
+    mem = {'chapter': 5, 'month': '40-2', 'tick': 100,
+           'captured': ['アルマムーン', 'テラビル', 'ヒュペルボレア', 'カルーン',
+                        'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
+                        'バスカビル', 'プトレマイス'],
+           'lost': ['クロチェット'],
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
+           '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    assert orders._boss_path_captured(mem)
+    assert orders._ready(b1, mem)
+
+
+def test_boss_order_still_waits_when_its_chain_is_broken():
+    b1 = next(o for o in chart.all_orders(5) if o['step'] == '5-B1')
+    mem = {'chapter': 5, 'month': '40-2', 'tick': 100,
+           'captured': ['アルマムーン', 'テラビル', 'ヒュペルボレア', 'カルーン',
+                        'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
+                        'プトレマイス', 'クロチェット'],
+           'lost': ['バスカビル'],
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
+           '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+    assert not orders._boss_path_captured(mem)
+    assert not orders._ready(b1, mem)

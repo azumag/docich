@@ -9,6 +9,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide
+from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_camp_proof_binding import opened
@@ -83,7 +84,8 @@ def test_close_wait_has_a_shared_finite_budget_across_json_and_fades(mode, kind)
     assert not mem.get('garrison')
 
 
-def test_failed_closes_do_not_replenish_named_attempts_on_requeue():
+def test_failed_closes_do_not_replenish_named_attempts_on_requeue(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); created = mem['retreat_rechecks']['ゼウス']['tick']
     for attempt in range(1, 4):
         focus(mem)

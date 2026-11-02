@@ -345,6 +345,78 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertEqual(state["end_reason"], "switch-terminal-before-corner-active")
         self.assertEqual(coordinator.calls, [])
 
+    def test_released_recovery_required_start_is_retired_by_the_rotation_settle(self):
+        # Production 2026-10-31 (#3152): the sorengame->nsnake boundary request
+        # never reached the broker, its drain cancel was refused forever, and
+        # the corner latched failed with the canonical recovery_required code
+        # while the request-wide receipt finished failed/timeout. The released
+        # settle proof must still retire the owner -- the corner provably
+        # never became active -- or every later retro dispatch deadlocks on
+        # "rotation execution owner mismatch".
+        mgr, coordinator, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="timeout")
+        state = mgr._read_state()
+        state["last_error_code"] = "recovery_required"
+        mgr._write_state(state)
+        ledger = {
+            "schema": 1, "status": "waiting",
+            "known_corners": {"robots": {"id": "robots", "adapter": "game", "game": "robots"}},
+            "released_requests": {"robots": {"request_id": request_id, "at": 1.0}},
+            "failed_corners": [],
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "switch-terminal-before-corner-active")
+        self.assertIsNone(state["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
+    def test_recovery_required_start_needs_terminal_receipt_before_settle(self):
+        # The recovery_required preserved code alone is not permission: without
+        # a terminal failed receipt for the exact request the owner must stay
+        # latched for the ordinary retry path.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="timeout")
+        state = mgr._read_state()
+        state["last_error_code"] = "recovery_required"
+        mgr._write_state(state)
+        mgr.store.receipts._path(request_id).unlink()
+        ledger = {
+            "schema": 1, "status": "waiting",
+            "known_corners": {"robots": {"id": "robots", "adapter": "game", "game": "robots"}},
+            "released_requests": {"robots": {"request_id": request_id, "at": 1.0}},
+            "failed_corners": [],
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_recovery_required_start_needs_prelaunch_receipt_code(self):
+        # A terminal failed receipt outside the reviewed prelaunch codes still
+        # refuses, even with the recovery_required preserved code.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            terminal_status="failed", corner_status="failed", error_code="agent_start_failed")
+        state = mgr._read_state()
+        state["last_error_code"] = "recovery_required"
+        mgr._write_state(state)
+        ledger = {
+            "schema": 1, "status": "waiting",
+            "known_corners": {"robots": {"id": "robots", "adapter": "game", "game": "robots"}},
+            "released_requests": {"robots": {"request_id": request_id, "at": 1.0}},
+            "failed_corners": [],
+        }
+        (Path(mgr.g.state_dir) / "corner_rotation.json").write_text(
+            json.dumps(ledger), encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="robots"), False)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
     def test_released_rollback_failed_start_stays_failed_until_previous_is_owned(self):
         mgr, _, request_id = self._setup_failed_start(
             terminal_status="failed", corner_status="failed", error_code="rollback_failed")

@@ -229,6 +229,7 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
     after the answer is saved and logged, so no other observer process can
     start a second generation for this runtime meanwhile."""
     status, detail = 'saved', None
+    detail_orders = None
     started = time.monotonic()
     try:
         prompt = build_prompt(request, _recent_results(runtime_dir))
@@ -240,7 +241,17 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
             # plan from stock/garrison facts that are no longer current.
             status = 'superseded'
         else:
-            adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'), request)
+            doc = parse_output(output, request, agent or 'unknown')
+            try:
+                adjust.save(runtime_dir, doc, request)
+            except ValueError:
+                # Keep the rejected order steps for diagnosis: the fixed
+                # `invalid_output` detail never carries the offending names.
+                detail_orders = [{'step': o.get('step'), 'source': o.get('source'),
+                                  'target': o.get('target')}
+                                 for o in (doc.get('orders') or [])[:8]
+                                 if isinstance(o, dict)] or None
+                raise
     except ValueError as exc:
         status, detail = 'invalid_output', _invalid_detail(exc)
     except RuntimeError as exc:
@@ -260,6 +271,7 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
             'event': 'adjust_worker', 'at': time.time(), 'status': status, 'detail': detail,
             'request_id': request.get('request_id'),
             'elapsed_s': round(time.monotonic() - started, 3),
+            **({'rejected_orders': detail_orders} if detail_orders else {}),
             **({'cooldown_s': cooldown_s} if cooldown_s is not None else {}),
             **{k: request.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}})
     except Exception:

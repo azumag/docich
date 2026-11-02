@@ -4,10 +4,10 @@ set -euo pipefail
 mode="${RESUME_RECOVERY_MODE:-}"
 expected="${RESUME_RECOVERY_EXPECTED:-}"
 sha="${RESUME_RECOVERY_SHA:-}"
-[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || exit 64
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 64
 case "$mode" in
-  check|recover) ;;
+  check|recover) [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || exit 64 ;;
+  retry) ;;
   *) exit 64 ;;
 esac
 root="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"

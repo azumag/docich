@@ -244,12 +244,15 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
     """Explicit direct API specs never start OpenCode or invent a fallback.
 
     Normal COMMENT/RADIO generation is allowed; RESEARCH/PREPASS remain
-    separate. The request's ordered agents, if any, are still the operator's
-    explicit application-level fallback policy.
+    separate. CC_TRANSLATION is admitted only as an exact label (no prefix
+    match) and only here: the caption adapter calls call_agent directly and
+    never goes through dispatch(), so validate_label and the COMMENT/RADIO
+    queue/backoff lanes do not apply to it. The request's ordered agents, if
+    any, are still the operator's explicit application-level fallback policy.
     """
     from ..discord_chat import ChatRateLimit, Settings, direct_chat_options, read_secret
     from ..reply_research_api import answer_once
-    if (not request.label.startswith(("COMMENT", "RADIO"))
+    if (not (request.label.startswith(("COMMENT", "RADIO")) or request.label == "CC_TRANSLATION")
             or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
         return ProviderResult(2, failure_kind="invalid_provider", detail="generation_only")
     if spec.raw != f"{spec.provider}:{spec.model}":
@@ -259,11 +262,18 @@ def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout")
         key_name = {"openrouter": "OPENROUTER_API_KEY", "vercel": "AI_GATEWAY_API_KEY",
-                    "cloudflare": "CLOUDFLARE_API_TOKEN"}[profile]
+                    "cloudflare": "CLOUDFLARE_API_TOKEN",
+                    "sarashina": "SARASHINA_RELAY_TOKEN"}[profile]
         if profile == "cloudflare":
             account = env.get("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "")
             base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
             model = "@" + spec.model if spec.model and spec.model.startswith("cf/") else ""
+            upstream = billing = ""
+        elif profile == "sarashina":
+            # Endpoint is operator env only; direct_chat_options validates it and
+            # fails before any transport if absent or invalid.
+            base = env.get("DOCICH_CHAT_SARASHINA_UPSTREAM", "").strip().rstrip("/")
+            model = spec.model or ""
             upstream = billing = ""
         else:
             base = {"openrouter": "https://openrouter.ai/api/v1",

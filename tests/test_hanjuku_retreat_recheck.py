@@ -5,6 +5,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide
+from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, _camp_frame, camp_menu
 from test_hanjuku_house import roster, status
@@ -233,7 +234,8 @@ def test_actual_picker_uses_the_existing_receipt_path():
     assert p.camp_recall_step(screen, mem, frame) == []
 
 
-def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall():
+def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); named_menu(mem)
     mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
@@ -246,6 +248,7 @@ def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall():
 
 
 def test_two_roofs_keep_the_same_failed_camp_backoff_when_map_animates(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
@@ -289,6 +292,7 @@ def test_named_status_has_a_finite_freshness_budget():
 
 
 def test_changed_view_cannot_send_an_exhausted_actor_through_anonymous_recall(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
     # A different camera/current tent has no durable identity yet.
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
@@ -298,10 +302,54 @@ def test_changed_view_cannot_send_an_exhausted_actor_through_anonymous_recall(mo
     # It must read the real occupant before choosing きかん.
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall') and not mem.get('recall_skip')
+    assert not mem.get('recall')
     assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
     assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     assert p.camp_recall_step(changed_map, mem, FRAME) is None
+
+
+def test_a_blocked_occupant_holds_only_that_tent_when_the_view_keeps_changing(monkeypatch):
+    """g1097 07:28: an animated roofless view defeated the same-view suppression.
+
+    The tent was reopened every 7.5 seconds until the anonymous budget ran out,
+    and each pass kept the map away from the sortie orders.
+    """
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
+    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
+    changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
+    assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
+    p.camp_recall_step(camp_menu(1), mem, FRAME)
+    p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME)
+
+    from docich.hanjuku_pixels import Frame
+    rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
+    animated = Frame(FRAME.width, FRAME.height, bytes(rgb))
+    assert p.camp_recall_step(changed_map, mem, animated) is None
+    assert not mem.get('recall')
+    assert mem['retreat_anonymous_budget']['reads'] == 1
+
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (200, 90), 'clipped': False}])
+    assert p.camp_recall_step(Screen([], None, '', kind='map', cursor=(200, 90)), mem, animated) == [p.pad('a')]
+
+
+def test_reading_a_waiting_actor_on_its_own_tent_recalls_it_at_once(monkeypatch):
+    """g1097 07:28: the wait only exists to retry the tent the read just proved.
+
+    Refusing it pushed ``retry_after`` out on every pass, so グレナデン's named
+    retry never came due while the tent reopened beneath it.
+    """
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
+    mem = memory()
+    mem['retreat_rechecks']['ゼウス'].update(attempts=1, retry_after=mem['tick'] + 30)
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
+    changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
+    assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
+    assert mem['recall']['general'] == 'ゼウス' and mem['recall']['retreat_recheck'] is True
+    assert mem['recall']['named_status']['general'] == 'ゼウス'
+    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 2
 
 
 def test_anonymous_actual_other_actor_can_return_without_resetting_blocked_actor(monkeypatch):
@@ -331,6 +379,7 @@ def test_anonymous_checked_other_actor_uses_owned_picker_without_resetting_named
 
 
 def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     import json
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
@@ -354,6 +403,7 @@ def test_anonymous_status_does_not_switch_an_intended_hero_to_another_actor():
 
 
 def test_changing_unanchored_views_cannot_scan_an_exhausted_actor_forever(monkeypatch):
+    monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     from docich.hanjuku_pixels import Frame
     from docich import hanjuku_roster
     mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
@@ -366,6 +416,7 @@ def test_changing_unanchored_views_cannot_scan_an_exhausted_actor_forever(monkey
         assert p.camp_recall_step(MAP, mem, frame) == [p.pad('a')]
         assert p.camp_recall_step(camp_menu(1), mem, frame) == [p.pad('a')]
         assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, frame) == [p.pad('b')]
+        mem.pop('recall_skip', None)  # the budget is the bound once every hold has run out
     assert mem['retreat_anonymous_budget']['reads'] == hanjuku_roster.MAX_GENERALS
     for n in range(4):
         assert p.camp_recall_step(MAP, mem, changed(n + hanjuku_roster.MAX_GENERALS)) is None

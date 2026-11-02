@@ -29,22 +29,23 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
                 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
-                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
+                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
+                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
                 'sortie_confirm_miss',
-                'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
+                'world_map_tick', 'world_map_due', 'world_map_wait', 'world_map_close', 'home_lost',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs', 'hero_repair_deferral',
+                'goals', 'goals_overflow', 'goal_departed', 'map_idle_tick',
                 'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
                 'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle'):
         mem.pop(key, None)
     mem['chapter'] = chapter
     mem['chapter_evidence'] = evidence or 'header'

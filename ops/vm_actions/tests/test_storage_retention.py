@@ -74,6 +74,58 @@ class PreviewReleaseGcTests(unittest.TestCase):
         self.assertTrue(newest.exists())
 
 
+    def test_keep_one_retains_only_the_protected_clean_release(self):
+        oldest_sha, oldest, _ = self.make_release(1)
+        middle_sha, middle, _ = self.make_release(2)
+        newest_sha, newest, _ = self.make_release(3)
+
+        removed = gw._prune_preview_releases(self.cfg, "docich", newest_sha, keep=1)
+
+        self.assertEqual(sorted(removed), sorted([oldest_sha, middle_sha]))
+        self.assertFalse(oldest.exists())
+        self.assertFalse(middle.exists())
+        self.assertTrue(newest.exists())
+
+    def test_protected_release_is_never_removed_even_when_oldest(self):
+        oldest_sha, oldest, _ = self.make_release(1)
+        self.make_release(2)
+
+        removed = gw._prune_preview_releases(self.cfg, "docich", oldest_sha, keep=1)
+
+        self.assertNotIn(oldest_sha, removed)
+        self.assertTrue(oldest.exists())
+
+    def test_keep_one_still_preserves_dirty_release(self):
+        dirty_sha, dirty, _ = self.make_release(1, dirty=True)
+        newest_sha, newest, _ = self.make_release(2)
+
+        removed = gw._prune_preview_releases(self.cfg, "docich", newest_sha, keep=1)
+
+        self.assertNotIn(dirty_sha, removed)
+        self.assertTrue(dirty.exists(), "dirty release must stay fail-closed under keep=1")
+        self.assertTrue(newest.exists())
+
+    def test_non_sha_entries_and_symlinks_are_never_touched(self):
+        _, newest, _ = self.make_release(2)
+        newest_sha = newest.name
+        root = self.state / "releases" / "docich"
+        stray = root / "not-a-sha"
+        stray.mkdir()
+        link_target = self.base / "outside"
+        link_target.mkdir()
+        (root / ("a" * 40)).symlink_to(link_target, target_is_directory=True)
+
+        removed = gw._prune_preview_releases(self.cfg, "docich", newest_sha, keep=1)
+
+        self.assertEqual(removed, [])
+        self.assertTrue(stray.exists())
+        self.assertTrue(link_target.exists())
+
+    def test_default_retention_is_still_two_generations(self):
+        # The owner-gated flip to 1 must be a deliberate constant change.
+        self.assertEqual(gw.PREVIEW_RELEASE_KEEP, 2)
+
+
 class FilesystemStatusTests(unittest.TestCase):
     def test_reports_df_style_usage_without_paths_or_names(self):
         fake = SimpleNamespace(f_blocks=100, f_bfree=30, f_bavail=20, f_frsize=4096, f_files=1000, f_favail=250)

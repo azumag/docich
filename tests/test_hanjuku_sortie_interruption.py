@@ -116,15 +116,26 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert p.next_order(mem) == order
 
 
-def test_a_stale_or_unlisted_general_is_not_a_transit_arrival():
+def test_a_stale_general_listed_mid_route_is_a_transit_arrival():
+    """Owner 2026-11-02 (g1097): no sortie-age bound — a roster is only read
+    when the castle is visited, so a general listed mid-route is a transit
+    arrival no matter how long ago the sortie launched."""
     mem = memory(); mem['tick'] = 5000
     sortie = {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
               'source': 'スペンソニア', 'tick': mem['tick'] - p.SORTIE_BUSY_TICKS - 1}
     mem['sorties'] = {'A:1:J1': dict(sortie)}
-    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == []
-    mem['sorties']['A:1:J1']['tick'] = mem['tick'] - 1
+    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == ['A:1:J1']
+    assert mem['sorties']['A:1:J1']['status'] == 'arrived'
+    assert mem['sorties']['A:1:J1']['transit_to'] == 'けっかい'
+
+
+def test_an_unlisted_general_is_not_a_transit_arrival():
+    mem = memory(); mem['tick'] = 5000
+    sortie = {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
+              'source': 'スペンソニア', 'tick': mem['tick'] - 1}
+    mem['sorties'] = {'A:1:J1': dict(sortie)}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['リーキ']) == []
-    assert mem['sorties']['A:1:J1'] == {**sortie, 'tick': mem['tick'] - 1}
+    assert mem['sorties']['A:1:J1'] == sortie
 
 
 @pytest.mark.parametrize('words,expected', [(['ゼウス','どうし'], 'pending'),

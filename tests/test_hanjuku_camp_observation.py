@@ -26,6 +26,22 @@ def test_a_missing_current_tent_never_confirms_the_saved_screen_coordinate(monke
     assert not mem['recall_verification'].get('input_sent')
 
 
+def test_a_lost_tent_is_not_chased_again_until_the_skip_window_passes(monkeypatch):
+    # g1075 23:55-00:03: the same tent was found and lost 8 times in a row.
+    current = []
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: current)
+    mem = memory()
+    for _ in range(3):
+        assert p.camp_recall_step(MAP, mem, object()) == []
+    current.append({'target': (120, 60)})
+    mem['tick'] += 1
+    assert p.camp_recall_step(MAP, mem, object()) is None
+    assert 'recall' not in mem
+    mem['tick'] += p.RECALL_SKIP_TICKS
+    assert p.camp_recall_step(MAP, mem, object())
+    assert mem['recall']['stage'] == 'to_camp'
+
+
 def test_a_fresh_tent_replaces_the_old_coordinate_before_any_confirmation(monkeypatch):
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (150, 100)}])
     mem = memory()

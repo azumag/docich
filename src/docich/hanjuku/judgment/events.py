@@ -109,6 +109,69 @@ def _monster_damage_first(owner, ally, enemy, skills) -> bool:
             == [_fold_skill(s) for s in reference.MONSTER_SKILLS['なると']])
 
 
+def _monster_chikyu_choice(owner, ally, enemy, skills):
+    """ちきゅうちゃん's skill by opponent: 'skill2', 'skill1' or None (#3071).
+
+    wikiwiki hjksfc 攻撃データ: a self-destruct wipes a general and his
+    soldiers outright, hits a monster for the user's remaining HP and a boss
+    for 1/8 of its max HP. おめでとり's あたためる (g1075 10-29 14:13 to
+    10-30 06:05) won all six times against a lone general and left
+    スプリミョーネ alive at 08:44. ハルマゲドン at HP 1 and 47 left
+    ドラゴンフライ and ニンフ alive (10-30 08:08, 09:22) while だいじしん
+    halves both sides, so a known general takes ハルマゲドン, a monster or
+    boss だいじしん, and an unknown or unread panel keeps the old policy.
+    """
+    if not (owner == 'ally' and ally is not None and enemy is not None
+            and ally.name == 'ちきゅうちゃん'
+            and type(ally.hp) is int and ally.hp > 0
+            and type(enemy.hp) is int and enemy.hp > 0
+            and len(skills) == 2
+            and [_fold_skill(s) for s in skills]
+            == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ちきゅうちゃん']]):
+        return None
+    if _is_monster_opponent(enemy):
+        return 'skill1'
+    if reference.general_strength(enemy.name) is not None:
+        return 'skill2'
+    return None
+
+
+def _lampkin_menu(owner, ally, skills):
+    """Our ランプキン with its owned two-skill menu (へんなおどり, かぼちゃ)."""
+    return bool(owner == 'ally' and ally is not None and ally.name == 'ランプキン'
+                and len(skills) == 2
+                and [_fold_skill(s) for s in skills]
+                == [_fold_skill(s) for s in reference.MONSTER_SKILLS['ランプキン']])
+
+
+def _lampkin_forced_kind(enemy):
+    """Why かぼちゃ is pointless this turn: 'boss' or 'hp1', else None.
+
+    Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので「へんなおどり」
+    一択。相手のHPが1なら、そのまま押し切れるので「へんなおどり」一択。
+    """
+    if enemy is None:
+        return None
+    name = _monster_display_name(enemy.name)
+    if name in chart.BOSSES.values() or name in reference.BOSS_GENERALS:
+        return 'boss'
+    if type(enemy.hp) is int and enemy.hp == 1:
+        return 'hp1'
+    return None
+
+
+def _monster_lampkin_choice(owner, ally, enemy, skills):
+    """ランプキン takes へんなおどり (skill1) when かぼちゃ is pointless.
+
+    A chapter boss / named boss-general opponent, or an opponent left at 1 HP,
+    always takes skill1. Only an owned complete two-skill menu enables the
+    override; any other turn follows the かぼちゃ cycle in ``battle_menus``.
+    """
+    if not _lampkin_menu(owner, ally, skills) or _lampkin_forced_kind(enemy) is None:
+        return None
+    return 'skill1'
+
+
 def _monster_display_name(name):
     return _MONSTER_DISPLAY_ALIASES.get(name, name)
 

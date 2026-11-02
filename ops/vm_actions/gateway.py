@@ -441,7 +441,12 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
     return result
 
 
-def _prune_preview_releases(cfg,repo,protected_sha,keep=2):
+# Preview checkouts retained per repo, including the protected sha. Changing
+# this to 1 is owner-gated (docs/operations/gateway-state-retention-design.md):
+# it removes the one-generation rollback target that preview exec relies on.
+PREVIEW_RELEASE_KEEP=2
+
+def _prune_preview_releases(cfg,repo,protected_sha,keep=PREVIEW_RELEASE_KEEP):
     if not SHA_RE.fullmatch(protected_sha) or keep < 1:
         raise ValueError('invalid preview retention request')
     root=state_root(cfg)/'releases'/repo
@@ -825,7 +830,7 @@ def deploy_preview(cfg,repo,sha):
     if dest.exists():
         if git(dest,'rev-parse','HEAD')!=sha or not git_clean(dest):
             raise ValueError('preview drift detected')
-        removed=_prune_preview_releases(cfg,repo,sha)
+        removed=_prune_preview_releases(cfg,repo,sha,keep=PREVIEW_RELEASE_KEEP)
         return {'status':'staged','sha':sha,'pruned_releases':removed}
     dest.parent.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix='.incoming-preview-',dir=dest.parent))
@@ -843,7 +848,7 @@ def deploy_preview(cfg,repo,sha):
         os.rename(checkout,dest)
     finally:
         if temp.exists(): shutil.rmtree(temp,ignore_errors=True)
-    removed=_prune_preview_releases(cfg,repo,sha)
+    removed=_prune_preview_releases(cfg,repo,sha,keep=PREVIEW_RELEASE_KEEP)
     return {'status':'staged','sha':sha,'pruned_releases':removed}
 
 def deploy_git(cfg,repo,sha):

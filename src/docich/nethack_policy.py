@@ -447,7 +447,7 @@ def rest_action_for_hold(
 # ordinary contact attempt. If those reviewed routes are exhausted, the
 # resolver remains fail-closed rather than resting beside the creature; the
 # caller can then surface the blocked state for recovery planning.
-STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food"}
+STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food", "food_acquisition"}
 
 
 def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer) -> Action | None:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import random
 import re
+import sys
 import time
 from dataclasses import asdict
 
@@ -36,6 +37,7 @@ from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
 from .hanjuku import _compat
 from .hanjuku import decision_log as _decision_log, reporting as _reporting
 from .hanjuku.flows import (battle as _flow_battle, battle_menus as _flow_battle_menus,
+                            camp_recheck as _flow_camp_recheck,
                             deploy as _flow_deploy, egg_recovery as _flow_egg_recovery, map as _flow_map,
                             month as _flow_month, name as _flow_name, prompts as _flow_prompts,
                             recall as _flow_recall, shop as _flow_shop)
@@ -43,13 +45,14 @@ from .hanjuku.judgment import battle as _judgment_battle, events as _judgment_ev
 from .hanjuku.os_layer import (commands as _os_commands, navigation as _os_navigation,
                                readers as _os_readers, world as _os_world)
 from .hanjuku.strategy import (campaign as _strategy_campaign, economy as _strategy_economy,
-                               execution as _strategy_execution, kit as _strategy_kit,
+                               execution as _strategy_execution, goals as _strategy_goals,
+                               kit as _strategy_kit,
                                orders as _strategy_orders, replan as _strategy_replan)
 
 _LAYER_MODULES = (
     _decision_log,
     _os_readers, _os_world, _os_commands, _os_navigation,
-    _strategy_execution, _strategy_kit, _strategy_orders, _strategy_replan, _strategy_economy, _strategy_campaign,
+    _strategy_execution, _strategy_kit, _strategy_orders, _strategy_replan, _strategy_economy, _strategy_campaign, _strategy_goals,
     _judgment_battle, _judgment_events,
     _flow_name, _flow_map, _flow_recall, _flow_deploy, _flow_battle, _flow_battle_menus,
     _flow_month, _flow_egg_recovery, _flow_shop, _flow_prompts,
@@ -57,3 +60,115 @@ _LAYER_MODULES = (
 )
 
 _compat.install(__name__, _LAYER_MODULES)
+
+
+# A named retreat recheck deliberately stops after three UI attempts so a bad
+# roster/cursor cannot loop forever.  Previously that finite budget became a
+# permanent camp ban: the queue row remained at ATTEMPT_LIMIT and the same camp
+# could never be reconsidered until an unrelated new departure was observed.
+# Re-arm only pre-dispatch rows after a longer stale wait.  This starts the
+# measured named roster/SELECT/status flow again; it does not infer camp identity
+# from a screen coordinate and it never re-arms a sent/possibly-sent return A.
+EXHAUSTED_CAMP_RECHECK_REARM_TICKS = 120
+_camp_recheck_step_without_stale_rearm = _flow_camp_recheck.step
+
+
+def _rearm_exhausted_camp_rechecks(mem):
+    if mem.get('recall'):
+        return []
+    now = mem.get('tick')
+    if type(now) is not int or now < 0:
+        return []
+    queue = _flow_camp_recheck._scope(mem)
+    rearmed = []
+    for actor, row in queue.items():
+        if (row.get('status') not in ('needs_observation', 'anonymous_recheck_exhausted')
+                or row.get('attempts') != _flow_camp_recheck.ATTEMPT_LIMIT
+                or type(row.get('retry_after')) is not int
+                or now < row['retry_after'] + EXHAUSTED_CAMP_RECHECK_REARM_TICKS
+                or _flow_camp_recheck._arrival_request(mem, actor, row) is not None):
+            continue
+        previous_attempts = row['attempts']
+        row.update(attempts=0, retry_after=now, status='needs_observation')
+        rearmed.append(actor)
+        _decision_log._record(
+            mem, 'retreat_recheck_budget_rearmed', chart_step=None, general=actor,
+            observed_metric={'previous_attempts': previous_attempts, 'stale_until': now},
+            resulting_event='named_camp_recheck_allowed',
+            reason='本人再確認の有限予算を使い切ったまま長時間経過したため、現在の名簿と野営を再観測する予算を再アームする',
+        )
+    return rearmed
+
+
+def _camp_recheck_step_with_stale_rearm(screen, mem, frame, existing):
+    if (screen.kind == 'map' and frame is not None and not mem.get('recall') and not any(
+            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack'))):
+        _rearm_exhausted_camp_rechecks(mem)
+    return _camp_recheck_step_without_stale_rearm(screen, mem, frame, existing)
+
+
+_flow_camp_recheck.step = _camp_recheck_step_with_stale_rearm
+
+
+# v350 can re-arm a 四季王 step after its march/entry goes stale, but a retry
+# can still park when every cached garrison list says there is no legal
+# companion. Returning/recruited generals may have changed the real home
+# roster since that receipt. Force one bounded re-read of the home list so a
+# stale retry cannot be abandoned solely because of old roster evidence.
+BOSS_ROSTER_REPROBE_TICKS = 100
+_next_order_without_boss_roster_reprobe = next_order
+
+
+def _reprobe_stalled_season_boss_roster(mem) -> bool:
+    if mem.get('chapter') != 4:
+        return False
+    states = mem.get('orders') or {}
+    sorties = mem.get('sorties') or {}
+    sites = set(chart.boss_sites(4))
+    stalled = [order for order in chart.orders(4)
+               if order.get('target') in sites
+               and states.get(order['step']) == 'pending'
+               and (sorties.get(order['step']) or {}).get('status') == 'overdue'
+               and not _strategy_orders._site_king_down(mem, order['target'])]
+    if not stalled:
+        return False
+    if any(_strategy_orders._boss_companion_source(order, mem) is not None
+           for order in stalled):
+        return False
+
+    home = chart.home_castle(4)
+    if home not in _os_world._owned(mem):
+        return False
+    garrison = mem.setdefault('garrison', {})
+    if home not in garrison or garrison.get(home) is None:
+        return False
+
+    now = int(mem.get('tick') or 0)
+    last = mem.get('boss_roster_reprobe_tick')
+    if type(last) is int and now - last < BOSS_ROSTER_REPROBE_TICKS:
+        return False
+
+    previous = list(garrison.get(home) or ())
+    garrison.pop(home, None)
+    (mem.get('garrison_observed_at') or {}).pop(home, None)
+    mem['boss_roster_reprobe_tick'] = now
+    _decision_log._record(
+        mem, 'boss_roster_reprobe',
+        observed_metric={'home': home, 'cached_generals': previous,
+                         'stalled_steps': [order['step'] for order in stalled]},
+        reason='長時間停滞した四季王の再出撃候補が見つからないため、本城の将軍一覧を再確認する',
+    )
+    return True
+
+
+def _next_order_with_boss_roster_reprobe(mem):
+    order = _next_order_without_boss_roster_reprobe(mem)
+    if order is None and _reprobe_stalled_season_boss_roster(mem):
+        return _next_order_without_boss_roster_reprobe(mem)
+    return order
+
+
+# The compatibility facade deliberately forwards a rebinding to every layered
+# module still holding the old function object. Use that contract here so the
+# map flow and late imports both see the guarded next_order.
+setattr(sys.modules[__name__], 'next_order', _next_order_with_boss_roster_reprobe)

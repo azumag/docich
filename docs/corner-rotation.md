@@ -660,6 +660,28 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
+### clock-gap quarantine 中の半熟手動予約（clear-hanjuku-clock-quarantine）
+
+長時間の停止（now - last_seen_at > DAY）を検知した rotation は、cooldown の基準が
+信頼できないため clock_hold_until = now + DAY を保存し、clock-gap-quarantine で待機する。
+この間も queued_manual は保持されるが、timer は予約を処理しない。
+restart-service は state の hold を消さないため、これだけでは解除できない。
+
+canonical operator の固定 operation clear-hanjuku-clock-quarantine は、次を全て満たす
+時だけ clock_hold_until を削除する。ゲームの開始・停止・切替は行わない。
+
+- reason = clock-gap-quarantine
+- clock_hold_until が未来
+- status が running ではなく、pending / manual_pending が無い
+- last_seen_at が現在より未来でない（clock regression でない）
+- queued_manual.corner = hanjuku-hero
+
+解除後は reason = manual-clock-hold-cleared として保存し、既存の timer tick が
+通常の予約・program-slot・game-switch 境界契約を通して queue を処理する。
+clock_hold_until が無い・期限切れ・queue が別 corner の場合は解除せず、operator は非0で
+終了する。これは downtime の安全性を消すのではなく、owner が明示した1件の手動予約に限って
+hold を外す経路である。
+
 ### 予想王コーナー（`yoso` adapter、自動抽選＋手動予約）
 
 `config/docich.soren-live.toml` の catalog に `{ id = "yosou-oh", adapter = "yoso",

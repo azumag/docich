@@ -927,12 +927,18 @@ def test_boss_kit_is_never_dropped_while_a_card_may_be_hidden():
     screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'グリンボー'),
                                   stocks=('3', '1', '1', '1'))
     order = policy._order(mem)
+    # Owner 2026-11-02 (切り札不足でも延期しない, #3201): unproven stock does
+    # not defer the assault — each unselectable strict card is dropped after
+    # its bounded hold and the sortie continues to the confirmation.
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
-    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert not mem.get('card_drop')
-    assert policy._deploy_cards(order, mem) == ['クースカン', 'ノリウツール']
-    assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
+    assert mem['card_drop']['1-B1'] == ['クースカン']
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert mem['card_drop']['1-B1'] == ['クースカン', 'ノリウツール']
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert policy._deploy_cards(order, mem) == []
+    assert mem['active'] == '1-B1' and mem['orders'][order['step']] == 'pending'
 
 
 def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_ones():

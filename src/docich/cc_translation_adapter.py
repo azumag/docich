@@ -76,7 +76,9 @@ def dispatch_translator(spec: AgentSpec, env: Mapping[str, str]) -> Translator:
     snapshot = dict(env)
 
     def translate(prompt: str, timeout: float) -> tuple[str, str]:
-        request = DispatchRequest(label="cc-translation", prompt=prompt, agents=(spec,))
+        # Dedicated label: _direct_chat admits CC_TRANSLATION explicitly. It is
+        # not a COMMENT/RADIO lane and never reaches validate_label or dispatch().
+        request = DispatchRequest(label="CC_TRANSLATION", prompt=prompt, agents=(spec,))
         result = call_agent(spec, request, timeout=timeout, env=snapshot)
         if result.returncode == 0:
             return result.output, ""
@@ -167,9 +169,19 @@ def make_server(
     return ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
 
 
+def check_sarashina_startup(env: Mapping[str, str]) -> None:
+    """Fail before listening: valid pinned endpoint and a present API key (value never logged)."""
+    from .discord_chat import read_secret, sarashina_pin
+    sarashina_pin(env)
+    if not read_secret(env, "SARASHINA_RELAY_TOKEN"):
+        raise ValueError("sarashina API key is required")
+
+
 def main(env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     upstream = parse_upstream(env.get("DOCICH_CC_ADAPTER_UPSTREAM", ""))
+    if upstream.provider == "sarashina-api":
+        check_sarashina_startup(env)
     try:
         port = int(env.get("DOCICH_CC_ADAPTER_PORT", str(DEFAULT_PORT)))
         timeout = float(env.get("DOCICH_CC_ADAPTER_TIMEOUT_SEC", str(DEFAULT_TIMEOUT_SEC)))
