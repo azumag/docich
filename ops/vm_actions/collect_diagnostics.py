@@ -6663,7 +6663,13 @@ def _project_corner_state(data):
                            "audio-complete",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
-                           "operator-stopped-before-start"} else None),
+                           "operator-stopped-before-start",
+                           # #3174: the admission gate expires a hanjuku start
+                           # whose remaining budget cannot cover drain+probe;
+                           # without this entry the refusal would project as
+                           # null and be indistinguishable from an
+                           # unregistered reason.
+                           "start-budget-insufficient"} else None),
         "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
