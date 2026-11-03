@@ -901,3 +901,27 @@ def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
     assert r.forget_defeated(mem, NAMES[1]) is True
     assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
     assert r.LAST_COMPLETE_KEY in mem  # the card subtracts instead of showing 不明
+
+
+def test_monthly_roster_scan_runs_once_and_is_retained_for_the_month():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    _month_roster({'policy': mem})
+    marker = mem.get('month_roster_scan')
+    assert marker and marker['scope'] == [mem['chapter'], mem['month']]
+    # The retained receipt is the month's data, not a one-frame observation.
+    assert mem['recruit_roster']['complete'] is True
+    # A second monthly-menu visit does not start another scan. The level page
+    # (level_trigger) is a different visit and is intentionally not covered.
+    mem['hanjuku_level_seen'] = {'scope': [mem['chapter'], mem['month']]}
+    mem['shop'] = {'key': mem['month'], 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
+                   'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
+                   'recruit_reserve': 0, 'closed': True}
+    from test_hanjuku_chart_bot import month_canvas
+    from docich.hanjuku_screen import parse
+    before = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    frame = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(frame), mem, frame) is None
+    after = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    assert after == before
