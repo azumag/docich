@@ -967,6 +967,14 @@ def _step_once(screen, mem, frame):
             # still unread, the monthly visit runs for that page alone.
             level_trigger = (level_due and shop.get('key') == mem.get('month')
                              and bool(shop.get('level_scan_wait')))
+            # One monthly roster scan per chapter/month. The scan runs the
+            # moment the monthly menu is ready (before purchases/recruitment);
+            # a completed scan is retained for the month and never repeated,
+            # even after a join invalidates the live receipt. The country
+            # status page (level_trigger) is not a roster scan and stays.
+            if ((mem.get('month_roster_scan') or {}).get('scope') == scope
+                    and not level_trigger):
+                return None
             if (_recruit_sufficient(mem) or receipts.surveyed(mem)
                     or (receipts.fresh(mem)
                         and receipts.fresh(mem).get('complete'))) and not level_trigger:
@@ -1101,6 +1109,12 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'month_scan_complete', observed_metric={'roster_complete': complete,
                         'generals': state['seen'], 'observations': state.get('total')},
                         reason='当月の実一覧を確認して月初メニューへ戻る')
+                if complete:
+                    # Owner 2026-11-03: 月一メニューを開いた直後の1回だけ名簿を
+                    # 読み、その月は再スキャンしない。読み取った名簿は既存の
+                    # receipt/house_eggs に保持され、当月の判断と表示に使う。
+                    mem['month_roster_scan'] = {'scope': [mem.get('chapter'), mem.get('month')],
+                                                 'tick': int(mem.get('tick') or 0)}
             _finish(mem)
             return []
         if phase == 'month_open':
