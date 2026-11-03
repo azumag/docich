@@ -21,7 +21,7 @@ jobs:
       github.triggering_actor == 'azumag' &&
       github.event.issue.number == 2938 &&
       github.event.comment.user.id == 9018513 &&
-      startsWith(github.event.comment.body, '/tsuitate-status production hourly-')
+      startsWith(github.event.comment.body, '/tsuitate-status production ')
     environment: vm-operations
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -120,13 +120,10 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          [[ "$TSUITATE_RUN_ID" =~ ^hourly-[0-9]{10}$ ]]
+          [[ "$TSUITATE_RUN_ID" =~ ^(hourly-[0-9]{10}|background-[0-9]{20})$ ]]
           work="$RUNNER_TEMP/tsuitate-status"
           ssh_args=(-F /dev/null -T -p "$TSUITATE_STATUS_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
-          if ! (ulimit -f 32; timeout --kill-after=5s 30s ssh "${ssh_args[@]}" \
-              "$VM_SSH_USER@$VM_SSH_HOST" \
-              "tsuitate_status_query docich production $SHA $TSUITATE_RUN_ID" \
-              > "$work/output/status.json" 2> "$work/transport.stderr"); then
+          if ! (ulimit -f 32; timeout --kill-after=5s 30s ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "tsuitate_status_query docich production $SHA $TSUITATE_RUN_ID" > "$work/output/status.json" 2> "$work/transport.stderr"); then
             rm -f "$work/output/status.json"
             echo '::error::Tsuitate status query rejected or unavailable'
             exit 1
@@ -161,9 +158,7 @@ jobs:
           set -euo pipefail
           umask 077
           work="$RUNNER_TEMP/tsuitate-status"
-          timeout --kill-after=5s 20s \
-            python3 control/ops/vm_actions/tsuitate_public_replay_query.py \
-            > "$work/replay-reply.json"
+          timeout --kill-after=5s 20s python3 control/ops/vm_actions/tsuitate_public_replay_query.py > "$work/replay-reply.json"
 
       - name: Recheck current protected main before public replay reply
         if: steps.replay.outcome == 'success'
@@ -192,8 +187,7 @@ jobs:
           umask 077
           work="$RUNNER_TEMP/tsuitate-status"
           python3 control/ops/vm_actions/tsuitate_status_query_reply.py > "$work/reply.json"
-          gh api --method POST repos/azumag/docich/issues/2938/comments \
-            --input "$work/reply.json" > /dev/null
+          gh api --method POST repos/azumag/docich/issues/2938/comments --input "$work/reply.json" > /dev/null
 
       - name: Return bounded public replay facts to the control Issue
         if: steps.replay.outcome == 'success'
@@ -203,8 +197,7 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/tsuitate-status"
-          gh api --method POST repos/azumag/docich/issues/2938/comments \
-            --input "$work/replay-reply.json" > /dev/null
+          gh api --method POST repos/azumag/docich/issues/2938/comments --input "$work/replay-reply.json" > /dev/null
 
       - name: Fail when query did not succeed
         if: steps.status.outcome != 'success'
