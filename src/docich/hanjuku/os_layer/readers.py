@@ -57,8 +57,18 @@ def _month_dialog_unread(screen: Screen) -> bool:
     unknown tiles there; anything else unknown may be a choice.
     """
     rows = {line.y: line for line in screen.lines if line.y >= 167}
+    # The window's vertical frame reads as unknown tiles in its two outermost
+    # columns on every row (g1105 43-5: the month-end resume notice could never
+    # be advanced because x=0/x=248 looked like unread glyphs). An x used by an
+    # unknown cell on at least two rows at the observed extremes is the frame,
+    # not a glyph.
+    xs = [x for line in rows.values() for x, _ in line.cells]
+    edges = {min(xs), max(xs)} if xs else set()
+    border = {x for x in edges
+              if sum(1 for line in rows.values()
+                     if any(cx == x and ch == UNKNOWN for cx, ch in line.cells)) >= 2}
     for y, line in rows.items():
-        unknown = [x for x, ch in line.cells if ch == UNKNOWN]
+        unknown = [x for x, ch in line.cells if ch == UNKNOWN and x not in border]
         if not unknown:
             continue
         below = rows.get(y + 8)

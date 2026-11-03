@@ -128,7 +128,18 @@ def _month_army_count_check(screen, mem, shop):
             return [pad('b')]
         # g1097 43-3: a leftover plain-text message over the menu ignores B
         # and only A dismisses it; without this the check held [] forever.
-        return _month_text_advance(screen, mem, 'へいしほじゅう') or []
+        advance = _month_text_advance(screen, mem, 'へいしほじゅう')
+        if advance is not None:
+            return advance
+        # g1105 43-5: a foreground screen that can neither be closed nor
+        # advanced must not stay owned forever - army_count_owned kept the
+        # no-input escape suppressed and the menu froze until screen_stalled.
+        # Hold this tick, then release the check as 'unverified' so the next
+        # observation is handled like any other month-menu screen.
+        state['stage'] = 'unverified'
+        _record(mem, 'army_count_unverified', month=(state.get('scope') or [None, None, None])[-1],
+                reason='兵数確認の終了処理中の画面を有限回で閉じられないため所有を手放す。購入はしていない')
+        return []
     if state.get('stage') == 'quantity_requested':
         # The real stock question needs one A to reach the digit editor.
         # Repeating that A on a delayed editor could confirm its default 01.

@@ -89,6 +89,20 @@ def test_a_partly_unread_choice_is_not_plain_text():
     assert not any(r['decision'] == 'month_text_advance' for r in mem['_records'])
 
 
+def test_window_frame_columns_do_not_block_the_advance():
+    # g1105 43-5: the month-end resume notice's window frame read as unknown
+    # tiles at x=0/x=248 on every row; the advance held [] until screen_stalled.
+    from docich.hanjuku_font import TextLine, UNKNOWN
+    screen = menu(body='しじを おえたら これで せんとうさいかいですじゃ!')
+    screen.lines = [*screen.lines,
+                    TextLine(167, ((0, UNKNOWN), (248, UNKNOWN))),
+                    TextLine(191, ((0, UNKNOWN), (248, UNKNOWN)))]
+    mem = {'month': '43-5', '_records': []}
+    moves = stuck(mem, screen)
+    assert [policy.pad('a')] in moves
+    assert any(r['decision'] == 'month_text_advance' for r in mem['_records'])
+
+
 def test_a_fully_unread_row_that_is_not_voicing_marks_blocks_the_advance():
     from docich.hanjuku_font import TextLine, UNKNOWN
     screen = menu()
