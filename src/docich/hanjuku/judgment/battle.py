@@ -1470,6 +1470,66 @@ def _enemy_transformed(mem, cur):
     return False
 
 
+def _stale_army_melee_hold(mem, cur):
+    """Last-observed evidence that melee is still the better first move.
+
+    The live battle panel can be covered by the rescue/clash menu, so the
+    current-HP/soldiers markers go unread even though the last panel was
+    healthy and clearly ahead. Troops only decrease inside a battle, so the
+    last counts are upper bounds: credit us with none and the enemy with its
+    last observed total. This only delays the egg by one melee observation;
+    the caller bounds how often it may do so, and it never licences the
+    hero's last egg without a doubled margin.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if _enemy_transformed(mem, cur):
+        return None
+    ally, enemy_name = cur.get('ally'), cur.get('enemy')
+    if identity is None or not all(isinstance(n, str) for n in (ally, enemy_name)):
+        return None
+    # Only the stale case: a current panel has its own stricter rules.
+    if not (cur.get('card_soldiers_current') is not True or cur.get('card_hp_unread')
+            or cur.get('card_context_unclassified')):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum = general_max_hp('しゅじんこう' if ally == NAME else ally)
+    enemy_maximum = general_max_hp(enemy_name)
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
+            or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
+            or _own_egg_empty(mem, cur)
+            or any(type(n) is not int or not 0 <= n <= 6 for n in (ours, theirs))
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
+            or not enemy <= enemy_start <= enemy_maximum
+            or hp <= enemy or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS):
+        return None
+    if hp < start and (enemy >= enemy_start
+                       or (start - hp) * enemy_start > (enemy_start - enemy) * start):
+        return None
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if any(type(n) is not int or not 1 <= n <= 15 for n in (ac, ec)):
+        return None
+    own_force, enemy_force = hp, enemy + 10 * theirs
+    own_score, enemy_score = own_force * ac, enemy_force * ec
+    if own_force * 10 <= enemy_force * BEHIND_EGG_RATIO_TENTHS or own_score <= enemy_score:
+        return None
+    if ally == NAME and not (hp > 2 * enemy_force and own_score > 2 * enemy_score):
+        return None
+    return {'rule': 'stale_army_melee_hold', 'ally_hp': hp, 'enemy_hp': enemy,
+            'ally_max_hp': maximum, 'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+            'soldiers_last': [ours, theirs], 'ally_soldiers_min': 0,
+            'enemy_soldiers_max': theirs, 'ally_force_min': own_force,
+            'enemy_force_max': enemy_force, 'ally_melee_score_min': own_score,
+            'enemy_melee_score_max': enemy_score, 'army_basis': 'stale_upper_bounds'}
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
@@ -1479,13 +1539,16 @@ def _hold_melee_egg(mem, cur, labels):
     if (_enemy_transformed(mem, cur)
             or _critical_survival_needed(cur)
             or _own_egg_empty(mem, cur)
-            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('card_soldiers_current') is not True
             or cur.get('egg_battle') or mem.get('egg_battle')
             or cur.get('card_summon_observed')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS):
         return False
+    if (cur.get('card_soldiers_current') is not True
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')):
+        # The live panel is covered: the last observed counts are upper
+        # bounds, so only the conservative stale evidence may hold the egg.
+        return _stale_army_melee_hold(mem, cur) is not None
     if _healthy_melee_margin_evidence(mem, cur) is not None:
         return True
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')

@@ -22,6 +22,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
+                               _stale_army_melee_hold,
                                _migrate_card_evidence, _one_hit_lethal, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
@@ -247,6 +248,19 @@ def _survival_menu(screen, mem, cur):
                                                   or _melee_continuation_evidence(mem, cur)
                                                   or {'rule': 'healthy_melee_advantage'})},
                 reason='実HP・戦闘力と観測兵数または未読兵数の不利側境界で白兵優位のため卵を温存して戻る')
+        return [pad('b')]
+    stale = _stale_army_melee_hold(mem, cur) if 'たまごをつかう' in labels else None
+    if (stale is not None and type(rescue.get('stale_conserved', 0)) is int
+            and rescue.get('stale_conserved', 0) < 2):
+        # The live panel is covered but the last panel was healthy and clearly
+        # ahead. Return to melee and re-read the panel instead of spending an
+        # egg on an unread frame; bounded to two holds per battle.
+        rescue['stale_conserved'] = rescue.get('stale_conserved', 0) + 1
+        rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
+        _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur),
+                                 'conservation': stale},
+                reason='実パネルが未読でも最後の観測でHP・戦闘力・兵数が白兵優位のため卵を温存して戻る')
         return [pad('b')]
     rescue.pop('conserving_melee', None)
     if (critical and (egg_ready or (safe_card and 'きりふだ' in labels))
