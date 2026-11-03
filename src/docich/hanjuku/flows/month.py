@@ -1480,7 +1480,8 @@ def month_sub_step(screen: Screen, mem):
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
             if joined and joined[1] not in sub.setdefault('joined_names', []):
                 sub['joined_names'].append(joined[1])
-                from ..os_layer.roster import invalidate
+                from ..os_layer.roster import invalidate, record_join
+                record_join(mem, joined[1])  # keep a confirmed join in the count
                 invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},
