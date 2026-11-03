@@ -263,6 +263,55 @@ def _tally_status_open(mem, purpose, info, ticks=0):
         _tally(mem, 'status_fields_read', 'location')
 
 
+SORTIE_ATTEMPT_KEYS = 40  # distinct (target, purpose) pairs kept
+
+
+def _sortie_state_sig(mem, source, general):
+    """Issue #3326 (34): HP / in-castle / gold / soldiers at the source.
+
+    The state-change test the issue requires next to each retry: a retry
+    whose signature matches the previous attempt at the same (target,
+    purpose) had no new evidence, which is what the ≈0 gate must separate.
+    """
+    info = (mem.get('house_eggs') or {}).get(general) or {}
+    garrison = (mem.get('garrison') or {}).get(source)
+    return [info.get('hp'), info.get('location'), mem.get('gold'),
+            len(garrison) if isinstance(garrison, list) else None]
+
+
+def _tally_sortie_attempt(mem, target, purpose, outcome, sig):
+    """Issue #3326 (34 ①): one attempt = one terminal departure outcome.
+
+    Counting rule fixed before implementation (issue #3326 constraint): after
+    #3237 split the send journal, ``launched_unconfirmed`` (picker closed
+    with no journaled send) is the same visible event as a cancel and counts
+    as ``cancelled_unsent``; a released request counts separately as
+    ``released``; roster proof that the unit stayed counts as
+    ``cancelled_observed``. A whole obs_cost key is spent on this one entry
+    instead of several #3259-style counters, so the remaining TALLY_KEYS
+    budget is untouched; the inner by_key map is capped by
+    SORTIE_ATTEMPT_KEYS. Counts only; never read by a decision.
+    """
+    cost = mem.setdefault('obs_cost', {})
+    if 'sortie_retry' not in cost and len(cost) >= TALLY_KEYS:
+        return
+    entry = cost.setdefault('sortie_retry', {'n': 0, 'by_key': {}})
+    entry['n'] += 1
+    key = f'{target}|{purpose}'
+    rows = entry['by_key']
+    if key not in rows and len(rows) >= SORTIE_ATTEMPT_KEYS:
+        return
+    row = rows.setdefault(key, {'n': 0})
+    row['n'] += 1
+    row[outcome] = row.get(outcome, 0) + 1
+    if row.get('sig') is not None:
+        if list(sig) == row['sig']:
+            row['unchanged'] = row.get('unchanged', 0) + 1
+        else:
+            row['changed'] = row.get('changed', 0) + 1
+    row['sig'] = list(sig)
+
+
 def _tally_open_once(mem, state, purpose, info):
     """Issue #3194 (36): count a phase's first confirmed status read once.
 

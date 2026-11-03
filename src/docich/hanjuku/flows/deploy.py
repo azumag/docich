@@ -85,6 +85,11 @@ def _verify_sortie_source(screen, mem, order):
     cancelled = sortie['general'] in present
     sortie['status'] = 'cancelled' if cancelled else 'en_route'
     if cancelled:
+        from .house import _sortie_state_sig, _tally_sortie_attempt
+        # Issue #3326 (34): roster presence proves the unit stayed behind.
+        _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
+                              sortie.get('purpose'), 'cancelled_observed',
+                              _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
         _record_sortie_cancelled_observed(mem, order, sortie)
         status = (mem.get('orders') or {}).get(step)
         if status not in ('failed',):
