@@ -74,7 +74,7 @@ def test_original_failed_owner_requires_its_own_rolled_back_receipt(
         "game": "hanjuku-hero",
         "rotation_request_id": logical,
     })
-    receipt_path = base / "game-switch" / "receipts" / f"{logical}.json"
+    receipt_path = base / "game-switch" / "requests" / f"{logical}.json"
     original_receipt = s.op._object(receipt_path)
     atomic_write_json(receipt_path, dict(original_receipt, status="failed"))
     before_owner = (base / "retro_corner.json").read_bytes()
