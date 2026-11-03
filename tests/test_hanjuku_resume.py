@@ -1310,3 +1310,77 @@ def test_persistent_unrecognized_foreground_falls_back_to_source_chapter(setup):
     policy=read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy']
     assert policy['name']=={'done':True}
     resume.require_verified(s.spec)
+def _write_request(s, status, request_id='req-old', **extra):
+    resume._private_root(s.g)
+    record = {'status': status, 'request_id': request_id, 'start_policy': resume.START_POLICY}
+    record.update(extra)
+    atomic_write_json(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE, record)
+
+
+def test_rollback_transition_to_unconsumed_when_runtime_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == resume.ROLLED_BACK_UNCONSUMED
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+    assert stored['request_id'] == 'req-old'
+
+
+def test_rollback_transition_keeps_claimed_when_runtime_not_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=False)
+    assert result == 'claimed'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'claimed'
+
+
+def test_rollback_transition_keeps_verified_when_restore_succeeded(setup):
+    s = setup
+    _write_request(s, 'verified')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == 'verified'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'verified'
+
+
+def test_prepare_after_rollback_transition_succeeds(setup):
+    s = setup
+    # rolled-back-unconsumed は prepare() で pending 扱いにならず、
+    # 別 request_id の後続 prepare() が成功する
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare(s.g, s.game, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'prepared'
+
+
+def test_derived_attempt_is_refused_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed になった元 claim の派生 attempt（同一
+    # resume_request_id を名乗る startup_recovery 経路）は、request を消費
+    # できないため fail-closed で拒否される（新規 request ID での prepare
+    # だけが可能）。identity が一致していても status が resumable でない
+    # 限り通さない。
+    old_request_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED, request_id=old_request_id,
+                   startup_recovery={'original': {'request_id': old_request_id},
+                                     'attempt_id': attempt_id})
+    with pytest.raises(AdapterError, match='startup recovery identity mismatch'):
+        resume.prepare_start(
+            s.g,
+            dict(s.queue, request_id=attempt_id, resume_request_id=old_request_id),
+        )
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+
+
+def test_natural_rotation_prepare_start_succeeds_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed の後、自然 rotation 経路
+    # （resume_request_id なし）の新規 prepare_start が成功する。
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare_start(s.g, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'queued'

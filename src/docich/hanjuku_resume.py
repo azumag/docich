@@ -25,6 +25,7 @@ REQUEST_FILE = 'hanjuku_resume.json'
 RECEIPT_FILE = 'hanjuku_resume.json'
 MAX_BYTES = 64 * 1024 * 1024
 START_POLICY = 'terminal-boundary-v1'
+ROLLED_BACK_UNCONSUMED = 'rolled-back-unconsumed'
 
 
 def _start_mode(record):
@@ -463,6 +464,29 @@ def claim(adapter, deadline, cancel):
         atomic_write_json(spec.runtime_dir / RECEIPT_FILE, local)
         _persist_copy(sealed, spec.runtime_dir / 'states/hanjuku-hero.state')
         adapter._check_active(deadline, cancel, "claim")
+
+
+def transition_rollback_claim(g, *, runtime_stopped: bool = False) -> str | None:
+    """ロールバック後の claim 状態を遷移させる。
+
+    restore() が成功せず（REQUEST_FILE の status が 'claimed' のまま）、
+    かつ runtime 停止が確認できた場合のみ rolled-back-unconsumed に遷移し、
+    prepare() で pending 扱いしない（後続の prepare() が "another checkpoint
+    request is pending" で拒否されなくなる）。
+
+    runtime 停止が未確認の場合は現状どおり claimed のまま（recovery-required）
+    に留め、証拠のない解放は行わない（released-unverified と同じ原則）。
+    restore() 成功済み（status == 'verified'）の場合も遷移せず、claim を残す。
+    """
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if not prior or prior.get('status') != 'claimed':
+            return prior.get('status') if prior else None
+        if not runtime_stopped:
+            return 'claimed'
+        updated = dict(prior, status=ROLLED_BACK_UNCONSUMED)
+        atomic_write_json(root / REQUEST_FILE, updated)
+        return ROLLED_BACK_UNCONSUMED
 
 
 def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
