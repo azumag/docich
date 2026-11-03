@@ -213,3 +213,19 @@ def test_boolean_generation_one_is_not_an_integer_run_identity():
     confirm(mem); interrupt(mem); _flow(mem).pop('sortie_attempt')
     _world(mem)['launched_orders']['1-A3']['departure_binding']['identity']['generation'] = True
     assert p._order_for_step(mem, '1-A3') is None
+
+
+def test_reconciled_attempt_does_not_claim_a_repicked_pending_order():
+    """g1107 2026-11-03: a departure attempt reconciled into a sortie record
+    kept ``interrupted`` and its ``confirmation_tick`` after that sortie
+    resolved and the order returned to pending. ``execution_claimed`` still
+    resolved the re-picked step to None, so every castle menu was backed out
+    with a silent B and the same ``order_start`` looped (drought months
+    43-10..44-2, launches stuck at 3)."""
+    mem = memory(); confirm(mem); interrupt(mem)
+    assert _flow(mem)['sortie_attempt']['interrupted'] is True
+    # The launched march resolved; a retry put the step back to pending.
+    mem['sorties'] = {}
+    _world(mem)['launched_orders'] = {}
+    mem['orders']['1-A3'] = 'pending'
+    assert p._order_for_step(mem, '1-A3') is not None

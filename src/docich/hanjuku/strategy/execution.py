@@ -96,7 +96,8 @@ def execution_order(mem, step):
     context = (mem.get('order_context') or {}).get(step) or {}
     attempt = _flow(mem).get('sortie_attempt') or {}
     confirmed = context.get('departure_order')
-    if (attempt.get('step') == step and _valid_departure(confirmed, mem)
+    if (attempt.get('step') == step and not attempt.get('interrupted')
+            and _valid_departure(confirmed, mem)
             and type(attempt.get('confirmation_tick')) is int
             and attempt.get('confirmation_tick') == confirmed['departure_binding']['confirm_tick']):
         return {**deepcopy(confirmed), '_execution_bound': True}
@@ -136,9 +137,17 @@ def departure_snapshot(order, mem, general, source):
 
 
 def execution_claimed(mem, step):
-    """A stale tagged execution must not fall through to a new plan's actor."""
+    """A stale tagged execution must not fall through to a new plan's actor.
+
+    ``interrupted`` marks the attempt already reconciled into a sortie record
+    (flows.map.observe_sortie_transition): the launched record owns the claim
+    while it lives. Once that sortie resolves and the order is pending again,
+    the leftover attempt must not resolve the re-picked step to None - g1107
+    2026-11-03 looped order_start + silent B on every castle menu for months.
+    """
     attempt = _flow(mem).get('sortie_attempt') or {}
     snapshot = (_world(mem).get('launched_orders') or {}).get(step) or {}
-    return ((attempt.get('step') == step and 'confirmation_tick' in attempt)
+    return ((attempt.get('step') == step and 'confirmation_tick' in attempt
+             and not attempt.get('interrupted'))
             or ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
                 and 'departure_binding' in snapshot))
