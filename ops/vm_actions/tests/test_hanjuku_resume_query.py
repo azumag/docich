@@ -145,6 +145,13 @@ class WorkflowTests(unittest.TestCase):
             "rotation_execution_unverified", "rotation_invalid_state",
             "rotation_unexpected", "invalid_value", "missing_key", "type_mismatch",
             "dependency_unavailable", "adapter_failure", "resume_rejected",
+            "expected_reservation_required", "reservation_not_in_scope",
+            "invalid_evidence", "reservation_changed", "context_changed",
+            "gameplay_started", "startup_rollback_unverified", "switch_not_stable",
+            "newer_progress_unverified", "target_paused_or_unavailable",
+            "checkpoint_changed", "owner_not_terminal", "retry_exhausted",
+            "unsafe_state", "missing_evidence", "unreadable_evidence", "unsafe_lock",
+            "busy", "lock_unavailable", "runtime_resources_present",
             "transport_failure",
         ):
             self.assertIn(reason, text)
