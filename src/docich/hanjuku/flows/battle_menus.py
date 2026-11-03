@@ -17,7 +17,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
-                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT,
+                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, EGG_WALL_DAMAGE,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
