@@ -1310,3 +1310,47 @@ def test_persistent_unrecognized_foreground_falls_back_to_source_chapter(setup):
     policy=read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy']
     assert policy['name']=={'done':True}
     resume.require_verified(s.spec)
+def test_derived_attempt_refused_when_runtime_not_stopped(setup):
+    """Derived attempt is refused when runtime_stopped is not confirmed.
+    This verifies that without runtime_stopped confirmation, the system
+    retains claimed status (recovery-required) and does not transition
+    to rolled-back-unconsumed, allowing proper checkpoint rejection.
+    """
+    s = setup
+    _write_request(s, 'claimed')
+    from docich.hanjuku_resume import transition_rollback_claim
+    result = transition_rollback_claim(s.g, runtime_stopped=False)
+    assert result == 'claimed'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'claimed'
+    # Verify prepare after refused derived attempt fails with pending
+    ledger = s.manager.load(1000000.0)
+    ledger.update(status='running', pending=dict(ledger['pending'], source='manual', phase='dispatched'), queued_manual=None)
+    s.manager.save(ledger)
+    before = snapshot_recovery(s)
+    with pytest.raises(AdapterError, match='another checkpoint request is pending'):
+        resume.prepare_start(s.g, dict(s.queue, request_id=str(uuid.uuid4())))
+    assert snapshot_recovery(s) == before
+
+
+def test_natural_rotation_prepare_succeeds_after_rollback_transition(setup):
+    """After rollback transition to rolled-back-unconsumed, subsequent
+    natural rotation's prepare() succeeds (not rejected as pending).
+    This verifies the fix for #3174 where rolled-back-unconsumed
+    status allows new prepare calls to proceed.
+    """
+    s = setup
+    # First, transition to rolled-back-unconsumed with runtime_stopped=True
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == resume.ROLLED_BACK_UNCONSUMED
+    # Now attempt a new prepare for natural rotation
+    ledger = s.manager.load(1000000.0)
+    ledger.update(status='waiting', pending=None, queued_manual=None)
+    s.manager.save(ledger)
+    before = snapshot_recovery(s)
+    # New prepare with different request_id should succeed
+    resume.prepare(s.g, 'hanjuku-hero', dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'prepared'
+    assert snapshot_recovery(s) != before  # State changed
