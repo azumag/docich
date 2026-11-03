@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -49,6 +50,10 @@ MAX_TOP_PROCESSES = 20
 MAX_SPAWN_ROWS = 30
 MAX_OTHER_COMMS = 8
 MAX_CMDLINE_BYTES = 4096
+
+TELEMETRY_MAX_FILES = 8
+TELEMETRY_MAX_BYTES = 131072
+TELEMETRY_LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 OTHER_COMM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,15}$")
 OTHER_COMM_SECRET_MARKERS = (
@@ -187,6 +192,120 @@ def _load_registry_workers():
         return tuple(module.WORKERS)
     except Exception:  # registry is optional context; never fatal
         return ()
+
+
+def _load_agent_telemetry():
+    """Import the #3151 telemetry reader from the repo's src tree.
+
+    The profiler stays a single stdlib script; this is the one local module it
+    reads, and only when a telemetry directory is requested/present.
+    """
+    src = Path(__file__).resolve().parents[2] / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from docich.agent import telemetry as module
+    return module
+
+
+def _telemetry_label(value):
+    if isinstance(value, str) and TELEMETRY_LABEL_RE.fullmatch(value):
+        return value
+    return "redacted"
+
+
+def _telemetry_int(value, maximum=10**9):
+    if type(value) is not int or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _telemetry_float(value, maximum=10**6):
+    if isinstance(value, bool) or type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    value = float(value)
+    if value < 0 or value > maximum:
+        return None
+    return round(value, 6)
+
+
+def _telemetry_timestamp(value):
+    if isinstance(value, bool) or type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    value = float(value)
+    if value < 0 or value > 253402300799:
+        return None
+    return int(value)
+
+
+def read_telemetry(telemetry_dir):
+    """Project the fixed snapshots written by #3151 / #3287.
+
+    Only the fixed counter/timer allowlists and safe role/game labels are
+    emitted. A malformed, oversized, symlinked or foreign file is skipped, so
+    the profiler never republishes arbitrary state-dir JSON.
+    """
+    result = {"status": "absent", "snapshots": []}
+    if telemetry_dir is None:
+        return result
+    directory = Path(telemetry_dir)
+    try:
+        if not directory.is_dir():
+            return result
+        paths = list(directory.glob("*.json"))
+    except OSError:
+        return result
+
+    def _mtime(path):
+        try:
+            return path.lstat().st_mtime
+        except OSError:
+            return 0.0
+
+    # Newest first: the profiler is a bounded snapshot, and stale games from
+    # earlier corners must not crowd out the currently running one.
+    paths.sort(key=_mtime, reverse=True)
+    try:
+        module = _load_agent_telemetry()
+    except Exception:  # src tree not available: report it, never fail the sample
+        return {"status": "unavailable", "snapshots": []}
+    rows = []
+    for path in paths[:TELEMETRY_MAX_FILES]:
+        try:
+            info = path.lstat()
+            if path.is_symlink() or not 0 < info.st_size <= TELEMETRY_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        data = module.load_snapshot(path)
+        if not isinstance(data, dict):
+            continue
+        counters = data.get("counters")
+        seconds = data.get("seconds")
+        row = {
+            # #3151 snapshots predate the role field; they are agent snapshots.
+            "role": (data.get("role", "agent") if data.get("role", "agent") in module.ROLES
+                     else "unknown"),
+            "game": _telemetry_label(data.get("game")),
+            "brain": _telemetry_label(data.get("brain")),
+            "counters": {},
+            "seconds": {},
+        }
+        if isinstance(counters, dict):
+            for key in module.COUNTERS:
+                value = _telemetry_int(counters.get(key))
+                if value is not None:
+                    row["counters"][key] = value
+        if isinstance(seconds, dict):
+            for key in module.TIMERS:
+                value = _telemetry_float(seconds.get(key))
+                if value is not None:
+                    row["seconds"][key] = value
+        written_at = _telemetry_timestamp(data.get("written_at"))
+        if written_at is not None:
+            row["written_at"] = written_at
+        rows.append(row)
+    rows.sort(key=lambda r: (r["role"], r["game"], r["brain"]))
+    return {"status": "ok" if rows else "empty", "snapshots": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +630,7 @@ def _round(value, digits=2):
 
 
 def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep,
-           monotonic=time.monotonic):
+           monotonic=time.monotonic, telemetry_dir=None):
     clk_tck = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
     ncpu = os.cpu_count() or 1
     workers = _load_registry_workers()
@@ -655,6 +774,7 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
         "other_comms": other_rows[:MAX_OTHER_COMMS],
         "other_comms_truncated": max(len(other_rows) - MAX_OTHER_COMMS, 0),
         "top_processes": top_rows,
+        "telemetry": read_telemetry(telemetry_dir),
     }
 
 
@@ -720,6 +840,20 @@ def render_text(report):
     if report["spawns"]:
         lines += ["", "spawned in window (component <- spawner):"]
         lines += [f"  {s['count']:>5}  {s['component']} <- {s['spawner']}" for s in report["spawns"]]
+    telemetry = report.get("telemetry") or {}
+    snapshots = telemetry.get("snapshots") or []
+    if snapshots:
+        lines += ["", "agent telemetry (fixed counters):"]
+        for row in snapshots:
+            counters = row.get("counters") or {}
+            seconds = row.get("seconds") or {}
+            lines.append(
+                f"  {row['role']:<6} {row['game']:<16} "
+                f"cycles={counters.get('cycles', 0)} captures={counters.get('captures', 0)} "
+                f"capture_spawns={counters.get('capture_spawns', 0)} "
+                f"brain_spawns={counters.get('brain_spawns', 0)} "
+                f"capture_s={seconds.get('capture_s', 0)}"
+            )
     return "\n".join(lines)
 
 
@@ -736,6 +870,21 @@ def _default_soren_root():
     return candidate if candidate.is_dir() else None
 
 
+def _default_telemetry_dir():
+    """Find the state-dir telemetry written by #3151/#3287, if present.
+
+    Production uses the repo-relative ``run-soren-live`` state dir; the local
+    default is ``run``. The profiler only reads, so a missing directory is
+    reported as absent rather than created.
+    """
+    root = Path(__file__).resolve().parents[2]
+    for rel in ("run-soren-live/agent_telemetry", "run/agent_telemetry"):
+        candidate = root / rel
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -746,6 +895,9 @@ def main(argv=None):
     p_sample.add_argument("--warmup", type=float, default=0.0)
     p_sample.add_argument("--soren-root", default=None,
                           help="soviet_now root for worker pid files (default: /home/ubuntu/soren if present)")
+    p_sample.add_argument("--telemetry-dir", default=None,
+                          help="directory with agent_telemetry/*.json snapshots "
+                               "(default: run-soren-live/agent_telemetry or run/agent_telemetry if present)")
     p_sample.add_argument("--proc-root", default="/proc", help=argparse.SUPPRESS)
     p_sample.add_argument("--json", action="store_true", help="print JSON instead of a table")
     p_sample.add_argument("--output", default=None, help="also write the JSON report to this path")
@@ -766,9 +918,11 @@ def main(argv=None):
     interval = _clamp(args.interval, MIN_INTERVAL, MAX_INTERVAL)
     warmup = _clamp(args.warmup, 0.0, MAX_WARMUP)
     soren_root = Path(args.soren_root) if args.soren_root else _default_soren_root()
+    telemetry_dir = Path(args.telemetry_dir) if args.telemetry_dir else _default_telemetry_dir()
     if warmup:
         time.sleep(warmup)
-    report = sample(Path(args.proc_root), duration, interval, soren_root, args.scenario)
+    report = sample(Path(args.proc_root), duration, interval, soren_root, args.scenario,
+                    telemetry_dir=telemetry_dir)
     if args.output:
         Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")

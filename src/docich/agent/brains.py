@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 
 from .. import procs
+from . import telemetry as telemetry_mod
 from ..actions import Action, ActionError, extract_json, parse_actions
 from ..adapters import AdapterError, Observation
 from ..config import GameConfig, GlobalConfig
@@ -72,6 +73,7 @@ class CommandBrain:
                 "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": match_index,
             }
         try:
+            telemetry_mod.active().count("brain_spawns")
             result = procs.run(
                 self.cmd,
                 env_extra=env_extra,

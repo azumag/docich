@@ -2509,7 +2509,25 @@ class RetroCornerManager:
 
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
         if self._scripted_hanjuku(state):
-            return self._wait_hanjuku(state)
+            # #3287: the corner monitor is a separate process from the agent,
+            # so it binds its own fixed-path snapshot (role=corner). Off means
+            # DISABLED: no file and no behaviour change.
+            from .agent import telemetry as telemetry_mod
+            tel = telemetry_mod.AgentTelemetry.from_env(
+                self.g.state_dir, 'hanjuku-hero', 'corner', role='corner')
+            telemetry_mod.set_active(tel)
+            try:
+                return self._wait_hanjuku(state)
+            finally:
+                # Flush the corner's own snapshot, then unbind. A state-write
+                # failure is logged and never changes the corner result.
+                try:
+                    tel.flush(force=True)
+                except OSError as exc:
+                    print(f"[retro-corner] 警告: telemetry の書き出しに失敗しました: {exc}",
+                          flush=True)
+                finally:
+                    telemetry_mod.set_active(telemetry_mod.DISABLED)
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
@@ -2572,6 +2590,7 @@ class RetroCornerManager:
     def _wait_hanjuku(self, state):
         """No fixed session deadline: observe until game-over or 300s stasis."""
         from .adapters import make_adapter
+        from .agent import telemetry as telemetry_mod
         from .agent.fence import AgentFence, shared_section
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
@@ -2633,6 +2652,9 @@ class RetroCornerManager:
                 self._sleep(2.)
                 continue
             not_ready = 0
+            # Persist the corner's fixed capture/spawn counters at the same
+            # throttled cadence as the agent (#3287); off is a no-op.
+            telemetry_mod.flush_active()
             run = observation.meta.get('hanjuku') or {}
             runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
             # #1469: durably publish the Hanjuku logic generation this corner is
