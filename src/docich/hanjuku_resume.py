@@ -632,15 +632,25 @@ def restore(adapter, deadline, cancel):
     dialogue_without_chapter = False
     message_without_chapter = False
     menu_without_chapter = False
+    unknown_without_chapter = False
+    unknown_screen_polls = 0
+    # Polls that return no paused frame or an unparseable screen keep waiting:
+    # a loading transition can still become a chapter-bearing frame. Only
+    # consecutive parses of a stable, unrecognized foreground give up and fall
+    # back to the source-run chapter (g1102/g1104 livelock: an unrecognized
+    # screen burned the whole restore budget on every retry).
+    _UNKNOWN_SCREEN_POLL_LIMIT = 120
     inherited = source_chapter(adapter.g.state_dir, request)
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
            and not ritual_without_chapter and not battle_menu_without_chapter
            and not gift_without_chapter and not dialogue_without_chapter
-           and not message_without_chapter and not menu_without_chapter):
+           and not message_without_chapter and not menu_without_chapter
+           and not unknown_without_chapter):
         adapter._check_active(deadline, cancel, "restore")
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
         if not reply or not reply.startswith('GET_STATUS PAUSED '):
+            unknown_screen_polls = 0
             continue
         adapter._require_paused(deadline, cancel)
         XKit(native['display']).screenshot(capture, native['width'], native['height'],
@@ -679,6 +689,10 @@ def restore(adapter, deadline, cancel):
             # notice (「かんじゅくプリンスじょうは…」) and the wait ran out the
             # deadline. The source run still proves the chapter.
             message_without_chapter = True
+        else:
+            unknown_screen_polls += 1
+            if unknown_screen_polls >= _UNKNOWN_SCREEN_POLL_LIMIT:
+                unknown_without_chapter = True
     if chapter is None:
         chapter = source_chapter(adapter.g.state_dir, request)
     # These verified chapterless panels seed only their measured foreground

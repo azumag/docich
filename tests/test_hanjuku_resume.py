@@ -1296,3 +1296,17 @@ def test_detached_claimed_recovers_with_own_interrupted_owner(recovery_setup):
     assert result['status']=='recovery-queued'
     queued=s.manager.load(1000000.0)['queued_manual']
     assert queued['resume_request_id']==s.queue['request_id']
+
+
+def test_persistent_unrecognized_foreground_falls_back_to_source_chapter(setup):
+    # g1102/g1104: a claimed checkpoint restored to a screen the parser cannot
+    # classify, so the chapter wait burned the whole 60s restore budget and
+    # the switch rolled back on every retry. A stable unrecognized foreground
+    # must still resume with the source-run chapter evidence instead.
+    s=setup
+    commands,writes=restore_test(s,chapter=None,kind='unclassified_modal',seconds=30)
+    receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified'
+    policy=read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy['name']=={'done':True}
+    resume.require_verified(s.spec)
