@@ -70,14 +70,29 @@ def _worker_running(root, name):
 
 
 def _prediction_in_flight(state_dir: Path) -> bool:
-    """True only while the prediction worker runs an ACTIVE/LOCKED prediction."""
+    """True while the prediction worker runs an unresolved prediction.
+
+    docich#3335 (B): the soviet_now writer never puts ``status`` in the state
+    file — it only writes one after verifying the remote prediction is
+    ACTIVE, and it deletes the file at resolution. So a well-formed file
+    (non-empty ``prediction_id`` plus at least two ``outcome_ids``; a
+    ``created_at`` of 0 is fine because the recovered state writes that) is
+    itself an in-flight record. When ``status`` IS present the strict
+    contract applies: only ACTIVE/LOCKED counts, so a future writer that
+    records terminal statuses (RESOLVED/CANCELED) stays correct.
+    """
     if not _worker_running(state_dir, PREDICTION_WORKER):
         return False
     try:
         state = json.loads((state_dir / PREDICTION_STATE_FILE).read_text())
     except (OSError, ValueError):
         return False
-    return isinstance(state, dict) and state.get('status') in PREDICTION_ACTIVE_STATUSES
+    if not isinstance(state, dict):
+        return False
+    if 'status' in state:
+        return state.get('status') in PREDICTION_ACTIVE_STATUSES
+    outcomes = state.get('outcome_ids')
+    return bool(state.get('prediction_id')) and isinstance(outcomes, list) and len(outcomes) >= 2
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
@@ -108,7 +123,8 @@ def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
     Two conditions hold a corner back:
 
     - an in-flight prediction (only while the prediction worker actually runs,
-      so a stopped worker never blocks the corners forever), and
+      so a stopped worker never blocks the corners forever; a well-formed
+      state file without ``status`` counts as in-flight per docich#3335), and
     - a non-empty shared comment/audio queue (queued or playing item).
 
     Improvement cycles and interleaved A/B are not gated: the match/round
