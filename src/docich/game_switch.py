@@ -4695,6 +4695,15 @@ class GameSwitchCoordinator:
                         updates={"candidate": None},
                         crash_hook=self.crash_hook,
                     )
+                # 案c: hanjuku-hero の rollback 後、restore() 未成功かつ runtime
+                # 停止確認済みの場合のみ rolled-back-unconsumed に遷移し、
+                # prepare() で pending 扱いしない。runtime 停止未確認時は
+                # claimed のまま（recovery-required）。
+                if candidate.get("game") == "hanjuku-hero":
+                    from .hanjuku_resume import transition_rollback_claim
+                    from types import SimpleNamespace
+                    _g = SimpleNamespace(state_dir=self.store.state_dir)
+                    transition_rollback_claim(_g, runtime_stopped=True)
 
         state, _migrated = self.store.canonical.load()
         previous = state.get("previous") or state.get("active")
