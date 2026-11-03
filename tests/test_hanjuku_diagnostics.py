@@ -323,3 +323,30 @@ def test_recent_decisions_are_fixed_tokens_only(tmp_path):
     assert [row['strategy_variant'] for row in recent] == ['sortie_menu_unclassified', None]
     text = json.dumps(out, ensure_ascii=False)
     assert 'DO NOT EMIT' not in text and '3-Z1' not in text
+
+
+def test_sortie_launch_stall_detected(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'decision', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 100 + i}
+        for i in range(4)]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 4, 'order_launched': 0, 'stalled': True}
+
+
+def test_sortie_launch_not_stalled_when_launched(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['order_start', 'order_start', 'order_start', 'order_launched']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 3, 'order_launched': 1, 'stalled': False}
