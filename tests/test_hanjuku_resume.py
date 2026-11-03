@@ -714,3 +714,48 @@ def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup
         'name':{'done':True},'resume_chapter_pending':True,
         'resume_battle_menu':{'readings':0}}}
     assert setup.source.read_bytes()==compressed(state_bytes())
+
+
+def _write_request(s, status, request_id='req-old', **extra):
+    resume._private_root(s.g)
+    record = {'status': status, 'request_id': request_id, 'start_policy': resume.START_POLICY}
+    record.update(extra)
+    atomic_write_json(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE, record)
+
+
+def test_rollback_transition_to_unconsumed_when_runtime_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == resume.ROLLED_BACK_UNCONSUMED
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+    assert stored['request_id'] == 'req-old'
+
+
+def test_rollback_transition_keeps_claimed_when_runtime_not_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=False)
+    assert result == 'claimed'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'claimed'
+
+
+def test_rollback_transition_keeps_verified_when_restore_succeeded(setup):
+    s = setup
+    _write_request(s, 'verified')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == 'verified'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'verified'
+
+
+def test_prepare_after_rollback_transition_succeeds(setup):
+    s = setup
+    # rolled-back-unconsumed は prepare() で pending 扱いにならず、
+    # 別 request_id の後続 prepare() が成功する
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare(s.g, s.game, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'prepared'
