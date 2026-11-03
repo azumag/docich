@@ -474,6 +474,17 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                                       and owner.get('startup_resume_recovery') == attempt)))
                 or (automatic and released_proven and terminal_owner)
                 or (interrupted_release and owns_failure and owner.get('status') == 'interrupted')
+                # A manual claimed original whose dispatch died before the
+                # corner became active leaves an interrupted owner keyed by
+                # the same logical request, marked with the pre-AI terminal
+                # reason. The earlier gates already proved rolled-back
+                # termination, absent gameplay files and released runtime
+                # resources for this exact transfer, so that retired owner
+                # must not strand the recovery the way a live or failed owner
+                # would (g1099 2026-11-03).
+                or (detached_claimed and owns_failure
+                    and owner.get('status') == 'interrupted'
+                    and owner.get('end_reason') == 'switch-terminal-before-corner-active')
                 or ((unclaimed_release or unclaimed is not None) and owns_unclaimed)
                 or ((detached_claimed or recovered_pending) and foreign_terminal_owner)):
             raise CancelRefused('owner_not_terminal')
