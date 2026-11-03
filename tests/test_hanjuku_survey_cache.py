@@ -828,3 +828,37 @@ def test_leave_roster_tallies_roster_completeness_and_observations():
     rec = next(r for r in mem['_records'] if r['decision'] == 'house_scan_complete')
     # total counts this closing observation too: 17 earlier + the map frame.
     assert rec['observed_metric']['observations'] == 18
+
+
+# ---- Issue #3326 (34 ①): sortie attempts per (target, purpose) ----
+def test_sortie_attempt_tally_counts_outcomes_and_state_change():
+    mem = {'gold': 250, 'garrison': {'城A': ['ゼウス', 'どうし']},
+           'house_eggs': {'ゼウス': {'hp': 80, 'location': 'castle'}}}
+    sig = house._sortie_state_sig(mem, '城A', 'ゼウス')
+    assert sig == [80, 'castle', 250, 2]
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', sig)
+    # Same key, identical signature: an unchanged retry (what #34 hunts).
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    # Changed signature: legitimate re-confirmation, not a blind retry.
+    mem['gold'] = 100
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent',
+                                house._sortie_state_sig(mem, '城A', 'ゼウス'))
+    # A different purpose at the same fort is a different key.
+    house._tally_sortie_attempt(mem, '砦B', 'move', 'released',
+                                house._sortie_state_sig(mem, '城A', 'ゼウス'))
+    rows = mem['obs_cost']['sortie_retry']
+    assert rows['n'] == 4
+    attack = rows['by_key']['砦B|attack']
+    assert attack['n'] == 3
+    assert attack['departed'] == 1 and attack['cancelled_unsent'] == 2
+    assert attack['unchanged'] == 1 and attack['changed'] == 1
+    assert rows['by_key']['砦B|move']['released'] == 1
+
+
+def test_sortie_attempt_keys_stay_bounded():
+    mem = {}
+    for i in range(house.SORTIE_ATTEMPT_KEYS + 5):
+        house._tally_sortie_attempt(mem, f'砦{i}', 'attack', 'departed', [1, 'castle', 0, 0])
+    entry = mem['obs_cost']['sortie_retry']
+    assert entry['n'] == house.SORTIE_ATTEMPT_KEYS + 5
+    assert len(entry['by_key']) == house.SORTIE_ATTEMPT_KEYS

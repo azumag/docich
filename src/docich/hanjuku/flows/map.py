@@ -95,6 +95,12 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             # A journaled A plus the field map returning is the departure
             # observation: only now may the reservation become world state,
             # never at decision time (docich#3193 A).
+            from .house import _sortie_state_sig, _tally_sortie_attempt
+            # Issue #3326 (34): one attempt closes as 'departed' here.
+            _tally_sortie_attempt(mem, request.get('target') or order['target'],
+                (request.get('snapshot') or {}).get('purpose') or order.get('purpose'),
+                'departed',
+                _sortie_state_sig(mem, request.get('source'), request.get('general')))
             _commit_departure(mem, order, request['context'], request['snapshot'])
             attempt['interrupted'] = True
             mem.pop('expect_menu', None)
@@ -122,6 +128,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         'tick': int(mem.get('tick') or 0),
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
            if 'departure_binding' in snapshot else {})}
+    from .house import _sortie_state_sig, _tally_sortie_attempt
+    # Issue #3326 (34): no journaled send before the picker closed = a cancel.
+    _tally_sortie_attempt(mem, order['target'], order.get('purpose'),
+                          'cancelled_unsent',
+                          _sortie_state_sig(mem, snapshot['source'], general))
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
                   reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')
@@ -933,6 +944,12 @@ def _release_departure_request(mem, order, request, reason):
     step = order['step']
     flow(mem).pop('departure_request', None)
     _flow(mem).pop('sortie_attempt', None)
+    from .house import _sortie_state_sig, _tally_sortie_attempt
+    # Issue #3326 (34): a released request is its own outcome, not a cancel.
+    _tally_sortie_attempt(mem, request.get('target') or order['target'],
+        (request.get('snapshot') or {}).get('purpose') or order.get('purpose'),
+        'released',
+        _sortie_state_sig(mem, request.get('source'), request.get('general')))
     misses = flow(mem).setdefault('departure_miss', {})
     misses[step] = int(misses.get(step) or 0) + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
