@@ -498,6 +498,36 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
         return {'status': 'recovery-queued', 'fingerprint': digest}
 
 
+# Fixed refusal tokens -> stable exit codes. The owner workflow only reads the
+# gateway exit code (stdout stays in the VM-private exec log), so mapping the
+# fixed CancelRefused token to a distinct code is the only way an operator can
+# tell which reviewed gate refused without exposing private state.
+_REFUSAL_EXITS = {
+    'busy': 90,
+    'checkpoint_changed': 91,
+    'clock_regressed': 92,
+    'context_changed': 93,
+    'expected_reservation_required': 94,
+    'gameplay_started': 95,
+    'invalid_evidence': 96,
+    'lock_unavailable': 97,
+    'manual_queue_conflict': 98,
+    'missing_evidence': 99,
+    'newer_progress_unverified': 100,
+    'owner_not_terminal': 101,
+    'reservation_changed': 102,
+    'reservation_not_in_scope': 103,
+    'retry_exhausted': 104,
+    'runtime_resources_present': 105,
+    'startup_rollback_unverified': 106,
+    'switch_not_stable': 107,
+    'target_paused_or_unavailable': 108,
+    'unreadable_evidence': 109,
+    'unsafe_lock': 110,
+    'unsafe_state': 111,
+}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('check', 'recover', 'retry'))
@@ -512,9 +542,11 @@ def main(argv=None):
                 result = {'status': 'noop'}
         else:
             result = recover(g, expected=args.expected, apply=args.mode == 'recover')
-    except Exception:
+    except Exception as exc:
         # Never publish raw exception text, private checkpoint paths or bytes.
         print(json.dumps({'status': 'refused'}))
+        if isinstance(exc, CancelRefused):
+            return _REFUSAL_EXITS.get(str(exc), 77)
         return 77
     print(json.dumps(result, separators=(',', ':')))
     return 0

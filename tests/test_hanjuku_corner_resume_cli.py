@@ -63,3 +63,27 @@ def test_fresh_start_does_not_touch_checkpoint_recovery(monkeypatch):
     assert result["status"] == "queued"
     assert calls["recovery"] == 0
     assert calls["queue"] == [("hanjuku-hero", {})]
+
+def test_retry_cli_maps_fixed_refusal_tokens_to_exit_codes(monkeypatch):
+    from docich import hanjuku_resume_recovery as recovery_module
+    from docich.hanjuku_manual_cancel import CancelRefused
+
+    monkeypatch.setattr(recovery_module, 'queue_failed_start',
+                        lambda g: (_ for _ in ()).throw(CancelRefused('owner_not_terminal')))
+    assert recovery_module.main(['retry']) == 101
+
+    monkeypatch.setattr(recovery_module, 'queue_failed_start',
+                        lambda g: (_ for _ in ()).throw(CancelRefused('gameplay_started')))
+    assert recovery_module.main(['retry']) == 95
+
+    monkeypatch.setattr(recovery_module, 'queue_failed_start',
+                        lambda g: (_ for _ in ()).throw(CancelRefused('unlisted_reason')))
+    assert recovery_module.main(['retry']) == 77
+
+
+def test_retry_cli_non_refusal_error_keeps_generic_exit(monkeypatch):
+    from docich import hanjuku_resume_recovery as recovery_module
+
+    monkeypatch.setattr(recovery_module, 'queue_failed_start',
+                        lambda g: (_ for _ in ()).throw(RuntimeError('boom')))
+    assert recovery_module.main(['retry']) == 77
