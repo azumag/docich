@@ -350,3 +350,44 @@ def test_sortie_launch_not_stalled_when_launched(tmp_path):
     out = d._collect_hanjuku_tactical(tmp_path, 110)
     launch = out['policy']['sortie_launch']
     assert launch == {'order_start': 3, 'order_launched': 1, 'stalled': False}
+
+
+def test_camp_tail_counts_camp_decisions(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['camp_found', 'camp_enter', 'camp_recall_aborted', 'camp_recall_aborted']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['policy']['camp'] == {'counts': {
+        'camp_found': 1, 'camp_enter': 1, 'camp_recall_aborted': 2}}
+
+
+def test_recall_projection_reports_an_armed_retry_window(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall_skip': {'tick': 460}, 'recall_skip_ticks': 120,
+                             'recall_retry': {'count': 2},
+                             'retreat_rechecks': {'first': {}, 'second': {}},
+                             'retreat_anonymous_budget': {'reads': 9}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    recall = d._collect_hanjuku_tactical(tmp_path, 110)['policy']['recall']
+    assert recall['state'] == 'idle'
+    assert recall['skip'] == {'age': 40, 'window': 120, 'retry': 2}
+    assert recall['queue'] == 2 and recall['anonymous_reads'] == 9
+
+
+def test_recall_projection_reports_the_stage_and_keeps_names_private(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall': {'stage': 'to_camp', 'steps': 3,
+                                        'target': [120, 80], 'general': 'private-general'}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recall = out['policy']['recall']
+    assert recall == {'state': 'recalling', 'stage': 'to_camp', 'steps': 3,
+                      'named': False, 'hero': False, 'target': [120, 80]}
+    assert 'private-general' not in json.dumps(out, ensure_ascii=False)
+

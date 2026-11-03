@@ -11727,6 +11727,80 @@ def _hanjuku_sortie_launch(rows):
             'stalled': starts >= 3 and launched == 0}
 
 
+HANJUKU_CAMP_DECISIONS = frozenset({
+    'camp_found', 'camp_enter', 'camp_menu_not_opened', 'camp_menu_unread',
+    'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
+    'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
+    'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
+    'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
+})
+
+
+def _hanjuku_camp_tail(rows):
+    """Bounded camp events in the same decision tail as ``sortie_launch``.
+
+    The last-eight window is dominated by ``action_plan`` rows, so a camp that
+    keeps being found, entered and given up on was invisible: "the bot ignores
+    the tent" and "the bot is inside a bounded retry window" read the same.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str) and decision in HANJUKU_CAMP_DECISIONS:
+            counts[decision] = counts.get(decision, 0) + 1
+    return {'counts': counts}
+
+
+HANJUKU_RECALL_STAGES = frozenset({
+    'to_camp', 'hero_focus', 'hero_open', 'menu', 'dest', 'await_dispatch',
+    'recheck_roster_open', 'recheck_roster_read', 'recheck_status', 'recheck_read',
+    'recheck_close', 'fort_menu', 'fort_list', 'fort_status', 'fort_status_read',
+})
+
+
+def _compact_hanjuku_recall(mem):
+    """Bounded camp-recall state: why a visible camp is or is not recalled.
+
+    Only fixed stage tokens, bounded counts and the cursor-cell target leave
+    this reader; generals, castles and reasons stay in the private log. The
+    retry window is the reason a still-visible tent can sit for hundreds of
+    observations, so its age and length are projected beside the state.
+    """
+    flow = mem.get('flow') if isinstance(mem.get('flow'), dict) else {}
+    out = {'state': 'idle'}
+    state = flow.get('recall')
+    if isinstance(state, dict):
+        stage = state.get('stage')
+        target = state.get('target')
+        steps = state.get('steps')
+        out = {'state': 'recalling',
+               'stage': stage if stage in HANJUKU_RECALL_STAGES else 'other',
+               'steps': steps if type(steps) is int and 0 <= steps <= 1000 else None,
+               'named': state.get('retreat_recheck') is True,
+               'hero': state.get('hero') is True,
+               'target': (list(target) if isinstance(target, (list, tuple)) and len(target) == 2
+                          and all(type(axis) is int for axis in target) else None)}
+    skip = flow.get('recall_skip')
+    if isinstance(skip, dict):
+        tick, armed = mem.get('tick'), skip.get('tick')
+        window = flow.get('recall_skip_ticks')
+        window = window if type(window) is int and 0 < window <= 100000 else 400
+        age = tick - armed if type(tick) is int and type(armed) is int else None
+        retry = flow.get('recall_retry')
+        count = retry.get('count') if isinstance(retry, dict) else None
+        out['skip'] = {'age': age if age is not None and 0 <= age <= 100000 else None,
+                       'window': window,
+                       'retry': count if type(count) is int and 0 <= count <= 100 else None}
+    queue = flow.get('retreat_rechecks')
+    if isinstance(queue, dict):
+        out['queue'] = len(queue) if len(queue) <= 64 else None
+    budget = flow.get('retreat_anonymous_budget')
+    if isinstance(budget, dict):
+        reads = budget.get('reads')
+        out['anonymous_reads'] = reads if type(reads) is int and 0 <= reads <= 1000 else None
+    return out
+
+
 # Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
 # sortie this many times before parking it. The collector runs as a standalone
 # file on the VM, so a test pins the two values together instead of importing
@@ -11858,6 +11932,11 @@ def _compact_hanjuku_policy(mem, state=None):
         'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
                           'has_plan': isinstance(mem.get('chart_plan'), dict)}
                          if chart_adjust else None),
+        # A visible tent nobody acts on had no projection at all. Project the
+        # flow's own bounded recall state beside it so the reason (no
+        # detection, an armed retry window, a queue budget or a stuck recall)
+        # is readable without the private decision log.
+        'recall': _compact_hanjuku_recall(mem),
         # A long battle looks like a frozen month/capture count. Project the
         # bounded HP evidence so diagnostics can say whether it is progressing.
         'battle': ({'enemy': text(battle.get('enemy'), 32),
@@ -12032,7 +12111,8 @@ def _collect_hanjuku_tactical(state_dir, now):
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
                     'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
                                'recent_decisions': rows[-8:],
-                               'sortie_launch': _hanjuku_sortie_launch(rows)},
+                               'sortie_launch': _hanjuku_sortie_launch(rows),
+                               'camp': _hanjuku_camp_tail(rows)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
@@ -12069,7 +12149,8 @@ def _collect_hanjuku_tactical(state_dir, now):
         out.update(status='ok', age_sec=int(age), chapter=1,
                    policy={**_compact_hanjuku_policy(mem, bot),
                            'recent_decisions': dec_rows[-8:],
-                           'sortie_launch': _hanjuku_sortie_launch(dec_rows)},
+                           'sortie_launch': _hanjuku_sortie_launch(dec_rows),
+                           'camp': _hanjuku_camp_tail(dec_rows)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
