@@ -88,3 +88,15 @@ def test_a_battle_result_frame_does_not_discard_an_already_pending_camp(monkeypa
     before = deepcopy(_flow(mem)['recall'])
     assert p.camp_recall_step(MAP, mem, object()) == []
     assert _flow(mem)['recall'] == before
+
+
+def test_cursor_covering_a_previously_seen_tent_opens_the_menu(monkeypatch):
+    """Owner 2026-11-04: カーソルが野営画像を覆っても帰還を続ける."""
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [])
+    mem = memory()
+    mem['recall']['last_seen'] = [120, 100]
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'menu'
+    assert _flow(mem)['recall'].get('occluded_enter') is True
+    # One occluded attempt only; a still-missing tent follows the old abort.
+    assert p.camp_recall_step(MAP, mem, object()) == []

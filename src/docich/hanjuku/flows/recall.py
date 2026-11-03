@@ -153,7 +153,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         cursor = _cursor(screen)
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
-        state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0,
+        state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
+                                 'last_seen': list(camp['target']), 'steps': 0,
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {})},
@@ -202,6 +203,25 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         camps = (own_camps(frame) if frame is not None else []) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
         if not camps:
+            # Owner 2026-11-04: キャンプにカーソルが重なると野営画像を失い、
+            # 帰還が中断していた。直前の実測でカーソル位置にあると確認できた
+            # targetなら、一度だけAでメニューを開く（メニュー段階が空振りを
+            # 有界に処理する）。未観測の古い座標は従来どおり信頼しない。
+            cursor = _cursor(screen)
+            target = state.get('target')
+            last = state.get('last_seen')
+            if (not state.get('occluded_enter') and cursor
+                    and _camp_target(last) and _camp_target(target)
+                    and abs(last[0] - target[0]) <= RECALL_ARRIVE_PX
+                    and abs(last[1] - target[1]) <= RECALL_ARRIVE_PX
+                    and abs(cursor[0] - target[0]) <= RECALL_ARRIVE_PX
+                    and abs(cursor[1] - target[1]) <= RECALL_ARRIVE_PX):
+                state['occluded_enter'] = True
+                _observe_recall_origin(screen, mem, frame, state)
+                state['stage'], state['steps'] = 'menu', 0
+                _record(mem, 'camp_enter', observed_metric={'camp': list(target), 'occluded': True},
+                        reason='カーソルが野営画像を覆っているため、直前に実測したtargetを信頼してきかんメニューを開く')
+                return [pad('a')]
             missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
             if missing == 1:
                 _record(mem, 'camp_position_unconfirmed', observed_metric={'previous_target': state.get('target')},
@@ -221,6 +241,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state['target'] = list(camp['target'])
+        # The cursor sprite can cover the tent once the servo is on it; keep
+        # the last real detection so the arrival step can trust it.
+        state['last_seen'] = list(camp['target'])
         if camp.get('kind'):
             state['camp_kind'] = camp['kind']
         else:
