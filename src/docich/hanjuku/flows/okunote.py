@@ -95,9 +95,10 @@ def combat_return(screen, mem, cur, *, summon=None):
         return
     if (ordinary or (screen.kind == 'egg_battle_menu' and summon)) and (
             cur.get('okunote_egg_preempt') or cur.get('okunote_summon_preempt')):
-        # The enemy lived through this draw: a preempt may draw again, bounded
-        # by OKUNOTE_REDRAW_LIMIT (owner 2026-11-02 積極利用, extended v362 to
-        # the egg-battle-menu return of the summon preempt).
+        # The enemy lived through this draw: a preempt may draw again.
+        # The egg-route redraw stays bounded by OKUNOTE_REDRAW_LIMIT; the
+        # enemy-summon preempt keeps drawing until the summon is gone
+        # (owner 2026-11-03).
         cur['okunote_draws'] = int(cur.get('okunote_draws') or 0) + 1
     for key in ('okunote_attempt', 'okunote_flow', 'okunote_egg_preempt',
                 'okunote_summon_preempt',
