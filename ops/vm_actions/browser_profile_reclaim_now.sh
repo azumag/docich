@@ -9,9 +9,14 @@
 #     dry-run>. Refuses to delete anything else (plan_mismatch).
 #
 # The actual mutation contract lives in the reviewed
-# runtime_browser_profile_reclaim.py: completed-generation gates
-# (RUN_ID / canonical inactive / terminal_identity), game-switch.lock shared
-# flock, symlink/nlink/unsafe-entry rejection, per-entry re-stamp on apply.
+# runtime_browser_profile_reclaim.py: canonical-inactive, keep-recent and age
+# gates, game-switch.lock shared flock, symlink/nlink/unsafe-entry rejection,
+# per-entry re-stamp on apply. A generation counts as completed only with the
+# hanjuku run record or the common ``retired`` marker written by game-switch
+# teardown for every corner (src/docich/runtime_retirement.py). The
+# ``--allow-unmarked-backlog`` census switch is deliberately not wired here:
+# it is dry-run only and never authorizes deletion.
+#
 # hanjuku logs, frames and the generation dir are never removed.
 #
 # No restart, sudo, arbitrary path, prompt, model output, or credential data

@@ -68,10 +68,24 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
             (directory / prof / "Cache" / "f").write_bytes(b"p" * 100)
             (directory / prof / "Cache" / "deep" / "g").write_bytes(b"p" * 50)
 
-    def dry_run(self, batch=20, keep_recent=3, min_age_hours=0):
+    def dry_run(self, batch=20, keep_recent=3, min_age_hours=0,
+                allow_unmarked_backlog=False):
         return reclaim.run(self.state, apply=False, batch=batch, expect_plan="",
                            target_free_bytes=1 << 62, keep_recent=keep_recent,
-                           min_age_hours=min_age_hours)
+                           min_age_hours=min_age_hours,
+                           allow_unmarked_backlog=allow_unmarked_backlog)
+
+    def make_unmarked(self, name):
+        """A browser-profile generation as production writes it: no run record."""
+        directory = self.state / "runtimes" / name
+        (directory / "weather-browser-profile" / "Cache").mkdir(parents=True)
+        (directory / "weather-browser-profile" / "Cache" / "f").write_bytes(b"p" * 100)
+
+    def write_marker(self, name, generation):
+        marker = {"schema": 1, "runtime_id": name, "generation": generation,
+                  "retired_at": "2026-11-04T00:00:00Z"}
+        (self.state / "runtimes" / name / reclaim.RETIRE_MARKER).write_text(
+            json.dumps(marker))
 
     def planned_ids(self, result):
         return [entry["runtime_id"] for entry in result["plan"]]
@@ -133,6 +147,97 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
         # All fixture entries are fresh, so a nonzero age gate selects none.
         result = self.dry_run(min_age_hours=24)
         self.assertEqual(self.planned_ids(result), [])
+
+    def test_retire_marker_is_accepted_without_hanjuku_run_record(self):
+        name = "g6-abcdef12"
+        self.make_unmarked(name)
+        self.write_marker(name, 6)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0)
+        self.assertIn(name, self.planned_ids(result))
+        self.assertEqual(result["selection"]["retire-marker"], 1)
+        self.assertEqual(result["selection"]["unmarked-backlog"], 0)
+
+    def test_generation_without_proof_is_skipped_and_counted(self):
+        name = "g7-abcdef12"
+        self.make_unmarked(name)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(name, self.planned_ids(result))
+        self.assertGreaterEqual(result["skipped_counts"].get("no_terminal_proof", 0), 1)
+
+    def test_marker_for_another_generation_is_not_a_proof(self):
+        name = "g8-abcdef12"
+        self.make_unmarked(name)
+        self.write_marker(name, 9)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(name, self.planned_ids(result))
+
+    def test_unmarked_backlog_flag_selects_but_never_applies(self):
+        name = "g9-abcdef12"
+        self.make_unmarked(name)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0, allow_unmarked_backlog=True)
+        self.assertIn(name, self.planned_ids(result))
+        self.assertGreaterEqual(result["selection"]["unmarked-backlog"], 1)
+        with self.assertRaises(evidence.EvidenceError) as ctx:
+            reclaim.run(self.state, apply=True, batch=20,
+                        expect_plan=result["plan_sha256"],
+                        target_free_bytes=1 << 62, keep_recent=0,
+                        min_age_hours=0, allow_unmarked_backlog=True)
+        self.assertEqual(str(ctx.exception), "unmarked_backlog_dry_run_only")
+
+    def test_invalid_terminal_record_with_marker_is_accepted(self):
+        name = "g6-abcdef12"
+        self.make_unmarked(name)
+        (self.state / "runtimes" / name / "hanjuku_run.json").write_text(
+            json.dumps(_run(name, reason="not_completed")))
+        self.write_marker(name, 6)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0)
+        self.assertIn(name, self.planned_ids(result))
+        self.assertEqual(result["selection"]["retire-marker"], 1)
+
+    def test_unsafe_run_record_does_not_fall_back_to_marker(self):
+        name = "g6-abcdef12"
+        self.make_unmarked(name)
+        target = self.state / "game_switch.json"
+        (self.state / "runtimes" / name / "hanjuku_run.json").symlink_to(target)
+        self.write_marker(name, 6)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(name, self.planned_ids(result))
+
+    def test_marker_contract_matches_teardown_writer(self):
+        root = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(root / "src"))
+        from docich import runtime_retirement
+        self.assertEqual(reclaim.RETIRE_MARKER, runtime_retirement.RETIRE_MARKER)
+        self.assertEqual(reclaim.RETIRE_MARKER_SCHEMA, runtime_retirement.SCHEMA)
+        self.assertEqual(reclaim.MAX_MARKER_BYTES, runtime_retirement.MAX_MARKER_BYTES)
+        name = "g6-abcdef12"
+        self.make_unmarked(name)
+        self.canonical["next_generation"] = 10
+        (self.state / "game_switch.json").write_text(json.dumps(self.canonical))
+        runtime_retirement.write_retire_marker(
+            self.state, {"runtime_id": name, "generation": 6},
+            retired_at="2026-11-04T00:00:00Z")
+        result = self.dry_run(keep_recent=0)
+        self.assertIn(name, self.planned_ids(result))
+        self.assertEqual(result["selection"]["retire-marker"], 1)
+
+    def test_skip_counts_include_keep_recent_and_no_profile(self):
+        result = self.dry_run()
+        # g3/g4/g5 are protected and the active g2 is never a candidate.
+        self.assertGreaterEqual(result["skipped_counts"].get("keep_recent", 0), 3)
+        self.assertGreaterEqual(result["skipped_counts"].get("active_or_retiring", 0), 1)
 
     def test_batch_bounds_are_enforced(self):
         for bad in (0, -1, reclaim.MAX_BATCH + 1, "x"):

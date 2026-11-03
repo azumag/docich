@@ -45,6 +45,7 @@ from .naming import (
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
 from .hanjuku_log_retention import prune_completed
+from .runtime_retirement import write_retire_marker
 from .log_redaction import redact_log_detail
 
 
@@ -5121,6 +5122,7 @@ class GameSwitchCoordinator:
         cleanup_pending = False
         retiring = list(state.get("retiring") or [])
         remaining: list[Mapping[str, object]] = []
+        retired: list[Mapping[str, object]] = []
         for runtime in retiring:
             self._log(
                 "cleanup_started", phase=str(state.get("phase")),
@@ -5158,6 +5160,7 @@ class GameSwitchCoordinator:
                     detail=_teardown_detail(evidence, runtime),
                 )
             else:
+                retired.append(runtime)
                 self._log(
                     "cleaned", phase=str(state.get("phase")),
                     generation=runtime.get("generation"),
@@ -5180,7 +5183,27 @@ class GameSwitchCoordinator:
                 ),
             )
         self._prune_hanjuku_logs(warnings)
+        self._write_retire_markers(retired, warnings, phase=str(state.get("phase")))
         return cleanup_pending
+
+    def _write_retire_markers(self, runtimes: list[Mapping[str, object]],
+                              warnings: list[str], *, phase: str) -> None:
+        """Record confirmed teardowns for every corner (docich#3122).
+
+        The marker is the completion proof for corners without a per-game
+        terminal record; failures are warnings, never rollback reasons.
+        """
+        for runtime in runtimes:
+            try:
+                write_retire_marker(self.store.state_dir, runtime)
+            except Exception as exc:
+                warnings.append(f"retire marker書き込み失敗: {_safe_detail(exc)}")
+                self._log(
+                    "retire_marker_failed", phase=phase,
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                    result="failed",
+                )
 
     def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
         """Bounded retention for completed hanjuku decision/event logs (#3132).

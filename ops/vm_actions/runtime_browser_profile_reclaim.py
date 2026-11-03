@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Plan or apply bounded removal of stale *-browser-profile dirs in completed generations (docich#3122).
 
-Dry-run by default. A generation qualifies only if it passes the same gates as
-hanjuku_evidence_gateway._completed_candidates: RUN_ID shape, canonical state
-inactive, terminal_identity. Only directories named ``browser-profile`` or
-``*-browser-profile`` inside the generation directory are removed; the
-generation directory itself, hanjuku logs and frames are never removed.
-The newest keep_recent generations are skipped regardless, and a profile tree
-whose newest entry is younger than the age gate is skipped. Apply requires the
-digest of the reviewed dry-run plan, so the deleted set is exactly the
-reviewed set. Errors are fixed codes; no paths or source data are printed.
+Dry-run by default. A generation qualifies only if it passes the shared gates:
+RUN_ID shape, canonical state inactive, keep-recent/age, and a completion proof.
+The proof is either the hanjuku run record (``terminal_identity``, the stricter
+form) or the common ``retired`` marker that game-switch teardown writes for
+every corner (``src/docich/runtime_retirement.py``). Only directories named
+``browser-profile`` or ``*-browser-profile`` inside the generation directory
+are removed; the generation directory itself, hanjuku logs and frames are never
+removed. The newest keep_recent generations are skipped regardless, and a
+profile tree whose newest entry is younger than the age gate is skipped.
+``--allow-unmarked-backlog`` only widens *dry-run* enumeration for generations
+retired before the marker existed; it never permits apply. Apply requires the
+digest of the reviewed dry-run plan, so the deleted set is exactly the reviewed
+set. Errors are fixed codes; no paths or source data are printed.
 """
 from __future__ import annotations
 
@@ -27,6 +31,10 @@ import hanjuku_evidence as evidence
 
 SCHEMA = 1
 PROFILE_SUFFIX = "-browser-profile"
+# Must match src/docich/runtime_retirement.py (parity test in this directory).
+RETIRE_MARKER = "retired"
+RETIRE_MARKER_SCHEMA = 1
+MAX_MARKER_BYTES = 64 * 1024
 DEFAULT_BATCH = 20
 MAX_BATCH = 100
 MAX_RUNTIME_ENTRIES = 4096
@@ -87,7 +95,57 @@ def _walk_profile(profile_fd, prefix):
     return entries
 
 
-def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
+def _retire_marker_matches(runtime_fd, name, generation):
+    """Whether the common teardown marker proves this generation retired.
+
+    Mirrors the contract written by ``src/docich/runtime_retirement.py``:
+    a regular, unsymlinked JSON file naming the same runtime/generation. Any
+    read or shape failure is simply "no proof", never an exception.
+    """
+    try:
+        raw = evidence._read(runtime_fd, RETIRE_MARKER, MAX_MARKER_BYTES)
+        marker = json.loads(raw)
+    except (evidence.EvidenceError, ValueError):
+        return False
+    return (isinstance(marker, dict)
+            and type(marker.get("schema")) is int
+            and marker["schema"] == RETIRE_MARKER_SCHEMA
+            and marker.get("runtime_id") == name
+            and type(marker.get("generation")) is int
+            and marker["generation"] == generation)
+
+
+def _completion_proof(runtime_fd, name, generation):
+    """Return "run-record", "retire-marker", or None.
+
+    The hanjuku run record is checked first because it carries terminal
+    evidence; the common marker only records a confirmed teardown. A present
+    but unsafe run record (symlink/hardlink/oversize) stays fail-closed and
+    never falls back to the weaker marker.
+    """
+    try:
+        raw = evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON)
+    except evidence.EvidenceError as exc:
+        if str(exc) != "required_file_missing":
+            raise
+    else:
+        try:
+            evidence.terminal_identity(evidence._json(raw), name)
+            return "run-record"
+        except evidence.EvidenceError as exc:
+            if str(exc) in ("unsafe_file", "file_too_large"):
+                raise
+    if _retire_marker_matches(runtime_fd, name, generation):
+        return "retire-marker"
+    return None
+
+
+def _collect(runtimes_fd, canonical, keep_recent, min_age_ns, allow_unmarked):
+    """Select reclaim candidates and count why other generations were skipped.
+
+    Per-generation failures stay fail-closed (skip); only bounded-scan
+    violations abort the whole plan, as before.
+    """
     names = []
     with os.scandir(runtimes_fd) as entries:
         for index, item in enumerate(entries):
@@ -99,20 +157,39 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
     )
     protected = set(ids[-keep_recent:]) if keep_recent else set()
     generations = []
+    skipped = {}
+    kinds = {"run-record": 0, "retire-marker": 0, "unmarked-backlog": 0}
+
+    def _skip(reason):
+        skipped[reason] = skipped.get(reason, 0) + 1
+
     for name in names:
         match = evidence.RUN_ID.fullmatch(name)
-        if not match or int(match[1]) in protected:
+        if not match:
+            _skip("invalid_runtime_name")
             continue
+        generation = int(match[1])
+        if generation in protected:
+            _skip("keep_recent")
+            continue
+        fresh = 0
         try:
             evidence._inactive(canonical, name)
         except evidence.EvidenceError as exc:
             if str(exc) == "runtime_active":
+                _skip("active_or_retiring")
                 continue
             raise
         try:
             with evidence._child(runtimes_fd, name) as runtime_fd:
-                run = evidence._json(evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON))
-                evidence.terminal_identity(run, name)
+                proof = _completion_proof(runtime_fd, name, generation)
+                if proof is None:
+                    if not allow_unmarked:
+                        _skip("no_terminal_proof")
+                        continue
+                    kind = "unmarked-backlog"
+                else:
+                    kind = proof
                 profiles = []
                 with os.scandir(runtime_fd) as entries:
                     for item in entries:
@@ -125,14 +202,25 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
                             tree = _walk_profile(profile_fd, "")
                         if (min_age_ns and tree
                                 and max(e[1].st_mtime_ns for e in tree) >= min_age_ns):
+                            fresh += 1
                             continue
                         profiles.append((item.name, st, tree))
-        except (OSError, evidence.EvidenceError):
+        except evidence.EvidenceError as exc:
+            _skip("unsafe_layout" if str(exc) in ("unsafe_file", "profile_scan_limit")
+                  else "scan_error")
             continue
-        if profiles:
-            generations.append((int(match[1]), name, profiles))
+        except OSError:
+            _skip("scan_error")
+            continue
+        if fresh:
+            _skip("profile_too_recent")
+        if not profiles:
+            _skip("no_profile")
+            continue
+        kinds[kind] += 1
+        generations.append((generation, name, profiles))
     generations.sort()
-    return generations
+    return generations, skipped, kinds
 
 
 def _free_bytes(root):
@@ -193,11 +281,16 @@ def _remove_profile(profile_fd, tree, planned_stamps):
 
 
 def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
-        keep_recent=DEFAULT_KEEP_RECENT, min_age_hours=DEFAULT_MIN_AGE_HOURS):
+        keep_recent=DEFAULT_KEEP_RECENT, min_age_hours=DEFAULT_MIN_AGE_HOURS,
+        allow_unmarked_backlog=False):
     if type(batch) is not int or not 1 <= batch <= MAX_BATCH:
         raise evidence.EvidenceError("invalid_batch")
     if type(keep_recent) is not int or not 0 <= keep_recent:
         raise evidence.EvidenceError("invalid_keep_recent")
+    if apply and allow_unmarked_backlog:
+        # Migration-only census switch: apply stays limited to generations
+        # with a real completion proof until a separate owner decision.
+        raise evidence.EvidenceError("unmarked_backlog_dry_run_only")
     root = Path(state_dir)
     free_before = _free_bytes(root)
     min_age_ns = int(min_age_hours * 3600 * 1e9)
@@ -215,7 +308,9 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
             canonical = evidence._json(before)
             evidence._inactive(canonical, "")
             with evidence._child(root_fd, "runtimes") as runtimes_fd:
-                generations = _collect(runtimes_fd, canonical, keep_recent, min_age_ns)
+                generations, skipped, kinds = _collect(
+                    runtimes_fd, canonical, keep_recent, min_age_ns,
+                    allow_unmarked_backlog)
                 selected = generations[:batch]
                 plan = [
                     {
@@ -263,8 +358,11 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
         "batch": batch,
         "keep_recent": keep_recent,
         "min_age_hours": min_age_hours,
+        "allow_unmarked_backlog": allow_unmarked_backlog,
         "generations_verified": len(generations),
         "generations_selected": len(selected),
+        "selection": kinds,
+        "skipped_counts": dict(sorted(skipped.items())),
         "truncated": len(generations) > batch,
         "plan_sha256": digest,
         "plan": [
@@ -295,12 +393,16 @@ def main(argv=None):
     parser.add_argument("--target-free-gib", type=float, default=DEFAULT_TARGET_FREE_GIB)
     parser.add_argument("--keep-recent", type=int, default=DEFAULT_KEEP_RECENT)
     parser.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS)
+    parser.add_argument("--allow-unmarked-backlog", action="store_true",
+                        help="dry-run only: also list generations retired before the "
+                             "common retire marker existed (never applies)")
     args = parser.parse_args(argv)
     try:
         result = run(args.state_dir, apply=args.apply, batch=args.batch,
                      expect_plan=args.expect_plan,
                      target_free_bytes=int(args.target_free_gib * 1024 ** 3),
-                     keep_recent=args.keep_recent, min_age_hours=args.min_age_hours)
+                     keep_recent=args.keep_recent, min_age_hours=args.min_age_hours,
+                     allow_unmarked_backlog=args.allow_unmarked_backlog)
     except evidence.EvidenceError as exc:
         print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": str(exc)}))
         return 1
