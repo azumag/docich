@@ -16,6 +16,8 @@ ACTIVE = "g2-bbbbbbbb"
 UNFINISHED = "g3-cccccccc"
 LINKED = "g4-dddddddd"
 NEWEST = "g5-eeeeeeee"
+MARKED = "g6-ffffffff"
+LEGACY = "g7-11111111"
 
 
 def _run(name, reason="game_over"):
@@ -45,6 +47,11 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
         for name in (DONE, ACTIVE, UNFINISHED, LINKED, NEWEST):
             self.make(name, _run(name if name != UNFINISHED else name,
                                  reason="game_over" if name != UNFINISHED else "not_completed"))
+        self.make(MARKED, None)
+        (runtimes / MARKED / "retired.json").write_text(json.dumps(
+            {"schema": 1, "kind": "runtime_retired",
+             "runtime_id": MARKED, "generation": 6}))
+        self.make(LEGACY, None)
         # A symlinked profile entry must make its whole generation skipped.
         (runtimes / LINKED / "mystery-browser-profile" / "Cache" / "f").unlink()
         (runtimes / LINKED / "mystery-browser-profile" / "Cache" / "f").symlink_to(
@@ -59,7 +66,8 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
     def make(self, name, run):
         directory = self.state / "runtimes" / name
         directory.mkdir()
-        (directory / "hanjuku_run.json").write_text(json.dumps(run))
+        if run is not None:
+            (directory / "hanjuku_run.json").write_text(json.dumps(run))
         for file_name in ("hanjuku_commentary.jsonl", "hanjuku_narration.jsonl",
                           "hanjuku_decisions.jsonl"):
             (directory / file_name).write_bytes(b"x" * 16)
@@ -68,10 +76,10 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
             (directory / prof / "Cache" / "f").write_bytes(b"p" * 100)
             (directory / prof / "Cache" / "deep" / "g").write_bytes(b"p" * 50)
 
-    def dry_run(self, batch=20, keep_recent=3, min_age_hours=0):
+    def dry_run(self, batch=20, keep_recent=3, min_age_hours=0, include_legacy=False):
         return reclaim.run(self.state, apply=False, batch=batch, expect_plan="",
                            target_free_bytes=1 << 62, keep_recent=keep_recent,
-                           min_age_hours=min_age_hours)
+                           min_age_hours=min_age_hours, include_legacy=include_legacy)
 
     def planned_ids(self, result):
         return [entry["runtime_id"] for entry in result["plan"]]
@@ -90,7 +98,7 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
 
     def test_keep_recent_protects_newest_generations(self):
         # Widening the protection window to 5 newest excludes g1 as well.
-        result = self.dry_run(keep_recent=5)
+        result = self.dry_run(keep_recent=7)
         self.assertEqual(self.planned_ids(result), [])
 
     def test_active_and_unfinished_generations_are_never_selected(self):
@@ -128,6 +136,45 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
         # The symlinked LINKED generation is completed but excluded by the
         # unsafe_file gate, so it never appears in any plan.
         self.assertNotIn(LINKED, self.planned_ids(self.dry_run()))
+
+    def _free_keep_window(self):
+        # Widen selection beyond the newest-3 window (g5/g6/g7) so MARKED and
+        # LEGACY are evaluated, while DONE still matches keep_recent=0 too.
+        return self.dry_run(keep_recent=0)
+
+    def test_retire_marker_completes_generation_without_run_record(self):
+        # A profile-holding generation with retired.json but no
+        # hanjuku_run.json (weather/yosou style, the #3122 blind spot) is
+        # selected through the marker gate.
+        result = self.dry_run(keep_recent=0)
+        ids = self.planned_ids(result)
+        self.assertIn(MARKED, ids)
+        entry = next(e for e in result["plan"] if e["runtime_id"] == MARKED)
+        self.assertEqual(entry["completion"], "retire_marker")
+
+    def test_generation_without_any_proof_is_skipped_and_counted(self):
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(LEGACY, self.planned_ids(result))
+        self.assertEqual(result["skipped"]["no_completion_evidence"], 1)
+        self.assertEqual(result["skipped"]["not_completed"], 1)
+        self.assertEqual(result["legacy_generations"], 0)
+
+    def test_include_legacy_lists_pre_marker_generations_visibly(self):
+        result = self.dry_run(keep_recent=0, include_legacy=True)
+        ids = self.planned_ids(result)
+        self.assertIn(LEGACY, ids)
+        entry = next(e for e in result["plan"] if e["runtime_id"] == LEGACY)
+        self.assertEqual(entry["completion"], "legacy_no_evidence")
+        self.assertEqual(result["legacy_generations"], 1)
+
+    def test_marker_with_wrong_identity_is_rejected(self):
+        marker = self.state / "runtimes" / MARKED / "retired.json"
+        marker.write_text(json.dumps(
+            {"schema": 1, "kind": "runtime_retired",
+             "runtime_id": MARKED, "generation": 99}))
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(MARKED, self.planned_ids(result))
+        self.assertEqual(result["skipped"]["invalid_marker"], 1)
 
     def test_min_age_gate_skips_fresh_profiles(self):
         # All fixture entries are fresh, so a nonzero age gate selects none.

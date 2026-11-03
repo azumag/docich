@@ -45,6 +45,7 @@ from .naming import (
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
 from .hanjuku_log_retention import prune_completed
+from .retire_marker import RetireMarkerError, write_retire_marker
 from .log_redaction import redact_log_detail
 
 
@@ -5165,6 +5166,7 @@ class GameSwitchCoordinator:
                     result="cleaned",
                     detail=_teardown_detail(evidence, runtime),
                 )
+                self._write_retire_marker(runtime, warnings, str(state.get("phase")))
         if len(remaining) != len(retiring):
             tx.transition(
                 {state["phase"]}, str(state["phase"]),
@@ -5181,6 +5183,27 @@ class GameSwitchCoordinator:
             )
         self._prune_hanjuku_logs(warnings)
         return cleanup_pending
+
+    def _write_retire_marker(self, runtime: Mapping[str, object], warnings: list[str], phase: str) -> None:
+        """Common retire marker for every completed generation (docich#3122).
+
+        Written only after teardown is confirmed, so the marker proves the
+        generation was properly retired rather than abandoned. Housekeeping
+        only: a marker failure is a warning, never a rollback reason.
+        """
+        runtime_id = runtime.get("runtime_id")
+        try:
+            if not isinstance(runtime_id, str):
+                raise RetireMarkerError("invalid_runtime_id")
+            write_retire_marker(self.store.state_dir, runtime_id)
+        except Exception as exc:
+            warnings.append(f"retire marker書き込み失敗: {_safe_detail(exc)}")
+            return
+        self._log(
+            "retire_marker_written", phase=phase,
+            generation=runtime.get("generation"),
+            runtime_id=runtime_id,
+        )
 
     def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
         """Bounded retention for completed hanjuku decision/event logs (#3132).

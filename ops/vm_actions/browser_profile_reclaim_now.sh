@@ -45,4 +45,10 @@ if [[ "$mode" == "apply" ]]; then
     --batch 100 --keep-recent 3 --min-age-hours 24
 fi
 
-exec python3 "$helper" "$state_dir" --batch 100 --keep-recent 3 --min-age-hours 24
+# Phase-1 migration review opt-in: INCLUDE_LEGACY=1 additionally lists
+# generations retired before the common retire marker existed (tagged
+# legacy_no_evidence in the plan). Default stays the strict gate; apply
+# keeps requiring the reviewed digest either way.
+extra=()
+if [[ "${INCLUDE_LEGACY:-0}" == "1" ]]; then extra+=(--include-legacy); fi
+exec python3 "$helper" "$state_dir" --batch 100 --keep-recent 3 --min-age-hours 24 "${extra[@]}"

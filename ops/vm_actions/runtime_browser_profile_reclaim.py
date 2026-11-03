@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Plan or apply bounded removal of stale *-browser-profile dirs in completed generations (docich#3122).
 
-Dry-run by default. A generation qualifies only if it passes the same gates as
-hanjuku_evidence_gateway._completed_candidates: RUN_ID shape, canonical state
-inactive, terminal_identity. Only directories named ``browser-profile`` or
+Dry-run by default. A generation qualifies only if it passes the canonical
+gates (RUN_ID shape, canonical state inactive) plus a completion proof: either
+the hanjuku terminal_identity record, or the common retire marker
+(``retired.json``) the game switch writes after confirmed teardown
+(docich#3122). Generations retired before the marker existed carry no proof;
+the explicit ``--include-legacy`` opt-in lists them with the
+``legacy_no_evidence`` completion tag, keeping the default gates fail-closed. Only directories named ``browser-profile`` or
 ``*-browser-profile`` inside the generation directory are removed; the
 generation directory itself, hanjuku logs and frames are never removed.
 The newest keep_recent generations are skipped regardless, and a profile tree
@@ -87,7 +91,44 @@ def _walk_profile(profile_fd, prefix):
     return entries
 
 
-def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
+MARKER_FILE = "retired.json"
+
+
+def _completion(runtime_fd, name):
+    """Return how this generation proves completion, or None.
+
+    ``hanjuku_run`` = the hanjuku terminal record passes terminal_identity;
+    ``retire_marker`` = no run record exists but the common retired.json
+    identity matches. A run record that exists but fails the terminal check
+    is contradictory evidence, not a missing proof: it raises
+    ``not_completed`` and can never be rescued by the legacy opt-in.
+    """
+    try:
+        raw = evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON)
+    except OSError:
+        raw = None
+    except evidence.EvidenceError:
+        raw = None
+    if raw is not None:
+        run = evidence._json(raw)
+        evidence.terminal_identity(run, name)
+        return "hanjuku_run"
+    try:
+        marker = evidence._json(evidence._read(runtime_fd, MARKER_FILE, evidence.MAX_JSON))
+    except (OSError, evidence.EvidenceError):
+        return None
+    match = evidence.RUN_ID.fullmatch(name)
+    if (not isinstance(marker, dict) or match is None
+            or type(marker.get("schema")) is not int or marker["schema"] != 1
+            or marker.get("kind") != "runtime_retired"
+            or marker.get("runtime_id") != name
+            or type(marker.get("generation")) is not int
+            or marker["generation"] != int(match[1])):
+        raise evidence.EvidenceError("invalid_marker")
+    return "retire_marker"
+
+
+def _collect(runtimes_fd, canonical, keep_recent, min_age_ns, include_legacy):
     names = []
     with os.scandir(runtimes_fd) as entries:
         for index, item in enumerate(entries):
@@ -99,6 +140,7 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
     )
     protected = set(ids[-keep_recent:]) if keep_recent else set()
     generations = []
+    skipped = {"not_completed": 0, "no_completion_evidence": 0, "invalid_marker": 0}
     for name in names:
         match = evidence.RUN_ID.fullmatch(name)
         if not match or int(match[1]) in protected:
@@ -111,8 +153,12 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
             raise
         try:
             with evidence._child(runtimes_fd, name) as runtime_fd:
-                run = evidence._json(evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON))
-                evidence.terminal_identity(run, name)
+                completion = _completion(runtime_fd, name)
+                if completion is None:
+                    if not include_legacy:
+                        skipped["no_completion_evidence"] += 1
+                        continue
+                    completion = "legacy_no_evidence"
                 profiles = []
                 with os.scandir(runtime_fd) as entries:
                     for item in entries:
@@ -127,12 +173,16 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns):
                                 and max(e[1].st_mtime_ns for e in tree) >= min_age_ns):
                             continue
                         profiles.append((item.name, st, tree))
-        except (OSError, evidence.EvidenceError):
+        except evidence.EvidenceError as exc:
+            if str(exc) in ("invalid_marker", "not_completed"):
+                skipped[str(exc)] += 1
+            continue
+        except OSError:
             continue
         if profiles:
-            generations.append((int(match[1]), name, profiles))
-    generations.sort()
-    return generations
+            generations.append((int(match[1]), name, profiles, completion))
+    generations.sort(key=lambda item: item[0])
+    return generations, skipped
 
 
 def _free_bytes(root):
@@ -193,7 +243,8 @@ def _remove_profile(profile_fd, tree, planned_stamps):
 
 
 def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
-        keep_recent=DEFAULT_KEEP_RECENT, min_age_hours=DEFAULT_MIN_AGE_HOURS):
+        keep_recent=DEFAULT_KEEP_RECENT, min_age_hours=DEFAULT_MIN_AGE_HOURS,
+        include_legacy=False):
     if type(batch) is not int or not 1 <= batch <= MAX_BATCH:
         raise evidence.EvidenceError("invalid_batch")
     if type(keep_recent) is not int or not 0 <= keep_recent:
@@ -215,11 +266,13 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
             canonical = evidence._json(before)
             evidence._inactive(canonical, "")
             with evidence._child(root_fd, "runtimes") as runtimes_fd:
-                generations = _collect(runtimes_fd, canonical, keep_recent, min_age_ns)
+                generations, skipped = _collect(runtimes_fd, canonical, keep_recent,
+                                              min_age_ns, include_legacy)
                 selected = generations[:batch]
                 plan = [
                     {
                         "runtime_id": name,
+                        "completion": completion,
                         "profiles": [
                             {
                                 "name": pname,
@@ -230,14 +283,14 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
                             for pname, st, tree in profiles
                         ],
                     }
-                    for _, name, profiles in selected
+                    for _, name, profiles, completion in selected
                 ]
                 digest = _digest(plan)
                 removed = 0
                 if apply:
                     if expect_plan != digest:
                         raise evidence.EvidenceError("plan_mismatch")
-                    for _, name, profiles in selected:
+                    for _, name, profiles, _completion_tag in selected:
                         with evidence._child(runtimes_fd, name) as runtime_fd:
                             for pname, st, tree in profiles:
                                 current = os.stat(pname, dir_fd=runtime_fd,
@@ -265,11 +318,14 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
         "min_age_hours": min_age_hours,
         "generations_verified": len(generations),
         "generations_selected": len(selected),
+        "legacy_generations": sum(1 for _, _, _, c in generations if c == "legacy_no_evidence"),
+        "skipped": skipped,
         "truncated": len(generations) > batch,
         "plan_sha256": digest,
         "plan": [
             {
                 "runtime_id": entry["runtime_id"],
+                "completion": entry["completion"],
                 "profiles": [
                     {"name": p["name"], "entries": len(p["entries"]),
                      "bytes": sum(e[3] for e in p["entries"])}
@@ -295,12 +351,16 @@ def main(argv=None):
     parser.add_argument("--target-free-gib", type=float, default=DEFAULT_TARGET_FREE_GIB)
     parser.add_argument("--keep-recent", type=int, default=DEFAULT_KEEP_RECENT)
     parser.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS)
+    parser.add_argument("--include-legacy", action="store_true",
+                        help="list pre-marker generations with no completion proof "
+                             "as legacy_no_evidence (migration review only; off by default)")
     args = parser.parse_args(argv)
     try:
         result = run(args.state_dir, apply=args.apply, batch=args.batch,
                      expect_plan=args.expect_plan,
                      target_free_bytes=int(args.target_free_gib * 1024 ** 3),
-                     keep_recent=args.keep_recent, min_age_hours=args.min_age_hours)
+                     keep_recent=args.keep_recent, min_age_hours=args.min_age_hours,
+                     include_legacy=args.include_legacy)
     except evidence.EvidenceError as exc:
         print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": str(exc)}))
         return 1
