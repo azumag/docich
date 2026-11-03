@@ -154,6 +154,32 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
+INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
+
+
+def _wave_pick(mem, target, owned, busy, allow_sole):
+    """(source, general) of a measured spare for a same-target wave.
+
+    Unlike ``_interim_source`` this never picks an unread castle: an unread
+    list is a probe for the first sortie, not a known spare for a wave.
+    Sources still keep one defender; the home castle is preferred.
+    """
+    chapter = mem.get('chapter') or 0
+    home = chart.home_castle(chapter)
+    garrison = mem.get('garrison') or {}
+    unavailable = set(mem.get('general_location_unknown') or ())
+    need = 1 if allow_sole else 2
+    for source in sorted(owned, key=lambda c: (c != home, c)):
+        names = garrison.get(source)
+        if not names:
+            continue
+        free = [g for g in names if g not in busy and g not in unavailable]
+        if len(free) < need:
+            continue
+        spares = [g for g in _spares(free, sole=allow_sole) if g != NAME]
+        if spares:
+            return source, spares[0]
+    return None
 
 
 def _spares(free, unavailable=(), sole=False):
@@ -353,6 +379,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         choices.sort(key=lambda x: (x[0], x[1] != home), reverse=True)
         _, source, general = choices[0]
         return source, general
+    wave_target = None
     for target in targets:
         picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
                   if chart.is_boss_castle(target) else
@@ -497,6 +524,38 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         moved = {o['target'] for o in moves}
         moves.extend(o for o in _defense_rebalance(mem, owned, busy, heading)
                      if o['target'] not in moved)
+    # Owner 2026-11-04: 人数に余裕があるときは一つの城へ波状攻撃.
+    # Generate the first attempt for every target (and the moves that staff
+    # empty castles) before spending any surplus, so a wave never steals the
+    # general another retake/move needs. The first non-boss target gets the
+    # remaining measured spares, each source still keeping one defender.
+    wave_orders = []
+    wave_target = next((o['target'] for o in (*sorties['retake'], *sorties['attack'])
+                        if not chart.is_boss_castle(o['target'])), None)
+    if wave_target is not None:
+        committed = set()
+        for order in (*sorties['retake'], *sorties['attack'], *moves):
+            general = order.get('general')
+            if general and general != MOVE_ANY_GENERAL:
+                committed.add(general)
+        wave_busy = busy | planned_busy | committed
+        purpose = 'retake' if wave_target in lost else 'attack'
+        base = chart_orders.get(wave_target)
+        cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
+        extra = 0
+        while extra < INTERIM_WAVE_LIMIT:
+            more = _wave_pick(mem, wave_target, owned, wave_busy, allow_sole)
+            if more is None:
+                break
+            source2, general2 = more
+            committed.add(general2)
+            wave_busy = wave_busy | {general2}
+            wave_orders.append({
+                'general': general2, 'target': wave_target, 'cards': cards,
+                'source': source2, 'after': None, 'purpose': purpose,
+                'note': (f"暫定: {general2}で{wave_target}へ波状攻撃" if purpose == 'attack'
+                         else f"暫定: {general2}で奪われた{wave_target}へ波状奪還")})
+            extra += 1
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -509,7 +568,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
     attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
     lead = [*known_retakes, *moves, *unread_retakes]
-    for order in (*lead[:1], *waves, *lead[1:], *attacks):
+    for order in (*lead[:1], *waves, *lead[1:], *attacks, *wave_orders):
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order

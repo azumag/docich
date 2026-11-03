@@ -89,3 +89,42 @@ def test_a_startable_adopted_plan_still_suppresses_the_interim_sortie():
     replan._off_chart(mem)
     assert interim(mem) is None
     assert mem['orders'][step] == 'pending'
+
+
+def test_spare_generals_form_a_wave_on_the_first_target():
+    """Owner 2026-11-04: 人数に余裕があれば一つの城へ波状攻撃.
+
+    Four generals in the home castle and no other target: the first attack
+    keeps one defender and the remaining spares join the same castle in
+    successive sorties instead of one general per castle.
+    """
+    from docich import hanjuku_chart as chart
+    castles = list(chart.castles(1))
+    home = chart.home_castle(1)
+    target = next(c for c in castles if c != home and not chart.is_boss_castle(c))
+    # The hero's castle keeps two companions (guard), so the wave comes from
+    # another owned castle with four measured generals (three spares).
+    other = next(c for c in castles if c not in (home, target))
+    mem = memory(captured=[c for c in castles if c != target], lost=[],
+                 garrison={home: ['ゼウス', 'どうし'],
+                           other: ['ココット', 'ヴィーナス', 'トレビス', 'ビーツ']})
+    candidates = replan.interim_candidates(mem)
+    attacks = [o for o in candidates.values() if o['target'] == target]
+    assert len(attacks) == 3, candidates
+    assert len({o['general'] for o in attacks}) == 3
+    assert {o['general'] for o in attacks} <= set(mem['garrison'][other])
+    assert {o['purpose'] for o in attacks} == {'attack'}
+
+
+def test_two_generals_leave_a_defender_and_make_no_wave():
+    from docich import hanjuku_chart as chart
+    castles = list(chart.castles(1))
+    home = chart.home_castle(1)
+    target = next(c for c in castles if c != home and not chart.is_boss_castle(c))
+    other = next(c for c in castles if c not in (home, target))
+    mem = memory(captured=[c for c in castles if c != target], lost=[],
+                 garrison={home: ['ゼウス', 'どうし'],
+                           other: ['ココット', 'ヴィーナス']})
+    candidates = replan.interim_candidates(mem)
+    attacks = [o for o in candidates.values() if o['target'] == target]
+    assert len(attacks) == 1, candidates
