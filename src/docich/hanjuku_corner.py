@@ -58,7 +58,43 @@ ROTATION_FAILURE_EXIT = {
     'dependency_unavailable': 88,
     'adapter_failure': 89,
 }
-EXIT_FAILURE_REASON = {value: key for key, value in ROTATION_FAILURE_EXIT.items()}
+
+# Failed-before-AI checkpoint recovery already raises only fixed reason tokens.
+# Give those tokens dedicated process exits so the owner-only workflow can
+# report which invariant refused the retry without exposing request ids, paths,
+# checkpoint bytes or arbitrary exception text. Existing rotation reasons keep
+# their established codes.
+RESUME_RECOVERY_FAILURE_EXIT = {
+    'expected_reservation_required': 90,
+    'reservation_not_in_scope': 91,
+    'invalid_evidence': 92,
+    'reservation_changed': 93,
+    'context_changed': 94,
+    'gameplay_started': 95,
+    'startup_rollback_unverified': 96,
+    'switch_not_stable': 97,
+    'newer_progress_unverified': 98,
+    'target_paused_or_unavailable': 99,
+    'checkpoint_changed': 100,
+    'owner_not_terminal': 101,
+    'retry_exhausted': 102,
+    'unsafe_state': 103,
+    'missing_evidence': 104,
+    'unreadable_evidence': 105,
+    'unsafe_lock': 106,
+    'busy': 107,
+    'lock_unavailable': 108,
+    'runtime_resources_present': 109,
+}
+CANCEL_REFUSAL_EXIT = {
+    **RESUME_RECOVERY_FAILURE_EXIT,
+    'clock_regressed': ROTATION_FAILURE_EXIT['clock_regressed'],
+    'manual_queue_conflict': ROTATION_FAILURE_EXIT['manual_queue_conflict'],
+}
+EXIT_FAILURE_REASON = {
+    **{value: key for key, value in ROTATION_FAILURE_EXIT.items()},
+    **{value: key for key, value in RESUME_RECOVERY_FAILURE_EXIT.items()},
+}
 
 ROTATION_KIND_FAILURE_REASON = {
     'adapter-state': 'rotation_adapter_state',
@@ -87,6 +123,7 @@ ADAPTER_FAILURE_MODULES = frozenset({
 def _fixed_failure_exit(exc):
     """Return only a stable class; never expose exception text or runtime paths."""
     from .corner_rotation import RotationError
+    from .hanjuku_manual_cancel import CancelRefused
 
     if isinstance(exc, RotationError):
         reason = getattr(exc, 'reason_code', None)
@@ -94,6 +131,11 @@ def _fixed_failure_exit(exc):
             return ROTATION_FAILURE_EXIT.get(reason, 77)
         kind_reason = ROTATION_KIND_FAILURE_REASON.get(getattr(exc, 'kind', None))
         return ROTATION_FAILURE_EXIT.get(kind_reason, 77)
+    if isinstance(exc, CancelRefused):
+        # CancelRefused is shared by the resume-recovery verifier. Its callers
+        # use fixed reason tokens, but still fail closed if an unknown token is
+        # ever introduced: never print or forward arbitrary exception text.
+        return CANCEL_REFUSAL_EXIT.get(str(exc), ROTATION_FAILURE_EXIT['queue_rejected'])
     if isinstance(exc, ConfigError):
         return ROTATION_FAILURE_EXIT['config_invalid']
     if isinstance(exc, OSError):
