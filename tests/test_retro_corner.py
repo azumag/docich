@@ -2810,6 +2810,169 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["result"]["error_code"], "timeout")
 
+    def _hanjuku_manager(self, current, *, duration_minutes=None):
+        """Manager whose corner targets hanjuku-hero (the #3174 gated path)."""
+        (self.root / "config/games/hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\ntitle="Hanjuku"\nadapter="retroarch"\n'
+            '[retroarch]\nrom="games/roms/hanjuku-hero.sfc"\n'
+            '[lifecycle]\nrequire_round_boundary=true\n'
+            '[agent]\nenabled=true\n',
+            encoding="utf-8",
+        )
+        self.cfg = replace(
+            self.cfg,
+            games=["hanjuku-hero"],
+            duration_minutes=duration_minutes or self.cfg.duration_minutes,
+        )
+        mgr, coordinator = self.manager(current)
+        return mgr, coordinator
+
+    @staticmethod
+    def _hanjuku_success(request_id):
+        identity = {
+            "game": "hanjuku-hero",
+            "runtime_id": "hanjuku-hero-g1-aaaa",
+            "generation": 1,
+            "lease_id": "lease-1",
+        }
+        receipt = {
+            "request_id": request_id,
+            "target": "hanjuku-hero",
+            "status": "succeeded",
+            "runtime_id": identity["runtime_id"],
+            "generation": 1,
+            "result": {"status": "succeeded", "active_runtime": identity},
+        }
+        return SimpleNamespace(
+            status="succeeded",
+            request_id=request_id,
+            error_code=None,
+            detail=None,
+            receipt=receipt,
+        )
+
+    def test_under_budget_hanjuku_start_is_interrupted_before_any_switch_call(self):
+        # #3174 plan A admission gate: a hanjuku slot that cannot cover the
+        # measured drain+probe budget expires before any request is
+        # submitted, so no receipt and no hanjuku-resume claim is left.
+        current = ["sorengame"]
+        mgr, coordinator = self._hanjuku_manager(current, duration_minutes=5)
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "interrupted")
+        self.assertEqual(coordinator.calls, [])
+        state = mgr.status()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "start-budget-insufficient")
+        self.assertNotIn("switch_request_id", state)
+        mgr.store.initialize()
+        self.assertEqual(mgr.store.receipts.receipts(), [])
+
+    def test_queued_hanjuku_start_under_budget_is_cancelled_without_a_switch_call(self):
+        current = ["sorengame"]
+
+        class AlwaysQueuedCoordinator(FakeCoordinator):
+            def switch(self, game, *, request_id=None, timeout_s=None):
+                self.calls.append(("switch", game, request_id, timeout_s))
+                return SimpleNamespace(
+                    status="queued",
+                    request_id=request_id,
+                    error_code="queued",
+                    detail="queued",
+                )
+
+        mgr, _ = self._hanjuku_manager(current)
+        coordinator = AlwaysQueuedCoordinator(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        state = mgr.status()
+        request_id = state["switch_request_id"]
+        mgr.store.initialize()
+        mgr.store.enqueue_request(request_id, "switch", "hanjuku-hero")
+
+        # 54 minutes in leaves 360s of slot budget, below the 400s admission
+        # gate; the still-unclaimed queued request is cancelled instead of
+        # running a switch that is guaranteed to time out and roll back.
+        self.now_value += timedelta(minutes=54)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "interrupted")
+        self.assertEqual(len(coordinator.calls), 1)
+        self.assertEqual(
+            mgr.status()["end_reason"], "start-budget-insufficient"
+        )
+        receipt = mgr.store.receipts.load(request_id)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["result"]["error_code"], "timeout")
+
+    def test_queued_hanjuku_start_at_budget_boundary_is_still_admitted(self):
+        current = ["sorengame"]
+        hanjuku_success = self._hanjuku_success
+
+        class QueuedTimeoutCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_once = True
+
+            def switch(
+                self,
+                game,
+                *,
+                request_id=None,
+                timeout_s=None,
+                allow_boundary_timeout_extension=True,
+                payload=None,
+            ):
+                self.calls.append(
+                    (
+                        "switch",
+                        game,
+                        request_id,
+                        timeout_s,
+                        allow_boundary_timeout_extension,
+                    )
+                )
+                if game == "hanjuku-hero" and self.queue_once:
+                    self.queue_once = False
+                    return SimpleNamespace(
+                        status="queued",
+                        request_id=request_id,
+                        error_code="queued",
+                        detail="queued",
+                    )
+                self.current[0] = game
+                return hanjuku_success(request_id)
+
+        mgr, _ = self._hanjuku_manager(current)
+        coordinator = QueuedTimeoutCoordinator(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        # Exactly 400s of budget remains: drain estimate 360s + probe floor
+        # 40s is the inclusive admission threshold, so the replay proceeds.
+        self.now_value += timedelta(minutes=53, seconds=20)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "completed")
+        self.assertAlmostEqual(coordinator.calls[1][3], 400)
+
+    def test_under_budget_non_hanjuku_start_is_not_gated(self):
+        # The admission gate is hanjuku-only: other adapters were not
+        # measured and must keep their existing behaviour even on short
+        # slots.
+        self.cfg = replace(self.cfg, duration_minutes=5)
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls[0][0], "switch")
+
     def test_expired_start_reconciles_exact_succeeded_receipt_without_replay(self):
         current = ["sorengame"]
 
