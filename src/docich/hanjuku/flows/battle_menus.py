@@ -942,8 +942,25 @@ def okunote_step(screen, mem):
                         reason='照合不能な召喚戦メニューへの入力が有界回数を超えてもおくのて行を確認できないため、以後は通常のコマンド判定へ戻す')
                 return None
             cur.pop('okunote_summon_unconfirmed', None)
+            cur['summon_enemy_hp'] = summon['enemy_monster_hp']
             _egg_general_reading(screen, mem, cur)
             hp = summon['ally_hp']
+            # Owner 2026-11-04: 相手のHPが一撃で倒せる残りなら奥の手は不要
+            # （召喚獣戦でも同じ）。通常のこうげきへ戻す。
+            if 0 < summon['enemy_monster_hp'] <= EGG_WALL_DAMAGE:
+                _record(mem, 'battle_okunote_skip_one_hit', **_battle_labels(cur),
+                        observed_metric={'enemy_monster_hp': summon['enemy_monster_hp'],
+                                         'wall_damage': EGG_WALL_DAMAGE},
+                        reason='敵の召喚獣のHPが一撃で倒せる残りのため、おくのてを使わず通常攻撃へ戻す')
+                return None
+        elif _one_hit_lethal(cur):
+            # Owner 2026-11-04: 通常戦でも相手のHPが一撃で倒せる残りなら
+            # 奥の手を開かない（既存の one_hit_lethal と同じ境界）。
+            _record(mem, 'battle_okunote_skip_one_hit', **_battle_labels(cur),
+                    observed_metric={'enemy_hp': cur.get('enemy_hp'),
+                                     'wall_damage': EGG_WALL_DAMAGE},
+                    reason='相手のHPが一撃で倒せる残りのため、おくのてを使わず通常攻撃へ戻す')
+            return None
         # g482: パプリカ34 entered the irreversible random choices and chose
         # しんだフリ (28..48 self damage), then lost at HP0. Before opening
         # the candidates, require enough *current* HP to survive even the
@@ -1582,6 +1599,8 @@ def egg_battle_step(screen: Screen, mem):
     summon = okunote.summon_reading(screen, mem, battle)
     okunote.combat_return(screen, mem, battle, summon=summon)
     if battle:
+        if isinstance(summon, dict) and type(summon.get('enemy_monster_hp')) is int:
+            battle['summon_enemy_hp'] = summon['enemy_monster_hp']
         battle['card_summon_observed'] = True
         battle['card_context_unclassified'] = False
     general_reading = _egg_general_reading(screen, mem, battle)

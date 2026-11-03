@@ -2030,6 +2030,10 @@ def _defender_summon_preempt(mem, cur):
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_summon_preempt') or {}
+    # Owner 2026-11-04: 相手（召喚獣）のHPが一撃で倒せる残りなら奥の手は不要。
+    enemy_hp = cur.get('summon_enemy_hp')
+    if type(enemy_hp) is int and 0 < enemy_hp <= EGG_WALL_DAMAGE:
+        return None
     if (type(chapter) is not int or chapter not in range(1, 13)
             or cur.get('side') not in ('defense', 'attack')
             or (cur.get('side') == 'defense'
@@ -2077,6 +2081,7 @@ def _defender_last_resort(mem, cur):
             or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
             or cur.get('okunote_last_resort_selected')
             or (cur.get('okunote_egg_preempt') or {}).get('selected')
+            or _one_hit_lethal(cur)
             or not cur.get('okunote_only_observed')):
         return False
     hp, enemy, start, enemy_start = (cur.get(k) for k in
@@ -2112,6 +2117,8 @@ def _defender_summon_last_resort(mem, cur, reading):
         return False
     hp, enemy = reading.get('ally_hp'), reading.get('enemy_monster_hp')
     starts = (cur.get('start_ally_hp'), cur.get('start_enemy_hp'))
+    if type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE:
+        return False   # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
     return (type(hp) is int and type(enemy) is int and 0 < hp <= OKUNOTE_MAX_SELF_DAMAGE
             and all(type(v) is int and v > 0 for v in starts)
             and type(general_max_hp(cur.get('enemy'))) is int

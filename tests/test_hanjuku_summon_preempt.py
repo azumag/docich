@@ -432,3 +432,15 @@ def test_enemy_summon_keeps_drawing_okunote_past_the_old_limit():
     # Once the summon is gone the old menu policy returns.
     mem['battle'].update(card_summon_observed=False, enemy_summon_observed=False)
     assert p._defender_summon_preempt(mem, mem['battle']) is None
+
+
+def test_enemy_summon_at_one_hit_hp_does_not_open_okunote():
+    """Owner 2026-11-04: 相手のHPが一撃で倒せる残りなら奥の手は不要."""
+    for hp in (1, 2, 3, 4):
+        mem = memory()
+        mem['battle'].update(okunote_only_observed=True, summon_enemy_hp=hp)
+        assert p._defender_summon_preempt(mem, mem['battle']) is None, hp
+    for hp in (5, 30):
+        mem = memory()
+        mem['battle'].update(okunote_only_observed=True, summon_enemy_hp=hp)
+        assert p._defender_summon_preempt(mem, mem['battle'])['due'], hp
