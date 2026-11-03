@@ -258,12 +258,14 @@ def test_candidate_then_egg_menu_return_redraws_within_the_fight():
     assert cur['okunote_draws'] == 1
     assert any(r['decision'] == 'battle_okunote_combat_return' for r in mem['_records'])
     assert cur['okunote_summon_preempt']['selected']  # a fresh guard, selected again
-    # At the redraw limit the preempt stops and the old fight resumes.
+    # The enemy summon remains: the preempt keeps drawing おくのて even past
+    # the old redraw limit (owner 2026-11-03).
     cur['okunote_draws'] = p.OKUNOTE_REDRAW_LIMIT
     mem['battle'].pop('okunote_summon_preempt')
     mem['battle'].pop('okunote_attempt', None)
-    actions = p.egg_battle_step(s, mem)
-    assert actions != [p.pad('a')] and no_b(actions)
+    assert p.egg_battle_step(s, mem) == [p.pad('a')]
+    # The no-summon exclusions (test_exclusions_keep_old_policy) resume the
+    # ordinary fight; this screen still shows the monster, so it stays here.
 
 
 def test_scrolled_egg_box_classifies_as_egg_battle_menu():
@@ -419,3 +421,14 @@ def test_an_unreadable_committed_menu_past_the_limit_marks_unavailable():
     assert guard['exhausted'] and guard['stage'] == 'unavailable'
     assert any(r['decision'] == 'battle_okunote_committed_unread'
                for r in mem['_records'])
+
+
+def test_enemy_summon_keeps_drawing_okunote_past_the_old_limit():
+    mem = memory()
+    mem['battle'].update(okunote_only_observed=True, okunote_draws=4)
+    assert p._defender_summon_preempt(mem, mem['battle'])['due']
+    mem['battle']['okunote_draws'] = 50
+    assert p._defender_summon_preempt(mem, mem['battle'])['due']
+    # Once the summon is gone the old menu policy returns.
+    mem['battle'].update(card_summon_observed=False, enemy_summon_observed=False)
+    assert p._defender_summon_preempt(mem, mem['battle']) is None

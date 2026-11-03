@@ -2051,8 +2051,11 @@ def _defender_summon_preempt(mem, cur):
                           and (cur.get('summon_egg_unavailable') or not cur.get('planned_cards'))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
-    if not resources_free or draws >= OKUNOTE_REDRAW_LIMIT:
+    if not resources_free:
         return None
+    # Owner 2026-11-03: 敵の召喚獣が残っている間は、おくのてを何度でも
+    # 引き直して倒し切る。抽選回数を理由に通常メニュー(こうげき)へ戻さない。
+    # メニューを開く回数・未読時の上限は従来どおり有界。
     return {'resources_basis': ('observed_okunote_only' if cur.get('okunote_only_observed')
                                 else 'summon_menu_egg_unavailable' if cur.get('summon_egg_unavailable')
                                 else 'own_egg_empty_no_cards'),
