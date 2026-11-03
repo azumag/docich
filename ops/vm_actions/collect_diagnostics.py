@@ -11195,6 +11195,45 @@ def _collect_hanjuku_projection_recovery(state_dir):
         return {**result, 'status': 'unverified'}
 
 
+def _hanjuku_runtime_terminal(root, runtime_id):
+    """Fixed-enemy projection of a rolled-back/failed Hanjuku runtime dir:
+    which reviewed terminal markers are present. Enums and booleans only;
+    no bytes, paths beyond the fixed layout, or private state escape."""
+    result = {
+        'runtime_present': False, 'presentation_status': None,
+        'receipt_status': None, 'gameplay_files': None,
+        'states_files': None,
+    }
+    try:
+        runtime = root / 'runtimes' / runtime_id
+        if not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', runtime_id) or not runtime.is_dir():
+            return result
+        result['runtime_present'] = True
+        presentation, _ = _read_hanjuku_record(runtime / 'presentation.json')
+        status = presentation.get('status')
+        if status in {'prepared', 'ready', 'stopped', 'presentation_failed',
+                      'cleanup_failed', 'failed'}:
+            result['presentation_status'] = status
+        elif status is not None:
+            result['presentation_status'] = 'other'
+        receipt, _ = _read_hanjuku_record(runtime / 'hanjuku_resume.json')
+        rstatus = receipt.get('status')
+        if rstatus in {'prepared', 'claimed', 'queued'}:
+            result['receipt_status'] = rstatus
+        elif rstatus is not None:
+            result['receipt_status'] = 'other'
+        result['gameplay_files'] = sorted(
+            name for name in ('hanjuku_bot.json', 'hanjuku_run.json',
+                              'hanjuku_events.jsonl')
+            if (runtime / name).exists())
+        states = runtime / 'states'
+        if states.is_dir():
+            result['states_files'] = sorted(entry.name for entry in states.iterdir())
+    except (OSError, ValueError, TypeError):
+        pass
+    return result
+
+
 def _collect_hanjuku_resume(state_dir):
     """Fixed metadata projection; does not read checkpoint/ROM bytes."""
     unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
@@ -11247,7 +11286,9 @@ def _collect_hanjuku_resume(state_dir):
             digest = hashlib.sha256(json.dumps(request, sort_keys=True,
                 separators=(',', ':'), allow_nan=False).encode()).hexdigest()
             return {**unavailable, 'status': 'detached_claim',
-                    'reservation_fingerprint': digest}
+                    'reservation_fingerprint': digest,
+                    'runtime_terminal': _hanjuku_runtime_terminal(
+                        root, request['runtime_id'])}
         if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
                 or not isinstance(owner.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])

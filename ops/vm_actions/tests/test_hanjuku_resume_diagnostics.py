@@ -66,7 +66,12 @@ def test_detached_claim_is_visible_without_claiming_recovery_eligibility(tmp_pat
         patch.setattr(Path,'read_bytes',forbid)
         result=load_collector()._collect_hanjuku_resume(tmp_path)
     assert result=={'status':'detached_claim','basis':'resume_receipt',
-                    'reservation_fingerprint':fingerprint(data)}
+                    'reservation_fingerprint':fingerprint(data),
+                    'runtime_terminal':{'runtime_present':True,
+                                        'presentation_status':None,
+                                        'receipt_status':None,
+                                        'gameplay_files':None,
+                                        'states_files':None}}
     assert 'PRIVATE' not in json.dumps(result)
     assert {p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==before
 
