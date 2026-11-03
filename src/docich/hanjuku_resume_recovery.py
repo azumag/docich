@@ -247,9 +247,22 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
                 or (queued and (queued.get('request_id') != attempt_queued_id
                                 or queued.get('resume_request_id') != logical))):
             raise CancelRefused('manual_queue_conflict')
-        owner = _object(base / 'retro_corner.json')
-        if owner.get('status') not in {'idle', 'completed', 'interrupted', 'expired'}:
+        owner_path = base / 'retro_corner.json'
+        owner = _object(owner_path)
+        terminal_owner = owner.get('status') in {'idle', 'completed', 'interrupted', 'expired'}
+        # A derived attempt can leave its exact owner at failed even though the
+        # switch has already rolled back and every runtime resource is gone.
+        # All those stronger proofs are checked above under the same writer
+        # locks. Reconcile only that exact failed attempt; a foreign/mismatched
+        # failed owner is still an ownership conflict and must fail closed.
+        failed_owner = (owner.get('status') == 'failed'
+                        and owner.get('game') == 'hanjuku-hero'
+                        and owner.get('rotation_request_id') == attempt_receipt_id)
+        if not terminal_owner and not failed_owner:
             raise CancelRefused('owner_not_terminal')
+        if failed_owner:
+            atomic_write_json(owner_path, dict(owner, status='interrupted',
+                                               startup_resume_recovery=attempt_queued_id))
         if failed is None:
             audit = {'claim': claim, 'attempt_id': first, 'fingerprint': fingerprint(claim)}
             new_recovery = dict(previous, attempt_id=attempt_ids[1], failed_attempt=audit)
