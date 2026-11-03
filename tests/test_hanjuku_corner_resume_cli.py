@@ -2,14 +2,16 @@ from types import SimpleNamespace
 
 
 def _patch_start(monkeypatch, *, recovered):
-    import docich.config as config_module
+    from docich import hanjuku_corner
     import docich.corner_rotation as rotation_module
     import docich.hanjuku_resume_recovery as recovery_module
 
     g = SimpleNamespace(state_dir="/tmp/unused")
     calls = {"recovery": 0, "queue": []}
 
-    monkeypatch.setattr(config_module, "load_global", lambda *args, **kwargs: g)
+    # hanjuku_corner imports load_global directly, so patch the symbol actually
+    # used by start() rather than docich.config.load_global.
+    monkeypatch.setattr(hanjuku_corner, "load_global", lambda *args, **kwargs: g)
 
     def recover(config):
         assert config is g
