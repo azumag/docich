@@ -791,9 +791,10 @@ def test_completed_roster_is_kept_for_the_status_card_across_a_partial_page():
     r.page(mem, NAMES[3:5])
     assert mem['recruit_roster']['complete'] is False
     assert mem[r.LAST_COMPLETE_KEY] == kept
-    # Membership changes invalidate both: the old count is no longer evidence.
+    # Invalidating the receipts keeps the count basis: the card still shows
+    # the last complete list plus confirmed joins until the next full walk.
     r.invalidate(mem)
-    assert r.LAST_COMPLETE_KEY not in mem
+    assert mem[r.LAST_COMPLETE_KEY] == kept
 
 
 def test_failed_or_untrusted_roster_does_not_replace_the_kept_count():
@@ -845,3 +846,58 @@ def test_failed_month_roster_walk_leaves_no_complete_copy():
     _failed_month_roster({'policy': mem})
     assert mem['recruit_roster']['complete'] is False
     assert r.LAST_COMPLETE_KEY not in mem
+
+
+def test_confirmed_joins_add_to_the_kept_count_and_departures_subtract():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert r.record_join(mem, 'ココット') is True
+    assert r.record_join(mem, 'ココット') is False  # duplicate announcement
+    assert r.record_join(mem, 'どうし') is False  # already on the list
+    assert r.record_join(mem, '') is False
+    assert mem[r.PENDING_JOINS_KEY] == ['ココット']
+    # A confirmed departure removes a joined name first, then a listed one.
+    assert r.record_departure(mem, 'ココット') is True
+    assert mem[r.PENDING_JOINS_KEY] == []
+    assert r.record_departure(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert r.record_departure(mem, 'だれか') is False
+    # A new complete list clears the pending joins (it already contains them).
+    r.record_join(mem, 'ココット')
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert r.PENDING_JOINS_KEY not in mem
+
+
+def test_observed_member_records_a_join_and_invalidate_keeps_the_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': []}
+    r._remember_complete(mem, receipt)
+    r.observed_member(mem, ['ココット'])
+    assert mem[r.PENDING_JOINS_KEY] == ['ココット']
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
+    assert r.completed_survey(mem) is None  # the old survey no longer applies
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
+
+
+def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': [NAMES[1]]}
+    r._remember_complete(mem, receipt)
+    assert r.forget_defeated(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert r.LAST_COMPLETE_KEY in mem  # the card subtracts instead of showing 不明

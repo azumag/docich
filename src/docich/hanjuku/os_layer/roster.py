@@ -15,6 +15,9 @@ VISIBLE_NAME_ROWS = 8
 # The frozen observation card keeps showing the last complete roster
 # (labelled as the previous month) until this month's complete walk.
 LAST_COMPLETE_KEY = 'roster_last_complete'
+# Confirmed 加入 announcements since that complete list, so the status
+# card can show 名簿人数＋加入人数 instead of dropping to 不明.
+PENDING_JOINS_KEY = 'roster_pending_joins'
 # SFC ID0..127 canonical char.csv: candidate wage is not known before payment.
 MAX_RECRUIT_WAGE = 15
 FRESH_TICKS = 400
@@ -198,6 +201,51 @@ def _remember_complete(mem, receipt):
     mem[LAST_COMPLETE_KEY] = {'schema': 1, 'identity': dict(identity),
                              'chapter': chapter, 'month': month, 'tick': tick,
                              'complete': True, 'names': list(names)}
+    mem.pop(PENDING_JOINS_KEY, None)  # this list already contains the joins
+
+
+def record_join(mem, name):
+    """A confirmed 加入告知 adds one general until the next complete list.
+
+    Payment or a return never proves an extra general (that is why a recruit
+    invalidates the receipts), but the game announces the joined name
+    explicitly. The status card adds these names to the last complete list
+    and keeps showing a count. ``invalidate()`` keeps both, a new complete
+    list clears them, and a confirmed departure removes the name from the
+    list it belongs to (see ``record_departure``).
+    """
+    record = mem.get(LAST_COMPLETE_KEY)
+    if (not isinstance(name, str) or not 1 <= len(name) <= 32
+            or not isinstance(record, dict) or not isinstance(record.get('names'), list)):
+        return False
+    if name in record['names']:
+        return False
+    pending = [n for n in mem.get(PENDING_JOINS_KEY) or []
+               if isinstance(n, str) and 1 <= len(n) <= 32]
+    if name in pending:
+        return False
+    mem[PENDING_JOINS_KEY] = (pending + [name])[:MAX_GENERALS]
+    return True
+
+
+def record_departure(mem, name):
+    """A confirmed departure subtracts one general from the kept count.
+
+    Only a full list that no longer holds a defeated general confirms this
+    (``forget_defeated``). Merely losing a battle is not proof of death, so
+    ``defeated`` keeps the count.
+    """
+    if not isinstance(name, str):
+        return False
+    record = mem.get(LAST_COMPLETE_KEY)
+    if isinstance(record, dict) and isinstance(record.get('names'), list) and name in record['names']:
+        record['names'] = [n for n in record['names'] if n != name]
+        return True
+    pending = [n for n in mem.get(PENDING_JOINS_KEY) or [] if isinstance(n, str)]
+    if name in pending:
+        mem[PENDING_JOINS_KEY] = [n for n in pending if n != name]
+        return True
+    return False
 
 
 def invalidate(mem):
@@ -206,7 +254,8 @@ def invalidate(mem):
     mem.pop('roster_survey_scope', None)
     mem.pop('roster_survey', None)
     mem.pop('roster_status_walk', None)
-    mem.pop(LAST_COMPLETE_KEY, None)
+    # Keep LAST_COMPLETE_KEY/PENDING_JOINS_KEY: the status card shows the
+    # last complete list plus confirmed joins until a new complete list.
     mem.pop('house_status_recheck', None)
     mem['recruit_roster_recheck'] = True
     if mem.get('house'):
@@ -245,6 +294,7 @@ def forget_defeated(mem, name):
     for key in ('dirty', 'dirty_revisions', 'read_revisions'):
         survey.get(key, {}).pop(name, None)
     survey['defeated'].remove(name)
+    record_departure(mem, name)  # subtract; a confirmed departure is not 不明
     _remember_complete(mem, survey['receipt'])  # the fresh list no longer holds them
     mem['house_status_recheck'] = bool(survey.get('dirty'))
     return True
@@ -292,6 +342,8 @@ def observed_member(mem, names):
         # month incomplete (g1097 18:35: roster_complete false), so the month
         # could never be carried and the full status walk ran again.
         return
+    for name in names:
+        record_join(mem, name)  # a new observed member stays visible as a count
     source = deepcopy(survey) if survey is not None and month_carry_enabled() else None
     wages = dict(held or {})
     if survey is not None:
