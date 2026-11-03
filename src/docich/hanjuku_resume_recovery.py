@@ -252,12 +252,28 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
         terminal_owner = owner.get('status') in {'idle', 'completed', 'interrupted', 'expired'}
         # A derived attempt can leave its exact owner at failed even though the
         # switch has already rolled back and every runtime resource is gone.
-        # All those stronger proofs are checked above under the same writer
-        # locks. Reconcile only that exact failed attempt; a foreign/mismatched
-        # failed owner is still an ownership conflict and must fail closed.
+        # The original logical request can also remain as the stale failed
+        # owner after the derived attempt was recorded. Accept the latter only
+        # after revalidating the original request's own exact rollback receipt.
+        original_terminal = store.receipts.load(logical)
+        original_result = original_terminal.get('result') if original_terminal else None
+        original_rolled_back = (
+            original_terminal is not None
+            and original_terminal.get('operation') == 'switch'
+            and original_terminal.get('target') == 'hanjuku-hero'
+            and original_terminal.get('status') == 'rolled_back'
+            and original_terminal.get('generation') == original['generation']
+            and original_terminal.get('runtime_id') == original['runtime_id']
+            and isinstance(original_result, dict)
+            and original_result.get('status') == 'rolled_back'
+            and original_result.get('request_id') == logical
+            and original_result.get('generation') == original['generation']
+        )
         failed_owner = (owner.get('status') == 'failed'
                         and owner.get('game') == 'hanjuku-hero'
-                        and owner.get('rotation_request_id') == attempt_receipt_id)
+                        and (owner.get('rotation_request_id') == attempt_receipt_id
+                             or (owner.get('rotation_request_id') == logical
+                                 and original_rolled_back)))
         if not terminal_owner and not failed_owner:
             raise CancelRefused('owner_not_terminal')
         if failed_owner:
