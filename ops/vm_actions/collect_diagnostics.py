@@ -228,6 +228,60 @@ _HARD_KEEP = ("meta", "prediction", "lawsim")
 # ``--min-participations`` override, so the defaults are the deployed values.
 # The collector runs against a fixed argv and does not import the docich package.
 _PREDICTION_MIN_ROUNDS = 3
+
+# Per-section byte accounting: measured once after budget reductions, reported
+# under ``meta`` as a fixed-shape map (top N + others + total) within hundreds
+# of bytes when serialized. Excluded from the budget envelope target.
+
+
+def _compute_section_bytes(payload):
+    """Compute per-section byte accounting for top-level payload keys.
+
+    For each top-level key (excluding ``meta`` itself to avoid circular
+    measurement), serialize the value as JSON (``sort_keys=True,
+    ensure_ascii=False``) and measure the UTF-8 byte length.  Return a
+    fixed-shape map comprising the top ``N`` keys by byte size, an ``others``
+    entry holding the total byte size of all remaining keys, and a ``total``
+    entry for the grand total.
+
+    The returned map is designed to serialize to within a few hundred bytes,
+    so it does not push up the diagnostics envelope.
+    """
+    import json
+
+    # Measure each top-level key's serialized byte size, skip meta itself
+    byte_sizes = {}
+    for key, value in payload.items():
+        if key == "meta":
+            continue
+        try:
+            serialized = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            continue
+        byte_len = len(serialized.encode("utf-8"))
+        byte_sizes[key] = byte_len
+
+    if not byte_sizes:
+        return {"others": 0, "total": 0}
+
+    # Sort by byte size descending
+    sorted_items = sorted(byte_sizes.items(), key=lambda x: x[1], reverse=True)
+    total = sum(v for _k, v in sorted_items)
+
+    # Take top N (N=5) to keep the map fixed-shape and small;
+    # the map itself serializes to well within hundreds of bytes.
+    N = 5
+    top_items = sorted_items[:N]
+    top_dict = {k: v for k, v in top_items}
+
+    # ``others`` = sum of byte sizes of all keys beyond the top N
+    others = total - sum(v for _k, v in top_items)
+
+    # Build the result: top N entries + "others" + "total"
+    result = dict(top_dict)
+    result["others"] = others
+    result["total"] = total
+    return result
 _PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
@@ -15082,6 +15136,9 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
+    # Append per-section byte accounting under meta (fixed-shape map:
+    # top N + others + total; serialized size well within hundreds of bytes).
+    payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
     sys.stdout.write(text + "\n")
     return 0
 
