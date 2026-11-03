@@ -55,7 +55,7 @@ class ManualRetroCornerTests(unittest.TestCase):
         mgr = ManualRetroCornerManager(
             self.g,
             game="ninvaders",
-            duration_minutes=7,
+            duration_minutes=5,
             coordinator=coordinator,
             now=lambda: now,
             sleep=lambda seconds: slept.append(seconds),
@@ -67,7 +67,7 @@ class ManualRetroCornerTests(unittest.TestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls, [("switch", "ninvaders"), ("switch", "sorengame")])
-        self.assertEqual(slept, [420.0])
+        self.assertEqual(slept, [300.0])
         self.assertEqual(current[0], "sorengame")
         self.assertFalse((self.g.state_dir / "retro_corner.json").exists())
         self.assertTrue((self.g.state_dir / "retro_corner_manual.json").exists())
@@ -107,7 +107,7 @@ class ManualRotationTargetContractTests(ManualRetroCornerTests):
         return ManualRetroCornerManager(
             self.g,
             game="ninvaders",
-            duration_minutes=7,
+            duration_minutes=5,
             coordinator=FakeCoordinator(["sorengame"]),
             now=lambda: datetime(2026, 9, 6, 17, 32, tzinfo=ZoneInfo("Asia/Tokyo")),
             sleep=lambda seconds: None,

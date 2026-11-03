@@ -1967,7 +1967,7 @@ class RetroCornerManager:
         return min(remaining, default_timeout_s)
 
     @staticmethod
-    def _start_budget_sufficient(timeout_s: float | None) -> bool:
+    def _start_budget_sufficient(target: str, timeout_s: float | None) -> bool:
         """Admission gate (#3174): refuse to run a doomed switch request.
 
         The request budget (min of remaining slot time and the coordinator
@@ -1977,8 +1977,15 @@ class RetroCornerManager:
         timeout -> rollback and leaves a claimed hanjuku-resume request that
         poisons later rotations.  A request budget of None means the slot is
         already over, which is also insufficient.
+
+        Only hanjuku-hero targets are gated: both constants were measured on
+        the hanjuku resume path (materialize->restore) and the residual claim
+        that poisons later rotations is specific to hanjuku_resume.claim().
+        Other adapters were not measured and stay ungated for now.
         """
 
+        if target != "hanjuku-hero":
+            return True
         return timeout_s is not None and timeout_s >= SWITCH_MIN_START_BUDGET_S
 
     @staticmethod
@@ -2371,7 +2378,7 @@ class RetroCornerManager:
         self._prepare_start_state(state, scheduled=scheduled)
         self._write_state(state)
         if not self._start_budget_sufficient(
-            self._remaining_start_timeout_s(state, now)
+            target, self._remaining_start_timeout_s(state, now)
         ):
             # Early expire before any request is submitted: no receipt, no
             # claim, so nothing residual can poison the next slot.
@@ -2445,8 +2452,8 @@ class RetroCornerManager:
         if previous is not None and not isinstance(previous, str):
             previous = None
         timeout_s = self._remaining_start_timeout_s(state, now)
-        if timeout_s is None or timeout_s < SWITCH_MIN_START_BUDGET_S:
-            # The queued request was admitted with enough budget but can no
+        if timeout_s is None or not self._start_budget_sufficient(target, timeout_s):
+            # A queued hanjuku request admitted with enough budget can no
             # longer finish drain+probe before its deadline; cancel it only
             # through the unclaimed-receipt path so a claimed request still
             # runs to its terminal state untouched.

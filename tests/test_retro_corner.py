@@ -782,10 +782,7 @@ class TestRetroCornerRotation(RetroCornerTestBase):
             self.cfg,
             games=games,
             mode="rotation",
-            # A slot shorter than the #3174 admission budget (400s) can never
-            # start a switch; 15 minutes keeps the fixture in the admissible
-            # range while staying far below the real 60-minute slot.
-            duration_minutes=15,
+            duration_minutes=1,
             rotation_period_hours=24.0,
             rotation_wait_minutes=10,
         )
@@ -2767,14 +2764,14 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
 
         first = mgr.start()
         self.assertEqual(first.status, "queued")
-        self.now_value += timedelta(minutes=52)
+        self.now_value += timedelta(minutes=55)
         second = mgr.tick()
 
         self.assertEqual(second.status, "completed")
         self.assertEqual(coordinator.calls[0][0:2], ("switch", "robots"))
         self.assertAlmostEqual(coordinator.calls[0][3], 10 * 60)
         self.assertEqual(coordinator.calls[1][0:2], ("switch", "robots"))
-        self.assertAlmostEqual(coordinator.calls[1][3], 8 * 60)
+        self.assertAlmostEqual(coordinator.calls[1][3], 5 * 60)
         self.assertIs(coordinator.calls[0][4], False)
         self.assertIs(coordinator.calls[1][4], False)
         self.assertEqual(coordinator.calls[0][2], coordinator.calls[1][2])
@@ -2813,13 +2810,53 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["result"]["error_code"], "timeout")
 
-    def test_under_budget_start_is_interrupted_before_any_switch_call(self):
-        # #3174 plan A admission gate: a slot that cannot cover the measured
-        # drain+probe budget expires before any request is submitted, so no
-        # receipt and no hanjuku-resume claim can be left behind.
-        self.cfg = replace(self.cfg, duration_minutes=5)
-        current = ["sorengame"]
+    def _hanjuku_manager(self, current, *, duration_minutes=None):
+        """Manager whose corner targets hanjuku-hero (the #3174 gated path)."""
+        (self.root / "config/games/hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\ntitle="Hanjuku"\nadapter="retroarch"\n'
+            '[retroarch]\nrom="games/roms/hanjuku-hero.sfc"\n'
+            '[lifecycle]\nrequire_round_boundary=true\n'
+            '[agent]\nenabled=true\n',
+            encoding="utf-8",
+        )
+        self.cfg = replace(
+            self.cfg,
+            games=["hanjuku-hero"],
+            duration_minutes=duration_minutes or self.cfg.duration_minutes,
+        )
         mgr, coordinator = self.manager(current)
+        return mgr, coordinator
+
+    @staticmethod
+    def _hanjuku_success(request_id):
+        identity = {
+            "game": "hanjuku-hero",
+            "runtime_id": "hanjuku-hero-g1-aaaa",
+            "generation": 1,
+            "lease_id": "lease-1",
+        }
+        receipt = {
+            "request_id": request_id,
+            "target": "hanjuku-hero",
+            "status": "succeeded",
+            "runtime_id": identity["runtime_id"],
+            "generation": 1,
+            "result": {"status": "succeeded", "active_runtime": identity},
+        }
+        return SimpleNamespace(
+            status="succeeded",
+            request_id=request_id,
+            error_code=None,
+            detail=None,
+            receipt=receipt,
+        )
+
+    def test_under_budget_hanjuku_start_is_interrupted_before_any_switch_call(self):
+        # #3174 plan A admission gate: a hanjuku slot that cannot cover the
+        # measured drain+probe budget expires before any request is
+        # submitted, so no receipt and no hanjuku-resume claim is left.
+        current = ["sorengame"]
+        mgr, coordinator = self._hanjuku_manager(current, duration_minutes=5)
 
         result = mgr.start()
 
@@ -2832,7 +2869,7 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         mgr.store.initialize()
         self.assertEqual(mgr.store.receipts.receipts(), [])
 
-    def test_queued_start_under_budget_is_cancelled_without_a_switch_call(self):
+    def test_queued_hanjuku_start_under_budget_is_cancelled_without_a_switch_call(self):
         current = ["sorengame"]
 
         class AlwaysQueuedCoordinator(FakeCoordinator):
@@ -2845,8 +2882,8 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
                     detail="queued",
                 )
 
+        mgr, _ = self._hanjuku_manager(current)
         coordinator = AlwaysQueuedCoordinator(current)
-        mgr, _ = self.manager(current)
         mgr.coordinator = coordinator
 
         first = mgr.start()
@@ -2854,7 +2891,7 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         state = mgr.status()
         request_id = state["switch_request_id"]
         mgr.store.initialize()
-        mgr.store.enqueue_request(request_id, "switch", "robots")
+        mgr.store.enqueue_request(request_id, "switch", "hanjuku-hero")
 
         # 54 minutes in leaves 360s of slot budget, below the 400s admission
         # gate; the still-unclaimed queued request is cancelled instead of
@@ -2871,8 +2908,9 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["result"]["error_code"], "timeout")
 
-    def test_queued_start_at_budget_boundary_is_still_admitted(self):
+    def test_queued_hanjuku_start_at_budget_boundary_is_still_admitted(self):
         current = ["sorengame"]
+        hanjuku_success = self._hanjuku_success
 
         class QueuedTimeoutCoordinator(FakeCoordinator):
             def __init__(self, current):
@@ -2886,6 +2924,7 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
                 request_id=None,
                 timeout_s=None,
                 allow_boundary_timeout_extension=True,
+                payload=None,
             ):
                 self.calls.append(
                     (
@@ -2896,7 +2935,7 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
                         allow_boundary_timeout_extension,
                     )
                 )
-                if game == "robots" and self.queue_once:
+                if game == "hanjuku-hero" and self.queue_once:
                     self.queue_once = False
                     return SimpleNamespace(
                         status="queued",
@@ -2905,15 +2944,10 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
                         detail="queued",
                     )
                 self.current[0] = game
-                return SimpleNamespace(
-                    status="succeeded",
-                    request_id=request_id,
-                    error_code=None,
-                    detail=None,
-                )
+                return hanjuku_success(request_id)
 
+        mgr, _ = self._hanjuku_manager(current)
         coordinator = QueuedTimeoutCoordinator(current)
-        mgr, _ = self.manager(current)
         mgr.coordinator = coordinator
 
         first = mgr.start()
@@ -2925,6 +2959,19 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
 
         self.assertEqual(second.status, "completed")
         self.assertAlmostEqual(coordinator.calls[1][3], 400)
+
+    def test_under_budget_non_hanjuku_start_is_not_gated(self):
+        # The admission gate is hanjuku-only: other adapters were not
+        # measured and must keep their existing behaviour even on short
+        # slots.
+        self.cfg = replace(self.cfg, duration_minutes=5)
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls[0][0], "switch")
 
     def test_expired_start_reconciles_exact_succeeded_receipt_without_replay(self):
         current = ["sorengame"]
