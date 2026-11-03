@@ -1478,6 +1478,11 @@ def _defender_summon_egg_menu(screen, mem, battle):
 
 _ENEMY_COMMAND_SETTLE_CANCEL_PERIOD = 12
 
+# g1107: an unread (greyed-row) cursor kept blind A rejected for hours. The
+# 4-row command box needs at most 3 ups to re-park on its top row; beyond
+# this bound the bot holds instead of confirming an unobserved row.
+EGG_ATTACK_UNREAD_UP_LIMIT = 6
+
 
 def _enemy_command_wait(mem, key, scope, decision, metric, wait_reason,
                         unconfirmed_reason):
@@ -1735,7 +1740,34 @@ def egg_battle_step(screen: Screen, mem):
         move = _battle_menu_to(screen, label)
         if move is None:
             visible = {w for _, _, w in _options(screen)}
-            if (screen.menu_cursor is not None and label not in visible
+            if screen.menu_cursor is None:
+                if empty_egg:
+                    return [pad('b')]  # never confirm the empty egg at an unread cursor
+                # g1107 2026-11-03: おくのて探索が尽きた後にカーソルが灰色の
+                # たまごをつかう行 (未読) に残り、未確認カーソルへの blind A が
+                # 2,000 回以上拒否され続けた。カーソルが読めないときは確定せず、
+                # 最上行へ戻す有界な up で再観測し、尽きれば保留する。fierce は
+                # 既存通り未読カーソルを動かさない。
+                if fierce or battle.get('egg_attack_label') == 'もうこうげき':
+                    return []
+                nudges = battle.get('egg_attack_unread_ups') or 0
+                if type(nudges) is int and nudges < EGG_ATTACK_UNREAD_UP_LIMIT:
+                    battle['egg_attack_unread_ups'] = nudges + 1
+                    _record(mem, 'battle_egg_attack_unread_cursor',
+                            **_battle_labels(battle),
+                            observed_metric={'command': label, 'visible': sorted(visible),
+                                             'up_attempt': nudges + 1},
+                            reason='コマンド行とカーソルが未読のままなので、未知の行を確定せず上へ戻して再観測する')
+                    return [pad('up')]
+                if nudges == EGG_ATTACK_UNREAD_UP_LIMIT:
+                    _record(mem, 'battle_egg_attack_unread_cursor_held',
+                            **_battle_labels(battle),
+                            observed_metric={'command': label, 'visible': sorted(visible),
+                                             'up_attempts': nudges},
+                            reason='有界な上戻しでもコマンド行・カーソルを再観測できないため、未知の行を確定せず入力を保留する')
+                return []
+            battle.pop('egg_attack_unread_ups', None)
+            if (label not in visible
                     and visible.intersection({'もうこうげき', 'おくのて'})):
                 # おくのて探索で箱がスクロールしたままなら、上へ戻して
                 # こうげき行を再観測する (見えない行をAで確定しない)。
