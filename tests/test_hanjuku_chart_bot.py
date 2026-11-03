@@ -896,10 +896,16 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     for _ in range(2):
         actions, state = decide(spent.frame(), state)
         assert actions[0]['buttons'] == ['b']
+    # g1107: with the row unreadable the cursor cannot be confirmed, so a
+    # blind A on the greyed egg row is rejected forever. The bot nudges up a
+    # bounded number of times to re-observe, then holds instead of confirming.
+    for _ in range(6):
+        actions, state = decide(spent.frame(), state)
+        assert actions[0]['buttons'] == ['up']
     actions, state = decide(spent.frame(), state)
-    assert actions[0]['buttons'] == ['a']
+    assert actions == []
     actions, state = decide(spent.frame(), state)
-    assert actions[0]['buttons'] == ['a']
+    assert actions == []
 
 
 def test_experience_prefers_a_better_action_and_stays_with_an_untried_default():
