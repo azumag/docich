@@ -11592,8 +11592,8 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
-def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
-    """Last fixed decision/event names from the active runtime's own log.
+def _hanjuku_decision_rows(runtime, active, clock):
+    """Parsed decision/event rows from the active runtime's own log tail.
 
     Only allowlisted tokens, fixed screen kinds and ages leave this reader.
     Reasons, chart steps, general/castle names, frame hashes and identities
@@ -11645,7 +11645,32 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
                 continue
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return []
-    return out[-limit:]
+    return out
+
+
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log."""
+    return _hanjuku_decision_rows(runtime, active, clock)[-limit:]
+
+
+def _hanjuku_sortie_launch(rows):
+    """Bounded launch-vs-repick signal from the decision tail itself.
+
+    A picked order fires ``order_start``; a sortie that actually leaves fires
+    ``order_launched``. Repeated picks with no launch in the same tail window
+    is the observed select-then-cancel loop (order_start → castle_menu → map),
+    which carried no signal until now and read as a healthy map walk.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str):
+            counts[decision] = counts.get(decision, 0) + 1
+    starts = counts.get('order_start', 0)
+    launched = counts.get('order_launched', 0)
+    return {'order_start': starts,
+            'order_launched': launched,
+            'stalled': starts >= 3 and launched == 0}
 
 
 # Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
@@ -11949,9 +11974,11 @@ def _collect_hanjuku_tactical(state_dir, now):
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
+            rows = _hanjuku_decision_rows(runtime, active, now)
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
                     'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
-                               'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                               'recent_decisions': rows[-8:],
+                               'sortie_launch': _hanjuku_sortie_launch(rows)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
@@ -11984,9 +12011,11 @@ def _collect_hanjuku_tactical(state_dir, now):
         again, _ = _read_hanjuku_record(root / 'game_switch.json')
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
+        dec_rows = _hanjuku_decision_rows(runtime, active, now)
         out.update(status='ok', age_sec=int(age), chapter=1,
                    policy={**_compact_hanjuku_policy(mem, bot),
-                           'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                           'recent_decisions': dec_rows[-8:],
+                           'sortie_launch': _hanjuku_sortie_launch(dec_rows)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)

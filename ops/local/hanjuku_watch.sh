@@ -53,12 +53,23 @@ if runs:
     # recent stall signals
     dec = os.path.join(os.path.dirname(p), "hanjuku_decisions.jsonl")
     try:
-        tail = open(dec).readlines()[-60:]
+        tail = open(dec).readlines()[-200:]
         held = [json.loads(x) for x in tail if 'situation_held' in x]
         if held:
             print("LAST_HELD reason=%s step=%s t=%s" % (
                 str(held[-1].get("reason"))[:80], held[-1].get("chart_step"),
                 datetime.datetime.fromtimestamp(held[-1].get("at", 0)).strftime("%H:%M:%S")))
+        rows = []
+        for x in tail:
+            try:
+                rows.append(json.loads(x))
+            except Exception:
+                pass
+        starts = sum(1 for r in rows if r.get("decision") == "order_start")
+        launched = sum(1 for r in rows if r.get("decision") == "order_launched")
+        print("SORTIE order_start=%d order_launched=%d %s" % (
+            starts, launched,
+            "STALL(select->cancel loop, no launch in tail)" if starts >= 3 and launched == 0 else "ok"))
     except Exception as e:
         print("decisions read: %s" % e)
 EOF
