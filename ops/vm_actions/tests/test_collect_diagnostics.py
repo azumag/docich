@@ -443,6 +443,22 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
     assert unknown['end_reason'] is None
 
 
+def test_corner_end_reason_reports_the_admission_gate_vocabulary():
+    # #3174 follow-up: the admission gate's early-expire reason must stay
+    # visible in diagnostics; an unregistered reason would silently project
+    # as null exactly when the gate fires in production.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-budget-insufficient'})
+    assert output['status']=='interrupted'
+    assert output['end_reason']=='start-budget-insufficient'
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-deadline-expired'})
+    assert output['end_reason']=='start-deadline-expired'
+
+
 def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
     # #1992: a released failed owner that the settle refused must be readable
     # from diagnostics alone, so a settle that does not fire does not need

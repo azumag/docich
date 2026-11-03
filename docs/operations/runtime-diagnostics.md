@@ -270,6 +270,13 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
   通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
   `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
+- `corners.<id>.end_reason` が `start-budget-insufficient` の場合、その枠は
+  **投入前 admission gate（#3174）が残り slot 予算（drain 見積 360s + probe
+  下限 40s = 400s 未満）を不足と判定し、switch request を submit せずに
+  早期 expire した**ことを意味する。claim 前の拒否なので hanjuku-resume の
+  claim 残留はなく、timeout/rollback による失敗ではない点で
+  `switch-terminal-before-corner-active` や `start-deadline-expired` と
+  区別して読む。対象は hanjuku-hero の切替のみ。
 - `corners.soren91_corner` は meriken（soren91）枠のライフサイクルと、その枠を
   終わらせた切替の結果を出す（#1221）。`status` / `game` / `previous_game` /
   `completed_at` / `end_reason` は他コーナーと同じ固定射影で、加えて
