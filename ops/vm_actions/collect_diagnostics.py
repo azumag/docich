@@ -6669,7 +6669,12 @@ def _project_corner_state(data):
                            # without this entry the refusal would project as
                            # null and be indistinguishable from an
                            # unregistered reason.
-                           "start-budget-insufficient"} else None),
+                           "start-budget-insufficient",
+                           # #3174 follow-up: the queued-start expiry writes
+                           # this reason when the slot deadline itself has
+                           # elapsed; it predates the admission gate but was
+                           # never allowlisted and would project as null.
+                           "start-deadline-expired"} else None),
         "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",

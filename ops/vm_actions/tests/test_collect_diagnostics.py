@@ -453,6 +453,10 @@ def test_corner_end_reason_reports_the_admission_gate_vocabulary():
         'end_reason':'start-budget-insufficient'})
     assert output['status']=='interrupted'
     assert output['end_reason']=='start-budget-insufficient'
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-deadline-expired'})
+    assert output['end_reason']=='start-deadline-expired'
 
 
 def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
