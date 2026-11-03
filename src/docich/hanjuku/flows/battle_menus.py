@@ -2143,18 +2143,23 @@ def monster_menu_step(screen: Screen, mem):
                 owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
             if policy_default is not None:
                 default = policy_default
+        # Owner 2026-11-03: ランプキンは自分のHPが一桁になったら、倒される
+        # 前に「たまごにもどる」で帰還する。攻撃継続より卵へ戻す判断を優先し、
+        # ボス/HP1の強制スキル選択より先に適用する。
+        lampkin_return = bool(lampkin and type(ally_hp) is int and 0 < ally_hp <= 9)
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
         # Special monster owner tactics must not be overridden by generic
         # retreat/experience: Balloon Finch survival and Akematsu one-shot swap.
-        action = (default if special_cycle else
+        action = ('retreat' if lampkin_return else
+                  default if special_cycle else
                   'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
                   else chikyu or lampkin or experience.preferred(exp, key, default=default, kind='monster_menu'))
         # HP pools alone do not establish that this monster cannot win: a
         # living summon can attack, heal or disable the opponent. Returning
         # also exposes its general. Discard saved/learned HP-only retreats;
-        # retain the explicit, measured two-useless-skills exception.
-        if action == 'retreat' and not powerless:
+        # retain the measured two-useless-skills and Lampkin low-HP returns.
+        if action == 'retreat' and not (powerless or lampkin_return):
             action = default
         if not special_cycle and not damage_first and not damage_second and not chikyu and not lampkin:
             action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines))
@@ -2169,7 +2174,11 @@ def monster_menu_step(screen: Screen, mem):
         battle = mem.get('battle')
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
-        if action == 'retreat':
+        if action == 'retreat' and lampkin_return:
+            label = 'たまごに もどれ'
+            why = (f'HP{ally_hp}が一桁のため、倒される前に「たまごにもどる」で'
+                   '帰還する（オーナー 2026-11-03）')
+        elif action == 'retreat':
             label = 'たまごに もどれ'
             why = '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
         elif balloon_cycle:
@@ -2263,6 +2272,7 @@ def monster_menu_step(screen: Screen, mem):
                                  'damage_first': damage_first,
                                  'chikyu_choice': chikyu,
                                  'lampkin_choice': lampkin,
+                                 'lampkin_return': lampkin_return,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
