@@ -9,7 +9,7 @@ accessors themselves.
 """
 from docich.hanjuku.state import regions
 from docich.hanjuku.state.regions import (FLOW, JOURNAL, PLAN, WORLD,
-                                          KEY_OWNERSHIP, flow, journal,
+                                          KEY_OWNERSHIP, flow, journal, world,
                                           migrate_legacy_state)
 from test_hanjuku_execution_binding import confirm, memory
 
@@ -65,6 +65,20 @@ def test_flow_session_keys_die_with_the_chapter():
     assert 'flow' not in mem or not mem['flow'].get('departure_request')
     assert 'departure_request' not in mem
     assert 'departure_miss' not in mem
+
+
+def test_world_region_dies_with_the_chapter_but_journal_survives():
+    # W1 follow-up: _enter_chapter must clear the world region (chapter
+    # lifetime) while the journal region (run lifetime) is untouched.
+    from docich.hanjuku.strategy import campaign
+    mem = memory(); confirm(mem)
+    world(mem)['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
+    world(mem)['launched_orders'] = {'1-A1': {'step': '1-A1'}}
+    journal(mem)['_departure_input'] = {'request_trace': {'d': 2}}
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert 'world' not in mem
+    assert 'launched' not in mem and 'launched_orders' not in mem
+    assert mem['journal']['_departure_input']['request_trace'] == {'d': 2}
 
 
 def test_migrated_departure_and_recall_keys_live_in_their_regions():
