@@ -37,6 +37,7 @@ from .game_switch import (
     GameSwitchStore,
     RuntimeSpec,
     StateCorruptError,
+    SWITCH_MIN_START_BUDGET_S,
     _request_payload_hash,
     atomic_write_json,
     new_request_id,
@@ -1966,6 +1967,21 @@ class RetroCornerManager:
         return min(remaining, default_timeout_s)
 
     @staticmethod
+    def _start_budget_sufficient(timeout_s: float | None) -> bool:
+        """Admission gate (#3174): refuse to run a doomed switch request.
+
+        The request budget (min of remaining slot time and the coordinator
+        cap) must cover the measured drain estimate plus the probe floor
+        (SWITCH_MIN_START_BUDGET_S).  Below that the request cannot finish
+        drain+readiness before its deadline, so it deterministically hits
+        timeout -> rollback and leaves a claimed hanjuku-resume request that
+        poisons later rotations.  A request budget of None means the slot is
+        already over, which is also insufficient.
+        """
+
+        return timeout_s is not None and timeout_s >= SWITCH_MIN_START_BUDGET_S
+
+    @staticmethod
     def _succeeded_start_receipt_matches_active(
         canonical: dict[str, object],
         receipt: dict[str, object],
@@ -2071,6 +2087,8 @@ class RetroCornerManager:
         request_id: str,
         target: str,
         previous: str | None,
+        end_reason: str = "start-deadline-expired",
+        detail: str = "retro corner start deadline expired before claim",
     ) -> tuple[dict[str, object], CornerResult | None]:
         """Reconcile a committed start, or cancel only an unclaimed queue entry."""
 
@@ -2162,7 +2180,7 @@ class RetroCornerManager:
                     "to_game": target,
                     "generation": receipt.get("generation"),
                     "error_code": ERROR_TIMEOUT,
-                    "detail": "retro corner start deadline expired before claim",
+                    "detail": detail,
                 }
                 transaction.finish_request(request_id, "failed", result)
         except GameSwitchBusyError:
@@ -2177,7 +2195,7 @@ class RetroCornerManager:
         state.update(
             status="interrupted",
             completed_at=now.isoformat(),
-            end_reason="start-deadline-expired",
+            end_reason=end_reason,
             last_error=None,
             last_error_code=None,
         )
@@ -2186,7 +2204,7 @@ class RetroCornerManager:
             "interrupted",
             game=target,
             previous_game=previous,
-            detail="retro corner start deadline expired before claim",
+            detail=detail,
         )
 
     def _reconcile_stale_locked(self, now: dt.datetime) -> None:
@@ -2352,6 +2370,26 @@ class RetroCornerManager:
             state.update(extra_state)
         self._prepare_start_state(state, scheduled=scheduled)
         self._write_state(state)
+        if not self._start_budget_sufficient(
+            self._remaining_start_timeout_s(state, now)
+        ):
+            # Early expire before any request is submitted: no receipt, no
+            # claim, so nothing residual can poison the next slot.
+            state.pop("switch_request_id", None)
+            state.update(
+                status="interrupted",
+                completed_at=now.isoformat(),
+                end_reason="start-budget-insufficient",
+                last_error=None,
+                last_error_code=None,
+            )
+            self._write_state(state)
+            return state, CornerResult(
+                "interrupted",
+                game=target,
+                previous_game=previous,
+                detail="switch start budget below drain+probe estimate",
+            )
         try:
             transition = self._transition_to_start(
                 previous,
@@ -2407,13 +2445,27 @@ class RetroCornerManager:
         if previous is not None and not isinstance(previous, str):
             previous = None
         timeout_s = self._remaining_start_timeout_s(state, now)
-        if timeout_s is None:
+        if timeout_s is None or timeout_s < SWITCH_MIN_START_BUDGET_S:
+            # The queued request was admitted with enough budget but can no
+            # longer finish drain+probe before its deadline; cancel it only
+            # through the unclaimed-receipt path so a claimed request still
+            # runs to its terminal state untouched.
             return self._expire_queued_start_locked(
                 state,
                 now,
                 request_id=request_id,
                 target=target,
                 previous=previous,
+                end_reason=(
+                    "start-budget-insufficient"
+                    if timeout_s is not None
+                    else "start-deadline-expired"
+                ),
+                detail=(
+                    "queued switch start budget fell below drain+probe estimate"
+                    if timeout_s is not None
+                    else "retro corner start deadline expired before claim"
+                ),
             )
         try:
             transition = self._transition_to_start(

@@ -782,7 +782,10 @@ class TestRetroCornerRotation(RetroCornerTestBase):
             self.cfg,
             games=games,
             mode="rotation",
-            duration_minutes=1,
+            # A slot shorter than the #3174 admission budget (400s) can never
+            # start a switch; 15 minutes keeps the fixture in the admissible
+            # range while staying far below the real 60-minute slot.
+            duration_minutes=15,
             rotation_period_hours=24.0,
             rotation_wait_minutes=10,
         )
@@ -2764,14 +2767,14 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
 
         first = mgr.start()
         self.assertEqual(first.status, "queued")
-        self.now_value += timedelta(minutes=55)
+        self.now_value += timedelta(minutes=52)
         second = mgr.tick()
 
         self.assertEqual(second.status, "completed")
         self.assertEqual(coordinator.calls[0][0:2], ("switch", "robots"))
         self.assertAlmostEqual(coordinator.calls[0][3], 10 * 60)
         self.assertEqual(coordinator.calls[1][0:2], ("switch", "robots"))
-        self.assertAlmostEqual(coordinator.calls[1][3], 5 * 60)
+        self.assertAlmostEqual(coordinator.calls[1][3], 8 * 60)
         self.assertIs(coordinator.calls[0][4], False)
         self.assertIs(coordinator.calls[1][4], False)
         self.assertEqual(coordinator.calls[0][2], coordinator.calls[1][2])
@@ -2809,6 +2812,119 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         receipt = mgr.store.receipts.load(request_id)
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["result"]["error_code"], "timeout")
+
+    def test_under_budget_start_is_interrupted_before_any_switch_call(self):
+        # #3174 plan A admission gate: a slot that cannot cover the measured
+        # drain+probe budget expires before any request is submitted, so no
+        # receipt and no hanjuku-resume claim can be left behind.
+        self.cfg = replace(self.cfg, duration_minutes=5)
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "interrupted")
+        self.assertEqual(coordinator.calls, [])
+        state = mgr.status()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "start-budget-insufficient")
+        self.assertNotIn("switch_request_id", state)
+        mgr.store.initialize()
+        self.assertEqual(mgr.store.receipts.receipts(), [])
+
+    def test_queued_start_under_budget_is_cancelled_without_a_switch_call(self):
+        current = ["sorengame"]
+
+        class AlwaysQueuedCoordinator(FakeCoordinator):
+            def switch(self, game, *, request_id=None, timeout_s=None):
+                self.calls.append(("switch", game, request_id, timeout_s))
+                return SimpleNamespace(
+                    status="queued",
+                    request_id=request_id,
+                    error_code="queued",
+                    detail="queued",
+                )
+
+        coordinator = AlwaysQueuedCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        state = mgr.status()
+        request_id = state["switch_request_id"]
+        mgr.store.initialize()
+        mgr.store.enqueue_request(request_id, "switch", "robots")
+
+        # 54 minutes in leaves 360s of slot budget, below the 400s admission
+        # gate; the still-unclaimed queued request is cancelled instead of
+        # running a switch that is guaranteed to time out and roll back.
+        self.now_value += timedelta(minutes=54)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "interrupted")
+        self.assertEqual(len(coordinator.calls), 1)
+        self.assertEqual(
+            mgr.status()["end_reason"], "start-budget-insufficient"
+        )
+        receipt = mgr.store.receipts.load(request_id)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["result"]["error_code"], "timeout")
+
+    def test_queued_start_at_budget_boundary_is_still_admitted(self):
+        current = ["sorengame"]
+
+        class QueuedTimeoutCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_once = True
+
+            def switch(
+                self,
+                game,
+                *,
+                request_id=None,
+                timeout_s=None,
+                allow_boundary_timeout_extension=True,
+            ):
+                self.calls.append(
+                    (
+                        "switch",
+                        game,
+                        request_id,
+                        timeout_s,
+                        allow_boundary_timeout_extension,
+                    )
+                )
+                if game == "robots" and self.queue_once:
+                    self.queue_once = False
+                    return SimpleNamespace(
+                        status="queued",
+                        request_id=request_id,
+                        error_code="queued",
+                        detail="queued",
+                    )
+                self.current[0] = game
+                return SimpleNamespace(
+                    status="succeeded",
+                    request_id=request_id,
+                    error_code=None,
+                    detail=None,
+                )
+
+        coordinator = QueuedTimeoutCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        # Exactly 400s of budget remains: drain estimate 360s + probe floor
+        # 40s is the inclusive admission threshold, so the replay proceeds.
+        self.now_value += timedelta(minutes=53, seconds=20)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "completed")
+        self.assertAlmostEqual(coordinator.calls[1][3], 400)
 
     def test_expired_start_reconciles_exact_succeeded_receipt_without_replay(self):
         current = ["sorengame"]

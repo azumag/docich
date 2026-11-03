@@ -1530,6 +1530,25 @@ class GameSwitchStore:
 # recoverable step failures.
 
 DEFAULT_REQUEST_TIMEOUT_S = 600.0
+# Admission gate budget for corner start requests (#3174, plan A).  A request
+# admitted with less remaining budget than drain + probe can never reach
+# readiness before its deadline and instead chains doomed rollbacks
+# (observed: the same request failing 4 times in a row).  Both constants are
+# bounded values derived from the production game_switch.log measurement
+# (2026-11-03, issuecomment-6605747649):
+#  - drain estimate: begin->round_boundary_reached p95 352.4s (n=561), rounded
+#    to 360s.  The max 734.5s is intentionally not baked in: it includes the
+#    boundary pathology period fixed by #3172, and combining it with the 600s
+#    request cap would make nearly every switch inadmissible.
+#  - probe floor: recent successful materialize->restore max 37.5s
+#    (2026-11-01+, n=3; samples 4.3/37.4/37.5s), rounded up to 40s.  The
+#    all-period p95 of 5.7s is intentionally not used because the recent
+#    resume path is far above it.
+# 再確認は deploy 後 diagnostics（受入手順4）で行い、必要なら follow-up で
+# 見直す。定数は設定化しない（#3174 の設計判断どおり）。
+SWITCH_DRAIN_BUDGET_S = 360.0
+SWITCH_PROBE_BUDGET_S = 40.0
+SWITCH_MIN_START_BUDGET_S = SWITCH_DRAIN_BUDGET_S + SWITCH_PROBE_BUDGET_S
 QUIESCE_VERIFY_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
 PREFLIGHT_TIMEOUT_S = 60.0
