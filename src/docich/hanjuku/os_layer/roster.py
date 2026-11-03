@@ -12,6 +12,9 @@ MAX_GENERALS = 32
 # so the roster shows this many names at once. A page shorter than this ends
 # on screen and cannot hide a further entry.
 VISIBLE_NAME_ROWS = 8
+# The frozen observation card keeps showing the last complete roster
+# (labelled as the previous month) until this month's complete walk.
+LAST_COMPLETE_KEY = 'roster_last_complete'
 # SFC ID0..127 canonical char.csv: candidate wage is not known before payment.
 MAX_RECRUIT_WAGE = 15
 FRESH_TICKS = 400
@@ -173,12 +176,37 @@ def roles(raw):
     return dict(raw)
 
 
+def _remember_complete(mem, receipt):
+    """Keep a bounded copy of the last complete roster for the status card.
+
+    The card must not fall back to 不明 when a partial page replaces
+    ``recruit_roster`` or the month rolls over. Membership-changing events
+    still call ``invalidate()``, which drops this copy with the receipts.
+    """
+    identity = run_identity(mem.get('_run_identity'))
+    if not isinstance(receipt, dict) or receipt.get('complete') is not True:
+        return
+    chapter, month = receipt.get('chapter'), receipt.get('month')
+    names, tick = receipt.get('names'), receipt.get('tick')
+    if (identity is None or type(chapter) is not int or chapter <= 0
+            or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or not isinstance(names, list) or not 1 <= len(names) <= MAX_GENERALS
+            or any(not isinstance(name, str) or not 1 <= len(name) <= 32 for name in names)
+            or len(set(names)) != len(names) or type(tick) is not int):
+        return
+    mem[LAST_COMPLETE_KEY] = {'schema': 1, 'identity': dict(identity),
+                             'chapter': chapter, 'month': month, 'tick': tick,
+                             'complete': True, 'names': list(names)}
+
+
 def invalidate(mem):
     mem.pop('roster_carry_source', None)  # only observed_member() re-stashes it
     mem.pop('recruit_roster', None)
     mem.pop('roster_survey_scope', None)
     mem.pop('roster_survey', None)
     mem.pop('roster_status_walk', None)
+    mem.pop(LAST_COMPLETE_KEY, None)
     mem.pop('house_status_recheck', None)
     mem['recruit_roster_recheck'] = True
     if mem.get('house'):
@@ -217,6 +245,7 @@ def forget_defeated(mem, name):
     for key in ('dirty', 'dirty_revisions', 'read_revisions'):
         survey.get(key, {}).pop(name, None)
     survey['defeated'].remove(name)
+    _remember_complete(mem, survey['receipt'])  # the fresh list no longer holds them
     mem['house_status_recheck'] = bool(survey.get('dirty'))
     return True
 
@@ -597,6 +626,7 @@ def complete(mem, state):
             and set(receipt['names']) == set(state.get('seen') or ()))
     if full:
         receipt['complete'] = True
+        _remember_complete(mem, receipt)
         # Prior-stage employed names may still be waiting for arrival. The
         # active list cannot prove they stopped receiving wages. Resolve only
         # by observing every retained name in this full global scan.

@@ -773,3 +773,75 @@ def test_invalid_completed_survey_chapter_cannot_release_members(location, value
     p._prioritise_recruit(mem, current, 500)
     assert current['recruit'] == 'deferred_roster'
     assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef12', 'generation': 1,
+            'lease_id': 'lease'}
+
+
+def test_completed_roster_is_kept_for_the_status_card_across_a_partial_page():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True)
+    r._remember_complete(mem, receipt)
+    kept = mem[r.LAST_COMPLETE_KEY]
+    assert kept['names'] == NAMES[:3] and (kept['chapter'], kept['month']) == (1, '1-7')
+    assert kept['identity'] == IDENTITY
+    # A single roster page outside a scan replaces the receipt, never the copy.
+    r.page(mem, NAMES[3:5])
+    assert mem['recruit_roster']['complete'] is False
+    assert mem[r.LAST_COMPLETE_KEY] == kept
+    # Membership changes invalidate both: the old count is no longer evidence.
+    r.invalidate(mem)
+    assert r.LAST_COMPLETE_KEY not in mem
+
+
+def test_failed_or_untrusted_roster_does_not_replace_the_kept_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    kept = mem[r.LAST_COMPLETE_KEY]
+    for broken in (dict(mem['recruit_roster'], complete=False),
+                   dict(mem['recruit_roster'], complete=True, month='1-13'),
+                   dict(mem['recruit_roster'], complete=True, names=['どうし', 'どうし']),
+                   dict(mem['recruit_roster'], complete=True, names=[]),
+                   dict(mem['recruit_roster'], complete=True, tick=True)):
+        r._remember_complete(mem, broken)
+        assert mem[r.LAST_COMPLETE_KEY] == kept
+    mem.pop('_run_identity')
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert mem[r.LAST_COMPLETE_KEY] == kept
+
+
+def test_forget_defeated_removes_the_general_from_the_kept_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, wages={}, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': [NAMES[1]]}
+    r._remember_complete(mem, receipt)
+    assert r.forget_defeated(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert mem[r.LAST_COMPLETE_KEY]['tick'] == receipt['tick']
+
+
+def test_month_roster_walk_keeps_a_complete_copy_for_the_status_card():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    _month_roster({'policy': mem})
+    kept = mem.get(r.LAST_COMPLETE_KEY)
+    assert kept and kept['names'] == mem['recruit_roster']['names']
+    assert (kept['chapter'], kept['month']) == (mem['chapter'], mem['month'])
+    assert kept['identity'] == IDENTITY and kept['tick'] == mem['recruit_roster']['tick']
+
+
+def test_failed_month_roster_walk_leaves_no_complete_copy():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    _failed_month_roster({'policy': mem})
+    assert mem['recruit_roster']['complete'] is False
+    assert r.LAST_COMPLETE_KEY not in mem
