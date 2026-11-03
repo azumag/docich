@@ -19,6 +19,16 @@ def start(*, resume_latest=False):
     root = Path(__file__).resolve().parents[2]
     config = load_global(root, root / 'config/docich.soren-live.toml')
     from .corner_rotation import CornerRotationManager
+    # Explicit checkpoint resume must mirror the WebUI path: before creating a
+    # new manual reservation, recover an already-claimed failed-before-AI
+    # transfer when the reviewed recovery proves it is still the same logical
+    # checkpoint.  Skipping this gate makes a detached claim look like a generic
+    # queue rejection and strands an otherwise recoverable save.
+    if resume_latest:
+        from .hanjuku_resume_recovery import queue_failed_start
+        recovered = queue_failed_start(config)
+        if recovered is not None:
+            return recovered
     # Durable next-slot priority: the timer finishes the current reservation
     # and uses the normal execution/program-slot/game-boundary gates.
     manager = CornerRotationManager(config)
