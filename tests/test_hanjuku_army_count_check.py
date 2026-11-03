@@ -469,3 +469,20 @@ def test_closing_stage_advances_leftover_plain_text_with_a():
     mem2['army_count_check'] = {'scope': scope2, 'stage': 'closing',
                                 'result': 'unverified', 'exit_presses': 4}
     assert monthly._month_army_count_check(s2, mem2, mem2['shop']) == []
+
+
+def test_closing_stage_releases_an_unclosable_screen():
+    # g1105 43-5: a foreground screen the check can neither close nor advance
+    # stayed owned forever; army_count_owned then suppressed the no-input
+    # escape and the menu froze until screen_stalled. The tick still holds,
+    # but the check releases the screen afterwards.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう', choices=True)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s, mem, mem['shop']) == []
+    assert mem['army_count_check']['stage'] == 'unverified'
+    assert monthly._month_army_count_check(s, mem, mem['shop']) is None
