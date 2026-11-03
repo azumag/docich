@@ -2165,7 +2165,12 @@ def monster_menu_step(screen: Screen, mem):
         # Owner 2026-11-03: ランプキンは自分のHPが一桁になったら、倒される
         # 前に「たまごにもどる」で帰還する。攻撃継続より卵へ戻す判断を優先し、
         # ボス/HP1の強制スキル選択より先に適用する。
-        lampkin_return = bool(lampkin and type(ally_hp) is int and 0 < ally_hp <= 9)
+        # Owner 2026-11-04: the enemy can be the same monster (ランプキン),
+        # which makes _monster_owner ambiguous (both skill sets match) and
+        # left the retreat unselected at HP 1/3/6. The ally panel is our
+        # monster, so take the return from the ally Lampkin menu regardless.
+        lampkin_return = bool(_lampkin_menu('ally', ally, lampkin_skills)
+                              and type(ally_hp) is int and 0 < ally_hp <= 9)
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
         # Special monster owner tactics must not be overridden by generic

@@ -51,3 +51,16 @@ def test_lampkin_return_also_applies_at_one_hp_and_to_bosses(monkeypatch):
         state_ = state()
         menus.monster_menu_step(view(ally_hp=1, enemy=enemy, cursor=160), state_)
         assert state_['monster_menu_choice'] == 'retreat'
+
+
+def test_ambiguous_same_monster_both_sides_still_returns_to_the_egg(monkeypatch):
+    """The enemy being the same monster makes the owner ambiguous.
+
+    Live 2026-11-04 00:06/00:36: ally ランプキン at HP 1/3/6 vs ランプキン,
+    owner=None, the bot selected かぼちゃ instead of the egg. The ally panel
+    is our monster, so the single-digit return must still win.
+    """
+    quiet(monkeypatch)
+    state_ = state()
+    assert menus.monster_menu_step(view(ally_hp=9, enemy='ランプキン', cursor=160), state_) == [menus.pad('down')]
+    assert state_['monster_menu_choice'] == 'retreat'
