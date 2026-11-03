@@ -64,3 +64,12 @@ def test_ambiguous_same_monster_both_sides_still_returns_to_the_egg(monkeypatch)
     state_ = state()
     assert menus.monster_menu_step(view(ally_hp=9, enemy='ランプキン', cursor=160), state_) == [menus.pad('down')]
     assert state_['monster_menu_choice'] == 'retreat'
+
+
+def test_mirror_lampkin_uses_only_the_dance(monkeypatch):
+    """Owner 2026-11-04: 相手もランプキンなら へんなおどり だけ."""
+    quiet(monkeypatch)
+    for hp in (10, 50, 100):
+        state_ = state()
+        assert menus.monster_menu_step(view(ally_hp=hp, enemy='ランプキン', cursor=160), state_) == [menus.pad('a')]
+        assert state_['monster_menu_choice'] == 'skill1'

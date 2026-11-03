@@ -2062,6 +2062,13 @@ def monster_menu_step(screen: Screen, mem):
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     lampkin_skills = [''.join(line.known.split()) for line in skill_lines]
     lampkin_forced = _monster_lampkin_choice(owner, ally, enemy, lampkin_skills)
+    # Owner 2026-11-04: 相手もランプキンなら「へんなおどり」だけを選ぶ。
+    # 同名同士では owner が曖昧（両側のスキルが一致）でも、味方パネルが
+    # ランプキンならこの戦闘のメニューはこちらなので同じ規則を使う。
+    lampkin_mirror = bool(_lampkin_menu('ally', ally, lampkin_skills)
+                          and enemy is not None and enemy.name == 'ランプキン')
+    if lampkin_mirror:
+        lampkin_forced = 'skill1'
     lampkin_cycle = (_lampkin_menu(owner, ally, lampkin_skills) and lampkin_forced is None)
     lampkin = lampkin_forced or (lampkin_cycle_choice(mem, enemy) if lampkin_cycle else None)
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
@@ -2253,7 +2260,10 @@ def monster_menu_step(screen: Screen, mem):
         elif lampkin:
             label = second if action == 'skill2' else first
             kind = _lampkin_forced_kind(enemy)
-            if kind == 'boss':
+            if lampkin_mirror:
+                label = first
+                why = '同名のランプキン戦は「へんなおどり」だけを選ぶ（オーナー 2026-11-04）'
+            elif kind == 'boss':
                 why = 'ボスモンスターに「かぼちゃ」はきかないため、つねに「へんなおどり」を選ぶ（オーナー 2026-11-02）'
             elif kind == 'hp1':
                 why = '相手のHPが1でそのまま押し切れるため、「かぼちゃ」を使わず「へんなおどり」を選ぶ（オーナー 2026-11-02）'
