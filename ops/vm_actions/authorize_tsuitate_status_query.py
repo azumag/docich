@@ -13,7 +13,8 @@ REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
 WORKFLOW = "azumag/docich/.github/workflows/tsuitate-status-query.yml@refs/heads/main"
 ISSUE_NUMBER = "2938"
-COMMAND_RE = re.compile(r"/tsuitate-status production (hourly-[0-9]{10})\Z")
+RUN_ID_PATTERN = r"(?:hourly-[0-9]{10}|background-[0-9]{20})"
+COMMAND_RE = re.compile(rf"/tsuitate-status production ({RUN_ID_PATTERN})\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
