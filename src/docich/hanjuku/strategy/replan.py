@@ -649,11 +649,21 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
 
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
-    if (mem.get('chart_plan') or {}).get('request_id') == rid:
-        return
     if _plan_pending(mem):
         return
     allow_sole = _defense_gate(mem) == 'break'
+    if (mem.get('chart_plan') or {}).get('request_id') == rid:
+        # The stored plan belongs to this situation and the caller has just
+        # shown that none of its orders can start (_plan_pending is False).
+        # Rebuilding it would offer the same blocked orders again, so send the
+        # single deterministic interim sortie instead — the fallback the
+        # speedrun path already takes for an exhausted adopted plan. Without
+        # it the bot idled on the field with the whole army home: g1107
+        # 2026-11-03 07:24-07:33Z (chapter 5, 44-6..44-7) kept four pending
+        # worker orders that could never start, nine generals in the home
+        # castle and two lost castles, and the month advanced with no sortie.
+        _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
+        return
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)

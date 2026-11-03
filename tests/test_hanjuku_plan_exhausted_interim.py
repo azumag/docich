@@ -1,0 +1,91 @@
+"""An adopted plan with no startable order must not stop the fallback sortie.
+
+g1107 (2026-11-03 07:24-07:33Z, chapter 5, month 44-6..44-7): a worker plan was
+adopted under request id `d2bca0d0`. None of its four pending orders could
+start, so `next_order` answered None and `map_step` idled on the field. The
+mechanical fallback never ran: `_mechanical_chart` returned as soon as the
+stored plan's request id matched the current situation, even though
+`_plan_pending` had just reported that no order of that plan can run. Nine
+generals stayed in the home castle, two castles stayed lost and the month
+advanced without a single sortie.
+
+The speedrun path already falls back to one deterministic interim sortie for an
+exhausted adopted plan; the mechanical path (the default since the speedrun
+chart was abolished) now does the same.
+
+The conftest enables the speedrun chart for the whole suite, so these tests
+disable it explicitly: the defect is in the mechanical path production uses.
+"""
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich import hanjuku_chart_adjust as chart_adjust
+from docich.hanjuku.strategy import replan
+
+
+HOME = 'アルマムーン'
+IDLE = ['ゼウス', 'ココット', 'ヴィーナス', 'どうし']
+
+
+@pytest.fixture(autouse=True)
+def mechanical_path(monkeypatch):
+    """Run the path production uses: no speedrun chart (conftest enables it)."""
+    monkeypatch.delenv('DOCICH_HANJUKU_SPEEDRUN_CHART', raising=False)
+    assert not chart_adjust.chart.speedrun_enabled(1)
+
+
+def memory(**overrides):
+    mem = {
+        'chapter': 1, 'tick': 1000, 'month': '1-5', '_records': [],
+        'captured': ['キカンドン', 'ナキューメラ', 'カストーラ'],
+        'lost': ['ジョンリギ'],
+        'garrison': {HOME: list(IDLE)},
+        'orders': {},
+        'card_stock': {'イッテツーン': 3},
+    }
+    mem.update(overrides)
+    return mem
+
+
+def adopt(mem, *, after, source=HOME, general='ゼウス', target='ゴーメン'):
+    """Adopt one plan order for exactly this situation, as a worker answer."""
+    rid = chart_adjust.request_id(mem)
+    step = chart_adjust.execution_step(rid, 'Mblocked')
+    mem['chart_plan'] = {
+        'request_id': rid, 'source': 'jev',
+        'orders': [{'step': step, 'general': general, 'source': source, 'target': target,
+                    'cards': [], 'after': after, 'note': 'adopted'}],
+    }
+    mem.setdefault('orders', {})[step] = 'pending'
+    return step
+
+
+def interim(mem):
+    return (mem.get('chart_adjust') or {}).get('interim_order')
+
+
+def test_a_blocked_adopted_plan_falls_back_to_one_interim_sortie():
+    mem = memory()
+    step = adopt(mem, after=['captured', 'ゴーメン'])      # ゴーメン is not ours
+    assert replan._plan_pending(mem) is False
+    replan._off_chart(mem)
+    order = interim(mem)
+    assert order is not None, 'a blocked adopted plan left the idle army with no sortie'
+    assert order['purpose'] == 'retake' and order['target'] == 'ジョンリギ'
+    assert order['source'] == HOME
+    # The adopted plan is kept: a new situation, not this fallback, replaces it.
+    assert mem['chart_plan']['orders'][0]['step'] == step
+    assert [r for r in mem['_records'] if r['decision'] == 'chart_interim_order']
+
+
+def test_a_startable_adopted_plan_still_suppresses_the_interim_sortie():
+    mem = memory()
+    step = adopt(mem, after=None)
+    assert replan._plan_pending(mem) is True
+    replan._off_chart(mem)
+    assert interim(mem) is None
+    assert mem['orders'][step] == 'pending'
