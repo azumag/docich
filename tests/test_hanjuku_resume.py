@@ -1353,3 +1353,34 @@ def test_prepare_after_rollback_transition_succeeds(setup):
     resume.prepare(s.g, s.game, dict(s.queue, request_id=str(uuid.uuid4())))
     stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
     assert stored['status'] == 'prepared'
+
+
+def test_derived_attempt_is_refused_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed になった元 claim の派生 attempt（同一
+    # resume_request_id を名乗る startup_recovery 経路）は、request を消費
+    # できないため fail-closed で拒否される（新規 request ID での prepare
+    # だけが可能）。identity が一致していても status が resumable でない
+    # 限り通さない。
+    old_request_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED, request_id=old_request_id,
+                   startup_recovery={'original': {'request_id': old_request_id},
+                                     'attempt_id': attempt_id})
+    with pytest.raises(AdapterError, match='startup recovery identity mismatch'):
+        resume.prepare_start(
+            s.g,
+            dict(s.queue, request_id=attempt_id, resume_request_id=old_request_id),
+        )
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+
+
+def test_natural_rotation_prepare_start_succeeds_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed の後、自然 rotation 経路
+    # （resume_request_id なし）の新規 prepare_start が成功する。
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare_start(s.g, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'queued'
