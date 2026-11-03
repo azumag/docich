@@ -1276,3 +1276,23 @@ def test_detached_claimed_refuses_uncertainty(detached_claimed, bad):
     with pytest.raises(s.op.CancelRefused):
         recover_startup(s, apply=True, expected=s.fingerprint)
     assert snapshot_recovery(s) == before
+
+
+def test_detached_claimed_recovers_with_own_interrupted_owner(recovery_setup):
+    # g1099 2026-11-03: a manual claimed original whose dispatch died before
+    # the corner became active leaves an interrupted owner keyed by the same
+    # logical request. That retired owner is proof, not a blocker.
+    s=recovery_setup;base=Path(s.g.state_dir)
+    ledger=s.manager.load(1000000.0)
+    ledger.update(status='waiting',reason='not-due',pending=None,queued_manual=None,
+                  failed_corners=[{'corner':'hanjuku-hero','request_id':s.queue['request_id'],
+                                   'resolution':'released-unverified'}])
+    s.manager.save(ledger)
+    atomic_write_json(base/'retro_corner.json',{
+        'status':'interrupted','game':'hanjuku-hero',
+        'rotation_request_id':s.queue['request_id'],
+        'end_reason':'switch-terminal-before-corner-active'})
+    result=recover_startup(s,apply=True,expected=s.fingerprint)
+    assert result['status']=='recovery-queued'
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['resume_request_id']==s.queue['request_id']
