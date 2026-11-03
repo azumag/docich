@@ -43,12 +43,18 @@ def test_original_partial_menu_withholds_a_without_inventing_ally_panel():
 
 
 def test_json_roundtrip_wait_is_bounded_and_does_not_restore_old_navigation():
-    s = parse(frame()); m = memory()
+    s = parse(frame()); m = memory(); sent = []
     for _ in range(70):
-        m = json.loads(json.dumps(m)); assert egg_battle_step(s, m) == []
+        m = json.loads(json.dumps(m))
+        actions = egg_battle_step(s, m)
+        assert actions in ([], [policy.pad('b')])
+        sent.extend(actions)
     assert m['enemy_general_menu_pending']['observations'] == 31
-    assert len(m['_records']) == 2
-    assert m['_records'][-1]['deviation_reason'] == 'enemy_command_unconfirmed'
+    waits = [r for r in m['_records'] if r['decision'] == 'enemy_general_menu_pending']
+    assert len(waits) == 2
+    assert waits[-1]['deviation_reason'] == 'enemy_command_unconfirmed'
+    assert [r['decision'] for r in m['_records'][2:]] == [
+        'enemy_command_wait_cancel'] * len(sent)
 
 
 @pytest.mark.parametrize('count', [-1, True, '1', 99, None])

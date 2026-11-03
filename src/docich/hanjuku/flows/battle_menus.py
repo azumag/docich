@@ -1476,6 +1476,41 @@ def _defender_summon_egg_menu(screen, mem, battle):
     return None
 
 
+_ENEMY_COMMAND_SETTLE_CANCEL_PERIOD = 12
+
+
+def _enemy_command_wait(mem, key, scope, decision, metric, wait_reason,
+                        unconfirmed_reason):
+    """Bounded enemy-command wait: a frozen box earns a cancel tap, never a confirm.
+
+    The observation cap used to leave the end to the screen-stall watchdog,
+    but the command box keeps animating, so a permanently parked enemy menu
+    can hold the corner for hours (g1107 レモン egg battle, 2026-11-04:
+    ~2.5h of identical egg_battle_menu waits). After the cap, a periodic B
+    either closes a misrecognized own menu or is ignored on a real enemy
+    turn; it can never select a row.
+    """
+    previous = mem.get(key)
+    same_scope = isinstance(previous, dict) and previous.get('scope') == scope
+    count = previous.get('observations') if same_scope else 0
+    count = count if type(count) is int and 0 <= count <= 30 else 30
+    count = min(count + 1, 31)
+    settle = (previous.get('settle_ticks') or 0) + 1 if same_scope and count == 31 else 0
+    mem[key] = {'scope': scope, 'observations': count, 'settle_ticks': settle}
+    if (count in (1, 31)
+            and not (same_scope and previous.get('observations') == count)):
+        _record(mem, decision,
+                deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
+                observed_metric={**metric, 'observations': count},
+                reason=unconfirmed_reason if count == 31 else wait_reason)
+    if count == 31 and settle >= _ENEMY_COMMAND_SETTLE_CANCEL_PERIOD:
+        mem[key]['settle_ticks'] = 0
+        _record(mem, 'enemy_command_wait_cancel', observed_metric=metric,
+                reason='敵コマンド表示が再観測上限後も変化しないため、確定を伴わないキャンセルで実際の入力待ちかを確認する')
+        return [pad('b')]
+    return []
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -1495,22 +1530,14 @@ def egg_battle_step(screen: Screen, mem):
         for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
                     'egg_menu_stage', 'egg_battle_row_dead', 'enemy_general_menu'):
             mem.pop(key, None)
-        scope = [partial_enemy.name, partial_enemy.hp]
-        previous = mem.get('enemy_general_menu_pending')
-        count = (previous.get('observations') if isinstance(previous, dict)
-                 and previous.get('scope') == scope else 0)
-        count = count if type(count) is int and 0 <= count <= 30 else 30
-        count = min(count + 1, 31)
-        mem['enemy_general_menu_pending'] = {'scope': scope, 'observations': count}
-        if count in (1, 31) and previous != mem['enemy_general_menu_pending']:
-            _record(mem, 'enemy_general_menu_pending',
-                    deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
-                    observed_metric={'enemy': partial_enemy.name,
-                                     'enemy_hp': partial_enemy.hp,
-                                     'observations': count,
-                                     'ally_panel_unread': len(screen.egg_rows) == 1},
-                    reason='敵将軍の実HP欄と左コマンドの途中表示。味方HPを補完せず入力を保留する')
-        return []
+        return _enemy_command_wait(
+            mem, 'enemy_general_menu_pending',
+            [partial_enemy.name, partial_enemy.hp],
+            'enemy_general_menu_pending',
+            {'enemy': partial_enemy.name, 'enemy_hp': partial_enemy.hp,
+             'ally_panel_unread': len(screen.egg_rows) == 1},
+            '敵将軍の実HP欄と左コマンドの途中表示。味方HPを補完せず入力を保留する',
+            '敵コマンド途中表示の再観測上限。味方HPを補完せず、無害な間欠キャンセルで入力待ちを確認する')
     mem.pop('enemy_general_menu_pending', None)
     enemy_command = _enemy_general_command(screen)
     if enemy_command:
@@ -1520,23 +1547,14 @@ def egg_battle_step(screen: Screen, mem):
         for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
                     'egg_menu_stage', 'egg_battle_row_dead'):
             mem.pop(key, None)
-        scope = [ally.name, ally.hp, enemy.name, enemy.hp]
-        previous = mem.get('enemy_general_menu')
-        count = (previous.get('observations') if isinstance(previous, dict)
-                 and previous.get('scope') == scope else 0)
-        count = count if type(count) is int and 0 <= count <= 30 else 30
-        count = min(count + 1, 31)
-        mem['enemy_general_menu'] = {'scope': scope, 'observations': count}
-        if count in (1, 31) and previous != mem['enemy_general_menu']:
-            _record(mem, 'enemy_general_menu_wait',
-                    deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
-                    observed_metric={'owner': 'enemy', 'ally_monster': ally.name,
-                                     'ally_hp': ally.hp, 'enemy': enemy.name,
-                                     'enemy_hp': enemy.hp, 'observations': count},
-                    reason=('敵将軍の実コマンド表示のため、敵の操作終了を待つ'
-                            if count == 1 else
-                            '敵コマンド表示の再観測上限。味方の卵や攻撃を推測入力せず、既存の画面停滞検出へ委ねる'))
-        return []
+        return _enemy_command_wait(
+            mem, 'enemy_general_menu',
+            [ally.name, ally.hp, enemy.name, enemy.hp],
+            'enemy_general_menu_wait',
+            {'owner': 'enemy', 'ally_monster': ally.name, 'ally_hp': ally.hp,
+             'enemy': enemy.name, 'enemy_hp': enemy.hp},
+            '敵将軍の実コマンド表示のため、敵の操作終了を待つ',
+            '敵コマンド表示の再観測上限。味方の卵や攻撃を推測入力せず、無害な間欠キャンセルで入力待ちを確認する')
     mem.pop('enemy_general_menu', None)
     _summon_scene(mem)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。

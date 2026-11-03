@@ -47,14 +47,22 @@ def test_native_enemy_general_waits_without_own_egg_or_attack_action(uid):
 
 def test_repeated_native_image_and_json_roundtrip_saturate_without_blind_confirmation():
     # Repetition is a synthetic stuck-screen case, not 100 natural observations.
+    # A permanently frozen enemy command box earns only periodic cancels; a
+    # blind row confirmation (A) must never be sent.
     s = native(17492); m = memory()
+    sent = []
     for _ in range(100):
         m = json.loads(json.dumps(m))
-        assert egg_battle_step(s, m) == []
+        actions = egg_battle_step(s, m)
+        assert actions in ([], [policy.pad('b')])
+        sent.extend(actions)
     assert m['enemy_general_menu']['observations'] == 31
+    assert 1 <= len(sent) <= 6
     records = [r for r in m['_records'] if r['decision'] == 'enemy_general_menu_wait']
     assert len(records) == 2
     assert records[-1]['deviation_reason'] == 'enemy_command_unconfirmed'
+    assert [r['decision'] for r in m['_records'][-len(sent):]] == [
+        'enemy_command_wait_cancel'] * len(sent)
 
 
 @pytest.mark.parametrize('bad_count', [-1, 32, True, '1', None])
