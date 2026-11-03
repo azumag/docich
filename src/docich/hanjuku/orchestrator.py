@@ -334,7 +334,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
             reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
-            for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month', 'month_roster_scan',
+            for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month', 'month_roster_scan', 'country_income',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
                         'starter_party', 'map_registration', 'map_discovery', 'boss_victories', 'obs_cost'):
