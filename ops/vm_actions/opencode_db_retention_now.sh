@@ -106,11 +106,13 @@ session_helper="$docich_root/ops/vm_actions/opencode_session_file_reclaim.py"
 session_data="/home/ubuntu/.local/share/opencode"
 session_gate="$root/tmp/state/.opencode_rotation_gate.lock"
 session_state="$root/tmp/state/opencode_session_file_reclaim_state.json"
+session_status_file="$root/tmp/state/opencode_session_file_retention.json"
 
 session_status=0
 if [[ -f "$session_helper" && ! -L "$session_helper" && -d "$session_data" ]]; then
   if python3 "$session_helper" "$session_data" "$session_gate" \
-      --state-file "$session_state" --batch 50 --cutoff-hours 24 \
+      --state-file "$session_state" --status-file "$session_status_file" \
+      --batch 50 --cutoff-hours 24 \
       --gate-wait-sec 300; then
     session_status=0
   else

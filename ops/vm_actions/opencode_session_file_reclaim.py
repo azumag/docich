@@ -38,6 +38,7 @@ import time
 SCHEMA = 1
 STATE_SCHEMA = 1
 MANIFEST_SCHEMA = 1
+STATUS_SCHEMA = 1
 MAX_TREE_ENTRIES = 200000
 MAX_TOP_ENTRIES = 65536
 MAX_STATE_BYTES = 64 * 1024 * 1024
@@ -299,6 +300,39 @@ def _append_manifest(path, applied):
         os.close(fd)
 
 
+def _write_status(path, data_dir, payload):
+    """Best-effort bounded status file for monitor projection.
+
+    The payload is built by ``main`` and contains only fixed enums, booleans
+    and non-negative integers (never a plan, path or file content). Any
+    failure is swallowed so a status write can never fail the retention unit.
+    """
+    if not path:
+        return False
+    try:
+        if not _outside_store(path, data_dir):
+            return False
+        directory = os.path.dirname(path) or "."
+        fd, tmp = tempfile.mkstemp(prefix=".opencode_session_status.", dir=directory)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            tmp = ""
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
 def _verify(data_fd, rel, stamp):
     parent_rel, _, leaf = rel.rpartition("/")
     fd = _open_dir(parent_rel, data_fd) if parent_rel else data_fd
@@ -401,9 +435,11 @@ def run(data_dir, gate_path, *, apply, batch, expect_plan, cutoff_hours, gate_wa
         digest = _digest(plan_view)
         removed = 0
         if auto_apply:
-            if selected:
-                removed = _apply(data_fd, selected)
-                _append_manifest(manifest_file, selected)
+            # Record each removal before moving to the next entry so a crash
+            # mid-batch cannot leave already removed entries unrecorded.
+            for item in selected:
+                removed += _apply(data_fd, [item])
+                _append_manifest(manifest_file, [item])
             applied = {i["path"] for i in selected}
             remaining = [i for i in plan if i["path"] not in applied]
             _write_state(state_file, store, cutoff_hours, [_entry_view(i) for i in remaining])
@@ -459,9 +495,23 @@ def main(argv=None):
     parser.add_argument("--auto-apply", action="store_true")
     parser.add_argument("--state-file", default="")
     parser.add_argument("--manifest-file", default="")
+    parser.add_argument("--status-file", default="")
     parser.add_argument("--cutoff-hours", type=float, default=DEFAULT_CUTOFF_HOURS)
     parser.add_argument("--gate-wait-sec", type=float, default=DEFAULT_GATE_WAIT_SEC)
     args = parser.parse_args(argv)
+    mode = "apply" if (args.apply or args.auto_apply) else "dry-run"
+
+    def reject(reason):
+        _write_status(args.status_file, args.data_dir, {
+            "schema": STATUS_SCHEMA,
+            "status": "gate_timeout" if reason == "gate_timeout" else "failed",
+            "mode": mode,
+            "reason": reason,
+            "completed_at": int(time.time()),
+            "cutoff_seconds": max(0, int(args.cutoff_hours * 3600)),
+            "auto_apply": bool(args.auto_apply),
+        })
+
     try:
         result = run(
             args.data_dir, args.gate_path, apply=args.apply, batch=args.batch,
@@ -470,11 +520,30 @@ def main(argv=None):
             state_file=args.state_file, manifest_file=args.manifest_file,
         )
     except ReclaimError as exc:
-        print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": str(exc)}))
-        return 75 if str(exc) == "gate_timeout" else 1
+        reason = str(exc)
+        reject(reason)
+        print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": reason}))
+        return 75 if reason == "gate_timeout" else 1
     except OSError:
+        reject("io_error")
         print(json.dumps({"schema": SCHEMA, "status": "rejected", "reason": "io_error"}))
         return 1
+    _write_status(args.status_file, args.data_dir, {
+        "schema": STATUS_SCHEMA,
+        "status": "completed",
+        "mode": result["mode"],
+        "reason": "ok",
+        "completed_at": int(time.time()),
+        "cutoff_seconds": max(0, int(args.cutoff_hours * 3600)),
+        "auto_apply": bool(result["auto_apply"]),
+        "entries_planned": result["entries_planned"],
+        "entries_confirmed": result["entries_confirmed"],
+        "entries_selected": result["entries_selected"],
+        "bytes_planned": result["bytes_planned"],
+        "bytes_removed": result["bytes_removed"],
+        "truncated": bool(result["truncated"]),
+        "state_written": result["state"] == "written",
+    })
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0
 

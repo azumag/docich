@@ -653,6 +653,94 @@ class StorageBreakdownV2Tests(unittest.TestCase):
         self.assertEqual(other["allocated_bytes"], total["allocated_bytes"] - known_bytes)
 
 
+class OpenCodeSessionFileStatusTests(unittest.TestCase):
+    """Fixed-field projection of the file-stage status (docich#3140)."""
+
+    NOW = 1_800_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.soren = Path(self.tmp.name)
+        (self.soren / "tmp" / "state").mkdir(parents=True)
+        self.path = self.soren / "tmp" / "state" / "opencode_session_file_retention.json"
+
+    def project(self, payload):
+        self.path.write_text(json.dumps(payload))
+        return collector._collect_opencode_session_file(self.soren, self.NOW)
+
+    def test_projects_only_the_whitelisted_fields(self):
+        item = self.project({
+            "schema": 1,
+            "status": "completed",
+            "mode": "dry-run",
+            "reason": "ok",
+            "completed_at": self.NOW - 60,
+            "cutoff_seconds": 86400,
+            "entries_planned": 5,
+            "entries_confirmed": 5,
+            "entries_selected": 2,
+            "bytes_planned": 123,
+            "bytes_removed": 0,
+            "truncated": True,
+            "state_written": True,
+            "auto_apply": False,
+            # Never projected: the helper plan contains paths and content.
+            "plan": [{"path": "snapshot/secret"}],
+            "path": "/home/ubuntu/.local/share/opencode",
+            "note": "secret",
+        })
+        self.assertTrue(item["present"])
+        self.assertTrue(item["readable"])
+        self.assertEqual(item["status"], "completed")
+        self.assertEqual(item["mode"], "dry-run")
+        self.assertEqual(item["reason"], "ok")
+        self.assertEqual(item["age_sec"], 60)
+        self.assertFalse(item["stale"])
+        self.assertEqual(item["entries_planned"], 5)
+        self.assertTrue(item["truncated"])
+        self.assertTrue(item["state_written"])
+        for dropped in ("plan", "path", "note"):
+            self.assertNotIn(dropped, item)
+        self.assertNotIn("snapshot/", json.dumps(item))
+
+    def test_unknown_enums_and_invalid_numbers_degrade(self):
+        item = self.project({
+            "schema": 1,
+            "status": "SECRET",
+            "mode": "x",
+            "reason": "../../etc/passwd",
+            "entries_planned": -1,
+            "bytes_removed": True,
+            "auto_apply": "yes",
+        })
+        self.assertTrue(item["readable"])
+        self.assertEqual(item["status"], "unknown")
+        self.assertEqual(item["mode"], "unknown")
+        self.assertEqual(item["reason"], "unknown")
+        self.assertNotIn("entries_planned", item)
+        self.assertNotIn("bytes_removed", item)
+        self.assertNotIn("auto_apply", item)
+
+    def test_missing_or_foreign_schema_is_not_readable(self):
+        absent = collector._collect_opencode_session_file(self.soren, self.NOW)
+        self.assertFalse(absent["present"])
+        self.assertFalse(absent["readable"])
+
+        item = self.project({"schema": 2, "status": "completed"})
+        self.assertTrue(item["present"])
+        self.assertFalse(item["readable"])
+        self.assertNotIn("status", item)
+
+    def test_old_status_is_flagged_stale(self):
+        item = self.project({
+            "schema": 1,
+            "status": "completed",
+            "completed_at": self.NOW - 4 * 3600,
+        })
+        self.assertTrue(item["stale"])
+
+
 class StorageSummaryTests(unittest.TestCase):
 
     def test_renders_fixed_opencode_caller_attribution_only(self):
@@ -905,10 +993,53 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertIn("opencode_default_other_bytes=3000", context)
         self.assertIn("opencode_default_other_count=5", context)
 
+        # A truncated remainder must be rendered as unknown, not as a number:
+        # absent bytes/count cannot be misread as growth or reclamation.
+        breakdown["opencode_default_other"]["scan_complete"] = False
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_other_complete=0", context)
+        self.assertNotIn("opencode_default_other_bytes", context)
+        self.assertNotIn("opencode_default_other_count", context)
+
         breakdown["opencode_default_snapshot"]["scan_complete"] = False
         _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
         self.assertEqual(incomplete, base_incomplete)
         self.assertIn("opencode_default_snapshot_complete=0", context)
+
+    def test_session_file_retention_renders_fixed_fields_only(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        data = {
+            "storage_breakdown": breakdown,
+            "opencode_session_file": {
+                "present": True,
+                "readable": True,
+                "status": "gate_timeout",
+                "mode": "dry-run",
+                "reason": "gate_timeout",
+                "age_sec": 120,
+                "entries_planned": 7,
+                "bytes_removed": 0,
+                "plan": [{"path": "snapshot/secret"}],
+            },
+        }
+        available, _incomplete, context = summary.render(data)
+        self.assertEqual(available, 1)
+        self.assertIn("session_file_retention=gate_timeout", context)
+        self.assertIn("session_file_retention_reason=gate_timeout", context)
+        self.assertIn("session_file_retention_mode=dry-run", context)
+        self.assertIn("session_file_retention_age_sec=120", context)
+        self.assertIn("session_file_retention_planned=7", context)
+        self.assertIn("session_file_retention_removed_bytes=0", context)
+        self.assertNotIn("snapshot/", context)
+
+        # Older collectors do not emit the key at all: unknown, never invented.
+        data.pop("opencode_session_file")
+        _a, _i, context = summary.render(data)
+        self.assertIn("session_file_retention=unknown", context)
 
     def test_v2_incomplete_root_flags_the_shared_incomplete(self):
         leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}

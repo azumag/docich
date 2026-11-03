@@ -272,6 +272,71 @@ class OpencodeSessionFileReclaimTests(unittest.TestCase):
         finally:
             os.close(fd)
 
+    # ---- bounded status projection (docich#3140 DSH review) ----
+
+    def status_path(self):
+        return str(Path(self.tempdir.name) / "status.json")
+
+    def test_main_writes_bounded_0600_status_without_paths(self):
+        status = self.status_path()
+        code = reclaim.main([str(self.data), str(self.gate), "--status-file", status])
+        self.assertEqual(code, 0)
+        payload = json.loads(Path(status).read_text())
+        self.assertEqual(payload["schema"], reclaim.STATUS_SCHEMA)
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["mode"], "dry-run")
+        self.assertEqual(payload["reason"], "ok")
+        self.assertGreaterEqual(payload["entries_planned"], 2)
+        self.assertFalse(payload["auto_apply"])
+        self.assertNotIn("plan", payload)
+        self.assertNotIn("state", payload)
+        self.assertNotIn("snapshot/", json.dumps(payload))
+        self.assertEqual(os.stat(status).st_mode & 0o777, 0o600)
+
+    def test_main_records_failure_reason_without_paths(self):
+        status = self.status_path()
+        code = reclaim.main([str(self.data), str(self.gate),
+                             "--status-file", status, "--auto-apply"])
+        self.assertEqual(code, 1)
+        payload = json.loads(Path(status).read_text())
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["reason"], "state_required")
+        self.assertEqual(payload["mode"], "apply")
+        self.assertNotIn("/", payload["reason"])
+
+    def test_main_records_gate_timeout_as_deferred_status(self):
+        import fcntl
+        status = self.status_path()
+        fd = os.open(self.gate, os.O_CREAT | os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(
+                reclaim.main([str(self.data), str(self.gate),
+                              "--status-file", status, "--gate-wait-sec", "0"]),
+                75,
+            )
+        finally:
+            os.close(fd)
+        payload = json.loads(Path(status).read_text())
+        self.assertEqual(payload["status"], "gate_timeout")
+        self.assertEqual(payload["reason"], "gate_timeout")
+
+    def test_status_write_failure_never_changes_the_exit_code(self):
+        missing = str(Path(self.tempdir.name) / "absent" / "status.json")
+        self.assertEqual(
+            reclaim.main([str(self.data), str(self.gate), "--status-file", missing]),
+            0,
+        )
+        self.assertFalse(os.path.exists(missing))
+
+    def test_status_file_inside_the_store_is_never_written(self):
+        inside = str(self.data / "status.json")
+        self.assertEqual(
+            reclaim.main([str(self.data), str(self.gate), "--status-file", inside]),
+            0,
+        )
+        self.assertFalse((self.data / "status.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

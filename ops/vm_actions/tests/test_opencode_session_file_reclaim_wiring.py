@@ -28,6 +28,11 @@ class OpenCodeSessionFileWiringTest(unittest.TestCase):
         )
         self.assertIn('session_data="/home/ubuntu/.local/share/opencode"', text)
         self.assertIn("--state-file", text)
+        self.assertIn("--status-file", text)
+        self.assertIn(
+            'session_status_file="$root/tmp/state/opencode_session_file_retention.json"',
+            text,
+        )
         self.assertIn("--cutoff-hours 24", text)
         # This epoch must never enable either apply mode.
         self.assertNotIn("--apply", text)
