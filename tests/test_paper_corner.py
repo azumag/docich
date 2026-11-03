@@ -232,7 +232,7 @@ def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     state.mkdir(parents=True, exist_ok=True)
     # An in-flight prediction is what the boundary must confirm.
     (state/'prediction_worker.pid').write_text(str(os.getpid()))
-    (state/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
+    (state/'current_prediction.json').write_text(json.dumps({'prediction_id':'p1','outcome_ids':['o1','o2'],'created_at':1}))
     def sleep(seconds):
         if now[0] == due:
             now[0]+=35*60

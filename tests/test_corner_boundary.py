@@ -786,3 +786,58 @@ def test_waiting_tick_keeps_a_released_row_until_the_release_runs(tmp_path):
     # "fix" that marked the released record terminal would erase the evidence
     # the operator still diagnoses from.
     assert json.loads(released.read_text())['status'] == 'failed'
+
+
+def test_statusless_wellformed_prediction_blocks_then_unlocks(tmp_path):
+    """docich#3335 (B): the real writer puts no status in the state file."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    # The create-path state: no status key, well-formed ids.
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2'],
+                    'game_num': 0, 'created_at': 1700000000}))
+    assert not boundary_ready(state, 100)
+    (state / 'corner_boundary_prediction.json').write_text(json.dumps({'completed_at': time.time() - 1}))
+    assert boundary_ready(state, 100)
+
+
+def test_statusless_recovered_prediction_blocks(tmp_path):
+    """created_at: 0 must not be required: recovered state writes that."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'prediction_id': 'p2', 'outcome_ids': ['o1', 'o2'],
+                    'game_num': 0, 'created_at': 0, 'recovered': True}))
+    assert not boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('status', ['ACTIVE', 'LOCKED'])
+def test_active_statuses_still_block(tmp_path, status):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'status': status, 'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2']}))
+    assert not boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('status', ['RESOLVED', 'CANCELED'])
+def test_terminal_statuses_do_not_block(tmp_path, status):
+    """A future writer recording terminal statuses must not regress."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'status': status, 'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2']}))
+    assert boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('state_json', [
+    {'prediction_id': '', 'outcome_ids': ['o1', 'o2']},
+    {'prediction_id': 'p1', 'outcome_ids': ['o1']},
+    {'prediction_id': 'p1'},
+    {'prediction_id': 'p1', 'outcome_ids': 'o1'},
+])
+def test_statusless_malformed_state_does_not_block(tmp_path, state_json):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps(state_json))
+    assert boundary_ready(state, 100)

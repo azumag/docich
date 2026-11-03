@@ -3392,7 +3392,7 @@ class TestProgramBoundary(RetroCornerTestBase):
         root.mkdir(parents=True, exist_ok=True)
         # An in-flight prediction is what the boundary must confirm.
         (root/'prediction_worker.pid').write_text(str(os.getpid()))
-        (root/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
+        (root/'current_prediction.json').write_text(json.dumps({'prediction_id':'p1','outcome_ids':['o1','o2'],'created_at':1}))
         sleeps=[]
         def sleep(seconds):
             sleeps.append(seconds)
