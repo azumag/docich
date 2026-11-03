@@ -1427,7 +1427,7 @@ def _boss_entry_cell(mem, general):
                    and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)]
         # A re-sent step replaces its sortie; the retired attempt still names
         # the site this general is marching to.
-        retired = mem.get('retired_sorties')
+        retired = _world(mem).get('retired_sorties')
         for rows in (retired.values() if isinstance(retired, dict) else ()):
             sorties.extend(s for s in rows or ()
                            if isinstance(s, dict) and s.get('general') == general

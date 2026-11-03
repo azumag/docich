@@ -714,9 +714,9 @@ def _retire_unentered_sortie(mem, step, sortie):
     target = sortie.get('target') or sortie.get('planned_target')
     if not chart.is_boss_castle(target) or sortie.get('status') == 'arrived':
         return
-    retired = mem.get('retired_sorties')
+    retired = _world(mem).get('retired_sorties')
     if not isinstance(retired, dict):
-        retired = mem['retired_sorties'] = {}
+        retired = _world(mem)['retired_sorties'] = {}
     rows = retired.setdefault(step, [])
     if not isinstance(rows, list):
         rows = retired[step] = []
@@ -1512,7 +1512,7 @@ def _match_sortie(mem, castle, general):
     arrived, and no further sortie could start.
     """
     sorties = mem.get('sorties') or {}
-    retired = mem.get('retired_sorties')
+    retired = _world(mem).get('retired_sorties')
     retired = retired if isinstance(retired, dict) else {}
     now = int(mem.get('tick') or 0)
     candidates = [step for step, sortie in sorties.items()
@@ -1583,7 +1583,7 @@ def _promote_retired_sortie(mem, step, castle, general):
     source and his site together; the replaced attempt stays retired so its
     own late entry can still bind.
     """
-    retired = mem.get('retired_sorties')
+    retired = _world(mem).get('retired_sorties')
     rows = retired.get(step) if isinstance(retired, dict) else None
     if not isinstance(rows, list):
         return None

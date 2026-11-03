@@ -66,7 +66,7 @@ KEY_OWNERSHIP = {
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
     'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
-    'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     # --- ラン同一性は常に ExecutionJournal ---
     '_run_identity':   {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
