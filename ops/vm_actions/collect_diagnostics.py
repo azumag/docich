@@ -1838,6 +1838,16 @@ CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
 CPU_PROFILE_MAX_BYTES = 32768
 CPU_PROFILE_MAX_COMPONENTS = 30
 CPU_PROFILE_MAX_SPAWNS = 30
+CPU_PROFILE_MAX_TELEMETRY = 8
+CPU_PROFILE_TELEMETRY_COUNTERS = (
+    "cycles", "awaits", "observes", "decides", "acts", "waits",
+    "actions_completed", "hotload_publish_failures",
+    "captures", "capture_spawns", "brain_spawns",
+)
+CPU_PROFILE_TELEMETRY_TIMERS = (
+    "fence_lock_s", "observe_s", "decide_s", "act_s", "hotload_publish_s",
+    "capture_s",
+)
 # Output-pressure caps. The producer already orders both lists busiest-first,
 # so only the tail is dropped, and the omitted counts stay visible.
 CPU_PROFILE_BUDGET_COMPONENTS = 10
@@ -1912,6 +1922,13 @@ def _cpu_profile_label(value):
 
 def _cpu_profile_comm_label(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", value):
+        return None
+    return value
+
+
+def _cpu_profile_safe_label(value):
+    """Fixed-shape label for telemetry game/brain names (no paths/argv)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
         return None
     return value
 
@@ -2031,6 +2048,41 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    telemetry = []
+    raw_telemetry = data.get("telemetry")
+    if isinstance(raw_telemetry, dict):
+        raw_snapshots = raw_telemetry.get("snapshots")
+        if isinstance(raw_snapshots, list):
+            for item in raw_snapshots[:CPU_PROFILE_MAX_TELEMETRY]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                if role not in ("agent", "corner"):
+                    continue
+                game = _cpu_profile_safe_label(item.get("game"))
+                brain = _cpu_profile_safe_label(item.get("brain"))
+                if game is None or brain is None:
+                    continue
+                row = {"role": role, "game": game, "brain": brain,
+                       "counters": {}, "seconds": {}}
+                counters = item.get("counters")
+                if isinstance(counters, dict):
+                    for key in CPU_PROFILE_TELEMETRY_COUNTERS:
+                        value = _cpu_profile_number(counters.get(key), maximum=10**9)
+                        if value is not None:
+                            row["counters"][key] = int(value)
+                seconds = item.get("seconds")
+                if isinstance(seconds, dict):
+                    for key in CPU_PROFILE_TELEMETRY_TIMERS:
+                        value = _cpu_profile_number(seconds.get(key), maximum=10**6)
+                        if value is not None:
+                            row["seconds"][key] = value
+                written_at = _cpu_profile_number(item.get("written_at"),
+                                                maximum=253402300799)
+                if written_at is not None:
+                    row["written_at"] = int(written_at)
+                telemetry.append(row)
+
     # Compact summary that survives output pressure: even when the per-row
     # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
     # visible (azumag/docich#970). The byte size is not a fixed cap: in the
@@ -2101,6 +2153,7 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "cpu_top": cpu_top,
         "spawn_top": spawn_top,
         "other_top": other_top,
+        "telemetry": telemetry,
     }
 
 

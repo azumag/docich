@@ -6,19 +6,24 @@ decide -> act order, the decisions and the fence/hot-load behaviour are
 unchanged, and the snapshot carries only fixed numeric fields.
 """
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.actions import Action  # noqa: E402
 from docich.adapters import base  # noqa: E402
-from docich.agent import loop, telemetry  # noqa: E402
+from docich.agent import brains, loop, telemetry  # noqa: E402
 from docich.agent.fence import AgentFence  # noqa: E402
+from docich.retro_corner import RetroCornerManager  # noqa: E402
+from docich.xkit import XKit  # noqa: E402
 
 
 LEASE = "11111111-1111-1111-1111-111111111111"
@@ -200,6 +205,129 @@ class TestFlushFailureDoesNotStopLoop(unittest.TestCase):
         with mock.patch("builtins.print") as printed:
             loop._flush_telemetry(tel)
         self.assertTrue(any("telemetry" in str(c) for c in printed.call_args_list))
+
+
+class TestRoleWiring(unittest.TestCase):
+    def tearDown(self):
+        telemetry.set_active(telemetry.DISABLED)
+
+    def test_corner_role_gets_its_own_fixed_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"DOCICH_AGENT_TELEMETRY": "1"}
+            agent = telemetry.AgentTelemetry.from_env(Path(tmp), "g", "b", environ=env)
+            corner = telemetry.AgentTelemetry.from_env(
+                Path(tmp), "g", "b", role="corner", environ=env)
+            agent.count("cycles")
+            agent.flush(force=True)
+            corner.count("captures")
+            corner.flush(force=True)
+            agent_path = Path(tmp) / "agent_telemetry" / "g.json"
+            corner_path = Path(tmp) / "agent_telemetry" / "g.corner.json"
+            self.assertTrue(agent_path.is_file())
+            self.assertTrue(corner_path.is_file())
+            self.assertEqual(json.loads(agent_path.read_text())["role"], "agent")
+            self.assertEqual(json.loads(corner_path.read_text())["role"], "corner")
+            self.assertEqual(json.loads(corner_path.read_text())["counters"]["captures"], 1)
+
+
+class TestAdapterCaptureWiring(unittest.TestCase):
+    def tearDown(self):
+        telemetry.set_active(telemetry.DISABLED)
+
+    def _run_screenshot(self, tmp):
+        out = Path(tmp) / "screenshots" / "latest.png"
+        with mock.patch("docich.xkit.procs.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+            XKit(":99").screenshot(out, 320, 200)
+        return out
+
+    def test_capture_counts_one_ffmpeg_spawn_and_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tel = telemetry.AgentTelemetry.from_env(
+                Path(tmp), "g", "b", environ={"DOCICH_AGENT_TELEMETRY": "1"})
+            telemetry.set_active(tel)
+            self._run_screenshot(tmp)
+            self.assertEqual(tel._counters["capture_spawns"], 1)
+            self.assertEqual(tel._counters["captures"], 1)
+            self.assertGreaterEqual(tel._timers["capture_s"], 0.0)
+            tel.flush(force=True)
+            raw = (Path(tmp) / "agent_telemetry" / "g.json").read_text(encoding="utf-8")
+        # Fixed counters only: no frame, path or argv is recorded.
+        self.assertNotIn("ffmpeg", raw)
+        self.assertNotIn("latest.png", raw)
+
+    def test_capture_is_a_noop_with_the_flag_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry.set_active(telemetry.DISABLED)
+            self._run_screenshot(tmp)
+            self.assertFalse((Path(tmp) / "agent_telemetry").exists())
+        self.assertFalse(telemetry.active().active)
+
+
+class TestBrainSpawnWiring(unittest.TestCase):
+    def tearDown(self):
+        telemetry.set_active(telemetry.DISABLED)
+
+    def test_command_brain_counts_one_spawn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tel = telemetry.AgentTelemetry.from_env(
+                Path(tmp), "g", "b", environ={"DOCICH_AGENT_TELEMETRY": "1"})
+            telemetry.set_active(tel)
+            g = SimpleNamespace(
+                agent=SimpleNamespace(brain_timeout_s=5),
+                repo_root=Path(tmp),
+            )
+            game = SimpleNamespace(
+                name="testgame", raw={},
+                agent=SimpleNamespace(command=["python3", "brain.py"]),
+            )
+            brain = brains.CommandBrain(g, game)
+            obs = SimpleNamespace(to_json=lambda: "{}")
+            with mock.patch("docich.agent.brains.procs.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout='{"actions": [{"type": "wait", "ms": 1}]}', stderr="")
+                actions = brain.decide(obs)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(tel._counters["brain_spawns"], 1)
+
+
+class TestCornerMonitorWiring(unittest.TestCase):
+    def tearDown(self):
+        telemetry.set_active(telemetry.DISABLED)
+
+    def _manager(self, tmp, wait):
+        manager = object.__new__(RetroCornerManager)
+        manager.g = SimpleNamespace(state_dir=Path(tmp))
+        manager._scripted_hanjuku = lambda state: True
+        manager._wait_hanjuku = wait
+        return manager
+
+    def test_corner_binds_role_and_flushes_on_exit(self):
+        def wait(_state):
+            telemetry.active().count("captures")
+            return "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager(tmp, wait)
+            with mock.patch.dict(os.environ, {"DOCICH_AGENT_TELEMETRY": "1"}):
+                self.assertEqual(manager._wait_and_finish({}), "done")
+            self.assertFalse(telemetry.active().active)
+            path = Path(tmp) / "agent_telemetry" / "hanjuku-hero.corner.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["role"], "corner")
+        self.assertEqual(data["counters"]["captures"], 1)
+
+    def test_corner_off_writes_nothing_and_leaves_no_binding(self):
+        def wait(_state):
+            telemetry.active().count("captures")
+            return "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager(tmp, wait)
+            with mock.patch.dict(os.environ, {"DOCICH_AGENT_TELEMETRY": ""}):
+                self.assertEqual(manager._wait_and_finish({}), "done")
+            self.assertFalse((Path(tmp) / "agent_telemetry").exists())
+        self.assertFalse(telemetry.active().active)
 
 
 if __name__ == "__main__":

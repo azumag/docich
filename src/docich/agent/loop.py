@@ -169,6 +169,9 @@ def run_agent(
     brain = brains.build_brain(g, game)
     # #2832 Stage 1: opt-in via DOCICH_AGENT_TELEMETRY (default off, no-op).
     tel = telemetry_mod.AgentTelemetry.from_env(g.state_dir, name, game.agent.brain)
+    # Adapter/brain code below the loop (ffmpeg capture, brain subprocess) is
+    # counted through the process-local binding added in #3287.
+    telemetry_mod.set_active(tel)
 
     while True:
         t0 = time.monotonic()
