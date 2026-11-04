@@ -1107,7 +1107,8 @@ def _adopt_plan(mem, doc, rid):
                 continue
             assigned[order['step']] = int(rotation.get(chapter) or 0) % len(probes)
             rotation[chapter] = (int(rotation.get(chapter) or 0) + 1) % len(probes)
-        del list(assigned)[:-40]          # bounded: only the newest orders matter
+        for stale in list(assigned)[:-40]:   # del on the temporary list is a no-op
+            assigned.pop(stale, None)
 
     state = mem.setdefault('chart_adjust', {})
     state.pop('interim_order', None)
