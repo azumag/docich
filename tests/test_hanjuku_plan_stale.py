@@ -7,6 +7,14 @@ change none of those, so the same plan sat there. v405 fixed the reason those
 moves could not start; this keeps any future stuck plan from waiting forever.
 """
 from docich.hanjuku.strategy import replan
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_report_memory():
+    replan._STALE_REPORTED.clear()
+    yield
+    replan._STALE_REPORTED.clear()
 
 
 def plan(steps=('M1',)):
@@ -77,3 +85,16 @@ def test_the_same_stale_plan_is_recorded_once():
     mem['chart_plan_tick'] = 1000
     replan._drop_stale_plan(mem)
     assert len(decisions(mem, 'plan_stale_rebuild')) == 1
+
+
+def test_the_same_plan_is_reported_once_per_process():
+    """A planner copy that drops the signature must not report every call."""
+    replan._STALE_REPORTED.clear()
+    for _ in range(3):
+        mem = memory(1000)
+        replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
+        mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
+        mem.pop('plan_stale_signature', None)      # the copy never keeps it
+        replan._drop_stale_plan(mem)
+        assert len(decisions(mem, 'plan_stale_rebuild')) <= 1
+    replan._STALE_REPORTED.clear()
