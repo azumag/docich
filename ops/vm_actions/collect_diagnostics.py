@@ -15136,6 +15136,8 @@ def main(argv):
     # 0 issue exists to collect. If the injection itself pushes the envelope
     # past the hard ceiling -- only possible within a few hundred bytes of it
     # -- the accounting is dropped instead of failing the whole operation.
+    # ``meta`` is built as a dict in this collector. If that contract ever
+    # changes, skip optional accounting rather than breaking diagnostics output.
     if isinstance(payload.get("meta"), dict):
         payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
