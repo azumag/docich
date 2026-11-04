@@ -10,7 +10,7 @@ from copy import deepcopy
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
 from . import edition
@@ -1466,10 +1466,11 @@ def _give_up_source(mem, order):
         mem.setdefault('source_override', {})[step] = home
         mem['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
         garrison.pop(source, None)
-        _record(mem, 'order_source_changed', chart_step=step, strategy_variant='source_fallback',
-                deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
-                observed_metric={'source': source, 'menu_miss': misses},
-                reason='本城から出撃し直す')
+        # A counter, not a decision record: the caller that logs this keeps
+        # source_miss and the override out of the persisted state (g1133
+        # 2026-11-05 probe: override null and source_miss 5 on all 224 calls),
+        # so it fired on every observation - 94 records in five minutes.
+        _tally(mem, 'source_fallback')
         return
     _finish_order(mem, 'failed', deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
                   observed_metric={'source': source, 'menu_miss': misses},
