@@ -264,3 +264,37 @@ def test_hp_exception_is_recomputed_after_damage_and_actual_summoning():
     assert p._hero_retreat_needed(cur)
     cur.update(ally_hp=59, egg_battle=True, egg_retreat_needed=True)
     assert p._hero_retreat_needed(cur)
+
+
+def wounded_venus(**changes):
+    # g1133 2026-11-04 15:05:32 ジュメルズ, not a synthetic frame: the panel
+    # read 20/82 vs 24 with six soldiers on each side (score 960 vs 672).
+    base = dict(ally='ヴィーナス', enemy='ココット', hp=20, enemy_hp=24,
+                ally_soldiers=6, enemy_soldiers=6)
+    base.update(changes)
+    return duel(**base)
+
+
+def test_quarter_hp_retreat_is_refuted_by_intact_soldiers_and_combat_lead():
+    cur = wounded_venus()
+    assert rules._default_retreat_needed(deepcopy(cur)) is True
+    assert p._hero_retreat_needed(cur) is False
+    assert cur['retreat_assessment']['reason'] == 'measured_melee_advantage_intact_soldiers'
+    assert cur['retreat_assessment']['critical_hp'] == rules.GENERAL_CRITICAL_RETREAT_HP
+    mem = {'battle': cur, 'chapter': 5}
+    assert p._hero_retreat_open(mem, cur) is None
+
+
+@pytest.mark.parametrize('changes', [
+    {'ally_soldiers': 2},                       # army already spent
+    {'enemy_soldiers': 0, 'ally_soldiers': 0},  # no measured army
+    {'card_soldiers_current': False},           # panel counts not proven current
+    {'ally_hp': 12},                            # absolute critical floor
+    {'enemy_hp': 60},                           # 20/82 vs a much deeper pool
+    {'enemy': 'ゼウス'},                         # combat lead gone (12 vs 13)
+])
+def test_melee_advantage_override_only_covers_the_measured_favourable_case(changes):
+    cur = wounded_venus(**changes)
+    assert p._hero_retreat_needed(cur) is True
+    assert cur['retreat_assessment']['reason'] != 'measured_melee_advantage_intact_soldiers'
+
