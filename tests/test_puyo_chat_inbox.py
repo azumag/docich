@@ -121,6 +121,18 @@ class TestAppendChat(ChatInboxTestBase):
         self.assertEqual(result["status"], "appended")
         self.assertEqual(len(self._lines(runtime)), 1)
 
+    def test_short_write_is_not_reported_as_appended(self):
+        """A short OS write must fail instead of returning a false success."""
+        from unittest.mock import patch
+
+        self._activate()
+        with patch.object(inbox.os, "write", return_value=0):
+            with self.assertRaises(inbox.ChatInboxError):
+                inbox.append_chat(
+                    self.state_dir, user_id="1", display_name="v",
+                    text="!puyo join", msg_id="short-write",
+                )
+
     def test_append_preserves_existing_lines(self):
         runtime = self._activate()
         path = self._inbox(runtime)
