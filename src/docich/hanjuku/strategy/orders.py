@@ -1420,7 +1420,16 @@ def _source(order, mem):
     bound = bound_fields(order, mem)
     if order.get('_execution_bound') is True:
         return bound['source'] if bound is not None else None
-    return mem.get('source_override', {}).get(order['step'], order['source'])
+    override = mem.get('source_override') or {}
+    step = order.get('step')
+    if step in override:
+        return override[step]
+    # A rebuilt plan gives the same content a new execution id (“A:<rid>:M1”),
+    # so a fallback decided for the content must survive that: g1133 2026-11-05
+    # fell back to the home castle 96 times in ten minutes because each rebuild
+    # forgot the decision and aimed at the unopenable castle again.
+    local = step.rsplit(':', 1)[-1] if isinstance(step, str) else None
+    return override.get(local, order['source'])
 
 
 def _give_up_source(mem, order):
@@ -1445,6 +1454,7 @@ def _give_up_source(mem, order):
     garrison = mem.get('garrison') or {}
     if source != home and home in _owned(mem) and not mem.get('source_override', {}).get(step):
         mem.setdefault('source_override', {})[step] = home
+        mem['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
         garrison.pop(source, None)
         _record(mem, 'order_source_changed', chart_step=step, strategy_variant='source_fallback',
                 deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
