@@ -958,6 +958,15 @@ def _country_status_level(screen):
 # that same frame instead of waiting a whole observation period (1.5 s).
 INPUT_FREE_HOPS = {('roster_next', 'roster'), ('roster_advance', 'roster')}
 MAX_INPUT_FREE_HOPS = 2
+# Live 2026-11-05: 192 observations over 46 minutes issued no pad at all
+# (``planned_actions: []``) while the flow kept hopping roster_advance ->
+# roster and back, so the month's roster scan never finished and the run sat
+# in the house menu. A run of observations that issues no pad is not progress:
+# leave the menu and let the ordinary policy resume instead of spinning.
+# Only the roster walk is counted: other phases wait on a map screen by design
+# (open_roster retries at age 3/6, travel), so a long wait there is not a spin.
+HOUSE_IDLE_LIMIT = 10
+HOUSE_IDLE_PHASES = frozenset({'roster', 'roster_next', 'roster_advance', 'status'})
 
 
 def step(screen, mem, frame):
@@ -967,7 +976,40 @@ def step(screen, mem, frame):
     moved along ``INPUT_FREE_HOPS``. Any pad, ``None`` (release to another
     owner) or ended flow stops the chain, so no input follows another input
     inside one observation and the hop count is bounded.
+
+    Consecutive observations that issue no pad are counted as well: a menu that
+    never accepts input is left (``house_idle_escape``) instead of spinning.
     """
+    actions = _step_chain(screen, mem, frame)
+    state = mem.get('house')
+    if state is None:
+        return actions
+    if actions != [] or screen.kind != 'text' or state.get('phase') not in HOUSE_IDLE_PHASES:
+        state.pop('idle_observations', None)
+        state.pop('idle_phases', None)
+        return actions
+    idle = int(state.get('idle_observations') or 0) + 1
+    state['idle_observations'] = idle
+    phases = list(state.get('idle_phases') or [])
+    if not phases or phases[-1] != state.get('phase'):
+        phases.append(state.get('phase'))
+        del phases[:-4]
+        state['idle_phases'] = phases
+    if idle < HOUSE_IDLE_LIMIT:
+        return actions
+    from ..os_layer.commands import pad
+    _record(mem, 'idle_escape',
+            observed_metric={'observations': idle, 'phases': phases,
+                             'screen': screen.kind, 'seen': len(state.get('seen') or [])},
+            reason='入力の無い観測が続き月内メニューが進まないため、名簿を閉じて通常の判断へ戻す')
+    state.pop('idle_observations', None)
+    state.pop('idle_phases', None)
+    _phase(state, 'leave_roster')
+    return [pad('b')]
+
+
+def _step_chain(screen, mem, frame):
+    """``step`` body: one handler run plus the bounded input-free hops."""
     for _ in range(MAX_INPUT_FREE_HOPS + 1):
         before = (mem.get('house') or {}).get('phase')
         house_state = mem.get('house')
