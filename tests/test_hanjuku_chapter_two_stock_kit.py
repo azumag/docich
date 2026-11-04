@@ -72,11 +72,10 @@ def test_existing_or_committed_attempts_are_not_rekitted(state):
     assert mem == before
 
 
-@pytest.mark.parametrize('change', ['chapter', 'step', 'target'])
+@pytest.mark.parametrize('change', ['chapter', 'target'])
 def test_other_chapters_orders_and_targets_keep_their_chart_kit(change):
     mem = memory(); o = dict(order())
     if change == 'chapter': mem['chapter'] = 1
-    elif change == 'step': o['step'] = '2-S1'
     else: o['target'] = 'ウラノポリス'
     assert p._chapter_two_balmung_inventory(mem, o, inventory()) is None
     assert not mem.get('rare_card_kit')

@@ -1165,13 +1165,17 @@ def _tactics(mem, step):
                      'tactic_id': f'rare:{step}:キャトルミュー',
                      'boss_only': _is_boss_order(order, mem),
                      'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
-        elif (mem.get('chapter') == 2 and step == '2-B1'
-              and _is_boss_order(order, mem) and 'バルムンク' in carried):
+        elif _is_boss_order(order, mem) and 'バルムンク' in carried:
+            # owner 2026-11-04: ボスへ効く切り札(バルムンクはボス250)は積極的に使う。
+            # 第2話は実測済みの敵名つき戦術、他の章は敵名を問わずボス突入の実測でのみ開く。
             used = ((mem.get('kit_spent') or {}).get(step) or []).count('バルムンク')
-            rare = tuple({'enemy': chart.BOSSES[2], 'card': 'バルムンク',
+            chapter = mem.get('chapter')
+            boss_name = chart.BOSSES.get(chapter) if chapter != 4 else None  # 四季王は敵名が季節で変わる
+            rare = tuple({'enemy': boss_name, 'card': 'バルムンク',
                           'open': True, 'step': step, 'boss_only': True,
                           'tactic_id': f'rare:{step}:バルムンク:{used + index}',
-                          'note': '実携行を確認したイベント札を実測第2話ボスへ使用'}
+                          'note': ('実携行を確認したイベント札を実測第2話ボスへ使用' if chapter == 2 else
+                                   '実携行を確認したバルムンク(ボス250)をボスへ開幕で使用')}
                          for index in range(carried.count('バルムンク')))
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
@@ -1181,7 +1185,7 @@ def _tactics(mem, step):
         carried = _deploy_cards(order, mem)
     carried = [card for card in carried
                if card not in override and card != strong_kit
-               and not (rare and card == 'キャトルミュー')]
+               and not (rare and card in ('キャトルミュー', 'バルムンク'))]
     derived, seen = [], set()
     occurrences = {}
     spent = (mem.get('kit_spent') or {}).get(step, [])

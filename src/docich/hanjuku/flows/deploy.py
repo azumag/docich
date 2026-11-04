@@ -113,6 +113,87 @@ BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general 
 
 
 
+BALMUNG_HELD = 'balmung_held'
+
+
+def _note_balmung_stock(mem, month, inventory):
+    """Remember a measured バルムンク stock for this month's boss sorties.
+
+    The rare-card sweep shows the whole list over several readings, but the
+    boss order may not be the sortie that sweeps. A shown row sets / clears the
+    record; a panel that proves the card absent (fewer than four rows, or
+    sandwiched between rows of the ID order) clears it too.
+    """
+    rows = inventory['rows']
+    shown = next((r for r in rows if r['card'] == 'バルムンク'), None)
+    if shown is not None:
+        if shown['stock'] > 0:
+            mem[BALMUNG_HELD] = {'month': month, 'stock': shown['stock']}
+        else:
+            mem.pop(BALMUNG_HELD, None)
+    elif _card_proven_absent('バルムンク', inventory):
+        mem.pop(BALMUNG_HELD, None)
+
+
+def _boss_balmung_generic(mem, order) -> bool:
+    """Every chapter's boss order except the live-tested chapter-two kit.
+
+    owner 2026-11-04: ボスへ効く切り札(バルムンクはボス250)を積極的に使う。
+    第2話 2-B1 は実プレイで検証済みの専用キット(イッテツーン+バルムンク2)を
+    維持し、それ以外の章のボス注文(基礎チャート・調整・波状の追加隊)は
+    ``_boss_balmung_kit`` で実在庫のバルムンクを先頭に足す。
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or not _is_boss_order(order, mem):
+        return False
+    return not (chapter == 2 and order.get('step') == '2-B1'
+                and order.get('target') == chart.boss_castle(2))
+
+
+def _boss_balmung_kit(mem, order, inventory):
+    """Freeze ``バルムンク x min(stock, 2)`` first, then the planned boss cards.
+
+    Only the unselected live panel counts (never an old cache), and an already
+    started / spent / dropped / rare-kitted attempt is left alone. The kit keeps
+    the planned cards in order while the carry slots and the 47 card-ID budget
+    allow (``_cap_card_ids``), so バルムンク x2 (32) leaves room for one cheap
+    planned card. The measured copies carried decide the battle tactics.
+    """
+    step = order['step']
+    if ((mem.get('orders') or {}).get(step) not in (None, 'pending')
+            or (mem.get('rare_card_kit') or {}).get(step) is not None
+            or (mem.get('kit_spent') or {}).get(step)
+            or (mem.get('card_drop') or {}).get(step)
+            or mem.get('picked') or inventory['remaining'] != CARRY_SLOTS):
+        return None
+    stock = next((r['stock'] for r in inventory['rows'] if r['card'] == 'バルムンク'), None)
+    if stock is None:
+        # Not in this four-row window: a copy the month's sweep measured counts
+        # (the rare-kit selection scrolls to it and a proven absence drops it).
+        held = mem.get(BALMUNG_HELD)
+        month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+        stock = held.get('stock') if isinstance(held, dict) and held.get('month') == month else 0
+    if type(stock) is not int or stock < 1:
+        return None
+    count = min(stock, 2)
+    original = _deploy_cards(order, mem)
+    kit = _cap_card_ids(['バルムンク'] * count + [c for c in original if c != 'バルムンク'])[:CARRY_SLOTS]
+    if kit.count('バルムンク') != count:
+        return None
+    mem.setdefault('rare_card_kit', {})[step] = kit
+    mem.pop('rare_scan', None)
+    mem.setdefault('strong_card_kit', {}).pop(step, None)
+    _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=step,
+            observed_metric={'card': 'バルムンク', 'stock': stock, 'cards': kit,
+                             'original_cards': original, 'boss': chart.BOSSES.get(mem.get('chapter')),
+                             'boss_damage': reference.boss_damage_card('バルムンク'),
+                             'id_sum': sum(CARD_IDS[c] for c in kit),
+                             'inventory_evidence': inventory.get('inventory_evidence'),
+                             'observed_rows': inventory.get('observed_rows')},
+            reason='未選択の実在庫にバルムンク(ボス250)を確認したため、ボス注文の先頭に携行して積極的に使う')
+    return []
+
+
 def _chapter_two_balmung_inventory(mem, order, inventory):
     """Freeze the isolated-tested boss kit from this unselected live panel.
 
@@ -122,6 +203,8 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
     Never infer stock from an old global cache or alter a selected sortie.
     """
     step = order['step']
+    if _boss_balmung_generic(mem, order):
+        return _boss_balmung_kit(mem, order, inventory)
     if (mem.get('chapter') != 2 or step != '2-B1'
             or order.get('target') != chart.boss_castle(2)
             or (mem.get('orders') or {}).get(step) not in (None, 'pending')
@@ -174,6 +257,9 @@ def _rare_card_inventory(screen, mem, order, inventory):
             or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
         return None
     month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+    boss_generic = _boss_balmung_generic(mem, order)
+    _note_balmung_stock(mem, month, inventory)
+    scan_field, scan_key = 'rare_scan_month', month
     scan = mem.get('rare_scan') or {}
     if scan.get('rewind', 0) > 0:
         scan['rewind'] -= 1
@@ -183,19 +269,22 @@ def _rare_card_inventory(screen, mem, order, inventory):
                 screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
                 reason='レア札在庫の有限探索後に選択カーソルを戻す')
         return [pad('up')]
+    if boss_generic and _boss_balmung_kit(mem, order, inventory) is not None:
+        mem[scan_field] = scan_key
+        return []                        # バルムンクを確認: 次の観測で選択する
     row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
     if row and row['stock'] > 0 and inventory['remaining'] > 0:
         original = _deploy_cards(order, mem)
         kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
         mem.setdefault('rare_card_kit', {})[order['step']] = kit
-        mem['rare_scan_month'] = month
+        mem[scan_field] = scan_key
         mem.pop('rare_scan', None)
         _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
                 observed_metric={'card': row['card'], 'stock': row['stock'], 'cards': kit,
                                  'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
                 reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
         return []
-    if not isinstance(month, str) or mem.get('rare_scan_month') == month:
+    if not isinstance(month, str) or mem.get(scan_field) == scan_key:
         return None
     scan = mem.setdefault('rare_scan', {'step': order['step'], 'presses': 0, 'rows': None})
     if scan['step'] != order['step']:
@@ -205,7 +294,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
     at_bottom = inventory['selected_y'] == inventory['rows'][-1]['y']
     if (len(rows) < 4 or scan['presses'] >= RARE_SCAN_LIMIT
             or (at_bottom and scan['rows'] == rows and scan.get('was_bottom'))):
-        mem['rare_scan_month'] = month
+        mem[scan_field] = scan_key
         if scan['presses']:
             scan['rewind'] = scan['presses'] - 1
             if not scan['rewind']:
@@ -309,6 +398,30 @@ def _dropper_card_inventory(mem, order, inventory, wanted) -> bool:
     return True
 
 
+def _strong_card_names(mem, order):
+    """The cards a sortie may carry as its strong-card supplement, in use order.
+
+    Ordinary generals: ``reference.STRONG_CARDS`` (HP halving / big general damage).
+    A monster boss (chapter 5 onward) takes the boss damage column, where
+    クースカン(20) / ノリウツール(8) do almost nothing and the halving effects do
+    not apply (owner 2026-11-04), so its sortie carries the cards that hurt a
+    boss (``reference.BOSS_DAMAGE_CARDS``). A weak general (max HP <=
+    ``SACRIFICE_GENERAL_MAX_HP``) may also spend バグストーム: 50 to the boss at
+    the cost of halving both armies, which a disposable general can afford.
+    """
+    chapter = mem.get('chapter')
+    boss = chart.BOSSES.get(chapter) if type(chapter) is int else None
+    if (not _is_boss_order(order, mem) or chapter == 4 or not boss
+            or boss in reference.BOSS_GENERALS):
+        return reference.STRONG_CARDS
+    names = list(reference.BOSS_DAMAGE_CARDS)
+    actor = _sortie_general(order, mem)
+    hp = general_max_hp('しゅじんこう' if actor == NAME else actor) if actor else None
+    if type(hp) is int and hp <= reference.SACRIFICE_GENERAL_MAX_HP:
+        names += reference.BOSS_SACRIFICE_CARDS
+    return tuple(names)
+
+
 def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
     """Add one held strong card to a sortie that still has a carry slot free.
 
@@ -333,7 +446,7 @@ def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
         return False                     # 残り枠は予定札で埋まる
     stock = mem.get('card_stock') or {}
     used = sum(CARD_IDS[c] for c in wanted)
-    held = [name for name in reference.STRONG_CARDS
+    held = [name for name in _strong_card_names(mem, order)
             if name not in wanted and int(stock.get(name, 0) or 0) > 0
             and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
             and len(wanted) + 1 <= CARRY_SLOTS]
@@ -526,7 +639,9 @@ def _deploy_context(order, mem, *, expected_metric=None):
                        deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     elif rare_kit and 'バルムンク' in rare_kit:
         context.update(strategy_variant='rare_balmung_boss',
-                       deviation_reason='実在庫のバルムンクを第2話ボスの実測装備として携行')
+                       deviation_reason=('実在庫のバルムンクを第2話ボスの実測装備として携行'
+                                          if mem.get('chapter') == 2 else
+                                          '実在庫のバルムンク(ボス250)をボス注文の先頭に携行して積極的に使う'))
     return context
 
 

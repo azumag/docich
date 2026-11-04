@@ -96,7 +96,8 @@ def test_readable_live_required_card_at_the_deadline_still_uses_normal_selection
     for _ in range(p.CARD_UNREADABLE_LIMIT - 1):
         assert p.deploy_step(unread, mem) == []
     from test_hanjuku_sortie_evidence import actor_panel
-    live = actor_panel(measured_card_select(('クースカン', 'ノリウツール', 'ブラッキー', 'バルムンク')),
+    # バルムンク(ボス250)の実在庫がある一覧は専用キットになる (test_hanjuku_boss_balmung_generic)。
+    live = actor_panel(measured_card_select(('クースカン', 'ノリウツール', 'ブラッキー', 'ファバード')),
                        'シェーブル')
     assert p.deploy_step(live, mem) == [p.pad('a')]
     assert mem['picked'] == ['クースカン'] and mem['active'] == '1-B1'
