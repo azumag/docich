@@ -540,7 +540,7 @@ def _deploy_input(screen, mem, order, actions, reason):
     return actions
 
 
-def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
+def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
     if not (mem.get('retry_context') or {}).get(order['step']):
         context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
@@ -548,9 +548,34 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
             observed_metric={'hand': screen.hand,
                              'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
-                             'carried_cards_read': carried, 'confirmation': 'unclassified'},
+                             'carried_cards_read': carried, 'confirmation': 'unclassified',
+                             'hold_variant': hold_variant},
             reason=reason)
     return []
+
+
+
+GENERAL_LIST_HOLD_LIMIT = 8
+
+
+def _hold_general_list_bounded(screen, mem, order, reason, variant):
+    """Fail a stuck general-list selection before the 60-tick menu watchdog."""
+    step = order['step']
+    holds = mem.setdefault('general_list_hold', {})
+    holds[step] = holds.get(step, 0) + 1
+    if holds[step] >= GENERAL_LIST_HOLD_LIMIT:
+        count = holds.pop(step)
+        (mem.get('target_cancel') or {}).pop(step, None)
+        _record(mem, 'general_list_hold_exhausted',
+                **_deploy_context(order, mem), screen=screen.kind,
+                observed_metric={'hold_variant': variant, 'hold_count': count},
+                reason=reason)
+        _finish_order(mem, 'failed', deviation_reason=reason,
+                      observed_metric={'hold_variant': variant, 'hold_count': count},
+                      source=_source(order, mem),
+                      reason='将軍一覧の停滞上限に達したため出撃指示を取り消す')
+        return [pad('b'), pad('b')]
+    return _hold_deploy(screen, mem, order, reason, hold_variant=variant)
 
 
 def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
@@ -1222,7 +1247,8 @@ def deploy_step(screen: Screen, mem):
             if (present is None or len(present) != len(set(present))
                     or any((g in visible and not _general_visible(screen, g)) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
-                return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
+                return _hold_general_list_bounded(screen, mem, order,
+                    '出撃一覧の本人・カーソルを確認できないため保留', 'roster_unreadable')
             candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or _is_boss_order(order, mem)
                           or order.get('source_probe') is True else [])
@@ -1255,7 +1281,8 @@ def deploy_step(screen: Screen, mem):
             (mem.get('boss_absent') or {}).pop(order['step'], None)
             move = _list_menu_to(screen, mem, order, general)
             if move is None:
-                return _hold_deploy(screen, mem, order, '選択本人へカーソルを合わせられないため保留')
+                return _hold_general_list_bounded(screen, mem, order,
+                    '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable')
             if move == 'here':
                 mem['sortie_general'][order['step']] = general
                 if general != order['general']:
@@ -1266,7 +1293,8 @@ def deploy_step(screen: Screen, mem):
             return _deploy_input(screen, mem, order, [move], '主人公以外の待機将軍を優先して選択カーソルを移動')
         empty_list = 'おりません' in screen.text
         if not screen.hand and not empty_list:
-            return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
+            return _hold_general_list_bounded(screen, mem, order,
+                '将軍選択カーソルを判定できないため入力を保留', 'cursor_unreadable')
         general = mem.get('general_override', {}).get(order['step'], order['general'])
         move = _list_menu_to(screen, mem, order, general) if screen.hand else None
         if move is None:
