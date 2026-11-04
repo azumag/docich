@@ -14445,7 +14445,11 @@ def _compute_section_bytes(payload):
     separators=(",", ":")``) and measured including the quoted key name and
     the ``:`` separator, so ``total`` tracks the real envelope size (differing
     only by the outer braces, commas and the ``section_bytes`` entry itself,
-    which is injected after measurement). Returns ``{"top": {name: bytes,
+    which is injected after measurement). ``total`` is a collector-side
+    measurement: the headroom monitor publishes the gateway's re-serialized
+    output, which differs by the sanitizer's truncation and the sections the
+    gateway appends, so these two numbers are not expected to match. Returns
+    ``{"top": {name: bytes,
     ...}, "others": n, "total": n}`` where ``top`` holds the largest
     ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
     Serialization failure cannot occur in practice -- the caller runs this on
