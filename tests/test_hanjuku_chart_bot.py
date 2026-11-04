@@ -1558,6 +1558,26 @@ def test_decision_records_deduped_against_log_tail(tmp_path):
     assert decisions[1]['observed_metric']['attempt'] == 2
 
 
+def test_decision_dedupe_respects_generation_and_missing_fields(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_dedupe_identity_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1', 'generation': 1,
+                'lease_id': 'lease-1'}
+    record = {'decision': 'y_jump_open', 'chart_step': 'J1', 'reason': None}
+    rows = [{'event': 'decision', **identity, **record}]
+    assert module._recorded_before(rows, record, identity)
+    assert not module._recorded_before(
+        rows, record, {**identity, 'generation': 2})
+    assert not module._recorded_before(
+        rows, record, {**identity, 'lease_id': 'lease-2'})
+    assert not module._recorded_before(
+        [{'event': 'decision', **identity, 'decision': 'y_jump_open',
+          'chart_step': 'J1'}], record, identity)
+
+
 def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
