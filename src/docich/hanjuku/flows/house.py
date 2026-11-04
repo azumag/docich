@@ -1018,8 +1018,21 @@ def _step_once(screen, mem, frame):
                 # another owner and dropped the month's refill. The count
                 # check and an unsettled refill finish first (both bounded).
                 return None
-            if ((mem.get('shop') or {}).get('key') == mem.get('month')
-                    and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
+            level_due = _level_due(mem)
+            # Issue #3011 (owner): the hanjuku level lives on the country
+            # status page. Once the month's shopping is done and the level is
+            # still unread, the monthly visit runs for that page alone.
+            level_trigger = (level_due and shop.get('key') == mem.get('month')
+                             and bool(shop.get('level_scan_wait')))
+            # The recruit gate guards the roster walk, not the free
+            # country-status page. A finished (or receipt-unverified) recruit
+            # used to block the level-only visit for the rest of the month, so
+            # 現在収入 / 総賃金 kept the previous month's values while the game
+            # recruited (g1133 49-9 still showed 49-6, owner 2026-11-05).
+            status_only = level_trigger and shop.get('recruit') in ('done', 'unverified')
+            if (shop.get('key') == mem.get('month')
+                    and shop.get('recruit') in ('opened', 'done', 'unverified')
+                    and not status_only):
                 return None
             from ..strategy.economy import _batch_active
             if ((mem.get('shop') or {}).get('key') == mem.get('month')
@@ -1039,12 +1052,6 @@ def _step_once(screen, mem, frame):
                 # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
                 # The attempt is over either way; only the receipt is unknown.
                 return None
-            level_due = _level_due(mem)
-            # Issue #3011 (owner): the hanjuku level lives on the country
-            # status page. Once the month's shopping is done and the level is
-            # still unread, the monthly visit runs for that page alone.
-            level_trigger = (level_due and shop.get('key') == mem.get('month')
-                             and bool(shop.get('level_scan_wait')))
             # One monthly roster scan per chapter/month. The scan runs the
             # moment the monthly menu is ready (before purchases/recruitment);
             # a completed scan is retained for the month and never repeated,
