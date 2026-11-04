@@ -84,5 +84,52 @@ class SectionBytesAccountingTests(unittest.TestCase):
         self.assertLessEqual(len(text.encode("utf-8")), original + 1)
 
 
+    def test_real_main_writes_accounting_to_stdout(self):
+        """Execute the actual main AST with isolated collector dependencies."""
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+
+        source_tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        main_node = next(n for n in source_tree.body
+                         if isinstance(n, ast.FunctionDef) and n.name == "main")
+        ns = _namespace()
+        ns.update({"sys": sys, "Path": Path, "time": __import__("time"),
+                   "PROD_ROOT": Path("/unused"),
+                   "json": json})
+        # Every collector is isolated; no production files, processes or network.
+        collector_names = {
+            n.id for n in ast.walk(main_node)
+            if isinstance(n, ast.Name) and n.id.startswith("_")
+        }
+        for name in collector_names:
+            if name not in ns:
+                ns[name] = MagicMock(return_value={})
+        ns["_collect_soren91_manual_evidence"].return_value = {"active": False}
+        ns["_collect_meta"].return_value = {"source": "test"}
+        ns["_collect_ai"].return_value = {
+            key: 0 for key in ("queue_giveups", "attempts", "failures",
+                              "rate_limits", "fallbacks", "all_failed",
+                              "budget_exhausted")
+        }
+        ns["_collect_opencode_retention"].return_value = {
+            "attempt": {"present": False}, "timer": {"active": True}
+        }
+        ns["_severity"].return_value = "ok"
+        ns["_diagnostics_budget"] = lambda payload: json.dumps(
+            payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        exec(compile(ast.fix_missing_locations(
+            ast.Module(body=[main_node], type_ignores=[])), str(SOURCE), "exec"), ns)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(ns["main"](["collect_diagnostics.py", "/unused"]), 0)
+        raw = output.getvalue()
+        parsed = json.loads(raw)
+        self.assertIn("section_bytes", parsed["meta"])
+        self.assertLessEqual(len(raw.encode("utf-8")), 65536)
+        accounting = parsed["meta"]["section_bytes"]
+        self.assertEqual(accounting["others"] + sum(accounting["top"].values()),
+                         accounting["total"])
+
+
 if __name__ == "__main__":
     unittest.main()
