@@ -6,6 +6,7 @@ measured from the Y view (v402), so the next suspect is the tile an army may
 enter from. Chapter 6 therefore carries a bounded probe list; the relaunch
 budget advances one tile before the step is parked.
 """
+from docich import hanjuku_chart as chart
 from docich.hanjuku.os_layer import navigation as N
 from docich.hanjuku.strategy import orders as O
 
@@ -56,10 +57,10 @@ def test_the_budget_exhaustion_moves_to_the_next_probe_tile():
 
 def test_the_probe_list_is_bounded_and_then_parks():
     mem = memory(LAUNCH + O.MARCH_ARRIVAL_CAP)
-    mem['boss_cell_probe'] = {6: len(N.BOSS_CELL_PROBES[6]) - 1}
+    mem['boss_cell_probe'] = {6: len(chart.BOSS_CELL_PROBES[6]) - 1}
     mem['boss_relaunch'] = {'6-B1': O.BOSS_RELAUNCH_LIMIT}
     O._relaunch_overdue_boss(mem)
-    assert mem['boss_cell_probe'] == {6: len(N.BOSS_CELL_PROBES[6]) - 1}
+    assert mem['boss_cell_probe'] == {6: len(chart.BOSS_CELL_PROBES[6]) - 1}
     assert mem['orders']['6-B1'] == 'launched'
     assert len(decisions(mem, 'boss_relaunch_exhausted')) == 1
 

@@ -860,9 +860,8 @@ def _shift_boss_probe(mem, target):
     ``os_layer.navigation.BOSS_CELL_PROBES``) shifts: the chart cell stays the
     first candidate, and the relaunch budget advances one tile per exhaustion.
     """
-    from ..os_layer.navigation import BOSS_CELL_PROBES
     chapter = mem.get('chapter') or 0
-    probes = BOSS_CELL_PROBES.get(chapter)
+    probes = chart.BOSS_CELL_PROBES.get(chapter)
     if not probes or not chart.is_boss_castle(target):
         return False
     probe = mem.setdefault('boss_cell_probe', {})

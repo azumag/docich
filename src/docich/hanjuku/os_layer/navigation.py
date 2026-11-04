@@ -313,24 +313,11 @@ def _drop_stale_y_jump(screen, mem):
     return False
 
 
-# The boss cell is the building centre measured from the Y view (v395, checked
-# against a captured frame in v402). An army enters a building only from its
-# own tile, so a cell that never produced an entry after the relaunch budget is
-# probed one tile at a time (1 tile = 8 px = 64 chart units). Only chapters with
-# a measured cell are probed; every other chapter keeps the chart cell.
-BOSS_CELL_PROBES = {6: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))}
-
-
 def boss_probe_cell(mem, name):
-    """The cell to aim at for ``name``: the chart cell or its current probe."""
+    """The cell to aim at for ``name``: the chart cell or its probe candidate."""
     chapter = mem.get('chapter') or 0
-    cell = chart.castles(chapter).get(name)
-    probes = BOSS_CELL_PROBES.get(chapter)
-    if cell is None or not probes or not chart.is_boss_castle(name):
-        return cell
-    index = int((mem.get('boss_cell_probe') or {}).get(chapter) or 0)
-    dx, dy = probes[min(max(index, 0), len(probes) - 1)]
-    return (cell[0] + dx, cell[1] + dy)
+    index = (mem.get('boss_cell_probe') or {}).get(chapter) or 0
+    return chart.boss_probe_cell(chapter, name, index)
 
 
 def _want_y_jump(mem, order, name, mode) -> bool:
