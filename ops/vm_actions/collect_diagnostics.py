@@ -6870,6 +6870,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v417-source-mismatch",
             "hanjuku-chart-v418-giveup-fallback",
             "hanjuku-chart-v419-giveup-probe",
+            "hanjuku-chart-v420-code-probe",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
