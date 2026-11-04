@@ -351,9 +351,12 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
         if (state.get('hero') or state.get('fort')) and marker:
-            goal = state.get('goal') or _recall_goal(mem)
-            if not goal and state.get('fort'):
-                goal = _fort_recall_goal(mem, state)
+            # A 砦 asks for the nearest own castle (owner 2026-11-04). The hero's
+            # castle is only _recall_goal's last resort, so a fort must not
+            # consult it first: with no bound origin it answered アルマムーン
+            # and the Y jump left the fort's neighbourhood.
+            goal = state.get('goal') or (_fort_recall_goal(mem, state) if state.get('fort')
+                                         else _recall_goal(mem))
             state['goal'] = goal
             jumped = (mem.get('y_jumped') or {}).get('RECALL') == goal
             if goal and jumped and not castle_roofs(frame):
@@ -457,6 +460,9 @@ def _fort_step(screen, mem, state):
         current = _current(screen)
         if not current or current[2] not in members:
             return []
+        # The fort holds these generals together, so any of their departures
+        # locates it when the chosen one has no sortie record of his own.
+        state['fort_members'] = list(members)
         state.update(stage='fort_status', steps=0, general=current[2])
         _record(mem, 'camp_fort_sortie', chart_step=None, general=current[2],
                 observed_metric={'camp': state.get('target'), 'members': members},
