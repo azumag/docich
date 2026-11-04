@@ -135,14 +135,21 @@ def test_halving_cards_are_not_added_to_a_monster_boss_sortie():
     assert 'strong_card_kit' not in mem
 
 
-def test_only_a_weak_general_spends_bug_storm_on_the_boss():
-    weak = next(n for n, (hp, *_rest) in reference.GENERAL_STATS.items()
-                if hp <= reference.SACRIFICE_GENERAL_MAX_HP and p.general_max_hp(n))
-    strong = next(n for n, (hp, *_rest) in reference.GENERAL_STATS.items() if hp >= 70)
-    order, mem = _wave_memory(weak)
-    assert 'バグストーム' in p._strong_card_names(mem, order)
-    order, mem = _wave_memory(strong)
-    assert 'バグストーム' not in p._strong_card_names(mem, order)
+def test_only_an_eggless_weak_general_spends_bug_storm_on_the_boss():
+    stats = reference.GENERAL_STATS
+    ok = lambda n: reference.sacrifice_general(n)
+    assert ok('キャラウェイ') and ok('バジル')                       # HP40/戦闘4・3、卵なし
+    assert not ok('カシュー')          # 戦闘1・HP39 だが卵(イビル)を持つ
+    assert not ok('タピオカ')          # 卵なし・HP50 だが戦闘7
+    assert not ok('ヘパイストス') and not ok('しゅじんこう')
+    assert not ok('存在しない将軍') and not ok(None)               # 表に無ければ不可
+    assert all(stats[n][3] == '－' and stats[n][0] <= 50 and stats[n][1] <= 5
+               for n in stats if ok(n))
+    weak = 'キャラウェイ'
+    strong = next(n for n, (hp, *_rest) in stats.items() if hp >= 70)
+    for general, expected in ((weak, True), ('カシュー', False), ('タピオカ', False), (strong, False)):
+        order, mem = _wave_memory(general)
+        assert ('バグストーム' in p._strong_card_names(mem, order)) is expected, general
 
 
 def test_boss_generals_and_ordinary_sorties_keep_the_general_strong_cards():

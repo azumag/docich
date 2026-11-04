@@ -416,8 +416,7 @@ def _strong_card_names(mem, order):
         return reference.STRONG_CARDS
     names = list(reference.BOSS_DAMAGE_CARDS)
     actor = _sortie_general(order, mem)
-    hp = general_max_hp('しゅじんこう' if actor == NAME else actor) if actor else None
-    if type(hp) is int and hp <= reference.SACRIFICE_GENERAL_MAX_HP:
+    if reference.sacrifice_general('しゅじんこう' if actor == NAME else actor):
         names += reference.BOSS_SACRIFICE_CARDS
     return tuple(names)
 

@@ -173,7 +173,23 @@ BOSS_DAMAGE_CARDS = ('バルムンク', 'ハリケーン', 'ビッグウェイ�
 # 自爆札: ボス50ダメージと引き換えに両軍の将軍・兵士のHPを半減する(イベント限定)。
 # 使い捨てにできる弱い将軍の出撃だけに携行する。
 BOSS_SACRIFICE_CARDS = ('バグストーム',)
-SACRIFICE_GENERAL_MAX_HP = 50      # この最大HP以下の将軍を「弱い将軍」とみなす
+# 自爆してよい「弱い将軍」: 卵を持たず(owner 2026-11-04)、最大HPと戦闘が低い将軍だけ。
+SACRIFICE_GENERAL_MAX_HP = 50      # この最大HP以下
+SACRIFICE_GENERAL_MAX_COMBAT = 5   # かつ gcgx shogun.html の戦闘がこの値以下
+
+
+def sacrifice_general(name: str | None) -> bool:
+    """True for a general the bug-storm self-destruct may use (egg-less, weak).
+
+    The shogun table must list the general: an unlisted name is never a
+    sacrifice (fail-closed). ``エッグ種別`` '－' means no egg.
+    """
+    stats = GENERAL_STATS.get('しゅじんこう' if name == 'どうし' else name) if name else None
+    if stats is None:
+        return False
+    hp, combat, _bonus, egg, _thought = stats
+    return (egg == '－' and hp <= SACRIFICE_GENERAL_MAX_HP
+            and combat <= SACRIFICE_GENERAL_MAX_COMBAT)
 
 
 def boss_damage_card(card: str) -> int:
