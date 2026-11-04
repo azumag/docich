@@ -1,5 +1,6 @@
 # ADR 0006: opencode session ファイルストアの age-based pruning（auto-apply 有効化済み・owner 承認 #3140 comment 6635080145）
-- Status: **Accepted**（2026-11-02 DSH レビュー。設計確定・auto-apply 有効化済み（owner 承認 #3140 comment 6635080145））- Issue: [azumag/docich#3140](https://github.com/azumag/docich/issues/3140)（#389 follow-up）
+- Status: **Accepted**（2026-11-02 DSH レビュー。設計確定・auto-apply 有効化済み（owner 承認 #3140 comment 6635080145））
+- Issue: [azumag/docich#3140](https://github.com/azumag/docich/issues/3140)（#389 follow-up）
 - Precedents: [ADR 0002](./0002-opencode-db-retention.md)（opencode.db bounded retention、writer exclusion gate 付き）、#1906（`opencode.log` logrotate・`tool-output` 除外、完了）
 - Related lanes: #3109 / #3120 / #3121（`github-vm-ops` state 側の retention。本ADRの対象外）
 
