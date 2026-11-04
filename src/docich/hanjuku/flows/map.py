@@ -631,6 +631,17 @@ def map_step(screen: Screen, mem, frame):
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
         step = order['step']
+        # Record what the give-up is about to work with: g1133 2026-11-05 kept
+        # source_miss at 5 and never kept the override (issue #3417), so this
+        # probe shows whether the state is discarded or the fallback is simply
+        # refused (the home castle may keep only the hero).
+        home = chart.home_castle(mem.get('chapter') or 0)
+        _record(mem, 'source_giveup_probe', chart_step=step,
+                observed_metric={'source_miss': (mem.get('source_miss') or {}).get(step),
+                                 'override': (mem.get('source_override') or {}).get(step),
+                                 'source': _source(order, mem), 'home': home,
+                                 'home_garrison': list((mem.get('garrison') or {}).get(home) or ())},
+                reason='出撃元を諦める前の状態を残す')
         _give_up_source(mem, order)
         order = _order(mem)
         if order is not None and _source_giveup_stuck(mem, step):
