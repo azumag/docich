@@ -1452,6 +1452,16 @@ def _give_up_source(mem, order):
     # the cell would freeze the camera on open sea again (g358).
     misses = mem.get('source_miss', {}).pop(step, 0)
     garrison = mem.get('garrison') or {}
+    if source != home and home in _owned(mem):
+        # The home castle may keep only the hero, so the fallback source cannot
+        # send anyone: g1133 2026-11-05 aimed at the home castle on every
+        # observation while no sortie could ever leave it. Fail the order so
+        # the plan offers another (a castle that still has a spare).
+        if _last_castle_held(mem, {**order, 'source': home}):
+            _finish_order(mem, 'failed', deviation_reason=f'{source}で決定しても城メニューが{misses}回開かず、本城も出せない',
+                          observed_metric={'source': source, 'menu_miss': misses, 'home': home},
+                          reason='出撃元の城を選べず、本城も将軍1人のため出撃できないので指示を諦める')
+            return
     if source != home and home in _owned(mem) and not mem.get('source_override', {}).get(step):
         mem.setdefault('source_override', {})[step] = home
         mem['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
