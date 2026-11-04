@@ -9,7 +9,8 @@ from copy import deepcopy
 from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ... import hanjuku_chart_adjust as chart_adjust
-from ..decision_log import _record
+from ..decision_log import _record, _tally
+from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
@@ -576,6 +577,11 @@ def _source_giveup_stuck(mem, step):
 
 
 def map_step(screen: Screen, mem, frame):
+    # Did this module really run? The give-up logs 199 records in twenty minutes
+    # while the probe added in v419 never appeared, so the running module may be
+    # older than the checkout (issue #3417). A tally keeps it out of the
+    # decision log while still showing the loaded version in the policy state.
+    _tally(mem, f'module:{BOT_VERSION}')
     _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
         return []
