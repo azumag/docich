@@ -902,6 +902,27 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             reason='LLM応答を待たず決定的候補の先頭から暫定出撃')
 
 
+def _suppress_recent_failures(mem, orders):
+    """Do not re-issue, at once, an order that just failed with that content.
+
+    A rebuilt plan carries a new execution id for the same (source>target:
+    purpose) step, so it looked new and was retried immediately; g1133
+    2026-11-05 retried the boss order 96 times in ten minutes while no castle
+    menu would open. The content stays failed until PLAN_STALE_TICKS passes.
+    """
+    now = int(mem.get('tick') or 0)
+    recent = mem.get('failed_local_step') or {}
+    if not recent:
+        return
+    status = mem.setdefault('orders', {})
+    for order in orders:
+        at = recent.get(order.get('step'))
+        if type(at) is not int or now - at >= PLAN_STALE_TICKS:
+            continue
+        status[order['step']] = 'failed'
+        _tally(mem, 'retry_suppressed')
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
@@ -945,6 +966,7 @@ def _mechanical_chart(mem, state, rid, digest):
             'purpose': order.get('purpose'),
             'note': order.get('note') or '',
         })
+    _suppress_recent_failures(mem, orders)
     if previous_steps and [o['step'] for o in orders] == previous_steps:
         mem['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))

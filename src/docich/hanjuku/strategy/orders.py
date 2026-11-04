@@ -1399,6 +1399,11 @@ def _finish_order(mem, state, **fields):
             (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
         if state == 'failed':
+            # Remember the content name: a rebuilt plan gives the same content a
+            # new execution id, so it would be re-issued at once (g1133
+            # 2026-11-05: the boss order failed 96 times in ten minutes because
+            # no castle menu opened at either source).
+            mem.setdefault('failed_local_step', {})[step.rsplit(':', 1)[-1]] = int(mem.get('tick') or 0)
             from . import goals
             order = _order_for_step(mem, step) or {}
             goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
