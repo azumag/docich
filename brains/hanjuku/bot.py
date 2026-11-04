@@ -120,11 +120,18 @@ def _decision_tail(runtime: Path):
     return rows
 
 
-def _recorded_before(rows, record):
-    """True when this exact decision content already exists in the tail."""
-    return any(row.get('event') == 'decision'
-               and all(row.get(key) == value for key, value in record.items())
-               for row in rows)
+def _recorded_before(rows, record, identity):
+    """Deduplicate exact records only within the same runtime generation.
+
+    A missing key is not equivalent to a key explicitly set to None.
+    Different generations may legitimately repeat the same chart decision.
+    """
+    return any(
+        row.get('event') == 'decision'
+        and all(row.get(key) == value for key, value in identity.items())
+        and all(key in row and row[key] == value for key, value in record.items())
+        for row in rows
+    )
 
 
 def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, actions, frame_sha256, frame=None):
@@ -197,7 +204,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     for record in records:
         # Records re-emitted from a copy-mem path (no persisted plan/jump state)
         # are byte-identical to an earlier row; write each content once.
-        if _recorded_before(prior, record):
+        if _recorded_before(prior, record, identity):
             continue
         payload={'schema':1,'event':'decision','at':now,'bot_version':BOT_VERSION,
                  'step':state.get('step'),'screen_kind':state.get('screen_kind'),
