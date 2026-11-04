@@ -287,3 +287,33 @@ def test_the_mechanical_rebuild_records_the_failures_before_clearing_the_plan():
     assert len(book[LOST5]) == replan.RETAKE_STALL_FAILS
     targets = [order['target'] for order in (mem.get('chart_plan') or {}).get('orders') or ()]
     assert BOSS5 in targets, targets
+
+
+HOME6 = chart.home_castle(6)
+BOSS6 = chart.boss_castle(6)
+ORDINARY6 = [c for c in chart.castles(6) if c != BOSS6]
+
+
+def memory6(**overrides):
+    mem = {
+        'chapter': 6, 'tick': 1000, 'month': '49-9', '_records': [],
+        'captured': list(ORDINARY6), 'lost': [],
+        'garrison': {HOME6: ['どうし', 'ポワソン', 'ガスパチョ', 'バゲット'], 'イカリア': ['ゼウス']},
+        'orders': {}, 'card_stock': {'イッテツーン': 3},
+    }
+    mem.update(overrides)
+    return mem
+
+
+def test_chapter_6_boss_is_targetable_once_every_castle_is_ours():
+    """g1133 2026-11-05: without a boss cell next_order() returned None with
+    all twelve castles ours, so the chapter could never be finished."""
+    assert BOSS6 in chart.castles(6)
+    candidates = replan.interim_candidates(memory6())
+    assert any(o['target'] == BOSS6 for o in candidates.values())
+
+
+def test_chapter_6_boss_waits_for_the_last_castle():
+    mem = memory6(captured=[c for c in ORDINARY6 if c != 'アブダレ'])
+    candidates = replan.interim_candidates(mem)
+    assert not any(o['target'] == BOSS6 for o in candidates.values())
