@@ -329,6 +329,12 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
         return False
+    plan_steps = {o.get('step') for o in (mem.get('chart_plan') or {}).get('orders') or ()}
+    if plan_steps and order['step'] not in plan_steps and mem.get('active') != order['step']:
+        # An order no plan and no active selection owns keeps its jump state
+        # forever: g1133 2026-11-05 opened the Y view for the abandoned step
+        # A:bf8c3dee:M97e81e 72 times in 2.5 minutes (always attempt 1).
+        return False
     last = mem.get('y_jump_last') or {}
     if (last.get('step') == order['step'] and last.get('mode') == mode
             and ((not int(last.get('moves') or 0)
