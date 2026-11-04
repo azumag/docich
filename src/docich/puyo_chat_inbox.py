@@ -124,7 +124,11 @@ def _seen_append(path: Path, msg_id: str) -> None:
         return
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        os.write(fd, (msg_id + "\n").encode("utf-8"))
+        encoded = (msg_id + "\n").encode("utf-8")
+        written = os.write(fd, encoded)
+        if written != len(encoded):
+            raise OSError("short chat seen write")
+        os.fsync(fd)
     finally:
         os.close(fd)
 
