@@ -930,6 +930,7 @@ def _mechanical_chart(mem, state, rid, digest):
             'target': order['target'],
             'cards': list(order.get('cards') or ()),
             'after': order.get('after'),
+            'purpose': order.get('purpose'),
             'note': order.get('note') or '',
         })
     _rearm_failed_boss_steps(mem, orders, rid)
