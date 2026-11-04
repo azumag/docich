@@ -114,3 +114,6 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
     assert KEY_OWNERSHIP['launched_orders']['region'] == WORLD
     assert KEY_OWNERSHIP['launched']['migrated'] is True
     assert KEY_OWNERSHIP['launched_orders']['migrated'] is True
+    # W2: retired_sorties も world 領域へ実移行。
+    assert KEY_OWNERSHIP['retired_sorties']['region'] == WORLD
+    assert KEY_OWNERSHIP['retired_sorties']['migrated'] is True
