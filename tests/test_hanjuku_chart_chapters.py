@@ -323,6 +323,28 @@ WRAM_TILES = {
 }
 
 
+# Chapter 5 WRAM castle records read 2026-11-04 from the live g1133 chapter 5
+# savestate (0x1700, 16-byte [id, x, y, ...]): ids 31-41 are the eleven
+# ordinary castles and id 231 is 完熟大魔城 at tile (90, 32).
+CH5_ORDINARY_RECORDS = (
+    (12, 10), (48, 12), (100, 12), (68, 34), (96, 48), (54, 66),
+    (22, 52), (12, 110), (50, 98), (86, 88), (108, 110))
+CH5_BOSS_RECORD = (90, 32)
+
+
+def test_chapter_5_boss_cell_uses_its_wram_record_and_the_ordinary_anchor():
+    # Ordinary field cells are the record tile + (3, 4); the boss follows the
+    # same anchor. The 2026-11-02 skull-centre value (758, 300) was +14, +12
+    # from this and camped generals south-east of the building (g1133).
+    anchor = (3, 4)
+    ordinary = {tuple(8 * (v + d) for v, d in zip(record, anchor))
+                for record in CH5_ORDINARY_RECORDS}
+    assert ordinary == {cell for name, cell in chart.CASTLES[5].items()
+                        if name != chart.boss_castle(5)}
+    assert chart.CASTLES[5]['ボス'] == tuple(
+        8 * (v + d) for v, d in zip(CH5_BOSS_RECORD, anchor)) == (744, 288)
+
+
 def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
     from docich.hanjuku_map_sources import SOURCE_CASTLES
     for chapter, tiles in WRAM_TILES.items():
