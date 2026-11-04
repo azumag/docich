@@ -1094,7 +1094,11 @@ def _adopt_plan(mem, doc, rid):
     # A mechanical plan is rebuilt whenever its orders stop being runnable;
     # the same rebuild was recorded every observation (g1133 2026-11-05: 17
     # identical records in 30 minutes). Record only a different plan.
-    signature = (rid, tuple(o['step'] for o in orders))
+    # JSON round trip: the policy is reloaded between observations, so the
+    # stored value must be lists; a tuple reloads as a list and never compares
+    # equal (measured 2026-11-05: 24 records in 11 minutes, five of them the
+    # very same plan).
+    signature = [rid, [o['step'] for o in orders]]
     if mem.get('chart_adjust_signature') != signature:
         mem['chart_adjust_signature'] = signature
         _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
