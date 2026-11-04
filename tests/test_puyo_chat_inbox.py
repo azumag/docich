@@ -219,7 +219,7 @@ class TestSeenSidecar(ChatInboxTestBase):
         original_write = inbox.os.write
 
         def short_seen_write(fd, data):
-            if data == b"short-id\\n":
+            if data == b"short-id\n":
                 return 0
             return original_write(fd, data)
 
