@@ -143,9 +143,9 @@ WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 WORLD_MAP_CLOSE_LIMIT = 3      # Y presses before the view is known not to close with Y
 PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
 PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor before giving up
-PICKER_HISTORY = 4             # recent cursor positions used to spot a picker cycle
-PICKER_LOOP_LIMIT = 3          # revisits of a seen position before giving up
-PICKER_LOOP_MIN_STEP = 8       # px a step must move before it can close a cycle
+PICKER_VISIT_SLOTS = 12        # distinct cursor positions remembered per recall
+PICKER_LOOP_LIMIT = 3          # visits of one position before giving up
+PICKER_LOOP_MIN_STEP = 8       # px a step must move before it counts as a visit
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
@@ -324,22 +324,23 @@ def world_map_step(screen, mem, frame):
             still = (int(recall.get('picker_still') or 0) + 1
                      if prev == list(cursor) else 0)
             recall.update(picker_cursor=list(cursor), picker_still=still)
-            # g1133 02:13-02:22: the alternating axes moved the ring between
-            # バビラリー and オケアナ forever (right and left undo each other),
-            # so the unchanged-cursor budget never fired. A cursor that
-            # revisits a distant position is cycling; bound that too. Local
-            # jitter below PICKER_LOOP_MIN_STEP is not a cycle.
+            # g1133 02:13-02:43: the ring moves between バビラリー and オケアナ
+            # with two unchanged readings at each stop, so a sliding window of
+            # changed positions never accumulated (the unchanged steps cleared
+            # it) and the loop budget never fired. Count how often each distant
+            # position is visited instead; local jitter below
+            # PICKER_LOOP_MIN_STEP is not a visit.
             here = [round(cursor[0], 1), round(cursor[1], 1)]
-            history = list(recall.get('picker_history') or ())
-            loops = int(recall.get('picker_loops') or 0)
             moved = (abs(here[0] - prev[0]) + abs(here[1] - prev[1])) if prev else None
-            if still or (moved is not None and moved < PICKER_LOOP_MIN_STEP):
-                loops, history = 0, []
-            elif here in history:
-                loops, history = loops + 1, []
-            else:
-                history = (history + [here])[-PICKER_HISTORY:]
-            recall.update(picker_history=history, picker_loops=loops)
+            visits = dict(recall.get('picker_visits') or {})
+            loops = int(recall.get('picker_loops') or 0)
+            if moved is None or moved >= PICKER_LOOP_MIN_STEP:
+                key = f'{here[0]},{here[1]}'
+                visits[key] = int(visits.get(key) or 0) + 1
+                loops = max(int(v) for v in visits.values())
+                if len(visits) > PICKER_VISIT_SLOTS:
+                    visits = dict(sorted(visits.items(), key=lambda kv: kv[1])[-PICKER_VISIT_SLOTS:])
+            recall.update(picker_visits=visits, picker_loops=loops)
             if still >= PICKER_AXIS_SWITCH:
                 if min(abs(dx), abs(dy)) >= 3:
                     press = other
