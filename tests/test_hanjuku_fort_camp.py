@@ -345,6 +345,46 @@ def test_the_fort_goal_follows_the_latest_sortie_source_of_that_general():
     assert orders_goal(mem) == 'バスカビル'
 
 
+def test_a_fort_goal_uses_the_measured_camp_cell_before_the_hero_castle():
+    """Owner 2026-11-04: 砦から帰還する時は一番近い自城を選ぶ。"""
+    mem = memory(chapter=5, captured=['カルーン', 'バスカビル', 'オトラント'],
+                 garrison={'アルマムーン': ['どうし']},
+                 recall=fort_recall(stage='dest', fort=True, general='ヘパイストス',
+                                    origin=[560, 300]))
+    assert orders_goal(mem) == 'カルーン'      # 568,304 is nearest to the camp cell
+
+
+def test_a_fort_leaves_for_its_nearest_castle_not_the_heros_castle(monkeypatch):
+    """The hero's castle stood in for a camp it knew nothing about.
+
+    _recall_goal answers アルマムーン whenever the hero is garrisoned there and
+    no position is bound, and the fort path used to ask it first. The fort's
+    own departure record is nearer evidence, and only that is consulted now.
+    """
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
+    mem = fort_dest_memory(garrison={'アルマムーン': ['どうし']},
+                           sorties={'x': {'general': 'ヘパイストス', 'source': 'カルーン',
+                                          'target': 'ボス', 'tick': 900, 'status': 'en_route'}})
+    assert recall._recall_goal(mem) == 'アルマムーン'      # the answer we replaced
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
+    assert mem['y_jump']['goal'] == 'カルーン'
+    assert _flow(mem)['recall']['goal'] == 'カルーン'
+
+
+def test_a_fort_mate_s_departure_locates_a_general_without_one():
+    mem = memory(chapter=5, captured=['カルーン', 'バスカビル', 'オトラント'],
+                 recall=fort_recall(stage='dest', fort=True, general='エピィ',
+                                    fort_members=['エピィ', 'キール']),
+                 sorties={'x': {'general': 'キール', 'source': 'バスカビル', 'tick': 900}})
+    assert orders_goal(mem) == 'バスカビル'
+
+
+def test_the_fort_list_remembers_its_members_for_the_destination():
+    mem = memory(recall=fort_recall(stage='fort_list'))
+    assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('a')]
+    assert _flow(mem)['recall']['fort_members'] == ['ヴィーナス', 'エピィ']
+
+
 def test_without_a_sortie_record_the_fort_goal_is_the_home_castle_then_any_owned():
     assert orders_goal(fort_dest_memory()) == 'アルマムーン'
     mem = fort_dest_memory(home_lost=True)

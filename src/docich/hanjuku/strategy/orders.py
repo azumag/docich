@@ -1481,28 +1481,41 @@ def _recall_goal(mem, flags=None):
         return hero_castle
     return owned[0] if len(owned) == 1 else None
 def _fort_recall_goal(mem, state):
-    """A castle to send a 砦's general to when his own position cannot be bound.
+    """The nearest own castle to the 砦, by whichever position is measured.
 
-    g1097 2026-11-02 17:25-17:33 (ヘパイストス, HP19/49, in a 砦 with キール): the
-    picker opened on the 砦 with no own castle in view and ``_recall_goal``
-    returned None (no two-roof origin out there, no recorded recall sorties,
-    several owned castles), so the Y jump never started and the same
-    しゅつげき was cancelled and retried for good. His last sortie's departure
-    castle stands in for his position (the #2907 proxy); otherwise the home
-    castle, then the first owned one. Any own castle supplies him.
+    Owner rule (2026-11-04): a 砦's general leaves for the nearest own castle,
+    not for the hero's castle. _recall_goal ends on the hero's castle when it
+    cannot bind a position, so a 砦 must not consult it first — g1097
+    2026-11-02 17:25-17:33 (ヘパイストス, HP19/49, in a 砦 with キール) opened the
+    picker with no own castle in view and got アルマムーン for that reason.
+
+    Position, in order: the measured camp cell (origin); the latest departure
+    of a general seen in this 砦 — the fort holds them together, so a mate's
+    record locates it as well as his own; the home castle only when neither
+    exists. Any own castle supplies him.
     """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
     owned = sorted(c for c in _owned(mem) if c in cells)
     if not owned:
         return None
+
+    def nearest(x, y):
+        return min(owned, key=lambda c: ((cells[c][0] - x) ** 2 + (cells[c][1] - y) ** 2, c))
+
+    origin = state.get('origin')
+    if (isinstance(origin, (list, tuple)) and len(origin) == 2
+            and all(type(value) is int for value in origin)):
+        return nearest(*origin)
     general = state.get('general')
+    members = [name for name in (state.get('fort_members') or ()) if isinstance(name, str)]
+    if isinstance(general, str) and general not in members:
+        members.append(general)
     sorties = [s for s in (mem.get('sorties') or {}).values()
-               if isinstance(s, dict) and general and s.get('general') == general
+               if isinstance(s, dict) and s.get('general') in members
                and s.get('source') in cells and type(s.get('tick')) is int]
     if sorties:
-        x, y = cells[max(sorties, key=lambda s: s['tick'])['source']]
-        return min(owned, key=lambda c: ((cells[c][0] - x) ** 2 + (cells[c][1] - y) ** 2, c))
+        return nearest(*cells[max(sorties, key=lambda s: s['tick'])['source']])
     home = chart.home_castle(chapter)
     return home if home in owned else owned[0]
 
