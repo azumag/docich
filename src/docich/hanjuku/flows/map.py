@@ -538,6 +538,25 @@ def _order_start_due(mem, step):
     return True
 
 
+def _drop_jump_state(mem, step):
+    """Forget the Y-jump bookkeeping of one step.
+
+    g1133 2026-11-05 opened the Y view for the abandoned step
+    ``A:bf8c3dee:M97e81e`` 72 times in 2.5 minutes (always attempt 1) while the
+    active order was another step: the per-step jump memory outlived the plan.
+    """
+    mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
+                      if not k.startswith(f'{step}:')}
+    _forget_failed_jump(mem, step)
+    (mem.get('y_jumped') or {}).pop(step, None)
+    last = mem.get('y_jump_last') or {}
+    if last.get('step') == step:
+        mem.pop('y_jump_last', None)
+    jump = mem.get('y_jump') or {}
+    if jump.get('step') == step:
+        mem.pop('y_jump', None)
+
+
 def _release_stale_active(mem):
     """Drop an active order that no plan or launch record owns.
 
@@ -559,6 +578,7 @@ def _release_stale_active(mem):
         return False
     mem['active'] = None
     mem['picked'] = []
+    _drop_jump_state(mem, step)
     _record(mem, 'stale_active_released', chart_step=step,
             observed_metric={'plan_steps': sorted(plan_steps)[:8]},
             reason='計画にも出撃記録にも無い古い指示が残っていたため解放し、現在の計画から選び直す')
