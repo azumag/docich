@@ -280,6 +280,44 @@ class TestSeenSidecar(ChatInboxTestBase):
         self.assertEqual(result, {"status": "skipped", "reason": "duplicate"})
         self.assertEqual(self._lines(runtime), [])
 
+    def test_compaction_fsyncs_file_and_directory(self):
+        """The compacted id list and rename must both be durable."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        seen = runtime_directory(
+            self.state_dir, runtime["runtime_id"]) / inbox.SEEN_FILENAME
+        seen.write_text(
+            "".join(f"m{i}\n" for i in range(inbox.SEEN_COMPACT_AT)),
+            encoding="utf-8",
+        )
+        original_fsync = inbox.os.fsync
+        synced = []
+
+        def recording_fsync(fd):
+            synced.append(fd)
+            return original_fsync(fd)
+
+        with patch.object(inbox.os, "fsync", side_effect=recording_fsync):
+            inbox._seen_append(seen, "new-id")
+        self.assertEqual(len(synced), 2)
+        self.assertIn("new-id", seen.read_text(encoding="utf-8"))
+        self.assertFalse(seen.with_name(seen.name + ".tmp").exists())
+
+    def test_compaction_short_write_keeps_original_sidecar(self):
+        """Never publish a truncated replacement on a short write."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        seen = runtime_directory(
+            self.state_dir, runtime["runtime_id"]) / inbox.SEEN_FILENAME
+        original = "".join(f"m{i}\n" for i in range(inbox.SEEN_COMPACT_AT))
+        seen.write_text(original, encoding="utf-8")
+        with patch.object(inbox.os, "write", return_value=0):
+            with self.assertRaises(OSError):
+                inbox._seen_append(seen, "new-id")
+        self.assertEqual(seen.read_text(encoding="utf-8"), original)
+
     def test_seen_file_stays_bounded(self):
         runtime = self._activate()
         seen = runtime_directory(
