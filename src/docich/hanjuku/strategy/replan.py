@@ -1094,6 +1094,7 @@ def _adopt_plan(mem, doc, rid):
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
     mem['chart_plan_tick'] = int(mem.get('tick') or 0)
+    mem.pop('plan_stale_signature', None)
     # Several boss waves march at once, so each new boss order takes the next
     # probe candidate in rotation instead of every wave aiming at the same
     # tile (v404). Chapters without a probe list are untouched.
@@ -1155,6 +1156,13 @@ def _drop_stale_plan(mem):
     status = mem.get('orders') or {}
     if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
         return
+    signature = [o.get('step') for o in plan['orders']]
+    if mem.get('plan_stale_signature') == signature:
+        # The drop did not stick for this exact plan: do not record (or drop)
+        # it again on every observation (g1133 2026-11-05: 87 identical
+        # plan_stale_rebuild records in half an hour).
+        return
+    mem['plan_stale_signature'] = signature
     mem['chart_plan'] = None
     mem.pop('chart_plan_tick', None)
     _record(mem, 'plan_stale_rebuild', chart_step=None,

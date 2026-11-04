@@ -6859,6 +6859,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v406-plan-stale",
             "hanjuku-chart-v407-boss-wave-solo",
             "hanjuku-chart-v408-order-start-backoff",
+            "hanjuku-chart-v409-stale-plan-once",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
