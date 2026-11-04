@@ -272,3 +272,22 @@ def test_native_home_ring_with_a_second_own_flag_moves_towards_nearby_castle():
     assert p.world_flags(frame, 2)['フーリック'] == 'own'
     assert p.world_map_step(VIEW, mem, frame) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'フーリック'
+
+
+def test_a_blocked_axis_alternates_when_the_other_offset_is_small(monkeypatch):
+    """g1133 01:06-01:33: バビラリー→ダーラント (dx 38, dy -1.5) pressed right
+    8 times without moving; the old magnitude guard never tried up, so every
+    recall fell back to バビラリー."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    x, y = p.chart.castles(6)['バビラリー']; ox, oy = p.WORLD_MAP_OFFSET[6]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    presses = [p.world_map_step(VIEW, mem, picker()) for _ in range(p.PICKER_STILL_LIMIT)]
+    assert presses == ([[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH)
