@@ -170,7 +170,8 @@ class TestNethackSpectator(unittest.TestCase):
         # Non-map screens keep the reviewed TTY fallback and add a readable
         # item panel for listings; both stay textContent-only.
         self.assertIn('id="menu"', shell)
-        self.assertIn("looksLikeListing", shell)
+        self.assertIn("listingIndent", shell)
+        self.assertIn("cellsToLines", shell)
         self.assertIn("categoryTile", shell)
         self.assertIn("fitMenu", shell)
         self.assertIn("fitTty", shell)

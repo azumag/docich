@@ -394,7 +394,7 @@ def render_live_shell(
     board.appendChild(div);
   }
 
-  const inventoryEntry = /^\s*([a-zA-Z])\s*-\s+(.+?)\s*$/;
+  const inventoryEntry = /^(\s*)([a-zA-Z])\s*-\s+(.+?)\s*$/;
   const categoryRules = [
     ['gold', /gold pieces?/i],
     ['potion', /\bpotion/i],
@@ -445,12 +445,40 @@ def render_live_shell(
     menuRows.appendChild(row);
   }
 
-  function looksLikeListing(lines) {
+  function cellsToLines(cells, cols) {
+    const width = Math.max(1, Math.min(Number(cols) || 80, 200));
+    const table = [];
+    let height = 0;
+    for (const cell of cells) {
+      const x = Number(cell.x);
+      const y = Number(cell.y);
+      if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= width || y < 0) continue;
+      if (!table[y]) table[y] = new Array(width).fill(' ');
+      const glyph = typeof cell.glyph === 'string' && cell.glyph.length === 1 ? cell.glyph : ' ';
+      table[y][x] = glyph;
+      height = Math.max(height, y + 1);
+    }
+    const lines = [];
+    for (let y = 0; y < height; y += 1) {
+      lines.push((table[y] || new Array(width).fill(' ')).join(''));
+    }
+    return lines;
+  }
+
+  function listingIndent(lines) {
+    // A lettered menu line (a - a +1 long sword) is only trusted when at
+    // least two of them share one indent. NetHack draws the inventory list in
+    // the right half over the map, so the entries never start at column zero.
+    let indent = null;
     let entries = 0;
     for (const line of lines) {
-      if (inventoryEntry.test(line)) entries += 1;
+      const match = inventoryEntry.exec(line);
+      if (!match) continue;
+      if (indent === null) indent = match[1].length;
+      else if (indent !== match[1].length) return null;
+      entries += 1;
     }
-    return entries >= 3;
+    return entries >= 2 ? indent : null;
   }
 
   function fitMenu() {
@@ -476,37 +504,64 @@ def render_live_shell(
     tty.style.fontSize = size.toFixed(2) + 'px';
   }
 
-  function drawMenu(lines, statusLines) {
+  function drawMenu(lines, statusLines, baseIndent) {
     const statusSet = new Set(statusLines.map((line) => line.replace(/\s+$/, '')));
-    const first = lines.length > 0 ? lines[0].trim() : '';
-    let title = first;
-    if (first.length > 32 || inventoryEntry.test(first)) title = '';
-    menuTitle.textContent = title || ' ';
+    const rows = [];
+    for (const line of lines) {
+      const trimmed = line.replace(/\s+$/, '');
+      if (!trimmed.trim()) continue;
+      if (statusSet.has(trimmed)) continue;
+      const sliced = trimmed.slice(baseIndent).replace(/\s+$/, '');
+      if (sliced.trim()) rows.push(sliced);
+    }
+    // A prompt line above the list becomes the panel title; a bare listing
+    // (NetHack draws it without one) keeps the panel titleless.
+    let title = '';
+    if (rows.length > 0 && !inventoryEntry.test(rows[0]) && /[?\[]/.test(rows[0])) {
+      title = rows.shift().trim();
+    }
+    menuTitle.textContent = title;
+    menuTitle.hidden = !title;
     menuRows.replaceChildren();
-    let started = false;
-    for (const raw of lines) {
-      const trimmed = raw.trim();
-      if (!trimmed) continue;
-      if (!started && trimmed === title) {
-        started = true;
-        continue;
-      }
-      started = true;
-      if (statusSet.has(raw.replace(/\s+$/, ''))) continue;
-      const match = inventoryEntry.exec(raw);
+    for (const line of rows) {
+      const match = inventoryEntry.exec(line);
       if (match) {
-        const label = match[2];
-        appendMenuRow('item', label, match[1], categoryTile(label));
-      } else if (/^[A-Z][A-Za-z ,'&\/-]{0,31}$/.test(trimmed)) {
-        appendMenuRow('header', trimmed);
+        const label = match[3];
+        appendMenuRow('item', label, match[2], categoryTile(label));
+      } else if (/^[A-Z][A-Za-z ,'&\/-]{0,31}$/.test(line.trim())) {
+        appendMenuRow('header', line.trim());
       } else {
-        appendMenuRow('text', trimmed);
+        appendMenuRow('text', line);
       }
     }
   }
 
   function draw(payload) {
     if (payload.frame_kind === 'map' && Array.isArray(payload.cells)) {
+      const messageLine = typeof payload.message === 'string' ? payload.message : '';
+      const mapLines = [messageLine, ...cellsToLines(payload.cells, payload.cols)];
+      const mapIndent = listingIndent(mapLines);
+      if (mapIndent !== null) {
+        // The inventory menu is drawn over the map; show it as the panel.
+        board.replaceChildren();
+        board.hidden = true;
+        tty.hidden = true;
+        tty.textContent = '';
+        message.hidden = true;
+        const menuStatus = Array.isArray(payload.status_lines)
+          ? payload.status_lines.map((line) => String(line))
+          : [];
+        status.replaceChildren();
+        for (const line of menuStatus) {
+          const item = document.createElement('div');
+          item.textContent = line;
+          status.appendChild(item);
+        }
+        drawMenu(mapLines, menuStatus, mapIndent);
+        menu.hidden = false;
+        fitMenu();
+        return;
+      }
       board.replaceChildren();
       board.style.gridTemplateColumns = 'repeat(' + payload.cols + ', minmax(0, 1fr))';
       board.style.aspectRatio = payload.cols + ' / ' + Math.max(payload.rows, 1);
@@ -534,10 +589,11 @@ def render_live_shell(
         ? payload.status_lines.map((line) => String(line))
         : [];
       status.replaceChildren();
-      if (looksLikeListing(lines)) {
+      const indent = listingIndent(lines);
+      if (indent !== null) {
         tty.textContent = '';
         tty.hidden = true;
-        drawMenu(lines, statusLines);
+        drawMenu(lines, statusLines, indent);
         menu.hidden = false;
         for (const line of statusLines) {
           const item = document.createElement('div');
@@ -636,7 +692,7 @@ body {{ margin:0; background:#07090c; color:#f3f4f6; font-family:ui-monospace,SF
 .menu-row.text {{ color:#cbd5e1; white-space:pre; }}
 .menu-icon {{ flex:0 0 auto; width:1.3em; height:1.3em; }}
 .menu-letter {{ flex:0 0 auto; display:grid; place-items:center; width:1.45em; height:1.45em; border-radius:.3em; background:#1e293b; color:#fde68a; font-weight:800; }}
-.menu-label {{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:pre; }}
+.menu-label {{ flex:1 1 auto; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }}
 {tile_css()}
 </style></head><body>
 {sprite_atlas_html()}
