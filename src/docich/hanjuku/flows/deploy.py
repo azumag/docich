@@ -1283,6 +1283,7 @@ def deploy_step(screen: Screen, mem):
             if move is None:
                 return _hold_general_list_bounded(screen, mem, order,
                     '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable')
+            (mem.get('general_list_hold') or {}).pop(order['step'], None)
             if move == 'here':
                 mem['sortie_general'][order['step']] = general
                 if general != order['general']:
