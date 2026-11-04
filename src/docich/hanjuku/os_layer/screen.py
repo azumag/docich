@@ -146,9 +146,26 @@ def _free_cursor(masks_white, frame: Frame):
     return found[0] if len(found) == 1 else None
 
 
+# Chapter 6 draws the enemy castle with a slate roof: (74,88,139) lit, (49,64,90)
+# shaded (g1133 2026-11-04 23:40 オケアナ and 23:20 カバルッサ: roofs=0 at the
+# target, the cursor wandered and the sortie was cancelled). Neither is the blue
+# of chapters 1-5, so a component counts only when it holds both tones.
+SLATE_LIT = (74, 88, 139)
+SLATE_SHADE = (49, 64, 90)
+SLATE_TOLERANCE = 3
+SLATE_SHADE_MIN = 8
+
+
+def _slate_near(p, target, tol):
+    return all(abs(a - b) <= tol for a, b in zip(p, target))
+
+
 def _roof_kind(r, g, b):
     if r <= 50 and 80 <= g <= 120 and 120 <= b <= 160:
         return 'enemy'
+    if (_slate_near((r, g, b), SLATE_LIT, SLATE_TOLERANCE)
+            or _slate_near((r, g, b), SLATE_SHADE, SLATE_TOLERANCE)):
+        return 'enemy_slate'
     if r >= 190 and g <= 70 and 30 <= b <= 85:
         return 'own'
     return None
@@ -162,7 +179,7 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
             kind = _roof_kind(*frame.pixel(x, y))
             if kind and not (exclude and exclude[0] <= x <= exclude[2] and exclude[1] <= y <= exclude[3]):
                 labels[(x, y)] = kind
-    seen, out = set(), []
+    seen, out, slate = set(), [], []
     for start, kind in labels.items():
         if start in seen:
             continue
@@ -179,15 +196,55 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
                         stack.append(n)
         if len(pts) < 25:
             continue
+        slate_roof = kind == 'enemy_slate'
+        if slate_roof:
+            shade = sum(1 for q in pts if _slate_near(frame.pixel(*q), SLATE_SHADE, SLATE_TOLERANCE))
+            if shade < SLATE_SHADE_MIN or shade == len(pts):
+                continue            # one tone alone is rock or shadow, not a roof
+            kind = 'enemy'
         x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
         y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
         if x1 - x0 > 40 or y1 - y0 > 30:
+            continue
+        if slate_roof:
+            slate.append((x0, y0, x1, y1))
             continue
         clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
         out.append({'kind': kind, 'box': (x0, y0, x1, y1), 'clipped': clipped,
                     # Cursor top-left that selects this castle.
                     'target': ((x0 + x1) // 2, y1 - 8)})
+    for x0, y0, x1, y1 in _merge_boxes(slate, SLATE_MERGE_GAP):
+        clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
+        # The slate roof is only the top of the sprite: the castle body hangs
+        # SLATE_BODY_BELOW px under it, so the selecting cell is that far lower
+        # than for a roof that covers the whole castle (live: cursor y = roof
+        # bottom + 1 on オケアナ 2026-11-04 23:40).
+        out.append({'kind': 'enemy', 'box': (x0, y0, x1, y1), 'clipped': clipped,
+                    'target': ((x0 + x1) // 2, y1 + SLATE_BODY_BELOW - 8)})
     return out
+
+
+SLATE_MERGE_GAP = 6        # the tower and the body of one castle are separate roof pieces
+SLATE_BODY_BELOW = 9       # castle body below the slate roof's bottom edge, px
+
+
+def _merge_boxes(boxes, gap):
+    boxes = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if (a[0] - gap <= b[2] and b[0] - gap <= a[2]
+                        and a[1] - gap <= b[3] and b[1] - gap <= a[3]):
+                    boxes[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return boxes
 
 
 # Our camping tent (野営): a yellow/orange body with a light-blue base band
