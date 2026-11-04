@@ -1308,3 +1308,26 @@ def test_food_emergency_also_probes_before_any_eat():
     agent = brain()
     assert act(agent, frame(condition="Weak", hp="4(16)")) == ["i"]
     assert agent.last_progress_decision.intent == "open_inventory"
+
+
+def test_no_food_probe_is_not_reopened_on_every_frame_without_a_turn_counter():
+    # Production NetHack 3.6.7 in this build renders no "T:" status field, so
+    # every observed frame has turn=None. The re-probe window must then count
+    # acknowledged actions instead of turns, otherwise a probed-listing closes
+    # and the menu is re-opened on the next capture (live open/close flicker).
+    agent = brain()
+    assert act(agent, frame(condition="Hungry", turn=None)) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
+    for _ in range(4):
+        keys = act(agent, frame({"n": "."}, condition="Hungry", turn=None))
+        assert keys != ["i"]
+
+
+def test_no_safe_food_result_keeps_the_full_reprobe_window():
+    # The listing's "nothing safe" verdict is the probe result; closing the
+    # menu must not shorten the 30-turn window to the generic abandon window.
+    agent = brain()
+    assert act(agent, frame(condition="Hungry", turn=50)) == ["i"]
+    assert act(agent, CORPSE_LISTING) == ["Escape"]
+    assert act(agent, frame(condition="Hungry", turn=52)) != ["i"]
+    assert agent.progress._inv_block_turns == 30
