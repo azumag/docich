@@ -897,12 +897,28 @@ def _check_source_castle(screen, mem, order):
     label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
     if label in cells:
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
-    misses = mem.setdefault('source_miss', {})
-    misses[step] = misses.get(step, 0) + 1
+    misses = _count_source_mismatch(mem, step, label)
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
             observed_metric={'castle': name, 'misses': misses[step]},
             reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
+def _count_source_mismatch(mem, step, label):
+    """Count consecutive mismatches at the same wrong castle.
+
+    Only the same wrong castle counts as the same failure: opening a different
+    castle each time means the position estimate is being corrected and the
+    march is making progress (g1133 2026-11-05 opened the home castle three
+    times while aiming at オケアナ, which is the case this bounds).
+    """
+    misses = mem.setdefault('source_miss', {})
+    seen = mem.setdefault('source_mismatch_castle', {})
+    if seen.get(step) != label:
+        misses[step] = 0
+        seen[step] = label
+    misses[step] = misses.get(step, 0) + 1
+    return misses[step]
 
 
 def _keep_last_castle(screen, mem, order):
