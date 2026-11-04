@@ -899,7 +899,7 @@ def _check_source_castle(screen, mem, order):
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
     misses = _count_source_mismatch(mem, step, label)
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
-            observed_metric={'castle': name, 'misses': misses[step]},
+            observed_metric={'castle': name, 'misses': misses},
             reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
 
