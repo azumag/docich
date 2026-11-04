@@ -54,7 +54,7 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     # The stored plan can no longer start (_plan_pending False) and the
     # situation changed: an owned castle is now empty.
     mem['orders'] = {step: 'failed' for step in first}
-    mem['garrison']['トウトウ'] = []
+    mem["captured"].remove("トウトウ")      # a normal castle becomes a target again
     adopt(mem, 1001)
     assert [o['step'] for o in mem['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2
