@@ -68,6 +68,13 @@ class SectionBytesAccountingTests(unittest.TestCase):
                              {**output, "meta": {"source": "test"}})["total"])
         self.assertLessEqual(len(text.encode("utf-8")), 65536)
 
+    def test_non_dict_meta_preserves_original_output(self):
+        # Optional accounting must not crash if the meta contract changes.
+        payload = {"meta": None, "status": "ok"}
+        text = _inject(payload)
+        self.assertEqual(json.loads(text), payload)
+        self.assertLessEqual(len(text.encode("utf-8")), 65536)
+
     def test_near_hard_cap_drops_accounting_without_exceeding_limit(self):
         payload = {"meta": {}, "sample": "x" * 200}
         original = len(json.dumps(payload, sort_keys=True, ensure_ascii=False,
