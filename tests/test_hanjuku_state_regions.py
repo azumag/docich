@@ -78,6 +78,16 @@ def test_country_income_survives_the_chapter_until_the_next_read():
     assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 20, 'income': 300}
 
 
+def test_country_wages_survive_the_chapter_until_the_next_read():
+    # 総賃金 is the same kind of last observation as 現在収入.
+    from docich.hanjuku.strategy import campaign
+    mem = memory(); confirm(mem)
+    mem['country_wages'] = {'scope': [1, '1-7'], 'tick': 20, 'wages': 150}
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert mem['chapter'] == 2
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 20, 'wages': 150}
+
+
 def test_world_region_dies_with_the_chapter_but_journal_survives():
     # W1 follow-up: _enter_chapter must clear the world region (chapter
     # lifetime) while the journal region (run lifetime) is untouched.

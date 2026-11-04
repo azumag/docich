@@ -20,8 +20,9 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
-    # country_income is a last observation (owner 2026-11-04): keep it until
-    # the next country-status read rewrites it, instead of blanking 現在収入.
+    # country_income / country_wages are last observations (owner 2026-11-04):
+    # keep them until the next country-status read rewrites them, instead of
+    # blanking 現在収入 / 総賃金.
     for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',

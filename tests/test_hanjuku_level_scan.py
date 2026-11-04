@@ -94,8 +94,10 @@ def test_level_trigger_visits_status_and_skips_the_roster():
     assert mem['house']['phase'] == 'level_status'
     page1 = _country_page1()
     assert house.step(parse(page1), mem, page1) == [p.pad('a')]
-    # Page 1 carries the country's total income; keep it for 現在収入.
+    # Page 1 carries the country's total income and total wages; keep both as
+    # the last observations shown as 現在収入 / 総賃金 on the status card.
     assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 500, 'income': 300}
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 500, 'wages': 150}
     page2 = _country_page2(level=14, value=2800, needed=3400)
     assert house.step(parse(page2), mem, page2) == [p.pad('b')]
     assert mem['hanjuku_level'] == 14
