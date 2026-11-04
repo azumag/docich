@@ -6856,6 +6856,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v403-boss-cell-probe",
             "hanjuku-chart-v404-boss-probe-rotation",
             "hanjuku-chart-v405-plan-purpose",
+            "hanjuku-chart-v406-plan-stale",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

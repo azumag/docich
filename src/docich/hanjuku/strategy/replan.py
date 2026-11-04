@@ -1086,6 +1086,7 @@ def _adopt_plan(mem, doc, rid):
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    mem['chart_plan_tick'] = int(mem.get('tick') or 0)
     # Several boss waves march at once, so each new boss order takes the next
     # probe candidate in rotation instead of every wave aiming at the same
     # tile (v404). Chapters without a probe list are untouched.
@@ -1123,6 +1124,36 @@ def _adopt_plan(mem, doc, rid):
                 reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
+PLAN_STALE_TICKS = 600      # ~15 min of observations with no order started
+
+
+def _drop_stale_plan(mem):
+    """Rebuild a plan whose every order stayed pending for a long time.
+
+    The rebuild used to wait for the situation digest to change (gold, month,
+    order status). A plan whose orders cannot start changes none of them, so it
+    sat pending forever: g1133 2026-11-05 had two staging moves pending for
+    over an hour, and the plan was never rebuilt with the purpose field that
+    would have let them run (v405). Dropping it here makes the next
+    ``_mechanical_chart`` rebuild from the current situation.
+    """
+    plan = mem.get('chart_plan') or {}
+    adopted = mem.get('chart_plan_tick')
+    if not plan.get('orders') or type(adopted) is not int:
+        return
+    now = int(mem.get('tick') or 0)
+    if now - adopted < PLAN_STALE_TICKS:
+        return
+    status = mem.get('orders') or {}
+    if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
+        return
+    mem['chart_plan'] = None
+    mem.pop('chart_plan_tick', None)
+    _record(mem, 'plan_stale_rebuild', chart_step=None,
+            observed_metric={'age': now - adopted, 'orders': [o.get('step') for o in plan['orders']]},
+            reason='計画の指示が長時間未発射のままのため、現在の状況から再構築する')
+
+
 def _off_chart_mechanical(mem, state, rid, gate):
     """Speedrun chart abolished: take castles mechanically, ask no model.
 
@@ -1135,6 +1166,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
     digest = chart_adjust.request_digest(fields)
+    _drop_stale_plan(mem)
     if state.get('request_id') != rid:
         state.clear()
         state['request_id'] = rid
