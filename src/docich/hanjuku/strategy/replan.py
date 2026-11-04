@@ -1091,10 +1091,16 @@ def _adopt_plan(mem, doc, rid):
     # Digest for commentary: grounded order content, not the full plan blob.
     order_digest = [{'general': o['general'], 'source': o['source'],
                      'target': o['target'], 'cards': list(o['cards'])} for o in orders]
-    _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
-            request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
-            local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
-            reason='調整チャートを受信したため独自の指示列で出撃を再開')
+    # A mechanical plan is rebuilt whenever its orders stop being runnable;
+    # the same rebuild was recorded every observation (g1133 2026-11-05: 17
+    # identical records in 30 minutes). Record only a different plan.
+    signature = (rid, tuple(o['step'] for o in orders))
+    if mem.get('chart_adjust_signature') != signature:
+        mem['chart_adjust_signature'] = signature
+        _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+                request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
+                local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
+                reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
 def _off_chart_mechanical(mem, state, rid, gate):

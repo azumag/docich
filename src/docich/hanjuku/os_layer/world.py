@@ -342,9 +342,15 @@ def _apply_world_flags(mem, flags):
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
             changed.append(('captured', castle))
-    _record(mem, 'world_map_owners', observed_metric=flags,
-            resulting_event=[f'{k}:{c}' for k, c in changed] or None,
-            reason='全体マップの旗の色で全城の所有を確認')
+    # The Y view is read once per picker step and once per survey; recording
+    # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
+    # most of them identical picker steps) hid real changes in the log.
+    signature = tuple(sorted(flags.items()))
+    if mem.get('world_map_signature') != signature:
+        mem['world_map_signature'] = signature
+        _record(mem, 'world_map_owners', observed_metric=flags,
+                resulting_event=[f'{k}:{c}' for k, c in changed] or None,
+                reason='全体マップの旗の色で全城の所有を確認')
     for kind, castle in changed:
         _record(mem, 'castle_lost_observed' if kind == 'lost' else 'castle_owned_observed',
                 castle=castle, observed_metric={'world_map': flags[castle]},
