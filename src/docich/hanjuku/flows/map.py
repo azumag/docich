@@ -143,6 +143,9 @@ WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 WORLD_MAP_CLOSE_LIMIT = 3      # Y presses before the view is known not to close with Y
 PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
 PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor before giving up
+PICKER_HISTORY = 4             # recent cursor positions used to spot a picker cycle
+PICKER_LOOP_LIMIT = 3          # revisits of a seen position before giving up
+PICKER_LOOP_MIN_STEP = 8       # px a step must move before it can close a cycle
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
@@ -317,9 +320,26 @@ def world_map_step(screen, mem, frame):
             # down press moved it to グリン. Record every step, so its frame is
             # kept, try the other axis when the reading does not move, and stop
             # once it has not changed for a while.
+            prev = recall.get('picker_cursor')
             still = (int(recall.get('picker_still') or 0) + 1
-                     if recall.get('picker_cursor') == list(cursor) else 0)
+                     if prev == list(cursor) else 0)
             recall.update(picker_cursor=list(cursor), picker_still=still)
+            # g1133 02:13-02:22: the alternating axes moved the ring between
+            # バビラリー and オケアナ forever (right and left undo each other),
+            # so the unchanged-cursor budget never fired. A cursor that
+            # revisits a distant position is cycling; bound that too. Local
+            # jitter below PICKER_LOOP_MIN_STEP is not a cycle.
+            here = [round(cursor[0], 1), round(cursor[1], 1)]
+            history = list(recall.get('picker_history') or ())
+            loops = int(recall.get('picker_loops') or 0)
+            moved = (abs(here[0] - prev[0]) + abs(here[1] - prev[1])) if prev else None
+            if still or (moved is not None and moved < PICKER_LOOP_MIN_STEP):
+                loops, history = 0, []
+            elif here in history:
+                loops, history = loops + 1, []
+            else:
+                history = (history + [here])[-PICKER_HISTORY:]
+            recall.update(picker_history=history, picker_loops=loops)
             if still >= PICKER_AXIS_SWITCH:
                 if min(abs(dx), abs(dy)) >= 3:
                     press = other
@@ -333,9 +353,9 @@ def world_map_step(screen, mem, frame):
             _record(mem, 'camp_recall_picker_step',
                     observed_metric={'cursor': list(cursor), 'goal': goal,
                                      'offset': [round(dx, 1), round(dy, 1)], 'press': press,
-                                     'still': still},
+                                     'still': still, 'loops': loops},
                     reason='帰還先の城へ全体マップのカーソルを1歩動かす')
-            if still >= PICKER_STILL_LIMIT and _picker_on_enemy(nearby, flags):
+            if (still >= PICKER_STILL_LIMIT or loops >= PICKER_LOOP_LIMIT) and _picker_on_enemy(nearby, flags):
                 _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
                         observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},
                         reason='帰還先カーソルが敵城の上で動かないため、敵城へは確定せず取り消す')
@@ -343,7 +363,7 @@ def world_map_step(screen, mem, frame):
                 mem['uncertain'] = True
                 _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 return [pad('b')]
-            if still >= PICKER_STILL_LIMIT:
+            if still >= PICKER_STILL_LIMIT or loops >= PICKER_LOOP_LIMIT:
                 # Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
                 # 動かないカーソルを取り消すと、撤退した将軍が野営のまま帰れない
                 # (g1133 00:14:49, ダーラントへ向かうカーソルが止まり取消)。
