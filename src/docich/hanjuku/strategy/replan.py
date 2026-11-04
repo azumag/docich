@@ -539,10 +539,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             unavailable |= {NAME}
         sole = len(owned) == 1
         need = 1 if allow_sole else 2
+        # Owner 2026-11-04: a rear castle may send its last general. Once every
+        # normal castle is held the boss is the only enemy left, so a wave may
+        # take the last general from a non-home castle: g1133 2026-11-05 had one
+        # general per castle after the first waves, so no wave could form again
+        # and the plan fell back to staging moves that enemy attacks kept
+        # interrupting. The home castle always keeps its defender.
+        post_conquest = _post_conquest_wait(mem)
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
-            if len(set(free)) < need:
+            if len(set(free)) < need and not (post_conquest and c != home and free):
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
