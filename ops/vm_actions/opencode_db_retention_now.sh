@@ -112,7 +112,7 @@ session_status=0
 if [[ -f "$session_helper" && ! -L "$session_helper" && -d "$session_data" ]]; then
   if python3 "$session_helper" "$session_data" "$session_gate" \
       --state-file "$session_state" --status-file "$session_status_file" \
-      --batch 50 --cutoff-hours 24 \
+      --batch 50 --cutoff-hours 24 --auto-apply \
       --gate-wait-sec 300; then
     session_status=0
   else
