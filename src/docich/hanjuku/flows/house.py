@@ -1309,13 +1309,17 @@ def _step_once(screen, mem, frame):
         return []
     if phase == 'level_status':
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
-        # page 2 carries the hanjuku level/value. Keep the total income as the
-        # last observed 現在収入 for the status card; only a readable page
-        # rewrites it (owner 2026-11-03 / 2026-11-04).
+        # page 2 carries the hanjuku level/value. Keep the total income and
+        # total wages as last observations for the status card; only a
+        # readable page rewrites them (owner 2026-11-04).
         income = _status_row_value(screen, 'しゅうにゅう')
         if type(income) is int and 0 <= income <= 99999:
             mem['country_income'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                      'tick': int(mem.get('tick') or 0), 'income': income}
+        wages = _status_row_value(screen, 'そうちんぎん')
+        if type(wages) is int and 0 <= wages <= 99999:
+            mem['country_wages'] = {'scope': [mem.get('chapter'), mem.get('month')],
+                                    'tick': int(mem.get('tick') or 0), 'wages': wages}
         read = _country_status_level(screen)
         if isinstance(read, dict) and type(read['level']) is int:
             scope = [mem.get('chapter'), mem.get('month')]
