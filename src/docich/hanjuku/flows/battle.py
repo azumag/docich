@@ -787,9 +787,23 @@ def battle_step(screen: Screen, mem):
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
     done = cur.setdefault('tactics_done', [])
+
     # Preserve original indexes (chart tactic IDs) while prioritizing egg drop.
-    ordered = sorted(enumerate(tactics), key=lambda item: (
-        0 if item[0] < len(extra) else 1 if item[1].get('egg_drop_only') else 2))
+    # The unverified default "use any carried card at the opening" (tactic id
+    # 'd:') is a last resort: ranked above the strong-only tactic it opened
+    # with the dropper and the carried strong card never fired against a strong
+    # general (g1133 2026-11-04 16:00:50, キール vs マンゴスチン).
+    def _tactic_rank(item):
+        index, tactic = item
+        if index < len(extra):
+            return 0                   # retry/override openers own the opening
+        if tactic.get('egg_drop_only'):
+            return 1                   # a measured egg drop is worth the opening
+        if str(tactic.get('tactic_id') or '').startswith('d:'):
+            return 3                   # unverified default: only when nothing else is due
+        return 2                       # verified chart tactic / strong card
+
+    ordered = sorted(enumerate(tactics), key=_tactic_rank)
     for index, tactic in ordered:
         tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if not _tactic_enemy_ok(tactic, b.enemy, cur) or tid in done:
