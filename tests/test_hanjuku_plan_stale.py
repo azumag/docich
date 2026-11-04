@@ -58,3 +58,22 @@ def test_a_plan_without_an_adoption_tick_is_left_alone():
     mem.pop('chart_plan_tick', None)
     replan._drop_stale_plan(mem)
     assert mem['chart_plan'] is not None
+
+
+def test_the_same_stale_plan_is_recorded_once():
+    """A drop that does not stick must not record every observation.
+
+    g1133 2026-11-05: 87 identical plan_stale_rebuild records in half an hour,
+    all with the same plan and the same age.
+    """
+    mem = memory(1000)
+    replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
+    stored = dict(mem['chart_plan'])
+    mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
+    replan._drop_stale_plan(mem)
+    assert len(decisions(mem, 'plan_stale_rebuild')) == 1
+    # The plan is back (a path that does not adopt it): do not record again.
+    mem['chart_plan'] = stored
+    mem['chart_plan_tick'] = 1000
+    replan._drop_stale_plan(mem)
+    assert len(decisions(mem, 'plan_stale_rebuild')) == 1
