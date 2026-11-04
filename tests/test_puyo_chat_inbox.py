@@ -184,6 +184,36 @@ class TestFailClosed(ChatInboxTestBase):
         self.assertEqual(result, {"status": "skipped", "reason": "no_puyo_slot"})
         self.assertFalse(self._inbox(runtime).exists())
 
+    def test_switch_lock_blocks_stale_slot_append(self):
+        """An exclusive switch lease prevents writes into the old slot."""
+        from docich.game_switch import GameSwitchLock
+
+        runtime = self._activate()
+        lock = GameSwitchLock(self.state_dir)
+        lock.acquire(exclusive=True)
+        try:
+            result = inbox.append_chat(
+                self.state_dir, user_id="1", display_name="v",
+                text="!puyo join", msg_id="switching")
+        finally:
+            lock.release()
+        self.assertEqual(result, {"status": "skipped", "reason": "switch_busy"})
+        self.assertFalse(self._inbox(runtime).exists())
+
+    def test_not_ready_slot_does_not_receive_chat(self):
+        """Draining a slot must not accept new chat even if still active."""
+        runtime = self._activate()
+        state, _ = self.store.canonical.load()
+        state["phase"] = "draining"
+        state["operation"] = "switch"
+        state["request_id"] = "01234567-89ab-cdef-0123-456789abcdef"
+        self.store.canonical.save(state)
+        result = inbox.append_chat(
+            self.state_dir, user_id="1", display_name="v",
+            text="!puyo join", msg_id="draining")
+        self.assertEqual(result, {"status": "skipped", "reason": "no_puyo_slot"})
+        self.assertFalse(self._inbox(runtime).exists())
+
     def test_missing_runtime_dir_is_noop(self):
         # canonical が puyo を指していても runtime_dir が無ければ書かない。
         runtime = self._activate(make_dir=False)
