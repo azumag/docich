@@ -1097,6 +1097,9 @@ def _rescue_card(candidates, cur):
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
 GENERAL_CRITICAL_RETREAT_HP = 12
+# quarter-HP 退却を抑止する合戦力スコアの最低倍率 (1.3 = 13/10)。
+# 合戦力スコア = (HP + 10×兵士) × 戦闘力。小数を避けて整数比較する。
+QUARTER_RETREAT_COMBAT_RATIO_TENTHS = 13
 
 
 def _unarmed_clash_risk(cur):
@@ -1733,6 +1736,31 @@ def _egg_rescue_pending(cur):
     return False
 
 
+def _quarter_retreat_combat_blocked(cur):
+    """quarter-HP 退却を合戦力優位で抑止すべきか。
+
+    パネルで両側の兵士数が読めている場合 (soldiers_current) に限り、
+    合戦力スコア (HP + 10×兵士) × 戦闘力 が 1.3 倍以上なら True。
+    ご主人様 / 召喚 / ボス / 資源確認の安全経路はここで除外し、
+    _default_retreat_needed の他条項 (hp 床、卵戦、救済枯渇) とは独立させる。
+    """
+    if cur.get('egg_battle'):
+        return False
+    ally = cur.get('ally')
+    if ally in (None, NAME, 'しゅじんこう'):
+        return False
+    enemy = cur.get('enemy')
+    if enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS:
+        return False
+    balance = _melee_balance(cur)
+    if balance.get('soldiers_current') is not True:
+        return False
+    ours, theirs = balance.get('ally_melee_score'), balance.get('enemy_melee_score')
+    if type(ours) is not int or type(theirs) is not int or ours <= 0 or theirs <= 0:
+        return False
+    return ours * 10 >= QUARTER_RETREAT_COMBAT_RATIO_TENTHS * theirs
+
+
 def _default_retreat_needed(cur):
     """Any general's retreat threshold in an attack battle.
 
@@ -1765,7 +1793,10 @@ def _default_retreat_needed(cur):
         # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
         # her while the bot chose こうげき and the retreat came too late).
         return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
-    return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
+    quarter = hp < enemy and hp * 4 <= ref
+    if quarter and _quarter_retreat_combat_blocked(cur):
+        quarter = False
+    return hp <= GENERAL_CRITICAL_RETREAT_HP or quarter
 
 
 def _hero_retreat_needed(cur):
