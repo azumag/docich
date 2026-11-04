@@ -190,3 +190,17 @@ def test_a_read_level_clears_the_unread_count():
     assert house.step(parse(page2), mem, page2) == [p.pad('b')]
     assert 'hanjuku_level_unread' not in mem
 
+
+
+def test_month_rollover_releases_the_previous_month_roster_visit():
+    """g1107 46-8->46-9: the old house close step owned the month menu with no
+    input until screen_stalled. A month change must return the screen."""
+    mem = _month_memory()
+    mem['month'] = '1-8'
+    mem['house'] = {'phase': 'close', 'chapter': 1, 'roster_month': '1-7',
+                    'month_scan': False, 'age': 0, 'total': 0,
+                    'seen': [], 'pending': []}
+    menu = month_canvas(250, on='メインメニュー', month=8)
+    assert house.step(parse(menu), mem, menu) is None
+    assert 'house' not in mem
+    assert any(r.get('decision') == 'house_month_changed' for r in mem.get('_records') or [])

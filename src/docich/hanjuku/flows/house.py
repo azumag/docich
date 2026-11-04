@@ -1105,6 +1105,20 @@ def _step_once(screen, mem, frame):
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
+    # A month rollover ends the previous month's roster visit. Keeping its
+    # close step on the new month's menu owned the screen with no input until
+    # the run hit screen_stalled (g1107 46-8->46-9, 2026-11-04 01:11).
+    roster_month = state.get('roster_month')
+    if (roster_month is not None and roster_month != mem.get('month')
+            and state.get('phase') == 'close'):
+        # Only the dead close step owns the new month's menu with no input.
+        # Income/roster/level phases keep their own month-boundary handling.
+        _record(mem, 'month_changed', observed_metric={
+            'state_month': roster_month, 'month': mem.get('month'),
+            'phase': state.get('phase')},
+            reason='月が変わったため前月の名簿巡回の終了処理を打ち切り、月一フローへ画面を返す')
+        _finish(mem)
+        return None
     if state.get('from_survey') and receipts.reusable_survey(mem) is None:
         if state.get('phase') == 'close':
             # g684 2-11 15:49:04-15:50+: already closed, this check re-ran

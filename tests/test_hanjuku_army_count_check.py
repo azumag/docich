@@ -486,3 +486,23 @@ def test_closing_stage_releases_an_unclosable_screen():
     assert monthly._month_army_count_check(s, mem, mem['shop']) == []
     assert mem['army_count_check']['stage'] == 'unverified'
     assert monthly._month_army_count_check(s, mem, mem['shop']) is None
+
+
+def test_stalled_month_menu_releases_the_army_check_with_b():
+    """g1107 46-9: army_count_owned suppressed the no-input escape for 300 s
+    and the run ended screen_stalled. The month menu must close with B."""
+    from docich.hanjuku_bot import decide
+    mem = memory()
+    p.month_step(screen(), mem)
+    p.month_step(observe_count(mem, 0), mem)
+    assert p.month_step(screen(), mem) == [p.pad('a')]
+    assert monthly.army_count_owned(mem)
+    frame = month_canvas(72, month=8, on='へいしほじゅう')
+    state = {'policy': mem, 'phase': 'month_menu', 'no_input_streak': 1000,
+             'no_input_frames': [frame.digest()]}
+    actions, out = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [p.pad('b')]
+    assert 'army_count_check' not in out['policy']
+    assert out['policy']['shop']['soldiers_done'] is True
+    assert not out['policy']['shop'].get('soldier_receipt')
+    assert any(r['decision'] == 'month_menu_stall_release' for r in out['_records'])
