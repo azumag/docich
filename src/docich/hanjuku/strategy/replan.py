@@ -6,12 +6,11 @@ one answers, and records every deviation.
 """
 from __future__ import annotations
 
-import collections
 import hashlib
 
 from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
                  hanjuku_reference as reference)
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
@@ -1134,7 +1133,6 @@ def _adopt_plan(mem, doc, rid):
                 reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
-_STALE_REPORTED = collections.deque(maxlen=32)   # plans already reported this process
 PLAN_STALE_TICKS = 600      # ~15 min of observations with no order started
 
 
@@ -1147,6 +1145,10 @@ def _drop_stale_plan(mem):
     over an hour, and the plan was never rebuilt with the purpose field that
     would have let them run (v405). Dropping it here makes the next
     ``_mechanical_chart`` rebuild from the current situation.
+
+    The drop is counted, not recorded: the planner is also run on copies (the
+    chart worker) where no state signature survives, so a decision record
+    repeated on every call (35 identical records a minute under v411).
     """
     plan = mem.get('chart_plan') or {}
     adopted = mem.get('chart_plan_tick')
@@ -1158,26 +1160,10 @@ def _drop_stale_plan(mem):
     status = mem.get('orders') or {}
     if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
         return
-    signature = [o.get('step') for o in plan['orders']]
-    if signature in _STALE_REPORTED:
-        # A planner run that works on a copy (the chart worker) never keeps the
-        # signature in its state, so the same plan was reported on every call:
-        # g1133 2026-11-05 logged 99 identical records in 12 minutes. Report a
-        # plan once per process; the state signature still covers the real run.
-        mem['chart_plan'] = None
-        return
-    _STALE_REPORTED.append(signature)
-    if mem.get('plan_stale_signature') == signature:
-        # The drop did not stick for this exact plan: do not record (or drop)
-        # it again on every observation (g1133 2026-11-05: 87 identical
-        # plan_stale_rebuild records in half an hour).
-        return
-    mem['plan_stale_signature'] = signature
     mem['chart_plan'] = None
     mem.pop('chart_plan_tick', None)
-    _record(mem, 'plan_stale_rebuild', chart_step=None,
-            observed_metric={'age': now - adopted, 'orders': [o.get('step') for o in plan['orders']]},
-            reason='計画の指示が長時間未発射のままのため、現在の状況から再構築する')
+    mem.pop('plan_stale_signature', None)
+    _tally(mem, 'plan_stale_rebuild')
 
 
 def _off_chart_mechanical(mem, state, rid, gate):
