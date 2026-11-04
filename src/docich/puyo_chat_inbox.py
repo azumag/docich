@@ -195,7 +195,7 @@ def append_chat(state_dir, *, user_id, display_name, text, msg_id=None) -> dict:
             if msg_id:
                 _seen_append(seen, msg_id)
             _append_line(inbox, line)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             raise ChatInboxError("chat_inbox append failed") from exc
     finally:
         lock.release()
