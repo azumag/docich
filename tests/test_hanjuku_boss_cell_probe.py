@@ -51,6 +51,6 @@ def test_a_normal_castle_is_never_probed():
 
 def test_the_assignment_stays_bounded():
     mem = {'chapter': 6, 'tick': 1, '_records': []}
-    for i in range(30):
+    for i in range(50):   # over the 40-entry bound
         replan._adopt_plan(mem, plan(f'M{i}'), f'rid{i}')
     assert len(mem['boss_step_probe']) <= 40

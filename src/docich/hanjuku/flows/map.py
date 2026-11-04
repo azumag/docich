@@ -515,6 +515,28 @@ def _abandon_stuck_step(screen, mem, order):
     return []
 
 
+ORDER_START_BACKOFF = 12      # observations (~18 s) before the same order restarts
+
+
+def _order_start_due(mem, step):
+    """The same order is not restarted on every observation.
+
+    A start that an interruption (defence, event) cut short used to restart at
+    once: g1133 2026-11-05 started the same move 10 times in five minutes, each
+    attempt opening the world map and aborting. The backoff keeps the order
+    pending without paying that cost again.
+    """
+    now = int(mem.get('tick') or 0)
+    started = mem.setdefault('order_start_tick', {})
+    last = started.get(step)
+    if last is not None and now - int(last) < ORDER_START_BACKOFF:
+        return False
+    started[step] = now
+    for stale in list(started)[:-40]:      # del on the temporary list is a no-op
+        started.pop(stale, None)
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -613,6 +635,8 @@ def map_step(screen: Screen, mem, frame):
             update_world(screen, mem, frame)
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
+        if not _order_start_due(mem, order['step']):
+            return []
         mem['active'] = order['step']
         mem['picked'] = []
         # The bounded inventory search belongs to this attempt, not the
