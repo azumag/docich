@@ -103,8 +103,9 @@ def _read_seen(path: Path) -> list[str]:
     """Read the id sidecar as an ordered list, tolerating a missing file."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except FileNotFoundError:
         return []
+    # Any other read failure must stop delivery, not bypass deduplication.
     return [line for line in lines if line]
 
 
@@ -175,8 +176,11 @@ def append_chat(state_dir, *, user_id, display_name, text, msg_id=None) -> dict:
             return {"status": "skipped", "reason": "no_puyo_slot"}
 
         seen = inbox.parent / SEEN_FILENAME
-        if msg_id and msg_id in _read_seen(seen):
-            return {"status": "skipped", "reason": "duplicate"}
+        try:
+            if msg_id and msg_id in _read_seen(seen):
+                return {"status": "skipped", "reason": "duplicate"}
+        except (OSError, UnicodeError) as exc:
+            raise ChatInboxError("chat seen read failed") from exc
 
         line = json.dumps(
             {"user_id": user_id, "display_name": display_name, "text": text},
