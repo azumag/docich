@@ -27,6 +27,11 @@ class OpenCodeSessionFileWiringTest(unittest.TestCase):
         )
         self.assertIn('session_data="/home/ubuntu/.local/share/opencode"', text)
         self.assertIn("--state-file", text)
+        self.assertIn("--manifest-file", text)
+        self.assertIn(
+            'session_manifest="$root/tmp/state/opencode_session_file_reclaim_manifest.jsonl"',
+            text,
+        )
         self.assertIn("--status-file", text)
         self.assertIn(
             'session_status_file="$root/tmp/state/opencode_session_file_retention.json"',
