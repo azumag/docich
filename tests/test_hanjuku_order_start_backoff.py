@@ -8,6 +8,11 @@ again, so the retry cost more observations than the sortie it was retrying.
 from docich.hanjuku.flows import map as M
 
 
+def test_the_first_start_is_allowed_even_at_tick_zero():
+    mem = {'tick': 0}
+    assert M._order_start_due(mem, 'A:x:M1') is True
+
+
 def test_the_first_start_is_allowed():
     mem = {'tick': 100}
     assert M._order_start_due(mem, 'A:x:M1') is True

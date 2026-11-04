@@ -528,7 +528,8 @@ def _order_start_due(mem, step):
     """
     now = int(mem.get('tick') or 0)
     started = mem.setdefault('order_start_tick', {})
-    if now - int(started.get(step) or 0) < ORDER_START_BACKOFF:
+    last = started.get(step)
+    if last is not None and now - int(last) < ORDER_START_BACKOFF:
         return False
     started[step] = now
     for stale in list(started)[:-40]:      # del on the temporary list is a no-op
