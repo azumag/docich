@@ -302,6 +302,26 @@ def _control_melee_advantage(cur, enemy_hp, ally_soldiers, enemy_soldiers):
             and hp >= enemy_hp * 2)
 
 
+def _card_halving_leads(cur, estimate):
+    """クースカン halves the general's HP: after it we are not behind in HP.
+
+    Owner 2026-11-04: 切り札はピンチの救済ではなく状況を有利にするために使う。
+    Holding it does not stop a lost melee, it only throws the card away (g1133
+    22:45: ally 38 vs enemy 46, クースカン refused six times in 36 s with no
+    input, then the general retreated with the card unused; 14 refusals in 90
+    minutes). The strict follow-up projection (``_control_melee_advantage``:
+    twice the HP, army and combat parity) still decides the melee hold after
+    the card; this only decides whether to open it. Bosses and unread HP keep
+    the old refusal.
+    """
+    hp, remaining = cur.get('ally_hp'), estimate['remaining_hp_upper']
+    return (estimate['effect_kind'] == 'half_enemy_hp' and not estimate['self_harm']
+            and estimate['target_kind'] == 'general'
+            and cur.get('enemy') not in reference.BOSS_GENERALS
+            and type(estimate['damage_lower_bound']) is int and estimate['damage_lower_bound'] > 0
+            and type(remaining) is int and type(hp) is int and hp > 0 and remaining <= hp)
+
+
 def _card_melee_projection(cur, card, context, estimate):
     # gcgx kirihuda.html: クースカン halves enemy general/soldier HP and
     # stuns. Keep the prospective effect separate from observed live HP.
@@ -512,6 +532,8 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
             melee = _card_melee_projection(cur, card, context, estimate)
             if melee:
                 result.update(allowed=True, role='control_then_melee_not_a_kill', melee_followup=melee)
+            elif card == 'クースカン' and _card_halving_leads(cur, estimate):
+                result.update(allowed=True, role='halving_not_a_kill')
             else:
                 result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
@@ -579,7 +601,8 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
-                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill'):
+                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill',
+                     'halving_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)

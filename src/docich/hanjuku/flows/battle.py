@@ -824,10 +824,10 @@ def battle_step(screen: Screen, mem):
             continue          # do not spend the boss kit in an unmeasured road fight
         strong_evidence = None
         if tactic.get('strong_only'):
-            strong, strong_evidence = _strong_enemy(mem, cur)
-            if not strong:
-                # 追加携行した切り札は、強い将軍と判定された戦闘以外では温存する。
-                continue
+            # Owner 2026-11-04: 切り札はピンチの救済ではなく、状況を有利にする
+            # ために使う。不利でなくても、携行した強い札は開幕で使う。強い
+            # 将軍かどうかは判断の根拠として記録するだけで、使用の条件にしない。
+            _, strong_evidence = _strong_enemy(mem, cur)
         # No calibrated use receipt exists, so a selected-then-unclassified card
         # is the best evidence there is. Without chaining on it the charted boss
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
