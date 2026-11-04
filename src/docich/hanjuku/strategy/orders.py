@@ -1649,7 +1649,17 @@ def _arrival_limit(mem, sortie):
     if not source or not target:
         return BOSS_ARRIVAL_LIMIT
     distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
-    return max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    if chart.is_boss_castle(sortie.get('target') or sortie.get('planned_target')):
+        # g1133 2026-11-05 04:04: the boss march from オケアナ (203 chart cells)
+        # had not entered at 819 observations and the 800 floor declared it lost
+        # while it was still walking; the same chapter's marches measured 23-34
+        # minutes (1380-2040 observations) for 603-740 cells, so a boss march can
+        # outlast the floor. The boss is the chapter's last march, so it may use
+        # the whole window in which its battle can still bind to the order; the
+        # relaunch budget still bounds a wrong cell.
+        limit = MARCH_ARRIVAL_CAP
+    return limit
 
 
 def _long_march(sorties, castle, general, now, retired=None):
