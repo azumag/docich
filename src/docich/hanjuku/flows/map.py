@@ -564,6 +564,17 @@ def _release_stale_active(mem):
     return True
 
 
+def _source_giveup_stuck(mem, step):
+    """The give-up limit is still reached after the give-up ran.
+
+    g1133 2026-11-05 kept `source_miss` at 5 and never wrote the override, so
+    `_give_up_source` fired on every observation and returned no input (453
+    identical records, issue #3417). The caller closes the open panel instead
+    of idling when this is true.
+    """
+    return (mem.get('source_miss') or {}).get(step, 0) >= SOURCE_MISS_LIMIT
+
+
 def map_step(screen: Screen, mem, frame):
     _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
@@ -619,8 +630,19 @@ def map_step(screen: Screen, mem, frame):
             return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
+        step = order['step']
         _give_up_source(mem, order)
         order = _order(mem)
+        if order is not None and _source_giveup_stuck(mem, step):
+            # The give-up did not take effect (its state was not kept: g1133
+            # 2026-11-05 kept source_miss at 5 and the override absent for
+            # 453 identical records). Do not return no input forever: close
+            # whatever panel the mismatch left open and observe again.
+            _record(mem, 'source_giveup_ineffective', chart_step=step,
+                    observed_metric={'source_miss': (mem.get('source_miss') or {}).get(step),
+                                     'override': (mem.get('source_override') or {}).get(step)},
+                    reason='出撃元を諦める判定が残っているため、開いているパネルを閉じて次の観測に進む')
+            return [pad('b')]
     verifying = order is not None and (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
     if order is not None and ((not verifying and not _ready(order, mem)) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding

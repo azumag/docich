@@ -6868,6 +6868,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v415-retry-suppress",
             "hanjuku-chart-v416-source-content-key",
             "hanjuku-chart-v417-source-mismatch",
+            "hanjuku-chart-v418-giveup-fallback",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
