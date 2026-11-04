@@ -6863,6 +6863,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v410-boss-marker-confirm",
             "hanjuku-chart-v411-stale-record-once",
             "hanjuku-chart-v412-stale-tally",
+            "hanjuku-chart-v413-plan-readopt",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
