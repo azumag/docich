@@ -1237,6 +1237,14 @@ def _merchant_spendable(mem, shop, header):
     egg, recruit = shop.get('reserve', 0), shop.get('recruit_reserve', 0)
     if repair is None or any(type(v) is not int or v < 0 for v in (egg, recruit)):
         return None
+    if (shop.get('recruit_priority')
+            and shop.get('recruit') not in ('done', 'not_needed', 'opened', 'unverified')):
+        # The merchant is visited before _prioritise_recruit measures the fee.
+        # Keep the whole batch's fee out of the spare-cash budget so an
+        # optional card cannot spend the month's recruitment money. The live
+        # 49-10 merchant had 8734G yet skipped an affordable card because the
+        # boolean necessity hold treated the pending recruit as unaffordable.
+        recruit = max(recruit, RECRUIT_COST * _recruit_units(shop))
     return max(0, header['gold'] - _egg_recovery_wage_floor(mem) - egg - repair - recruit)
 
 
