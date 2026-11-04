@@ -87,6 +87,36 @@ def test_roles_can_be_overridden_by_chapter_and_adopted_chart(monkeypatch):
     assert p._recruit_target(mem) is None
 
 
+def test_cash_spare_counts_every_field_castle_not_only_owned():
+    # Owner 2026-11-04: 1000G以上なら所有城ではなく章の全城（ボス城を除く）で数える。
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    assert p._recruit_target(mem) == 2 * 2 + 3       # 所持金未観測は従来どおり所有城
+    mem['gold'] = 999
+    assert p._recruit_target(mem) == 2 * 2 + 3
+    mem['gold'] = 1000
+    # 第1話はボスのけっかいを含む8城。フィールド上の守備対象は7城。
+    assert p._recruit_target(mem) == 2 * 7 + 3
+    mem['gold'] = None
+    assert p._recruit_target(mem) == 7
+
+
+def test_cash_spare_respects_chart_roles_and_the_general_cap(monkeypatch):
+    mem = memory(NAMES, complete=True, castles=1)
+    mem['gold'] = 1000
+    monkeypatch.setitem(p.chart.RECRUITMENT_BY_CHAPTER, 1, {'per_castle': 4, 'attack': 8})
+    assert p._recruit_target(mem) == 32                # 4*7+8=36 を上限32で切る
+
+
+def test_cash_spare_makes_a_previously_sufficient_roster_short_again():
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['gold'] = 999
+    assert p._recruit_shortage(mem)['target'] == 7
+    mem['gold'] = 1000
+    shortage = p._recruit_shortage(mem)
+    assert shortage['target'] == 17
+    assert shortage['count_lower_bound'] == 6
+
+
 def test_receipt_union_requires_one_scan_and_wrap_not_repeated_page():
     mem=memory();state={'chapter':1,'phase':'roster','seen':[]}
     mem['house']=state;r.begin(mem,state)
