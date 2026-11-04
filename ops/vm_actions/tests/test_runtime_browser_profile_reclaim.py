@@ -181,6 +181,40 @@ class RuntimeBrowserProfileReclaimTests(unittest.TestCase):
         result = self.dry_run(min_age_hours=24)
         self.assertEqual(self.planned_ids(result), [])
 
+    def test_include_legacy_is_dry_run_only(self):
+        with self.assertRaises(evidence.EvidenceError) as ctx:
+            reclaim.run(self.state, apply=True, batch=20, expect_plan="0" * 64,
+                        target_free_bytes=1 << 62, keep_recent=0,
+                        min_age_hours=0, include_legacy=True)
+        self.assertEqual(str(ctx.exception), "include_legacy_dry_run_only")
+
+    def test_unsafe_run_record_skips_even_with_valid_marker(self):
+        name = "g8-22222222"
+        self.make(name, None)
+        runtime = self.state / "runtimes" / name
+        (runtime / "hanjuku_run.json").symlink_to(self.state / "game_switch.json")
+        (runtime / reclaim.MARKER_FILE).write_text(json.dumps(
+            {"schema": reclaim.MARKER_SCHEMA, "kind": reclaim.MARKER_KIND,
+             "runtime_id": name, "generation": 8}))
+        result = self.dry_run(keep_recent=0)
+        self.assertNotIn(name, self.planned_ids(result))
+        self.assertEqual(result["skipped"][reclaim.UNSAFE_RUN_RECORD], 1)
+
+    def test_marker_contract_matches_game_switch_writer(self):
+        root = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(root / "src"))
+        from docich import retire_marker
+        self.assertEqual(reclaim.MARKER_FILE, retire_marker.MARKER_FILE)
+        self.assertEqual(reclaim.MARKER_SCHEMA, retire_marker.MARKER_SCHEMA)
+        self.assertEqual(reclaim.MARKER_KIND, retire_marker.MARKER_KIND)
+        name = "g8-22222222"
+        self.make(name, None)
+        retire_marker.write_retire_marker(self.state, name)
+        result = self.dry_run(keep_recent=0)
+        self.assertIn(name, self.planned_ids(result))
+        entry = next(e for e in result["plan"] if e["runtime_id"] == name)
+        self.assertEqual(entry["completion"], "retire_marker")
+
     def test_batch_bounds_are_enforced(self):
         for bad in (0, -1, reclaim.MAX_BATCH + 1, "x"):
             with self.assertRaises(evidence.EvidenceError):
