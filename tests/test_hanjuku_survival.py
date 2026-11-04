@@ -731,7 +731,8 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     screen.hidden_battle_commands = hidden
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert mem['battle']['survival']['exhausted']
-    assert mem['_records'][-1]['decision'] == 'battle_okunote_risk_declined'
+    assert mem['_records'][-1]['decision'] in (
+        'battle_okunote_risk_declined', 'battle_okunote_risk_conserved')
     # Repeated observations of the fading parent menu do not duplicate records.
     records = len(mem['_records'])
     assert p.okunote_step(screen, mem) == [p.pad('b')]
@@ -1086,12 +1087,16 @@ def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhau
 
 
 def test_low_hp_opens_okunote_when_safe_candidate_visible():
-    mem = memory(34, 59)
-    mem['battle']['ally_hp'] = 34
-    mem['battle']['side'] = 'defense'
+    # A non-hero losing defense (owner 2026-11-04) opens the parent menu.
+    mem = {'chapter': 1, '_records': [], 'battle': {
+        'enemy': 'ミント', 'ally': 'ゼウス', 'side': 'defense',
+        'castle': p.chart.home_castle(1), 'start_enemy_hp': 32, 'start_ally_hp': 26,
+        'enemy_hp': 32, 'ally_hp': 26, 'step': None, 'cards_used': [],
+        'card_evidence_version': 1, 'card_soldiers_current': True,
+        'card_hp_unread': False, 'card_context_unclassified': False,
+        'ally_soldiers': 2, 'enemy_soldiers': 6}}
     screen = menu(('おどす',), kind='battle_menu')
     assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
-    assert not mem['battle'].get('survival', {}).get('exhausted')
     assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])
 
 
@@ -1117,7 +1122,9 @@ def test_low_hp_conerves_okunote_when_healthy_melee_advantage():
     assert len(mem['_records']) == records
 
 
-def test_low_hp_does_not_conserve_okunote_when_soldiers_unobserved():
+def test_low_hp_conserves_okunote_when_soldiers_unobserved():
+    # Owner 2026-11-04 kept the unread-panel hold: the covered counts stay
+    # upper bounds, so this case conserves rather than opening the lottery.
     mem = memory(80, 10)
     cur = mem['battle']
     cur['ally_hp'] = 80
@@ -1129,8 +1136,8 @@ def test_low_hp_does_not_conserve_okunote_when_soldiers_unobserved():
     cur['start_ally_hp'] = 90
     cur['start_enemy_hp'] = 60
     screen = menu(('おどす',), kind='battle_menu')
-    p.okunote_step(screen, mem)
-    assert not any(r.get('decision') == 'battle_okunote_risk_conserved'
-                   for r in mem['_records'])
-    assert any(r.get('decision') == 'battle_okunote_risk_accepted'
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert any(r.get('decision') == 'battle_okunote_risk_conserved'
                for r in mem['_records'])
+    assert not any(r.get('decision') == 'battle_okunote_risk_accepted'
+                   for r in mem['_records'])

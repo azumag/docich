@@ -121,5 +121,11 @@ def test_trevis_losing_melee_before_half_hp_takes_last_chance():
 ])
 def test_melee_rule_keeps_existing_exclusions(changes):
     mem = g1075_memory(**changes)
+    if changes == {'enemy_hp': 28}:
+        # The enemy is already damaged, but the low-HP losing melee opens the
+        # lottery (owner 2026-11-04); the last-resort record stays absent.
+        assert p.okunote_step(menu(), mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
+        assert not any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
+        return
     assert p.okunote_step(menu(), mem) == [p.pad('b')]
     assert not any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
