@@ -191,6 +191,20 @@ for _chapter, _cells in DEMON_CASTLE_CELLS.items():
     CASTLES[_chapter].update(_cells)
 del _chapter, _cells
 
+# Chapter 6's 完熟秘密基地 also spawns only after every ordinary castle is
+# ours (GCGX 06: 全ての城を制圧すると完熟秘密基地が出現する; a fan board puts
+# it at the centre of the upper-right forest). Without a cell the mechanical
+# planner has no boss target at chapter end and next_order() returns None
+# forever (g1133 simulation 2026-11-05: all twelve castles ours -> {}).
+# The 22:23 g1133 Y view measures that forest centre at (166.5, 68.0) with
+# the chapter offset (64.3, 45.0), so the cell is (818, 184). This is an
+# approximate first position: the roof checks and the inland search guard the
+# entry, and a live measurement replaces it once the base is seen.
+SECRET_BASE_CELLS = {6: {'ボス': (818, 184)}}
+for _chapter, _cells in SECRET_BASE_CELLS.items():
+    CASTLES[_chapter].update(_cells)
+del _chapter, _cells
+
 # Independent native-view calibrations. Castle cells are field-cursor top-left
 # coordinates; flags and the Y selection cursor use different pixel anchors.
 # Keep these values separate when registering a chapter from a source map.
