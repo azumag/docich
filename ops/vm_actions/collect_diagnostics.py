@@ -6828,6 +6828,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v375-closing-text-advance",
             "hanjuku-chart-v376-plan-spare-reservation",
             "hanjuku-chart-v377-plan-exhausted-interim",
+            "hanjuku-chart-v378-fort-menu-handover",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
