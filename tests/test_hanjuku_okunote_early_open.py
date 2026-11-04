@@ -94,13 +94,18 @@ def test_hero_keeps_the_hp_and_position_deadlines(ally):
     assert 'okunote_egg_preempt' not in mem['battle']
 
 
-def test_enemy_without_egg_keeps_the_self_damage_decline():
-    # 2026-10-30 00:47 アルマムーン: ミント has no egg; a 26 HP defender is
-    # still not sent into the 88 HP self-damage lottery from the open menu.
+def test_enemy_without_egg_opens_the_lottery_from_the_parent_menu():
+    # Owner 2026-11-04: the candidates are unknown until the list opens.
     mem = memory(ally='ゼウス', ally_hp=26, enemy='ミント', enemy_hp=32)
-    assert p.battle_menu_step(native('g1075-okunote-only-rescue-menu.png'), mem) == [p.pad('b')]
-    assert decisions(mem, 'battle_okunote_risk_declined')
-    assert not decisions(mem, 'battle_okunote_egg_preempt')
+    mem['battle'].update(card_soldiers_current=True, card_hp_unread=False,
+                         card_context_unclassified=False, ally_soldiers=2, enemy_soldiers=6)
+    labels = ('おくのて',)
+    lines = [TextLine(175, tuple((160 + 8 * j, ch) for j, ch in enumerate('おくのて')))]
+    screen = Screen(lines, (138, 169, 156, 181), 'おくのて', kind='battle_menu')
+    screen.hidden_battle_commands = True
+    actions = p.okunote_step(screen, mem)
+    assert actions and actions != [p.pad('b')]
+    assert not decisions(mem, 'battle_okunote_risk_declined')
 
 
 @pytest.mark.parametrize('changes', [

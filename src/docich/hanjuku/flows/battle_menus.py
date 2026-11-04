@@ -1055,37 +1055,61 @@ def okunote_step(screen, mem):
             # Re-arm exhausted on tide change.
             _rescue_rearm(mem, cur, {'owner': 'ally'})
             rescue = _survival_state(mem, cur)
-            # Candidate-first: check safe okunote choices (not self-damage).
-            visible = {w for _, _, w in _options(screen)} if getattr(screen, 'kind', None) == 'battle_menu' else set()
-            # Unobserved is not safe (#2102): do not fall back to the static
-            # OKUNOTE_CHOICES when the menu is not visible.
-            okunote_visible = [w for w in OKUNOTE_CHOICES if w in visible] if visible else []
-            from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES
-            safe = [c for c in okunote_visible if c not in OKUNOTE_SELF_DAMAGE_CHOICES]
-
-            if not safe or rescue.get('exhausted'):
+            # Owner 2026-11-04: the parent rescue menu cannot show the
+            # okunote candidates before おくのて is opened. Declining from
+            # "no safe candidate" here was logically impossible; only the
+            # candidate list (okunote_menu) is evidence. The rescue's egg/card
+            # exhaustion is not a veto either. Open the lottery in a losing
+            # pinch (or conserve a healthy/covered melee) and choose among the
+            # visible choices after opening.
+            visible = {w for _, _, w in _options(screen)}
+            ally_full = general_max_hp(cur.get('ally')) if cur.get('ally') else None
+            enemy_full = general_max_hp(cur.get('enemy')) if cur.get('enemy') else None
+            conserve = (_hold_melee_egg(mem, cur, visible)
+                        or cur.get('card_soldiers_current') is not True
+                        or cur.get('card_hp_unread') or cur.get('card_context_unclassified'))
+            hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
+            protected = (
+                cur.get('ally') in (None, 'だいじん')
+                or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
+                or cur.get('side') != 'defense'
+                or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+                or cur.get('enemy') in chart.BOSSES.values()
+                or cur.get('planned_cards') or cur.get('card_flow')
+                or cur.get('egg_battle') or mem.get('egg_battle')
+                or cur.get('card_summon_observed')
+                or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
+                or 'きりふだ' in visible or 'たまごをつかう' in visible
+                or type(hp) is not int or hp <= 0
+                or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
+                or ally_full is None or enemy_full is None
+                or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
+                or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
+                or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
+                or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+            if conserve:
+                if not flow.get('risk_conserved'):
+                    flow['risk_conserved'] = True
+                    _record(mem, 'battle_okunote_risk_conserved', **_battle_labels(cur),
+                            observed_metric={'ally_hp': hp, 'melee_balance': _melee_balance(cur)},
+                            reason='低HPだが白兵優位または未読パネルのため奥の手を温存し白兵へ戻る')
+                flow['risk_declined'] = True
+                rescue['exhausted'] = True
+                return [pad('b')]
+            if protected:
                 if not flow.get('risk_declined'):
                     flow['risk_declined'] = True
                     _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
                             observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
-                            reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+                            reason='低HPだが主人公・計画札・召喚戦・ボス・使用可能な卵/切り札などの既存保護条件があるため、奥の手を開かず白兵へ戻る')
                 rescue['exhausted'] = True
                 return [pad('b')]
-            # Conserve: healthy melee advantage despite low HP -> keep okunote closed.
-            if _hold_melee_egg(mem, cur, visible):
-                if not flow.get('risk_conserved'):
-                    flow['risk_conserved'] = True
-                    _record(mem, 'battle_okunote_risk_conserved', **_battle_labels(cur),
-                            observed_metric={'ally_hp': hp, 'safe_candidates': safe,
-                                             'melee_balance': _melee_balance(cur)},
-                            reason='低HPだが白兵優位のため奥の手を温存し白兵へ戻る')
-                flow['risk_declined'] = True
-                rescue['exhausted'] = True
-                return [pad('b')]
-            # safe candidate exists: fall through to open okunote
+            # Losing pinch: fall through to open おくのて. The candidates are
+            # checked only after the list is visible.
             _record(mem, 'battle_okunote_risk_accepted', **_battle_labels(cur),
-                    observed_metric={'ally_hp': hp, 'safe_candidates': safe},
-                    reason='低HPだが観測した安全候補があるため奥の手を開く')
+                    observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                    reason='低HPで白兵優位がないため奥の手を開く（候補は開いた後に確認する）')
+
     # The irreversible candidate list cannot be cancelled. A parent-menu
     # navigation budget must never block a now-readable best candidate.
     if flow['ticks'] > 16 and screen.kind == 'battle_menu':
@@ -1128,10 +1152,17 @@ def okunote_step(screen, mem):
         label = 'おくのて'
     else:
         from ..os_layer.screen import OKUNOTE_SELF_DAMAGE_CHOICES as _sd
-        candidates = [w for w in OKUNOTE_CHOICES if w in names and w not in _sd]
+        shown = [w for w in OKUNOTE_CHOICES if w in names]
+        candidates = [w for w in shown if w not in _sd]
         if not candidates:
-            return []
-        label = candidates[-1]
+            if not shown:
+                return []
+            label = shown[0]
+            _record(mem, 'battle_okunote_forced_self_damage', **_battle_labels(cur),
+                    observed_metric={'choices': shown},
+                    reason='可視候補がすべて自傷のため、選ばざるを得ない候補で奥の手を進める')
+        else:
+            label = candidates[-1]
     move = _battle_menu_to(screen, label)
     if move != 'here':
         if (move is None and screen.kind == 'battle_menu'

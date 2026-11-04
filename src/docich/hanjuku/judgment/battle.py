@@ -1248,7 +1248,7 @@ def _general_egg_rescue_recheck(mem, cur):
     from ..os_layer.roster import run_identity
     rescue = cur.get('survival')
     if (not isinstance(rescue, dict)
-            or cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('ally') in (None, NAME, 'しじんこう', 'しゅじんこう', 'だいじん')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
             or cur.get('egg_battle') or mem.get('egg_battle')
@@ -2074,7 +2074,7 @@ def _defender_last_resort(mem, cur):
     replaces repeated losing melee after *measured* resource unavailability.
     Boss kits, the hero, uncertain locations and healthy fights stay excluded.
     """
-    if (cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+    if (cur.get('ally') in (None, NAME, 'しじんこう', 'しゅじんこう', 'だいじん')
             or cur.get('side') != 'defense'
             or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
             or cur.get('enemy') in chart.BOSSES.values()
