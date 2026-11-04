@@ -759,6 +759,10 @@ def _boss_retry_due(order, mem) -> bool:
 
 
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
+# Chapter 6 marches run slower than the chapter 3 measurement (g1133
+# 2026-11-05: 603 cells to セレーネ took 23-32 min, 740 to ユージア 34 min), so
+# the fixed limit reset orders whose general was still walking.
+MARCH_TICKS_PER_CELL = {6: 2.4}
 BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
 BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
 # A site march starts from a corner castle and can outlive two relaunch
@@ -876,7 +880,7 @@ def _relaunch_overdue_boss(mem):
         if sortie.get('status') == 'overdue':
             _drop_spent_sortie_attempt(mem, step)
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
-                or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                or type(sortie.get('tick')) is not int or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         relaunches = mem.setdefault('boss_relaunch', {})
         # Owner 2026-10-30: a spent relaunch budget must not park a site
@@ -982,7 +986,7 @@ def _relaunch_overdue_march(mem):
             continue
         if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
-                or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         en_route = sortie.get('status') == 'en_route'
         sortie['status'] = 'overdue'
@@ -1620,6 +1624,32 @@ def _match_sortie(mem, castle, general):
 
 
 LONG_MARCH_TICKS = 4 * SORTIE_BUSY_TICKS   # ~35 min; chapter 3 marches measured up to 677
+# A march may not outlive the window in which its battle can still bind to
+# the order (_long_march), so the distance-scaled wait is capped here.
+MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+
+
+def _arrival_limit(mem, sortie):
+    """How long a march may run before its order counts as lost.
+
+    BOSS_ARRIVAL_LIMIT was measured on chapter 3's longest march (677 cells).
+    A chapter whose chart marches slower needs a longer wait: g1133 2026-11-05
+    showed ナストリーニ reaching セレーネ (603 cells) 23-32 min after launch and
+    ピスタチオ ユージア (740) after 34 min, while the fixed 20 min had already
+    reset both orders and sent a second general after a march still walking.
+    Chapters without a measured rate keep the fixed limit; the wait never
+    exceeds the long-march window.
+    """
+    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
+    if not rate:
+        return BOSS_ARRIVAL_LIMIT
+    cells = chart.castles(mem.get('chapter'))
+    source = cells.get(sortie.get('source'))
+    target = cells.get(sortie.get('target') or sortie.get('planned_target'))
+    if not source or not target:
+        return BOSS_ARRIVAL_LIMIT
+    distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
+    return max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
 
 
 def _long_march(sorties, castle, general, now, retired=None):
