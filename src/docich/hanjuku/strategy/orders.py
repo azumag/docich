@@ -898,8 +898,15 @@ def _relaunch_overdue_boss(mem):
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
         _drop_spent_sortie_attempt(mem, step)
+        # The cell and the measured source list go with the record: a boss march
+        # that never enters is either a wrong cell or a launch that never left
+        # (g1133 2026-11-05: five boss sorties recorded as launched while the
+        # world map showed a single marching unit).
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
-                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
+                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0),
+                    'cell': list(chart.castles(mem.get('chapter') or 0).get(target) or ()),
+                    'source_still_has_general': sortie.get('general') in
+                    ((mem.get('garrison') or {}).get(sortie.get('source')) or ())}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
             if not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,

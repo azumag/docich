@@ -49,7 +49,9 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['chart_step'] == '3-B1' and record['general'] == 'アポロン'
     assert record['observed_metric'] == {'general': 'アポロン', 'source': 'パタゴーヌ',
-                                         'marching': 79599 - LAUNCH, 'relaunches': 0}
+                                         'marching': 79599 - LAUNCH, 'relaunches': 0,
+                                         'cell': list(chart.castles(CHAPTER)['ボス']),
+                                         'source_still_has_general': False}
     assert '3-B1' not in mem['general_override']
     assert '3-B1' not in _world(mem)['launched_orders']
 
