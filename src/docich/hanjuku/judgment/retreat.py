@@ -2,6 +2,10 @@
 
 Owner 2026-10-15: keep clearly favourable fights, protect strong generals
 sooner, and accept more risk for weak or *observed* eggless generals.
+Owner 2026-11-04: a general at 20/82 HP with six whole soldiers and a
+combat-weighted melee lead (g1133 ヴィーナス 20 vs ココット 24, score
+960 vs 672) must not retreat on the opening-HP fraction alone; the soldier
+pool is still unspent and the legacy quarter-HP clause ignored it.
 The thresholds below are policy choices, not a damage formula or win odds.
 Resource selection, the hero, summons, bosses and unread panels retain the
 existing safety path. This module never reads a frame or sends pad input.
@@ -21,6 +25,7 @@ STRONG_RETREAT_PERCENT = 50
 EXPENDABLE_RETREAT_HP = 4
 EXPENDABLE_RETREAT_PERCENT = 20
 HOPELESS_MELEE_RATIO = 4
+MELEE_ADVANTAGE_RATIO_TENTHS = 13  # 1.3x combat-weighted force with soldiers read
 
 
 def _strength(name):
@@ -98,6 +103,36 @@ def _dominant_melee(cur, balance, hp_floor):
             and values[0] > 2 * values[1] and values[2] > 2 * values[3])
 
 
+def _quarter_hp_retreat(cur, profile):
+    """The legacy final clause this module may refute, and only that one.
+
+    _default_retreat_needed otherwise owns the resource, summon, boss and
+    hero safety paths; refuting a retreat here must not relax those.
+    """
+    start, hp, enemy = (cur.get(key) for key in
+                        ('start_ally_hp', 'ally_hp', 'enemy_hp'))
+    return (type(start) is int and type(hp) is int and type(enemy) is int
+            and 0 < hp < enemy
+            and hp * 4 <= start <= (profile.get('max_hp') or 0))
+
+
+def _measured_melee_advantage(cur, balance):
+    """Whole soldiers plus a clear combat-weighted lead is not a defeat.
+
+    The soldier pool absorbs damage before the general (10 HP each), so the
+    general's HP fraction alone understates a fight that has not touched the
+    army yet. Only a current panel with both soldier counts read counts.
+    """
+    from .battle import GENERAL_CRITICAL_RETREAT_HP
+    if balance.get('soldiers_current') is not True:
+        return False
+    ours, theirs = balance.get('ally_melee_score'), balance.get('enemy_melee_score')
+    hp = cur.get('ally_hp')
+    return (type(hp) is int and hp > GENERAL_CRITICAL_RETREAT_HP
+            and type(ours) is int and type(theirs) is int and ours > 0 and theirs > 0
+            and ours * 10 >= theirs * MELEE_ADVANTAGE_RATIO_TENTHS)
+
+
 def _hopeless_attack_melee(cur, balance):
     """#3042: spent resources against a far stronger defender is not a risk to take.
 
@@ -151,6 +186,13 @@ def retreat_needed(cur):
     if _dominant_melee(cur, balance, floor):
         return _result(cur, profile, False, 'measured_remaining_force_advantage',
                        active=True, hp_floor=floor)
+    # g1133 2026-11-04 15:05 ジュメルズ: ヴィーナス 20/82 vs ココット 24 with
+    # six soldiers each scored 960 vs 672 (combat 12 vs 8) yet the legacy
+    # quarter-HP clause retreated without ever reading the intact army.
+    if (_quarter_hp_retreat(cur, profile)
+            and _measured_melee_advantage(cur, balance)):
+        return _result(cur, profile, False, 'measured_melee_advantage_intact_soldiers',
+                       active=True, hp_floor=rules.GENERAL_CRITICAL_RETREAT_HP)
 
     # Keep the ordinary rescue/retreat sequence until real resources have
     # been checked. A chart plan, unknown cards or an untried positive egg
