@@ -139,7 +139,7 @@ class TestAppendChat(ChatInboxTestBase):
 
         runtime = self._activate()
         path = self._inbox(runtime)
-        path.write_bytes(b'{"user_id":"9","display_name":"old","text":"x"}\\n')
+        path.write_bytes(b'{"user_id":"9","display_name":"old","text":"x"}\n')
         original = path.read_bytes()
         real_write = inbox.os.write
 
