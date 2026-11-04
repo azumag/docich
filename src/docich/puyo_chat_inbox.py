@@ -152,12 +152,23 @@ def _seen_append(path: Path, msg_id: str) -> None:
 
 def _append_line(path: Path, line: bytes) -> None:
     """Append exactly one line atomically (single O_APPEND write + fsync)."""
+    # The GameSwitch shared lock serializes switching, not other producers.
+    # The fetch hook is contractually the sole writer for this inbox.
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        written = os.write(fd, line)
-        if written != len(line):
-            raise OSError("short chat inbox write")
-        os.fsync(fd)
+        original_size = os.fstat(fd).st_size
+        try:
+            written = os.write(fd, line)
+            if written != len(line):
+                raise OSError("short chat inbox write")
+            os.fsync(fd)
+        except OSError:
+            # A short write can leave a partial JSONL record. Without
+            # rollback, the next append would concatenate two records.
+            # Preserve all pre-existing bytes, including on fsync failure.
+            os.ftruncate(fd, original_size)
+            os.fsync(fd)
+            raise
     finally:
         os.close(fd)
 
