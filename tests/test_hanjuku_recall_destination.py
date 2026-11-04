@@ -7,7 +7,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_pixels import Frame
 from test_hanjuku_camp_receipts import picker
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 VIEW = Screen([], None, '', kind='world_map')
 
@@ -41,7 +41,7 @@ def test_home_cursor_does_not_confirm_when_unit_is_near_kikandon(monkeypatch):
 
 
 def test_unknown_origin_can_join_observed_hero_castle(monkeypatch):
-    mem = memory(); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'ゴーメン'
@@ -51,7 +51,7 @@ def test_unknown_origin_prefers_sortie_source_over_hero_castle():
     # issue #2907: origin が束縛できなくても、帰還する本人の出撃元を代理の
     # 現在地として距離判定へ使い、主人公の在城城へ一律固定しない。
     mem = memory()
-    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
     _flow(mem)['recall']['sorties'] = ['s1']
     mem['sorties'] = {'s1': {'source': 'ジョンリギ'}}
     assert p._recall_goal(mem) == 'ジョンリギ'
@@ -61,14 +61,14 @@ def test_captured_sortie_source_uses_nearest_owned_castle():
     # 出撃元が奪取されて自軍城でなくても、その座標を代理 origin として
     # 最も近い自軍城へ帰還する（けっかい(265,270) → ゴーメン(295,606)）。
     mem = memory()
-    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
     _flow(mem)['recall']['sorties'] = ['s1']
     mem['sorties'] = {'s1': {'source': 'けっかい'}}
     assert p._recall_goal(mem) == 'ゴーメン'
 
 
 def test_distance_tie_prefers_hero_and_nearby_castle_beats_far_hero():
-    mem = memory([649, 765]); mem['garrison'] = {'キカンドン': [p.NAME]}
+    mem = memory([649, 765]); _world(mem)['garrison'] = {'キカンドン': [p.NAME]}
     assert p._recall_goal(mem) == 'キカンドン'
     _flow(mem)['recall']['origin'] = list(p.chart.castles(1)['ジョンリギ'])
     assert p._recall_goal(mem) == 'ジョンリギ'
@@ -79,7 +79,7 @@ def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(m
     # SFC units move straight to their destination. Manhattan distance chose
     # ゴーメン (309) over キカンドン (312), although the direct squared
     # distances are respectively60381 and52034. This origin is synthetic.
-    mem = memory([370, 840]); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory([370, 840]); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'キカンドン'
@@ -93,12 +93,12 @@ def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(m
 
 @pytest.mark.parametrize('change', ['marching', 'unknown', 'duplicate', 'enemy'])
 def test_unconfirmed_hero_is_not_used_as_a_merge_target(change):
-    mem = memory(); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     flags = {c: 'own' for c in p._owned(mem)}
     if change == 'marching':
         mem['sorties'] = {'x': {'general': p.NAME, 'status': 'en_route', 'tick': 99}}
-    elif change == 'unknown': mem['general_location_unknown'] = [p.NAME]
-    elif change == 'duplicate': mem['garrison']['キカンドン'] = [p.NAME]
+    elif change == 'unknown': _world(mem)['general_location_unknown'] = [p.NAME]
+    elif change == 'duplicate': _world(mem)['garrison']['キカンドン'] = [p.NAME]
     else: flags['ゴーメン'] = 'enemy'
     assert p._recall_goal(mem, flags) is None
 
@@ -212,7 +212,7 @@ def unit_box(castle):
 
 
 def test_unique_picker_marker_binds_origin_and_selects_nearest_castle(monkeypatch):
-    mem = memory(); mem['garrison'] = {'キカンドン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'キカンドン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     monkeypatch.setattr(p, 'world_markers', lambda _: [unit_box('ジョンリギ')])
     actions = p.world_map_step(VIEW, mem, picker())

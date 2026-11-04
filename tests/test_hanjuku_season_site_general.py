@@ -8,6 +8,7 @@ fights as a summoned monster from the first turn with no きりふだ row
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders
+from docich.hanjuku.state.regions import world as _world
 
 NORMAL = [c for c in chart.CASTLE_NAMES[4] if c not in ('アルマムーン', 'ボス')]
 HOME = chart.home_castle(4)
@@ -37,14 +38,14 @@ def test_g1075_lists_read_the_heros_castle_before_sending_a_weak_lone_general():
 def test_the_strongest_companion_of_every_read_list_goes():
     mem = memory(アルカ=['ヴィーナス', 'ブカティーニ'])
     assert orders._boss_companion_source(site_order(), mem) == 'アルカ'
-    mem['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
     assert orders._boss_companion_source(site_order(), mem) == HOME
-    assert orders._order_hero_alternatives(site_order(), mem, mem['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
+    assert orders._order_hero_alternatives(site_order(), mem, _world(mem)['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
 
 
 def test_a_read_heros_castle_without_a_strong_spare_falls_back_to_the_best_read_list():
     mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
     assert orders._boss_companion_source(site_order(), mem) == 'ミヒラギアン'
 
 
@@ -61,10 +62,10 @@ def test_a_lone_general_never_leaves_its_castle_for_a_site():
     # still goes while the hero keeps one other defender (owner 2026-10-30:
     # 定常的にボス城へ進行).
     mem = memory()
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
     assert orders._boss_companion_source(site_order(), mem) == HOME
     # A lone hero still holds his castle: nobody else remains to defend.
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス']
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス']
     assert orders._boss_companion_source(site_order(), mem) is None
     assert not orders._ready(site_order(), mem)
 

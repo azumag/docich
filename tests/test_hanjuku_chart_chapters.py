@@ -10,6 +10,7 @@ from docich import hanjuku_measure as measure
 from docich import hanjuku_policy as policy
 from docich import hanjuku_reference as ref
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def map_screen():
@@ -236,7 +237,7 @@ def test_restored_native_intro_requires_both_independent_lines():
         assert mem['chapter_evidence'] == 'native_chapter_2_intro'
         assert 'resume_chapter_pending' not in mem
         assert 'resume_intro_clues' not in mem
-        assert not mem.get('garrison') and not mem.get('captured')
+        assert not _world(mem).get('garrison') and not mem.get('captured')
     # Ordinary dialogue and established chapters cannot be reassigned.
     for mem in ({}, {'chapter': 6}, {'chapter': 6, 'resume_chapter_pending': True}):
         before = mem.get('chapter')

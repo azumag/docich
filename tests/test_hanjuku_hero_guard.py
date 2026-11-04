@@ -8,7 +8,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_sortie_evidence import selected_list, actor_panel, measured_card_select, measured_loaded_sortie
 from test_hanjuku_survival import menu
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
@@ -55,7 +55,7 @@ def test_hotloaded_hero_selection_backs_out_before_departure(kind):
 
 def test_adequate_companion_elsewhere_redirects_source_without_inventing_departure():
     order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
-    mem['garrison'] = {order['source']: [p.NAME], chart.home_castle(2): ['ゼウス', p.NAME]}
+    _world(mem)['garrison'] = {order['source']: [p.NAME], chart.home_castle(2): ['ゼウス', p.NAME]}
     mem['house_eggs'] = {p.NAME: {'broken': True}}
     assert p.next_order(mem) == order
     assert mem['source_override'][order['step']] == chart.home_castle(2)
@@ -67,7 +67,7 @@ def test_adequate_companion_elsewhere_redirects_source_without_inventing_departu
 @pytest.mark.parametrize('status', [{'broken': True}, {'uses': 0}, {'hp': 10, 'max_hp': 85}])
 def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
     order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
-    mem['garrison'] = {order['source']: [p.NAME, 'ゼウス']}
+    _world(mem)['garrison'] = {order['source']: [p.NAME, 'ゼウス']}
     mem['house_eggs'] = {'ゼウス': status}
     assert p.next_order(mem) is None
     assert not mem.get('sortie_general')
@@ -77,9 +77,9 @@ def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():
     order, mem = boss_memory()
     mem['sorties'] = {'old': {'general': 'ゼウス', 'tick': 99, 'status': 'en_route'}}
     assert p._order_hero_alternatives(order, mem, [p.NAME, 'ゼウス']) == []
-    mem.pop('sorties'); mem['general_location_unknown'] = ['ゼウス']
+    mem.pop('sorties'); _world(mem)['general_location_unknown'] = ['ゼウス']
     assert p._order_hero_alternatives(order, mem, ['ゼウス']) == []
-    mem.pop('general_location_unknown')
+    _world(mem).pop('general_location_unknown')
     assert p._order_hero_alternatives(order, mem, ['ゼウス', 'ゼウス']) == []
 
 

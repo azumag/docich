@@ -4,6 +4,7 @@ Walks the month menu, starts purchases, recruits and chikujou according to
 the economy plan, and verifies each transaction against the visible receipt.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 import re
 
@@ -585,7 +586,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                                 'left_menu': False}
             if sub == 'recruit':
                 mem['month_sub']['generals_before'] = sorted({
-                    g for gs in (mem.get('garrison') or {}).values() for g in gs or ()})
+                    g for gs in (_world(mem).get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
             return [pad('a')]
@@ -1144,7 +1145,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # A recruit joins the hero's castle, which need not be home.
         # Invalidate its old list; observe the candidate there before claiming
         # admission. Payment alone is not a roster increase.
-        garrison = mem.get('garrison') or {}
+        garrison = _world(mem).get('garrison') or {}
         placements = {c for c, gs in garrison.items() if NAME in (gs or ())}
         placements.add(chart.home_castle(mem.get('chapter') or 0))
         for c in placements:

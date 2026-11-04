@@ -114,7 +114,7 @@ def test_decide_renames_state_written_before_the_label_change():
                                                      'source': RETIRED, 'target': 'キカンドン',
                                                      'cards': []}}}}
     _, updated = decide(FRAME, state)
-    assert updated['policy']['garrison'] == {HOME: ['どうし']}
+    assert (updated['policy'].setdefault('world', {}))['garrison'] == {HOME: ['どうし']}
     assert updated['policy']['world']['launched_orders']['1-A1']['source'] == HOME
     assert RETIRED not in json.dumps(updated, ensure_ascii=False)
 

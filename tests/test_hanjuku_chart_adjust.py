@@ -1414,8 +1414,8 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     # those castles just because a tracking window elapsed. They wait for
     # the monthly named location verification instead.
     for castle in ('カストーラ', 'キカンドン', 'ジョンリギ'):
-        assert mem['garrison'][castle] == []
-    assert {'ココット', 'ビーツ', 'チコリ'} <= set(mem['general_location_unknown'])
+        assert _world(mem)['garrison'][castle] == []
+    assert {'ココット', 'ビーツ', 'チコリ'} <= set(_world(mem)['general_location_unknown'])
     assert mem.get('house') == before.get('house')  # an in-progress scan remains owned by house
     assert not decisions(mem, 'chart_adjust_applied')  # no duplicate adoption
 
@@ -1443,7 +1443,7 @@ def test_g514_recovered_retake_still_requires_a_readable_spare_defender(monkeypa
 def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     _, mem = g514_locked_plan()
     mem['chart_plan']['orders'][0]['after'] = None
-    mem['garrison']['カストーラ'] = ['ココット', 'ゼウス']
+    _world(mem)['garrison']['カストーラ'] = ['ココット', 'ゼウス']
     assert policy._plan_pending(mem)
     policy._off_chart(mem)
     assert not mem['chart_adjust'].get('interim_order')

@@ -2,6 +2,7 @@
 import pytest
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Battle, Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory():
@@ -26,8 +27,8 @@ def test_post_defeat_own_flag_preserves_castle_and_other_defenders_but_not_loser
     policy._apply_world_flags(mem, {'スペンソニア': 'own'})
     result = finish(mem)
     assert mem['captured'] == ['スペンソニア'] and not mem.get('lost')
-    assert mem['garrison']['スペンソニア'] == ['ヴィーナス']
-    assert mem['general_location_unknown'] == ['シェーブル']
+    assert _world(mem)['garrison']['スペンソニア'] == ['ヴィーナス']
+    assert _world(mem)['general_location_unknown'] == ['シェーブル']
     assert result['outcome'] == 'loss'
     assert result['resulting_event'] == 'defense_retained:スペンソニア'
     assert result['observed_metric']['castle_owner_after_defeat'] == 'own'
@@ -43,7 +44,7 @@ def test_latest_post_defeat_enemy_flag_confirms_castle_loss(initial_owner):
     policy._apply_world_flags(mem, {'スペンソニア': 'enemy'})
     result = finish(mem)
     assert mem['captured'] == [] and mem['lost'] == ['スペンソニア']
-    assert 'スペンソニア' not in mem['garrison']
+    assert 'スペンソニア' not in _world(mem)['garrison']
     assert result['resulting_event'] == 'lost:スペンソニア'
     assert result['observed_metric']['castle_owner_after_defeat'] == 'enemy'
 
@@ -141,7 +142,7 @@ def test_recaptured_home_is_removed_again_when_a_new_enemy_flag_is_seen():
     policy._apply_world_flags(mem, {home: 'enemy'})
     assert home not in mem['captured'] and home not in policy._owned(mem)
     assert mem['home_lost'] is True and home in mem['lost']
-    assert home not in mem['garrison']
+    assert home not in _world(mem)['garrison']
     assert any(o['target'] == home and o['purpose'] == 'retake'
                for o in policy.interim_candidates(mem).values())
 
@@ -154,5 +155,5 @@ def test_new_enemy_flag_repairs_a_hotloaded_home_receipt_without_counting_loss_t
     for _ in range(2):
         policy._apply_world_flags(mem, {home: 'enemy'})
         assert mem['captured'] == ['ジョンリギ']
-        assert home not in policy._owned(mem) and home not in mem['garrison']
+        assert home not in policy._owned(mem) and home not in _world(mem)['garrison']
         assert mem['lost'] == [home] and mem['tally']['castle_losses'] == 1

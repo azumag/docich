@@ -3870,7 +3870,7 @@ def test_same_month_cached_shop_is_migrated_only_once():
 def test_garrisons_and_sortie_records_do_not_replace_fresh_global_roster():
     mem = _short_recruit_memory()
     mem['captured'] = ['キカンドン']
-    mem['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
+    _world(mem)['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
     mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 99}}
     assert policy._recruit_shortage(mem)['total_roster'] == 2
     mem.pop('recruit_roster')
@@ -3903,7 +3903,7 @@ def test_recruit_join_is_verified_at_the_heros_observed_castle():
            'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-7',
                          'candidate_names': ['ラズベリー'], 'generals_before': ['どうし']}}
     policy._finish_month_sub(parse(month_canvas(50)), mem, {'recruit': 'opened'})
-    assert 'ジョンリギ' not in mem['garrison']
+    assert 'ジョンリギ' not in _world(mem)['garrison']
     c = Canvas(); c.text(64, 31, 'しゅつげき'); c.text(64, 47, 'ステータス')
     c.text(144, 39, 'どうし'); c.text(144, 55, 'ラズベリー'); c.hand(122, 33)
     policy._observe_garrison(parse(c.frame()), mem,
@@ -4024,7 +4024,7 @@ def _broken_hero_memory():
 
 def test_broken_hero_waits_for_real_repair_status_not_house_departure():
     mem = _broken_hero_memory()
-    mem['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
     order = {'step': 'x', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
     assert not policy._ready(order, mem)
@@ -4053,7 +4053,7 @@ def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem['recruit_roster']['names'] = ['どうし', 'ゼウス', 'アルテミス', 'クミン']
     mem['recruit_roster']['wages'] = {n: 4 for n in mem['recruit_roster']['names']}
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
-    mem['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
     mem['recruit_roster']['names'] = ['どうし']      # ゼウス gone from the roster too (#3077)
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 

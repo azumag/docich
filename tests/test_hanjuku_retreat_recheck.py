@@ -9,7 +9,7 @@ from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, _camp_frame, camp_menu
 from test_hanjuku_house import roster, status
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'recheck-test', 'generation': 1, 'lease_id': 'lease-test'}
 MAP = Screen([], None, '', kind='map', cursor=(26, 66))
@@ -48,7 +48,7 @@ def test_actual_selection_surviving_actor_only_queues_unknown_location():
     assert row['attempts'] == 0
     assert not _flow(mem).get('recall')
     assert mem['sorties']['old']['status'] == 'arrived'
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
 
 
 @pytest.mark.parametrize('change', [ {'hero_retreat': {}}, {'ally_hp': 0}, {'ally_hp': None}, {'side': 'defense'} ])
@@ -70,7 +70,7 @@ def test_named_focus_requires_current_tent_and_matching_status_before_return():
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert mem['sorties'] == before_sorties
-    assert not mem.get('house_eggs') and not mem.get('garrison')
+    assert not mem.get('house_eggs') and not _world(mem).get('garrison')
 
 
 @pytest.mark.parametrize('name,hp,castle', [('ヴィーナス', 6, False), ('ゼウス', 0, False), ('ゼウス', None, False), ('ゼウス', 6, True)])
@@ -149,7 +149,7 @@ def test_matching_inputs_do_not_mark_camp_or_arrival_complete():
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'arrival_unconfirmed'
     assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
     assert mem['sorties']['old']['status'] == 'arrived'
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
 
 
 def test_named_flow_routes_main_menu_in_decide(monkeypatch):
@@ -459,7 +459,7 @@ def test_hotload_rejects_malformed_rows_without_restoring_arrival_or_inventory(c
     mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(change)
     assert recheck._scope(mem) == {}
     assert not _flow(mem).get('retreat_rechecks')
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     assert mem['sorties']['old']['status'] == 'arrived'
 
 
@@ -468,7 +468,7 @@ def test_malformed_hotload_queue_stays_unknown(value):
     from docich import hanjuku_camp_recheck as recheck
     mem = memory(); _flow(mem)['retreat_rechecks'] = value
     assert recheck._scope(mem) == {}
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
 
 
 def test_hotload_oversized_valid_queue_is_bounded_before_any_work():
@@ -478,7 +478,7 @@ def test_hotload_oversized_valid_queue_is_bounded_before_any_work():
     bounded = recheck._scope(mem)
     assert len(bounded) == hanjuku_roster.MAX_GENERALS
     assert len(_flow(mem)['retreat_rechecks']) == hanjuku_roster.MAX_GENERALS
-    assert not _flow(mem).get('recall') and not mem.get('garrison')
+    assert not _flow(mem).get('recall') and not _world(mem).get('garrison')
 
 
 def test_main_status_fallback_field_does_not_authorize_a_camp_return():
@@ -502,7 +502,7 @@ def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_ten
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
 
 
 @pytest.mark.parametrize('start_ui', [False, True])
@@ -514,7 +514,7 @@ def test_new_name_or_join_observation_drops_old_intent_and_ui_immediately(start_
     _flow(mem)['retreat_anonymous_budget'] = {'key': {}, 'reads': 31}
     assert p.camp_recall_step(Screen([], None, text, kind=kind), mem, FRAME) is None
     assert not _flow(mem).get('recall') and not _flow(mem).get('retreat_rechecks')
-    assert not _flow(mem).get('retreat_anonymous_budget') and not mem.get('garrison')
+    assert not _flow(mem).get('retreat_anonymous_budget') and not _world(mem).get('garrison')
     assert not any(r.get('resulting_event') in ('arrival_confirmed', 'dead') for r in mem['_records'])
 
 
@@ -746,7 +746,7 @@ def test_offscreen_camp_discovery_named_status_return_and_current_castle_observa
     assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=True, castle=True, hp=6)), mem, empty) == [p.pad('b')]
     assert _flow(mem)['recall_verification']['status'] == 'in_castle_observed'
-    assert not _flow(mem).get('retreat_rechecks') and not mem.get('garrison')
+    assert not _flow(mem).get('retreat_rechecks') and not _world(mem).get('garrison')
     c.observe_camp_status(parse(camp_status_frame()), mem)
     assert not _flow(mem).get('retreat_rechecks')  # replayed old page cannot restart the return
 
@@ -796,7 +796,7 @@ def test_unconfirmed_camp_status_never_creates_an_actor_or_position(change):
     elif change == 'run_unknown': mem['_run_identity'] = None
     elif change == 'other_foreground': screen.kind = 'shop_quantity'
     c.observe_camp_status(screen, mem)
-    assert not _flow(mem).get('retreat_rechecks') and not mem.get('garrison')
+    assert not _flow(mem).get('retreat_rechecks') and not _world(mem).get('garrison')
 
 
 def test_cached_camp_information_without_a_current_panel_does_not_create_work():

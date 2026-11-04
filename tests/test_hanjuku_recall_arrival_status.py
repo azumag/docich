@@ -9,7 +9,7 @@ from docich.hanjuku_screen import parse
 from docich.hanjuku_pixels import read_png
 from test_hanjuku_retreat_recheck import MAP, FRAME, main_menu
 from test_hanjuku_house import roster, status
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 ROOT=Path(__file__).parent/'fixtures/hanjuku'
 EVIDENCE=json.loads((ROOT/'g749-cinnamon-recall-evidence.json').read_text())
@@ -50,7 +50,7 @@ def test_sent_return_can_read_current_castle_status_after_old_camp_budget_exhaus
     assert p.camp_recall_step(parse(status(ACTOR,main=True,castle=True,hp=16)),mem,FRAME)==[p.pad('b')]
     assert ACTOR not in (_flow(mem).get('retreat_rechecks') or {})
     assert not _flow(mem).get('recall')
-    assert mem['sorties']==before and not mem.get('garrison')
+    assert mem['sorties']==before and not _world(mem).get('garrison')
     assert _flow(mem)['recall_verification']['status']=='in_castle_observed'
     row=mem['_records'][-1]
     assert row['resulting_event']=='in_castle_destination_unconfirmed'
@@ -66,7 +66,7 @@ def test_field_or_unknown_status_does_not_reissue_return_or_claim_success(locati
     assert _flow(mem)['retreat_rechecks'][ACTOR]['status']=='arrival_unconfirmed'
     assert _flow(mem)['retreat_rechecks'][ACTOR]['attempts']==3
     assert _flow(mem)['retreat_rechecks'][ACTOR]['arrival_reads']==1
-    assert not _flow(mem).get('recall') and not mem.get('garrison')
+    assert not _flow(mem).get('recall') and not _world(mem).get('garrison')
     assert _flow(mem)['recall_verification']['status']=='arrival_unconfirmed'
     assert not any(r['decision']=='camp_recall_requested' for r in mem['_records'])
 

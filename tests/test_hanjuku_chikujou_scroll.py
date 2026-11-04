@@ -8,6 +8,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
 from test_hanjuku_multi_chikujou import castles, memory, month, open_build, quote, result
+from docich.hanjuku.state.regions import world as _world
 
 NAMES = ('アルマムーン', 'ナキューメラ', 'キカンドン', 'ジョンリギ', 'ゴーメン', 'スペンソニア')
 FRAME = Path(__file__).parent / 'fixtures/hanjuku/g684-chikujou-four-rows.png'
@@ -16,7 +17,7 @@ FRAME = Path(__file__).parent / 'fixtures/hanjuku/g684-chikujou-four-rows.png'
 def holdings(names=NAMES, **shop):
     mem = memory(**shop)
     mem['captured'] = list(names[1:])
-    mem['garrison'] = {c: ['どうし' if i == 0 else 'ゼウス'] for i, c in enumerate(names)}
+    _world(mem)['garrison'] = {c: ['どうし' if i == 0 else 'ゼウス'] for i, c in enumerate(names)}
     return mem
 
 

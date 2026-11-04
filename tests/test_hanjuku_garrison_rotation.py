@@ -12,6 +12,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 from docich.hanjuku.strategy.orders import _garrison_plan
 from docich.hanjuku.strategy.replan import _garrison_rotation
+from docich.hanjuku.state.regions import world as _world
 
 OWNED = ['キカンドン', 'ナキューメラ', 'ゴーメン', 'カストーラ']
 
@@ -23,7 +24,7 @@ def memory(garrison, **kw):
 
 
 def rotation(mem):
-    return _garrison_rotation(mem, set(mem['garrison']), set(), set())
+    return _garrison_rotation(mem, set(_world(mem)['garrison']), set(), set())
 
 
 def test_plan_targets_follow_distance_to_the_nearest_enemy():
@@ -49,7 +50,7 @@ def test_a_surplus_rear_general_moves_to_the_front():
     assert [(o['source'], o['target']) for o in moves] == [('ナキューメラ', 'キカンドン')]
     assert moves[0]['garrison_rotate'] is True and moves[0]['purpose'] == 'move'
     # 余剰を出す城は1人残す（2人 -> 1人）。
-    assert len(mem['garrison']['ナキューメラ']) - 1 == 1
+    assert len(_world(mem)['garrison']['ナキューメラ']) - 1 == 1
 
 
 def test_a_far_rear_castle_never_sends_its_last_defender():

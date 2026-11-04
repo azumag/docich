@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 
 HOME = 'アルマムーン'
@@ -154,7 +155,7 @@ def test_spare_generals_form_a_wave_on_the_first_target():
     attacks = [o for o in candidates.values() if o['target'] == target]
     assert len(attacks) == 3, candidates
     assert len({o['general'] for o in attacks}) == 3
-    assert {o['general'] for o in attacks} <= set(mem['garrison'][other])
+    assert {o['general'] for o in attacks} <= set(_world(mem)['garrison'][other])
     assert {o['purpose'] for o in attacks} == {'attack'}
 
 

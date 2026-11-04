@@ -45,7 +45,7 @@ def _hero_alternatives(mem, names):
     """
     if not names or len(names) != len(set(names)):
         return []
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
 
 
@@ -70,7 +70,7 @@ def _order_hero_alternatives(order, mem, names, relaxed=True):
         # Owner 2026-10-30 (卵持ちを残す): that one holds an egg; g1075 lost
         # アルカ (09:01:32) when the egg-less キール, kept as ヴィーナス left,
         # met リーキ's おーでーん summon.
-        unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+        unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
         present = set(names or ()) - unavailable
         candidates = [g for g in candidates if _holds_egg(mem, g)
                       and not chart_adjust.hero_guard_short(names, g, unavailable)
@@ -108,7 +108,7 @@ def _order_hero_alternatives(order, mem, names, relaxed=True):
     # honours the site egg rule, the hero-castle guard and the unfit list.
     # A broken/depleted egg or a heavy injury keeps recovering as before —
     # a dead sortie chips nothing and can feed the enemy a defector.
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     present = set(names or ()) - unavailable
     unknown = [g for g in names or ()
                if g not in weak and g != NAME and g not in unavailable
@@ -155,7 +155,7 @@ def _boss_companion_unfit(mem, name):
 
 def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     source = _source(order, mem)
     chapter = mem.get('chapter') or 0
     owned = _owned(mem) & set(chart.castles(chapter))
@@ -186,7 +186,7 @@ def _boss_companion_source(order, mem):
 
 def _hero_source_alternative(order, mem):
     return (order.get('general') == NAME
-            and bool(_order_hero_alternatives(order, mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, (_world(mem).get('garrison') or {}).get(_source(order, mem)))))
 
 
 def _gate_dicts(mem, *keys):
@@ -246,7 +246,7 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
         return False
-    garrison = (mem.get('garrison') or {}).get(source)
+    garrison = (_world(mem).get('garrison') or {}).get(source)
     general_present = isinstance(garrison, list) and general in garrison
     if not general_present:
         gates.pop(step, None)
@@ -293,7 +293,7 @@ def _source_defender_suppressed(order, mem) -> bool:
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
         return False
-    current_present = (mem.get('garrison') or {}).get(source)
+    current_present = (_world(mem).get('garrison') or {}).get(source)
     current_present_tuple = tuple(sorted(current_present)) if isinstance(current_present, list) else None
     if current_present_tuple != _gate_names(gate.get('present')):
         gates.pop(step, None)
@@ -301,7 +301,7 @@ def _source_defender_suppressed(order, mem) -> bool:
             mem.setdefault('orders', {})[step] = None
         return False
     busy, _ = _en_route(mem)
-    unknown = set(mem.get('general_location_unknown') or ())
+    unknown = set(_world(mem).get('general_location_unknown') or ())
     unavailable = busy | unknown
     current_available = None
     if isinstance(current_present, list):
@@ -331,7 +331,7 @@ def _record_source_defender_cancel(mem, order, present=None, available=None, gat
     elif isinstance(present, (tuple, set, frozenset)):
         present_tuple = tuple(sorted(present))
     busy, _ = _en_route(mem)
-    unknown = set(mem.get('general_location_unknown') or ())
+    unknown = set(_world(mem).get('general_location_unknown') or ())
     unavailable = busy | unknown
     if available is None and isinstance(present, list):
         available = tuple(sorted(set(present) - unavailable))
@@ -640,7 +640,7 @@ def _ready(order, mem) -> bool:
         return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
             and _boss_companion_source(order, mem) is None
-            and (mem.get('garrison') or {}).get(_source(order, mem)) is not None):
+            and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
         return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
@@ -713,7 +713,7 @@ def _plan_pending(mem) -> bool:
     heading = _en_route(mem)[1] | {o['target'] for o in plan
                                    if status.get(o['step']) == 'launched' and o['step'] not in sorties}
 
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
 
     def live(o):
         after = o.get('after') or ()
@@ -738,7 +738,7 @@ def _source_list_open(order, mem) -> bool:
     there) was built as a probe but never started.
     """
     source = _source(order, mem)
-    if (mem.get('garrison') or {}).get(source) != []:
+    if (_world(mem).get('garrison') or {}).get(source) != []:
         return True
     return order.get('source_probe') is True and routes.probe_due(mem, source)
 
@@ -1248,7 +1248,7 @@ def next_order(mem):
                     general=order.get('general'), target=order.get('target'),
                     reason='再試行の目標城は既に自軍のため再出撃せず、次の指示へ進む')
     retries = [o for o in retries if o not in stale]
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     # The base chart's remaining orders follow an adopted plan that cannot run
     # (g438 03:48: the plan's only order sent the dead ココット from an empty
     # ジョンリギ, so the bot idled with every castle but the boss's taken while
@@ -1449,9 +1449,9 @@ def _defense_break_allowed(order, mem):
     source = _source(order, mem)
     return (source == interim.get('source') and source in _owned(mem)
             and _sortie_general(order, mem) == interim.get('general')
-            and interim.get('general') in ((mem.get('garrison') or {}).get(source) or ())
+            and interim.get('general') in ((_world(mem).get('garrison') or {}).get(source) or ())
             and interim.get('general') not in (_en_route(mem)[0]
-                                              | set(mem.get('general_location_unknown') or ()))
+                                              | set(_world(mem).get('general_location_unknown') or ()))
             and source not in (mem.get('lost') or ())
             and source not in (mem.get('defense_break_blocked') or ())
             and (mem.get('defense_break_sources') or {}).get(source) == interim.get('target'))
@@ -1495,8 +1495,8 @@ def _unplaced_castle_generals(mem):
     30 minutes (owner 2026-10-11: しょうぐんがいるのに新規出撃をしてない).
     """
     month = mem.get('month')
-    placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
-    busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    placed = {g for gs in (_world(mem).get('garrison') or {}).values() for g in gs or ()}
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     names = {name for name, info in (mem.get('house_eggs') or {}).items()
              if isinstance(info, dict) and info.get('location') == 'castle' and info.get('month') == month}
     # g1075 2026-10-30 11:48 (#3077): chapter 4 recorded no house statuses,
@@ -1504,7 +1504,7 @@ def _unplaced_castle_generals(mem):
     # An unread list is opened by its own probe, so the roster counts only
     # once every owned castle's list has been read.
     roster = mem.get('recruit_roster') or {}
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     if (roster.get('chapter') == mem.get('chapter') and roster.get('month') == month
             and all(garrison.get(c) is not None for c in _owned(mem))):
         names |= {name for name in roster.get('names') or () if name != NAME}
@@ -1516,7 +1516,7 @@ def _arrival_castle(mem, owned):
 
     None once that castle's real list refuted the current unplaced set.
     """
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     hero = [c for c in owned if NAME in (garrison.get(c) or ())]
     castle = hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
     refuted = ((mem.get('unplaced_refuted_castles') or {}).get(castle)
@@ -1535,8 +1535,8 @@ HERO_BROKEN_SORTIE_CANCEL_LIMIT = 3
 
 def _source_location_recheck(mem, source):
     """An apparent second idle name needs its own fresh location reading."""
-    present = set((mem.get('garrison') or {}).get(source) or ()) - _en_route(mem)[0]
-    unknown = present & set(mem.get('general_location_unknown') or ())
+    present = set((_world(mem).get('garrison') or {}).get(source) or ()) - _en_route(mem)[0]
+    unknown = present & set(_world(mem).get('general_location_unknown') or ())
     if len(present) < 2 or not unknown or len(present - unknown) >= 2:
         return None
     scope = [mem.get('chapter'), mem.get('month'), sorted(present), sorted(unknown)]
@@ -1556,7 +1556,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
     source = _source(order, mem)
-    present = (mem.get('garrison') or {}).get(source)
+    present = (_world(mem).get('garrison') or {}).get(source)
     # A genuine arrival or newly joined general may have changed the list
     # since it was measured. Preserve those evidence-gathering reads; a
     # recorded singleton elsewhere must not launch a doomed sortie.
@@ -1565,7 +1565,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (allow_probe and order.get('source_probe') is True
             and (present is None or routes.probe_due(mem, source))):
         return False  # an unread/arriving roster needs its own receipt
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
         return False   # fresh joiners are checked by _keep_sortie_defender
@@ -1646,7 +1646,7 @@ def _give_up_source(mem, order):
     miss_map = mem.setdefault('source_miss', {})
     misses = miss_map.get(step, 0)
     miss_map[step] = 0
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     if source != home and home in _owned(mem):
         # The home castle may keep only the hero, so the fallback source cannot
         # send anyone: g1133 2026-11-05 aimed at the home castle on every
@@ -1691,9 +1691,9 @@ def _recall_goal(mem, flags=None):
     owned = sorted(c for c in _owned(mem) if c in cells
                    and (flags is None or flags.get(c) == 'own'))
     state = _flow(mem).get('recall') or {}
-    hero = [c for c in owned if NAME in ((mem.get('garrison') or {}).get(c) or ())]
+    hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
     hero_castle = (hero[0] if len(hero) == 1 and NAME not in _en_route(mem)[0]
-                   and NAME not in (mem.get('general_location_unknown') or ()) else None)
+                   and NAME not in (_world(mem).get('general_location_unknown') or ()) else None)
     origin = state.get('origin')
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
             and all(type(value) is int for value in origin)):
@@ -1763,15 +1763,15 @@ def _garrison_move(mem, general, source=None, target=None):
     """A general left ``source`` and/or now holds ``target`` (known lists only)."""
     from ..os_layer.roster import dirty_status
     dirty_status(mem, [general] if general else None, fields=('hp', 'location'))
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     # Movement-derived roster changes are not new observations.
-    observed = mem.setdefault('garrison_observed_at', {})
+    observed = _world(mem).setdefault('garrison_observed_at', {})
     observed.pop(source, None)
     observed.pop(target, None)
     if source and garrison.get(source) is not None:
         garrison[source] = [g for g in garrison[source] if g != general]
     if target and general:
-        mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or () if g != general]
+        _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or () if g != general]
         here = [g for g in garrison.get(target) or () if g != general]
         garrison[target] = [*here, general]
 
@@ -1786,7 +1786,7 @@ def _staffed_elsewhere(mem, source) -> bool:
     counted: the guard below errs towards keeping someone home.
     """
     busy, _ = _en_route(mem)
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
     return any(c != source and any(g not in busy for g in garrison.get(c) or ()) for c in owned)
 

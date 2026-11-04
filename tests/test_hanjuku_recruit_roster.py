@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as p, hanjuku_house as house, hanjuku_roster as r
 from docich.hanjuku_screen import Screen
 import pytest
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 NAMES = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'バジル', 'ミント',
          'クミン', 'チコリ', 'ビーツ', 'ヘーゼル', 'ラズベリー', 'カシュー',
@@ -182,7 +182,7 @@ def test_global_scan_counts_field_generals_without_inventing_castle_placements()
     mem['house']=state;r.begin(mem,state);r.page(mem,['どうし','バジル'])
     r.wage(mem,{'general':'バジル','wage':7,'location':'field'})
     assert mem['recruit_roster']['wages']=={'バジル':7}
-    assert 'バジル' not in mem['garrison']['アルマムーン']
+    assert 'バジル' not in _world(mem)['garrison']['アルマムーン']
 
 
 def test_fixed_wages_match_pinned_sfc_data_and_maximum_when_submodule_present():
@@ -326,7 +326,7 @@ def test_paid_receipt_invalidates_membership_without_adding_a_general():
     assert p._finish_month_sub(parse(month_canvas(50)),mem,s)
     assert r.fresh(mem) is None and s['recruit']=='done'
     assert mem['recruit_roster_recheck']
-    assert {n for gs in mem['garrison'].values() for n in gs} <= set(NAMES[:2])
+    assert {n for gs in _world(mem)['garrison'].values() for n in gs} <= set(NAMES[:2])
 
 
 def test_hp_defeat_invalidates_scan_without_inferring_death():

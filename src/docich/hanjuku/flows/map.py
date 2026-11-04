@@ -1624,7 +1624,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)
     general, source = probe.get('general'), probe.get('source')
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     if general and isinstance(garrison.get(source), list) and general not in garrison[source]:
         garrison[source].append(general)
     observed = {'general': general, 'source': source, 'target': probe.get('target'),

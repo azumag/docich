@@ -18,6 +18,7 @@ from docich.game_switch import DeadlineExceededError, RuntimeSpec, atomic_write_
 from docich.config import load_global, load_game
 from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, identity, read_record
 from docich import hanjuku_run
+from docich.hanjuku.state.regions import world as _world
 
 
 def state_bytes(mem=b'serialized core'):
@@ -464,7 +465,7 @@ def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
     mem={'resume_chapter_pending':True,'_records':[]}
     observe_chapter_castle(mem,'フーリック')
     assert mem['chapter']==2 and mem['chapter_evidence']=='フーリック'
-    assert 'resume_chapter_pending' not in mem and 'garrison' not in mem
+    assert 'resume_chapter_pending' not in mem and 'garrison' not in _world(mem)
     untouched={'_records':[]}
     observe_chapter_castle(untouched,'フーリック')
     assert untouched.get('chapter') is None

@@ -8,6 +8,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku_font import TextLine
 from docich.hanjuku.flows.deploy import _verify_sortie_source
+from docich.hanjuku.state.regions import world as _world
 
 
 def _screen(words=()):
@@ -74,7 +75,7 @@ def test_equivalent_source_defender_cancel_survives_a_new_execution_step():
                r.get('chart_step') == new['step'] for r in mem['_records'])
 
     # A real roster change releases the logical-route guard immediately.
-    mem['garrison']['アルマムーン'] = ['ゼウス', 'ヴィーナス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス', 'ヴィーナス']
     assert p._ready(new, mem)
     assert any(r['decision'] == 'sortie_equivalent_released' for r in mem['_records'])
 
@@ -92,7 +93,7 @@ def _arm_unverified_launch(mem, step):
         'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
         'status': 'en_route', 'tick': mem['tick'], 'purpose': 'attack'}
     mem.setdefault('launched', {})['ゴーメン'] = {'step': step, 'general': 'ゼウス'}
-    mem['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
     return {'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
             'reads': p.LAUNCH_PROBE_READS, 'baseline': [], 'tick': mem['tick']}
 

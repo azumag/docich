@@ -15,7 +15,7 @@ from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_camp_proof_binding import opened
 from test_hanjuku_house import status
 from test_hanjuku_retreat_recheck import ID, MAP, FRAME, focus, memory, panel_over_map
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 
 def field_status(actor='ゼウス', hp=6):
@@ -82,7 +82,7 @@ def test_close_wait_has_a_shared_finite_budget_across_json_and_fades(mode, kind)
     for name, row in before.items():
         assert _flow(mem)['retreat_rechecks'][name]['attempts'] == row['attempts']
         assert _flow(mem)['retreat_rechecks'][name]['tick'] == row['tick']
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
 
 
 def test_failed_closes_do_not_replenish_named_attempts_on_requeue(monkeypatch):
@@ -149,7 +149,7 @@ def test_close_wait_hp_zero_invalidates_only_that_actor_without_arrival_claim():
     assert p.camp_recall_step(parse(field_status(hp=0)), mem, FRAME) == [p.pad('b')]
     assert not _flow(mem).get('recall') and 'ゼウス' not in _flow(mem)['retreat_rechecks']
     assert _flow(mem)['retreat_rechecks']['ヴィーナス']['attempts'] == 0
-    assert not mem.get('garrison') and not _flow(mem).get('recall_verification')
+    assert not _world(mem).get('garrison') and not _flow(mem).get('recall_verification')
 
 
 def test_invalid_proof_never_closes_an_unrelated_text_foreground():

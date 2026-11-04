@@ -11967,7 +11967,8 @@ def _compact_hanjuku_policy(mem, state=None):
     def count(value, maximum=1_000_000):
         return value if type(value) is int and 0 <= value <= maximum else None
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
-    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
+    world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
     sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
@@ -12255,10 +12256,11 @@ def _collect_hanjuku_tactical(state_dir, now):
                                'camp': _hanjuku_camp_tail(rows)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
-        garrison = mem.get('garrison', {})
+        world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+        garrison = mem.get('garrison', world.get('garrison', {}))
         sorties = mem.get('sorties', {})
         tick = mem.get('tick')
-        unknown = mem.get('general_location_unknown', [])
+        unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)
                 or not isinstance(sorties, dict) or not isinstance(unknown, list)
                 or type(tick) is not int or tick < 0):
