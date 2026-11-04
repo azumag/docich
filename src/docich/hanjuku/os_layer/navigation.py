@@ -313,6 +313,26 @@ def _drop_stale_y_jump(screen, mem):
     return False
 
 
+# The boss cell is the building centre measured from the Y view (v395, checked
+# against a captured frame in v402). An army enters a building only from its
+# own tile, so a cell that never produced an entry after the relaunch budget is
+# probed one tile at a time (1 tile = 8 px = 64 chart units). Only chapters with
+# a measured cell are probed; every other chapter keeps the chart cell.
+BOSS_CELL_PROBES = {6: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))}
+
+
+def boss_probe_cell(mem, name):
+    """The cell to aim at for ``name``: the chart cell or its current probe."""
+    chapter = mem.get('chapter') or 0
+    cell = chart.castles(chapter).get(name)
+    probes = BOSS_CELL_PROBES.get(chapter)
+    if cell is None or not probes or not chart.is_boss_castle(name):
+        return cell
+    index = int((mem.get('boss_cell_probe') or {}).get(chapter) or 0)
+    dx, dy = probes[min(max(index, 0), len(probes) - 1)]
+    return (cell[0] + dx, cell[1] + dy)
+
+
 def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
@@ -336,7 +356,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # so an estimate that already reads "near" must not skip it (g1075
         # 2026-10-29 13:37: the retry walked onto its stale estimate and stopped).
         return True
-    world, goal = mem.get('cursor'), chart.castles(chapter)[name]
+    world, goal = mem.get('cursor'), boss_probe_cell(mem, name)
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 
 
@@ -372,7 +392,7 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return [pad('y')]
-    gx, gy = chart.castles(chapter)[jump['goal']]
+    gx, gy = boss_probe_cell(mem, jump['goal'])
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
