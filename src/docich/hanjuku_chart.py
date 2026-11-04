@@ -171,15 +171,22 @@ SEASON_SITE_CELLS = {
 }
 CASTLES[4].update(SEASON_SITE_CELLS)
 
-# Chapter 5's 完熟大魔城, measured 2026-11-02 from the live g1097 Y view with
-# every ordinary castle ours (the castle spawns only then; GCGX: 全ての城を
-# 制圧すると完熟大魔城が出現する). The skull sits at view ~(159, 82.5). The
-# skull is drawn centred on its castle (unlike a flag, anchored at the pole
-# base): its centre maps straight to the cell — ((159-64.3)*8, (82.5-45.0)*8)
-# = (758, 300). The earlier (746,271) used chapter 3's flag-pole calibration
-# and marched generals camped one cell NW of the castle instead of entering.
-# Production is read-only: no march has entered through this cell yet.
-DEMON_CASTLE_CELLS = {5: {'ボス': (758, 300)}}
+# Chapter 5's 完熟大魔城 (the castle spawns only after every ordinary castle
+# is ours; GCGX: 全ての城を制圧すると完熟大魔城が出現する). The 2026-11-02
+# value (758, 300) took the Y-view skull centre (159, 82.5) for the castle
+# and used the flag offset (64.3, 45.0). On 2026-11-04 the live g1133 run
+# marched generals at that cell and they camped just south-east of the
+# building (owner report 16:2x JST: the marker lands slightly bottom-right of
+# the boss castle and never enters). The chapter 5 WRAM castle records
+# (0x1700, 16-byte [id, x, y, ...], 8 px tiles; read 2026-11-04 from the g1133
+# chapter 5 savestate) list the eleven ordinary castles as ids 31-41 and the
+# boss as id 231 at tile (90, 32). Ordinary field cells sit at the record tile
+# + (3, 4) - the flag/skull anchor measured for chapters 1-3 - so the boss
+# cell is 8 * ((90, 32) + (3, 4)) = (744, 288). The skull sprite itself is
+# drawn about (4.5, 5.5) view px below-right of its record, which is why the
+# skull centre overshoots; the older (746, 271) sat above the building and
+# camped north-west.
+DEMON_CASTLE_CELLS = {5: {'ボス': (744, 288)}}
 for _chapter, _cells in DEMON_CASTLE_CELLS.items():
     CASTLES[_chapter].update(_cells)
 del _chapter, _cells
