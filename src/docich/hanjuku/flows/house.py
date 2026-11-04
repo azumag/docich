@@ -266,6 +266,28 @@ def _tally_status_open(mem, purpose, info, ticks=0):
 SORTIE_ATTEMPT_KEYS = 40  # distinct (target, purpose) pairs kept
 
 
+def _tally_dropped(mem, key):
+    """Issue #3326 (34 stage-1 gate): events that could not be recorded.
+
+    ``_tally`` and ``_tally_sortie_attempt`` silently return when their
+    bounded maps are full, which makes a saturated counter report the
+    same shape as zero events. Stage 2 must tell "no retries" apart
+    from "retries happened but were unobservable", so every rejected
+    insert is counted here instead. The map lives beside ``obs_cost``
+    (not inside it) precisely because ``obs_cost`` itself is what ran
+    out of room; each value is capped like ``decision_log._tally`` so
+    this cannot grow without limit either. Counts only; never read by
+    a decision.
+    """
+    dropped = mem.setdefault('obs_cost_dropped', {})
+    value = dropped.get(key)
+    if type(value) is not int or value < 0:
+        value = 0
+    value = min(value + 1, 10 ** 6)
+    dropped[key] = value
+    return value
+
+
 def _sortie_state_sig(mem, source, general):
     """Issue #3326 (34): HP / in-castle / gold / soldiers at the source.
 
@@ -294,12 +316,19 @@ def _tally_sortie_attempt(mem, target, purpose, outcome, sig):
     """
     cost = mem.setdefault('obs_cost', {})
     if 'sortie_retry' not in cost and len(cost) >= TALLY_KEYS:
+        # The outer obs_cost map is full: the attempt happened but leaves
+        # no row. Count it so a saturated board is not mistaken for ≈0.
+        _tally_dropped(mem, 'sortie_retry')
         return
     entry = cost.setdefault('sortie_retry', {'n': 0, 'by_key': {}})
     entry['n'] += 1
     key = f'{target}|{purpose}'
     rows = entry['by_key']
     if key not in rows and len(rows) >= SORTIE_ATTEMPT_KEYS:
+        # A new (target, purpose) pair arrived past the inner bound: the
+        # attempt is real but has no per-key row. Count the drop so the
+        # ≈0 gate does not read saturation as absence.
+        _tally_dropped(mem, 'sortie_retry_key')
         return
     row = rows.setdefault(key, {'n': 0})
     row['n'] += 1

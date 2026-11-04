@@ -862,3 +862,15 @@ def test_sortie_attempt_keys_stay_bounded():
     entry = mem['obs_cost']['sortie_retry']
     assert entry['n'] == house.SORTIE_ATTEMPT_KEYS + 5
     assert len(entry['by_key']) == house.SORTIE_ATTEMPT_KEYS
+    # Rejected inserts are not silent: saturation is distinguishable from ≈0.
+    assert mem['obs_cost_dropped']['sortie_retry_key'] == 5
+
+
+def test_sortie_attempt_outer_key_saturation_is_counted():
+    # Fill every obs_cost slot without sortie_retry: attempts still happen,
+    # but no row can be created. The drop counter must not return them as 0.
+    mem = {'obs_cost': {f'k{i}': {'n': 1} for i in range(house.TALLY_KEYS)}}
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', [1, 'castle', 0, 0])
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', [1, 'castle', 0, 0])
+    assert 'sortie_retry' not in mem['obs_cost']
+    assert mem['obs_cost_dropped']['sortie_retry'] == 2
