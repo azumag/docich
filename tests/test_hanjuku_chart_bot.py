@@ -2764,11 +2764,22 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert not any(r['decision'] == 'camp_recall' for r in mem['_records'])
 
 
-def test_camp_recall_cancels_when_no_own_castle_is_visible():
+def test_camp_recall_confirms_the_marker_when_no_own_castle_is_visible():
+    """Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。"""
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
     marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
-    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('b')]
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert [r['decision'] for r in mem['_records']][-2:] == [
+        'camp_recall_picker_fallback', 'camp_recall_requested']
+
+
+def test_camp_recall_without_a_marker_still_cancels():
+    frame = _camp_frame()
+    mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    no_marker = Screen(lines=[], hand=None, text='', kind='map_target')
+    assert policy.camp_recall_step(no_marker, mem, frame) == [policy.pad('b')]
     assert 'recall' not in _flow(mem)
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 

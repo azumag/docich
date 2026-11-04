@@ -280,6 +280,9 @@ def world_map_step(screen, mem, frame):
                   and abs(y / 8 + offset[1] - cursor[1]) <= 6]
         recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
         if recall['picker_observations'] >= RECALL_LIMIT:
+            if not recall.get('picker_forced') and not _picker_on_enemy(nearby, flags):
+                return _picker_fallback(mem, recall, nearby, cursor,
+                                        '帰還先カーソルが有限回で合わないため、今いる城で確定する')
             _record(mem, 'camp_recall_aborted',
                     observed_metric={'goal': recall.get('goal'), 'cursor': cursor},
                     reason='帰還先カーソルが有限回で合わず確定せず取り消す')
@@ -324,14 +327,20 @@ def world_map_step(screen, mem, frame):
                                      'offset': [round(dx, 1), round(dy, 1)], 'press': press,
                                      'still': still},
                     reason='帰還先の城へ全体マップのカーソルを1歩動かす')
-            if still >= PICKER_STILL_LIMIT:
+            if still >= PICKER_STILL_LIMIT and _picker_on_enemy(nearby, flags):
                 _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
                         observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},
-                        reason='帰還先カーソルが入力しても動かないため取り消して通常の行動に戻る')
+                        reason='帰還先カーソルが敵城の上で動かないため、敵城へは確定せず取り消す')
                 _flow(mem).pop('recall', None)
                 mem['uncertain'] = True
                 _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 return [pad('b')]
+            if still >= PICKER_STILL_LIMIT:
+                # Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
+                # 動かないカーソルを取り消すと、撤退した将軍が野営のまま帰れない
+                # (g1133 00:14:49, ダーラントへ向かうカーソルが止まり取消)。
+                return _picker_fallback(mem, recall, nearby, cursor,
+                                        '帰還先カーソルが入力しても動かないため、取り消さず今いる城で確定する')
             return [pad(press)]
         return _request_recall(mem, recall, goal,
                                [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
@@ -350,6 +359,33 @@ def world_map_step(screen, mem, frame):
                 'boxes': [list(m) for m in markers]},
                 reason='全体マップの▲（部隊マーカー）を定期確認')
     return _close_world_map(mem)
+
+
+def _picker_on_enemy(nearby, flags):
+    """The cursor stands on a castle the Y view flags as the enemy's: never confirm it."""
+    return bool(nearby) and (flags or {}).get(nearby[0]) == 'enemy'
+
+
+def _picker_fallback(mem, recall, nearby, cursor, reason):
+    """Confirm the recall where the picker cursor stands instead of cancelling.
+
+    The picker's ring starts on the home castle and snaps from castle to castle;
+    a goal it cannot reach (the reading stops moving, the observation budget is
+    spent) used to cancel the recall and leave the general camping. A castle the
+    cursor stands on is a destination too, so A confirms it; with no castle under
+    the cursor A is still sent once. ``_recall_dispatch_step`` then bounds what
+    follows, and a refused A is closed by its own limits.
+    """
+    castle = nearby[0] if nearby else None
+    recall['picker_forced'] = True
+    _record(mem, 'camp_recall_picker_fallback',
+            observed_metric={'goal': recall.get('goal'), 'castle': castle,
+                             'cursor': list(cursor) if cursor else None,
+                             'still': recall.get('picker_still'),
+                             'observations': recall.get('picker_observations')},
+            reason=reason)
+    return _request_recall(mem, recall, castle or recall.get('goal'),
+                           [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
 
 
 def _close_world_map(mem):
