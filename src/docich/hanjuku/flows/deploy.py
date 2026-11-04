@@ -33,6 +33,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
                                _sortie_general, _source, _source_location_recheck, _source_spare_missing,
                                _staffed_elsewhere, _unplaced_castle_generals)
+DEPLOY_HOLD_LIMIT = 10
 
 
 def _cancel_broken_hero_sortie(mem, order):
@@ -541,6 +542,7 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
         context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
                        else 'sortie_menu_unclassified', deviation_reason=reason)
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
+            hold_variant='hold',
             observed_metric={'hand': screen.hand,
                              'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
                              'carried_cards_read': carried, 'confirmation': 'unclassified'},
@@ -597,6 +599,20 @@ def _move_general_pick(screen, mem, order):
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
     return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                          '移動させる将軍を選択')
+def _bounded_deploy_hold(mem, order, limit=DEPLOY_HOLD_LIMIT):
+    """Bounded deployment hold: after `limit` holds, force _finish_order('failed').
+    
+    This replaces unlimited hold paths (general_list_unreadable / general_list_cursor_unreachable)
+    with a finite hold that eventually fails after `limit` attempts.
+    """
+    holds = mem.setdefault('deploy_hold_count', {})
+    step = order['step']
+    holds[step] = holds.get(step, 0) + 1
+    if holds[step] >= limit:
+        _finish_order(mem, 'failed', reason=f'deploy hold limit {limit} exceeded for step {step}')
+        mem['deploy_hold_count'] = {}  # reset after failure
+        return True
+    return False
 
 
 # g1075 2026-10-30 (#3077): every read of アルマムーン's list held exactly four
@@ -923,7 +939,7 @@ def resume_sortie_step(screen: Screen, mem):
     safe_cancel = (resume_sortie_panel(screen)
                    or screen.kind == 'general_list')
     if not safe_cancel or pending['readings'] >= 12:
-        _record(mem, 'situation_held', screen=screen.kind,
+        _record(mem, 'situation_held', screen=screen.kind, hold_variant='hold',
                 reason='復元後の出撃画面を閉じた証拠と章を確認できないため承認せず保留')
         return []
     _record(mem, 'resume_sortie_cancel', screen=screen.kind,
@@ -968,7 +984,7 @@ def _cancelled_sortie_step(screen, mem, owner):
     reads = owner.get('decline_reads', 0)
     reads = reads if type(reads) is int and 0 <= reads <= SORTIE_CANCEL_READ_LIMIT else SORTIE_CANCEL_READ_LIMIT
     if reads >= SORTIE_CANCEL_READ_LIMIT:
-        _record(mem, 'situation_held', screen=screen.kind,
+        _record(mem, 'situation_held', screen=screen.kind, hold_variant='hold',
                 reason='出撃拒否の有限観測を終えても実画面の取消を確認できないため承認せず保留')
         return []
     owner['decline_reads'] = reads + 1
@@ -981,7 +997,7 @@ def _cancelled_sortie_step(screen, mem, owner):
                      (138, 121, 156, 134), (138, 121, 158, 134))
     if not _sortie_decline_panel(screen) or screen.hand not in refusal_hands:
         owner.pop('decline_ready_tick', None)
-        _record(mem, 'situation_held', screen=screen.kind,
+        _record(mem, 'situation_held', screen=screen.kind, hold_variant='hold',
                 reason='出撃拒否の選択肢と現在カーソルを確認できないため承認せず保留')
         return []
     if owner.get('decline_sent') is True:
@@ -1071,7 +1087,7 @@ def boss_stock_restart_step(screen: Screen, mem):
         if screen.kind in held_kinds or partial_confirmation or owned_fragment:
             if isinstance(cancelled, dict):
                 return _cancelled_sortie_step(screen, mem, cancelled)
-            _record(mem, 'situation_held', screen=screen.kind,
+            _record(mem, 'situation_held', screen=screen.kind, hold_variant='hold',
                     reason='取り消し上限後も同じ出撃確認が残るため承認せず保留')
             return []
     restarting = mem.get('boss_stock_restart')
@@ -1188,6 +1204,9 @@ def deploy_step(screen: Screen, mem):
                              '出撃メニューを選択')
     if kind == 'general_list':
         walk = _general_list_scan(screen, mem, order)
+        if _bounded_deploy_hold(mem, order):
+            return [pad('b'), pad('b')]
+        _observe_garrison(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
         _observe_garrison(screen, mem, order)
