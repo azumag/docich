@@ -12,7 +12,7 @@ v419 で「出撃元を諦める直前」に `source_giveup_probe` を記録す�
 ## 変更
 
 - `flows/map.py` の `map_step` 冒頭で、モジュール自身の `BOT_VERSION` を
-  `code_probe` として1回だけ記録する（`mem['code_probe_version']` と比較）。
+  `_tally(mem, f'module:{BOT_VERSION}')` として数える（判断ログには書かないので既存の記録列を乱さない）。
 - ログ側の `bot_version`（ランタイムが刻む値）と `module_version` を突き合わせれば、
   コードが実際に読み込まれているかを確定できる。
 
