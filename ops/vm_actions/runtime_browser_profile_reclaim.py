@@ -7,7 +7,10 @@ the hanjuku terminal_identity record, or the common retire marker
 (``retired.json``) the game switch writes after confirmed teardown
 (docich#3122). Generations retired before the marker existed carry no proof;
 the explicit ``--include-legacy`` opt-in lists them with the
-``legacy_no_evidence`` completion tag, keeping the default gates fail-closed. Only directories named ``browser-profile`` or
+``legacy_no_evidence`` completion tag. That opt-in is dry-run only (apply is
+rejected with ``include_legacy_dry_run_only``), so the default gates stay
+fail-closed and deleting backlog generations remains an owner decision.
+Only directories named ``browser-profile`` or
 ``*-browser-profile`` inside the generation directory are removed; the
 generation directory itself, hanjuku logs and frames are never removed.
 The newest keep_recent generations are skipped regardless, and a profile tree
@@ -92,6 +95,9 @@ def _walk_profile(profile_fd, prefix):
 
 
 MARKER_FILE = "retired.json"
+MARKER_SCHEMA = 1
+MARKER_KIND = "runtime_retired"
+UNSAFE_RUN_RECORD = "unsafe_run_record"
 
 
 def _completion(runtime_fd, name):
@@ -99,16 +105,20 @@ def _completion(runtime_fd, name):
 
     ``hanjuku_run`` = the hanjuku terminal record passes terminal_identity;
     ``retire_marker`` = no run record exists but the common retired.json
-    identity matches. A run record that exists but fails the terminal check
-    is contradictory evidence, not a missing proof: it raises
-    ``not_completed`` and can never be rescued by the legacy opt-in.
+    identity matches. A run record that exists but is unreadable (symlink,
+    hardlink, oversize or otherwise unsafe) is contradictory evidence, not a
+    missing proof: it raises ``unsafe_run_record`` and never falls through to
+    the weaker marker or the legacy opt-in. A readable record that fails the
+    terminal check raises ``not_completed`` for the same reason.
     """
     try:
         raw = evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON)
+    except evidence.EvidenceError as exc:
+        if str(exc) != "required_file_missing":
+            raise evidence.EvidenceError(UNSAFE_RUN_RECORD) from None
+        raw = None
     except OSError:
-        raw = None
-    except evidence.EvidenceError:
-        raw = None
+        raise evidence.EvidenceError(UNSAFE_RUN_RECORD) from None
     if raw is not None:
         run = evidence._json(raw)
         evidence.terminal_identity(run, name)
@@ -119,8 +129,8 @@ def _completion(runtime_fd, name):
         return None
     match = evidence.RUN_ID.fullmatch(name)
     if (not isinstance(marker, dict) or match is None
-            or type(marker.get("schema")) is not int or marker["schema"] != 1
-            or marker.get("kind") != "runtime_retired"
+            or type(marker.get("schema")) is not int or marker["schema"] != MARKER_SCHEMA
+            or marker.get("kind") != MARKER_KIND
             or marker.get("runtime_id") != name
             or type(marker.get("generation")) is not int
             or marker["generation"] != int(match[1])):
@@ -140,7 +150,8 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns, include_legacy):
     )
     protected = set(ids[-keep_recent:]) if keep_recent else set()
     generations = []
-    skipped = {"not_completed": 0, "no_completion_evidence": 0, "invalid_marker": 0}
+    skipped = {"not_completed": 0, "no_completion_evidence": 0,
+               "invalid_marker": 0, UNSAFE_RUN_RECORD: 0}
     for name in names:
         match = evidence.RUN_ID.fullmatch(name)
         if not match or int(match[1]) in protected:
@@ -174,7 +185,7 @@ def _collect(runtimes_fd, canonical, keep_recent, min_age_ns, include_legacy):
                             continue
                         profiles.append((item.name, st, tree))
         except evidence.EvidenceError as exc:
-            if str(exc) in ("invalid_marker", "not_completed"):
+            if str(exc) in ("invalid_marker", "not_completed", UNSAFE_RUN_RECORD):
                 skipped[str(exc)] += 1
             continue
         except OSError:
@@ -249,6 +260,10 @@ def run(state_dir, *, apply, batch, expect_plan, target_free_bytes,
         raise evidence.EvidenceError("invalid_batch")
     if type(keep_recent) is not int or not 0 <= keep_recent:
         raise evidence.EvidenceError("invalid_keep_recent")
+    if apply and include_legacy:
+        # The legacy opt-in is a read-only census switch until an owner
+        # decision allows deleting generations that never carried a marker.
+        raise evidence.EvidenceError("include_legacy_dry_run_only")
     root = Path(state_dir)
     free_before = _free_bytes(root)
     min_age_ns = int(min_age_hours * 3600 * 1e9)
@@ -352,8 +367,9 @@ def main(argv=None):
     parser.add_argument("--keep-recent", type=int, default=DEFAULT_KEEP_RECENT)
     parser.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS)
     parser.add_argument("--include-legacy", action="store_true",
-                        help="list pre-marker generations with no completion proof "
-                             "as legacy_no_evidence (migration review only; off by default)")
+                        help="dry-run only: list pre-marker generations with no "
+                             "completion proof as legacy_no_evidence (rejected with "
+                             "--apply)")
     args = parser.parse_args(argv)
     try:
         result = run(args.state_dir, apply=args.apply, batch=args.batch,
