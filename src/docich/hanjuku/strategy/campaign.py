@@ -20,6 +20,8 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
+    # country_income is a last observation (owner 2026-11-04): keep it until
+    # the next country-status read rewrites it, instead of blanking 現在収入.
     for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
@@ -42,7 +44,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs', 'hero_repair_deferral',
                 'goals', 'goals_overflow', 'goal_departed', 'map_idle_tick',
                 'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
-                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'roster_last_complete', 'roster_pending_joins', 'month_roster_scan', 'country_income', 'castle_income', 'castle_ownership',
+                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'roster_last_complete', 'roster_pending_joins', 'month_roster_scan', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
