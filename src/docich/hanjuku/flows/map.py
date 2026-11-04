@@ -320,8 +320,16 @@ def world_map_step(screen, mem, frame):
             still = (int(recall.get('picker_still') or 0) + 1
                      if recall.get('picker_cursor') == list(cursor) else 0)
             recall.update(picker_cursor=list(cursor), picker_still=still)
-            if still >= PICKER_AXIS_SWITCH and min(abs(dx), abs(dy)) >= 3:
-                press = other
+            if still >= PICKER_AXIS_SWITCH:
+                if min(abs(dx), abs(dy)) >= 3:
+                    press = other
+                else:
+                    # The other offset is small, so the old guard never tried
+                    # it: g1133 01:06-01:33 バビラリー→ダーラント (dx 38,
+                    # dy -1.5) pressed right 8 times without moving and fell
+                    # back to the wrong castle. Alternate the two axes so a
+                    # blocked one is not held forever.
+                    press = other if (still // PICKER_AXIS_SWITCH) % 2 else press
             _record(mem, 'camp_recall_picker_step',
                     observed_metric={'cursor': list(cursor), 'goal': goal,
                                      'offset': [round(dx, 1), round(dy, 1)], 'press': press,
