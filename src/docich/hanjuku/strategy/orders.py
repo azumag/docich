@@ -853,6 +853,25 @@ def _drop_spent_sortie_attempt(mem, step):
         _flow(mem).pop('sortie_attempt', None)
 
 
+def _shift_boss_probe(mem, target):
+    """Move the boss aim to the next probe tile; False when there is none.
+
+    Only a chapter with a measured probe list (see
+    ``os_layer.navigation.BOSS_CELL_PROBES``) shifts: the chart cell stays the
+    first candidate, and the relaunch budget advances one tile per exhaustion.
+    """
+    chapter = mem.get('chapter') or 0
+    probes = chart.BOSS_CELL_PROBES.get(chapter)
+    if not probes or not chart.is_boss_castle(target):
+        return False
+    probe = mem.setdefault('boss_cell_probe', {})
+    index = int(probe.get(chapter) or 0) + 1
+    if index >= len(probes):
+        return False
+    probe[chapter] = index
+    return True
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -908,13 +927,20 @@ def _relaunch_overdue_boss(mem):
                     'source_still_has_general': sortie.get('general') in
                     ((mem.get('garrison') or {}).get(sortie.get('source')) or ())}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
-            if not stale:
+            if not stale and not entered and _shift_boss_probe(mem, target):
+                # The armies left and never entered at this cell: move the aim
+                # one tile instead of spending the chapter on the same tile.
+                relaunches[step] = 0
+                _record(mem, 'boss_cell_probe_shift', chart_step=step, observed_metric=observed,
+                        reason='ボス城に入城できないまま出し直しの上限に達したため、次の候補セルへ目標を移す')
+            elif not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
                         reason='ボス出撃の出し直しが上限に達したため保留')
                 continue
-            relaunches[step] = 0
-            _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
-                    reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
+            else:
+                relaunches[step] = 0
+                _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
+                        reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
                     'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):

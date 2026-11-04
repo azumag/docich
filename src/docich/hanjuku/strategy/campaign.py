@@ -37,7 +37,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'departure_request', 'departure_miss', 'flow', 'world',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
+                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'boss_cell_probe', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'world_map_close', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
