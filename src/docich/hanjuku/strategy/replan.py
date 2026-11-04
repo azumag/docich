@@ -1085,6 +1085,21 @@ def _adopt_plan(mem, doc, rid):
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    # Several boss waves march at once, so each new boss order takes the next
+    # probe candidate in rotation instead of every wave aiming at the same
+    # tile (v404). Chapters without a probe list are untouched.
+    probes = chart.BOSS_CELL_PROBES.get(mem.get('chapter') or 0) or ()
+    if probes:
+        assigned = mem.setdefault('boss_step_probe', {})
+        rotation = mem.setdefault('boss_probe_rotation', {})
+        chapter = mem.get('chapter') or 0
+        for order in orders:
+            if not chart.is_boss_castle(order['target']) or order['step'] in assigned:
+                continue
+            assigned[order['step']] = int(rotation.get(chapter) or 0) % len(probes)
+            rotation[chapter] = (int(rotation.get(chapter) or 0) + 1) % len(probes)
+        del list(assigned)[:-40]          # bounded: only the newest orders matter
+
     state = mem.setdefault('chart_adjust', {})
     state.pop('interim_order', None)
     mem['variant'] = 'chart_adjusted'

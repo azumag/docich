@@ -313,10 +313,15 @@ def _drop_stale_y_jump(screen, mem):
     return False
 
 
-def boss_probe_cell(mem, name):
-    """The cell to aim at for ``name``: the chart cell or its probe candidate."""
+def boss_probe_cell(mem, name, step=None):
+    """The cell to aim at for ``name``: the chart cell or its probe candidate.
+
+    The candidate belongs to the order (``mem['boss_step_probe']``), not to the
+    chapter: several boss waves march at once, so each one may test a different
+    tile instead of the whole chapter waiting for one tile at a time (v404).
+    """
     chapter = mem.get('chapter') or 0
-    index = (mem.get('boss_cell_probe') or {}).get(chapter) or 0
+    index = (mem.get('boss_step_probe') or {}).get(step) or 0
     return chart.boss_probe_cell(chapter, name, index)
 
 
@@ -343,7 +348,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # so an estimate that already reads "near" must not skip it (g1075
         # 2026-10-29 13:37: the retry walked onto its stale estimate and stopped).
         return True
-    world, goal = mem.get('cursor'), boss_probe_cell(mem, name)
+    world, goal = mem.get('cursor'), boss_probe_cell(mem, name, order.get('step'))
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 
 
@@ -379,7 +384,7 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return [pad('y')]
-    gx, gy = boss_probe_cell(mem, jump['goal'])
+    gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
