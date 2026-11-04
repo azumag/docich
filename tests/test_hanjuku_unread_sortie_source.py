@@ -143,7 +143,9 @@ def test_all_negative_castle_lists_stop_probing_instead_of_alternating_home():
         names = mem['garrison'].get(source) or ['クミン']
         assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
     assert len(sources) == len(set(sources))
-    assert not p.interim_candidates(mem)
+    # Only starved probes stop here; the garrison rotation the same plan emits
+    # (owner 2026-11-04) moves generals between our own castles and is no probe.
+    assert not [o for o in p.interim_candidates(mem).values() if o.get('source_probe')]
 
 
 def test_probe_does_not_select_an_unrecognized_actor_from_a_partial_read():

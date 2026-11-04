@@ -1375,7 +1375,12 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     rid = adjust.request_id(mem)
     assert rid == mem['chart_plan']['request_id'] == mem['chart_adjust']['request_id']
     assert not policy._plan_pending(mem) and receipt['plan_pending'] is False
-    assert policy.interim_candidates(mem) == receipt['candidates']
+    # The recorded candidates are the ones the live plan held; the garrison
+    # rotation added by owner 2026-11-04 is a new candidate class and not part
+    # of that capture.
+    candidates = {k: v for k, v in policy.interim_candidates(mem).items()
+                  if not v.get('garrison_rotate')}
+    assert candidates == receipt['candidates']
     assert mem.get('active') is None and not _flow(mem).get('recall')
     assert policy.next_order(mem) is None
     policy._off_chart(mem)     # no model answer needed: the first candidate starts
