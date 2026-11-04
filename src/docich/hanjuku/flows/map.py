@@ -915,6 +915,7 @@ def _commit_departure(mem, order, context, snapshot):
         mem['world_map_due'] = True
 
 
+BOSS_MARKER_CELL_PX = 24     # 3 tiles: the marker on the measured boss cell
 TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
 TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
 DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A as unaccepted
@@ -1201,8 +1202,18 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         return True
     if chart.is_boss_castle(order['target']):
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
-        # Accept it only when a Y jump placed the marker on it.
-        return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
+        # Accept it when a Y jump placed the marker on it, or when the marker
+        # already stands on the measured cell: g1133 2026-11-05 had three jump
+        # attempts end on stationary reads, and a jump-only rule left the base
+        # impossible to confirm. The cell itself was verified against a
+        # captured frame in v402.
+        if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+            return True
+        cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+        world = update_world(screen, mem, frame, order['target'])
+        return bool(cell and world
+                    and abs(world[0] - cell[0]) <= BOSS_MARKER_CELL_PX
+                    and abs(world[1] - cell[1]) <= BOSS_MARKER_CELL_PX)
     roofs = castle_roofs(frame)
     if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
         return True                           # winter palette: trust the Y jump (g421 18:13)
