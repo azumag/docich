@@ -155,6 +155,47 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
 INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
+# Owner 2026-11-04: the boss takes its waves while the previous one still
+# marches. The 2026-11-02 wave design below adds the boss target, but the
+# generic one-expedition-per-target guard removed it again for up to
+# SORTIE_BUSY_TICKS, so at chapter end (boss the only target) the planner
+# reported no candidates and the field map idled. The bound is the same wave
+# budget every other target gets (the first sortie plus INTERIM_WAVE_LIMIT
+# extra ones); spares and the one-defender rule still decide who goes.
+BOSS_WAVE_IN_FLIGHT = 1 + INTERIM_WAVE_LIMIT
+
+
+def _boss_wave_in_flight(mem, boss):
+    """Recent sorties already heading for the boss castle.
+
+    Counts the sortie records that still reserve a target plus a launched
+    plan order whose sortie record has not been written yet, so the bound
+    cannot be passed by the gap between the launch and its receipt.
+    """
+    now = int(mem.get('tick') or 0)
+    sorties = mem.get('sorties') or {}
+    steps = set()
+    for step, sortie in sorties.items():
+        if (not isinstance(sortie, dict)
+                or (sortie.get('target') or sortie.get('planned_target')) != boss
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                or type(sortie.get('tick')) is not int
+                or not 0 <= now - sortie['tick'] < SORTIE_BUSY_TICKS):
+            continue
+        steps.add(step)
+    status = mem.get('orders') or {}
+    for order in (mem.get('chart_plan') or {}).get('orders') or ():
+        if (isinstance(order, dict) and order.get('target') == boss
+                and status.get(order.get('step')) == 'launched'
+                and order.get('step') not in sorties):
+            steps.add(order.get('step'))
+    return len(steps)
+
+
+def _boss_wave_open(mem, target):
+    """The boss may keep its wave going while one sortie is still marching."""
+    return (chart.is_boss_castle(target)
+            and _boss_wave_in_flight(mem, target) < BOSS_WAVE_IN_FLIGHT)
 
 
 def _wave_pick(mem, target, owned, busy, allow_sole):
@@ -389,7 +430,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         targets = [*(c for c in targets if c in lost), *rest]
     # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
     # held and the boss unbeaten, send every spare general at it in successive
-    # waves — the charted single sortie is not the only assault.
+    # waves — the charted single sortie is not the only assault. The in-flight
+    # guard below exempts this target (owner 2026-11-04) so a wave can follow
+    # the previous one without waiting out SORTIE_BUSY_TICKS.
     boss = chart.boss_castle(chapter)
     if (boss in castles and boss_path
             and all(c in owned or c == home for c in boss_path - {boss})
@@ -408,10 +451,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
                 and sortie.get('target') is not None and sortie.get('tick') is not None
                 and 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS}
-    targets = [c for c in targets if c not in inflight]
+    # Owner 2026-11-04: the boss is the one target that keeps taking waves
+    # while a sortie to it is still in flight (the 2026-11-02 design above).
+    # Every other target keeps the one-expedition rule.
+    targets = [c for c in targets if c not in inflight or _boss_wave_open(mem, c)]
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
-    targets = [c for c in targets if c not in heading]
+    targets = [c for c in targets if c not in heading or _boss_wave_open(mem, c)]
     sorties = {'retake': [], 'attack': []}
     # #3266: a concrete general chosen for one target is already unavailable
     # to later targets in the same plan; otherwise every retake names the first spare.
@@ -813,7 +859,7 @@ def _mechanical_chart(mem, state, rid, digest):
     used = set()
     for label, order in candidates.items():
         orders.append({
-            'step': _mechanical_step(order, used),
+            'step': _mechanical_step(order, used, mem),
             'general': order['general'],
             'source': order['source'],
             'target': order['target'],
@@ -834,7 +880,7 @@ def _mechanical_chart(mem, state, rid, digest):
     _adopt_plan(mem, validated, rid)
 
 
-def _mechanical_step(order, used):
+def _mechanical_step(order, used, mem=None):
     """Local step id named by what the order does, not by its list position.
 
     g1097 2026-11-03: the plan is rebuilt whenever gold, month or an order
@@ -846,6 +892,13 @@ def _mechanical_step(order, used):
     was unused went out at a time. The id must identify the order's content.
     """
     key = '%s>%s:%s' % (order.get('source'), order.get('target'), order.get('purpose') or '')
+    if (mem is not None and chart.is_boss_castle(order.get('target'))
+            and _boss_wave_in_flight(mem, order.get('target')) >= 1):
+        # 章末のボスは行軍中でも次の隊を出す（owner 2026-11-04）。同じ出撃元と
+        # 目的のままだと、1隊目の行軍中に作った次の隊が同じstep名になり、
+        # launchedのまま再発行されない。2隊目以降だけ将軍まで含めて別の指示に
+        # する（1隊目は従来どおり位置に依存しないidを保つ）。
+        key += ':' + str(order.get('general') or '')
     step = 'M' + hashlib.sha1(key.encode()).hexdigest()[:6]
     while step in used:
         step = 'M' + hashlib.sha1((step + key).encode()).hexdigest()[:6]
