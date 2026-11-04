@@ -28,8 +28,9 @@ def test_the_adjusted_plan_keeps_the_move_purpose():
 
 
 def test_an_order_without_a_purpose_stays_untyped():
+    # Untyped orders keep their old shape: no purpose key at all.
     out = adj.validate(doc(None))
-    assert out['orders'][0]['purpose'] is None
+    assert 'purpose' not in out['orders'][0]
 
 
 def test_an_unknown_purpose_is_refused():
