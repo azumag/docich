@@ -850,6 +850,14 @@ def _observe_garrison(screen, mem, order):
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
     from ..strategy import routes
     routes.observed_roster(mem, castle, present)
+    scan = mem.get('general_list_scan') or {}
+    if (scan.get('castle') == castle and scan.get('step') == order['step']
+            and scan.get('end') in ('wrapped', 'stalled')):
+        # A completed walk of the source list is the evidence a blind
+        # world-map probe waits for (g1133: chapter 6 draws units as
+        # portraits, so the Y view never showed the committed unit).
+        from .map import settle_launch_probes_from_roster
+        settle_launch_probes_from_roster(mem, castle, present)
     if castle in _owned(mem):
         # A marching general the game stopped inside this castle is only
         # visible here: our own castles print no entry message. Continue his
