@@ -25,7 +25,7 @@ contract schema and the writer):
 * Appends are a single ``O_APPEND`` write of one newline-terminated JSON
   line followed by ``fsync``: the caller is the fetch loop's single
   writer, so no interleaving and no torn lines can occur.
-* ``--msg-id`` idempotency is kept in a bounded sidecar
+* ``--msg-id`` at-most-once delivery is kept in a bounded sidecar
   (``chat_inbox.seen``) next to the inbox: IRC reconnects re-deliver
   messages, and a retried mirror call must not apply the same chat twice.
 * Raw chat text is never logged anywhere else: only fixed status
@@ -184,9 +184,13 @@ def append_chat(state_dir, *, user_id, display_name, text, msg_id=None) -> dict:
             allow_nan=False,
         ).encode("utf-8") + b"\n"
         try:
-            _append_line(inbox, line)
+            # Reserve the id durably before writing to the consumer inbox.
+            # A crash between these operations may lose the message, but
+            # retrying must not apply it twice. Exactly-once requires a
+            # transactional consumer acknowledgement protocol.
             if msg_id:
                 _seen_append(seen, msg_id)
+            _append_line(inbox, line)
         except OSError as exc:
             raise ChatInboxError("chat_inbox append failed") from exc
     finally:
