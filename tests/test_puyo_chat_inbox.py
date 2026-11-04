@@ -211,6 +211,26 @@ class TestFailClosed(ChatInboxTestBase):
 
 
 class TestSeenSidecar(ChatInboxTestBase):
+    def test_short_seen_write_is_not_reported_as_success(self):
+        """A truncated id must not be silently recorded as durable."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        original_write = inbox.os.write
+
+        def short_seen_write(fd, data):
+            if data == b"short-id\\n":
+                return 0
+            return original_write(fd, data)
+
+        with patch.object(inbox.os, "write", side_effect=short_seen_write):
+            with self.assertRaises(inbox.ChatInboxError):
+                inbox.append_chat(
+                    self.state_dir, user_id="1", display_name="v",
+                    text="!puyo join", msg_id="short-id",
+                )
+        self.assertEqual(len(self._lines(runtime)), 1)
+
     def test_seen_file_stays_bounded(self):
         runtime = self._activate()
         seen = runtime_directory(
