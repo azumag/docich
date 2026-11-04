@@ -488,6 +488,72 @@ def _defense_priority_castles(mem):
             if c == home or _distance(chapter, c, boss) == nearest}
 
 
+GARRISON_FRONT_TARGET = 3   # 敵城に最も近い城の目標人数
+GARRISON_NEAR_TARGET = 2    # その次の輪の目標人数
+GARRISON_REAR_TARGET = 1    # 敵城から遠い城の目標人数
+GARRISON_REAR_FLOOR = 0     # 遠い城は0人まで送り出してよい (owner 2026-11-04)
+GARRISON_REAR_SPAN = 0.5    # 最前線の1.5倍以上遠い城だけを「遠い城」とする
+
+
+def _enemy_distance(mem, castle):
+    """Manhattan distance from ``castle`` to the nearest castle we do not own.
+
+    The enemy side is every castle on the map outside ``_owned`` — uncaptured
+    towns and the boss castle/sites alike. ``None`` for a castle the chapter
+    map does not place.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    if castle not in cells:
+        return None
+    owned = _owned(mem) & set(cells)
+    enemies = [c for c in cells if c not in owned]
+    if not enemies:
+        return 0
+    return min(_distance(chapter, castle, e) for e in enemies)
+
+
+def _garrison_plan(mem):
+    """Owner 2026-11-04: staff owned castles by distance to an enemy castle.
+
+    A castle with few generals falls easily — its defenders step in one at a
+    time — so generals are rotated toward the front instead of sitting in the
+    rear. The owned castle(s) nearest an enemy castle aim for
+    ``GARRISON_FRONT_TARGET`` generals, the next ring for
+    ``GARRISON_NEAR_TARGET``, and everything farther holds one. Only a castle
+    at least ``GARRISON_REAR_SPAN`` farther than the front ring is treated as
+    the rear (``GARRISON_REAR_FLOOR``): it is the least likely to be attacked
+    and may be left empty. The home castle and a castle we already lost once
+    always keep one general.
+
+    Returns ``{castle: (enemy_distance, target, floor)}`` for the owned
+    castles the chapter map places; ``floor`` is the fewest generals the
+    rotation leaves behind when its spare moves forward.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    owned = _owned(mem) & set(cells)
+    if not owned:
+        return {}
+    home = chart.home_castle(chapter)
+    lost = set(mem.get('lost') or ()) | set(mem.get('defense_break_blocked') or ())
+    distance = {c: _enemy_distance(mem, c) for c in owned}
+    rings = sorted(set(distance.values()))
+    plan = {}
+    for castle in owned:
+        ring = rings.index(distance[castle])
+        target = (GARRISON_FRONT_TARGET if ring == 0
+                  else GARRISON_NEAR_TARGET if ring == 1
+                  else GARRISON_REAR_TARGET)
+        floor = GARRISON_REAR_TARGET
+        front = rings[0]
+        if (ring >= 2 and castle != home and castle not in lost
+                and distance[castle] >= front * (1 + GARRISON_REAR_SPAN)):
+            floor = GARRISON_REAR_FLOOR
+        plan[castle] = (distance[castle], target, floor)
+    return plan
+
+
 def _defense_score(mem, name):
     """(has a usable egg, HP, combat); unmeasured stats fall back to (0, 0)."""
     hp, combat = (reference.general_strength(name) or (0, 0))[:2]

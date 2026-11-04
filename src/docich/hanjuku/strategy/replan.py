@@ -17,7 +17,7 @@ from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _defense_move_pick, _defense_priority_castles, _defense_score,
-                               _post_conquest_wait,
+                               _garrison_plan, _post_conquest_wait,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
                                _unplaced_castle_generals)
 
@@ -247,6 +247,73 @@ def _defense_rebalance(mem, owned, busy, heading):
                     'source': source, 'after': None, 'purpose': 'move',
                     'defense_rebalance': True,
                     'note': f'暫定: ボス出撃待ちの防衛優先として{general}を{source}から{target}へ移動'})
+    return out
+
+
+GARRISON_ROTATION_LIMIT = 3
+
+
+def _garrison_rotation(mem, owned, busy, heading, taken=()):
+    """Owner 2026-11-04: rotate idle generals toward the enemy-facing castles.
+
+    ``_garrison_plan`` sets the roster each owned castle should hold from its
+    distance to the nearest enemy castle; this emits the moves that close a
+    gap. A castle farther from every enemy sends one spare forward (its own
+    floor may be zero in the rear), while the front ring fills to
+    ``GARRISON_FRONT_TARGET``. Only a measured list can send or receive, a
+    target with an unread transfer waits for its own list (the arrival
+    receipt, #3037), and a castle already claimed by another candidate or an
+    outgoing march is not targeted twice in one plan.
+    """
+    chapter = mem.get('chapter') or 0
+    plan = _garrison_plan(mem)
+    if not plan:
+        return []
+    garrison = mem.get('garrison') or {}
+    unavailable = set(busy) | set(mem.get('general_location_unknown') or ())
+    free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
+    sole = len(plan) == 1
+    claimed = set(taken) | set(heading)
+    used = set()
+    out = []
+    for target in sorted(plan, key=lambda c: (plan[c][0], c)):
+        if len(out) >= GARRISON_ROTATION_LIMIT:
+            break
+        distance, want, _floor = plan[target]
+        if (garrison.get(target) is None or target in claimed
+                or routes.unread_dispatches(mem, target)):
+            continue
+        if len(set(free[target])) >= want:
+            continue
+        donors = []
+        for source in sorted(plan, key=lambda c: (-plan[c][0],
+                                                  _distance(chapter, c, target), c)):
+            if source == target or source in used:
+                continue
+            source_distance, _source_want, source_floor = plan[source]
+            if source_distance <= distance or not routes.allowed(mem, source, target):
+                continue
+            if garrison.get(source) is None or len(free[source]) - 1 < source_floor:
+                continue
+            spares = [g for g in _spares(free[source], sole=sole) if g != NAME]
+            if not spares:
+                continue
+            general = sorted(spares, key=lambda g: _defense_score(mem, g),
+                             reverse=True)[0]
+            # A castle already above its own target donates first; only then
+            # does a far castle give up its last general (floor zero).
+            surplus = 1 if len(free[source]) > _source_want else 0
+            donors.append((surplus, source_distance,
+                           -_distance(chapter, source, target), source, general))
+        if not donors:
+            continue
+        _, _, _, source, general = max(donors)
+        out.append({'general': general, 'target': target, 'cards': [],
+                    'source': source, 'after': None, 'purpose': 'move',
+                    'garrison_rotate': True,
+                    'note': f'暫定: 敵城に近い{target}を厚くするため{general}を{source}から移動'})
+        used.add(source)
+        claimed.add(target)
     return out
 
 
@@ -530,6 +597,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # general another retake/move needs. The first non-boss target gets the
     # remaining measured spares, each source still keeping one defender.
     wave_orders = []
+    wave_committed = set()
     wave_target = next((o['target'] for o in (*sorties['retake'], *sorties['attack'])
                         if not chart.is_boss_castle(o['target'])), None)
     if wave_target is not None:
@@ -538,6 +606,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             general = order.get('general')
             if general and general != MOVE_ANY_GENERAL:
                 committed.add(general)
+        wave_committed = committed
         wave_busy = busy | planned_busy | committed
         purpose = 'retake' if wave_target in lost else 'attack'
         base = chart_orders.get(wave_target)
@@ -556,6 +625,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 'note': (f"暫定: {general2}で{wave_target}へ波状攻撃" if purpose == 'attack'
                          else f"暫定: {general2}で奪われた{wave_target}へ波状奪還")})
             extra += 1
+    # Owner 2026-11-04: 人数の少ない城は陥落しやすいので、敵城に近い城ほど
+    # 厚くし、遠い城からは積極的に将軍を回す（遠い城は1人か0人でよい）。
+    # 攻撃・奪還・空城の移動・波状を先に確保した余剰だけを使い、候補の
+    # 後ろに置く。
+    committed = {o['general'] for o in (*moves, *sorties['retake'], *sorties['attack'])}
+    rotation = _garrison_rotation(
+        mem, owned, busy | planned_busy | wave_committed
+        | (committed - {MOVE_ANY_GENERAL}), heading,
+        taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -568,7 +646,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
     attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
     lead = [*known_retakes, *moves, *unread_retakes]
-    for order in (*lead[:1], *waves, *lead[1:], *attacks, *wave_orders):
+    for order in (*lead[:1], *waves, *lead[1:], *attacks, *rotation, *wave_orders):
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order

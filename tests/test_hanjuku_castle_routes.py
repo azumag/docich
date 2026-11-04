@@ -246,10 +246,14 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
     assert not orders._source_list_open(retake, mem)
     assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
-    # With no other candidate it is left unstarted (a hold is recorded) ...
+    # The stuck retake stays unstarted; the plan now rotates a rear general
+    # forward (owner 2026-11-04) instead of recording an empty hold.
     state_ = {'interim_order': retake}
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
-    assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
+    started = state_['interim_order']
+    assert started['step'] != 'I:b59ab6:2' and started.get('garrison_rotate') is True
+    assert mem['_records'][-1]['decision'] == 'chart_interim_order'
+    state_.pop('interim_order')
     # ... and it no longer holds a startable replacement: a spare at home
     # stages the next general toward グリン instead of waiting on the old probe.
     mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート',

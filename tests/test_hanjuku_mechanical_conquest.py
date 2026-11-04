@@ -66,7 +66,9 @@ def test_the_boss_is_attacked_only_after_every_other_castle_is_owned():
     partial = memory(captured=others[:-1])
     assert 'けっかい' not in [o['target'] for o in replan.interim_candidates(partial).values()]
     full = memory(captured=others)
-    assert [o['target'] for o in replan.interim_candidates(full).values()] == ['けっかい']
+    # Attacking the boss is what the gate is about; the garrison rotation the
+    # same plan emits (owner 2026-11-04) only moves generals between our castles.
+    assert attack_targets(full) == ['けっかい']
 
 
 def test_an_unfinished_chart_order_no_longer_holds_progress_back():
