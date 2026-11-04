@@ -259,7 +259,26 @@ class TestSeenSidecar(ChatInboxTestBase):
                     self.state_dir, user_id="1", display_name="v",
                     text="!puyo join", msg_id="short-id",
                 )
-        self.assertEqual(len(self._lines(runtime)), 1)
+        # A failed reservation must never reach the consumer inbox.
+        self.assertEqual(len(self._lines(runtime)), 0)
+
+    def test_inbox_failure_after_reservation_does_not_duplicate_on_retry(self):
+        """At-most-once: a failed inbox write leaves the id reserved."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        original_append = inbox._append_line
+        with patch.object(inbox, "_append_line", side_effect=OSError("disk full")):
+            with self.assertRaises(inbox.ChatInboxError):
+                inbox.append_chat(self.state_dir, user_id="1",
+                                  display_name="v", text="!puyo join",
+                                  msg_id="reserved-id")
+        self.assertEqual(self._lines(runtime), [])
+        result = inbox.append_chat(self.state_dir, user_id="1",
+                                   display_name="v", text="!puyo join",
+                                   msg_id="reserved-id")
+        self.assertEqual(result, {"status": "skipped", "reason": "duplicate"})
+        self.assertEqual(self._lines(runtime), [])
 
     def test_seen_file_stays_bounded(self):
         runtime = self._activate()
