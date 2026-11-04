@@ -1525,6 +1525,39 @@ def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_pat
     assert not (runtime/'hanjuku_events.jsonl').exists()
 
 
+def test_decision_records_deduped_against_log_tail(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_decision_dedupe_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abc123',
+                'generation': 1, 'lease_id': 'lease-1'}
+    runtime = tmp_path / identity['runtime_id']
+    runtime.mkdir()
+    record = {'decision': 'y_jump_open', 'chart_step': 'J1', 'target': 'アルマムーン',
+              'observed_metric': {'cursor': [10, 20], 'mode': 'target', 'attempt': 1},
+              'reason': '全体マップ（Y）で目的の城を直接選ぶ'}
+    meta = {'hanjuku': identity}
+    module.persist(runtime, {'step': 1, 'screen_kind': 'map'}, [record], meta,
+                   actions=[], frame_sha256='a' * 64)
+    # A caller replaying the policy on a copy re-emits the byte-identical
+    # record; the durable log keeps it once.
+    module.persist(runtime, {'step': 1, 'screen_kind': 'map'}, [record], meta,
+                   actions=[], frame_sha256='b' * 64)
+    rows = [json.loads(x) for x in (runtime/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    decisions = [r for r in rows if r.get('event') == 'decision']
+    assert len(decisions) == 1
+    # A genuinely different attempt still records.
+    retry = {**record, 'observed_metric': {'cursor': [10, 20], 'mode': 'target', 'attempt': 2}}
+    module.persist(runtime, {'step': 2, 'screen_kind': 'map'}, [retry], meta,
+                   actions=[], frame_sha256='c' * 64)
+    decisions = [json.loads(x) for x in (runtime/'hanjuku_decisions.jsonl').read_text().splitlines()
+                 if json.loads(x).get('event') == 'decision']
+    assert len(decisions) == 2
+    assert decisions[1]['observed_metric']['attempt'] == 2
+
+
 def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
