@@ -758,6 +758,23 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                            'resume_egg_ritual')))
     hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
               else NO_INPUT_HOLD_MAX)
+    army_owned = month_flow.army_count_owned(mem)
+    recruit_guard = month_flow.recruit_input_guard(screen, mem)
+    if (not actions and streak > hold_max and kind == 'month_menu'
+            and (army_owned or recruit_guard is not None)):
+        # Owner 2026-11-04: the free army/recruit checks must not own the
+        # month menu forever. g1107 46-9 stalled 300 s with no input and the
+        # run ended screen_stalled. Close the shop with B (never buy here),
+        # release the check, and let the next observation re-read the menu.
+        mem.pop('army_count_check', None)
+        if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            mem['shop']['soldiers_done'] = True
+        decision_log._record(mem, 'month_menu_stall_release', screen=kind, phase=phase,
+                observed_metric={'streak': streak, 'army_owned': army_owned,
+                                 'recruit_guard': bool(recruit_guard)},
+                reason='月一メニューで兵数・募集の確認が進まず無入力のまま停滞したため、購入せずBで閉じて再観測する')
+        army_owned = False
+        recruit_guard = None
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
@@ -770,8 +787,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             and not (kind == 'egg_battle_menu'
                      and (battle_menus_flow._enemy_general_command(screen) is not None
                           or battle_menus_flow._partial_enemy_general_command(screen) is not None))
-            and not month_flow.army_count_owned(mem)
-            and month_flow.recruit_input_guard(screen, mem) is None):
+            and not army_owned
+            and recruit_guard is None):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.
