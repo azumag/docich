@@ -537,7 +537,35 @@ def _order_start_due(mem, step):
     return True
 
 
+def _release_stale_active(mem):
+    """Drop an active order that no plan or launch record owns.
+
+    g1133 2026-11-05: the bot kept opening the Y view for ``A:bf8c3dee:M97e81e``
+    (588 records, always attempt 1) long after the plan had replaced it, so the
+    step consumed map observations while nothing could start it. An order that
+    is neither in the plan nor in the launched-order records and never got a
+    status was abandoned by the plan; releasing it lets ``next_order`` pick the
+    current plan.
+    """
+    step = mem.get('active')
+    if not step:
+        return False
+    plan = mem.get('chart_plan') or {}
+    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
+    launched = (mem.get('world') or {}).get('launched_orders') or mem.get('launched_orders') or {}
+    status = (mem.get('orders') or {}).get(step)
+    if not plan_steps or step in plan_steps or step in launched or status is not None:
+        return False
+    mem['active'] = None
+    mem['picked'] = []
+    _record(mem, 'stale_active_released', chart_step=step,
+            observed_metric={'plan_steps': sorted(plan_steps)[:8]},
+            reason='計画にも出撃記録にも無い古い指示が残っていたため解放し、現在の計画から選び直す')
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
+    _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
         return []
     if mem.pop('expect_menu', False):
