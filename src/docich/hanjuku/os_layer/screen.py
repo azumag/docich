@@ -971,6 +971,7 @@ WORLD_SEA_MIN = 1500           # chapter 1/2 views: 2106-2470 sampled sea pixels
 # other saved frame.
 WORLD_SEA_FRAMED_MIN = 1000
 WORLD_BACKDROP_MIN = 900       # of 1008 samples
+WORLD_BACKDROP_FRAME_ONLY_MIN = 1000   # frame + backdrop alone, no sea colour needed
 
 
 def _world_backdrop(frame: Frame) -> int:
@@ -985,7 +986,15 @@ def is_world_map(frame: Frame) -> bool:
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
     if sea >= WORLD_SEA_MIN:
         return True
-    return sea >= WORLD_SEA_FRAMED_MIN and _world_backdrop(frame) >= WORLD_BACKDROP_MIN
+    backdrop = _world_backdrop(frame)
+    if sea >= WORLD_SEA_FRAMED_MIN and backdrop >= WORLD_BACKDROP_MIN:
+        return True
+    # Chapter 6 paints the sea grey-green, so no pixel is WORLD_SEA at all
+    # (g1133 2026-11-04 22:23: 0 sampled; every jump closed as 'unknown' and
+    # the owners were never read). The gold frame plus the intact dark green
+    # backdrop identify the view on their own: 1008/1008 on every saved Y view
+    # and under 10 on every other saved frame.
+    return backdrop >= WORLD_BACKDROP_FRAME_ONLY_MIN
 
 
 # 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
