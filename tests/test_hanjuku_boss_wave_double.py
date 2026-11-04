@@ -182,3 +182,108 @@ def test_a_failed_non_boss_step_is_not_rearmed():
     replan._rearm_failed_boss_steps(
         mem, [{'step': 'Mfeed', 'target': ORDINARY5[0], 'general': 'ゼウス'}], 'rid')
     assert mem['orders'][step] == 'failed'
+
+
+# --- a lost castle whose retake keeps failing must not hold the boss (g1133) ---
+
+FAR5 = [c for c in ORDINARY5 if c != HOME5]
+LOST5 = FAR5[0]
+
+
+def _plan_with_failed_retakes(mem, castle, count):
+    """A stored mechanical plan with ``count`` failed retake steps for ``castle``."""
+    rid = chart_adjust.request_id(mem)
+    orders, status = [], {}
+    for i in range(count):
+        step = chart_adjust.execution_step(rid, f'Mretake{i}')
+        orders.append({'step': step, 'general': f'ココット{i}', 'source': HOME5,
+                       'target': castle, 'cards': [], 'after': None, 'note': ''})
+        status[step] = 'failed'
+    mem['chart_plan'] = {'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
+                         'source': 'mechanical', 'orders': orders}
+    mem['orders'] = status
+    return [order['step'] for order in orders]
+
+
+def lost_memory():
+    return memory(captured=[c for c in ORDINARY5 if c != LOST5], lost=[LOST5])
+
+
+def test_a_lost_castle_with_a_fresh_retake_still_gates_the_boss():
+    # No failed retake yet: the retake runs first, the boss waits (2026-11-02).
+    candidates = replan.interim_candidates(lost_memory())
+    assert boss_attacks(candidates) == []
+    assert any(order['purpose'] == 'retake' for order in candidates.values())
+
+
+def test_too_few_failed_retakes_do_not_release_the_boss():
+    mem = lost_memory()
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS - 1)
+    assert boss_attacks(replan.interim_candidates(mem)) == []
+
+
+def test_a_stalled_retake_releases_the_boss_and_the_boss_leads():
+    mem = lost_memory()
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    candidates = replan.interim_candidates(mem)
+    first = next(iter(candidates.values()))
+    assert first['target'] == BOSS5 and first['purpose'] == 'attack', candidates
+    # The retake stays in the plan as an ordinary later candidate.
+    assert any(order['purpose'] == 'retake' and order['target'] == LOST5
+               for order in candidates.values())
+
+
+def test_the_stall_survives_the_plan_dropping_its_failed_steps():
+    mem = lost_memory()
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    replan._failed_retakes(mem, record=True)
+    mem['chart_plan'] = None            # the rebuilt plan no longer lists them
+    assert boss_attacks(replan.interim_candidates(mem))
+
+
+def test_a_castle_that_is_not_lost_still_blocks_the_boss():
+    # One castle is lost and stalled, another is simply not captured yet.
+    other = FAR5[1]
+    mem = memory(captured=[c for c in ORDINARY5 if c not in (LOST5, other)], lost=[LOST5])
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    assert boss_attacks(replan.interim_candidates(mem)) == []
+
+
+def test_every_stalled_lost_castle_must_reach_the_limit():
+    other = FAR5[1]
+    mem = memory(captured=[c for c in ORDINARY5 if c not in (LOST5, other)],
+                 lost=[LOST5, other])
+    steps = _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    assert boss_attacks(replan.interim_candidates(mem)) == []
+    # The second castle's retakes fail as well: now neither gates the boss.
+    mem['retake_failures'] = {'chapter': 5, 'castles': {
+        other: [f'A:x:M{i}' for i in range(replan.RETAKE_STALL_FAILS)]}}
+    assert boss_attacks(replan.interim_candidates(mem))
+    assert steps
+
+
+def test_a_retaken_castle_forgets_its_failures():
+    mem = lost_memory()
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    replan._failed_retakes(mem, record=True)
+    mem['lost'] = []
+    mem['captured'] = list(ORDINARY5)
+    assert replan._failed_retakes(mem, record=True) == {}
+    assert mem['retake_failures']['castles'] == {}
+
+
+def test_failures_from_another_chapter_are_ignored():
+    mem = lost_memory()
+    mem['retake_failures'] = {'chapter': 4, 'castles': {
+        LOST5: [f'A:x:M{i}' for i in range(replan.RETAKE_STALL_FAILS)]}}
+    assert boss_attacks(replan.interim_candidates(mem)) == []
+
+
+def test_the_mechanical_rebuild_records_the_failures_before_clearing_the_plan():
+    mem = lost_memory()
+    _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
+    replan._off_chart(mem)
+    book = mem['retake_failures']['castles']
+    assert len(book[LOST5]) == replan.RETAKE_STALL_FAILS
+    targets = [order['target'] for order in (mem.get('chart_plan') or {}).get('orders') or ()]
+    assert BOSS5 in targets, targets
