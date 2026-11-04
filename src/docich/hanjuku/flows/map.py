@@ -868,9 +868,10 @@ DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A a
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
-LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before rollback
+LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
 
@@ -893,14 +894,31 @@ def _probe_launch_markers(mem, markers):
     near the source or target it always counts, anywhere else it counts once
     a baseline exists. A sortie settled by another path (arrival, battle,
     overdue) drops the probe instead of being rolled back.
+
+    Absence of a marker is not proof the unit stayed home (v389). g1133
+    2026-11-05 showed chapter 6 drawing marching units as portraits while the
+    probe only knows the (255,24,0) triangle: every survey of a view that
+    held nothing but the static house icon rolled a launch back, and the next
+    source roster showed the general had left. Once the surveys carry no unit
+    evidence the probe waits for that roster
+    (settle_launch_probes_from_roster) and only the wait expiring falls back
+    to the old rollback.
     """
     probes = _flow(mem).get('launch_probe') or {}
     if not probes:
         return
+    now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
         sortie = (mem.get('sorties') or {}).get(step)
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
+            continue
+        if probe.get('blind'):
+            since = probe.get('tick')
+            if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
+                continue
+            probes.pop(step, None)
+            _rollback_unverified_launch(mem, step, probe, markers)
             continue
         baseline = probe.get('baseline') or []
         fresh = [b for b in markers
@@ -920,16 +938,60 @@ def _probe_launch_markers(mem, markers):
             continue
         probe['reads'] = int(probe.get('reads') or 0) + 1
         if probe['reads'] >= LAUNCH_PROBE_READS:
+            probe['blind'] = True
+            probe['tick'] = now
+            _record(mem, 'sortie_launch_unverified', chart_step=step,
+                    general=probe.get('general'),
+                    observed_metric={'general': probe.get('general'),
+                                     'source': probe.get('source'),
+                                     'target': probe.get('target'),
+                                     'markers': [list(b) for b in markers],
+                                     'reads': probe['reads']},
+                    resulting_event='roster_pending',
+                    reason='全体マップに部隊▲が現れないため、出撃元の将軍一覧で出撃の成立を確認する')
+
+
+def settle_launch_probes_from_roster(mem, castle, generals):
+    """Settle a blind launch probe with the source castle's own roster.
+
+    A completed roster read is direct evidence about the general the ledger
+    sent out: gone from the list means the sortie left, still listed means the
+    committed A never took him. g1133 2026-11-05: the Y view drew marching
+    units as portraits, so only the roster could tell a real launch from a
+    failed one. Presence is the only case that rolls back; absence confirms.
+    """
+    probes = _flow(mem).get('launch_probe') or {}
+    if not probes:
+        return
+    roster = list(generals)
+    for step, probe in list(probes.items()):
+        if probe.get('source') != castle or not probe.get('blind'):
+            continue
+        general = probe.get('general')
+        if general in roster:
             probes.pop(step, None)
-            _rollback_unverified_launch(mem, step, probe, markers)
+            _rollback_unverified_launch(mem, step, probe, [],
+                                        reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
+            continue
+        probes.pop(step, None)
+        # The launch is confirmed: the equivalent-order miss budget it may
+        # have accrued belongs to a failed attempt, not to this one.
+        for key, row in list((mem.get('equivalent_launch_miss') or {}).items()):
+            if isinstance(row, dict) and row.get('step') == step:
+                (mem.get('equivalent_launch_miss') or {}).pop(key, None)
+        _record(mem, 'sortie_launch_confirmed', chart_step=step, general=general,
+                observed_metric={'castle': castle, 'general': general, 'roster': roster[:12]},
+                reason='出撃元の将軍一覧に出撃した将軍がいないため出撃成立を確認')
 
 
-def _rollback_unverified_launch(mem, step, probe, markers):
+def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     """A committed departure produced no unit marker: return it to pending.
 
     Mirrors the march-overdue reset so the order re-confirms from scratch,
     but leaves the observed garrison consistent: the general the ledger sent
     out was never seen leaving, so they go back onto the source roster.
+    reason carries the roster evidence when the probe was settled by the
+    source castle instead of the world map.
     """
     misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
@@ -954,13 +1016,13 @@ def _rollback_unverified_launch(mem, step, probe, markers):
         _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                 deviation_reason='出撃確定後に部隊が現れない',
                 observed_metric=observed,
-                reason='出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
+                reason=reason or '出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
         return
     if mem.setdefault('orders', {}).get(step) == 'launched':
         mem['orders'][step] = 'pending'
     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
             observed_metric=observed, resulting_event='order_reopened',
-            reason='出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')
+            reason=reason or '出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')
 
 
 def _departure_receipt_sent(mem, request):

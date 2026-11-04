@@ -176,3 +176,46 @@ def test_a_dropped_dakuten_on_the_visible_page_does_not_hold_a_boss_sortie():
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
     assert not held
+
+
+def test_a_completed_roster_settles_a_blind_launch_probe():
+    """g1133 2026-11-05: chapter 6's Y view drew units as portraits, so the
+    launch probe could never see the committed unit; the source roster is the
+    evidence that settles it."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 3, 'baseline': [], 'blind': True, 'tick': 400}}
+    gone = [g for g in ROSTER if g != 'ゼウス']
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'wrapped', 'names': gone, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(gone, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
+    (record,) = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_confirmed']
+    assert record['general'] == 'ゼウス' and record['observed_metric']['castle'] == 'アルマムーン'
+
+
+def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 3, 'baseline': [], 'blind': True, 'tick': 400}}
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'ヴィーナス']}
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'wrapped', 'names': ROSTER, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'pending'
+    assert _flow(mem)['launch_miss']['1-A3'] == 1

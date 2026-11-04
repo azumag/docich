@@ -179,36 +179,72 @@ def test_new_marker_near_source_confirms_launch(monkeypatch):
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
 
 
-def test_unseen_unit_rolls_the_launch_back_to_pending(monkeypatch):
+def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
+    """g1133 2026-11-05: the Y view showed only the static house icon."""
     mem = memory(); confirm(mem); commit(mem)
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
+    # No marker is not proof: the probe stays and the launch is not undone.
+    probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
+    assert isinstance(probe, dict) and probe.get('blind') is True
+    assert mem['orders']['1-A3'] == 'launched'
+    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert not _flow(mem).get('launch_miss')
+    records = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified']
+    assert records and records[-1]['resulting_event'] == 'roster_pending'
+    # The next completed roster of the source castle is the evidence: gone.
+    p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert not _flow(mem).get('launch_miss')
+    assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+
+
+def test_roster_still_listing_the_general_rolls_the_launch_back(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス', 'ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
     assert '1-A3' not in (_world(mem).get('launched_orders') or {})
-    # The general the ledger sent out was never seen leaving: back home.
     assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
     assert _flow(mem)['launch_miss']['1-A3'] == 1
     assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
 
-def test_repeatedly_unseen_launches_fail_the_order(monkeypatch):
+def test_repeatedly_listed_launches_fail_the_order(monkeypatch):
     mem = memory(); confirm(mem)
     for cycle in range(p.LAUNCH_MISS_LIMIT):
         if cycle:
             # A reopened order that confirmed again arms the same probe.
             _flow(mem).setdefault('launch_probe', {})['1-A3'] = {
                 'general': 'ゼウス', 'source': 'カストーラ', 'target': 'スペンソニア',
-                'reads': 0, 'baseline': [], 'tick': mem['tick']}
+                'reads': 0, 'baseline': [], 'tick': mem['tick'], 'blind': True}
             mem['orders']['1-A3'] = 'launched'
             mem.setdefault('sorties', {})['1-A3'] = {'status': 'en_route'}
         else:
             commit(mem)
         for _ in range(p.LAUNCH_PROBE_READS):
             survey(monkeypatch, mem, [])
+        p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス'])
     assert mem['orders']['1-A3'] == 'failed'
     assert any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])
+
+
+def test_a_blind_probe_still_rolls_back_when_the_roster_wait_expires(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
+    survey(monkeypatch, mem, [])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'pending'
+    assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
 def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
@@ -229,8 +265,12 @@ def test_stale_baseline_marker_alone_does_not_confirm(monkeypatch):
     # The same marker at the same place is not the new unit.
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [stale])
-    assert mem['orders']['1-A3'] == 'pending'
-    assert _flow(mem)['launch_miss']['1-A3'] == 1
+    assert not any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+    # Blind, so the source roster decides: the general is gone, he left.
+    p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert not _flow(mem).get('launch_miss')
 
 
 def test_fresh_marker_anywhere_confirms_once_a_baseline_exists(monkeypatch):
