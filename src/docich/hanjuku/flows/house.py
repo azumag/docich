@@ -958,13 +958,14 @@ def _country_status_level(screen):
 # that same frame instead of waiting a whole observation period (1.5 s).
 INPUT_FREE_HOPS = {('roster_next', 'roster'), ('roster_advance', 'roster')}
 MAX_INPUT_FREE_HOPS = 2
-# Live 2026-11-05: 192 observations over 46 minutes issued no pad at all
-# (``planned_actions: []``) while the flow kept hopping roster_advance ->
-# roster and back, so the month's roster scan never finished and the run sat
-# in the house menu. A run of observations that issues no pad is not progress:
-# leave the menu and let the ordinary policy resume instead of spinning.
-# Only the roster walk is counted: other phases wait on a map screen by design
-# (open_roster retries at age 3/6, travel), so a long wait there is not a spin.
+# Safety net for the roster walk. The hop only re-labels a frame that was
+# already read, so it must never be the only thing an observation does: a run
+# of observations that issues no pad is not progress. (Correction 2026-11-05:
+# the 192 hop records of that morning were the normal walk -- every one of
+# them sent ``down`` -- not a no-input spin; the guard stays as a bound on the
+# case the log cannot rule out, and it has not fired live.) Only the roster
+# walk is counted: other phases wait on a map screen by design (open_roster
+# retries at age 3/6, travel), so a long wait there is not a spin.
 HOUSE_IDLE_LIMIT = 10
 HOUSE_IDLE_PHASES = frozenset({'roster', 'roster_next', 'roster_advance', 'status'})
 

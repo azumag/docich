@@ -345,7 +345,11 @@ def _apply_world_flags(mem, flags):
     # The Y view is read once per picker step and once per survey; recording
     # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
     # most of them identical picker steps) hid real changes in the log.
-    signature = tuple(sorted(flags.items()))
+    # The signature has to survive the policy's JSON round trip: a tuple is
+    # reloaded as a list, so a tuple never compares equal again and the same
+    # flag set was recorded on every observation anyway (measured 2026-11-05:
+    # 147 owners records an hour over nine distinct flag sets).
+    signature = [[k, v] for k, v in sorted(flags.items())]
     if mem.get('world_map_signature') != signature:
         mem['world_map_signature'] = signature
         _record(mem, 'world_map_owners', observed_metric=flags,
