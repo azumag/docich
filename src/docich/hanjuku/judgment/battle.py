@@ -1553,6 +1553,48 @@ def _stale_army_melee_hold(mem, cur):
             'enemy_melee_score_max': enemy_score, 'army_basis': 'stale_upper_bounds'}
 
 
+HP_ONLY_MARGIN_NUM, HP_ONLY_MARGIN_DEN = 3, 2    # own score at least 1.5x the enemy's
+
+
+def _hp_only_clear_margin(mem, cur):
+    """Keep the egg when the HP-and-combat comparison is clearly ours, armies unread.
+
+    Owner 2026-11-05: 有利なのに卵を無駄に使ってしまう. g1133 23:23:22 ヘスティア
+    (HP 25/25, combat 9) against ヘーゼル (HP 33, combat 4) spent the egg at the
+    pre-clash check: the soldier counts were unread (``card_soldiers_current``
+    False), every conservation rule needs them, so the egg went although the
+    score was 225 to 132. With both armies unread the comparison is HP only on
+    both sides (``_melee_balance`` credits nobody), a fair estimate; a clear 1.5x
+    margin with a healthy general keeps the melee. Nothing is spent for good:
+    the survival menu re-asks on every ordinary panel, so an HP loss, a read
+    army or a summon takes the egg back at once. Strong generals, the hero,
+    wounded generals and unread HP keep the old behaviour.
+    """
+    if (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('ally') in (NAME, 'しゅじんこう')):
+        return None
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    maximum = max((n for n in (general_max_hp(cur.get('ally')), cur.get('ref_ally_hp'),
+                               cur.get('start_ally_hp')) if type(n) is int and n > 0),
+                  default=None)
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if (any(type(n) is not int or n <= 0 for n in (hp, enemy, maximum, ac, ec))
+            or hp > maximum or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp <= GENERAL_CRITICAL_RETREAT_HP):
+        return None
+    strong, _ = _strong_enemy(mem, cur)
+    if strong:
+        return None
+    own, theirs = hp * ac, enemy * ec
+    if own * HP_ONLY_MARGIN_DEN < theirs * HP_ONLY_MARGIN_NUM:
+        return None
+    return {'rule': 'hp_only_clear_margin', 'ally_hp': hp, 'ally_max_hp': maximum,
+            'enemy_hp': enemy, 'ally_combat': ac, 'enemy_combat': ec,
+            'ally_melee_score': own, 'enemy_melee_score': theirs,
+            'army_basis': 'unread_both_sides_hp_only'}
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
@@ -1571,7 +1613,8 @@ def _hold_melee_egg(mem, cur, labels):
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')):
         # The live panel is covered: the last observed counts are upper
         # bounds, so only the conservative stale evidence may hold the egg.
-        return _stale_army_melee_hold(mem, cur) is not None
+        return (_stale_army_melee_hold(mem, cur) is not None
+                or _hp_only_clear_margin(mem, cur) is not None)
     if _healthy_melee_margin_evidence(mem, cur) is not None:
         return True
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')

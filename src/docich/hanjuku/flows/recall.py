@@ -363,6 +363,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 return _finish_hero_recall(mem, state, goal)      # roofs hidden: trust the jump
             if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
                 return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
+        enemy_under_marker = marker and frame is not None and any(
+            r['kind'] == 'enemy' and abs(r['target'][0] - marker[0]) <= 12
+            and abs(r['target'][1] - marker[1]) <= 12 for r in castle_roofs(frame))
+        if marker and not roofs and not enemy_under_marker and not state.get('picker_forced'):
+            # Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
+            # No own roof is in view, but the picker's marker stands somewhere:
+            # confirm it once. The dispatch step bounds what follows.
+            state['picker_forced'] = True
+            _record(mem, 'camp_recall_picker_fallback',
+                    observed_metric={'marker': list(marker), 'roofs': 0, 'goal': state.get('goal')},
+                    reason='可視範囲に自軍城の屋根がないため取り消さず、マーカーの位置で確定する')
+            return _request_recall(mem, state, state.get('goal'), [pad('a')],
+                                   target_cell=list(marker))
         if not marker or not roofs:
             _flow(mem).pop('recall', None)
             mem['uncertain'] = True

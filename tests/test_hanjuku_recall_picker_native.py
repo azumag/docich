@@ -44,14 +44,17 @@ def test_native_picker_frames_replay_the_live_presses():
         ([151.0, 64.5], 'down', 0), ([169.0, 84.5], 'left', 0)]
 
 
-def test_native_ring_that_stays_on_home_tries_left_then_gives_up():
+def test_native_ring_that_stays_on_home_tries_left_then_confirms_home():
     mem = memory()
     screen, frame = load('almamoon')
     presses = [policy.world_map_step(screen, mem, frame) for _ in range(policy.PICKER_STILL_LIMIT)]
     assert presses == ([[policy.pad('down')]] * policy.PICKER_AXIS_SWITCH
                        + [[policy.pad('left')]] * (policy.PICKER_STILL_LIMIT - policy.PICKER_AXIS_SWITCH))
-    assert policy.world_map_step(screen, mem, frame) == [policy.pad('b')]
-    assert not _flow(mem).get('recall') and _flow(mem)['recall_skip'] == {'tick': 100}
-    aborted = [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
-    assert [r['resulting_event'] for r in aborted] == ['picker_cursor_stationary']
+    # Owner 2026-11-05: confirm the home castle the ring stands on, do not cancel.
+    assert policy.world_map_step(screen, mem, frame) == [
+        policy.pad('a'), {'type': 'wait', 'ms': 700}, policy.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
+    fallback = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_fallback']
+    assert len(fallback) == 1 and fallback[0]['observed_metric']['castle'] == 'アルマムーン'
     assert [s['still'] for s in steps(mem)] == list(range(policy.PICKER_STILL_LIMIT + 1))

@@ -133,8 +133,10 @@ def test_picker_stall_has_a_finite_budget(monkeypatch):
     monkeypatch.setattr(p, 'world_cursor', lambda _: None)
     for _ in range(p.RECALL_LIMIT - 1):
         assert not any(a.get('buttons') == ['a'] for a in p.world_map_step(VIEW, mem, picker()))
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
-    assert not _flow(mem).get('recall')
+    # Owner 2026-11-05: the budget no longer cancels, it confirms where the ring is.
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['picker_forced'] is True
 
 
 def chapter3_at(monkeypatch, castle):
@@ -152,7 +154,7 @@ def chapter3_memory():
                        'origin': list(p.chart.castles(3)['パタゴーヌ'])}}
 
 
-def test_stationary_picker_cursor_tries_the_other_axis_then_gives_up(monkeypatch):
+def test_stationary_picker_cursor_tries_the_other_axis_then_confirms_where_it_stands(monkeypatch):
     # g1075 15:10:55-15:14:46: aiming at パタゴーヌ, the ring stayed on
     # アルマムーン through 54 left presses; one down press reached グリン.
     mem = chapter3_memory()
@@ -161,12 +163,15 @@ def test_stationary_picker_cursor_tries_the_other_axis_then_gives_up(monkeypatch
     assert _flow(mem)['recall']['goal'] == 'パタゴーヌ'
     assert presses == ([[p.pad('left')]] * p.PICKER_AXIS_SWITCH
                        + [[p.pad('down')]] * (p.PICKER_STILL_LIMIT - p.PICKER_AXIS_SWITCH))
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
-    assert not _flow(mem).get('recall') and mem['uncertain'] and _flow(mem)['recall_skip'] == {'tick': 100}
+    # Owner 2026-11-05: a ring that will not move is confirmed on the castle it
+    # stands on (アルマムーン, ours) instead of cancelling the recall.
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    recall = _flow(mem)['recall']
+    assert recall['stage'] == 'await_dispatch' and recall['goal'] == 'アルマムーン'
     steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
     assert [r['observed_metric']['still'] for r in steps] == list(range(p.PICKER_STILL_LIMIT + 1))
-    assert mem['_records'][-1]['decision'] == 'camp_recall_aborted'
-    assert mem['_records'][-1]['resulting_event'] == 'picker_cursor_stationary'
+    assert mem['_records'][-1]['decision'] == 'camp_recall_requested'
+    assert mem['_records'][-2]['decision'] == 'camp_recall_picker_fallback'
 
 
 def test_moved_picker_cursor_returns_to_the_main_axis(monkeypatch):
