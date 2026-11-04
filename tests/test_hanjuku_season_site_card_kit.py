@@ -11,7 +11,10 @@ from docich import hanjuku_chart as chart, hanjuku_policy as policy
 from docich.hanjuku.strategy.kit import _deploy_cards, _strict_boss_cards
 from test_hanjuku_sortie_evidence import actor_panel, measured_card_select
 
-BOTTOM = ('クースカン', 'バルムンク', 'ミックミー', 'バグストーム')   # g1075 08:15:14-19
+# g1075 08:15:14-19 の一覧 (クースカン, バルムンク, ミックミー, バグストーム)。バルムンク(ボス250)の
+# 実在庫がある一覧は専用キットになる (test_hanjuku_boss_balmung_generic) ため、ここでは
+# 同じ並びの別札に置き換えて「無い札を外して続ける」規則だけを検証する。
+BOTTOM = ('クースカン', 'ミックミー', 'ファイアーボイス', 'バグストーム')
 
 
 def memory():

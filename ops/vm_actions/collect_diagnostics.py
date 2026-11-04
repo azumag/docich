@@ -6834,6 +6834,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v381-strong-card-first",
             "hanjuku-chart-v382-boss-wave-double",
             "hanjuku-chart-v383-boss-step-rearm",
+            "hanjuku-chart-v384-boss-damage-cards",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

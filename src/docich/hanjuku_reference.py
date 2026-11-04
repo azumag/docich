@@ -159,6 +159,45 @@ RECOMMENDED_CARD_SETS = (
 # エンジェリンは救済優先、デッドガン等の全滅/退却札は対象外。
 STRONG_CARDS = ('クースカン', 'ミックミー', 'マグネガキン', 'ノリウツール')
 
+# ボス戦の切り札 (owner 2026-11-04: 「ボスモンスターにも切り札は効くものがあるので、
+# 積極利用すること。クースカンなどは効かないが、バルムンクなどは有効。弱い将軍なら
+# バグストーム自爆でもいいかも」)。gcgx kirihuda.html (fetched 2026-11-04) の
+# ボスダメージ列と効果から、ボスへ実ダメージが入る札を並べる。クースカン(ボス20・
+# HP半減はボス/エグモンに効かない)・ノリウツール(ボス8)・ミックミー(32)は第5話以降の
+# モンスター型ボスには使わない。並びは使用優先順 (ボスダメージの大きい順)。
+#   バルムンク250(イベント限定) / ハリケーン100 / ビッグウェイブ100 / ファバード100
+#   (自軍半減) / マグネガキン80(+攻撃半減) / ドデカヘー70(+防御半減) / リューキーシ60 /
+#   ゼンマイン50。グルミー100・キャトルミュー90 はイベント限定で別経路(レア札)。
+BOSS_DAMAGE_CARDS = ('バルムンク', 'ハリケーン', 'ビッグウェイブ', 'ファバード',
+                     'マグネガキン', 'ドデカヘー', 'リューキーシ', 'ゼンマイン')
+# 自爆札: ボス50ダメージと引き換えに両軍の将軍・兵士のHPを半減する(イベント限定)。
+# 使い捨てにできる弱い将軍の出撃だけに携行する。
+BOSS_SACRIFICE_CARDS = ('バグストーム',)
+# 自爆してよい「弱い将軍」: 卵を持たず(owner 2026-11-04)、最大HPと戦闘が低い将軍だけ。
+SACRIFICE_GENERAL_MAX_HP = 50      # この最大HP以下
+SACRIFICE_GENERAL_MAX_COMBAT = 5   # かつ gcgx shogun.html の戦闘がこの値以下
+
+
+def sacrifice_general(name: str | None) -> bool:
+    """True for a general the bug-storm self-destruct may use (egg-less, weak).
+
+    The shogun table must list the general: an unlisted name is never a
+    sacrifice (fail-closed). ``エッグ種別`` '－' means no egg.
+    """
+    stats = GENERAL_STATS.get('しゅじんこう' if name == 'どうし' else name) if name else None
+    if stats is None:
+        return False
+    hp, combat, _bonus, egg, _thought = stats
+    return (egg == '－' and hp <= SACRIFICE_GENERAL_MAX_HP
+            and combat <= SACRIFICE_GENERAL_MAX_COMBAT)
+
+
+def boss_damage_card(card: str) -> int:
+    """The boss-column damage of a card (0 for an unknown name)."""
+    row = CARDS.get(card)
+    return int(row['boss_damage']) if row else 0
+
+
 # Castle level (wikiwiki.jp/hjksfc/城, 2026-09-29): the defender's egg monster
 # gains +level defense and speed (also egg vs general), a defending general's
 # charge speed +level, garrison capacity is level-1 (over it the AI sorties),
