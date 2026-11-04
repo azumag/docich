@@ -228,60 +228,6 @@ _HARD_KEEP = ("meta", "prediction", "lawsim")
 # ``--min-participations`` override, so the defaults are the deployed values.
 # The collector runs against a fixed argv and does not import the docich package.
 _PREDICTION_MIN_ROUNDS = 3
-
-# Per-section byte accounting: measured once after budget reductions, reported
-# under ``meta`` as a fixed-shape map (top N + others + total) within hundreds
-# of bytes when serialized. Excluded from the budget envelope target.
-
-
-def _compute_section_bytes(payload):
-    """Compute per-section byte accounting for top-level payload keys.
-
-    For each top-level key (excluding ``meta`` itself to avoid circular
-    measurement), serialize the value as JSON (``sort_keys=True,
-    ensure_ascii=False``) and measure the UTF-8 byte length.  Return a
-    fixed-shape map comprising the top ``N`` keys by byte size, an ``others``
-    entry holding the total byte size of all remaining keys, and a ``total``
-    entry for the grand total.
-
-    The returned map is designed to serialize to within a few hundred bytes,
-    so it does not push up the diagnostics envelope.
-    """
-    import json
-
-    # Measure each top-level key's serialized byte size, skip meta itself
-    byte_sizes = {}
-    for key, value in payload.items():
-        if key == "meta":
-            continue
-        try:
-            serialized = json.dumps(value, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            continue
-        byte_len = len(serialized.encode("utf-8"))
-        byte_sizes[key] = byte_len
-
-    if not byte_sizes:
-        return {"others": 0, "total": 0}
-
-    # Sort by byte size descending
-    sorted_items = sorted(byte_sizes.items(), key=lambda x: x[1], reverse=True)
-    total = sum(v for _k, v in sorted_items)
-
-    # Take top N (N=5) to keep the map fixed-shape and small;
-    # the map itself serializes to well within hundreds of bytes.
-    N = 5
-    top_items = sorted_items[:N]
-    top_dict = {k: v for k, v in top_items}
-
-    # ``others`` = sum of byte sizes of all keys beyond the top N
-    others = total - sum(v for _k, v in top_items)
-
-    # Build the result: top N entries + "others" + "total"
-    result = dict(top_dict)
-    result["others"] = others
-    result["total"] = total
-    return result
 _PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
@@ -14426,6 +14372,50 @@ def _corners_hard_trim(payload, text):
     return text
 
 
+# Per-section byte accounting (#3341, Phase 0 measurement only). The map is
+# reported under ``meta`` after ``_diagnostics_budget`` has already reduced the
+# payload, so it is excluded from the soft budget target by construction. Its
+# own footprint is bounded: the ``top`` map holds at most
+# ``_SECTION_BYTES_TOP_N`` key names with integer byte counts, plus the two
+# integer totals, and serializes to a few hundred bytes. The public boundary
+# carries key names and byte counts only -- never section contents, paths or
+# values -- matching the monitor's existing aggregate-only contract.
+_SECTION_BYTES_TOP_N = 5
+
+
+def _compute_section_bytes(payload):
+    """Measure the serialized UTF-8 byte share of each top-level section.
+
+    Every top-level key -- ``meta`` included, since ``section_bytes`` is not
+    yet present when this runs -- is serialized with the same settings as the
+    final envelope (``sort_keys=True, ensure_ascii=False,
+    separators=(",", ":")``) and measured including the quoted key name and
+    the ``:`` separator, so ``total`` tracks the real envelope size (differing
+    only by the outer braces, commas and the ``section_bytes`` entry itself,
+    which is injected after measurement). Returns ``{"top": {name: bytes,
+    ...}, "others": n, "total": n}`` where ``top`` holds the largest
+    ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
+    Serialization failure cannot occur in practice -- the caller runs this on
+    a payload ``_diagnostics_budget`` already serialized -- but such a
+    section is counted at 0 bytes so it folds into ``others`` instead of
+    crashing the collector.
+    """
+    byte_sizes = {}
+    for key, value in payload.items():
+        try:
+            entry = json.dumps(key) + ":" + json.dumps(
+                value, sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"))
+        except (TypeError, ValueError):
+            byte_sizes[key] = 0
+            continue
+        byte_sizes[key] = len(entry.encode("utf-8"))
+    ranked = sorted(byte_sizes.items(), key=lambda item: item[1], reverse=True)
+    top = {key: size for key, size in ranked[:_SECTION_BYTES_TOP_N]}
+    total = sum(byte_sizes.values())
+    return {"top": top, "others": total - sum(top.values()), "total": total}
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -15136,16 +15126,24 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
-    # Compute and include per-section byte accounting under meta BEFORE
-    # serializing, so the field is present in collector output. The map is
-    # fixed-shape (top N + others + total) and serializes to a few hundred
-    # bytes; re-run the budget check and keep the envelope within cap.
-    payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        # Last-resort: drop the accounting rather than exceed the cap.
-        payload["meta"].pop("section_bytes", None)
-        text = _diagnostics_budget(payload)
+    # Per-section byte accounting (#3341): measured on the post-budget payload
+    # and injected under ``meta`` (a _HARD_KEEP section), so it is excluded
+    # from the budget target by construction rather than competing with
+    # evidence for bytes. Re-serialize with the same compact separators the
+    # budget path emits. Only the gateway's hard ceiling is re-checked: the
+    # production envelope legitimately sits above the softer MAX_JSON_BYTES,
+    # and dropping the accounting there would blank the measurement the Phase
+    # 0 issue exists to collect. If the injection itself pushes the envelope
+    # past the hard ceiling -- only possible within a few hundred bytes of it
+    # -- the accounting is dropped instead of failing the whole operation.
+    if isinstance(payload.get("meta"), dict):
+        payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"))
+        if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+            del payload["meta"]["section_bytes"]
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                              separators=(",", ":"))
     sys.stdout.write(text + "\n")
     return 0
 
