@@ -133,6 +133,35 @@ class TestAppendChat(ChatInboxTestBase):
                     text="!puyo join", msg_id="short-write",
                 )
 
+    def test_short_inbox_write_rolls_back_partial_jsonl(self):
+        """A partial row must not poison the next successful append."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        path = self._inbox(runtime)
+        path.write_bytes(b'{"user_id":"9","display_name":"old","text":"x"}\\n')
+        original = path.read_bytes()
+        real_write = inbox.os.write
+
+        def partial_write(fd, data):
+            if data.startswith(b'{"user_id"'):
+                return real_write(fd, data[:7])
+            return real_write(fd, data)
+
+        with patch.object(inbox.os, "write", side_effect=partial_write):
+            with self.assertRaises(inbox.ChatInboxError):
+                inbox.append_chat(
+                    self.state_dir, user_id="1", display_name="v",
+                    text="first", msg_id="partial-id",
+                )
+        self.assertEqual(path.read_bytes(), original)
+        result = inbox.append_chat(
+            self.state_dir, user_id="1", display_name="v",
+            text="second", msg_id="next-id",
+        )
+        self.assertEqual(result["status"], "appended")
+        self.assertEqual([row["text"] for row in self._lines(runtime)], ["x", "second"])
+
     def test_append_preserves_existing_lines(self):
         runtime = self._activate()
         path = self._inbox(runtime)
