@@ -574,7 +574,13 @@ def _recruit_target(mem):
         spec = roles(raw)
     except ValueError:
         return None
-    target = spec['per_castle'] * len(owned) + spec['attack']
+    # Owner 2026-11-04: 資金に余裕がある（所持金1000G以上）月は、所有城だけで
+    # なく、その章のフィールド上の全城（ボス城を除く）の守備・交代分まで
+    # 募集してよい。所持金が未観測・1000G未満なら従来どおり所有城で数える。
+    # 1000Gは既存のまとめ募集（RECRUIT_BATCH_GOLD）と同じ閾値。
+    gold = mem.get('gold')
+    castles = expected if type(gold) is int and gold >= RECRUIT_BATCH_GOLD else owned
+    target = spec['per_castle'] * len(castles) + spec['attack']
     from ..os_layer.roster import MAX_GENERALS
     return min(target, MAX_GENERALS) if target > 0 else None
 
