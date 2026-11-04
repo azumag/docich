@@ -1,21 +1,24 @@
-"""An ineffective source give-up must not return no input forever (v418).
+"""The source fallback only runs when the home castle can send (v423).
 
-g1133 2026-11-05: `_give_up_source` popped `source_miss` and set
-`source_override`, yet the persisted policy kept `source_miss` at 5 and never
-grew the override (453 identical records, issue #3417). The give-up therefore
-fired on every observation and returned no input, so `order_start` stayed at
-zero for 25 minutes. When the give-up demonstrably did not take, the map step
-now closes the open panel and observes again instead of idling.
+g1133 2026-11-05: `home_garrison` was empty while `source_miss` stayed at 5 for
+an hour, so every observation gave the source up to a castle that could never
+launch and the order never walked to the chart own source (issue #3417).
+The give-up now runs only when the home castle has somebody to send.
 """
+from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import map as M
 
-
-def test_the_ineffective_giveup_closes_the_panel():
-    mem = {'chapter': 6, 'tick': 100, '_records': [],
-           'active': 'A:x:M1', 'source_miss': {'A:x:M1': 5}, 'picked': []}
-    assert M._source_giveup_stuck(mem, 'A:x:M1') is True
+HOME = chart.home_castle(6)
 
 
-def test_a_clean_state_is_not_stuck():
-    mem = {'chapter': 6, 'tick': 100, '_records': [], 'source_miss': {}}
-    assert M._source_giveup_stuck(mem, 'A:x:M1') is False
+def memory(garrison):
+    return {'chapter': 6, 'tick': 100, '_records': [], 'garrison': garrison}
+
+
+def test_an_empty_home_cannot_send():
+    assert M._home_can_send(memory({})) is False
+    assert M._home_can_send(memory({HOME: []})) is False
+
+
+def test_a_staffed_home_can_send():
+    assert M._home_can_send(memory({HOME: ['どうし']})) is True

@@ -565,15 +565,16 @@ def _release_stale_active(mem):
     return True
 
 
-def _source_giveup_stuck(mem, step):
-    """The give-up limit is still reached after the give-up ran.
+def _home_can_send(mem):
+    """The fallback source (the home castle) has at least one general.
 
-    g1133 2026-11-05 kept `source_miss` at 5 and never wrote the override, so
-    `_give_up_source` fired on every observation and returned no input (453
-    identical records, issue #3417). The caller closes the open panel instead
-    of idling when this is true.
+    g1133 2026-11-05 had `home_garrison: []` while `source_miss` stayed at 5
+    for an hour: every observation gave the source up to a castle that could
+    never send anyone, so the order never even walked to the chart's source
+    (issue #3417).
     """
-    return (mem.get('source_miss') or {}).get(step, 0) >= SOURCE_MISS_LIMIT
+    home = chart.home_castle(mem.get('chapter') or 0)
+    return bool((mem.get('garrison') or {}).get(home))
 
 
 def map_step(screen: Screen, mem, frame):
@@ -636,30 +637,13 @@ def map_step(screen: Screen, mem, frame):
             return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
-        step = order['step']
-        # Record what the give-up is about to work with: g1133 2026-11-05 kept
-        # source_miss at 5 and never kept the override (issue #3417), so this
-        # probe shows whether the state is discarded or the fallback is simply
-        # refused (the home castle may keep only the hero).
-        home = chart.home_castle(mem.get('chapter') or 0)
-        _record(mem, 'source_giveup_probe', chart_step=step,
-                observed_metric={'source_miss': (mem.get('source_miss') or {}).get(step),
-                                 'override': (mem.get('source_override') or {}).get(step),
-                                 'source': _source(order, mem), 'home': home,
-                                 'home_garrison': list((mem.get('garrison') or {}).get(home) or ())},
-                reason='出撃元を諦める前の状態を残す')
-        _give_up_source(mem, order)
-        order = _order(mem)
-        if order is not None and _source_giveup_stuck(mem, step):
-            # The give-up did not take effect (its state was not kept: g1133
-            # 2026-11-05 kept source_miss at 5 and the override absent for
-            # 453 identical records). Do not return no input forever: close
-            # whatever panel the mismatch left open and observe again.
-            _record(mem, 'source_giveup_ineffective', chart_step=step,
-                    observed_metric={'source_miss': (mem.get('source_miss') or {}).get(step),
-                                     'override': (mem.get('source_override') or {}).get(step)},
-                    reason='出撃元を諦める判定が残っているため、開いているパネルを閉じて次の観測に進む')
-            return [pad('b')]
+        if _home_can_send(mem):
+            _give_up_source(mem, order)
+            order = _order(mem)
+        # Otherwise the home castle has nobody to send (g1133 2026-11-05:
+        # home_garrison [] while source_miss stayed at 5 for an hour), so the
+        # fallback could never launch and giving up only blocked the walk to
+        # the chart's own source. Keep walking instead (issue #3417).
     verifying = order is not None and (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
     if order is not None and ((not verifying and not _ready(order, mem)) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding
