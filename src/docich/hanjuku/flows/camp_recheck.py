@@ -462,6 +462,13 @@ def _named_step(screen, mem, frame, state):
     if stage in ('recheck_roster_open', 'recheck_pick', 'recheck_roster_read', 'recheck_focus') and not _valid_episode(mem, state):
         _defer(mem, state, '本人focusのUI episodeを確認できず旧状態では操作しない')
         return [pad('b')] if screen.kind in ('text', 'main_menu', 'world_map', 'map_target') else []
+    if stage in ('recheck_status', 'recheck_read') and is_fort_menu(screen):
+        # A 砦 menu (しゅつげき/こうかん) is its own proof of what was opened, and
+        # its members are read from that menu, not from the camp image. Requiring
+        # the tent receipt here pressed B and left the dome: g1133 2026-11-04
+        # 15:21:03 opened the 砦 with the cursor covering it, and the receipt
+        # could not be bound on that frame.
+        return _hand_over_to_fort(screen, mem, state, frame, enter_fort)
     if stage in ('recheck_status', 'recheck_read') and not _valid_camp(mem, state):
         _defer(mem, state, '同run・同UI episodeの現在tent receiptを確認できず数量や帰還を更新しない')
         return [pad('b')] if screen.kind in ('text', 'world_map', 'map_target') else []
@@ -858,7 +865,12 @@ def _step_flow(screen, mem, frame, existing):
         budget = _anonymous_budget(mem, queue) if queue else None
         if not state and budget is not None and budget['reads'] >= roster_receipts.MAX_GENERALS:
             return None  # unknown camps stay unknown; ordinary map work is not starved
-        if state and queue and state['stage'] == 'menu' and not state.get('named_status'):
+        # A 砦 (dome) has no ステータス row to read: its generals and their status
+        # come from the sortie route. Converting it into the anonymous status
+        # recheck therefore fails on the receipt and closes the menu, so the
+        # recall keeps the 砦 route (which also tolerates a menu still fading in).
+        if (state and queue and state['stage'] == 'menu' and not state.get('named_status')
+                and state.get('camp_kind') != 'dome'):
             if budget['reads'] >= roster_receipts.MAX_GENERALS:
                 _defer(mem, state, '未知の匿名camp追加観測の有限予算に達したため帰還を確定しない',
                        status='anonymous_recheck_exhausted')

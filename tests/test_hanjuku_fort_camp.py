@@ -20,7 +20,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku import orchestrator
 from docich.hanjuku.flows import camp_recheck, house, recall
-from docich.hanjuku.os_layer import phase
+from docich.hanjuku.os_layer import phase, readers
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import fort_list_open, is_camp_menu, is_fort_menu
 from docich.hanjuku.os_layer.screen import own_camps, parse
@@ -360,3 +360,46 @@ def test_an_unowned_chapter_start_has_no_fort_goal():
 def orders_goal(mem):
     from docich.hanjuku.strategy.orders import _fort_recall_goal
     return _fort_recall_goal(mem, _flow(mem)['recall'])
+
+
+def test_an_occluded_dome_still_hands_its_fort_menu_to_the_sortie(monkeypatch):
+    """g1133 2026-11-04 15:20:55-15:21:04: the cursor covered the dome, A opened
+    しゅつげき/こうかん, and the pending retreat recheck answered B with
+    "現在tent receipt を確認できず" because the camp image — and with it the
+    receipt — was gone. The 砦 menu is its own proof of what was opened.
+
+    Live tail: camp_found kind=dome → camp_enter {occluded: true} →
+    retreat_recheck_unconfirmed (needs_observation) → B, and the dome stayed.
+    """
+    identity = dict(IDENTITY)
+    mem = memory(retreat_rechecks={'エピィ': {'identity': identity, 'chapter': 4, 'tick': 900,
+                                              'attempts': 0, 'retry_after': 900,
+                                              'status': 'needs_observation'}},
+                 recall={'stage': 'to_camp', 'steps': 0, 'target': [131, 110],
+                         'last_seen': [131, 110], 'camp_kind': 'dome'})
+    hidden = load('g1097-probe-dome-under-cursor.png')
+    fort = load('g1097-fort-menu-over-dome.png')
+    monkeypatch.setattr(recall, 'own_camps', lambda _frame: [])
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    assert recall.camp_recall_step(MAP, mem, hidden) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'menu'
+    assert _flow(mem)['recall'].get('camp_observation') is None
+    assert recall.camp_recall_step(screen('g1097-fort-menu-over-dome.png'), mem, fort) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'fort_list'
+    assert not decisions(mem, 'retreat_recheck_unconfirmed')
+
+
+def test_a_fort_menu_seen_mid_recheck_is_handed_over_before_the_receipt_check():
+    """A replayed or hot-loaded state can already sit at recheck_status when the
+    砦 menu appears; the sortie route reads the real members from it."""
+    identity = dict(IDENTITY)
+    mem = memory(retreat_rechecks={'エピィ': {'identity': identity, 'chapter': 4, 'tick': 900,
+                                              'attempts': 1, 'retry_after': 900,
+                                              'status': 'needs_observation'}})
+    _flow(mem)['recall'] = {'stage': 'recheck_status', 'steps': 0, 'reads': 0, 'general': 'エピィ',
+                            'target': [131, 110], 'retreat_recheck': True, 'identity': identity,
+                            'chapter': 4, 'recheck_tick': 900}
+    fort = load('g1097-fort-menu-over-dome.png')
+    assert recall.camp_recall_step(screen('g1097-fort-menu-over-dome.png'), mem, fort) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'fort_list'
+    assert decisions(mem, 'retreat_recheck_fort')
