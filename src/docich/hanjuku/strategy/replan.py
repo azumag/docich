@@ -711,18 +711,21 @@ def _mechanical_chart(mem, state, rid, digest):
     if _plan_pending(mem):
         return
     allow_sole = _defense_gate(mem) == 'break'
-    if (mem.get('chart_plan') or {}).get('request_id') == rid:
-        # The stored plan belongs to this situation and the caller has just
-        # shown that none of its orders can start (_plan_pending is False).
-        # Rebuilding it would offer the same blocked orders again, so send the
-        # single deterministic interim sortie instead — the fallback the
-        # speedrun path already takes for an exhausted adopted plan. Without
-        # it the bot idled on the field with the whole army home: g1107
-        # 2026-11-03 07:24-07:33Z (chapter 5, 44-6..44-7) kept four pending
-        # worker orders that could never start, nine generals in the home
-        # castle and two lost castles, and the month advanced with no sortie.
-        _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
-        return
+    stored = mem.get('chart_plan') or {}
+    if stored.get('request_id') == rid:
+        if stored.get('source') == 'mechanical':
+            # Owner 2026-11-04: 月の計画が尽きたら月の終わりを待たず、同じ
+            # 月のうちに余剰で新しい計画を作り続ける（守備1人は維持）。
+            # 候補は現在の状況から作り直すので、行軍中の目標は除外される。
+            mem['chart_plan'] = None
+        else:
+            # The stored plan belongs to this situation and the caller has just
+            # shown that none of its orders can start (_plan_pending is False).
+            # Rebuilding it would offer the same blocked orders again, so send
+            # the single deterministic interim sortie instead — the fallback
+            # the speedrun path already takes for an exhausted adopted plan.
+            _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
+            return
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)

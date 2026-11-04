@@ -128,3 +128,27 @@ def test_two_generals_leave_a_defender_and_make_no_wave():
     candidates = replan.interim_candidates(mem)
     attacks = [o for o in candidates.values() if o['target'] == target]
     assert len(attacks) == 1, candidates
+
+
+def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
+    """Owner 2026-11-04: 計画が尽きたら月の終わりを待たず新計画を作る."""
+    mem = memory()
+    rid = chart_adjust.request_id(mem)
+    step = 'Mdeadbeef'
+    mem['chart_plan'] = {
+        'schema': chart_adjust.SCHEMA, 'chapter': 1, 'request_id': rid,
+        'source': 'mechanical',
+        'orders': [{'step': step, 'general': 'ゼウス', 'source': HOME,
+                    'target': 'ゴーメン', 'cards': [], 'after': None, 'note': ''}],
+    }
+    mem['orders'] = {step: 'launched'}
+    mem['sorties'] = {step: {'source': HOME, 'target': 'ゴーメン', 'general': 'ゼウス',
+                             'status': 'en_route', 'tick': mem['tick'] - 10}}
+    replan._off_chart(mem)
+    plan = mem.get('chart_plan') or {}
+    assert plan.get('source') == 'mechanical', plan
+    targets = [o['target'] for o in plan.get('orders') or []]
+    assert targets, plan
+    # The in-flight target is excluded; a new plan offers the remaining work.
+    assert 'ジョンリギ' in targets, plan
+    assert 'ゴーメン' not in targets or mem['orders'].get(step) != 'launched'
