@@ -15136,9 +15136,16 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
-    # Append per-section byte accounting under meta (fixed-shape map:
-    # top N + others + total; serialized size well within hundreds of bytes).
+    # Compute and include per-section byte accounting under meta BEFORE
+    # serializing, so the field is present in collector output. The map is
+    # fixed-shape (top N + others + total) and serializes to a few hundred
+    # bytes; re-run the budget check and keep the envelope within cap.
     payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        # Last-resort: drop the accounting rather than exceed the cap.
+        payload["meta"].pop("section_bytes", None)
+        text = _diagnostics_budget(payload)
     sys.stdout.write(text + "\n")
     return 0
 
