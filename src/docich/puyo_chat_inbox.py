@@ -120,8 +120,24 @@ def _seen_append(path: Path, msg_id: str) -> None:
         # Compaction replaces the file atomically so a reader never sees a
         # half-written id list (rename within the same directory).
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text("\n".join(ids) + "\n", encoding="utf-8")
+        # Persist the replacement before publishing it, then persist the
+        # directory entry. Atomic rename alone does not guarantee durability
+        # after power loss.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            payload = ("\n".join(ids) + "\n").encode("utf-8")
+            written = os.write(fd, payload)
+            if written != len(payload):
+                raise OSError("short chat seen compaction write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
         return
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
