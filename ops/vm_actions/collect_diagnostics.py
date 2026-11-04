@@ -14383,6 +14383,50 @@ def _corners_hard_trim(payload, text):
     return text
 
 
+# Per-section byte accounting (#3341, Phase 0 measurement only). The map is
+# reported under ``meta`` after ``_diagnostics_budget`` has already reduced the
+# payload, so it is excluded from the soft budget target by construction. Its
+# own footprint is bounded: the ``top`` map holds at most
+# ``_SECTION_BYTES_TOP_N`` key names with integer byte counts, plus the two
+# integer totals, and serializes to a few hundred bytes. The public boundary
+# carries key names and byte counts only -- never section contents, paths or
+# values -- matching the monitor's existing aggregate-only contract.
+_SECTION_BYTES_TOP_N = 5
+
+
+def _compute_section_bytes(payload):
+    """Measure the serialized UTF-8 byte share of each top-level section.
+
+    Every top-level key -- ``meta`` included, since ``section_bytes`` is not
+    yet present when this runs -- is serialized with the same settings as the
+    final envelope (``sort_keys=True, ensure_ascii=False,
+    separators=(",", ":")``) and measured including the quoted key name and
+    the ``:`` separator, so ``total`` tracks the real envelope size (differing
+    only by the outer braces, commas and the ``section_bytes`` entry itself,
+    which is injected after measurement). Returns ``{"top": {name: bytes,
+    ...}, "others": n, "total": n}`` where ``top`` holds the largest
+    ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
+    Serialization failure cannot occur in practice -- the caller runs this on
+    a payload ``_diagnostics_budget`` already serialized -- but such a
+    section is counted at 0 bytes so it folds into ``others`` instead of
+    crashing the collector.
+    """
+    byte_sizes = {}
+    for key, value in payload.items():
+        try:
+            entry = json.dumps(key) + ":" + json.dumps(
+                value, sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"))
+        except (TypeError, ValueError):
+            byte_sizes[key] = 0
+            continue
+        byte_sizes[key] = len(entry.encode("utf-8"))
+    ranked = sorted(byte_sizes.items(), key=lambda item: item[1], reverse=True)
+    top = {key: size for key, size in ranked[:_SECTION_BYTES_TOP_N]}
+    total = sum(byte_sizes.values())
+    return {"top": top, "others": total - sum(top.values()), "total": total}
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -15093,6 +15137,26 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
+    # Per-section byte accounting (#3341): measured on the post-budget payload
+    # and injected under ``meta`` (a _HARD_KEEP section), so it is excluded
+    # from the budget target by construction rather than competing with
+    # evidence for bytes. Re-serialize with the same compact separators the
+    # budget path emits. Only the gateway's hard ceiling is re-checked: the
+    # production envelope legitimately sits above the softer MAX_JSON_BYTES,
+    # and dropping the accounting there would blank the measurement the Phase
+    # 0 issue exists to collect. If the injection itself pushes the envelope
+    # past the hard ceiling -- only possible within a few hundred bytes of it
+    # -- the accounting is dropped instead of failing the whole operation.
+    # ``meta`` is built as a dict in this collector. If that contract ever
+    # changes, skip optional accounting rather than breaking diagnostics output.
+    if isinstance(payload.get("meta"), dict):
+        payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"))
+        if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+            del payload["meta"]["section_bytes"]
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                              separators=(",", ":"))
     sys.stdout.write(text + "\n")
     return 0
 
