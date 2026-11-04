@@ -38,7 +38,7 @@ import json
 import os
 from pathlib import Path
 
-from .game_switch import GameSwitchStore, StateCorruptError
+from .game_switch import (GameSwitchBusyError, GameSwitchLock, GameSwitchStore, StateCorruptError)
 from .naming import NameValidationError, runtime_directory
 from .puyo_corner import MAX_NAME_CHARS, MAX_USER_ID_CHARS
 from .puyo_view import VIEW_NAME
@@ -85,7 +85,7 @@ def resolve_inbox_path(state_dir) -> Path | None:
     if missing:
         return None
     active = canonical.get("active")
-    if not isinstance(active, dict) or active.get("game") != VIEW_NAME:
+    if canonical.get("phase") != "ready" or not isinstance(active, dict) or active.get("game") != VIEW_NAME:
         return None
     runtime_id = active.get("runtime_id")
     if not isinstance(runtime_id, str) or not runtime_id:
@@ -160,25 +160,37 @@ def append_chat(state_dir, *, user_id, display_name, text, msg_id=None) -> dict:
     if not user_id or not display_name or not text:
         return {"status": "skipped", "reason": "invalid_input"}
 
-    inbox = resolve_inbox_path(state_dir)
-    if inbox is None:
-        return {"status": "skipped", "reason": "no_puyo_slot"}
-
-    seen = inbox.parent / SEEN_FILENAME
-    if msg_id and msg_id in _read_seen(seen):
-        return {"status": "skipped", "reason": "duplicate"}
-
-    line = json.dumps(
-        {"user_id": user_id, "display_name": display_name, "text": text},
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8") + b"\n"
+    # The coordinator takes the exclusive lock when switching slots. Keep a
+    # shared lock across canonical resolution AND the append so a switch
+    # cannot retire the resolved runtime between those two operations.
+    # Never block the chat fetch loop on an in-progress switch.
+    lock = GameSwitchLock(Path(state_dir))
     try:
-        _append_line(inbox, line)
-        if msg_id:
-            _seen_append(seen, msg_id)
-    except OSError as exc:
-        raise ChatInboxError("chat_inbox append failed") from exc
+        lock.acquire(exclusive=False, blocking=False)
+    except (GameSwitchBusyError, OSError):
+        return {"status": "skipped", "reason": "switch_busy"}
+    try:
+        inbox = resolve_inbox_path(state_dir)
+        if inbox is None:
+            return {"status": "skipped", "reason": "no_puyo_slot"}
+
+        seen = inbox.parent / SEEN_FILENAME
+        if msg_id and msg_id in _read_seen(seen):
+            return {"status": "skipped", "reason": "duplicate"}
+
+        line = json.dumps(
+            {"user_id": user_id, "display_name": display_name, "text": text},
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8") + b"\n"
+        try:
+            _append_line(inbox, line)
+            if msg_id:
+                _seen_append(seen, msg_id)
+        except OSError as exc:
+            raise ChatInboxError("chat_inbox append failed") from exc
+    finally:
+        lock.release()
     return {"status": "appended"}
 
 
