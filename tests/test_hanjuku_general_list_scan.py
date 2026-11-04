@@ -219,3 +219,23 @@ def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'pending'
     assert _flow(mem)['launch_miss']['1-A3'] == 1
+
+
+def test_a_roster_read_settles_a_probe_before_the_marker_surveys_finish():
+    """The roster often arrives first (g1133 00:38:04 survey, 00:38:40 roster)."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 1, 'baseline': [], 'tick': 400}}
+    gone = [g for g in ROSTER if g != 'ゼウス']
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'stalled', 'names': gone, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(gone, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')

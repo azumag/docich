@@ -952,20 +952,22 @@ def _probe_launch_markers(mem, markers):
 
 
 def settle_launch_probes_from_roster(mem, castle, generals):
-    """Settle a blind launch probe with the source castle's own roster.
+    """Settle a launch probe with the source castle's own roster.
 
     A completed roster read is direct evidence about the general the ledger
     sent out: gone from the list means the sortie left, still listed means the
     committed A never took him. g1133 2026-11-05: the Y view drew marching
     units as portraits, so only the roster could tell a real launch from a
     failed one. Presence is the only case that rolls back; absence confirms.
+    The read settles the probe whether or not the marker survey already went
+    blind: the roster arrives first on many sorties.
     """
     probes = _flow(mem).get('launch_probe') or {}
     if not probes:
         return
     roster = list(generals)
     for step, probe in list(probes.items()):
-        if probe.get('source') != castle or not probe.get('blind'):
+        if probe.get('source') != castle:
             continue
         general = probe.get('general')
         if general in roster:
