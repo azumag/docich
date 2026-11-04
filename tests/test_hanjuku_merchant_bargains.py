@@ -66,6 +66,40 @@ def test_full_payroll_soldier_funds_and_extra_buffer_boundary(ready, gold, qty):
     assert (ready['shop'].get('want') or [None, 0])[1] == qty
 
 
+def test_pending_recruit_fee_is_reserved_but_an_affordable_extra_is_bought(ready):
+    # Live g1133 49-10: the Chinese merchant had 8734G, but the boolean
+    # recruit hold skipped every planned card before the 50G recruit step.
+    shop = ready['shop']
+    shop.update(items=[['ミックミー', 2]], bargain_cards=['ミックミー'],
+                bargain_planned=True, bargain_listing_planned=True,
+                recruit_priority=True, recruit='check', recruit_reserve=0,
+                soldiers=44, soldiers_done=False)
+    assert p.shop_step(listing(8734, rows=(('ミックミー', 40),)), ready) == [p.pad('a')]
+    assert shop['want'] == ['ミックミー', 2, 40]
+
+
+@pytest.mark.parametrize('gold,bought', [(155, 0), (156, 1)])
+def test_pending_recruit_fee_stays_out_of_the_extra_budget(ready, gold, bought):
+    shop = ready['shop']
+    shop.update(items=[['ノリウツール', 3]], bargain_cards=['ノリウツール'],
+                bargain_planned=True, bargain_listing_planned=True,
+                recruit_priority=True, recruit='check', recruit_reserve=0,
+                soldiers=50, soldiers_done=False)
+    actions = p.shop_step(listing(gold), ready)
+    assert actions == [p.pad('a' if bought else 'b')]
+    assert (shop.get('want') or [None, 0])[1] == bought
+
+
+def test_pending_recruit_still_defers_new_extra_planning(ready):
+    # The merchant may sell an already planned extra, but the recruit menu
+    # keeps priority over planning a new one (chart bot monthly ordering).
+    shop = ready['shop']
+    shop.update(items=[], recruit_priority=True, recruit='check', recruit_reserve=0)
+    b.plan_bargains(ready, shop, listing(999).header)
+    assert shop['items'] == []
+    assert not shop.get('bargain_listing_planned')
+
+
 def test_all_necessities_and_original_card_priority_survive(ready):
     shop = ready['shop']
     shop.update(items=[['イッテツーン', 2]], reserve=50,

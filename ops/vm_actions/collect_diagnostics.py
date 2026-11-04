@@ -6844,6 +6844,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v391-country-status-after-recruit",
             "hanjuku-chart-v392-ch6-march-arrival",
             "hanjuku-chart-v393-recall-picker-axis-alternate",
+            "hanjuku-chart-v394-merchant-recruit-reserve",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
