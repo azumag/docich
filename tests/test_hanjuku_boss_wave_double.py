@@ -130,3 +130,55 @@ def test_an_exhausted_boss_plan_rebuilds_a_wave_with_a_new_step():
     assert BOSS5 in targets, plan
     assert all(order['step'] != step for order in plan['orders']), plan
     assert mem.setdefault('orders', {}).get(plan['orders'][0]['step']) in (None, 'pending')
+
+
+def _failed_boss_step(mem):
+    """Make the next mechanical plan offer a boss step already marked failed."""
+    candidates = replan.interim_candidates(mem)
+    boss = next(order for order in candidates.values() if order['target'] == BOSS5)
+    local = replan._mechanical_step(boss, set(), mem)
+    rid = chart_adjust.request_id(mem)
+    step = chart_adjust.execution_step(rid, local)
+    mem['chart_plan'] = {
+        'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
+        'source': 'mechanical',
+        'orders': [dict(boss, step=local, cards=[], after=None, note='')],
+    }
+    mem['orders'] = {step: 'failed'}
+    return step
+
+
+def test_a_failed_boss_step_is_rearmed_for_the_next_plan():
+    """g1133: a boss launch-miss failure must not end the chapter's sorties."""
+    mem = memory()
+    step = _failed_boss_step(mem)
+    replan._off_chart(mem)
+    assert mem['orders'][step] == 'pending'
+    assert any(record['decision'] == 'plan_step_rearmed' for record in mem['_records'])
+
+
+def test_the_rearm_waits_for_its_cooldown():
+    mem = memory()
+    step = _failed_boss_step(mem)
+    mem['boss_step_rearm'] = {step: {'month': mem['month'], 'count': 1, 'tick': mem['tick']}}
+    replan._off_chart(mem)
+    assert mem['orders'][step] == 'failed'
+
+
+def test_the_rearm_budget_is_per_month():
+    mem = memory()
+    step = _failed_boss_step(mem)
+    mem['boss_step_rearm'] = {step: {'month': mem['month'],
+                                     'count': replan.BOSS_STEP_REARM_LIMIT,
+                                     'tick': mem['tick'] - 10_000}}
+    replan._off_chart(mem)
+    assert mem['orders'][step] == 'failed'
+
+
+def test_a_failed_non_boss_step_is_not_rearmed():
+    mem = memory()
+    step = chart_adjust.execution_step('rid', 'Mfeed')
+    mem['orders'] = {step: 'failed'}
+    replan._rearm_failed_boss_steps(
+        mem, [{'step': 'Mfeed', 'target': ORDINARY5[0], 'general': 'ゼウス'}], 'rid')
+    assert mem['orders'][step] == 'failed'

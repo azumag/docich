@@ -163,6 +163,14 @@ INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares a
 # budget every other target gets (the first sortie plus INTERIM_WAVE_LIMIT
 # extra ones); spares and the one-defender rule still decide who goes.
 BOSS_WAVE_IN_FLIGHT = 1 + INTERIM_WAVE_LIMIT
+# Owner 2026-11-04: a boss step that failed its launch-marker retries must not
+# end the chapter's sorties. The mechanical plan is rebuilt every observation
+# under the same request id and offers the same step, and next_order skips a
+# 'failed' step forever, so the boss was never attacked again (g1133). Re-arm
+# it with a small per-month budget and a cooldown; the ordinary readiness,
+# source and kit checks still gate every launch.
+BOSS_STEP_REARM_LIMIT = 3            # failed boss steps re-armed per game month
+BOSS_STEP_REARM_COOLDOWN = 100       # observations between re-arms (~2.5 min at 1.5 s)
 
 
 def _boss_wave_in_flight(mem, boss):
@@ -867,6 +875,7 @@ def _mechanical_chart(mem, state, rid, digest):
             'after': order.get('after'),
             'note': order.get('note') or '',
         })
+    _rearm_failed_boss_steps(mem, orders, rid)
     doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
            'source': 'mechanical', 'orders': orders, 'purchases': None,
            'recruitment': None}
@@ -938,6 +947,52 @@ def _release_stale_steps(mem, steps):
                                  'target': sortie.get('target'),
                                  'age': (now - sortie['tick']) if type(sortie.get('tick')) is int else None},
                 reason='計画が再び出した指示に、行軍中でない過去の「出撃済み」が残っていたため未発射に戻す')
+
+
+def _rearm_failed_boss_steps(mem, orders, rid):
+    """Re-arm a failed boss step so the chapter end keeps taking sorties.
+
+    g1133 2026-11-04: the departure marker was never observed after アテナ's
+    boss sortie (16:18) and the retry hit LAUNCH_MISS_LIMIT at 16:22, so the
+    mechanical step stayed 'failed'. The plan is rebuilt every observation
+    under the same request id and offers that step again; ``next_order``
+    skips a failed step, so no boss sortie was planned for 40+ minutes while
+    ten castles sat owned and the army waited at home.
+
+    Only the boss is re-armed, and only within a per-month budget and
+    cooldown: a genuinely unreachable target must not drain the army forever.
+    """
+    status = mem.setdefault('orders', {})
+    now = int(mem.get('tick') or 0)
+    month = mem.get('month')
+    rearmed = mem.get('boss_step_rearm')
+    if not isinstance(rearmed, dict):
+        rearmed = mem['boss_step_rearm'] = {}
+    for order in orders:
+        if not chart.is_boss_castle(order.get('target')):
+            continue
+        step = chart_adjust.execution_step(rid, order['step'])
+        if status.get(step) != 'failed':
+            continue
+        entry = rearmed.get(step)
+        if not isinstance(entry, dict) or entry.get('month') != month:
+            entry = {'month': month, 'count': 0, 'tick': now - BOSS_STEP_REARM_COOLDOWN}
+        if entry['count'] >= BOSS_STEP_REARM_LIMIT:
+            continue
+        if now - entry['tick'] < BOSS_STEP_REARM_COOLDOWN:
+            continue
+        entry['count'] += 1
+        entry['tick'] = now
+        rearmed[step] = entry
+        status[step] = 'pending'
+        _record(mem, 'plan_step_rearmed', chart_step=step, general=order.get('general'),
+                target=order.get('target'),
+                observed_metric={'count': entry['count'], 'month': month},
+                reason='ボス指示が発射未確認の上限で失敗のまま再計画され続け、出撃が止まるため、月内の上限付きで未発射に戻す')
+    if len(rearmed) > 32:
+        for key in list(rearmed)[:-32]:
+            rearmed.pop(key, None)
+    return rearmed
 
 
 def _adjust_situation(mem):
