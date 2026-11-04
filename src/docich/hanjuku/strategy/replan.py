@@ -171,6 +171,55 @@ BOSS_WAVE_IN_FLIGHT = 1 + INTERIM_WAVE_LIMIT
 # source and kit checks still gate every launch.
 BOSS_STEP_REARM_LIMIT = 3            # failed boss steps re-armed per game month
 BOSS_STEP_REARM_COOLDOWN = 100       # observations between re-arms (~2.5 min at 1.5 s)
+# Owner 2026-11-04 (g1133): the mechanical boss wave waits until every other
+# castle is owned, so one lost castle whose retake never launches (クロチェット:
+# the march from アルマムーン is absorbed by オトラント, the only オトラント
+# general must stay) held the whole army at home for an hour while the boss
+# got no sortie. After this many failed retake launches for a castle the
+# retake stops gating the boss; it stays in the plan as an ordinary candidate.
+RETAKE_STALL_FAILS = 3
+RETAKE_FAILURE_KEEP = 8              # failed step ids remembered per lost castle
+
+
+def _failed_retakes(mem, record=False):
+    """{lost castle: failed retake step ids} from the book and the stored plan.
+
+    The mechanical plan is rebuilt (and its failed steps may drop out) every
+    time it is exhausted, so failures are copied into ``retake_failures``
+    when ``record`` is set — the rebuild calls it just before clearing the
+    plan. Readers pass ``record=False`` and merge the live plan on top, so a
+    caller that never rebuilds still sees the failures the plan holds.
+    """
+    chapter = mem.get('chapter') or 0
+    lost = {c for c in mem.get('lost') or () if not chart.is_boss_castle(c)}
+    book = mem.get('retake_failures')
+    stored = book.get('castles') if isinstance(book, dict) and book.get('chapter') == chapter else {}
+    # A castle retaken (or a chapter change) clears its failures.
+    found = {c: list(steps) for c, steps in (stored or {}).items()
+             if c in lost and isinstance(steps, list)}
+    plan = mem.get('chart_plan') or {}
+    status = mem.get('orders') or {}
+    if plan.get('chapter') in (None, chapter):
+        for order in plan.get('orders') or ():
+            target, step = order.get('target'), order.get('step')
+            if target in lost and status.get(step) == 'failed':
+                steps = found.setdefault(target, [])
+                if step not in steps:
+                    steps.append(step)
+    found = {c: steps[-RETAKE_FAILURE_KEEP:] for c, steps in found.items()}
+    if record:
+        mem['retake_failures'] = {'chapter': chapter, 'castles': found}
+    return found
+
+
+def _retakes_stalled(mem, blocking):
+    """True when every castle blocking the boss wave is lost and keeps failing."""
+    if not blocking:
+        return False
+    lost = set(mem.get('lost') or ())
+    failed = _failed_retakes(mem)
+    return all(c in lost and len(failed.get(c) or ()) >= RETAKE_STALL_FAILS
+               for c in blocking)
 
 
 def _boss_wave_in_flight(mem, boss):
@@ -442,8 +491,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # guard below exempts this target (owner 2026-11-04) so a wave can follow
     # the previous one without waiting out SORTIE_BUSY_TICKS.
     boss = chart.boss_castle(chapter)
-    if (boss in castles and boss_path
-            and all(c in owned or c == home for c in boss_path - {boss})
+    blocking = {c for c in boss_path - {boss} if c not in owned and c != home}
+    chain_held = not blocking
+    # Owner 2026-11-04: a castle whose retake keeps failing to launch must
+    # not hold the boss waves forever (g1133 17:48-18:50, クロチェット).
+    retakes_stalled = (not chain_held) and _retakes_stalled(mem, blocking)
+    if (boss in castles and boss_path and (chain_held or retakes_stalled)
             and not (mem.get('boss_victories') or {})):
         targets = [*targets, boss]
     # An interim sortie that has already gone out (launched/en route) must not be
@@ -700,7 +753,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
     attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
     lead = [*known_retakes, *moves, *unread_retakes]
-    for order in (*lead[:1], *waves, *lead[1:], *attacks, *rotation, *wave_orders):
+    # A stalled retake no longer gates the boss, so the boss wave leads: the
+    # failing retake would otherwise take the front slot every cycle.
+    front = [] if retakes_stalled else lead[:1]
+    for order in (*front, *waves, *(lead if retakes_stalled else lead[1:]),
+                  *attacks, *rotation, *wave_orders):
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
@@ -1077,6 +1134,9 @@ def _off_chart(mem):
     with no plan waiting, the first deterministic interim candidate runs. No
     model answer is required for progress.
     """
+    # Before any path below can drop the stored plan, keep its failed retake
+    # steps: a castle whose retake keeps failing stops gating the boss wave.
+    _failed_retakes(mem, record=True)
     # A deliberate recovery wait is not an exhausted chart. Do not ask the
     # planner to replace the boss order or send an interim sortie while the
     # next normal month advances. Other ready orders were considered first.
