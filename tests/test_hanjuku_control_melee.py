@@ -46,10 +46,33 @@ def test_native_castora_list_selects_control_card_without_a_second_card():
     {'ally': 'だれか'}, {'enemy': 'プリンス'},
 ])
 def test_control_melee_permission_needs_healthy_hp_current_army_and_combat(change):
+    """The strict follow-up projection is unchanged; opening the card is not it."""
     mem = castora()
     mem['battle'].update(change)
     gate = p._card_damage_gate(mem, mem['battle'], 'クースカン', listed_cards=['クースカン'])
-    assert gate['allowed'] is False
+    assert gate.get('melee_followup') is None
+    assert gate['role'] != 'control_then_melee_not_a_kill'
+
+
+@pytest.mark.parametrize('ally_hp, allowed', [(12, False), (16, False), (17, True), (33, True), (38, True)])
+def test_halving_opens_when_the_enemy_ends_up_no_stronger_than_us(ally_hp, allowed):
+    """Owner 2026-11-04: 切り札は不利でなくても使う。半減後に敵HPが自HP以下なら開く。"""
+    mem = castora()
+    mem['battle'].update(ally_hp=ally_hp, ally_soldiers=0, enemy_soldiers=6)
+    gate = p._card_damage_gate(mem, mem['battle'], 'クースカン', listed_cards=['クースカン'])
+    assert gate['allowed'] is allowed
+    assert gate['role'] == ('halving_not_a_kill' if allowed else 'control_has_no_observed_followup')
+
+
+def test_halving_never_opens_against_a_boss_or_an_unread_hp():
+    mem = castora()
+    mem['battle'].update(enemy='プリンス', ally_hp=90)
+    assert p._card_damage_gate(mem, mem['battle'], 'クースカン',
+                               listed_cards=['クースカン'])['allowed'] is False
+    mem = castora()
+    mem['battle'].update(card_hp_unread=True, ally_hp=90)
+    assert p._card_damage_gate(mem, mem['battle'], 'クースカン',
+                               listed_cards=['クースカン'])['allowed'] is False
 
 
 def test_an_unseen_card_or_other_control_effect_cannot_license_melee():

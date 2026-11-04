@@ -45,6 +45,7 @@ CARD_ROLE_MEANINGS = {
     'inspect_live_inventory_before_selection': '使用前に実際の手持ち札一覧を確認する必要があるという判断',
     'observed_control_chain_not_a_kill': '手持ち一覧に後続の攻撃札を確認し、準備用の札を候補にする判断。連携成功や撃破ではない',
     'control_has_no_observed_followup': '手持ち一覧に後続の攻撃札を確認できず、準備用の札を許可しなかった判断',
+    'halving_not_a_kill': '敵将軍のHPを半減して不利でなくなる札として許可する判断。半減の成功や撃破の結果ではない',
     'summon_already_observed': '既に召喚を観測した後の札評価。今回の札による召喚ではない',
 }
 
