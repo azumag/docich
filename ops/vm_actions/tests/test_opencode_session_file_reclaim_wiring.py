@@ -1,9 +1,8 @@
 """Contract tests for the docich#3140 session-file retention wiring.
 
-The wiring epoch is dry-run only: the hourly OpenCode retention unit runs the
-DB pass and then the session-file pass with no --apply / --auto-apply. Apply
-stays behind the owner gate. These assertions keep that boundary and the
-timeout budget from drifting.
+The hourly OpenCode retention unit runs the DB pass and then the
+session-file pass. These assertions keep the wiring and timeout budget from
+drifting.
 """
 import pathlib
 import unittest
@@ -28,15 +27,19 @@ class OpenCodeSessionFileWiringTest(unittest.TestCase):
         )
         self.assertIn('session_data="/home/ubuntu/.local/share/opencode"', text)
         self.assertIn("--state-file", text)
+        self.assertIn("--manifest-file", text)
+        self.assertIn(
+            'session_manifest="$root/tmp/state/opencode_session_file_reclaim_manifest.jsonl"',
+            text,
+        )
         self.assertIn("--status-file", text)
         self.assertIn(
             'session_status_file="$root/tmp/state/opencode_session_file_retention.json"',
             text,
         )
         self.assertIn("--cutoff-hours 24", text)
-        # This epoch must never enable either apply mode.
+        self.assertIn("--auto-apply", text)
         self.assertNotIn("--apply", text)
-        self.assertNotIn("--auto-apply", text)
         self.assertNotIn("--expect-plan", text)
 
     def test_stages_are_independent_and_report_db_first(self):
