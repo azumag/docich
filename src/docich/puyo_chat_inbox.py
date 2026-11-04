@@ -133,7 +133,9 @@ def _append_line(path: Path, line: bytes) -> None:
     """Append exactly one line atomically (single O_APPEND write + fsync)."""
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        os.write(fd, line)
+        written = os.write(fd, line)
+        if written != len(line):
+            raise OSError("short chat inbox write")
         os.fsync(fd)
     finally:
         os.close(fd)
