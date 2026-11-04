@@ -1450,7 +1450,13 @@ def _give_up_source(mem, order):
     home = chart.home_castle(mem.get('chapter') or 0)
     # Navigation state is left to the nav_reset of this same miss: dropping
     # the cell would freeze the camera on open sea again (g358).
-    misses = mem.get('source_miss', {}).pop(step, 0)
+    # Reset by assignment, not by pop: g1133 2026-11-05 kept source_miss at 5
+    # for an hour (the pop never reached the persisted state, while plain
+    # assignments such as orders[...] did), so the give-up fired on every
+    # observation and the order could never even start walking (issue #3417).
+    miss_map = mem.setdefault('source_miss', {})
+    misses = miss_map.get(step, 0)
+    miss_map[step] = 0
     garrison = mem.get('garrison') or {}
     if source != home and home in _owned(mem):
         # The home castle may keep only the hero, so the fallback source cannot
