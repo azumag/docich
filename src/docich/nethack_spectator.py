@@ -337,6 +337,9 @@ def render_live_shell(
   const message = document.getElementById('message');
   const board = document.getElementById('board');
   const tty = document.getElementById('tty');
+  const menu = document.getElementById('menu');
+  const menuTitle = document.getElementById('menu-title');
+  const menuRows = document.getElementById('menu-rows');
   const status = document.getElementById('status');
   let lastCaptureSeq = -1;
   let lastContentSeq = -1;
@@ -347,6 +350,8 @@ def render_live_shell(
     status.replaceChildren();
     tty.textContent = '';
     tty.hidden = true;
+    menu.hidden = true;
+    menuRows.replaceChildren();
     board.hidden = true;
     message.textContent = '';
     message.hidden = true;
@@ -389,6 +394,117 @@ def render_live_shell(
     board.appendChild(div);
   }
 
+  const inventoryEntry = /^\s*([a-zA-Z])\s*-\s+(.+?)\s*$/;
+  const categoryRules = [
+    ['gold', /gold pieces?/i],
+    ['potion', /\bpotion/i],
+    ['scroll', /\bscroll|\bspellbook/i],
+    ['wand', /\bwand/i],
+    ['ring', /\bring\b/i],
+    ['amulet', /\bamulet/i],
+    ['armor', /\barmor|mail|cloak|helmet|helm|boots|gloves|shield/i],
+    ['weapon', /\bsword|dagger|axe|spear|\bbow\b|arrow|mace|club|whip|blade/i],
+    ['food', /\bration|\bfood\b|corpse|\btin\b|apple|orange|melon|carrot|\begg\b/i],
+    ['tool', /\blamp\b|\bkey\b|pick-?axe|mirror|whistle|\bbag\b|\bbox\b|chest|towel/i],
+    ['gem', /\bgem\b|\bstone/i],
+  ];
+
+  function categoryTile(text) {
+    for (const rule of categoryRules) {
+      if (rule[1].test(text)) return rule[0];
+    }
+    return 'item';
+  }
+
+  function appendMenuRow(kind, label, letter = '', tile = '') {
+    const row = document.createElement('div');
+    row.className = 'menu-row ' + kind;
+    if (tile) {
+      const icon = document.createElement('span');
+      icon.className = 'menu-icon';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'tile-svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttribute('href', '#tile-' + (tileKeys.has(tile) ? tile : 'item'));
+      svg.appendChild(use);
+      icon.appendChild(svg);
+      row.appendChild(icon);
+    }
+    if (letter) {
+      const badge = document.createElement('span');
+      badge.className = 'menu-letter';
+      badge.textContent = letter;
+      row.appendChild(badge);
+    }
+    const text = document.createElement('span');
+    text.className = 'menu-label';
+    text.textContent = label;
+    row.appendChild(text);
+    menuRows.appendChild(row);
+  }
+
+  function looksLikeListing(lines) {
+    let entries = 0;
+    for (const line of lines) {
+      if (inventoryEntry.test(line)) entries += 1;
+    }
+    return entries >= 3;
+  }
+
+  function fitMenu() {
+    let size = 30;
+    menu.style.fontSize = size + 'px';
+    while (size > 11 && menuRows.scrollHeight > menuRows.clientHeight + 1) {
+      size -= 0.5;
+      menu.style.fontSize = size + 'px';
+    }
+  }
+
+  function fitTty(lines) {
+    let width = 1;
+    for (const line of lines) width = Math.max(width, line.length);
+    const rect = tty.getBoundingClientRect();
+    const style = getComputedStyle(tty);
+    const availWidth = Math.max(0, rect.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2);
+    const availHeight = Math.max(0, rect.height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 2);
+    const rows = Math.max(lines.length, 1);
+    const byWidth = availWidth / Math.max(width * 0.6, 1);
+    const byHeight = availHeight / (rows * 1.2);
+    const size = Math.max(11, Math.min(byWidth, byHeight, 42));
+    tty.style.fontSize = size.toFixed(2) + 'px';
+  }
+
+  function drawMenu(lines, statusLines) {
+    const statusSet = new Set(statusLines.map((line) => line.replace(/\s+$/, '')));
+    const first = lines.length > 0 ? lines[0].trim() : '';
+    let title = first;
+    if (first.length > 32 || inventoryEntry.test(first)) title = '';
+    menuTitle.textContent = title || ' ';
+    menuRows.replaceChildren();
+    let started = false;
+    for (const raw of lines) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (!started && trimmed === title) {
+        started = true;
+        continue;
+      }
+      started = true;
+      if (statusSet.has(raw.replace(/\s+$/, ''))) continue;
+      const match = inventoryEntry.exec(raw);
+      if (match) {
+        const label = match[2];
+        appendMenuRow('item', label, match[1], categoryTile(label));
+      } else if (/^[A-Z][A-Za-z ,'&\/-]{0,31}$/.test(trimmed)) {
+        appendMenuRow('header', trimmed);
+      } else {
+        appendMenuRow('text', trimmed);
+      }
+    }
+  }
+
   function draw(payload) {
     if (payload.frame_kind === 'map' && Array.isArray(payload.cells)) {
       board.replaceChildren();
@@ -397,6 +513,7 @@ def render_live_shell(
       for (const cell of payload.cells) appendTile(cell);
       tty.hidden = true;
       tty.textContent = '';
+      menu.hidden = true;
       board.hidden = false;
       message.textContent = typeof payload.message === 'string' ? payload.message : '';
       message.hidden = false;
@@ -412,9 +529,29 @@ def render_live_shell(
       board.replaceChildren();
       board.hidden = true;
       message.hidden = true;
+      const lines = payload.tty_lines.map((line) => String(line));
+      const statusLines = Array.isArray(payload.status_lines)
+        ? payload.status_lines.map((line) => String(line))
+        : [];
       status.replaceChildren();
-      tty.textContent = payload.tty_lines.join('\n');
+      if (looksLikeListing(lines)) {
+        tty.textContent = '';
+        tty.hidden = true;
+        drawMenu(lines, statusLines);
+        menu.hidden = false;
+        for (const line of statusLines) {
+          const item = document.createElement('div');
+          item.textContent = line;
+          status.appendChild(item);
+        }
+        fitMenu();
+        return;
+      }
+      menu.hidden = true;
+      menuRows.replaceChildren();
+      tty.textContent = lines.join('\n');
       tty.hidden = false;
+      fitTty(lines);
       return;
     }
     clearFrame('NetHack画面を準備しています。');
@@ -478,6 +615,7 @@ def render_live_shell(
 <title>{html.escape(window_title)}</title><style>
 :root {{ color-scheme:dark; background:#07090c; }}
 * {{ box-sizing:border-box; }}
+[hidden] {{ display:none !important; }}
 body {{ margin:0; background:#07090c; color:#f3f4f6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
 .shell {{ position:relative; width:100vw; height:100vh; overflow:hidden; }}
 .message,.status,.notice {{ background:#10151d; border:1px solid #263141; padding:10px 14px; }}
@@ -486,13 +624,25 @@ body {{ margin:0; background:#07090c; color:#f3f4f6; font-family:ui-monospace,SF
 .cell {{ position:relative; display:grid; place-items:center; min-width:0; min-height:0; overflow:hidden; background:#070b10; border:1px solid rgba(255,255,255,.015); }}
 .cell.void {{ background:#020407; border-color:transparent; }}
 .status {{ position:absolute; bottom:2%; left:2%; right:2%; min-height:8%; display:flex; justify-content:space-between; gap:24px; font-size:clamp(12px,1.3vw,18px); }}
+.status:empty {{ display:none; }}
 .notice {{ position:absolute; z-index:5; left:2%; right:2%; top:50%; transform:translateY(-50%); text-align:center; font-size:clamp(14px,1.5vw,22px); }}
-.tty {{ position:absolute; inset:0; margin:0; padding:3vh 2vw; display:grid; place-items:center; overflow:hidden; white-space:pre; color:#f3f4f6; font-size:min(1.8vw,2.8vh,24px); line-height:1.15; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+.tty {{ position:absolute; inset:6% 2.5% 10%; margin:0; padding:1% 2%; display:grid; place-items:center; overflow:hidden; white-space:pre; color:#f8fafc; background:linear-gradient(180deg,#0c131c 0%,#070b10 100%); border:1px solid #2b3648; border-radius:14px; line-height:1.25; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+.menu {{ position:absolute; inset:6% 2.5% 10%; display:flex; flex-direction:column; gap:6px; padding:10px 20px; background:linear-gradient(180deg,#0c131c 0%,#070b10 100%); border:1px solid #2b3648; border-radius:14px; overflow:hidden; }}
+.menu-title {{ flex:0 0 auto; font-size:.95em; letter-spacing:.14em; font-weight:800; color:#f8fafc; border-bottom:1px solid #263141; padding-bottom:5px; }}
+.menu-rows {{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:1px; overflow:hidden; }}
+.menu-row {{ display:flex; align-items:center; gap:.5em; flex:0 0 auto; line-height:1.18; }}
+.menu-row.header {{ color:#93c5fd; font-size:.72em; font-weight:800; letter-spacing:.06em; margin-top:.18em; }}
+.menu-row.item {{ color:#f8fafc; }}
+.menu-row.text {{ color:#cbd5e1; white-space:pre; }}
+.menu-icon {{ flex:0 0 auto; width:1.3em; height:1.3em; }}
+.menu-letter {{ flex:0 0 auto; display:grid; place-items:center; width:1.45em; height:1.45em; border-radius:.3em; background:#1e293b; color:#fde68a; font-weight:800; }}
+.menu-label {{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:pre; }}
 {tile_css()}
 </style></head><body>
 {sprite_atlas_html()}
 <main class="shell" id="screen">
 <div class="message" id="message" hidden></div><div class="board" id="board" hidden></div>
+<section class="menu" id="menu" hidden><div class="menu-title" id="menu-title"></div><div class="menu-rows" id="menu-rows"></div></section>
 <pre class="tty" id="tty" hidden></pre><div class="status" id="status"></div>
 <div class="notice" id="notice" aria-live="polite"></div></main>
 <script>{script}</script></body></html>"""
