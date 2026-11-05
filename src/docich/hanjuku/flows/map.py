@@ -705,8 +705,13 @@ def map_step(screen: Screen, mem, frame):
     # re-focus the view on where we are. The jump is camera motion we did not
     # measure: drop nav_last and demand a re-anchor (mirrors the search's
     # select_to_hero). Seeded on the first map frame, then every interval.
-    _apply_select_centered(mem)
-    if (_cursor(screen) and not screen.marker and not mem.get('y_jump')
+    # A frame that just re-established a known position from the previous
+    # SELECT must drive orders instead of refocusing again: map frames can be
+    # sparser than the interval while a chapter throws battles (g1133
+    # 2026-11-05: every cluster re-sent SELECT and no order ever drove).
+    recentered = _apply_select_centered(mem)
+    if (not recentered
+            and _cursor(screen) and not screen.marker and not mem.get('y_jump')
             and not mem.get('select_used') and not mem.get('near_goal')):
         tick = int(mem.get('tick') or 0)
         last = mem.get('select_focus_tick')
