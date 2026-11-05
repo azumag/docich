@@ -94,6 +94,54 @@ def chart_decision_summary(record: dict, *, now: float, identity: dict, decision
     }
 
 
+#: How much of the decisions log tail is scanned for an identical record.
+#: The bot process reloads per observation, so state/mem signatures cannot
+#: suppress a caller that replays the policy on a copy (its chart_plan /
+#: y_jumps never persist, so the same record re-emits every cycle). The log
+#: itself is the only durable, shared artifact, so dedupe happens here.
+DECISION_DEDUPE_TAIL_BYTES = 65536
+
+
+def _decision_tail(runtime: Path):
+    """Recent decision rows of this runtime's log; empty when unreadable."""
+    path = runtime / 'hanjuku_decisions.jsonl'
+    try:
+        if path.is_symlink() or not path.is_file():
+            return []
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - DECISION_DEDUPE_TAIL_BYTES)
+            stream.seek(offset)
+            tail = stream.read()
+        if offset:
+            tail = tail.partition(b'\n')[2]
+    except OSError:
+        return []
+    rows = []
+    for raw in tail.splitlines():
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _recorded_before(rows, record, identity):
+    """Deduplicate exact records only within the same runtime generation.
+
+    A missing key is not equivalent to a key explicitly set to None.
+    Different generations may legitimately repeat the same chart decision.
+    """
+    return any(
+        row.get('event') == 'decision'
+        and all(row.get(key) == value for key, value in identity.items())
+        and all(key in row and row[key] == value for key, value in record.items())
+        for row in rows
+    )
+
+
 def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, actions, frame_sha256, frame=None):
     now=time.time()
     identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('game','runtime_id','generation','lease_id')}
@@ -173,12 +221,18 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'planned_actions':actions,
         'reason_decisions':[r.get('decision') for r in records],
         'dispatch_status':'planned_not_yet_sent'})
+    prior = _decision_tail(runtime)
     for record in records:
+        # Records re-emitted from a copy-mem path (no persisted plan/jump state)
+        # are byte-identical to an earlier row; write each content once.
+        if _recorded_before(prior, record, identity):
+            continue
         payload={'schema':1,'event':'decision','at':now,'bot_version':BOT_VERSION,
                  'step':state.get('step'),'screen_kind':state.get('screen_kind'),
                  'phase':state.get('phase'),'decision_id':decision_id,
                  'frame_sha256':frame_sha256,'snapshot':snapshot,**identity,**record}
         append_log(runtime,'hanjuku_decisions',payload)
+        prior.append(payload)
         if record.get('decision') in CHART_DECISIONS:
             append_log(runtime,'hanjuku_chart_decisions',
                        chart_decision_summary(record,now=now,identity=identity,
