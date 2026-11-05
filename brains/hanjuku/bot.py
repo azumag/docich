@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 import tomllib
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -539,6 +540,13 @@ def overtaken_frames(runtime, state, *, now=None):
     return found
 
 
+def _where(exc):
+    """Exception class, message and the innermost frames (no observation data)."""
+    frames=traceback.extract_tb(exc.__traceback__)[-3:]
+    trail=' < '.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in reversed(frames))
+    return f'{type(exc).__name__}({str(exc)[:80]!r}) at {trail}'
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -594,15 +602,17 @@ def main():
                 except (OSError,ValueError):
                     # Losing one experience sample must not drop this frame's input.
                     print('hanjuku-bot: experience_save_failed',file=sys.stderr)
-    except (KeyError,TypeError,ValueError,OSError):
+    except (KeyError,TypeError,ValueError,OSError) as exc:
         code=2
-        print('hanjuku-bot: invalid observation',file=sys.stderr)
+        # g1133 11-05: 400+ "invalid observation" exits with no way to tell which
+        # line raised, so decided actions were silently dropped for hours.
+        print(f'hanjuku-bot: invalid observation {_where(exc)}',file=sys.stderr)
     except Exception as exc:
         # A policy defect must not crash the agent loop or send guesses:
         # hold input for this observation and record only the error class.
         code=2
         actions=[]
-        print(f'hanjuku-bot: policy_error {type(exc).__name__}',file=sys.stderr)
+        print(f'hanjuku-bot: policy_error {_where(exc)}',file=sys.stderr)
     print(json.dumps({'actions':actions, 'observation_interval_ms':interval_ms}),flush=True)
     return code
 
