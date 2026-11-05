@@ -7,9 +7,9 @@
 
 | 変数 | 必須 | 既定 | 内容 |
 |---|---|---|---|
-| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<provider>:<model>` のカンマ区切り fallback chain（先頭が primary）。provider は `vercel-api` / `openrouter-api` / `cloudflare-api` / `sarashina-api` / `local`（LAN の Ollama。`LOCAL_LLM_BASE_URL` / `LOCAL_LLM_MODEL` は既定値でよい）。全 upstream が同一 timeout 予算を分け合い、最初の成功を使う |
+| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<provider>:<model>` のカンマ区切り fallback chain（先頭が primary）。provider は `vercel-api` / `openrouter-api` / `cloudflare-api` / `sarashina-api` / `local`（LAN の Ollama。`LOCAL_LLM_BASE_URL` / `LOCAL_LLM_MODEL` は既定値でよい）。各 upstream に残り時間を渡して順次試行し、最初の成功を使う。provider が timeout を超過した場合の wall-clock 上限は保証しない |
 | `DOCICH_CC_ADAPTER_PORT` | いいえ | `4100` | 127.0.0.1 の待受ポート（`.env` の `DOCICH_CC_TRANSLATION_URL` と一致させる） |
-| `DOCICH_CC_ADAPTER_TIMEOUT_SEC` | いいえ | `25` | upstream 1 回の上限（0.1〜45）。クライアント側 timeout より短く保つ |
+| `DOCICH_CC_ADAPTER_TIMEOUT_SEC` | いいえ | `25` | fallback chain 全体の目標時間予算（0.1〜45秒）。各 provider の timeout 遵守が前提で、厳密な経過時間上限ではない。クライアント側 timeout より短く設定する |
 | `DOCICH_CHAT_VERCEL_UPSTREAM` 等 | upstream による | — | 既存 direct-chat の前提 env。`vercel-api` は単一の明示 upstream が要る |
 | `AI_GATEWAY_API_KEY` 等 | upstream による | — | 既存の secret。値は env ファイルか `*_FILE` でのみ渡し、ファイル・log・Actions 出力に書かない |
 | `DOCICH_CHAT_SARASHINA_UPSTREAM` | `sarashina-api` のとき必須 | — | 単一の endpoint。https のみ（loopback http だけ例外）。userinfo・query・fragment 不可。起動時に pin し、redirect は追従しない |
