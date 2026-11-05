@@ -151,17 +151,43 @@ def test_level_trigger_visits_status_and_skips_the_roster():
     assert mem['recruit_roster']['complete'] is True
 
 
-def test_roster_scan_does_not_detour_without_the_level_trigger():
-    # Ordinary roster visits keep their measured order: the status page is
-    # only read on the end-of-month visit the level trigger creates.
+def test_month_command_reads_headcount_without_opening_general_list():
     mem = _month_memory()
     mem['shop'] = {'key': '1-7'}
     menu = month_canvas(250, on='メインメニュー', month=7)
     assert house.step(parse(menu), mem, menu) == [p.pad('a')]
-    assert not mem['house'].get('level_only')
+    assert mem['house']['level_only'] is True
     main = _main_on('しょうぐん')
+    assert house.step(parse(main), mem, main) == [p.pad('down')]
+    main = _main_on('ステータス')
     assert house.step(parse(main), mem, main) == [p.pad('a')]
-    assert mem['house']['phase'] == 'roster'
+    page1 = _country_page1()
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_general_count']['scope'] == [1, '1-7']
+    assert 'recruit_roster' not in mem
+    assert house.step(parse(_country_page2()), mem, _country_page2()) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert house.step(parse(menu), mem, menu) == []
+    assert 'house' not in mem
+    assert house.step(parse(menu), mem, menu) is None
+
+
+def test_country_status_count_is_scoped_and_suffices_for_recruitment():
+    from docich.hanjuku.strategy.economy import _recruit_shortage, _recruit_sufficient
+    mem = _month_memory()
+    mem.update(garrison={'アルマムーン': ['どうし']},
+               country_general_count={'scope': [1, '1-7'], 'identity': None,
+                                      'tick': 500, 'count': 2, 'joined': []})
+    shortage = _recruit_shortage(mem)
+    assert shortage['count_lower_bound'] == 2
+    assert shortage['available_observed'] == []
+    assert not _recruit_sufficient(mem)
+    mem['country_general_count']['count'] = 10
+    assert _recruit_sufficient(mem)
+    mem['month'] = '1-8'
+    assert not _recruit_sufficient(mem)
 
 
 def test_unreadable_level_page_gives_up_bounded():
