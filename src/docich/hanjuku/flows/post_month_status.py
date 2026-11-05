@@ -19,6 +19,7 @@ MAX_STEPS = 900
 MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
+MARKER_RETRIES = 4  # bounded roster frames before status A; avoids transient sprite misses
 LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
 MARCH = frozenset({'いまこちらにむかっています', 'しんぐんちゅうです',
                    'いどうしています'})
@@ -390,8 +391,29 @@ def step(screen, mem, frame):
         # general, not to the preceding row's last rendered frame.
         if state.get('highlight') != selected:
             state['highlight'] = selected
+            state['marker_reads'] = 0
             return []
-        state.setdefault('markers', {})[selected] = _marker(mem, frame)
+        # The white selection triangle can be absent in one rendered frame.
+        # The old path sampled it once then unconditionally entered the status
+        # panel, so every failed sample became an expensive SELECT visit.
+        marker = _marker(mem, frame)
+        reads = int(state.get('marker_reads') or 0) + 1
+        state['marker_reads'] = reads
+        candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+        if frame is not None and not candidate and reads < MARKER_RETRIES:
+            return []  # stay on the same highlighted general for another frame
+        state.setdefault('markers', {})[selected] = marker
+        if not candidate:
+            _log(mem, 'post_month_roster_marker_unverified', general=selected,
+                 observed_metric={'reads': reads, 'marker_seen': isinstance(marker, dict),
+                                  'source': marker.get('source') if isinstance(marker, dict) else None,
+                                  'mapped_icons': ((marker.get('mapping') or {}).get('icons')
+                                                   if isinstance(marker, dict) else None)},
+                 reason='一覧の三角マークから城を確定できず個別状態確認後にSELECTへ委ねる')
+        else:
+            _log(mem, 'post_month_roster_marker_mapped', general=selected, castle=candidate,
+                 observed_metric={'reads': reads, 'source': marker.get('source')},
+                 reason='一覧の選択三角マークから在城候補を観測した')
         state['selected'] = selected
         _stage(state, 'status')
         return [pad('a')]
@@ -424,7 +446,9 @@ def step(screen, mem, frame):
                    if isinstance(residents, list) and name in residents]
             candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
             if candidate:
-                _assign(mem, name, candidate, evidence='roster_triangle')
+                if not _assign(mem, name, candidate, evidence='roster_triangle'):
+                    _log(mem, 'post_month_roster_castle_rejected', general=name, castle=candidate,
+                         reason='三角マークの候補城が現在の所有城ではないため在城として確定しない')
             elif len(old) == 1:
                 from ..os_layer.world import _owned
                 if old[0] in _owned(mem):
