@@ -348,3 +348,18 @@ def test_scrolled_roster_cannot_discard_unseen_cached_general():
     assert 'どうし' in mem['general_statuses']['statuses']
     assert 'どうし' in mem['garrison']['アルマムーン']
     assert not state.get('top_confirmed')
+
+
+def test_existing_defeat_verification_also_purges_persistent_status_and_garrison():
+    from test_hanjuku_survey_cache import completed, IDENTITY
+    mem = completed()
+    mem['general_statuses'] = {
+        'scope': [1, '1-6'], 'identity': dict(IDENTITY), 'complete': True,
+        'statuses': {name: _known_status(name) for name in ('どうし', 'ゼウス')},
+        'dirty': {}}
+    receipts.defeated(mem, 'ゼウス')
+    assert 'ゼウス' in mem['general_statuses']['statuses']
+    assert receipts.forget_defeated(mem, 'ゼウス')
+    assert 'ゼウス' not in mem['general_statuses']['statuses']
+    assert 'ゼウス' not in mem['garrison']['アルマムーン']
+    assert 'ゼウス' not in mem['house_eggs']
