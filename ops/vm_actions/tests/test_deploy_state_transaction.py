@@ -260,6 +260,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
              mock.patch.object(gw, 'write_json', side_effect=capture_intent):
             result = gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
         self.assertEqual(result, {'status': 'deployed', 'sha': new_parent, 'rebaselined_from': old_parent})
         self.assertEqual(intents[-1], {'from': old_parent, 'to': new_parent,
                                      'predeploy_head': new_parent})
@@ -345,6 +346,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         self._advance_production_to(new_parent)
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
             result = gw.rebaseline_git(self.cfg, 'docich', new_parent)
+            self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
             self.assertEqual(result, {'status': 'rebased', 'sha': new_parent, 'from': old_parent})
             state = gw.read_json(gw.current_file(self.cfg, 'docich'))
             self.assertEqual(state['projection_base'], old_parent)
