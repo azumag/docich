@@ -439,6 +439,75 @@ def test_joined_general_gets_only_new_individual_status_read():
     assert post.step(second, mem, None) == [pad('a')]
 
 
+def event_dialogue_frame():
+    """The measured 59年1月 あけまつ greeting: a green bottom panel, no cursor.
+
+    g1133 2026-11-06 02:57: 「おめでとうございます! あたらしい ぼん くれ
+    しょうがつ」. It classifies as phase 'dialogue' and parses as kind 'text',
+    exactly like the live frame the monthly state check held for 21 minutes.
+    """
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(48, 15, '59ねん 1のつき 99936')
+    canvas.text(24, 151, 'おめでとうございます!')
+    canvas.text(24, 167, 'あたらしい ぼん くれ しょうがつ')
+    return canvas.frame()
+
+
+def test_task_menu_releases_month_event_dialogue_instead_of_holding_input():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'},
+                 steps=0)
+    screen = parse(event_dialogue_frame())
+    assert screen.kind == 'text'
+    assert post.step(screen, mem, None) is None
+    # A scene this owner never claimed must not consume its observation budget.
+    assert state['steps'] == 0
+    assert mem['post_month_status'] is state
+    # The same flow resumes the task menu on the map after the scene ends.
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == []
+    assert post.step(field, mem, None) == []
+    assert post.step(field, mem, None) == [pad('x')]
+
+
+def test_task_menu_still_owns_the_roster_text_panel():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'})
+    roster_screen = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert roster_screen.kind == 'text'
+    assert post.step(roster_screen, mem, None) == []
+    assert state['stage'] == 'task_select'
+
+
+def test_blocked_status_releases_scene_but_keeps_holding_the_map():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='blocked')
+    assert post.step(parse(event_dialogue_frame()), mem, None) is None
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+
+
+def test_month_event_dialogue_is_advanced_while_post_month_tasks_wait():
+    from docich.hanjuku_bot import classify, decide
+    frame = event_dialogue_frame()
+    assert classify(frame) == 'dialogue'
+    mem = memory()
+    post.arm(mem)
+    mem['post_month_status'].update(stage='task_menu',
+                                    job={'kind': 'locate', 'name': 'ゼウス'},
+                                    steps=0)
+    actions, updated = decide(frame, {'policy': mem})
+    assert actions == [pad('a')]
+    assert updated['policy']['post_month_status']['stage'] == 'task_menu'
+
+
 def test_defeated_missing_general_pruned_only_after_full_roster_walk():
     mem = _persistent_memory('どうし', 'ゼウス')
     receipts.defeated(mem, 'ゼウス')
