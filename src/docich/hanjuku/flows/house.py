@@ -53,7 +53,7 @@ GOAL_FIELD_EXTRA = 2
 CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのなかにいます'})
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
-MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
+MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -869,7 +869,9 @@ def _camp_recall_first(mem, frame):
     it cannot serve stops being "ready" and this survey runs on the next frame.
     """
     from .camp_recheck import recall_ready
-    return recall_ready(mem, frame)
+    # The month-end roster sequence now owns all tent returns; a visible
+    # tent must not preempt ordinary scans or planned sorties.
+    return False
 
 
 def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick):
