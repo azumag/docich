@@ -874,3 +874,49 @@ def test_sortie_attempt_outer_key_saturation_is_counted():
     house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', [1, 'castle', 0, 0])
     assert 'sortie_retry' not in mem['obs_cost']
     assert mem['obs_cost_dropped']['sortie_retry'] == 2
+
+# ---- Issue #3326 (34 stage 3): cancel→retry round-trip pairs ----
+def test_sortie_cancel_retry_pair_counts_gap_and_signature():
+    mem = {'tick': 100, 'gold': 250,
+           'garrison': {'城A': ['ゼウス', 'どうし']},
+           'house_eggs': {'ゼウス': {'hp': 80, 'location': 'castle'}}}
+    sig = house._sortie_state_sig(mem, '城A', 'ゼウス')
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    # An attempt before any cancel is not a round trip.
+    mem['tick'] = 108
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', sig)
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦B|attack']
+    pairs = row['pairs']
+    assert pairs['n'] == 1
+    assert pairs['same_sig'] == 1 and 'diff_sig' not in pairs
+    assert pairs['departed'] == 1
+    assert pairs['gap_sum'] == 8 and pairs['gap_max'] == 8
+    assert pairs['gap_le_10'] == 1
+    # The departed retry closed the pair: nothing is pending, so the next
+    # attempt starts a new window instead of double-counting the old cancel.
+    assert 'cancel_pending' not in row
+
+
+def test_sortie_pair_rearms_on_consecutive_cancel_and_splits_by_outcome():
+    mem = {'tick': 10}
+    sig = [50, 'castle', 0, 1]
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'cancelled_unsent', sig)
+    # A second cancel at the same key IS the retry: it closes one pair and
+    # re-arms with the newer cancel.
+    mem['tick'] = 30
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'cancelled_observed', sig)
+    # State changed before the next retry: a legitimate re-check, diff_sig.
+    mem['tick'] = 120
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'released', [60, 'field', 0, 1])
+    pairs = mem['obs_cost']['sortie_retry']['by_key']['砦C|attack']['pairs']
+    assert pairs['n'] == 2
+    assert pairs['same_sig'] == 1 and pairs['diff_sig'] == 1
+    assert pairs['cancelled_observed'] == 1 and pairs['released'] == 1
+    # Gaps 20 (10→30) and 90 (30→120) both land in the ≤100 bucket.
+    assert pairs['gap_le_100'] == 2 and pairs['gap_sum'] == 110 and pairs['gap_max'] == 90
+    # 'released' is not a cancel: the chain ends without a pending pair.
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦C|attack']
+    assert 'cancel_pending' not in row
+    # A different (target, purpose) key never inherits this pending cancel.
+    house._tally_sortie_attempt(mem, '砦D', 'attack', 'departed', sig)
+    assert 'pairs' not in mem['obs_cost']['sortie_retry']['by_key']['砦D|attack']
