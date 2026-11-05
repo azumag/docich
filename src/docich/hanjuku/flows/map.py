@@ -597,6 +597,27 @@ def _home_can_send(mem):
     return bool((mem.get('garrison') or {}).get(home))
 
 
+def _apply_select_centered(mem):
+    """Use a just-sent SELECT as a known position.
+
+    SELECT centres the camera on the hero, so the cursor stands on the hero's
+    castle right after it: a position that needs no roof anchor (g1133
+    2026-11-05 sat `uncertain` with `anchor` None for hours).
+    """
+    if mem.pop('select_centered', None) is None or mem.get('y_jump'):
+        return False
+    hero = _hero_castle(mem)
+    cell = chart.castles(mem.get('chapter') or 0).get(hero) if hero else None
+    if not cell:
+        return False
+    mem['cursor'] = list(cell)
+    mem['uncertain'] = False
+    mem['anchor'] = hero
+    _record(mem, 'select_centered', observed_metric={'castle': hero, 'cell': list(cell)},
+            reason='SELECTで主人公の城へフォーカスしたので現在地を確定する')
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
     # Did this module really run? The give-up logs 199 records in twenty minutes
     # while the probe added in v419 never appeared, so the running module may be
@@ -642,6 +663,7 @@ def map_step(screen: Screen, mem, frame):
     # re-focus the view on where we are. The jump is camera motion we did not
     # measure: drop nav_last and demand a re-anchor (mirrors the search's
     # select_to_hero). Seeded on the first map frame, then every interval.
+    _apply_select_centered(mem)
     if (_cursor(screen) and not screen.marker and not mem.get('y_jump')
             and not mem.get('select_used') and not mem.get('near_goal')):
         tick = int(mem.get('tick') or 0)
@@ -654,6 +676,7 @@ def map_step(screen: Screen, mem, frame):
             mem['uncertain'] = True
             _record(mem, 'select_focus', observed_metric={'screen_cursor': list(_cursor(screen))},
                     reason='定期的にSELECTで主人公の位置へフォーカスして現在地を確認')
+            mem['select_centered'] = tick
             return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
