@@ -1178,9 +1178,10 @@ def _step_once(screen, mem, frame):
                 return None
             shop = mem.get('shop') or {}
             if shop.get('key') == mem.get('month') and shop.get('recruit') in ('opened', 'done', 'unverified'):
-                # Only an unread level can warrant a status-only return after
-                # recruitment; a transaction in progress owns its foreground.
-                if shop.get('recruit') == 'opened' or not _level_due(mem):
+                # Never steal a paid transaction. For completed recruitment,
+                # only the existing deferred level/status trigger permits a
+                # return visit; do not intercept the last monthly input.
+                if shop.get('recruit') == 'opened' or not shop.get('level_scan_wait'):
                     return None
             from ..strategy.economy import _batch_active
             if (_batch_active(shop) and shop.get('recruit') in ('pending', 'check')):
