@@ -231,6 +231,61 @@ def _roster_map(target="キカンドン", *, flags=True):
     return c.frame(), box
 
 
+
+def test_roster_waits_for_transient_marker_then_records_castle_without_select():
+    mem = memory(captured=['キカンドン'])
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし',), selected=0))
+    frame, _ = _roster_map()
+    mapped = {'source': 'selection_marker', 'castle_candidate': 'キカンドン',
+              'box': [98, 110, 104, 116]}
+    with patch.object(post, '_marker', side_effect=[None, None, mapped]):
+        assert post.step(first, mem, frame) == []  # settle highlight
+        assert post.step(first, mem, frame) == []  # triangle temporarily missing
+        assert post.step(first, mem, frame) == []  # still missing
+        assert post.step(first, mem, frame) == [pad('a')]  # candidate recovered
+    assert state['stage'] == 'status'
+    assert post.step(parse(status('どうし')), mem, None) == [pad('b')]
+    assert state['statuses']['どうし']['castle'] == 'キカンドン'
+    assert state['statuses']['どうし']['castle_evidence'] == 'roster_triangle'
+    assert mem['garrison']['キカンドン'] == ['どうし']
+    assert state['tasks'] == []
+
+
+def test_roster_marker_missing_is_bounded_and_never_guesses_a_castle():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし',), selected=0))
+    frame, _ = _roster_map(flags=False)
+    with patch.object(post, '_marker', return_value=None) as marker:
+        assert post.step(first, mem, frame) == []  # highlight
+        for _ in range(post.MARKER_RETRIES - 1):
+            assert post.step(first, mem, frame) == []
+        assert post.step(first, mem, frame) == [pad('a')]
+        assert marker.call_count == post.MARKER_RETRIES
+    assert state['markers']['どうし'] is None
+    assert post.step(parse(status('どうし')), mem, None) == [pad('b')]
+    assert 'castle' not in state['statuses']['どうし']
+
+
+def test_roster_marker_without_flag_gets_another_observation():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし',), selected=0))
+    frame, _ = _roster_map(flags=False)
+    with patch.object(post, '_marker', return_value={'source': 'selection_marker',
+                                                     'box': [20, 20, 26, 26]}):
+        assert post.step(first, mem, frame) == []
+        assert post.step(first, mem, frame) == []  # marker seen, castle not mapped
+    assert state['stage'] == 'roster'
+
+
 def test_measured_selection_triangle_overrides_the_red_army_marker():
     frame, box = _roster_map()
     result = post._marker(memory(chapter=1), frame)
@@ -239,12 +294,34 @@ def test_measured_selection_triangle_overrides_the_red_army_marker():
     assert result["castle_candidate"] == "キカンドン"
 
 
+
+def test_selection_triangle_accepts_neutral_palette_brightness_drift_only():
+    from docich.hanjuku.os_layer import readers
+    palette = {
+        readers.GENERAL_MARKER_WHITE: (236, 235, 236),
+        readers.GENERAL_MARKER_GRAY: (106, 105, 107),
+        readers.GENERAL_MARKER_BLACK: (48, 47, 49),
+    }
+    c = Canvas()
+    for dx, dy, colour in readers._GENERAL_MARKER_PATTERN:
+        c.put(55 + dx, 62 + dy, palette[colour])
+    assert readers.selection_marker(c.frame())['box'] == (55, 62, 61, 68)
+
+    # A tinted/coloured shape is not the white-grey selected-general marker.
+    coloured = Canvas()
+    for dx, dy, colour in readers._GENERAL_MARKER_PATTERN:
+        r, g, b = palette[colour]
+        coloured.put(55 + dx, 62 + dy, (min(r + 50, 255), g, b))
+    assert readers.selection_marker(coloured.frame()) is None
+
+
 def test_selection_triangle_without_castle_flags_has_no_candidate():
     frame, box = _roster_map(flags=False)
     result = post._marker(memory(chapter=1), frame)
     assert result["source"] == "selection_marker"
     assert tuple(result["box"]) == box
     assert "castle_candidate" not in result
+    assert result["icons_seen"] == 0
 
 
 
