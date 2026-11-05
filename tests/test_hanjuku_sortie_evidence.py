@@ -101,6 +101,21 @@ def test_unknown_card_name_row_is_read_but_never_selected():
     assert policy._measured_card_select(measured_card_select(('バル2ンク',), stocks=[1])) is None
 
 
+def test_card_select_hand_left_edge_jitter_is_accepted():
+    # g1133 2026-11-05 decision-001/002 vs decision-081: the same row-1 cursor
+    # measured x0=139 in some frames and x0=138 in others. Accepting only 138
+    # held every reading and cancelled the sortie after CARD_UNREADABLE_LIMIT.
+    screen = measured_card_select(selected=0)
+    screen.hand = (139, 49, 156, 62)
+    inventory = policy._measured_card_select(screen)
+    assert inventory is not None and inventory['selected_y'] == 55
+    screen.hand = (139, 49, 158, 62)
+    assert policy._measured_card_select(screen) is not None
+    # The jitter is one pixel: a wider left edge is still a different object.
+    screen.hand = (140, 49, 156, 62)
+    assert policy._measured_card_select(screen) is None
+
+
 def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
     mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
            'orders': {'1-A2': 'pending'}, 'picked': []}

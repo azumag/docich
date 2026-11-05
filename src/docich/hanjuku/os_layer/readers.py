@@ -374,7 +374,11 @@ def _sortie_inventory(screen):
     this recognizes text, not quantities or partial names. The receipt uses
     the canonical game catalogue, independently of the planning allowlist.
     """
-    if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
+    # g1133 decision-003: the same confirm cursor measured x0=139 (the
+    # left-edge orange column jitters 138/139, see _measured_card_select).
+    if (screen.kind != 'sortie_confirm'
+            or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118),
+                                   (139, 105, 156, 118), (139, 105, 158, 118))):
         return None
     def cells(y, left=136):
         return tuple((x, ch) for line in screen.lines if line.y == y
@@ -491,7 +495,11 @@ def _measured_card_select(screen):
         return None
     x0, y0, x1, y1 = screen.hand
     selected_y = y0 + 6
-    if (x0 != 138 or x1 not in (156, 158) or y1 != selected_y + 7
+    # g1133 2026-11-05: the same cursor's leftmost orange column jitters
+    # between x=138 and x=139 across frames (decision-001/002 vs decision-081,
+    # all row-1 selections). Accepting only 138 held every reading and
+    # cancelled ヘスティア/トレビス's boss sorties after CARD_UNREADABLE_LIMIT.
+    if (x0 not in (138, 139) or x1 not in (156, 158) or y1 != selected_y + 7
             or selected_y not in {row['y'] for row in rows}):
         return None
     return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining),
