@@ -266,6 +266,15 @@ def _tally_status_open(mem, purpose, info, ticks=0):
 SORTIE_ATTEMPT_KEYS = 40  # distinct (target, purpose) pairs kept
 
 
+# Outcomes that close an attempt without launching the unit: the two
+# cancel-shaped terminals defined by issue #3326 stage 1's counting rule.
+SORTIE_CANCEL_OUTCOMES = frozenset({'cancelled_unsent', 'cancelled_observed'})
+# Gap buckets for the cancel→retry round trip, in observation ticks. Fixed
+# labels keep the histogram bounded; the boundaries are wide enough to
+# separate an immediate loop (same menu re-walk) from a spaced re-try.
+SORTIE_PAIR_GAPS = (10, 100, 1000)
+
+
 def _tally_dropped(mem, key):
     """Issue #3326 (34 stage-1 gate): events that could not be recorded.
 
@@ -339,6 +348,38 @@ def _tally_sortie_attempt(mem, target, purpose, outcome, sig):
         else:
             row['changed'] = row.get('changed', 0) + 1
     row['sig'] = list(sig)
+    # Issue #3326 (34 stage 3): the per-attempt unchanged/changed split
+    # compares consecutive attempts and cannot restore the cancel→retry
+    # round trip the frequency gate needs. Keep the latest cancel-shaped
+    # terminal under cancel_pending; the next attempt at the same
+    # (target, purpose) is one round trip and is counted under 'pairs'
+    # with its gap bucket, its outcome and the signature comparison to
+    # the cancel it retried. A consecutive second cancel is itself a
+    # retried attempt: it closes the pending pair and re-arms it with
+    # the newer cancel. A non-cancel attempt (departed/released) closes
+    # the pair without re-arming. One fixed-size dict per bounded key;
+    # counts only; never read by a decision.
+    tick = int(mem.get('tick') or 0)
+    pending = row.get('cancel_pending')
+    if isinstance(pending, dict):
+        pairs = row.setdefault('pairs', {'n': 0})
+        pairs['n'] += 1
+        gap = max(tick - int(pending.get('tick') or 0), 0)
+        pairs['gap_sum'] = pairs.get('gap_sum', 0) + gap
+        pairs['gap_max'] = max(pairs.get('gap_max', 0), gap)
+        for bound in SORTIE_PAIR_GAPS:
+            if gap <= bound:
+                pairs['gap_le_%d' % bound] = pairs.get('gap_le_%d' % bound, 0) + 1
+                break
+        else:
+            pairs['gap_gt_%d' % SORTIE_PAIR_GAPS[-1]] = pairs.get('gap_gt_%d' % SORTIE_PAIR_GAPS[-1], 0) + 1
+        pairs['same_sig' if list(sig) == pending.get('sig') else 'diff_sig'] = (
+            pairs.get('same_sig' if list(sig) == pending.get('sig') else 'diff_sig', 0) + 1)
+        pairs[outcome] = pairs.get(outcome, 0) + 1
+    if outcome in SORTIE_CANCEL_OUTCOMES:
+        row['cancel_pending'] = {'tick': tick, 'sig': list(sig)}
+    else:
+        row.pop('cancel_pending', None)
 
 
 def _tally_open_once(mem, state, purpose, info):
