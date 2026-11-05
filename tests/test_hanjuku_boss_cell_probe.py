@@ -29,6 +29,17 @@ def test_each_new_boss_order_takes_the_next_candidate():
     assert sorted(assigned.values()) == [0, 1, 2]
 
 
+def test_the_rotation_survives_a_json_round_trip():
+    # g1133 2026-11-05: the policy reloads between observations, so the stored
+    # {"6": n} key comes back as a string while chapter is still int 6. Every
+    # boss step then re-read index 0 and all waves aimed at the same cell.
+    mem = {'chapter': 6, 'tick': 1, '_records': [],
+           'boss_probe_rotation': {'6': 1}}
+    replan._adopt_plan(mem, plan('M9'), 'abcd1234')
+    assert mem['boss_step_probe']['A:abcd1234:M9'] == 1
+    assert mem['boss_probe_rotation']['6'] == 2
+
+
 def test_a_step_keeps_its_candidate_when_the_plan_is_rebuilt():
     mem = {'chapter': 6, 'tick': 1, '_records': []}
     replan._adopt_plan(mem, plan('M1'), 'abcd1234')

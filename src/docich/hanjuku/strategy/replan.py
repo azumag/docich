@@ -1133,7 +1133,11 @@ def _adopt_plan(mem, doc, rid):
     if probes:
         assigned = mem.setdefault('boss_step_probe', {})
         rotation = mem.setdefault('boss_probe_rotation', {})
-        chapter = mem.get('chapter') or 0
+        # The policy round-trips through JSON between observations, so dict
+        # keys reload as strings. g1133 2026-11-05: chapter arrived as int 6,
+        # ``rotation.get(6)`` missed the stored "6" every time, and all sixteen
+        # boss steps kept probe index 0 — every wave aimed at the same cell.
+        chapter = str(mem.get('chapter') or 0)
         for order in orders:
             if not chart.is_boss_castle(order['target']) or order['step'] in assigned:
                 continue
