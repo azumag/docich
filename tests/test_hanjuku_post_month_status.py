@@ -195,3 +195,53 @@ def test_select_lost_in_roster_resends_select_before_location_failure():
     still_roster = parse(roster(names=('どうし', 'ゼウス'), selected=1))
     assert post.step(still_roster, mem, None) == [pad('select')]
     assert state['stage'] == 'task_jump'
+
+
+def _triangle(c, x, y):
+    white, gray, black = (255, 254, 255), (90, 88, 90), (32, 32, 32)
+    rows = ((0, (white,) * 7),
+            (0, (gray,) + (white,) * 5 + (gray,)),
+            (0, (gray,) * 2 + (white,) * 3 + (gray,) * 2),
+            (0, (black,) + (gray,) * 2 + (white,) + (gray,) * 2 + (black,)),
+            (1, (black,) + (gray,) * 3 + (black,)),
+            (2, (black,) + (gray,) + (black,)),
+            (3, (black,)))
+    for row, (offset, colours) in enumerate(rows):
+        for col, colour in enumerate(colours):
+            c.put(x + offset + col, y + row, colour)
+
+
+def _roster_map(target="キカンドン", *, flags=True):
+    from docich import hanjuku_chart as chart
+    c = Canvas()
+    if flags:
+        for x, y in chart.castles(1).values():
+            fx, fy = round(x / 8 + 17), round(y / 8 + 30)
+            for dy in range(4):
+                for dx in range(6):
+                    c.put(fx + dx, fy + dy, (230, 56, 90))
+    x, y = chart.castles(1)[target]
+    cx, cy = round(x / 8 + 17) + 2, round(y / 8 + 30) + 1
+    box = (cx - 3, cy - 6, cx + 3, cy)
+    _triangle(c, box[0], box[1])
+    # A red Y-view army marker elsewhere must never become the selection.
+    for dy in range(6):
+        for dx in range(7):
+            c.put(30 + dx, 30 + dy, (255, 24, 0))
+    return c.frame(), box
+
+
+def test_measured_selection_triangle_overrides_the_red_army_marker():
+    frame, box = _roster_map()
+    result = post._marker(memory(chapter=1), frame)
+    assert result["source"] == "selection_marker"
+    assert tuple(result["box"]) == box
+    assert result["castle_candidate"] == "キカンドン"
+
+
+def test_selection_triangle_without_castle_flags_has_no_candidate():
+    frame, box = _roster_map(flags=False)
+    result = post._marker(memory(chapter=1), frame)
+    assert result["source"] == "selection_marker"
+    assert tuple(result["box"]) == box
+    assert "castle_candidate" not in result
