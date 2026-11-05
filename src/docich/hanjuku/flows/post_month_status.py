@@ -338,6 +338,19 @@ def step(screen, mem, frame):
         names = house.roster(screen)
         if not names or screen.selected not in names:
             return []
+        # A SELECT or a previous roster visit can leave the list scrolled to
+        # the middle. Only a walk beginning at the hero/top can prove a
+        # defeated general absent; a partial tail must never evict residents.
+        if not state.get('top_confirmed'):
+            if names[0] == 'どうし' and screen.selected == 'どうし':
+                state['top_confirmed'] = True
+            else:
+                state['top_seeks'] = state.get('top_seeks', 0) + 1
+                if state['top_seeks'] > MAX_SCAN:
+                    state['failure'] = 'roster_top_unconfirmed'
+                    _stage(state, 'blocked')
+                    return [pad('b')]
+                return [pad('up')]
         selected = screen.selected
         if selected in state['names']:
             first = state['names'][0] if state['names'] else None
