@@ -860,17 +860,9 @@ def _month_count_advance(screen, mem, state, frame):
 
 
 def _camp_recall_first(mem, frame):
-    """A camp ready on this map frame goes before a new survey or repair session.
-
-    This flow runs ahead of ``map_step``. g1097 2026-11-01: 23 surveys of about
-    three minutes each took the idle map frames, so a tent in plain view at
-    19:16, 19:19 and 19:23 never reached the recall that the owner rule of
-    2026-09-28 asks for. The recall keeps its own bounded cooldowns, so a camp
-    it cannot serve stops being "ready" and this survey runs on the next frame.
-    """
-    from .camp_recheck import recall_ready
-    # The month-end roster sequence now owns all tent returns; a visible
-    # tent must not preempt ordinary scans or planned sorties.
+    """The roster-first monthly sequence, not a map interrupt, owns returns."""
+    # Keep this historical helper for compatibility. The roster scan
+    # schedules named recall tasks, so a visible tent cannot steal a survey.
     return False
 
 
