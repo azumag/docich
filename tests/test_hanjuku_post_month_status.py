@@ -143,10 +143,47 @@ def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
     with patch.object(post, 'menu_to', return_value='here'):
         assert post.step(menu, mem, None) == [pad('a')]
     with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
-        assert post.step(Screen([], None, '', kind='castle_info'), mem, None) == [pad('b')]
+        assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [pad('b')]
     assert state['stage'] == 'process'
     assert mem['garrison']['アルマムーン'] == ['ゼウス']
     assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
+
+
+def native_castle_panel(name='アルマムーン'):
+    """The native 城ステータス panel keeps the しゅつげき/ステータス menu drawn."""
+    c = Canvas()
+    c.text(24, 31, 'しゅつげき')
+    c.text(24, 47, 'ステータス')
+    c.text(120, 31, name)
+    c.text(120 + 8 * len(name), 31, 'じょう')
+    c.text(120, 47, 'しゅうにゅう')
+    c.text(176, 47, '22')
+    c.text(200, 47, 'G')
+    c.text(120, 63, 'レベル')
+    c.text(176, 63, '1')
+    c.text(120, 79, 'しょうぐん')
+    c.text(176, 79, '2')
+    c.text(200, 79, 'めい')
+    c.text(120, 95, 'ゼウス')
+    return parse(c.frame())
+
+
+def test_native_status_panel_classified_as_menu_still_confirms_location():
+    # g1133 2026-11-06: the panel is classified castle_menu because the menu
+    # stays behind it, so a castle_info-only gate never read the castle name
+    # and every locate task failed until the retry budget ran out.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}})
+    panel = native_castle_panel()
+    assert panel.kind == 'castle_menu'
+    assert post.step(panel, mem, None) == [pad('b')]
+    assert state['stage'] == 'process'
+    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
+    assert not mem.get('general_location_unknown')
 
 
 def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
@@ -155,8 +192,8 @@ def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
     state = mem['post_month_status']
     state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
                  statuses={'ゼウス': {'location': 'castle'}})
-    with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
-        assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == []
+    header = Screen([], None, 'しゅつげきステータス', kind='castle_menu')
+    assert post.step(header, mem, None) == []
     assert state['stage'] == 'locate_info'
     assert 'アルマムーン' not in mem.get('garrison', {})
 
