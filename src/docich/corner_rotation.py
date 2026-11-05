@@ -9,9 +9,11 @@ import fcntl
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import secrets
 import sys
+import threading
 import time
 import uuid
 
@@ -38,6 +40,15 @@ STOP_REQUEST_DIR = "corner-stop-requests"
 # instead of duplicating the path (#2352).
 LEDGER_FILE = "corner_rotation.json"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
+# A slot runs inside the tick that selected it, so ``last_seen_at`` cannot move
+# while a corner owns the lock. A restart after a corner longer than DAY would
+# then look like downtime and quarantine a slot that never stopped. The slot
+# writes this bounded record while it runs: a restart within
+# HEARTBEAT_FRESH_S resumes, an older record still falls into the quarantine.
+HEARTBEAT_FILE = "corner_rotation_heartbeat.json"
+HEARTBEAT_SCHEMA = 1
+HEARTBEAT_INTERVAL_S = 30.0
+HEARTBEAT_FRESH_S = 180.0
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 
 # Fixed latch taxonomy (#986). The exception text is never persisted: provider
@@ -201,6 +212,78 @@ class CornerRotationManager:
 
     def save(self, state):
         atomic_write_json(self.path, state)
+
+    @property
+    def heartbeat_path(self):
+        return Path(self.g.state_dir) / HEARTBEAT_FILE
+
+    def _write_heartbeat(self, pending):
+        """Best-effort liveness record for the slot this process is running."""
+        try:
+            atomic_write_json(self.heartbeat_path, {
+                "schema": HEARTBEAT_SCHEMA,
+                "corner": pending.get("corner"),
+                "request_id": pending.get("request_id"),
+                "pid": os.getpid(),
+                "at": self.clock(),
+            })
+        except Exception:
+            return
+
+    @contextmanager
+    def _slot_heartbeat(self, pending):
+        """Keep proving this process is alive while the slot blocks.
+
+        The ledger itself cannot be refreshed here: its lock is held by this
+        same tick. A separate bounded record is enough to tell a parked slot
+        from downtime when the next tick starts after a restart.
+        """
+        stop = threading.Event()
+        self._write_heartbeat(pending)
+
+        def beat():
+            while not stop.wait(HEARTBEAT_INTERVAL_S):
+                self._write_heartbeat(pending)
+
+        thread = threading.Thread(target=beat, name="corner-rotation-heartbeat",
+                                  daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5.0)
+            try:
+                self.heartbeat_path.unlink()
+            except OSError:
+                pass
+
+    def _heartbeat_proves_parked_slot(self, state, now):
+        """True when this ledger's pending slot was alive just before the gap.
+
+        Only a fresh heartbeat for the exact pending request counts, so a
+        real stop longer than the freshness window still quarantines.
+        """
+        if state.get("status") != "running":
+            return False
+        pending = state.get("pending")
+        if not isinstance(pending, dict):
+            return False
+        try:
+            data = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            return False
+        if not isinstance(data, dict) or data.get("schema") != HEARTBEAT_SCHEMA:
+            return False
+        if data.get("corner") != pending.get("corner"):
+            return False
+        if data.get("request_id") != pending.get("request_id"):
+            return False
+        at = data.get("at")
+        if type(at) not in (int, float) or isinstance(at, bool):
+            return False
+        age = now - float(at)
+        return 0 <= age <= HEARTBEAT_FRESH_S
 
     def _initial_known_corners(self):
         """Seed the migration ledger from pre-catalog corner state files.
@@ -1252,7 +1335,10 @@ class CornerRotationManager:
             if now - state["last_seen_at"] > DAY:
                 # A large jump is indistinguishable from downtime without a
                 # trusted time source: quarantine one full day, don't erase use.
-                state["clock_hold_until"] = now + DAY
+                # A slot parked in this process is not downtime; its heartbeat
+                # proves the process was alive until the restart.
+                if not self._heartbeat_proves_parked_slot(state, now):
+                    state["clock_hold_until"] = now + DAY
             state["last_seen_at"] = now
             if now < state.get("clock_hold_until", 0):
                 return self._wait(state, "clock-gap-quarantine")
@@ -1310,7 +1396,8 @@ class CornerRotationManager:
                         if owned and owned[0].get("status") == "restoring":
                             # Replay the exact reservation through the common
                             # program-slot and GameSwitchCoordinator gates.
-                            resumed = self.executor.execute(adapter, manual)
+                            with self._slot_heartbeat(manual):
+                                resumed = self.executor.execute(adapter, manual)
                             resumed_status = (resumed if isinstance(resumed, str)
                                               else getattr(resumed, "status", None))
                             if resumed_status in {"completed", "interrupted"}:
@@ -1454,7 +1541,8 @@ class CornerRotationManager:
                     state["history"].append(dict(corner=pending["corner"], at=now, source=source))
                 state.update(status="running", reason=None)
                 self.save(state)
-                result = self.executor.execute(adapter, pending)
+                with self._slot_heartbeat(pending):
+                    result = self.executor.execute(adapter, pending)
                 status = result if isinstance(result, str) else result.status
                 for raw in adapter.observations():
                     if raw.get("rotation_request_id") == pending["request_id"] and raw.get("started_at") is not None:
@@ -1926,7 +2014,8 @@ def run_manual(g, manager, games):
             runtime_environment=getattr(selected_adapter, "runtime_environment", None),
         )
         try:
-            result = rotation.executor.execute(adapter, request)
+            with rotation._slot_heartbeat(request):
+                result = rotation.executor.execute(adapter, request)
             status = result if isinstance(result, str) else result.status
             if status == "capture-profile-expired":
                 owned = [raw for raw in selected_adapter.observations()

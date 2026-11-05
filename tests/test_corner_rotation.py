@@ -16,6 +16,7 @@ from docich.corner_rotation import (
     RotationError,
     DAY,
     ERROR_KINDS,
+    HEARTBEAT_FRESH_S,
     _error_kind,
 )
 from docich.corner_adapters import CornerExecutionError
@@ -961,6 +962,79 @@ def test_clock_regression_and_large_forward_jump_quarantine(setup):
     clock[0] += 1
     assert make().tick()["status"] == "ready"
     assert len(executor.calls) == 2
+
+
+def _parked_slot(make, clock, *, hb_age=10.0, hb_corner=None, hb_request=None,
+                 status='running'):
+    """A rotation that was parked in a long corner when its process restarted."""
+    manager = make()
+    ledger = manager.load(clock[0])
+    request_id = 'a5bc4982-7a86-46c9-bc82-37ab6413139f'
+    ledger.update(status=status, reason=None,
+                  last_seen_at=clock[0] - 25 * 3600,
+                  pending={'corner': 'retro', 'phase': 'dispatched',
+                           'selected_at': clock[0] - 26 * 3600,
+                           'request_id': request_id, 'resume_latest': True})
+    manager.save(ledger)
+    manager.heartbeat_path.write_text(json.dumps({
+        'schema': 1, 'corner': hb_corner or 'retro',
+        'request_id': hb_request or request_id,
+        'pid': 1, 'at': clock[0] - hb_age,
+    }))
+    return manager
+
+
+def test_parked_slot_heartbeat_skips_clock_gap_quarantine(setup):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock)
+    assert manager.tick()['status'] == 'ready'
+    assert 'clock_hold_until' not in state(manager)
+    assert executor.calls and executor.calls[0] == {
+        'corner': 'retro', 'phase': 'dispatched',
+        'selected_at': clock[0] - 26 * 3600,
+        'request_id': 'a5bc4982-7a86-46c9-bc82-37ab6413139f',
+        'resume_latest': True}
+
+
+def test_stale_slot_heartbeat_still_quarantines(setup):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock, hb_age=HEARTBEAT_FRESH_S + 1)
+    assert manager.tick()['reason'] == 'clock-gap-quarantine'
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+    assert executor.calls == []
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'hb_request': '7b489899-51fa-5cd1-a9ce-49ee5f8b1414'},
+    {'hb_corner': 'paper'},
+    {'status': 'waiting'},
+])
+def test_foreign_or_inactive_heartbeat_does_not_skip_quarantine(setup, kwargs):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock, **kwargs)
+    assert manager.tick()['reason'] == 'clock-gap-quarantine'
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+    assert executor.calls == []
+
+
+def test_slot_writes_and_clears_its_heartbeat_while_executing(setup):
+    _, _, _, _, make = setup
+    manager = make()
+    seen = {}
+
+    class HeartbeatExecutor:
+        def execute(self, adapter, request):
+            seen['exists'] = manager.heartbeat_path.exists()
+            seen['data'] = json.loads(manager.heartbeat_path.read_text())
+            seen['request'] = request
+            return 'completed'
+
+    manager.executor = HeartbeatExecutor()
+    manager.tick()
+    assert seen['exists'] is True
+    assert seen['data']['request_id'] == seen['request']['request_id']
+    assert seen['data']['corner'] == seen['request']['corner']
+    assert manager.heartbeat_path.exists() is False
 
 
 def _quarantined_manual(make, clock, *, corner='hanjuku-hero', hold=DAY,

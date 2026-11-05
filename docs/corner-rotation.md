@@ -660,12 +660,29 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
+### 長時間コーナー中の再起動（slot heartbeat）
+
+ローテーションは枠の実行中、tick が flock を保持したままコーナー終了まで待つため、
+`last_seen_at` はコーナーが終わるまで進まない。24時間を超えるコーナーの途中で
+deploy / サービス再起動 / クラッシュ復帰をすると、停止していないにもかかわらず
+`now - last_seen_at > DAY` となり clock-gap quarantine に入っていた（2026-11-05 実測）。
+
+枠を実行しているプロセスは `state_dir/corner_rotation_heartbeat.json` に
+`schema` / `corner` / `request_id` / `pid` / `at` を30秒ごとに書く。再起動後の tick は、
+ledger が `status=running` かつ pending が同一 request で、heartbeat が
+`HEARTBEAT_FRESH_S`（180秒）以内のときだけ「park していた」と判定し、quarantine を
+付けずに `last_seen_at` を更新して継続する。heartbeat が古い・別 request・
+`running` でない場合は従来どおり fail-closed で1日 quarantine する。
+heartbeat は枠の正常終了時に削除される。
+
 ### clock-gap quarantine 中の半熟手動予約（clear-hanjuku-clock-quarantine）
 
 長時間の停止（now - last_seen_at > DAY）を検知した rotation は、cooldown の基準が
 信頼できないため clock_hold_until = now + DAY を保存し、clock-gap-quarantine で待機する。
 この間も queued_manual は保持されるが、timer は予約を処理しない。
-restart-service は state の hold を消さないため、これだけでは解除できない。
+restart-service は state の hold を消さないため、これだけでは解除できない
+（slot heartbeat 導入後は、park 中の短時間再起動では hold 自体が作られない。
+既に hold が入っている場合は下記 operator が必要）。
 
 canonical operator の固定 operation clear-hanjuku-clock-quarantine は、次を全て満たす
 時だけ clock_hold_until を削除する。ゲームの開始・停止・切替は行わない。
