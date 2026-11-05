@@ -233,7 +233,7 @@ def _complete_scan(mem, state):
     state['tasks'] = _tasks(state['statuses'], state['names'])
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
-        'statuses': deepcopy(state['statuses']), 'dirty': {}, 'pending_joins': [],
+        'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
         'suspected_departures': [], 'complete': True,
         'tick': int(mem.get('tick') or 0)}
     queue = state['tasks']
