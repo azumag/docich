@@ -83,7 +83,23 @@ def test_an_old_record_without_a_tick_is_stamped_and_lapses_from_there():
     assert nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
 
 
-def test_the_per_order_budget_still_bounds_a_lapsed_block():
-    mem = stationary(1000, stamped=0)
+def test_the_per_order_budget_still_bounds_an_unlapsed_block():
+    mem = stationary(1000, stamped=990)
     mem['y_jumps'] = {f"{ORDER['step']}:target": nav.Y_JUMP_LIMIT}
     assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    assert mem['y_jumps'][f"{ORDER['step']}:target"] == nav.Y_JUMP_LIMIT
+
+
+def test_a_lapsed_stationary_block_relaxes_the_budget_once():
+    mem = stationary(1000, stamped=0)
+    mem['y_jumps'] = {f"{ORDER['step']}:target": nav.Y_JUMP_LIMIT}
+    assert nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    assert mem['y_jumps'][f"{ORDER['step']}:target"] == nav.Y_JUMP_LIMIT - 1
+    assert mem['_records'][-1]['decision'] == 'y_jump_block_retry'
+
+
+def test_a_lapsed_block_does_not_touch_other_modes():
+    mem = stationary(1000, stamped=0)
+    mem['y_jumps'] = {f"{ORDER['step']}:map": nav.Y_JUMP_LIMIT}
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'map')
+    assert mem['y_jumps'][f"{ORDER['step']}:map"] == nav.Y_JUMP_LIMIT
