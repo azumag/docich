@@ -526,7 +526,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to later targets in the same plan; otherwise every retake names the first spare.
     planned_busy = set()
     planned_probe_sources = set()
-    def _boss_wave_pick(mem, owned, busy, allow_sole, prefer_not=(),
+    def _boss_wave_pick(mem, owned, busy, allow_sole, target, prefer_not=(),
                         allow_probe=True):
         """(source, general) of the next sendable spare for the boss.
 
@@ -534,7 +534,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         eggs make a weak general and a strong one remove about the same HP),
         so the pick spreads waves over castles that have not sent one yet
         instead of spending the strongest stack first. prefer_not holds the
-        sources this plan already used.
+        sources this plan already used; inside the same spread/home class the
+        closest source goes first so a far wave is not intercepted on the road
+        (issue #3506).
         """
         chapter = mem.get('chapter') or 0
         home = chart.home_castle(chapter)
@@ -559,10 +561,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
-                    choices.append((c in prefer_not, c == home, c, g))
+                    choices.append((c in prefer_not, c == home,
+                                    _distance(chapter, c, target), c, g))
         if choices:
             choices.sort()
-            _, _, source, general = choices[0]
+            _, _, _, source, general = choices[0]
             return source, general
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
@@ -576,12 +579,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if allow_probe and not any(garrison.get(c) for c in owned):
             for c in sorted((c for c in owned
                              if garrison.get(c) is None and c not in prefer_not),
-                            key=lambda c: (c == home, c)):
+                            key=lambda c: (c == home,
+                                           _distance(chapter, c, target), c)):
                 return c, MOVE_ANY_GENERAL
         return None
     wave_target = None
     for target in targets:
-        picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
+        picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole,
+                                  target)
                   if chart.is_boss_castle(target) else
                   _interim_source(mem, target, chart_orders.get(target), owned,
                                   busy | planned_busy, allow_sole))
@@ -628,7 +633,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         extra = 0
         while True:
             more = _boss_wave_pick(
-                mem, owned, wave_busy, allow_sole, prefer_not=used_sources,
+                mem, owned, wave_busy, allow_sole, boss,
+                prefer_not=used_sources,
                 allow_probe=(extra == 0
                              and not any(o.get('source_probe') for o in sorties['attack'])))
             if more is None:

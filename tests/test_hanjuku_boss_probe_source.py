@@ -34,6 +34,9 @@ def test_an_empty_bookkeeping_opens_one_castle_list_per_plan():
     probes = [o for o in waves if o.get('source_probe')]
     assert len(probes) == 1
     assert probes[0]['general'] == ANY
+    # #3506: even an evidence-gathering wave leaves from the closest castle;
+    # name order used to send a far source on the same doomed march.
+    assert probes[0]['source'] == 'オケアナ'
     assert probes[0]['purpose'] == 'attack'
 
 

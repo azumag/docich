@@ -35,6 +35,18 @@ def test_a_single_general_castle_can_still_send_a_boss_wave():
     assert attacks[0]['general'] == 'ゼウス'
 
 
+def test_boss_waves_leave_from_the_nearest_castles_first():
+    # #3506: unique spare names let one plan send repeated waves. Name order
+    # used to pick アブダレ/アルブラーカ first and leave オケアナ waiting even
+    # though it is the closest source to the boss.
+    garrison = {c: [f'将{i}'] for i, c in enumerate(NORMAL)}
+    attacks = boss_attacks(memory(garrison=garrison))
+    sources = [o['source'] for o in attacks]
+    assert set(sources) == set(NORMAL) - {HOME}
+    assert sources[:4] == ['オケアナ', 'カバルッサ', 'トウトウ', 'イカリア']
+    assert sources[-1] == 'グルーポフ'
+
+
 def test_the_home_castle_alone_does_not_send_a_boss_wave():
     attacks = boss_attacks(memory(garrison={HOME: ['ゼウス']}))
     assert attacks == []
