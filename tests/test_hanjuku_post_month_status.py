@@ -126,6 +126,21 @@ def test_unknown_status_never_allows_planning():
     assert 'general_statuses' not in mem
 
 
+def test_scripted_dialogue_releases_the_monthly_owner():
+    # g1133 2026-11-06 02:56: the new-partner ceremony arrived while a locate
+    # task was navigating. Holding [] at task_menu starved the ordinary A
+    # handler and every later observation still read 'task_menu'.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'}, tasks=[])
+    dialogue = Screen([], None, 'それでは あたらしい あいぼう を よんでみましょう。',
+                      kind='text')
+    assert post.step(dialogue, mem, None) is None
+    # A menu stage still owns its own map/menu frames.
+    assert post.step(Screen([], None, '', kind='main_menu'), mem, None) == []
+
+
 def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
     """SELECT's named position is evidence; roof recognition can be occluded."""
     mem = memory()
