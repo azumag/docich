@@ -383,12 +383,17 @@ def step(screen, mem, frame):
             camp = (min(camps, key=lambda c: sum(abs(c['target'][a] - cursor[a])
                                                  for a in (0, 1)) if cursor else 0)
                     if camps else {'target': list(cursor), 'kind': None})
+            if (cursor and sum(abs(camp['target'][a] - cursor[a])
+                               for a in (0, 1)) > 12):
+                _task_complete(mem, state, result='selected_general_camp_unconfirmed')
+                return []
             _flow(mem)['recall'] = {
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind')}
             _stage(state, 'wait_recall', recall_started=True)
-            return recall_flow.camp_recall_step(screen, mem, frame)
+            recall = recall_flow.camp_recall_step(screen, mem, frame)
+            return recall if recall is not None else []
         if job['kind'] == 'repair':
             if mem.get('house'):
                 return []
@@ -424,7 +429,8 @@ def step(screen, mem, frame):
         return []
     if stage == 'wait_recall':
         if _flow(mem).get('recall'):
-            return recall_flow.camp_recall_step(screen, mem, frame)
+            recall = recall_flow.camp_recall_step(screen, mem, frame)
+            return recall if recall is not None else []
         _task_complete(mem, state, result='recall_finished_or_deferred')
         return []
     if stage == 'wait_repair':
