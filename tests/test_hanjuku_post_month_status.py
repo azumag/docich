@@ -328,7 +328,8 @@ def test_defeated_missing_general_pruned_only_after_full_roster_walk():
 
 def test_old_run_identity_never_reuses_cached_status():
     mem = _persistent_memory('どうし')
-    mem['_run_identity'] = {'run_id': 'new'}
+    mem['_run_identity'] = {'game': 'hanjuku-hero', 'runtime_id': 'new-run',
+                            'generation': 2, 'lease_id': 'new-lease'}
     post.arm(mem)
     assert mem['post_month_status']['statuses'] == {}
     assert mem['post_month_status']['stage'] == 'await_map'
