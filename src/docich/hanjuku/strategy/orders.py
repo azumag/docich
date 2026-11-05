@@ -1086,11 +1086,17 @@ def _expire_spent_sorties(mem):
         # launched_unconfirmed for 5115 observations and held his name out of
         # every wave). Expire it with the overdue ones.
         if (not isinstance(sortie, dict)
-                or sortie.get('status') not in ('overdue', 'en_route', 'launched_unconfirmed')
-                or step in planned):
+                or sortie.get('status') not in ('overdue', 'en_route', 'launched_unconfirmed')):
             continue
         tick = sortie.get('tick')
         if type(tick) is not int or now - tick < SPENT_SORTIE_TICKS:
+            continue
+        # A planned step keeps its record only while a late entry could still
+        # bind (the chapter-4 site retry reads it). Past twice the bindable
+        # window nothing can bind: g1133 2026-11-05 kept グレナデン
+        # launched_unconfirmed for 9689 observations because every plan still
+        # listed the step, and the release path only touches 'launched' orders.
+        if step in planned and now - tick < 2 * SPENT_SORTIE_TICKS:
             continue
         sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
