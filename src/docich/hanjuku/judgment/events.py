@@ -149,11 +149,17 @@ def _lampkin_forced_kind(enemy):
 
     Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかないので「へんなおどり」
     一択。相手のHPが1なら、そのまま押し切れるので「へんなおどり」一択。
+
+    Owner 2026-11-05: a boss castle's monster keeps changing form (第6話
+   ハードマン→ハードロボ, 第12話 クーモン→スーモン→ボイルド), and the later
+    forms are not the chapter boss name in ``chart.BOSSES``.  Missing them sent
+    かぼちゃ to ハードロボ (live g1133, enemy HP 1127).  Use the reference
+    tables' boss classification so every known boss monster counts.
     """
     if enemy is None:
         return None
     name = _monster_display_name(enemy.name)
-    if name in chart.BOSSES.values() or name in reference.BOSS_GENERALS:
+    if name in chart.BOSSES.values() or reference.is_boss_target(name):
         return 'boss'
     if type(enemy.hp) is int and enemy.hp == 1:
         return 'hp1'
@@ -163,9 +169,9 @@ def _lampkin_forced_kind(enemy):
 def _monster_lampkin_choice(owner, ally, enemy, skills):
     """ランプキン takes へんなおどり (skill1) when かぼちゃ is pointless.
 
-    A chapter boss / named boss-general opponent, or an opponent left at 1 HP,
-    always takes skill1. Only an owned complete two-skill menu enables the
-    override; any other turn follows the かぼちゃ cycle in ``battle_menus``.
+    A chapter boss, a named boss general or boss monster, or an opponent left
+    at 1 HP always takes skill1. Only an owned complete two-skill menu enables
+    the override; any other turn follows the かぼちゃ cycle in ``battle_menus``.
     """
     if not _lampkin_menu(owner, ally, skills) or _lampkin_forced_kind(enemy) is None:
         return None
