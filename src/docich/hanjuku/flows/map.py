@@ -659,6 +659,12 @@ def map_step(screen: Screen, mem, frame):
     # older than the checkout (issue #3417). A tally keeps it out of the
     # decision log while still showing the loaded version in the policy state.
     _tally(mem, f'module:{BOT_VERSION}')
+    _tally(mem, 'map_step_seen')
+    if not _cursor(screen):
+        # The map step ran but the frame shows no cursor sprite: the position
+        # cannot be integrated (g1133 2026-11-05 froze at [392,144] for hours
+        # with `nav_last` null). Counted, not recorded, so it stays cheap.
+        _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
     _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
