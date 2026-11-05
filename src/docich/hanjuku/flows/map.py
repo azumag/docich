@@ -618,12 +618,45 @@ def _apply_select_centered(mem):
     return True
 
 
+CURSOR_STILL_LIMIT = 40      # identical estimates before the inland search starts
+
+
+def _watch_cursor_still(mem):
+    """Start the inland re-anchor when the position estimate never moves.
+
+    g1133 2026-11-05: `cursor` stayed [392,144] with `nav_last` null and
+    `uncertain` true for hours, so no order could be driven. The code already
+    has an inland search that moves to where roofs are visible; it was only
+    started from the arrive-but-no-roof path, so a frozen estimate never
+    reached it.
+    """
+    cursor = mem.get('cursor')
+    watch = mem.get('cursor_still') or {}
+    if not cursor:
+        mem.pop('cursor_still', None)
+        return False
+    if watch.get('cell') != list(cursor):
+        mem['cursor_still'] = {'cell': list(cursor), 'n': 1}
+        return False
+    watch['n'] = int(watch.get('n') or 0) + 1
+    mem['cursor_still'] = watch
+    if watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search'):
+        return False
+    mem['nav_search'] = True
+    mem.pop('nav_search_leg', None)
+    mem.pop('anchor', None)
+    _record(mem, 'cursor_still_search', observed_metric={'cursor': list(cursor), 'still': watch['n']},
+            reason='現在地の推定が動かないままなので、城の多い内陸へ動いて屋根アンカーで再特定する')
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
     # Did this module really run? The give-up logs 199 records in twenty minutes
     # while the probe added in v419 never appeared, so the running module may be
     # older than the checkout (issue #3417). A tally keeps it out of the
     # decision log while still showing the loaded version in the policy state.
     _tally(mem, f'module:{BOT_VERSION}')
+    _watch_cursor_still(mem)
     _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
         return []
