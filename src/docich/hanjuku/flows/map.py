@@ -693,14 +693,9 @@ def map_step(screen: Screen, mem, frame):
                 observed_metric={'menu_miss': mem['menu_miss'], 'cursor': mem.get('cursor'),
                                  'screen_cursor': list(_cursor(screen) or ()),
                                  'roofs': mem.get('roofs_seen')})
-    # Owner rule (2026-09-28): a camp (野営) seen on screen is recalled, even
-    # while an order is being driven (g421: a visible camp produced no
-    # camp_found because the recall only started on chartless idle maps).
-    # A Y jump in flight has already returned above (_drop_stale_y_jump), so
-    # a jump can neither be hijacked nor block a later recall.
-    recall = camp_recall_step(screen, mem, frame)
-    if recall is not None:
-        return recall
+    # Camp recall is no longer an opportunistic map interrupt. The
+    # post-month roster owner verifies each general first and schedules the
+    # named recall after the status scan; this path keeps driving orders.
     # Owner rule (2026-09-28): periodically SELECT to the hero's position to
     # re-focus the view on where we are. The jump is camera motion we did not
     # measure: drop nav_last and demand a re-anchor (mirrors the search's
