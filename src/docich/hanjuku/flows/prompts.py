@@ -424,6 +424,147 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     return [pad('a')]
 
 
+GONINJA_GUARD_OBSERVATIONS = 40   # ~60 s: the offer's lead-in before any choice
+GONINJA_GUARD_HOLD_MAX = 40       # ~60 s bounded hold, then decline by row order
+
+
+def _goninja_offer_decision(mem, screen):
+    """(choice, reason, variant, metric) for the measured goninja offer.
+
+    Owner rule (2026-10-17): accept only with readable gold >= 300; below or
+    unreadable declines. Shared by yes_no_step and goninja_guard_step so the
+    degraded-frame path can never diverge from the cash floor.
+    """
+    budget = metric = _goninja_budget(mem, screen.header)
+    if budget is None:
+        return ('いかんッ!', '所持金が読めないためゴニンジャーへの依頼を見送る',
+                'decline_goninja_unreadable', metric)
+    if budget['gold'] >= GONINJA_MIN_GOLD:
+        return ('うむッ!', f'所持金が{GONINJA_MIN_GOLD}G以上あるためゴニンジャーへ依頼する',
+                'accept_goninja', metric)
+    return ('いかんッ!', f'所持金が{GONINJA_MIN_GOLD}G未満のためゴニンジャーへの依頼を断る',
+            'decline_goninja_below_floor', metric)
+
+
+def _goninja_hold_fallback(screen, mem, guard):
+    """Bounded fail-safe: after the hold bound, decline by measured row order.
+
+    The choice rows are upper うむッ! / lower いかんッ! (gcgx img/ninja.png),
+    the same upper-accept/lower-refuse layout _bijin_decline_by_position uses.
+    It never guesses an accept: without a readable hand near one of exactly two
+    band rows this returns None and the caller keeps observing.
+    """
+    held = int(guard.get('held_ticks') or 0) + 1
+    guard['held_ticks'] = held
+    if held <= GONINJA_GUARD_HOLD_MAX:
+        return None
+    move = _bijin_decline_by_position(screen)
+    if move is None:
+        if not guard.get('bound_unactionable'):
+            guard['bound_unactionable'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'goninja_guard': True, 'held_observations': held},
+                    reason='ゴニンジャーの保留上限に達したが、選択行と手を読めず位置でも断れない')
+        return None
+    if move == 'a':
+        guard['chosen'] = True
+        _record(mem, 'prompt', choice='いかんッ!（位置）', prompt=screen.text[-60:],
+                strategy_variant='decline_goninja_position',
+                observed_metric={'held_observations': held},
+                reason='ゴニンジャーの選択行を読めないまま保留上限を超えたため、実測の行順（下=断り）で断る')
+        return [pad('a')]
+    return [pad(move)]
+
+
+def goninja_guard_step(screen: Screen, mem, *, phase=None):
+    """Own the monthly goninja offer on frames yes_no_step cannot read.
+
+    yes_no_step applies the 300G cash floor only when the offer wording, both
+    choice labels and the hand all read cleanly (kind 'yes_no'). When OCR
+    degrades the frame to 'text'/'unknown' the generic phase input either
+    stalls toward the 300 s screen_stalled terminal or blindly confirms
+    whatever row the cursor sits on (the 2026-11-06 frozen goninja screen is
+    this class, same shape as #2634 bijin / #1996 concert). This guard arms on
+    the offer's own wording, requires measured choice-band evidence before
+    touching the frame, applies the same cash floor, and after a bounded hold
+    declines by the measured row order. It never guesses an accept.
+    """
+    guard = mem.get('goninja_guard')
+    if isinstance(guard, dict):
+        guard.pop('held', None)  # ownership is recomputed for this observation
+    if mem.get('month_sub'):
+        mem.pop('goninja_guard', None)
+        return None   # a pending monthly purchase keeps its own dialogue owner
+    request_seen = _is_goninja_prompt(screen.text)
+    tick = int(mem.get('tick') or 0)
+    if request_seen and screen.kind in ('text', 'unknown', 'yes_no'):
+        if not isinstance(guard, dict):
+            guard = mem['goninja_guard'] = {'tick': tick, 'chosen': False}
+            _record(mem, 'goninja_offer_seen', screen=screen.kind, phase=phase,
+                    observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
+                                     'gold': _bijin_gold(screen)},
+                    reason='ゴニンジャーの依頼（月イチイベント）を検出。所持金300G以上なら依頼、未満・不明なら断る')
+        guard['tick'] = tick
+    if not isinstance(guard, dict):
+        return None
+    if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('goninja_guard', None)
+        return None
+    if screen.kind == 'yes_no':
+        return None   # the measured yes/no path applies the cash floor itself
+    if screen.kind not in ('text', 'unknown'):
+        return None
+    # The lead-in lease expires as before; once a choice is seen, time alone is
+    # not evidence the offer ended (a blinking hand or partial OCR must not
+    # release the same pending request to the generic A).
+    if tick - int(guard.get('tick') or 0) > GONINJA_GUARD_OBSERVATIONS and not guard.get('choice_seen'):
+        mem.pop('goninja_guard', None)
+        return None
+    if not request_seen:
+        if guard.get('choice_seen') and screen.kind == 'text' and readable_prose_screen(screen):
+            mem.pop('goninja_guard', None)
+            return None   # a readable different prose page ended the offer
+        guard['held'] = True
+        action = _goninja_hold_fallback(screen, mem, guard)
+        if action is not None:
+            return action
+        if not guard.get('unread_question_recorded'):
+            guard['unread_question_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'goninja_guard': True, 'text': screen.text[-80:]},
+                    reason='ゴニンジャーの依頼文が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
+        return []
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 208 and word]
+    band_rows = any(176 <= line.y <= 208 and line.cells for line in screen.lines)
+    if screen.hand is None and not band and not band_rows:
+        return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
+    guard['choice_seen'] = True
+    choice, reason, variant, metric = _goninja_offer_decision(mem, screen)
+    move = menu_to(screen, choice)
+    if move is None:
+        move = menu_to(screen, choice.rstrip('!'), exact=False)
+    if move is None:
+        guard['held'] = True
+        action = _goninja_hold_fallback(screen, mem, guard)
+        if action is not None:
+            return action
+        if not guard.get('unread_choice_recorded'):
+            guard['unread_choice_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'goninja_guard': True, 'text': screen.text[-80:]},
+                    reason='ゴニンジャーの選択行と現在行を確定できないため決定せず再観測')
+        return []
+    guard.pop('held_ticks', None)
+    guard.pop('bound_unactionable', None)
+    if move != 'here':
+        return [move]
+    guard['chosen'] = True
+    cur = _current(screen)
+    _record(mem, 'prompt', choice=(cur[2] if cur else choice), prompt=screen.text[-60:],
+            strategy_variant=variant, observed_metric=metric, reason=reason)
+    return [pad('a')]
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
@@ -432,16 +573,7 @@ def yes_no_step(screen: Screen, mem):
     elif _is_goninja_prompt(text):
         # 月イチイベント「ゴニンジャー」: 50Gで敵将軍の暗殺を依頼する。成功率は低い。
         # Owner rule (2026-10-17): 所持金300G未満なら断る。
-        budget = metric = _goninja_budget(mem, screen.header)
-        if budget is None:
-            choice, reason, variant = ('いかんッ!', '所持金が読めないためゴニンジャーへの依頼を見送る',
-                                       'decline_goninja_unreadable')
-        elif budget['gold'] >= GONINJA_MIN_GOLD:
-            choice, reason, variant = ('うむッ!', f'所持金が{GONINJA_MIN_GOLD}G以上あるためゴニンジャーへ依頼する',
-                                       'accept_goninja')
-        else:
-            choice, reason, variant = ('いかんッ!', f'所持金が{GONINJA_MIN_GOLD}G未満のためゴニンジャーへの依頼を断る',
-                                       'decline_goninja_below_floor')
+        choice, reason, variant, metric = _goninja_offer_decision(mem, screen)
     elif _is_bijin_request(text):
         # Owner rule (2026-10-15, 2026-10-21): the monthly 美女 request is
         # declined unless the 1000G floor is proven. Its measured frame is
