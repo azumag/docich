@@ -920,3 +920,14 @@ def test_sortie_pair_rearms_on_consecutive_cancel_and_splits_by_outcome():
     # A different (target, purpose) key never inherits this pending cancel.
     house._tally_sortie_attempt(mem, '砦D', 'attack', 'departed', sig)
     assert 'pairs' not in mem['obs_cost']['sortie_retry']['by_key']['砦D|attack']
+
+
+def test_month_carry_has_no_fixed_maximum_after_observed_unchanged_months():
+    from docich.hanjuku.os_layer import roster as records
+    row = {'general': 'ゼウス', 'location': 'castle',
+           'location_observed': True, 'broken': False,
+           'hp': 50, 'max_hp': 50, 'carry_depth': 99}
+    assert records._carry_eligible(row, []) is True
+    assert records._carry_eligible(row, ['location']) is False
+    row['broken'] = True
+    assert records._carry_eligible(row, []) is False
