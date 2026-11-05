@@ -1549,7 +1549,7 @@ def _friendly_general(mem, general):
             items = row if isinstance(row, list) else (row,)
             if any(isinstance(s, dict) and s.get('general') == general for s in items):
                 return True
-    for present in (mem.get('garrison') or {}).values():
+    for present in (_world(mem).get('garrison') or {}).values():
         if isinstance(present, (list, tuple)) and general in present:
             return True
     for info in (_world(mem).get('launched') or {}).values():

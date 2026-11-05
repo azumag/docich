@@ -595,7 +595,7 @@ def _home_can_send(mem):
     (issue #3417).
     """
     home = chart.home_castle(mem.get('chapter') or 0)
-    return bool((mem.get('garrison') or {}).get(home))
+    return bool((_world(mem).get('garrison') or {}).get(home))
 
 
 def _apply_select_centered(mem):

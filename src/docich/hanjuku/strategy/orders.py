@@ -934,7 +934,7 @@ def _relaunch_overdue_boss(mem):
                     'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0),
                     'cell': list(chart.castles(mem.get('chapter') or 0).get(target) or ()),
                     'source_still_has_general': sortie.get('general') in
-                    ((mem.get('garrison') or {}).get(sortie.get('source')) or ())}
+                    ((_world(mem).get('garrison') or {}).get(sortie.get('source')) or ())}
         # g1133 2026-11-05: an unentered boss march used to re-send the same
         # step at the same tile until the relaunch budget ran out (ブレッツェル
         # 2508, アテナ 2443, ベーグル 2451 observations at cell (818, 184))
@@ -1157,7 +1157,7 @@ def _expire_spent_sorties(mem):
     """
     now = int(mem.get('tick') or 0)
     sorties = mem.get('sorties') or {}
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     placed = {g for names in garrison.values() for g in (names or ())}
     # A step the current plan still offers keeps its record: the retry and
     # roster-reprobe paths bind through it (chapter 4 sites).
