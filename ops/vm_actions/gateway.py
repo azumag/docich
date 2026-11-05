@@ -908,20 +908,22 @@ def deploy_git(cfg,repo,sha):
     intent_written=False
     rebaselined_from=None
     try:
-        # The parent fetch must succeed and must not recurse. git's default
+        # #3344 Phase 3: verify the bundle as a pre-deploy gate, then import
+        # only the delta objects via a disposable staging repo. A direct bundle
+        # fetch would re-store the whole ~26MB non-thin pack on every deploy.
+        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','bundle','verify',str(bundle)],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+        # The staging fetch must succeed and must not recurse. git's default
         # on-demand recursion resolves every gitlink reachable in the incoming
         # history against the submodule remote; one gitlink whose commit was
         # garbage collected upstream (a merged-and-deleted PR branch) makes the
         # remote answer "upload-pack: not our ref" and fails the whole fetch,
         # aborting every deploy before the baseline can move (2026-09-10 outage).
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-        # Best effort: pre-populate submodule objects that the bundle can supply, so
-        # sync_owned_submodules() does not have to reach the network. Unreachable
-        # gitlinks must not fail the deploy here; the owned submodule checkout is
-        # verified for real by sync_owned_submodules()/owned_submodules_match().
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
+        # The second historical fetch (--recurse-submodules=on-demand) was a
+        # measured no-op (WP2 dry-run: a bundle never carries submodule
+        # objects) and is removed; submodule objects still arrive through
+        # sync_owned_submodules() below.
+        _stage_bundle_objects(cfg,root,bundle)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
         if projection_base!=sha:
             # Policy: production deploys move the recorded projection baseline
@@ -1026,6 +1028,10 @@ def deploy_git(cfg,repo,sha):
         _close_projection_plans(projection_plans)
     result={'status':'deployed','sha':sha}
     if rebaselined_from is not None: result['rebaselined_from']=rebaselined_from
+    # #3344: bound pack growth after the successful transaction. post_deploy
+    # is the only --prune=now call site; every object still needed is now
+    # reachable from the verified HEAD. Best-effort, never raises.
+    result['git_gc']=_post_op_git_gc(cfg,repo,root,sha,'post_deploy')
     return result
 
 def deploy_prod(cfg,repo,sha):
@@ -1050,8 +1056,10 @@ def rebaseline_git(cfg,repo,sha):
     _verify_ops_brief(cfg,repo,head)
     bundle=bundle_file(cfg,repo,sha)
     if not bundle.is_file(): raise ValueError('bundle missing')
-    subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
+    # #3344 Phase 3: same delta-only import as deploy_git.
+    subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','bundle','verify',str(bundle)],
                    stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+    _stage_bundle_objects(cfg,root,bundle)
     if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
     ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
                             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -1067,7 +1075,10 @@ def rebaseline_git(cfg,repo,sha):
     write_json(state_path,{**state,'sha':head,'previous_head':old,
                            'projection_base':projection_base,
                            'rebaseline_history':history})
-    return {'status':'rebased','sha':head,'from':old}
+    result={'status':'rebased','sha':head,'from':old}
+    # #3344: grace prune only; --prune=now stays exclusive to post-deploy.
+    result['git_gc']=_post_op_git_gc(cfg,repo,root,sha,'grace')
+    return result
 
 def rebaseline(cfg,repo,sha):
     return rebaseline_git(cfg,repo,sha)
@@ -1188,6 +1199,77 @@ def _run_reviewed_helper(script: bytes, argv: list[str], log) -> int:
         raise ValueError('presynced reconcile refused')
     return p.returncode
 
+GIT_GC_HELPER = 'ops/vm_actions/production_git_gc.py'
+GIT_GC_INTERVAL_SECONDS = 24*60*60
+GIT_GC_WARN_SIZE_KIB = 3*1024*1024
+GIT_GC_MAX_OUTPUT = 8192
+
+def git_gc_state_file(cfg,repo): return state_root(cfg)/'git-gc'/f'{repo}.json'
+
+def _post_op_git_gc(cfg, repo, root: Path, sha: str, prune_mode: str, log=None):
+    """Best-effort post-fetch gc through the reviewed helper (#3344).
+
+    The helper is read from the exact reviewed ``sha`` like the reconcile
+    helpers, so a candidate that predates it simply reports ``unavailable``.
+    gc is throttled to once per GIT_GC_INTERVAL_SECONDS inside the helper and
+    its verdict (including the .git size monitor) is merged into the
+    operation result.  ``prune_mode`` is the helper's knob: 'grace' for the
+    2-week default everywhere, 'post_deploy' (--prune=now) only on the
+    verified post-deploy call site.  Never raises: maintenance must not wedge
+    the deploy/rebaseline/reconcile that triggered it.
+    """
+    try:
+        script = _reviewed_helper(root, sha, GIT_GC_HELPER)
+    except ValueError:
+        return {'status': 'unavailable'}
+    try:
+        state_file = git_gc_state_file(cfg, repo)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [sys.executable, '-', str(root), str(state_file),
+             str(GIT_GC_INTERVAL_SECONDS), str(GIT_GC_WARN_SIZE_KIB), prune_mode],
+            input=script, stdout=subprocess.PIPE,
+            stderr=log if log is not None else subprocess.DEVNULL,
+            env=RECONCILE_ENV, timeout=RECONCILE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return {'status': 'error', 'reason': 'helper_failed'}
+    lines = (proc.stdout or b'')[-GIT_GC_MAX_OUTPUT:].decode('utf-8', 'replace').splitlines()
+    try:
+        verdict = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        verdict = None
+    if not isinstance(verdict, dict) or 'gc' not in verdict:
+        return {'status': 'error', 'reason': 'bad_verdict'}
+    return verdict
+
+def _stage_bundle_objects(cfg, root: Path, bundle: Path):
+    """Import bundle objects through a disposable staging repo (#3344 Phase 3).
+
+    Fetching a bundle writes its entire non-thin pack into the receiving repo
+    regardless of refspec (WP2 dry-run), so the full-history payload is first
+    unbundled into a scratch bare repo under the state root, then the
+    production repo fetches the candidate sha from it.  The second fetch uses
+    normal want/have negotiation and imports only the delta objects, which
+    keeps .git pack growth bounded per deploy.  The staging repo is deleted
+    in ``finally`` -- periodic recreation is its bounding mechanism, so no
+    retention state can accumulate.
+    """
+    staging = Path(tempfile.mkdtemp(prefix='staging-', dir=state_root(cfg)))
+    try:
+        subprocess.run(['git','init','--bare','--quiet',str(staging)],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
+        # The staging fetch must not recurse: a bare repo has no worktree to
+        # recurse into, but keep the flag explicit so the unbundle is strict
+        # and identical to the pre-#3344 authoritative fetch.
+        subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'+HEAD:refs/vmops/incoming'],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=300)
+        # Negotiated local fetch: only objects the production repo lacks are
+        # sent. FETCH_HEAD destination matches the previous fetch semantics.
+        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(staging),'refs/vmops/incoming'],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+    finally:
+        shutil.rmtree(staging,ignore_errors=True)
+
 def reconcile_presynced(cfg, repo, target, sha):
     """Converge a reviewed pre-synced checkout without the exec channel (#225).
 
@@ -1235,7 +1317,10 @@ def reconcile_presynced(cfg, repo, target, sha):
         )
         if rc != 0:
             raise ValueError('presynced reconcile refused')
-    return {'status':'reconciled','sha':sha,'output':'withheld','operation_id':opid}
+        # #3344: the protected-main fetch above also grows production .git;
+        # same bounded gc hook, grace mode, diagnostics to the op log.
+        gc_verdict = _post_op_git_gc(cfg,repo,root,sha,'grace',out)
+    return {'status':'reconciled','sha':sha,'output':'withheld','operation_id':opid,'git_gc':gc_verdict}
 
 
 def configure_jev(cfg,repo,target,sha,*,disable=False):
