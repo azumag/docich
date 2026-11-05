@@ -351,12 +351,17 @@ def step(screen, mem, frame):
             return [pad('a')]
         if job['kind'] == 'recall':
             camps = own_camps(frame) if frame is not None else []
-            if not camps:
-                _task_complete(mem, state, result='camp_not_visible')
-                return []
             cursor = screen.cursor
-            camp = min(camps, key=lambda c: sum(abs(c['target'][a] - cursor[a])
-                                                for a in (0, 1)) if cursor else 0)
+            if not camps and cursor is None:
+                _task_complete(mem, state, result='camp_cursor_unobserved')
+                return []
+            # SELECT in the named roster centres the field cursor on that
+            # general. A tent hidden under its cursor can still be opened by
+            # recall.py's one-shot occlusion path; never reuse an older map
+            # coordinate without this observed SELECT->map transition.
+            camp = (min(camps, key=lambda c: sum(abs(c['target'][a] - cursor[a])
+                                                 for a in (0, 1)) if cursor else 0)
+                    if camps else {'target': list(cursor), 'kind': None})
             _flow(mem)['recall'] = {
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
