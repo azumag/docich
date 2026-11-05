@@ -6920,6 +6920,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v468-live-march-refresh",
             "hanjuku-chart-v469-boss-wave-nearest",
             "hanjuku-chart-v470-boss-wave-egg-rank",
+            "hanjuku-chart-v471-boss-entry-no-return",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
