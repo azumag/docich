@@ -483,17 +483,32 @@ def _defer_recruit_for_egg(mem, shop):
         goals.note_attempt(mem, 'recruit', 'deferred')
 
 
+def _recruit_headcount(mem):
+    """The national status gives an exact total, not identities or positions."""
+    from ..os_layer.roster import MAX_GENERALS, fresh, run_identity
+    country = mem.get('country_general_count') or {}
+    if (isinstance(country, dict)
+            and country.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and country.get('identity') == run_identity(mem.get('_run_identity'))
+            and type(country.get('count')) is int
+            and 0 <= country['count'] <= MAX_GENERALS):
+        return country['count'], True, []
+    seen = fresh(mem)
+    if seen is None:
+        return None, False, []
+    return len(seen['names']), seen.get('complete') is True, list(seen['names'])
+
+
 def _recruit_spare_after_necessities(mem, shop, gold):
     """Once each owned castle can be staffed, only real spare cash recruits.
 
     Keep the existing demand/economy checks. This extra gate reserves pending
     purchases, soldiers and repair; it never borrows the goninja floor.
     """
-    from ..os_layer.roster import fresh
-    seen = fresh(mem)
+    count, complete, _ = _recruit_headcount(mem)
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
     known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter'), ())}
-    evidence = {'generals': len(seen['names']) if seen and seen.get('complete') is True else None,
+    evidence = {'generals': count if complete else None,
                 'owned_castles': len(owned) if owned and owned <= known else None,
                 'gold': gold, 'spare': None}
     continuing = _batch_continuing(shop)
@@ -586,36 +601,34 @@ def _recruit_target(mem):
 
 
 def _recruit_sufficient(mem):
-    from ..os_layer.roster import fresh
-    seen, target = fresh(mem), _recruit_target(mem)
-    return seen is not None and target is not None and len(seen['names']) >= target
+    count, _, _ = _recruit_headcount(mem)
+    target = _recruit_target(mem)
+    return count is not None and target is not None and count >= target
 
 
 def _stop_unneeded_recruit(mem, shop):
-    from ..os_layer.roster import fresh
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
-        return True  # finish the existing transaction; do not invent a refund
+        return True
     if _batch_continuing(shop):
-        # Each paid recruit invalidates the roster, so the next round cannot
-        # re-prove the shortage; the first complete roster did (recruit_batch).
-        return False
-    seen, target = fresh(mem), _recruit_target(mem)
-    if seen is not None and target is not None and len(seen['names']) < target and seen.get('complete') is True:
+        return False  # preserve the initial shortage across a paid batch
+    count, complete, _ = _recruit_headcount(mem)
+    target = _recruit_target(mem)
+    if count is not None and target is not None and count < target and complete:
         return False
     sufficient = _recruit_sufficient(mem)
     status = 'not_needed' if sufficient else 'deferred_roster'
     if shop.get('recruit') != status:
         _record(mem, 'recruit_not_needed' if sufficient else 'recruit_roster_unknown',
                 month=shop.get('key'),
-                observed_metric={'roster_lower_bound': len(seen['names']) if seen else None,
-                                 'target': target, 'complete': seen.get('complete') if seen else False},
-                reason=('新鮮な同一scanの実一覧で必要人数以上を確認したため募集を見送る' if sufficient
-                        else '実在人数または必要人数が不明のため募集を保留し、実一覧を再確認する'))
+                observed_metric={'roster_lower_bound': count,
+                                 'target': target, 'complete': complete},
+                reason=('当月の実人数が必要人数以上のため募集を見送る' if sufficient
+                        else '当月の人数または必要人数が不明のため募集を保留する'))
     shop['recruit'] = status
     shop['recruit_priority'] = False
     mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
                           'reason': ('enough_observed' if sufficient
-                                     else 'roster_incomplete' if seen and target is not None
+                                     else 'roster_incomplete' if count is not None and target is not None
                                      else 'roster_or_demand_unknown'), 'status': status}
     if sufficient:
         shop['recruit_reserve'] = 0
@@ -625,13 +638,12 @@ def _stop_unneeded_recruit(mem, shop):
 
 
 def _recruit_shortage(mem):
-    from ..os_layer.roster import fresh
-    seen, target = fresh(mem), _recruit_target(mem)
-    if (seen is None or target is None or seen.get('complete') is not True
-            or len(seen['names']) >= target):
+    count, complete, names = _recruit_headcount(mem)
+    target = _recruit_target(mem)
+    if count is None or target is None or not complete or count >= target:
         return None
-    return {'available_observed': list(seen['names']), 'count_lower_bound': len(seen['names']),
-            'target': target, 'total_roster': len(seen['names']),
+    return {'available_observed': names, 'count_lower_bound': count,
+            'target': target, 'total_roster': count,
             'garrison': mem.get('garrison') or {}, 'placement': 'observed_only'}
 
 
