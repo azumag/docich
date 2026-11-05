@@ -353,7 +353,11 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     # A tally survives even when the per-order jump counters do not (g1133
     # 2026-11-05: the same order re-opened the Y view 22 times a minute because
     # y_jumps was reset on every plan rebuild, issue #3417).
-    if (mem.get('tally') or {}).get(f'yjump:{key}', 0) >= Y_JUMP_TOTAL_LIMIT:
+    totals = mem.get('y_jumps_total') or {}
+    if ((mem.get('tally') or {}).get(f'yjump:{key}', 0) >= Y_JUMP_TOTAL_LIMIT
+            or int(totals.get(key) or 0) >= Y_JUMP_TOTAL_LIMIT):
+        # Two stores: the tally survives in this run, the plain dict survives
+        # a reload; either one reaching the cap stops the jumps.
         return False
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
@@ -371,6 +375,8 @@ def _start_y_jump(mem, order, name, mode):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
     _tally(mem, f'yjump:{key}')
+    totals = mem.setdefault('y_jumps_total', {})
+    totals[key] = int(totals.get(key) or 0) + 1
     jumps[key] = jumps.get(key, 0) + 1
     mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0,
                      'tick': int(mem.get('tick') or 0)}
