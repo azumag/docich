@@ -1662,7 +1662,10 @@ def _match_sortie(mem, castle, general):
     return None, 'none'
 
 
-LONG_MARCH_TICKS = 4 * SORTIE_BUSY_TICKS   # ~35 min; chapter 3 marches measured up to 677
+# g1133 2026-11-05: ピスタチオ's march to ユージア took 1651 observations,
+# 51 over the old 4x bound, so the entry matched nothing and the battle ran
+# as side 'enemy' (value-aware retreat off; he retreated at 9 vs 7).
+LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # ~60 min; g1133 march measured 1651
 # A march may not outlive the window in which its battle can still bind to
 # the order (_long_march), so the distance-scaled wait is capped here.
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS

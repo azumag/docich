@@ -1462,6 +1462,36 @@ def _boss_entry_cell(mem, general):
     return chart.boss_castle(chapter)
 
 
+def _friendly_general(mem, general):
+    """This run's own receipts mark the general as ours.
+
+    Only measured evidence counts: a sortie record (even one whose march
+    bound expired), a garrison/general-list row, this month's roster
+    receipt, or a launched record. Enemy generals never enter these stores.
+    """
+    if not isinstance(general, str) or not general or general in (NAME, 'しゅじんこう'):
+        return general in (NAME, 'しゅじんこう')
+    for pool in (mem.get('sorties'), mem.get('retired_sorties')):
+        if not isinstance(pool, dict):
+            continue
+        for row in pool.values():
+            items = row if isinstance(row, list) else (row,)
+            if any(isinstance(s, dict) and s.get('general') == general for s in items):
+                return True
+    for present in (mem.get('garrison') or {}).values():
+        if isinstance(present, (list, tuple)) and general in present:
+            return True
+    for info in (_world(mem).get('launched') or {}).values():
+        if isinstance(info, dict) and info.get('general') == general:
+            return True
+    try:
+        from ..os_layer import roster
+        receipt = roster.fresh(mem)
+    except Exception:
+        receipt = None
+    return isinstance(receipt, dict) and general in (receipt.get('names') or ())
+
+
 def message_step(screen: Screen, mem):
     text = screen.text
     encounter = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがてきとそうぐうしました!!', text)
@@ -1539,9 +1569,13 @@ def message_step(screen: Screen, mem):
             return [pad('a')]              # same entry text still on screen
         # 'legacy' is our own launched record for this general and castle; it
         # may carry no step (g839 step 4210: アマンディーヌ read as side='enemy',
-        # which switched off the value-aware retreat policy).
+        # which switched off the value-aware retreat policy). A sortie record,
+        # garrison row or roster receipt proves ours even when the march bound
+        # expired (g1133 2026-11-05: ピスタチオ's 1651-tick march to ユージア
+        # matched nothing, ran as side 'enemy', and he retreated at 9 vs 7).
         ours = (step is not None or match in ('ambiguous', 'legacy')
-                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス'))
+                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+                or _friendly_general(mem, general))
         side = 'attack' if ours else 'enemy'
         _bind_sortie(mem, step, castle, general)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
