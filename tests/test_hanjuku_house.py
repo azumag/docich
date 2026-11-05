@@ -717,3 +717,34 @@ def test_unaffordable_dispatch_records_the_defer_before_closing():
     metric = rec['observed_metric']
     assert (metric['gold'], metric['pending'], metric['need']) == (49, ['ゼウス'], 50)
     assert mem['house']['pending'] == ['ゼウス']
+
+
+def test_departure_pending_alone_leaves_garrison_unchanged():
+    # W4 reroute: popping departure_pending on the field map only proves
+    # the unit started moving — the garrison must not be edited until the
+    # arrival observation (#3193, DSH requirement ①).
+    mem = memory('travel', departure_pending=True, source='アルマムーン')
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    mem['sorties'] = {'1-A1': {'general': 'ゼウス', 'status': 'en_route'}}
+    house.step(Screen([], None, '', kind='map'), mem, None)
+    assert mem['garrison'] == {'アルマムーン': ['ゼウス', 'どうし']}
+    assert mem['sorties']['1-A1']['status'] == 'redirected_house'
+
+
+def test_prices_observation_moves_general_from_dispatch_source():
+    # W4 reroute: the prices panel is the arrival evidence — only here
+    # does the garrison update fire (DSH requirement ②).
+    mem = memory('travel', departure_pending=True, source='アルマムーン')
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    feed(mem, gifts())
+    assert mem['garrison'] == {'アルマムーン': ['どうし']}
+    assert any(r['decision'] == 'house_arrival_seen' for r in mem.get('_records', []))
+
+
+def test_prices_without_dispatch_leaves_garrison_unchanged():
+    # W4 reroute recommended check: a prices observation without an
+    # outbound dispatch must not move anyone (DSH requirement ③).
+    mem = memory('travel')
+    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    feed(mem, gifts())
+    assert mem['garrison'] == {'アルマムーン': ['ゼウス', 'どうし']}
