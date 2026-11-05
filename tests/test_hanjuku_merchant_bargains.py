@@ -120,11 +120,16 @@ def test_existing_same_card_is_not_duplicated_or_reordered(ready):
     assert 'ノリウツール' not in ready['shop']['bargain_cards']
 
 
-def test_sufficient_observed_stock_is_not_bought_again(ready):
+def test_stocked_cards_are_topped_up_with_surplus_cash(ready):
+    # Owner 2026-11-05: 在庫が目標に達していても余剰資金で買い足す。
+    # 月次の金額・枚数上限と在庫観測の非更新はそのまま。
     ready['card_stock'] = dict(b.BARGAIN_TARGETS)
     before = deepcopy(ready['card_stock'])
-    assert p.shop_step(listing(999), ready) == [p.pad('b')]
-    assert ready['shop']['items'] == [] and ready['card_stock'] == before
+    assert p.shop_step(listing(999), ready) == [p.pad('a')]
+    shop = ready['shop']
+    assert shop['items'] and all(name in b.BARGAIN_TARGETS for name, _ in shop['items'])
+    assert sum(b.KNOWN_PRICES[n] * q for n, q in shop['items']) <= b.BARGAIN_MONTHLY_GOLD
+    assert ready['card_stock'] == before
 
 
 def test_gold_and_copy_caps_also_apply_to_deeply_discounted_stock(ready):
