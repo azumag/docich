@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -137,6 +138,7 @@ def _make_handler(
 ) -> type[BaseHTTPRequestHandler]:
     if state is None:
         state = {"consecutive_failures": 0, "last_failure_kind": ""}
+    state_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "docich-cc-adapter"
@@ -148,15 +150,12 @@ def _make_handler(
                 return
             # Only the configured upstream name and failure counters are
             # exposed; never the key or prompt.
-            self._send_json(
-                200,
-                {
-                    "status": "ok",
-                    "upstream": upstream,
+            with state_lock:
+                counters = {
                     "consecutive_failures": state["consecutive_failures"],
                     "last_failure_kind": state["last_failure_kind"],
-                },
-            )
+                }
+            self._send_json(200, {"status": "ok", "upstream": upstream, **counters})
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             if self.path != CHAT_PATH:
@@ -167,13 +166,15 @@ def _make_handler(
                 return
             output, kind = translate(prompt, timeout)
             if kind:
-                state["consecutive_failures"] += 1
-                state["last_failure_kind"] = kind
+                with state_lock:
+                    state["consecutive_failures"] += 1
+                    state["last_failure_kind"] = kind
                 LOGGER.warning("[CC_TRANSLATION_ADAPTER] failed kind=%s status=502", kind)
                 self._send_error(502, kind)
                 return
-            state["consecutive_failures"] = 0
-            state["last_failure_kind"] = ""
+            with state_lock:
+                state["consecutive_failures"] = 0
+                state["last_failure_kind"] = ""
             self._send_json(
                 200, {"choices": [{"message": {"role": "assistant", "content": output}}]}
             )
