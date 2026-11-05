@@ -11,7 +11,7 @@ from ..os_layer import roster as receipts
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import _roof_under_cursor, world_markers
 from ..os_layer.screen import castle_roofs, own_camps
-from ..state.regions import flow as _flow
+from ..state.regions import flow as _flow, world as _world
 from . import house, recall as recall_flow, map_registration
 from copy import deepcopy
 
@@ -217,7 +217,7 @@ def _assign(mem, name, castle, *, evidence):
 
 
 def _forget_field_residents(mem, name):
-    for occupants in (mem.get('garrison') or {}).values():
+    for occupants in (_world(mem).get('garrison') or {}).values():
         if isinstance(occupants, list) and name in occupants:
             occupants.remove(name)
 
@@ -548,7 +548,7 @@ def step(screen, mem, frame):
         elif loc == 'castle':
             # Existing named castle rosters are still valid when the observed
             # status says resident. Do not repeat a costly SELECT for them.
-            old = [castle for castle, residents in (mem.get('garrison') or {}).items()
+            old = [castle for castle, residents in (_world(mem).get('garrison') or {}).items()
                    if isinstance(residents, list) and name in residents]
             candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
             if candidate:

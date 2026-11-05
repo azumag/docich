@@ -55,8 +55,8 @@ def test_a_zombie_march_is_expired_with_the_overdue_ones():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, status='en_route')
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] == []
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
 
 
 def test_a_recent_march_is_kept():
