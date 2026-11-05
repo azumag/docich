@@ -210,7 +210,8 @@ def affordable_gift(gold, reserve):
 def _record(mem, event, **fields):
     from ..decision_log import _record
     state = mem.get('house') or {}
-    _record(mem, 'house_' + event, chart_step=None, general=state.get('general'),
+    general = fields.pop('general', state.get('general'))
+    _record(mem, 'house_' + event, chart_step=None, general=general,
             strategy_variant='broken_egg_repair', **fields)
 
 
@@ -550,10 +551,76 @@ def observe_hero_repair_status(info, mem, *, in_camp=False):
         _hero_repair_defer_reason(mem)
 
 
+def _record_castle_location(mem, name, castle, evidence=None):
+    """Bind one observed general to a castle without inventing a roster."""
+    if not isinstance(name, str) or not name or not isinstance(castle, str) or not castle:
+        return
+    garrison = mem.setdefault('garrison', {})
+    for other, names in list(garrison.items()):
+        if other != castle and isinstance(names, list) and name in names:
+            names.remove(name)
+    members = garrison.get(castle)
+    if not isinstance(members, list):
+        members = garrison[castle] = []
+    if name not in members:
+        members.append(name)
+    info = (mem.get('house_eggs') or {}).get(name)
+    if isinstance(info, dict):
+        info['location'] = 'castle'
+        info['location_observed'] = True
+        info['castle'] = castle
+        receipts.status_observed(mem, info)
+    unknown = mem.get('general_location_unknown')
+    if isinstance(unknown, list) and name in unknown:
+        unknown.remove(name)
+    _record(mem, 'general_castle_observed', general=name, castle=castle,
+            observed_metric={'members': list(members[:8]), 'evidence': evidence or {}},
+            reason='将軍一覧の選択マークと地図の城旗から現在の在城を実測し、在籍一覧を更新')
+
+
+def _capture_selection_marker(state, mem, frame, name):
+    """Read the list's selection triangle before A replaces the map."""
+    if frame is None or not isinstance(state, dict):
+        return
+    from ..os_layer.readers import marker_castle, selection_marker
+    marker = selection_marker(frame)
+    if marker is None:
+        state.pop('pending_marker', None)
+        return
+    state['pending_marker'] = {'general': name, 'marker': marker,
+                               'mapped': marker_castle(frame, mem.get('chapter')),
+                               'tick': mem.get('tick')}
+
+
 def _observe_status(screen, mem):
     info = general_status(screen)
     if info:
         name = info['general']
+        state = mem.get('house') or {}
+        pending = state.get('pending_marker') or {}
+        if isinstance(pending, dict) and pending.get('general') == name:
+            if info.get('location') == 'castle' and info.get('location_observed') is True:
+                mapped = pending.get('mapped')
+                if isinstance(mapped, dict) and isinstance(mapped.get('castle'), str):
+                    info.update(castle=mapped['castle'], castle_observed=True)
+                    mem.setdefault('house_eggs', {})[name] = {
+                        **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
+                        'observed_tick': mem.get('tick'),
+                        'observed_run_identity': receipts.run_identity(mem.get('_run_identity'))}
+                    _record_castle_location(mem, name, mapped['castle'], {
+                        'source': 'selection_marker', **mapped})
+                else:
+                    info.pop('castle', None)
+                    targets = state.setdefault('castle_targets', [])
+                    if name not in targets:
+                        targets.append(name)
+                    _record(mem, 'castle_location_unmapped', general=name,
+                            observed_metric={'marker': (pending.get('marker') or {}).get('box'),
+                                             'location': info.get('location')},
+                            reason='在城は読めたが選択マークを城名へ束縛できないため、後でSELECTから城ステータスを確認する')
+            else:
+                info.pop('castle', None)
+            state.pop('pending_marker', None)
         mem.setdefault('house_eggs', {})[name] = {
             **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
             'observed_tick': mem.get('tick'),
@@ -1496,6 +1563,7 @@ def _step_once(screen, mem, frame):
             actions = _choose(screen, target)
             if actions == [pad('a')]:
                 state['selected'] = target
+                _capture_selection_marker(state, mem, frame, target)
                 _phase(state, 'status')
             return actions
         if not state['seen'] and state.get('roster_opened'):
@@ -1507,6 +1575,7 @@ def _step_once(screen, mem, frame):
             _phase(state, 'leave_roster')
             return [pad('b')]
         state['selected'] = selected
+        _capture_selection_marker(state, mem, frame, selected)
         _phase(state, 'status')
         return [pad('a')]
     if phase == 'status':
@@ -1517,7 +1586,8 @@ def _step_once(screen, mem, frame):
         _tally_open_once(mem, state, 'partial' if state.get('from_survey') else 'full', info)
         receipts.wage(mem, info)
         state['seen'].append(name)
-        if info['broken'] and name not in state['pending']:
+        if (info['broken'] and info.get('location') == 'castle'
+                and info.get('location_observed') is True and name not in state['pending']):
             state['pending'].append(name)
         if state.get('from_survey') and name in state['status_targets']:
             state['status_targets'].remove(name)
@@ -1580,6 +1650,20 @@ def _step_once(screen, mem, frame):
                     reason='一覧で確認した将軍の卵状態から修理対象を決定')
             # Reuse measured castle navigation/status paths to acquire only
             # missing incomes. No sortie or paid action is part of this survey.
+            targets = [n for n in (state.get('castle_targets') or []) if isinstance(n, str) and n]
+            if complete and targets:
+                overflow = targets[CASTLE_CHECK_QUEUE_LIMIT:]
+                targets = targets[:CASTLE_CHECK_QUEUE_LIMIT]
+                state['castle_queue'] = targets
+                state['castle_targets'] = []
+                if overflow:
+                    _record(mem, 'castle_check_deferred', observed_metric={'deferred': overflow},
+                            reason='未確定の在城将軍が上限を超えたため、当月は上限まで確認し残りは次月の状態確認に委ねる')
+                state['age'] = 0
+                _phase(state, 'castle_check_next')
+                _record(mem, 'castle_check_started', observed_metric={'generals': targets},
+                        reason='選択マークで城名を確定できなかった在城将軍を、SELECTから城ステータスで確認する')
+                return []
             if complete and _recruit_shortage(mem):
                 owned = sorted(_owned(mem))
                 missing = [c for c in owned if receipts.economics(mem, [STATUS_NAMES.get(c, c)]) is None]
@@ -1589,9 +1673,159 @@ def _step_once(screen, mem, frame):
             _next_general(mem)
             return []
         return [pad('b')]
+    if phase.startswith('castle_check_'):
+        return _castle_check_step(screen, mem, frame)
     if phase.startswith('income_'):
         return _income_step(screen, mem, frame)
     return _repair_step(screen, mem, frame)
+
+
+
+CASTLE_CHECK_LIMIT = 10
+CASTLE_CHECK_QUEUE_LIMIT = 3
+
+
+def _castle_check_step(screen, mem, frame):
+    """Resolve a castle read from status but not bound by the map marker.
+
+    The owner flow: open the information menu, put the cursor on the named
+    general, press SELECT to jump to his map position, open the castle menu,
+    choose ステータス, read the castle name and its general list, then close
+    back to the field. Only a status that already read しろのなかにいます
+    reaches this queue. Nothing is inferred from an unread panel.
+    """
+    from ..os_layer.commands import menu_to, pad
+    from ..os_layer.readers import CASTLE_STATUS, is_camp_menu
+    state = mem['house']
+    phase = state['phase']
+    name = state.get('castle_current')
+    state['age'] = int(state.get('age') or 0) + 1
+    if state['age'] > CASTLE_CHECK_LIMIT:
+        if name:
+            _record(mem, 'castle_check_unconfirmed', general=name,
+                    observed_metric={'phase': phase, 'age': state['age']},
+                    reason='SELECTからの城ステータス確認を有限回で終えられないため、この将軍は未確定のまま次へ進む')
+        state['age'] = 0
+        state.pop('castle_current', None)
+        _phase(state, 'castle_check_next')
+        return [pad('b')] if screen.kind in ('castle_menu', 'text', 'main_menu', 'general_list') else []
+    if phase == 'castle_check_next':
+        if screen.kind == 'main_menu' and screen.hand:
+            _phase(state, 'castle_check_open')
+            return []
+        if screen.kind != 'map':
+            return [pad('b')] if screen.kind in ('castle_menu', 'text', 'main_menu', 'general_list') else []
+        queue = [n for n in (state.get('castle_queue') or []) if isinstance(n, str) and n]
+        if not queue:
+            mem['month_status_complete'] = {'scope': [mem.get('chapter'), mem.get('month')],
+                                            'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'month_status_complete',
+                    observed_metric={'castles': list(state.get('castle_checked') or []),
+                                     'generals': list(state.get('seen') or [])},
+                    reason='将軍の状態確認と在城の確定を終え、通常の計画フェーズへ戻す')
+            _next_general(mem)
+            return []
+        state['castle_current'] = queue.pop(0)
+        state['castle_queue'] = queue
+        state['age'] = 0
+        _phase(state, 'castle_check_open')
+        return [pad('x')]
+    if phase == 'castle_check_open':
+        if screen.kind != 'main_menu':
+            return []
+        if not screen.hand:
+            return []
+        actions = _choose(screen, 'しょうぐん', mem=mem)
+        if actions == [pad('a')]:
+            _phase(state, 'castle_check_pick')
+        return actions
+    if phase == 'castle_check_pick':
+        names = roster(screen)
+        if names is None:
+            return []
+        if name not in names:
+            state['scrolls'] = int(state.get('scrolls') or 0) + 1
+            if state['scrolls'] > ROSTER_LIMIT:
+                _record(mem, 'castle_check_missing', general=name,
+                        reason='SELECT前の一覧で対象将軍を有限回で確認できないため、この将軍の在城は未確定のまま次へ進む')
+                state['scrolls'] = 0
+                state.pop('castle_current', None)
+                _phase(state, 'castle_check_next')
+                return [pad('b')]
+            return [pad('down')]
+        move = menu_to(screen, name)
+        if move == 'here':
+            state['age'] = 0
+            _phase(state, 'castle_check_focus')
+            return [pad('select')]
+        return [move] if move else []
+    if phase == 'castle_check_focus':
+        if screen.kind == 'world_map':
+            return [pad('y')]
+        if screen.kind == 'map':
+            _phase(state, 'castle_check_menu')
+            return [pad('a')]
+        if screen.kind in ('main_menu', 'general_list', 'castle_menu'):
+            return [pad('b')]
+        return []
+    if phase == 'castle_check_menu':
+        if screen.kind == 'castle_menu':
+            actions = _choose(screen, 'ステータス', mem=mem)
+            if actions == [pad('a')]:
+                _phase(state, 'castle_check_read')
+            return actions
+        if screen.kind == 'text' and is_camp_menu(screen):
+            # SELECT landed on a tent, not a castle: the status sentence and
+            # this menu disagree, so the castle stays unconfirmed.
+            _record(mem, 'castle_check_camp', general=name,
+                    reason='在城表示の将軍をSELECTした先が野営メニューだったため城名を推定しない')
+            state['age'] = 0
+            state.pop('castle_current', None)
+            _phase(state, 'castle_check_next')
+            return [pad('b')]
+        if screen.kind == 'map':
+            return [pad('a')]
+        return []
+    if phase == 'castle_check_read':
+        match = CASTLE_STATUS.search(screen.text)
+        if match is None:
+            if screen.kind == 'castle_menu':
+                actions = _choose(screen, 'ステータス', mem=mem)
+                if actions:
+                    return actions
+            return []
+        castle = match[1]
+        count = re.search(r'しょうぐん(\d+)めい', screen.text)
+        names = _names_at(screen, 144, 95, 159)
+        if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
+            _record(mem, 'castle_check_unread', general=name, castle=castle,
+                    observed_metric={'count': count[1] if count else None, 'names': names},
+                    reason='城ステータスの在城人数・氏名を完全に読めないため一覧を更新せず閉じる')
+        else:
+            mem.setdefault('garrison', {})[castle] = names
+            if name in names:
+                _record_castle_location(mem, name, castle,
+                                        {'source': 'castle_status', 'members': names[:8]})
+                state.setdefault('castle_checked', []).append(name)
+            else:
+                _record(mem, 'castle_check_absent', general=name, castle=castle,
+                        observed_metric={'members': names[:8]},
+                        reason='城ステータスの在籍一覧に対象将軍がいないため、在城を確定しない')
+        state['age'] = 0
+        _phase(state, 'castle_check_close')
+        return [pad('b')]
+    if phase == 'castle_check_close':
+        if screen.kind == 'castle_menu':
+            return [pad('b')]
+        if screen.kind == 'map':
+            state['age'] = 0
+            state.pop('castle_current', None)
+            _phase(state, 'castle_check_next')
+            return []
+        if screen.kind in ('text', 'main_menu', 'general_list'):
+            return [pad('b')]
+        return []
+    return None
 
 
 def _income_step(screen, mem, frame):
