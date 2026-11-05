@@ -535,9 +535,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         so the pick spreads waves over castles that have not sent one yet
         instead of spending the strongest stack first. prefer_not holds the
         sources this plan already used.
+
+        Within those equal sources the shortest march to the boss goes first.
+        The old tie-break was the castle's name, which put アルマムーン (428
+        cells) before the far closer オケアナ (203), so g1133 2026-11-06 only
+        ever entered the boss castle from オケアナ while the 306-1015-cell
+        marches were intercepted and camped on the road.
         """
         chapter = mem.get('chapter') or 0
         home = chart.home_castle(chapter)
+        cells = chart.castles(chapter)
+        boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
         garrison = mem.get('garrison') or {}
         unavailable = set(busy) | set(mem.get('general_location_unknown') or ()) | {NAME}
         if _hero_egg_broken(mem):
@@ -559,10 +567,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
-                    choices.append((c in prefer_not, c == home, c, g))
+                    xy = cells.get(c)
+                    distance = (round(((xy[0] - boss_xy[0]) ** 2
+                                       + (xy[1] - boss_xy[1]) ** 2) ** 0.5)
+                                if boss_xy and xy else 0)
+                    choices.append((c in prefer_not, c == home, distance, c, g))
         if choices:
             choices.sort()
-            _, _, source, general = choices[0]
+            _, _, _, source, general = choices[0]
             return source, general
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
