@@ -204,6 +204,30 @@ def _remember_complete(mem, receipt):
     mem.pop(PENDING_JOINS_KEY, None)  # this list already contains the joins
 
 
+def _persistent_status(mem):
+    """Verified per-general readings survive month boundaries, never game changes."""
+    row = mem.get('general_statuses')
+    if (not isinstance(row, dict) or row.get('complete') is not True
+            or row.get('identity') != run_identity(mem.get('_run_identity'))
+            or not isinstance(row.get('scope'), list) or len(row['scope']) != 2
+            or row['scope'][0] != mem.get('chapter')
+            or not isinstance(row.get('statuses'), dict)
+            or not isinstance(row.get('dirty', {}), dict)):
+        return None
+    return row
+
+
+def _dirty_persistent(mem, names=None, fields=('hp', 'location', 'egg')):
+    cache = _persistent_status(mem)
+    if cache is None:
+        return
+    chosen = list(cache['statuses']) if names is None else names
+    for name in chosen:
+        if name in cache['statuses']:
+            stale = set(cache.setdefault('dirty', {}).get(name) or ())
+            cache['dirty'][name] = sorted(stale | set(fields))
+
+
 def record_join(mem, name):
     """A confirmed 加入告知 adds one general until the next complete list.
 
@@ -215,6 +239,12 @@ def record_join(mem, name):
     list it belongs to (see ``record_departure``).
     """
     record = mem.get(LAST_COMPLETE_KEY)
+    if isinstance(name, str) and 1 <= len(name) <= 32:
+        cache = _persistent_status(mem)
+        if cache is not None and name not in cache['statuses']:
+            joins = cache.setdefault('pending_joins', [])
+            if name not in joins:
+                joins.append(name)
     if (not isinstance(name, str) or not 1 <= len(name) <= 32
             or not isinstance(record, dict) or not isinstance(record.get('names'), list)):
         return False
@@ -270,11 +300,16 @@ def defeated(mem, name):
     minutes) in the same month. Keep the survey and let the partial walk look
     for the name. Without a complete survey there is nothing worth keeping.
     """
+    dirty_status(mem, [name])
+    cache = _persistent_status(mem)
+    if cache is not None and name in cache['statuses']:
+        lost = cache.setdefault('suspected_departures', [])
+        if name not in lost:
+            lost.append(name)
     survey = completed_survey(mem)
     if survey is None or name not in survey['statuses']:
         invalidate(mem)
         return
-    dirty_status(mem, [name])
     survey['defeated'] = sorted({*(survey.get('defeated') or ()), name})
 
 
@@ -459,13 +494,11 @@ def _status_survey(mem, key, *, complete):
     return survey
 
 
-# Issue #3194 (06/10): month-boundary carry-over of unchanged status rows.
-# On by default (owner 2026-11-02: apply on merge). DOCICH_HANJUKU_MONTH_CARRY=0
-# is the kill switch and is read when the brain starts. A row is carried at
-# most MONTH_CARRY_MAX months in a row, then the general is opened again (the
-# periodic cross-check).
+# Issue #3194: unchanged readings may be carried indefinitely. Month changes
+# alone are not evidence that a general's HP, location or egg has changed.
+# A detected event marks the affected fields dirty; run/chapter identity still
+# guards against reusing readings from another playthrough.
 MONTH_CARRY_ENV = 'DOCICH_HANJUKU_MONTH_CARRY'
-MONTH_CARRY_MAX = 2
 
 
 def month_carry_enabled():
@@ -485,11 +518,9 @@ def _carry_eligible(row, dirty_fields):
     if not isinstance(row, dict) or dirty_fields:
         return False
     hp, maximum = row.get('hp'), row.get('max_hp')
-    depth = row.get('carry_depth', 0)
     return (row.get('location') == 'castle' and row.get('location_observed') is True
             and row.get('broken') is False
-            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
-            and type(depth) is int and 0 <= depth < MONTH_CARRY_MAX)
+            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum)
 
 
 def carry_forward(mem):
@@ -533,7 +564,8 @@ def carry_forward(mem):
             new = deepcopy(row)
             new.update(month=month, observed_chapter=chapter, observed_tick=rtick)
             if not same_month:  # a same-month row was read (or carried) this month already
-                new.update(carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
+                new.update(carried_from=previous)
+                new.pop('carry_depth', None)
             statuses[name] = carried_rows[name] = new
             carried.append(name)
         else:
@@ -565,6 +597,7 @@ def carry_forward(mem):
 
 def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     """A change invalidates only the participant's affected status fields."""
+    _dirty_persistent(mem, names, fields)
     survey = reusable_survey(mem)
     if survey is None:
         source = mem.get('roster_carry_source')  # waiting for the next names-only count
