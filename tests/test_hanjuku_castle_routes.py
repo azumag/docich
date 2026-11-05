@@ -251,7 +251,11 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     state_ = {'interim_order': retake}
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
     started = state_['interim_order']
-    assert started['step'] != 'I:b59ab6:2' and started.get('garrison_rotate') is True
+    # Owner 2026-11-05: the spares now go at the boss first, so the plan is
+    # not idle; either a rotation or a boss wave replaces the stuck retake.
+    assert started['step'] != 'I:b59ab6:2'
+    assert (started.get('garrison_rotate') is True
+            or started.get('target') == chart.boss_castle(mem['chapter']))
     assert mem['_records'][-1]['decision'] == 'chart_interim_order'
     state_.pop('interim_order')
     # ... and it no longer holds a startable replacement: a spare at home
@@ -261,9 +265,11 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
     new = state_['interim_order']
     assert new['step'] != 'I:b59ab6:2'
-    # #3266: the boss wave books ゼウス first, so the staged mover is the next spare.
-    assert (new['general'], new['source'], new['target'], new['purpose']) == (
-        'ミルフィーユ', 'アルマムーン', 'グリン', 'move')
+    # #3266: the boss wave books a spare first. Owner 2026-11-05: strength no
+    # longer decides the order, so the staged mover is whoever remains.
+    assert (new['source'], new['target'], new['purpose']) == (
+        'アルマムーン', 'グリン', 'move')
+    assert new['general'] not in ('どうし', 'エピィ')
     # A new transfer sent after that reading reopens the list once due.
     mem['tick'] += 5
     step = add_transfer(mem, 'アルマムーン', 'グリン', general='ゼウス')
