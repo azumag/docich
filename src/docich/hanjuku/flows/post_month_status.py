@@ -39,7 +39,8 @@ def arm(mem):
     mem['post_month_status'] = {
         'scope': scope, 'identity': receipts.run_identity(mem.get('_run_identity')),
         'stage': 'await_map', 'statuses': {}, 'names': [], 'tasks': [],
-        'steps': 0, 'phase_reads': 0, 'complete': False}
+        'steps': 0, 'phase_reads': 0, 'complete': False,
+        'started_tick': int(mem.get('tick') or 0)}
     _log(mem, 'post_month_status_armed',
          observed_metric={'scope': scope},
          reason='月次コマンド終了後、出撃計画より先に全将軍の状態を実測する')
@@ -115,6 +116,9 @@ def _assign(mem, name, castle, *, evidence):
     row = (mem.get('post_month_status') or {}).get('statuses', {}).get(name)
     if isinstance(row, dict):
         row.update(castle=castle, castle_evidence=evidence)
+    unknown = mem.get('general_location_unknown')
+    if isinstance(unknown, list) and name in unknown:
+        unknown.remove(name)
     _log(mem, 'post_month_location_confirmed', general=name, castle=castle,
          reason='将軍本人の現在位置と城の実表示を対応させて在城リストを更新')
     return True
@@ -147,6 +151,18 @@ def _complete_scan(mem, state):
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'complete': True,
         'tick': int(mem.get('tick') or 0)}
+    # Commit the same full-survey contract that the existing planner, payroll
+    # and egg-repair logic already understand. This is a verified per-general
+    # scan, unlike the earlier month-menu names-only count.
+    mem['recruit_roster'] = {
+        'chapter': state['scope'][0], 'month': state['scope'][1],
+        'tick': state['started_tick'], 'identity': state['identity'],
+        'names': list(state['names']),
+        'wages': {name: receipts.fixed_wage(name) for name in state['names']},
+        'complete': False}
+    receipts.complete(mem, {
+        'roster_started': state['started_tick'], 'seen': list(state['names']),
+        'roster_end_observed': True})
     _stage(state, 'process')
     _log(mem, 'post_month_status_complete',
          observed_metric={'generals': list(state['names']),
@@ -169,6 +185,11 @@ def _finish(mem, state):
 
 def _task_complete(mem, state, *, result):
     job = state.get('job') or {}
+    if job.get('kind') == 'locate' and result != 'castle_verified':
+        name = job.get('name')
+        if name and name not in mem.setdefault('general_location_unknown', []):
+            mem['general_location_unknown'].append(name)
+        _forget_field_residents(mem, name)
     _log(mem, 'post_month_task_result',
          general=job.get('name'), resulting_event=result,
          observed_metric={'task': job.get('kind')},
