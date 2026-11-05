@@ -1382,6 +1382,31 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
+    # Owner 2026-11-05: an attack that ended at its destination closes the
+    # sortie record. It used to stay 'en_route' after a defeat, so the left
+    # status chart kept showing a march that was already over and the ledger
+    # never learned win/loss/retreat by diff. A battle on the road (castle
+    # different from the sortie target) leaves the march running.
+    sortie = ((mem.get('sorties') or {}).get(step)) if step else None
+    if isinstance(sortie, dict) and cur.get('side') == 'attack':
+        target = sortie.get('target') or sortie.get('planned_target')
+        retreat = bool((cur.get('hero_retreat') or {}).get('selected'))
+        lost_battle = outcome == 'loss' or retreat
+        won_battle = outcome == 'win' and (enemy_hp == 0)
+        if castle and target and castle == target and (won_battle or lost_battle):
+            result = 'won' if won_battle else ('retreated' if retreat else 'lost')
+            (mem.get('sorties') or {}).pop(step, None)
+            history = mem.setdefault('sortie_history', [])
+            history.append({'step': step, 'general': sortie.get('general'),
+                            'source': sortie.get('source'), 'target': target,
+                            'outcome': result, 'tick': int(mem.get('tick') or 0),
+                            'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
+            del history[:-40]
+            _record(mem, 'sortie_outcome', chart_step=step, general=sortie.get('general'),
+                    castle=castle,
+                    observed_metric={'outcome': result, 'ally_hp': ally_hp,
+                                     'enemy_hp': enemy_hp},
+                    reason='戦闘結果で出撃の終了を差分記録し、行軍中の表示から外す')
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')
