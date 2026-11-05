@@ -15,8 +15,8 @@ removed them.  This is the bounded gc path and it is deliberately narrow:
   pass ``post_deploy`` for ``--prune=now``, because immediately after a
   verified ``reset --hard`` every required object is reachable from HEAD and
   the gateway lock already serializes readers;
-- it never operates on submodule repositories -- their object stores are a
-  separate concern and stay out of this helper;
+- each real submodule gitdir under .git/modules is maintained separately,
+  with its own daily state and conservative two-week prune grace;
 - on the first run it records a canary (``count-objects -v`` output and a
   bounded ``git fsck`` result) into the state file so the operator can
   compare the object store before and after gc was introduced;
@@ -31,6 +31,7 @@ maintenance must never wedge a deploy.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -146,13 +147,55 @@ def maintain(root: Path, state_file: Path, min_interval_seconds: int,
     return verdict
 
 
+
+def _module_gitdirs(root: Path) -> list[tuple[str, Path]]:
+    """Discover real submodule stores without following symlinks or worktrees."""
+    gitdir = root / ".git"
+    if gitdir.is_symlink() or not gitdir.is_dir():
+        return []
+    modules = gitdir / "modules"
+    if modules.is_symlink() or not modules.is_dir():
+        return []
+    found = []
+    for parent, dirs, files in os.walk(modules, followlinks=False):
+        dirs[:] = [d for d in dirs if not (Path(parent) / d).is_symlink()]
+        current = Path(parent)
+        if "config" in files and (current / "objects").is_dir() and not (current / "objects").is_symlink():
+            relative = current.relative_to(modules).as_posix()
+            found.append((relative, current))
+            # A nested submodule can have its own modules/ directory.
+            dirs[:] = [d for d in dirs if d == "modules"]
+    return found
+
+
+def maintain_all(root: Path, state_file: Path, interval: int,
+                 warn_size_kib: int, prune_mode: str) -> dict:
+    """Parent and modules use independent GC state and separate invocations."""
+    parent = maintain(root, state_file, interval, warn_size_kib, prune_mode)
+    # Modules are never pruned immediately, even on post-deploy.
+    modules = {}
+    for name, gitdir in _module_gitdirs(root):
+        key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+        module_state = state_file.parent / (state_file.stem + "-modules") / (key + ".json")
+        try:
+            modules[name] = maintain(gitdir, module_state, interval, warn_size_kib, "grace")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            modules[name] = {"gc": "error", "reason": "maintenance_failed"}
+    # Avoid embedding large fsck canaries from every module in the gateway log.
+    parent["modules"] = {
+        name: {key: value for key, value in result.items() if key != "canary"}
+        for name, result in modules.items()
+    }
+    return parent
+
+
 def main() -> int:
     if len(sys.argv) != 6:
         print(json.dumps({"gc": "error", "reason": "usage"}))
         return 2
     root, state_file = Path(sys.argv[1]), Path(sys.argv[2])
     try:
-        verdict = maintain(root, state_file, int(sys.argv[3]),
+        verdict = maintain_all(root, state_file, int(sys.argv[3]),
                            int(sys.argv[4]), sys.argv[5])
     except Exception:
         verdict = {"gc": "error", "reason": "maintenance_failed"}
