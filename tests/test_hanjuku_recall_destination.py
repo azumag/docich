@@ -272,3 +272,76 @@ def test_native_home_ring_with_a_second_own_flag_moves_towards_nearby_castle():
     assert p.world_flags(frame, 2)['フーリック'] == 'own'
     assert p.world_map_step(VIEW, mem, frame) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'フーリック'
+
+
+def test_a_blocked_axis_alternates_when_the_other_offset_is_small(monkeypatch):
+    """g1133 01:06-01:33: バビラリー→ダーラント (dx 38, dy -1.5) pressed right
+    8 times without moving; the old magnitude guard never tried up, so every
+    recall fell back to バビラリー."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    x, y = p.chart.castles(6)['バビラリー']; ox, oy = p.WORLD_MAP_OFFSET[6]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    presses = [p.world_map_step(VIEW, mem, picker()) for _ in range(p.PICKER_STILL_LIMIT)]
+    assert presses == ([[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH)
+
+
+def test_a_picker_ring_cycling_between_two_castles_gives_up(monkeypatch):
+    """g1133 02:13-02:22: right and left moved the ring between バビラリー
+    (73, 120.5) and オケアナ (175, 90.5) forever, so the unchanged-cursor
+    budget never fired and the recall never completed."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    positions = [(73.0, 120.5), (175.0, 90.5)]
+    seen = {'i': 0}
+
+    def cursor(_):
+        spot = positions[seen['i'] % 2]
+        seen['i'] += 1
+        return spot
+
+    monkeypatch.setattr(p, 'world_cursor', cursor)
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    actions = [p.world_map_step(VIEW, mem, picker())
+               for _ in range(p.PICKER_STILL_LIMIT + 2)]
+    assert any(a == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')] for a in actions)
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
+    assert steps[-1]['observed_metric']['loops'] >= p.PICKER_LOOP_LIMIT
+
+
+def test_a_picker_ring_that_stops_at_each_castle_still_gives_up(monkeypatch):
+    """g1133 02:43: the ring alternated バビラリー and オケアナ with two
+    unchanged readings at each stop, so a sliding window of changed positions
+    never accumulated and the loop budget never fired."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    stops = [(73.0, 120.5)] * 3 + [(175.0, 90.5)] * 3
+    seen = {'i': 0}
+
+    def cursor(_):
+        spot = stops[seen['i'] % len(stops)]
+        seen['i'] += 1
+        return spot
+
+    monkeypatch.setattr(p, 'world_cursor', cursor)
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    actions = [p.world_map_step(VIEW, mem, picker())
+               for _ in range(p.PICKER_STILL_LIMIT + 6)]
+    assert any(a == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')] for a in actions)
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
+    assert steps[-1]['observed_metric']['loops'] >= p.PICKER_LOOP_LIMIT

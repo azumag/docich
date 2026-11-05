@@ -90,6 +90,32 @@ Y_JUMP_UNKNOWN_HOLD_MAX = 6
 Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 
 
+UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
+
+
+def unknown_hold_advance(screen, mem, actions, digest):
+    """Break a frozen unreadable screen with one A press.
+
+    g1133 2026-11-05 logged 35 `situation_held` in half an hour: the bot sent no
+    input while the screen stayed unknown. Many game screens need one button to
+    move on, so an identical frame repeated UNKNOWN_HOLD_ADVANCE times gets a
+    single A. A screen that reacts never reaches the bound.
+    """
+    watch = mem.get('unknown_hold_watch') or {}
+    if watch.get('digest') != digest:
+        mem['unknown_hold_watch'] = {'digest': digest, 'n': 1}
+        return actions
+    watch['n'] = int(watch.get('n') or 0) + 1
+    mem['unknown_hold_watch'] = watch
+    if watch['n'] < UNKNOWN_HOLD_ADVANCE:
+        return actions
+    watch['n'] = 0
+    decision_log._record(mem, 'unknown_hold_advance', screen=screen.kind,
+                         observed_metric={'digest': digest[:16], 'held': UNKNOWN_HOLD_ADVANCE},
+                         reason='読めない画面が同じままなので、Aを1回だけ送って進める')
+    return [pad('a')]
+
+
 def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
     """Withhold the generic confirm while a Y jump is open, boundedly."""
     confirms = (isinstance(generic, list) and len(generic) == 1
@@ -708,8 +734,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 mem['held_phase']=phase
                 decision_log._record(mem,'situation_held',screen=kind,phase=phase,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
+            actions = unknown_hold_advance(screen, mem, actions, frame.digest())
         else:
             mem['held_phase']=None
+            mem.pop('unknown_hold_watch', None)
     actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
     # A concert picker that B cannot close must not consume the whole stall
     # window. Count unchanged observations that produced the same picker B;

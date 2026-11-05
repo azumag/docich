@@ -38,7 +38,8 @@ def test_a_jump_cut_by_the_month_and_a_battle_opens_again():
 def test_a_view_that_closes_right_away_still_walks():
     mem = memory(tick=100 + nav.Y_JUMP_OPEN_GRACE)
     assert nav._drop_stale_y_jump(target_map(), mem) is False
-    assert mem['y_jump_last'] == {'step': ORDER['step'], 'mode': 'target', 'moves': 0, 'why': 'view_closed'}
+    assert mem['y_jump_last'] == {'step': ORDER['step'], 'mode': 'target', 'moves': 0,
+                                  'why': 'view_closed', 'tick': mem['tick']}
     assert mem['cursor'] == [520, 528]
     assert mem['_records'][-1]['decision'] == 'y_jump_failed'
     assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
@@ -49,3 +50,56 @@ def test_a_jump_that_saw_the_view_is_not_an_interruption():
     mem['y_jump']['seen'] = True
     nav._drop_stale_y_jump(target_map(), mem)
     assert mem['_records'][-1]['decision'] == 'y_jump_failed'
+
+
+# --- a closed jump blocks Y only for a while (g1133 2026-11-05) ---
+
+def stationary(tick, stamped='missing'):
+    mem = {'chapter': 4, 'tick': tick, 'cursor': [520, 528]}
+    last = {'step': ORDER['step'], 'mode': 'target', 'moves': 3, 'why': 'cursor_stationary'}
+    if stamped != 'missing':
+        last['tick'] = stamped
+    mem['y_jump_last'] = last
+    return mem
+
+
+def test_a_stationary_close_blocks_y_right_after_it_happened():
+    mem = stationary(1000, stamped=990)
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+
+
+def test_the_stationary_block_lapses_after_the_cooldown():
+    mem = stationary(1000, stamped=1000 - nav.Y_JUMP_BLOCK_TICKS)
+    assert nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+
+
+def test_an_old_record_without_a_tick_is_stamped_and_lapses_from_there():
+    mem = stationary(5000)                       # saved before the tick existed
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    assert mem['y_jump_last']['tick'] == 5000
+    mem['tick'] = 5000 + nav.Y_JUMP_BLOCK_TICKS - 1
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    mem['tick'] = 5000 + nav.Y_JUMP_BLOCK_TICKS
+    assert nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+
+
+def test_the_per_order_budget_still_bounds_an_unlapsed_block():
+    mem = stationary(1000, stamped=990)
+    mem['y_jumps'] = {f"{ORDER['step']}:target": nav.Y_JUMP_LIMIT}
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    assert mem['y_jumps'][f"{ORDER['step']}:target"] == nav.Y_JUMP_LIMIT
+
+
+def test_a_lapsed_stationary_block_relaxes_the_budget_once():
+    mem = stationary(1000, stamped=0)
+    mem['y_jumps'] = {f"{ORDER['step']}:target": nav.Y_JUMP_LIMIT}
+    assert nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'target')
+    assert mem['y_jumps'][f"{ORDER['step']}:target"] == nav.Y_JUMP_LIMIT - 1
+    assert mem['_records'][-1]['decision'] == 'y_jump_block_retry'
+
+
+def test_a_lapsed_block_does_not_touch_other_modes():
+    mem = stationary(1000, stamped=0)
+    mem['y_jumps'] = {f"{ORDER['step']}:map": nav.Y_JUMP_LIMIT}
+    assert not nav._want_y_jump(mem, ORDER, 'フヌイヌム', 'map')
+    assert mem['y_jumps'][f"{ORDER['step']}:map"] == nav.Y_JUMP_LIMIT

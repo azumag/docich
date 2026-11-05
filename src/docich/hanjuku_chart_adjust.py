@@ -245,10 +245,20 @@ def _order(raw, castles, base_steps):
     # about it.
     if after is not None and after[0] == 'captured' and after[1] == target:
         after = None
-    return {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
-            'source': source, 'target': target, 'cards': tuple(cards),
-            'after': after,
-            'note': _text(raw.get('note'), 'note', required=False)}
+    purpose = raw.get('purpose')
+    if purpose not in (None, 'move', 'attack', 'retake'):
+        raise ValueError('invalid purpose')
+    order = {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
+             'source': source, 'target': target, 'cards': tuple(cards),
+             'after': after,
+             'note': _text(raw.get('note'), 'note', required=False)}
+    if purpose is not None:
+        # A move is exempt from the two-general reserve (g1133 2026-11-05: the
+        # mechanical plan dropped the purpose, so its staging moves were held
+        # by the attack rule and never started for an hour). An untyped order
+        # keeps its old shape, so nothing else changes.
+        order['purpose'] = purpose
+    return order
 
 
 def _purchases(raw):

@@ -109,7 +109,7 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
                         ('launch_miss', FLOW), ('recall', FLOW),
                         ('recall_verification', FLOW), ('recall_retry', FLOW),
                         ('recall_skip', FLOW), ('recall_skip_target', FLOW),
-                        ('recall_skip_ticks', FLOW), ('retreat_rechecks', FLOW),
+                        ('recall_skip_ticks', FLOW), ('recall_skip_history', FLOW), ('retreat_rechecks', FLOW),
                         ('retreat_camp_episode', FLOW),
                         ('retreat_anonymous_budget', FLOW),
                         ('_recall_inputs', JOURNAL)):

@@ -98,8 +98,10 @@ def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypat
         presses += policy.map_step(map_screen(190, 200), mem, FRAME) == [policy.pad('a')]
     assert presses == policy.SOURCE_MISS_LIMIT
     policy.map_step(map_screen(190, 200), mem, FRAME)      # third miss: give the source up
-    [changed] = decisions(mem, 'order_source_changed')
-    assert changed['observed_metric'] == {'source': 'キカンドン', 'menu_miss': 3}
+    # The fallback is counted, not recorded: the caller keeps the override out
+    # of the persisted state, so a record repeated on every observation.
+    assert decisions(mem, 'order_source_changed') == []
+    assert mem['tally']['source_fallback'] == 1
     assert mem['source_override'][order['step']] == 'アルマムーン'
     assert mem['active'] == order['step']
     for _ in range(policy.SOURCE_MISS_LIMIT + 1):

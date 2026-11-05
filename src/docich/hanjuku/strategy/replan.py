@@ -10,7 +10,7 @@ import hashlib
 
 from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
                  hanjuku_reference as reference)
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
@@ -539,10 +539,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             unavailable |= {NAME}
         sole = len(owned) == 1
         need = 1 if allow_sole else 2
+        # Owner 2026-11-04: a rear castle may send its last general. Once every
+        # normal castle is held the boss is the only enemy left, so a wave may
+        # take the last general from a non-home castle: g1133 2026-11-05 had one
+        # general per castle after the first waves, so no wave could form again
+        # and the plan fell back to staging moves that enemy attacks kept
+        # interrupting. The home castle always keeps its defender.
+        post_conquest = _post_conquest_wait(mem)
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
-            if len(set(free)) < need:
+            if len(set(free)) < need and not (post_conquest and c != home and free):
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
@@ -895,6 +902,27 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             reason='LLM応答を待たず決定的候補の先頭から暫定出撃')
 
 
+def _suppress_recent_failures(mem, orders):
+    """Do not re-issue, at once, an order that just failed with that content.
+
+    A rebuilt plan carries a new execution id for the same (source>target:
+    purpose) step, so it looked new and was retried immediately; g1133
+    2026-11-05 retried the boss order 96 times in ten minutes while no castle
+    menu would open. The content stays failed until PLAN_STALE_TICKS passes.
+    """
+    now = int(mem.get('tick') or 0)
+    recent = mem.get('failed_local_step') or {}
+    if not recent:
+        return
+    status = mem.setdefault('orders', {})
+    for order in orders:
+        at = recent.get(order.get('step'))
+        if type(at) is not int or now - at >= PLAN_STALE_TICKS:
+            continue
+        status[order['step']] = 'failed'
+        _tally(mem, 'retry_suppressed')
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
@@ -915,6 +943,11 @@ def _mechanical_chart(mem, state, rid, digest):
             # the speedrun path already takes for an exhausted adopted plan.
             _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
             return
+    # The same situation rebuilds the same candidate list on every call, and
+    # re-adopting it recorded the same plan over and over (g1133 2026-11-05:
+    # 487 identical chart_adjust_applied records). Keep the stored plan when
+    # the rebuilt steps are identical: nothing about it changed.
+    previous_steps = [o.get('step') for o in stored.get('orders') or ()]
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
@@ -930,8 +963,14 @@ def _mechanical_chart(mem, state, rid, digest):
             'target': order['target'],
             'cards': list(order.get('cards') or ()),
             'after': order.get('after'),
+            'purpose': order.get('purpose'),
             'note': order.get('note') or '',
         })
+    _suppress_recent_failures(mem, orders)
+    if previous_steps and [o['step'] for o in orders] == previous_steps:
+        mem['chart_plan'] = stored
+        mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
+        return
     _rearm_failed_boss_steps(mem, orders, rid)
     doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
            'source': 'mechanical', 'orders': orders, 'purchases': None,
@@ -1085,16 +1124,77 @@ def _adopt_plan(mem, doc, rid):
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    mem['chart_plan_tick'] = int(mem.get('tick') or 0)
+    mem.pop('plan_stale_signature', None)
+    # Several boss waves march at once, so each new boss order takes the next
+    # probe candidate in rotation instead of every wave aiming at the same
+    # tile (v404). Chapters without a probe list are untouched.
+    probes = chart.BOSS_CELL_PROBES.get(mem.get('chapter') or 0) or ()
+    if probes:
+        assigned = mem.setdefault('boss_step_probe', {})
+        rotation = mem.setdefault('boss_probe_rotation', {})
+        chapter = mem.get('chapter') or 0
+        for order in orders:
+            if not chart.is_boss_castle(order['target']) or order['step'] in assigned:
+                continue
+            assigned[order['step']] = int(rotation.get(chapter) or 0) % len(probes)
+            rotation[chapter] = (int(rotation.get(chapter) or 0) + 1) % len(probes)
+        for stale in list(assigned)[:-40]:   # del on the temporary list is a no-op
+            assigned.pop(stale, None)
+
     state = mem.setdefault('chart_adjust', {})
     state.pop('interim_order', None)
     mem['variant'] = 'chart_adjusted'
     # Digest for commentary: grounded order content, not the full plan blob.
     order_digest = [{'general': o['general'], 'source': o['source'],
                      'target': o['target'], 'cards': list(o['cards'])} for o in orders]
-    _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
-            request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
-            local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
-            reason='調整チャートを受信したため独自の指示列で出撃を再開')
+    # A mechanical plan is rebuilt whenever its orders stop being runnable;
+    # the same rebuild was recorded every observation (g1133 2026-11-05: 17
+    # identical records in 30 minutes). Record only a different plan.
+    # JSON round trip: the policy is reloaded between observations, so the
+    # stored value must be lists; a tuple reloads as a list and never compares
+    # equal (measured 2026-11-05: 24 records in 11 minutes, five of them the
+    # very same plan).
+    signature = [rid, [o['step'] for o in orders]]
+    if mem.get('chart_adjust_signature') != signature:
+        mem['chart_adjust_signature'] = signature
+        _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+                request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
+                local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
+                reason='調整チャートを受信したため独自の指示列で出撃を再開')
+
+
+PLAN_STALE_TICKS = 600      # ~15 min of observations with no order started
+
+
+def _drop_stale_plan(mem):
+    """Rebuild a plan whose every order stayed pending for a long time.
+
+    The rebuild used to wait for the situation digest to change (gold, month,
+    order status). A plan whose orders cannot start changes none of them, so it
+    sat pending forever: g1133 2026-11-05 had two staging moves pending for
+    over an hour, and the plan was never rebuilt with the purpose field that
+    would have let them run (v405). Dropping it here makes the next
+    ``_mechanical_chart`` rebuild from the current situation.
+
+    The drop is counted, not recorded: the planner is also run on copies (the
+    chart worker) where no state signature survives, so a decision record
+    repeated on every call (35 identical records a minute under v411).
+    """
+    plan = mem.get('chart_plan') or {}
+    adopted = mem.get('chart_plan_tick')
+    if not plan.get('orders') or type(adopted) is not int:
+        return
+    now = int(mem.get('tick') or 0)
+    if now - adopted < PLAN_STALE_TICKS:
+        return
+    status = mem.get('orders') or {}
+    if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
+        return
+    mem['chart_plan'] = None
+    mem.pop('chart_plan_tick', None)
+    mem.pop('plan_stale_signature', None)
+    _tally(mem, 'plan_stale_rebuild')
 
 
 def _off_chart_mechanical(mem, state, rid, gate):
@@ -1109,6 +1209,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
     digest = chart_adjust.request_digest(fields)
+    _drop_stale_plan(mem)
     if state.get('request_id') != rid:
         state.clear()
         state['request_id'] = rid

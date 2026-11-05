@@ -90,7 +90,6 @@ class DeployStateTransactionTests(unittest.TestCase):
         subprocess.run(['git', '-C', self.docich, 'commit', '-qam', 'parent-v1'], check=True)
         old_parent = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
         gw.write_json(gw.current_file(self.cfg, 'docich'), {'mode': 'git', 'sha': old_parent, 'previous_head': None})
-
         (subremote / 'game.txt').write_text('v2\n')
         subprocess.run(['git', '-C', subremote, 'commit', '-qam', 'v2'], check=True)
         sub_v2 = subprocess.check_output(['git', '-C', subremote, 'rev-parse', 'HEAD'], text=True).strip()
@@ -116,12 +115,15 @@ class DeployStateTransactionTests(unittest.TestCase):
         self.assertEqual(actual, sub_v2)
 
 
-    def _projection_case(self, *, live_text='v1\n', change_second=False):
+    def _projection_case(self, *, live_text='v1\n', change_second=False,
+                         intermediate=False, delete_file=False):
         live = self.base / 'soren-live'
         live.mkdir()
         (live / 'game.txt').write_text(live_text)
         (live / 'runtime.txt').write_text('runtime-live-mutated\n')
         (live / 'second.txt').write_text('second-v1\n')
+        if delete_file:
+            (live / 'deleted.txt').write_text('deleted-v1\n')
 
         subremote = self.base / 'soviet-projection-remote'
         subprocess.run(['git', 'init', '-q', subremote], check=True)
@@ -130,6 +132,8 @@ class DeployStateTransactionTests(unittest.TestCase):
         (subremote / 'game.txt').write_text('v1\n')
         (subremote / 'runtime.txt').write_text('runtime-source-v1\n')
         (subremote / 'second.txt').write_text('second-v1\n')
+        if delete_file:
+            (subremote / 'deleted.txt').write_text('deleted-v1\n')
         subprocess.run(['git', '-C', subremote, 'add', '-A'], check=True)
         subprocess.run(['git', '-C', subremote, 'commit', '-qm', 'v1'], check=True)
 
@@ -142,8 +146,17 @@ class DeployStateTransactionTests(unittest.TestCase):
         old_parent = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
         self.cfg['repos']['docich']['projections'] = {'games/soviet_now': str(live)}
         gw.write_json(gw.current_file(self.cfg, 'docich'), {'mode': 'git', 'sha': old_parent, 'previous_head': None})
+        if intermediate:
+            # An out-of-band main-shaped commit can sit between the recorded
+            # baseline and the requested commit without being the projection
+            # baseline itself.
+            (self.docich / 'intermediate.txt').write_text('intermediate\n')
+            subprocess.run(['git', '-C', self.docich, 'add', 'intermediate.txt'], check=True)
+            subprocess.run(['git', '-C', self.docich, 'commit', '-qm', 'intermediate'], check=True)
 
         (subremote / 'game.txt').write_text('v2\n')
+        if delete_file:
+            (subremote / 'deleted.txt').unlink()
         if change_second:
             (subremote / 'second.txt').write_text('second-v2\n')
         subprocess.run(['git', '-C', subremote, 'commit', '-qam', 'v2'], check=True)
@@ -220,6 +233,119 @@ class DeployStateTransactionTests(unittest.TestCase):
                 gw.deploy_git(self.cfg, 'docich', new_parent)
         self.assertEqual((live / 'game.txt').read_text(), 'manual-hotfix\n')
         self.assertEqual(subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip(), old_parent)
+
+
+    def _advance_production_to(self, commit):
+        candidate = self.base / 'candidate-projection'
+        subprocess.run(['git', '-C', self.docich, 'fetch', '-q', str(candidate), commit], check=True)
+        subprocess.run(['git', '-C', self.docich, 'reset', '--hard', '-q', commit], check=True)
+        subprocess.run(['git', '-C', self.docich, '-c', 'protocol.file.allow=always',
+                        'submodule', 'update', '--init', '--checkout', '--',
+                        'games/soviet_now'], check=True)
+
+    def test_root_already_at_requested_sha_still_projects_from_recorded_base(self):
+        live, subremote, old_parent, new_parent = self._projection_case()
+        self._advance_production_to(new_parent)
+        intents = []
+        real_write_json = gw.write_json
+        def capture_intent(path, value):
+            if 'deployment_intent' in value:
+                intents.append(value['deployment_intent'])
+            return real_write_json(path, value)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             mock.patch.object(gw, 'write_json', side_effect=capture_intent):
+            result = gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(result, {'status': 'deployed', 'sha': new_parent, 'rebaselined_from': old_parent})
+        self.assertEqual(intents[-1], {'from': old_parent, 'to': new_parent,
+                                     'predeploy_head': new_parent})
+        self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
+        state = gw.read_json(gw.current_file(self.cfg, 'docich'))
+        self.assertEqual(state['sha'], new_parent)
+        self.assertNotIn('projection_base', state)
+        self.assertEqual(state['rebaseline_history'][-1],
+                         {'from': old_parent, 'to': new_parent, 'target': new_parent, 'auto': True})
+
+    def test_intermediate_ancestor_head_does_not_become_projection_base(self):
+        live, subremote, old_parent, new_parent = self._projection_case(intermediate=True)
+        intermediate = gw.git(self.docich, 'rev-parse', 'HEAD')
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
+        state = gw.read_json(gw.current_file(self.cfg, 'docich'))
+        self.assertEqual(state['rebaseline_history'][-1]['from'], old_parent)
+        self.assertEqual(state['rebaseline_history'][-1]['to'], intermediate)
+        self.assertNotIn('projection_base', state)
+
+    def test_empty_projection_plan_fails_closed_when_gitlink_advanced(self):
+        live, subremote, old_parent, new_parent = self._projection_case()
+        self._advance_production_to(new_parent)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             mock.patch.object(gw, '_plan_projections', return_value=([], [])):
+            with self.assertRaisesRegex(ValueError, 'projection not converged'):
+                gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v1\n')
+        self.assertEqual(gw.git(self.docich, 'rev-parse', 'HEAD'), new_parent)
+        state = gw.read_json(gw.current_file(self.cfg, 'docich'))
+        self.assertEqual(state['sha'], new_parent)
+        self.assertEqual(state['projection_base'], old_parent)
+
+    def test_converged_live_projection_is_allowed_as_noop(self):
+        live, subremote, _old_parent, new_parent = self._projection_case(live_text='v2\n')
+        self._advance_production_to(new_parent)
+        inode = (live / 'game.txt').stat().st_ino
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').stat().st_ino, inode)
+        self.assertNotIn('projection_base', gw.read_json(gw.current_file(self.cfg, 'docich')))
+
+    def test_failed_deploy_after_auto_rebaseline_retries_from_projection_base(self):
+        live, subremote, old_parent, new_parent = self._projection_case()
+        self._advance_production_to(new_parent)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             mock.patch.object(gw, '_apply_projection', side_effect=OSError('simulated projection failure')):
+            with self.assertRaises(OSError):
+                gw.deploy_git(self.cfg, 'docich', new_parent)
+        state = gw.read_json(gw.current_file(self.cfg, 'docich'))
+        self.assertEqual(state['sha'], new_parent)
+        self.assertEqual(state['projection_base'], old_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v1\n')
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
+        self.assertNotIn('projection_base', gw.read_json(gw.current_file(self.cfg, 'docich')))
+
+    def test_deleted_source_path_requires_live_absent(self):
+        live, subremote, _old_parent, new_parent = self._projection_case(delete_file=True)
+        self._advance_production_to(new_parent)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertFalse((live / 'deleted.txt').exists())
+
+    def test_deploy_refuses_request_older_than_projection_base(self):
+        _live, subremote, old_parent, new_parent = self._projection_case()
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        old_bundle = gw.bundle_file(self.cfg, 'docich', old_parent)
+        candidate = self.base / 'candidate-projection'
+        subprocess.run(['git', '-C', candidate, 'checkout', '-q', '--detach', old_parent], check=True)
+        subprocess.run(['git', '-C', candidate, 'bundle', 'create', old_bundle, 'HEAD'], check=True)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             self.assertRaisesRegex(ValueError, 'requested commit must descend from projection baseline'):
+            gw.deploy_git(self.cfg, 'docich', old_parent)
+        self.assertEqual(gw.git(self.docich, 'rev-parse', 'HEAD'), new_parent)
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg, 'docich'))['sha'], new_parent)
+
+    def test_manual_rebaseline_preserves_projection_base_for_next_deploy(self):
+        live, subremote, old_parent, new_parent = self._projection_case()
+        self._advance_production_to(new_parent)
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            result = gw.rebaseline_git(self.cfg, 'docich', new_parent)
+            self.assertEqual(result, {'status': 'rebased', 'sha': new_parent, 'from': old_parent})
+            state = gw.read_json(gw.current_file(self.cfg, 'docich'))
+            self.assertEqual(state['projection_base'], old_parent)
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
+        self.assertNotIn('projection_base', gw.read_json(gw.current_file(self.cfg, 'docich')))
 
 
     def _record_pending(self, live, subremote, old_parent, text='v2\n'):

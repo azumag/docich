@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 import tomllib
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -94,6 +95,54 @@ def chart_decision_summary(record: dict, *, now: float, identity: dict, decision
     }
 
 
+#: How much of the decisions log tail is scanned for an identical record.
+#: The bot process reloads per observation, so state/mem signatures cannot
+#: suppress a caller that replays the policy on a copy (its chart_plan /
+#: y_jumps never persist, so the same record re-emits every cycle). The log
+#: itself is the only durable, shared artifact, so dedupe happens here.
+DECISION_DEDUPE_TAIL_BYTES = 65536
+
+
+def _decision_tail(runtime: Path):
+    """Recent decision rows of this runtime's log; empty when unreadable."""
+    path = runtime / 'hanjuku_decisions.jsonl'
+    try:
+        if path.is_symlink() or not path.is_file():
+            return []
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - DECISION_DEDUPE_TAIL_BYTES)
+            stream.seek(offset)
+            tail = stream.read()
+        if offset:
+            tail = tail.partition(b'\n')[2]
+    except OSError:
+        return []
+    rows = []
+    for raw in tail.splitlines():
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _recorded_before(rows, record, identity):
+    """Deduplicate exact records only within the same runtime generation.
+
+    A missing key is not equivalent to a key explicitly set to None.
+    Different generations may legitimately repeat the same chart decision.
+    """
+    return any(
+        row.get('event') == 'decision'
+        and all(row.get(key) == value for key, value in identity.items())
+        and all(key in row and row[key] == value for key, value in record.items())
+        for row in rows
+    )
+
+
 def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, actions, frame_sha256, frame=None):
     now=time.time()
     identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('game','runtime_id','generation','lease_id')}
@@ -173,12 +222,18 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'planned_actions':actions,
         'reason_decisions':[r.get('decision') for r in records],
         'dispatch_status':'planned_not_yet_sent'})
+    prior = _decision_tail(runtime)
     for record in records:
+        # Records re-emitted from a copy-mem path (no persisted plan/jump state)
+        # are byte-identical to an earlier row; write each content once.
+        if _recorded_before(prior, record, identity):
+            continue
         payload={'schema':1,'event':'decision','at':now,'bot_version':BOT_VERSION,
                  'step':state.get('step'),'screen_kind':state.get('screen_kind'),
                  'phase':state.get('phase'),'decision_id':decision_id,
                  'frame_sha256':frame_sha256,'snapshot':snapshot,**identity,**record}
         append_log(runtime,'hanjuku_decisions',payload)
+        prior.append(payload)
         if record.get('decision') in CHART_DECISIONS:
             append_log(runtime,'hanjuku_chart_decisions',
                        chart_decision_summary(record,now=now,identity=identity,
@@ -485,6 +540,50 @@ def overtaken_frames(runtime, state, *, now=None):
     return found
 
 
+def _where(exc):
+    """Exception class, message and the innermost frames (no observation data)."""
+    frames=[f for f in traceback.extract_tb(exc.__traceback__) if '/lib/python' not in f.filename][-3:]
+    trail=' < '.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in reversed(frames))
+    return f'{type(exc).__name__}({str(exc)[:80]!r}) at {trail}'
+
+
+def _unsortable_path(obj, path=''):
+    """Path of the first dict whose keys mix types (json sort_keys cannot order them)."""
+    if isinstance(obj, dict):
+        if len({type(k).__name__ for k in obj}) > 1:
+            return f'{path or "/"}{sorted({type(k).__name__ for k in obj})}'
+        for k, v in obj.items():
+            found = _unsortable_path(v, f'{path}/{k}')
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            found = _unsortable_path(v, f'{path}[{i}]')
+            if found:
+                return found
+    return None
+
+
+def _str_keys(obj):
+    if isinstance(obj, dict):
+        return {str(k): _str_keys(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_str_keys(v) for v in obj]
+    return obj
+
+
+def _sortable(name, obj):
+    """g1133 11-05: a dict holding both int and str keys made every state write raise
+    TypeError, so the already-decided input was dropped for hours. JSON turns every
+    key into a string anyway, so normalise here instead of losing the observation."""
+    try:
+        json.dumps(obj, sort_keys=True)
+        return obj
+    except TypeError:
+        print(f'hanjuku-bot: mixed_keys {name} {_unsortable_path(obj)}', file=sys.stderr)
+        return _str_keys(obj)
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -530,6 +629,10 @@ def main():
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
+            state=_sortable('state',state)
+            records=_sortable('records',records)
+            if isinstance(updated_experience,dict):
+                updated_experience=_sortable('experience',updated_experience)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
             publish_adjust_request(runtime,records,meta)
             ask_interim(runtime,state,meta)
@@ -540,15 +643,17 @@ def main():
                 except (OSError,ValueError):
                     # Losing one experience sample must not drop this frame's input.
                     print('hanjuku-bot: experience_save_failed',file=sys.stderr)
-    except (KeyError,TypeError,ValueError,OSError):
+    except (KeyError,TypeError,ValueError,OSError) as exc:
         code=2
-        print('hanjuku-bot: invalid observation',file=sys.stderr)
+        # g1133 11-05: 400+ "invalid observation" exits with no way to tell which
+        # line raised, so decided actions were silently dropped for hours.
+        print(f'hanjuku-bot: invalid observation {_where(exc)}',file=sys.stderr)
     except Exception as exc:
         # A policy defect must not crash the agent loop or send guesses:
         # hold input for this observation and record only the error class.
         code=2
         actions=[]
-        print(f'hanjuku-bot: policy_error {type(exc).__name__}',file=sys.stderr)
+        print(f'hanjuku-bot: policy_error {_where(exc)}',file=sys.stderr)
     print(json.dumps({'actions':actions, 'observation_interval_ms':interval_ms}),flush=True)
     return code
 

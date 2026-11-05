@@ -9,7 +9,8 @@ from copy import deepcopy
 from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ... import hanjuku_chart_adjust as chart_adjust
-from ..decision_log import _record
+from ..decision_log import _record, _tally
+from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
@@ -143,6 +144,9 @@ WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 WORLD_MAP_CLOSE_LIMIT = 3      # Y presses before the view is known not to close with Y
 PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
 PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor before giving up
+PICKER_VISIT_SLOTS = 12        # distinct cursor positions remembered per recall
+PICKER_LOOP_LIMIT = 3          # visits of one position before giving up
+PICKER_LOOP_MIN_STEP = 8       # px a step must move before it counts as a visit
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
@@ -317,17 +321,43 @@ def world_map_step(screen, mem, frame):
             # down press moved it to グリン. Record every step, so its frame is
             # kept, try the other axis when the reading does not move, and stop
             # once it has not changed for a while.
+            prev = recall.get('picker_cursor')
             still = (int(recall.get('picker_still') or 0) + 1
-                     if recall.get('picker_cursor') == list(cursor) else 0)
+                     if prev == list(cursor) else 0)
             recall.update(picker_cursor=list(cursor), picker_still=still)
-            if still >= PICKER_AXIS_SWITCH and min(abs(dx), abs(dy)) >= 3:
-                press = other
+            # g1133 02:13-02:43: the ring moves between バビラリー and オケアナ
+            # with two unchanged readings at each stop, so a sliding window of
+            # changed positions never accumulated (the unchanged steps cleared
+            # it) and the loop budget never fired. Count how often each distant
+            # position is visited instead; local jitter below
+            # PICKER_LOOP_MIN_STEP is not a visit.
+            here = [round(cursor[0], 1), round(cursor[1], 1)]
+            moved = (abs(here[0] - prev[0]) + abs(here[1] - prev[1])) if prev else None
+            visits = dict(recall.get('picker_visits') or {})
+            loops = int(recall.get('picker_loops') or 0)
+            if moved is None or moved >= PICKER_LOOP_MIN_STEP:
+                key = f'{here[0]},{here[1]}'
+                visits[key] = int(visits.get(key) or 0) + 1
+                loops = max(int(v) for v in visits.values())
+                if len(visits) > PICKER_VISIT_SLOTS:
+                    visits = dict(sorted(visits.items(), key=lambda kv: kv[1])[-PICKER_VISIT_SLOTS:])
+            recall.update(picker_visits=visits, picker_loops=loops)
+            if still >= PICKER_AXIS_SWITCH:
+                if min(abs(dx), abs(dy)) >= 3:
+                    press = other
+                else:
+                    # The other offset is small, so the old guard never tried
+                    # it: g1133 01:06-01:33 バビラリー→ダーラント (dx 38,
+                    # dy -1.5) pressed right 8 times without moving and fell
+                    # back to the wrong castle. Alternate the two axes so a
+                    # blocked one is not held forever.
+                    press = other if (still // PICKER_AXIS_SWITCH) % 2 else press
             _record(mem, 'camp_recall_picker_step',
                     observed_metric={'cursor': list(cursor), 'goal': goal,
                                      'offset': [round(dx, 1), round(dy, 1)], 'press': press,
-                                     'still': still},
+                                     'still': still, 'loops': loops},
                     reason='帰還先の城へ全体マップのカーソルを1歩動かす')
-            if still >= PICKER_STILL_LIMIT and _picker_on_enemy(nearby, flags):
+            if (still >= PICKER_STILL_LIMIT or loops >= PICKER_LOOP_LIMIT) and _picker_on_enemy(nearby, flags):
                 _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
                         observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},
                         reason='帰還先カーソルが敵城の上で動かないため、敵城へは確定せず取り消す')
@@ -335,7 +365,7 @@ def world_map_step(screen, mem, frame):
                 mem['uncertain'] = True
                 _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 return [pad('b')]
-            if still >= PICKER_STILL_LIMIT:
+            if still >= PICKER_STILL_LIMIT or loops >= PICKER_LOOP_LIMIT:
                 # Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
                 # 動かないカーソルを取り消すと、撤退した将軍が野営のまま帰れない
                 # (g1133 00:14:49, ダーラントへ向かうカーソルが止まり取消)。
@@ -486,7 +516,157 @@ def _abandon_stuck_step(screen, mem, order):
     return []
 
 
+ORDER_START_BACKOFF = 12      # observations (~18 s) before the same order restarts
+
+
+def _order_start_due(mem, step):
+    """The same order is not restarted on every observation.
+
+    A start that an interruption (defence, event) cut short used to restart at
+    once: g1133 2026-11-05 started the same move 10 times in five minutes, each
+    attempt opening the world map and aborting. The backoff keeps the order
+    pending without paying that cost again.
+    """
+    now = int(mem.get('tick') or 0)
+    started = mem.setdefault('order_start_tick', {})
+    last = started.get(step)
+    if last is not None and now - int(last) < ORDER_START_BACKOFF:
+        return False
+    started[step] = now
+    for stale in list(started)[:-40]:      # del on the temporary list is a no-op
+        started.pop(stale, None)
+    return True
+
+
+def _drop_jump_state(mem, step):
+    """Forget the Y-jump bookkeeping of one step.
+
+    g1133 2026-11-05 opened the Y view for the abandoned step
+    ``A:bf8c3dee:M97e81e`` 72 times in 2.5 minutes (always attempt 1) while the
+    active order was another step: the per-step jump memory outlived the plan.
+    """
+    mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
+                      if not k.startswith(f'{step}:')}
+    _forget_failed_jump(mem, step)
+    (mem.get('y_jumped') or {}).pop(step, None)
+    last = mem.get('y_jump_last') or {}
+    if last.get('step') == step:
+        mem.pop('y_jump_last', None)
+    jump = mem.get('y_jump') or {}
+    if jump.get('step') == step:
+        mem.pop('y_jump', None)
+
+
+def _release_stale_active(mem):
+    """Drop an active order that no plan or launch record owns.
+
+    g1133 2026-11-05: the bot kept opening the Y view for ``A:bf8c3dee:M97e81e``
+    (588 records, always attempt 1) long after the plan had replaced it, so the
+    step consumed map observations while nothing could start it. An order that
+    is neither in the plan nor in the launched-order records and never got a
+    status was abandoned by the plan; releasing it lets ``next_order`` pick the
+    current plan.
+    """
+    step = mem.get('active')
+    if not step:
+        return False
+    plan = mem.get('chart_plan') or {}
+    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
+    launched = (mem.get('world') or {}).get('launched_orders') or mem.get('launched_orders') or {}
+    status = (mem.get('orders') or {}).get(step)
+    if not plan_steps or step in plan_steps or step in launched or status is not None:
+        return False
+    mem['active'] = None
+    mem['picked'] = []
+    _drop_jump_state(mem, step)
+    _record(mem, 'stale_active_released', chart_step=step,
+            observed_metric={'plan_steps': sorted(plan_steps)[:8]},
+            reason='計画にも出撃記録にも無い古い指示が残っていたため解放し、現在の計画から選び直す')
+    return True
+
+
+def _home_can_send(mem):
+    """The fallback source (the home castle) has at least one general.
+
+    g1133 2026-11-05 had `home_garrison: []` while `source_miss` stayed at 5
+    for an hour: every observation gave the source up to a castle that could
+    never send anyone, so the order never even walked to the chart's source
+    (issue #3417).
+    """
+    home = chart.home_castle(mem.get('chapter') or 0)
+    return bool((mem.get('garrison') or {}).get(home))
+
+
+def _apply_select_centered(mem):
+    """Use a just-sent SELECT as a known position.
+
+    SELECT centres the camera on the hero, so the cursor stands on the hero's
+    castle right after it: a position that needs no roof anchor (g1133
+    2026-11-05 sat `uncertain` with `anchor` None for hours).
+    """
+    if mem.pop('select_centered', None) is None or mem.get('y_jump'):
+        return False
+    hero = _hero_castle(mem)
+    cell = chart.castles(mem.get('chapter') or 0).get(hero) if hero else None
+    if not cell:
+        return False
+    mem['cursor'] = list(cell)
+    mem['uncertain'] = False
+    mem['anchor'] = hero
+    _record(mem, 'select_centered', observed_metric={'castle': hero, 'cell': list(cell)},
+            reason='SELECTで主人公の城へフォーカスしたので現在地を確定する')
+    return True
+
+
+# Identical estimates before the inland search starts. Map observations are
+# rare while the chapter throws battles (g1133 2026-11-05: two map frames in
+# 8.4 minutes), so 40 would never be reached in a useful time.
+CURSOR_STILL_LIMIT = 6
+
+
+def _watch_cursor_still(mem):
+    """Start the inland re-anchor when the position estimate never moves.
+
+    g1133 2026-11-05: `cursor` stayed [392,144] with `nav_last` null and
+    `uncertain` true for hours, so no order could be driven. The code already
+    has an inland search that moves to where roofs are visible; it was only
+    started from the arrive-but-no-roof path, so a frozen estimate never
+    reached it.
+    """
+    cursor = mem.get('cursor')
+    watch = mem.get('cursor_still') or {}
+    if not cursor:
+        mem.pop('cursor_still', None)
+        return False
+    if watch.get('cell') != list(cursor):
+        mem['cursor_still'] = {'cell': list(cursor), 'n': 1}
+        return False
+    watch['n'] = int(watch.get('n') or 0) + 1
+    mem['cursor_still'] = watch
+    if watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search'):
+        return False
+    mem['nav_search'] = True
+    mem.pop('nav_search_leg', None)
+    mem.pop('anchor', None)
+    _record(mem, 'cursor_still_search', observed_metric={'cursor': list(cursor), 'still': watch['n']},
+            reason='現在地の推定が動かないままなので、城の多い内陸へ動いて屋根アンカーで再特定する')
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
+    # Did this module really run? The give-up logs 199 records in twenty minutes
+    # while the probe added in v419 never appeared, so the running module may be
+    # older than the checkout (issue #3417). A tally keeps it out of the
+    # decision log while still showing the loaded version in the policy state.
+    _tally(mem, f'module:{BOT_VERSION}')
+    _tally(mem, 'map_step_seen')
+    if not _cursor(screen):
+        # The map step ran but the frame shows no cursor sprite: the position
+        # cannot be integrated (g1133 2026-11-05 froze at [392,144] for hours
+        # with `nav_last` null). Counted, not recorded, so it stays cheap.
+        _tally(mem, 'map_no_cursor')
+    _watch_cursor_still(mem)
+    _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
         return []
     if mem.pop('expect_menu', False):
@@ -525,7 +705,13 @@ def map_step(screen: Screen, mem, frame):
     # re-focus the view on where we are. The jump is camera motion we did not
     # measure: drop nav_last and demand a re-anchor (mirrors the search's
     # select_to_hero). Seeded on the first map frame, then every interval.
-    if (_cursor(screen) and not screen.marker and not mem.get('y_jump')
+    # A frame that just re-established a known position from the previous
+    # SELECT must drive orders instead of refocusing again: map frames can be
+    # sparser than the interval while a chapter throws battles (g1133
+    # 2026-11-05: every cluster re-sent SELECT and no order ever drove).
+    recentered = _apply_select_centered(mem)
+    if (not recentered
+            and _cursor(screen) and not screen.marker and not mem.get('y_jump')
             and not mem.get('select_used') and not mem.get('near_goal')):
         tick = int(mem.get('tick') or 0)
         last = mem.get('select_focus_tick')
@@ -537,11 +723,17 @@ def map_step(screen: Screen, mem, frame):
             mem['uncertain'] = True
             _record(mem, 'select_focus', observed_metric={'screen_cursor': list(_cursor(screen))},
                     reason='定期的にSELECTで主人公の位置へフォーカスして現在地を確認')
+            mem['select_centered'] = tick
             return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
-        _give_up_source(mem, order)
-        order = _order(mem)
+        if _home_can_send(mem):
+            _give_up_source(mem, order)
+            order = _order(mem)
+        # Otherwise the home castle has nobody to send (g1133 2026-11-05:
+        # home_garrison [] while source_miss stayed at 5 for an hour), so the
+        # fallback could never launch and giving up only blocked the walk to
+        # the chart's own source. Keep walking instead (issue #3417).
     verifying = order is not None and (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
     if order is not None and ((not verifying and not _ready(order, mem)) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding
@@ -584,6 +776,8 @@ def map_step(screen: Screen, mem, frame):
             update_world(screen, mem, frame)
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
+        if not _order_start_due(mem, order['step']):
+            return []
         mem['active'] = order['step']
         mem['picked'] = []
         # The bounded inventory search belongs to this attempt, not the
@@ -862,15 +1056,17 @@ def _commit_departure(mem, order, context, snapshot):
         mem['world_map_due'] = True
 
 
+BOSS_MARKER_CELL_PX = 24     # 3 tiles: the marker on the measured boss cell
 TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
 TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
 DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A as unaccepted
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
-LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before rollback
+LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
 
@@ -893,14 +1089,31 @@ def _probe_launch_markers(mem, markers):
     near the source or target it always counts, anywhere else it counts once
     a baseline exists. A sortie settled by another path (arrival, battle,
     overdue) drops the probe instead of being rolled back.
+
+    Absence of a marker is not proof the unit stayed home (v389). g1133
+    2026-11-05 showed chapter 6 drawing marching units as portraits while the
+    probe only knows the (255,24,0) triangle: every survey of a view that
+    held nothing but the static house icon rolled a launch back, and the next
+    source roster showed the general had left. Once the surveys carry no unit
+    evidence the probe waits for that roster
+    (settle_launch_probes_from_roster) and only the wait expiring falls back
+    to the old rollback.
     """
     probes = _flow(mem).get('launch_probe') or {}
     if not probes:
         return
+    now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
         sortie = (mem.get('sorties') or {}).get(step)
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
+            continue
+        if probe.get('blind'):
+            since = probe.get('tick')
+            if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
+                continue
+            probes.pop(step, None)
+            _rollback_unverified_launch(mem, step, probe, markers)
             continue
         baseline = probe.get('baseline') or []
         fresh = [b for b in markers
@@ -920,16 +1133,62 @@ def _probe_launch_markers(mem, markers):
             continue
         probe['reads'] = int(probe.get('reads') or 0) + 1
         if probe['reads'] >= LAUNCH_PROBE_READS:
+            probe['blind'] = True
+            probe['tick'] = now
+            _record(mem, 'sortie_launch_unverified', chart_step=step,
+                    general=probe.get('general'),
+                    observed_metric={'general': probe.get('general'),
+                                     'source': probe.get('source'),
+                                     'target': probe.get('target'),
+                                     'markers': [list(b) for b in markers],
+                                     'reads': probe['reads']},
+                    resulting_event='roster_pending',
+                    reason='全体マップに部隊▲が現れないため、出撃元の将軍一覧で出撃の成立を確認する')
+
+
+def settle_launch_probes_from_roster(mem, castle, generals):
+    """Settle a launch probe with the source castle's own roster.
+
+    A completed roster read is direct evidence about the general the ledger
+    sent out: gone from the list means the sortie left, still listed means the
+    committed A never took him. g1133 2026-11-05: the Y view drew marching
+    units as portraits, so only the roster could tell a real launch from a
+    failed one. Presence is the only case that rolls back; absence confirms.
+    The read settles the probe whether or not the marker survey already went
+    blind: the roster arrives first on many sorties.
+    """
+    probes = _flow(mem).get('launch_probe') or {}
+    if not probes:
+        return
+    roster = list(generals)
+    for step, probe in list(probes.items()):
+        if probe.get('source') != castle:
+            continue
+        general = probe.get('general')
+        if general in roster:
             probes.pop(step, None)
-            _rollback_unverified_launch(mem, step, probe, markers)
+            _rollback_unverified_launch(mem, step, probe, [],
+                                        reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
+            continue
+        probes.pop(step, None)
+        # The launch is confirmed: the equivalent-order miss budget it may
+        # have accrued belongs to a failed attempt, not to this one.
+        for key, row in list((mem.get('equivalent_launch_miss') or {}).items()):
+            if isinstance(row, dict) and row.get('step') == step:
+                (mem.get('equivalent_launch_miss') or {}).pop(key, None)
+        _record(mem, 'sortie_launch_confirmed', chart_step=step, general=general,
+                observed_metric={'castle': castle, 'general': general, 'roster': roster[:12]},
+                reason='出撃元の将軍一覧に出撃した将軍がいないため出撃成立を確認')
 
 
-def _rollback_unverified_launch(mem, step, probe, markers):
+def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     """A committed departure produced no unit marker: return it to pending.
 
     Mirrors the march-overdue reset so the order re-confirms from scratch,
     but leaves the observed garrison consistent: the general the ledger sent
     out was never seen leaving, so they go back onto the source roster.
+    reason carries the roster evidence when the probe was settled by the
+    source castle instead of the world map.
     """
     misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
@@ -954,13 +1213,13 @@ def _rollback_unverified_launch(mem, step, probe, markers):
         _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                 deviation_reason='出撃確定後に部隊が現れない',
                 observed_metric=observed,
-                reason='出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
+                reason=reason or '出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
         return
     if mem.setdefault('orders', {}).get(step) == 'launched':
         mem['orders'][step] = 'pending'
     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
             observed_metric=observed, resulting_event='order_reopened',
-            reason='出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')
+            reason=reason or '出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')
 
 
 def _departure_receipt_sent(mem, request):
@@ -1084,8 +1343,18 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         return True
     if chart.is_boss_castle(order['target']):
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
-        # Accept it only when a Y jump placed the marker on it.
-        return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
+        # Accept it when a Y jump placed the marker on it, or when the marker
+        # already stands on the measured cell: g1133 2026-11-05 had three jump
+        # attempts end on stationary reads, and a jump-only rule left the base
+        # impossible to confirm. The cell itself was verified against a
+        # captured frame in v402.
+        if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+            return True
+        cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+        world = update_world(screen, mem, frame, order['target'])
+        return bool(cell and world
+                    and abs(world[0] - cell[0]) <= BOSS_MARKER_CELL_PX
+                    and abs(world[1] - cell[1]) <= BOSS_MARKER_CELL_PX)
     roofs = castle_roofs(frame)
     if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
         return True                           # winter palette: trust the Y jump (g421 18:13)

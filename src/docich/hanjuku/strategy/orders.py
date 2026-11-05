@@ -10,7 +10,7 @@ from copy import deepcopy
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
 from . import edition
@@ -759,6 +759,10 @@ def _boss_retry_due(order, mem) -> bool:
 
 
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS   # over the longest chapter 3 march measured (677)
+# Chapter 6 marches run slower than the chapter 3 measurement (g1133
+# 2026-11-05: 603 cells to セレーネ took 23-32 min, 740 to ユージア 34 min), so
+# the fixed limit reset orders whose general was still walking.
+MARCH_TICKS_PER_CELL = {6: 2.4}
 BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
 BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
 # A site march starts from a corner castle and can outlive two relaunch
@@ -876,7 +880,7 @@ def _relaunch_overdue_boss(mem):
         if sortie.get('status') == 'overdue':
             _drop_spent_sortie_attempt(mem, step)
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
-                or type(sortie.get('tick')) is not int or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                or type(sortie.get('tick')) is not int or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         relaunches = mem.setdefault('boss_relaunch', {})
         # Owner 2026-10-30: a spent relaunch budget must not park a site
@@ -894,8 +898,15 @@ def _relaunch_overdue_boss(mem):
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
         _drop_spent_sortie_attempt(mem, step)
+        # The cell and the measured source list go with the record: a boss march
+        # that never enters is either a wrong cell or a launch that never left
+        # (g1133 2026-11-05: five boss sorties recorded as launched while the
+        # world map showed a single marching unit).
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
-                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0)}
+                    'marching': now - sortie['tick'], 'relaunches': relaunches.get(step, 0),
+                    'cell': list(chart.castles(mem.get('chapter') or 0).get(target) or ()),
+                    'source_still_has_general': sortie.get('general') in
+                    ((mem.get('garrison') or {}).get(sortie.get('source')) or ())}
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
             if not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
@@ -982,7 +993,7 @@ def _relaunch_overdue_march(mem):
             continue
         if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
-                or now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         en_route = sortie.get('status') == 'en_route'
         sortie['status'] = 'overdue'
@@ -1388,6 +1399,11 @@ def _finish_order(mem, state, **fields):
             (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
         if state == 'failed':
+            # Remember the content name: a rebuilt plan gives the same content a
+            # new execution id, so it would be re-issued at once (g1133
+            # 2026-11-05: the boss order failed 96 times in ten minutes because
+            # no castle menu opened at either source).
+            mem.setdefault('failed_local_step', {})[step.rsplit(':', 1)[-1]] = int(mem.get('tick') or 0)
             from . import goals
             order = _order_for_step(mem, step) or {}
             goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
@@ -1404,7 +1420,16 @@ def _source(order, mem):
     bound = bound_fields(order, mem)
     if order.get('_execution_bound') is True:
         return bound['source'] if bound is not None else None
-    return mem.get('source_override', {}).get(order['step'], order['source'])
+    override = mem.get('source_override') or {}
+    step = order.get('step')
+    if step in override:
+        return override[step]
+    # A rebuilt plan gives the same content a new execution id (“A:<rid>:M1”),
+    # so a fallback decided for the content must survive that: g1133 2026-11-05
+    # fell back to the home castle 96 times in ten minutes because each rebuild
+    # forgot the decision and aimed at the unopenable castle again.
+    local = step.rsplit(':', 1)[-1] if isinstance(step, str) else None
+    return override.get(local, order['source'])
 
 
 def _give_up_source(mem, order):
@@ -1425,15 +1450,33 @@ def _give_up_source(mem, order):
     home = chart.home_castle(mem.get('chapter') or 0)
     # Navigation state is left to the nav_reset of this same miss: dropping
     # the cell would freeze the camera on open sea again (g358).
-    misses = mem.get('source_miss', {}).pop(step, 0)
+    # Reset by assignment, not by pop: g1133 2026-11-05 kept source_miss at 5
+    # for an hour (the pop never reached the persisted state, while plain
+    # assignments such as orders[...] did), so the give-up fired on every
+    # observation and the order could never even start walking (issue #3417).
+    miss_map = mem.setdefault('source_miss', {})
+    misses = miss_map.get(step, 0)
+    miss_map[step] = 0
     garrison = mem.get('garrison') or {}
+    if source != home and home in _owned(mem):
+        # The home castle may keep only the hero, so the fallback source cannot
+        # send anyone: g1133 2026-11-05 aimed at the home castle on every
+        # observation while no sortie could ever leave it. Fail the order so
+        # the plan offers another (a castle that still has a spare).
+        if _last_castle_held(mem, {**order, 'source': home}):
+            _finish_order(mem, 'failed', deviation_reason=f'{source}で決定しても城メニューが{misses}回開かず、本城も出せない',
+                          observed_metric={'source': source, 'menu_miss': misses, 'home': home},
+                          reason='出撃元の城を選べず、本城も将軍1人のため出撃できないので指示を諦める')
+            return
     if source != home and home in _owned(mem) and not mem.get('source_override', {}).get(step):
         mem.setdefault('source_override', {})[step] = home
+        mem['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
         garrison.pop(source, None)
-        _record(mem, 'order_source_changed', chart_step=step, strategy_variant='source_fallback',
-                deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
-                observed_metric={'source': source, 'menu_miss': misses},
-                reason='本城から出撃し直す')
+        # A counter, not a decision record: the caller that logs this keeps
+        # source_miss and the override out of the persisted state (g1133
+        # 2026-11-05 probe: override null and source_miss 5 on all 224 calls),
+        # so it fired on every observation - 94 records in five minutes.
+        _tally(mem, 'source_fallback')
         return
     _finish_order(mem, 'failed', deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
                   observed_metric={'source': source, 'menu_miss': misses},
@@ -1623,6 +1666,42 @@ def _match_sortie(mem, castle, general):
 # 51 over the old 4x bound, so the entry matched nothing and the battle ran
 # as side 'enemy' (value-aware retreat off; he retreated at 9 vs 7).
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # ~60 min; g1133 march measured 1651
+# A march may not outlive the window in which its battle can still bind to
+# the order (_long_march), so the distance-scaled wait is capped here.
+MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+
+
+def _arrival_limit(mem, sortie):
+    """How long a march may run before its order counts as lost.
+
+    BOSS_ARRIVAL_LIMIT was measured on chapter 3's longest march (677 cells).
+    A chapter whose chart marches slower needs a longer wait: g1133 2026-11-05
+    showed ナストリーニ reaching セレーネ (603 cells) 23-32 min after launch and
+    ピスタチオ ユージア (740) after 34 min, while the fixed 20 min had already
+    reset both orders and sent a second general after a march still walking.
+    Chapters without a measured rate keep the fixed limit; the wait never
+    exceeds the long-march window.
+    """
+    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
+    if not rate:
+        return BOSS_ARRIVAL_LIMIT
+    cells = chart.castles(mem.get('chapter'))
+    source = cells.get(sortie.get('source'))
+    target = cells.get(sortie.get('target') or sortie.get('planned_target'))
+    if not source or not target:
+        return BOSS_ARRIVAL_LIMIT
+    distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
+    limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    if chart.is_boss_castle(sortie.get('target') or sortie.get('planned_target')):
+        # g1133 2026-11-05 04:04: the boss march from オケアナ (203 chart cells)
+        # had not entered at 819 observations and the 800 floor declared it lost
+        # while it was still walking; the same chapter's marches measured 23-34
+        # minutes (1380-2040 observations) for 603-740 cells, so a boss march can
+        # outlast the floor. The boss is the chapter's last march, so it may use
+        # the whole window in which its battle can still bind to the order; the
+        # relaunch budget still bounds a wrong cell.
+        limit = MARCH_ARRIVAL_CAP
+    return limit
 
 
 def _long_march(sorties, castle, general, now, retired=None):

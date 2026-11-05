@@ -80,6 +80,9 @@ def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
     return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
+NAV_CONTINUITY_TICKS = 30      # ticks between map frames that still integrate
+
+
 def update_world(screen: Screen, mem, frame, goal_name=None):
     """Track the cursor's map cell from measured screen motion and roof anchors.
 
@@ -107,8 +110,13 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
         # rule (trust only anchored frames or the inland search).
         trusted = not mem.get('uncertain') or last.get('search')
     else:
-        trusted = (type(last_tick) is int and type(tick) is int
-                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+        # Map frames are sparse while the chapter throws battles (g1133
+        # 2026-11-05: two map frames in 8.4 minutes), so requiring the very
+        # next tick froze the estimate for hours. A short gap still integrates;
+        # a long one does not.
+        gap = tick - last_tick if type(last_tick) is int and type(tick) is int else None
+        trusted = (gap is not None and 0 <= gap <= NAV_CONTINUITY_TICKS
+                   and last.get('kind') == screen.kind)
     if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
@@ -117,7 +125,14 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
             else:
                 moved.append(s[axis] - last['screen'][axis])
         world = [world[0] + moved[0], world[1] + moved[1]]
-    mem['nav_last'] = None
+    # Seed the continuity record from this frame when there is none: `nav_step`
+    # only writes it after it computes a direction, so one early return left it
+    # None for good and no later frame could integrate (g1133 2026-11-05 froze
+    # at [392,144] for hours: every order was stuck at its source).
+    if not isinstance(mem.get('nav_last'), dict):
+        mem['nav_last'] = {'screen': list(s), 'expected': [0, 0],
+                           'tick': int(tick) if type(tick) is int else None,
+                           'kind': screen.kind, 'search': bool(mem.get('nav_search'))}
     box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
@@ -342,9 +357,19 @@ def _apply_world_flags(mem, flags):
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
             changed.append(('captured', castle))
-    _record(mem, 'world_map_owners', observed_metric=flags,
-            resulting_event=[f'{k}:{c}' for k, c in changed] or None,
-            reason='全体マップの旗の色で全城の所有を確認')
+    # The Y view is read once per picker step and once per survey; recording
+    # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
+    # most of them identical picker steps) hid real changes in the log.
+    # The signature has to survive the policy's JSON round trip: a tuple is
+    # reloaded as a list, so a tuple never compares equal again and the same
+    # flag set was recorded on every observation anyway (measured 2026-11-05:
+    # 147 owners records an hour over nine distinct flag sets).
+    signature = [[k, v] for k, v in sorted(flags.items())]
+    if mem.get('world_map_signature') != signature:
+        mem['world_map_signature'] = signature
+        _record(mem, 'world_map_owners', observed_metric=flags,
+                resulting_event=[f'{k}:{c}' for k, c in changed] or None,
+                reason='全体マップの旗の色で全城の所有を確認')
     for kind, castle in changed:
         _record(mem, 'castle_lost_observed' if kind == 'lost' else 'castle_owned_observed',
                 castle=castle, observed_metric={'world_map': flags[castle]},

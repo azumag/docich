@@ -48,6 +48,7 @@ KEY_OWNERSHIP = {
     'recall_skip':          {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'recall_skip_target':   {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'recall_skip_ticks':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    'recall_skip_history':  {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'retreat_rechecks':     {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'retreat_camp_episode': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'retreat_anonymous_budget': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},

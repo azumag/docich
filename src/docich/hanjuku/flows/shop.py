@@ -83,6 +83,7 @@ def shop_step(screen: Screen, mem):
         if (type(qty) is not int or qty <= 0 or price is None or price <= 0
                 or available is None or price > available):
             _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
+                    listed=dict(listed),
                     deviation_reason='invalid_quantity' if type(qty) is not int or qty <= 0
                                      else 'not_listed' if price is None else 'reserved_funds',
                     reason='商人の品揃えまたは全賃金・未払回復等を保持した購入予算の制約')

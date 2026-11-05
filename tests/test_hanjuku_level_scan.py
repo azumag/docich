@@ -77,6 +77,38 @@ def test_await_level_scan_bounds():
     assert month_flow._await_level_scan(mem, shop) is False
 
 
+def _after_recruit_memory(recruit):
+    mem = _month_memory()
+    mem.update(shop={'key': '1-7', 'level_scan_wait': 1, 'recruit': recruit},
+               month_roster_scan={'scope': [1, '1-7'], 'tick': 400},
+               recruit_month_scan_attempts={'scope': [1, '1-7'], 'count': 1},
+               recruit_roster={'chapter': 1, 'month': '1-7', 'tick': 400,
+                               'names': ['どうし'], 'wages': {}, 'complete': True})
+    return mem
+
+
+def test_finished_recruit_does_not_block_the_country_status_visit():
+    # g1133 49-9: the month's roster scan and recruit were done, and the
+    # recruit gate held every observation, so 現在収入/総賃金 stayed at 49-6.
+    mem = _after_recruit_memory('done')
+    menu = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(menu), mem, menu) == [p.pad('a')]
+    assert mem['house']['level_only'] is True
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == [p.pad('a')]
+    page1 = _country_page1()
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 500, 'income': 300}
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 500, 'wages': 150}
+
+
+def test_an_open_recruit_still_keeps_the_status_visit_waiting():
+    mem = _after_recruit_memory('opened')
+    menu = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(menu), mem, menu) is None
+    assert mem.get('house') is None
+
+
 def test_level_trigger_visits_status_and_skips_the_roster():
     mem = _month_memory()
     mem.update(shop={'key': '1-7', 'level_scan_wait': 1},

@@ -958,6 +958,16 @@ def _country_status_level(screen):
 # that same frame instead of waiting a whole observation period (1.5 s).
 INPUT_FREE_HOPS = {('roster_next', 'roster'), ('roster_advance', 'roster')}
 MAX_INPUT_FREE_HOPS = 2
+# Safety net for the roster walk. The hop only re-labels a frame that was
+# already read, so it must never be the only thing an observation does: a run
+# of observations that issues no pad is not progress. (Correction 2026-11-05:
+# the 192 hop records of that morning were the normal walk -- every one of
+# them sent ``down`` -- not a no-input spin; the guard stays as a bound on the
+# case the log cannot rule out, and it has not fired live.) Only the roster
+# walk is counted: other phases wait on a map screen by design (open_roster
+# retries at age 3/6, travel), so a long wait there is not a spin.
+HOUSE_IDLE_LIMIT = 10
+HOUSE_IDLE_PHASES = frozenset({'roster', 'roster_next', 'roster_advance', 'status'})
 
 
 def step(screen, mem, frame):
@@ -967,7 +977,40 @@ def step(screen, mem, frame):
     moved along ``INPUT_FREE_HOPS``. Any pad, ``None`` (release to another
     owner) or ended flow stops the chain, so no input follows another input
     inside one observation and the hop count is bounded.
+
+    Consecutive observations that issue no pad are counted as well: a menu that
+    never accepts input is left (``house_idle_escape``) instead of spinning.
     """
+    actions = _step_chain(screen, mem, frame)
+    state = mem.get('house')
+    if state is None:
+        return actions
+    if actions != [] or screen.kind != 'text' or state.get('phase') not in HOUSE_IDLE_PHASES:
+        state.pop('idle_observations', None)
+        state.pop('idle_phases', None)
+        return actions
+    idle = int(state.get('idle_observations') or 0) + 1
+    state['idle_observations'] = idle
+    phases = list(state.get('idle_phases') or [])
+    if not phases or phases[-1] != state.get('phase'):
+        phases.append(state.get('phase'))
+        del phases[:-4]
+        state['idle_phases'] = phases
+    if idle < HOUSE_IDLE_LIMIT:
+        return actions
+    from ..os_layer.commands import pad
+    _record(mem, 'idle_escape',
+            observed_metric={'observations': idle, 'phases': phases,
+                             'screen': screen.kind, 'seen': len(state.get('seen') or [])},
+            reason='入力の無い観測が続き月内メニューが進まないため、名簿を閉じて通常の判断へ戻す')
+    state.pop('idle_observations', None)
+    state.pop('idle_phases', None)
+    _phase(state, 'leave_roster')
+    return [pad('b')]
+
+
+def _step_chain(screen, mem, frame):
+    """``step`` body: one handler run plus the bounded input-free hops."""
     for _ in range(MAX_INPUT_FREE_HOPS + 1):
         before = (mem.get('house') or {}).get('phase')
         house_state = mem.get('house')
@@ -1018,8 +1061,21 @@ def _step_once(screen, mem, frame):
                 # another owner and dropped the month's refill. The count
                 # check and an unsettled refill finish first (both bounded).
                 return None
-            if ((mem.get('shop') or {}).get('key') == mem.get('month')
-                    and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
+            level_due = _level_due(mem)
+            # Issue #3011 (owner): the hanjuku level lives on the country
+            # status page. Once the month's shopping is done and the level is
+            # still unread, the monthly visit runs for that page alone.
+            level_trigger = (level_due and shop.get('key') == mem.get('month')
+                             and bool(shop.get('level_scan_wait')))
+            # The recruit gate guards the roster walk, not the free
+            # country-status page. A finished (or receipt-unverified) recruit
+            # used to block the level-only visit for the rest of the month, so
+            # 現在収入 / 総賃金 kept the previous month's values while the game
+            # recruited (g1133 49-9 still showed 49-6, owner 2026-11-05).
+            status_only = level_trigger and shop.get('recruit') in ('done', 'unverified')
+            if (shop.get('key') == mem.get('month')
+                    and shop.get('recruit') in ('opened', 'done', 'unverified')
+                    and not status_only):
                 return None
             from ..strategy.economy import _batch_active
             if ((mem.get('shop') or {}).get('key') == mem.get('month')
@@ -1039,12 +1095,6 @@ def _step_once(screen, mem, frame):
                 # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
                 # The attempt is over either way; only the receipt is unknown.
                 return None
-            level_due = _level_due(mem)
-            # Issue #3011 (owner): the hanjuku level lives on the country
-            # status page. Once the month's shopping is done and the level is
-            # still unread, the monthly visit runs for that page alone.
-            level_trigger = (level_due and shop.get('key') == mem.get('month')
-                             and bool(shop.get('level_scan_wait')))
             # One monthly roster scan per chapter/month. The scan runs the
             # moment the monthly menu is ready (before purchases/recruitment);
             # a completed scan is retained for the month and never repeated,

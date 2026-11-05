@@ -49,15 +49,21 @@ def cheap_listing(listed):
             if type(listed.get(name)) is int and 0 < listed[name] <= KNOWN_PRICES[name] * CHEAP_VENDOR_RATIO]
 
 
+def _egg_necessity_pending(mem, shop):
+    """Egg recovery still owns the menu and its reserved cash."""
+    return bool(shop.get('egg') not in ('done', 'not_needed')
+                and (shop.get('egg_priority') or shop.get('egg_before_recruit')
+                     or _egg_recovery_targets(mem)))
+
+
 def _necessities_pending(mem, shop):
     # A spare-cash purchase must not take the menu away from recovery or
-    # necessary recruitment. Defer planning; do not mark the visit spent.
-    egg = (shop.get('egg') not in ('done', 'not_needed')
-           and (shop.get('egg_priority') or shop.get('egg_before_recruit')
-                or _egg_recovery_targets(mem)))
+    # necessary recruitment. This gate stops a NEW extra from being planned;
+    # an extra already planned before the recruit step may still be bought
+    # when _merchant_spendable() keeps the fee (see merchant_card_spendable).
     recruit = (shop.get('recruit_priority')
                and shop.get('recruit') not in ('done', 'not_needed'))
-    return bool(egg or recruit)
+    return bool(_egg_necessity_pending(mem, shop) or recruit)
 
 
 def bargain_spendable(mem, shop, header):
@@ -109,7 +115,7 @@ def merchant_card_spendable(mem, shop, header, name, price):
     if name not in extras:
         return _merchant_spendable(mem, shop, header)
     if (type(price) is not int or price <= 0 or name not in BARGAIN_TARGETS
-            or price > KNOWN_PRICES[name] or _necessities_pending(mem, shop)):
+            or price > KNOWN_PRICES[name] or _egg_necessity_pending(mem, shop)):
         return None
     cash = bargain_spendable(mem, shop, header)
     if cash is None or _charted_purchase_ahead(mem, header):

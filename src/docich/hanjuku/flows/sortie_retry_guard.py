@@ -203,13 +203,13 @@ def install() -> None:
         original_cancelled(mem, order, sortie)
         _remember_cancel(order, mem, 'sortie_cancelled_observed')
 
-    def rollback(mem, step, probe, markers):
+    def rollback(mem, step, probe, markers, reason=None):
         key, fingerprint, row = _logical_launch_budget(mem, step, probe)
         launch_state = _launch_state(mem)
         if isinstance(row, dict):
             misses = launch_state.setdefault('launch_miss', {})
             misses[step] = max(int(misses.get(step) or 0), int(row.get('count') or 0))
-        result = original_rollback(mem, step, probe, markers)
+        result = original_rollback(mem, step, probe, markers, reason=reason)
         if key is not None:
             launch_state = _launch_state(mem)
             count = int((launch_state.get('launch_miss') or {}).get(step) or 0)
