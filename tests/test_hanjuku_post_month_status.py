@@ -321,6 +321,7 @@ def test_selection_triangle_without_castle_flags_has_no_candidate():
     assert result["source"] == "selection_marker"
     assert tuple(result["box"]) == box
     assert "castle_candidate" not in result
+    assert result["icons_seen"] == 0
 
 
 
