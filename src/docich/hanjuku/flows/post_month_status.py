@@ -13,6 +13,7 @@ from ..os_layer.readers import _roof_under_cursor, world_markers
 from ..os_layer.screen import castle_roofs, own_camps
 from ..state.regions import flow as _flow
 from . import house, recall as recall_flow, map_registration
+from copy import deepcopy
 
 MAX_STEPS = 900
 MAX_SCAN = receipts.MAX_GENERALS
@@ -29,22 +30,69 @@ def _log(mem, event, **details):
     decision_log._record(mem, event, **details)
 
 
+def _tasks(statuses, names):
+    queue = []
+    for name in names:
+        info = statuses[name]
+        if info.get('location') == 'camp':
+            queue.append({'kind': 'recall', 'name': name})
+        elif info.get('location') == 'castle':
+            if not info.get('castle'):
+                queue.append({'kind': 'locate', 'name': name})
+            if info.get('broken'):
+                queue.append({'kind': 'repair', 'name': name})
+    return queue
+
+
 def arm(mem):
-    """Arm only on the observed confirmation of the monthly exit."""
+    """The month alone never invalidates a verified per-general reading."""
     scope = [mem.get('chapter'), mem.get('month')]
     if not scope[0] or not scope[1]:
         return
     old = mem.get('post_month_status') or {}
     if old.get('scope') == scope:
         return
+    identity = receipts.run_identity(mem.get('_run_identity'))
+    cache = receipts._persistent_status(mem)
+    statuses = deepcopy(cache['statuses']) if cache is not None else {}
+    stale = set((cache or {}).get('dirty') or {})
+    # A moving general can reach a castle, camp or battle without an explicit
+    # status callback. Stationary castle residents need no periodic re-open.
+    for name, row in statuses.items():
+        if (row.get('location') in ('march', 'unknown')
+                or row.get('location') == 'castle' and not row.get('castle')):
+            stale.add(name)
+    pending = list((cache or {}).get('pending_joins') or [])
+    pending.extend(name for name in mem.get(receipts.PENDING_JOINS_KEY) or []
+                   if name not in statuses and name not in pending)
+    count = mem.get('country_general_count') or {}
+    count_mismatch = (isinstance(count, dict)
+                      and count.get('scope') == scope and count.get('identity') == identity
+                      and type(count.get('count')) is int
+                      and count['count'] != len(statuses))
+    scan = cache is None or bool(stale or pending or count_mismatch)
+    if not scan and not _tasks(statuses, list(statuses)):
+        # Common case: zero input and zero roster navigation this month.
+        mem['post_month_status_last'] = {
+            'scope': scope, 'statuses': statuses, 'complete': True,
+            'result': 'unchanged_cached', 'tick': int(mem.get('tick') or 0)}
+        _log(mem, 'post_month_status_reused',
+             observed_metric={'generals': len(statuses), 'reopened': 0},
+             reason='月替わりだけでは将軍の確定済み状態を無効化しない')
+        return
     mem['post_month_status'] = {
-        'scope': scope, 'identity': receipts.run_identity(mem.get('_run_identity')),
-        'stage': 'await_map', 'statuses': {}, 'names': [], 'tasks': [],
-        'steps': 0, 'phase_reads': 0, 'complete': False,
+        'scope': scope, 'identity': identity,
+        'stage': 'await_map' if scan else 'process', 'statuses': statuses,
+        'dirty': sorted(stale), 'names': [] if scan else list(statuses),
+        'tasks': [] if scan else _tasks(statuses, list(statuses)),
+        'steps': 0, 'phase_reads': 0, 'complete': not scan,
         'started_tick': int(mem.get('tick') or 0)}
     _log(mem, 'post_month_status_armed',
-         observed_metric={'scope': scope},
-         reason='月次コマンド終了後、出撃計画より先に全将軍の状態を実測する')
+         observed_metric={'scope': scope, 'cached': len(statuses),
+                          'reopen': sorted(stale), 'joins': pending,
+                          'count_mismatch': count_mismatch},
+         reason=('変更があり得る将軍だけ個別ステータスを再取得する'
+                 if scan else '既知の帰還・修理タスクのみ実行する'))
 
 
 def _stage(state, name, **fields):
@@ -145,26 +193,37 @@ def _forget_field_residents(mem, name):
 
 
 def _complete_scan(mem, state):
-    if (not state['names'] or len(state['statuses']) != len(state['names'])
-            or any(row.get('location') == 'unknown' for row in state['statuses'].values())):
+    if (not state['names'] or len(set(state['names'])) != len(state['names'])
+            or any(name not in state['statuses'] for name in state['names'])
+            or any(name in state.get('dirty', ()) for name in state['names'])
+            or any(state['statuses'][name].get('location') == 'unknown'
+                   for name in state['names'])):
         return False
     state['complete'] = True
     state['steps'] = 0
-    queue = []
-    for name in state['names']:
-        info = state['statuses'][name]
-        if info['location'] == 'camp':
-            queue.append({'kind': 'recall', 'name': name})
-        elif info['location'] == 'castle':
-            if not info.get('castle'):
-                queue.append({'kind': 'locate', 'name': name})
-            if info.get('broken'):
-                queue.append({'kind': 'repair', 'name': name})
-    state['tasks'] = queue
+    # A *complete* roster walk proves that missing names have left. A battle
+    # defeat by itself never proves death. Exclude absent names and all their
+    # pending/field references only after this membership proof.
+    missing = set(state['statuses']) - set(state['names'])
+    for name in missing:
+        receipts.record_departure(mem, name)
+        _forget_field_residents(mem, name)
+        for key in ('house_eggs', 'egg_types', 'egg_uses'):
+            if isinstance(mem.get(key), dict):
+                mem[key].pop(name, None)
+        for key in ('general_location_unknown', 'egg_recheck', 'roster_pending_joins'):
+            if isinstance(mem.get(key), list):
+                mem[key] = [actor for actor in mem[key] if actor != name]
+        _log(mem, 'post_month_general_departed', general=name,
+             reason='将軍名簿を末尾まで実測したが本人がいないため旧状態を除籍')
+    state['statuses'] = {name: state['statuses'][name] for name in state['names']}
+    state['tasks'] = _tasks(state['statuses'], state['names'])
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
-        'statuses': state['statuses'], 'complete': True,
+        'statuses': deepcopy(state['statuses']), 'dirty': {}, 'pending_joins': [],
+        'suspected_departures': [], 'complete': True,
         'tick': int(mem.get('tick') or 0)}
+    queue = state['tasks']
     # Commit the same full-survey contract that the existing planner, payroll
     # and egg-repair logic already understand. This is a verified per-general
     # scan, unlike the earlier month-menu names-only count.
@@ -279,7 +338,7 @@ def step(screen, mem, frame):
         if not names or screen.selected not in names:
             return []
         selected = screen.selected
-        if selected in state['statuses']:
+        if selected in state['names']:
             first = state['names'][0] if state['names'] else None
             at_end = (house._roster_scroll_end(screen, frame)
                       or (len(names) < receipts.VISIBLE_NAME_ROWS
@@ -293,6 +352,12 @@ def step(screen, mem, frame):
                      reason='将軍一覧の末尾が確認できず、通常の出撃計画を保留')
                 _stage(state, 'blocked')
                 return [pad('b')]
+            state['list_moves'] = state.get('list_moves', 0) + 1
+            return [pad('down')]
+        if selected in state['statuses'] and selected not in state.get('dirty', ()):
+            # The roster page establishes current membership, but does not
+            # require pressing A on a cached, unchanged general.
+            state['names'].append(selected)
             state['list_moves'] = state.get('list_moves', 0) + 1
             return [pad('down')]
         # Wait for a stable highlight so that the triangle belongs to this
@@ -322,6 +387,8 @@ def step(screen, mem, frame):
                'marker': marker, 'tick': int(mem.get('tick') or 0)}
         state['names'].append(name)
         state['statuses'][name] = row
+        if name in state.get('dirty', []):
+            state['dirty'].remove(name)
         if loc in ('camp', 'march'):
             _forget_field_residents(mem, name)
         elif loc == 'castle':
