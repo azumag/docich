@@ -425,8 +425,7 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
-    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
-        return []
+    # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
     if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
     if shop and not shop.get('closed'):
@@ -1486,6 +1485,17 @@ def month_sub_step(screen: Screen, mem):
                 sub['joined_names'].append(joined[1])
                 from ..os_layer.roster import invalidate, record_join
                 record_join(mem, joined[1])  # keep a confirmed join in the count
+                # Payment alone is not a general. A unique join notice is.
+                from ..os_layer.roster import run_identity, MAX_GENERALS
+                country = mem.get('country_general_count')
+                if (isinstance(country, dict)
+                        and country.get('scope') == [mem.get('chapter'), mem.get('month')]
+                        and country.get('identity') == run_identity(mem.get('_run_identity'))
+                        and type(country.get('count')) is int
+                        and country['count'] < MAX_GENERALS
+                        and joined[1] not in country.setdefault('joined', [])):
+                    country['count'] += 1
+                    country['joined'].append(joined[1])
                 invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},
