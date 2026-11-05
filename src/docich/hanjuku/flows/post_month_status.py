@@ -136,6 +136,12 @@ def _marker(mem, frame):
         if isinstance(mapped, dict) and int(mapped.get('icons') or 0) >= 1:
             result['castle_candidate'] = mapped['castle']
             result['mapping'] = mapped
+            result['icons_seen'] = mapped['icons']
+        else:
+            # Distinguish a missing flag sprite from a visible flag with an
+            # uncalibrated or ambiguous chart match in live diagnostics.
+            from ..os_layer.readers import _map_icon_centres
+            result['icons_seen'] = len(_map_icon_centres(frame))
         return result
     boxes = [b for b in world_markers(frame)
              if b[2] < 164 and b[3] < 150]
@@ -407,8 +413,10 @@ def step(screen, mem, frame):
             _log(mem, 'post_month_roster_marker_unverified', general=selected,
                  observed_metric={'reads': reads, 'marker_seen': isinstance(marker, dict),
                                   'source': marker.get('source') if isinstance(marker, dict) else None,
-                                  'mapped_icons': ((marker.get('mapping') or {}).get('icons')
-                                                   if isinstance(marker, dict) else None)},
+                                  'icons_seen': (marker.get('icons_seen')
+                                                 if isinstance(marker, dict) else None),
+                                  'marker_box': (marker.get('box')
+                                                 if isinstance(marker, dict) else None)},
                  reason='一覧の三角マークから城を確定できず個別状態確認後にSELECTへ委ねる')
         else:
             _log(mem, 'post_month_roster_marker_mapped', general=selected, castle=candidate,
