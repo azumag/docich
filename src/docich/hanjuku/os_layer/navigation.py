@@ -390,6 +390,14 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # Permit only one rescue jump per order/mode. Resetting the entire
         # budget while cursor_still remains high would grant 18 more jumps
         # each time the budget runs out, defeating the hard safety bound.
+        # Do not consume the one-shot rescue when the normal distance/target
+        # policy would reject a jump. A later valid target must retain it.
+        boss_needs_jump = (mode == 'target' and chart.is_boss_castle(name)
+                           and (mem.get('y_jumped') or {}).get(order['step']) != name)
+        world, goal = mem.get('cursor'), boss_probe_cell(mem, name, order.get('step'))
+        if not boss_needs_jump and world and (abs(world[0] - goal[0])
+                                               + abs(world[1] - goal[1]) <= Y_JUMP_FAR):
+            return False
         rescued = mem.setdefault('yjump_rescued', {})
         if not stuck or rescued.get(key):
             return False
