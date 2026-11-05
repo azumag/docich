@@ -127,9 +127,11 @@ def _forget_field_residents(mem, name):
 
 
 def _complete_scan(mem, state):
-    if not state['names'] or len(state['statuses']) != len(state['names']):
+    if (not state['names'] or len(state['statuses']) != len(state['names'])
+            or any(row.get('location') == 'unknown' for row in state['statuses'].values())):
         return False
     state['complete'] = True
+    state['steps'] = 0
     queue = []
     for name in state['names']:
         info = state['statuses'][name]
@@ -172,6 +174,7 @@ def _task_complete(mem, state, *, result):
          observed_metric={'task': job.get('kind')},
          reason='将軍別の処理を終了し次の将軍の処理へ進む')
     state.pop('job', None)
+    state['steps'] = 0
     _stage(state, 'process')
 
 
@@ -197,9 +200,11 @@ def step(screen, mem, frame):
         _log(mem, 'post_month_status_unverified',
              observed_metric={'stage': stage, 'names': list(state['statuses'])},
              reason='確認上限に達したため未確認情報を城の所在地として扱わない')
-        _finish(mem, state)
+        _stage(state, 'blocked')
         return []
     state['phase_reads'] += 1
+    if stage == 'blocked':
+        return []
     if stage == 'await_map':
         if screen.kind == 'map':
             _stage(state, 'open_menu')
@@ -233,7 +238,9 @@ def step(screen, mem, frame):
                 return [pad('b')]
             if state['phase_reads'] > STATUS_RETRIES:
                 state['failure'] = 'roster_end_unconfirmed'
-                _finish(mem, state)
+                _log(mem, 'post_month_status_unverified',
+                     reason='将軍一覧の末尾が確認できず、通常の出撃計画を保留')
+                _stage(state, 'blocked')
                 return [pad('b')]
             state['list_moves'] = state.get('list_moves', 0) + 1
             return [pad('down')]
@@ -251,7 +258,10 @@ def step(screen, mem, frame):
         if not info or info.get('general') != state.get('selected'):
             if state['phase_reads'] >= STATUS_RETRIES:
                 state['failure'] = 'status_unreadable'
-                _finish(mem, state)
+                _log(mem, 'post_month_status_unverified',
+                     general=state.get('selected'),
+                     reason='将軍個別の状態を読めないため通常の出撃計画を保留')
+                _stage(state, 'blocked')
                 return [pad('b')]
             return []
         name = info['general']
@@ -263,8 +273,18 @@ def step(screen, mem, frame):
         state['statuses'][name] = row
         if loc in ('camp', 'march'):
             _forget_field_residents(mem, name)
-        elif loc == 'castle' and isinstance(marker, dict) and marker.get('castle_candidate'):
-            _assign(mem, name, marker['castle_candidate'], evidence='roster_triangle')
+        elif loc == 'castle':
+            # Existing named castle rosters are still valid when the observed
+            # status says resident. Do not repeat a costly SELECT for them.
+            old = [castle for castle, residents in (mem.get('garrison') or {}).items()
+                   if isinstance(residents, list) and name in residents]
+            candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+            if candidate:
+                _assign(mem, name, candidate, evidence='roster_triangle')
+            elif len(old) == 1:
+                from ..os_layer.world import _owned
+                if old[0] in _owned(mem):
+                    row.update(castle=old[0], castle_evidence='previous_named_roster')
         _stage(state, 'roster_next')
         return [pad('b')]
     if stage == 'roster_next':
@@ -346,13 +366,20 @@ def step(screen, mem, frame):
         if job['kind'] == 'repair':
             if mem.get('house'):
                 return []
+            source = state['statuses'][name].get('castle')
+            if not source or not _roof_under_cursor(screen, frame):
+                _task_complete(mem, state, result='repair_source_unconfirmed')
+                return []
+            # SELECT already put the cursor on this general. Read the actual
+            # castle status before handing the existing guarded house FSM its
+            # castle_sortie / card / destination / receipt transaction.
             mem['house'] = {
-                'phase': 'close', 'chapter': mem['chapter'],
+                'phase': 'castle_verify', 'chapter': mem['chapter'],
                 'roster_month': mem.get('month'), 'age': 0, 'total': 0,
-                'seen': [], 'pending': [name], 'month_scan': False}
-            house._next_general(mem)
+                'seen': [], 'pending': [], 'month_scan': False,
+                'general': name, 'source': source, 'castles': []}
             _stage(state, 'wait_repair')
-            return house.step(screen, mem, frame) or []
+            return [pad('a')]
         _task_complete(mem, state, result='unknown_task')
         return []
     if stage == 'locate_info':
@@ -361,6 +388,10 @@ def step(screen, mem, frame):
         if castle is not None and _assign(mem, name, castle, evidence='native_castle_name'):
             _task_complete(mem, state, result='castle_verified')
             return [pad('b')]
+        if screen.kind == 'castle_menu' and screen.hand:
+            toward = menu_to(screen, 'ステータス')
+            if toward:
+                return [pad('a')] if toward == 'here' else [toward]
         if state['phase_reads'] >= STATUS_RETRIES:
             _task_complete(mem, state, result='castle_name_unreadable')
             return [pad('b')]
