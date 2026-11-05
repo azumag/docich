@@ -1784,8 +1784,13 @@ def egg_battle_step(screen: Screen, mem):
         # use it only as a bounded-resource last resort with actual panels.
         enemy_rows = [r for r in screen.egg_rows if r.side == 'enemy'
                       and r.name in _MONSTER_SKILLS and type(r.hp) is int and r.hp > 0]
+        # 敵が将軍でも召喚獣でも、敵HPが一桁なら通常攻撃で倒せるため、
+        # 命中・先手を損なうもうこうげきは選ばない。
+        enemy_low_hp = any(r.side == 'enemy' and type(r.hp) is int and 0 < r.hp < 10
+                           for r in screen.egg_rows)
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
-                  and len(enemy_rows) == 1 and not cards_left
+                  and len(enemy_rows) == 1 and not enemy_low_hp
+                  and not cards_left
                   and (empty_egg or 'たまごをつかう' not in screen.text))
         # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
         # defender facing an enemy summon with the egg row dead and no card left
@@ -1845,7 +1850,8 @@ def egg_battle_step(screen: Screen, mem):
             _record(mem, 'battle_egg_general_attack', **_battle_labels(battle),
                     observed_metric={'command': label, 'general_hp': battle.get('ally_hp'),
                                      'max_hp': general_reading[1] if general_reading else None,
-                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None},
+                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None,
+                                     'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
         return [pad('a')] if move == 'here' else [move]
