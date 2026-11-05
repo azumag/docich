@@ -1860,13 +1860,17 @@ def _repair_step(screen, mem, frame):
             return _exit(mem, '家を訪れた将軍が派遣対象と異なるため購入しない')
         if screen.kind == 'map':
             if state.pop('departure_pending', False):
-                _garrison_move(mem, name, source=state.get('source'))
+                # The garrison update is reserved for the arrival
+                # observation below: leaving the map only proves the unit
+                # started moving, not that it reached the house (W4
+                # reroute, issuecomment-6645962702).
                 for sortie in (mem.get('sorties') or {}).values():
                     if sortie.get('general') == name and sortie.get('status') in ('en_route', 'launched_unconfirmed'):
                         sortie['status'] = 'redirected_house'
                 tick = int(mem.get('tick') or 0)
                 mem.setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
-                    'general': name, 'target': None, 'status': 'en_route', 'purpose': 'house', 'tick': tick}
+                    'general': name, 'source': state.get('source'),
+                    'target': None, 'status': 'en_route', 'purpose': 'house', 'tick': tick}
                 _record(mem, 'departed', reason='移動先選択からフィールドへ戻ったことを確認')
                 return []
             if discovery:
@@ -1874,6 +1878,10 @@ def _repair_step(screen, mem, frame):
             return []
         prices = gift_prices(screen)
         if prices:
+            # Observed arrival: the prices panel only exists inside the
+            # house, so this is where the dispatch actually landed. The
+            # garrison fact moves here from the old departure-time write.
+            _garrison_move(mem, name, source=state.get('source'))
             _record(mem, 'arrival_seen', screen=screen.kind,
                     observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold')},
                     reason='家の贈り物一覧と価格を実画面で確認')
