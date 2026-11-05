@@ -9,13 +9,14 @@ from copy import deepcopy
 from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ... import hanjuku_chart_adjust as chart_adjust
+from ... import hanjuku_map_sources as sources
 from ..decision_log import _record, _tally
 from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
-from ..os_layer.commands import pad
+from ..os_layer.commands import menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
@@ -653,6 +654,203 @@ def _watch_cursor_still(mem):
     return True
 
 
+# Owner instruction (2026-11-06): reach the sortie's source castle through the
+# X menu's しろ list and SELECT, never through the Y world map. The list is the
+# same right-hand panel layout as the general roster: names at x=168 on 16 px
+# rows from y=39, with the orange hand left of the selected row. SELECT flies
+# the cursor to that castle (manual p.15: 将軍と同じく、セレクトボタンでその城へ飛べる).
+CASTLE_JUMP_HINT = 'Aボタンでステータスひょうじ'
+CASTLE_JUMP_LIMIT = 32          # observations across the whole menu trip
+CASTLE_JUMP_SCROLL_LIMIT = 8    # list scrolls while looking for the source
+CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
+CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
+
+
+def _castle_key(name):
+    """Compare chart and on-screen castle names without the long-vowel mark."""
+    return (name or '').replace('ー', '').replace(' ', '')
+
+
+def _castle_list_rows(screen):
+    """Rows of the own-castle list, or None when this is another panel."""
+    text = screen.text or ''
+    if not screen.hand or CASTLE_JUMP_HINT not in text or 'コマンドにもどります' not in text:
+        return None
+    rows = []
+    for line in screen.lines:
+        if 39 <= line.y <= 151 and (line.y - 39) % 16 == 0:
+            word = dict(line.spans()).get(168)
+            if word:
+                rows.append((line.y, word))
+    return rows or None
+
+
+def _castle_list_target(screen, source):
+    """The visible list row naming source (chart spelling may differ)."""
+    rows = _castle_list_rows(screen)
+    if not rows:
+        return None
+    key = _castle_key(source)
+    exact = [word for _, word in rows if _castle_key(word) == key]
+    if exact:
+        return exact[0]
+    for _, word in rows:
+        candidate = _castle_key(word)
+        if candidate and (key.startswith(candidate) or candidate.startswith(key)):
+            return word
+    return None
+
+
+def _want_castle_jump(mem, order, source, goal):
+    chapter = mem.get('chapter') or 0
+    if chapter not in Y_JUMP_OFFSET:
+        return False
+    if chapter not in sources.SOURCE_CASTLES or source not in sources.SOURCE_CASTLES[chapter]:
+        return False
+    if mem.get('active') != order['step']:
+        return False
+    if mem.get('y_jump') or mem.get('castle_jump') or _source(order, mem) != source:
+        return False
+    skip = mem.get('castle_jump_skip') or {}
+    tick = int(mem.get('tick') or 0)
+    if (skip.get('step') == order['step']
+            and tick - int(skip.get('tick') or 0) < CASTLE_JUMP_COOLDOWN):
+        return False
+    world = mem.get('cursor')
+    if world and abs(world[0] - goal[0]) + abs(world[1] - goal[1]) <= CASTLE_JUMP_FAR:
+        return False
+    return True
+
+
+def _start_castle_jump(mem, order, source):
+    mem['castle_jump'] = {'step': order['step'], 'source': source, 'phase': 'menu',
+                          'age': 0, 'total': 0, 'tick': int(mem.get('tick') or 0),
+                          'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
+    _record(mem, 'castle_jump_open', chart_step=order['step'], target=source,
+            observed_metric={'cursor': mem.get('cursor'), 'source': source},
+            reason='出撃元の城へXメニューの「しろ」からSELECTで飛ぶ')
+    return [pad('x')]
+
+
+def _end_castle_jump(screen, mem, why):
+    jump = mem.pop('castle_jump', None)
+    if not isinstance(jump, dict):
+        return []
+    mem['castle_jump_skip'] = {'step': jump.get('step'), 'tick': int(mem.get('tick') or 0)}
+    _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
+            screen=screen.kind,
+            observed_metric={'why': why, 'age': jump.get('age'), 'phase': jump.get('phase')},
+            reason='Xメニューの「しろ」から出撃元へ飛べないため、通常の移動に戻る')
+    if screen.kind == 'main_menu' or _castle_list_rows(screen):
+        return [pad('b')]
+    return []
+
+
+def castle_jump_step(screen, mem, frame):
+    """Drive X -> しろ -> castle name -> SELECT for the order's source.
+
+    Runs before the ordinary screen dispatch while mem['castle_jump'] is
+    live, so the main menu and the castle list cannot be mistaken for a
+    generic panel. Returns None when no jump is in flight.
+    """
+    jump = mem.get('castle_jump')
+    if not isinstance(jump, dict):
+        return None
+    jump['total'] = int(jump.get('total') or 0) + 1
+    jump['age'] = int(jump.get('age') or 0) + 1
+    if jump['total'] > CASTLE_JUMP_LIMIT:
+        return _end_castle_jump(screen, mem, 'limit')
+    order = _order_for_step(mem, jump['step'])
+    if order is None or mem.get('active') != jump['step']:
+        return _end_castle_jump(screen, mem, 'order_changed')
+
+    phase = jump.get('phase')
+    if phase == 'menu':
+        if screen.kind == 'map':
+            # Give the first X a few observations to draw the menu; a second
+            # X too early would close the menu it just opened.
+            if jump['age'] >= 3 and int(jump.get('menu_presses') or 0) < 2:
+                jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
+                return [pad('x')]
+            if jump['age'] < 4:
+                return []
+            return _end_castle_jump(screen, mem, 'menu_not_open')
+        if screen.kind == 'main_menu':
+            move = menu_to(screen, 'しろ')
+            if move == 'here':
+                jump['phase'] = 'list'
+                jump['age'] = 0
+                return [pad('a')]
+            if move:
+                return [move]
+            return _end_castle_jump(screen, mem, 'shiro_missing')
+        return _end_castle_jump(screen, mem, 'unexpected_menu')
+
+    if phase == 'list':
+        if screen.kind == 'main_menu':
+            if jump['age'] >= 2 and int(jump.get('menu_presses') or 0) < 3:
+                jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
+                return [pad('a')]
+            if jump['age'] < 3:
+                return []
+            return _end_castle_jump(screen, mem, 'list_not_open')
+        rows = _castle_list_rows(screen)
+        if rows is None:
+            if jump['age'] < 3:
+                return []
+            return _end_castle_jump(screen, mem, 'list_unreadable')
+        target = _castle_list_target(screen, jump['source'])
+        if target is None:
+            if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
+                jump['scrolls'] = int(jump.get('scrolls') or 0) + 1
+                jump['age'] = 0
+                return [pad('down')]
+            return _end_castle_jump(screen, mem, 'castle_missing')
+        move = menu_to(screen, target)
+        if move == 'here':
+            jump['phase'] = 'confirm'
+            jump['age'] = 0
+            return [pad('select')]
+        if move:
+            return [move]
+        return _end_castle_jump(screen, mem, 'castle_unreachable')
+
+    if phase == 'confirm':
+        if screen.kind == 'map':
+            if _roof_under_cursor(screen, frame):
+                mem['expect_menu'] = True
+                mem.pop('castle_jump', None)
+                mem.pop('castle_jump_skip', None)
+                _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
+                        observed_metric={'cursor': mem.get('cursor'),
+                                         'screen_cursor': list(_cursor(screen) or ())},
+                        reason='しろ一覧のSELECTで出撃元の城へ飛び、屋根の上で城メニューを開く')
+                return [pad('a')]
+            jump['waits'] = int(jump.get('waits') or 0) + 1
+            if jump['waits'] < 3:
+                return []
+            return _end_castle_jump(screen, mem, 'no_roof_after_select')
+        if _castle_list_rows(screen):
+            if int(jump.get('selects') or 0) < 2:
+                jump['selects'] = int(jump.get('selects') or 0) + 1
+                return [pad('select')]
+            return _end_castle_jump(screen, mem, 'select_not_accepted')
+        if screen.kind in ('castle_info', 'castle_menu', 'general_list'):
+            # SELECT opened the castle status instead of flying: back out to
+            # the list once and retry with the same target row.
+            jump['phase'] = 'list'
+            jump['age'] = 0
+            jump['status_retries'] = int(jump.get('status_retries') or 0) + 1
+            _record(mem, 'castle_jump_status', chart_step=jump['step'], target=jump['source'],
+                    screen=screen.kind,
+                    reason='SELECTで城一覧の状態画面が開いたため、一覧へ戻って再試行')
+            if jump['status_retries'] <= 1:
+                return [pad('b')]
+            return _end_castle_jump(screen, mem, 'select_opens_status')
+        return []
+    return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
+
+
 def map_step(screen: Screen, mem, frame):
     # Did this module really run? The give-up logs 199 records in twenty minutes
     # while the probe added in v419 never appeared, so the running module may be
@@ -815,8 +1013,8 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('cursor', None)                  # no roof near: jump again rather than search
         _record(mem, 'align_failed', chart_step=order['step'], target=source, screen=screen.kind,
                 reason='全体マップで選んだ出撃元の近くに屋根が無いため全体マップを開き直す')
-    if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
-        return _start_y_jump(mem, order, source, 'map')
+    if screen.cursor and not screen.marker and _want_castle_jump(mem, order, source, goal):
+        return _start_castle_jump(mem, order, source)
     result = nav_step(screen, mem, frame, goal, source, step=order['step'])
     if result == 'infeasible':
         return _abandon_stuck_step(screen, mem, order)

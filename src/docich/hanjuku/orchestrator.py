@@ -553,7 +553,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     battle_flow.note_duel_event(screen, mem)
-    actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
+    actions = map_flow.castle_jump_step(screen, mem, frame)
+    if actions is None:
+        actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
     if actions is None:
         actions = deploy_flow.resume_sortie_step(screen, mem)
     sortie_cancel_hold = False
