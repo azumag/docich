@@ -255,7 +255,8 @@ def _note_failed_jump(mem, jump, why):
     blinking per order while the ring cursor sat still on the sea).
     """
     last = {'step': jump.get('step'), 'mode': jump.get('mode'),
-            'moves': int(jump.get('moves') or 0), 'why': why}
+            'moves': int(jump.get('moves') or 0), 'why': why,
+            'tick': int(mem.get('tick') or 0)}
     if jump.get('foreground_interrupted'):
         last['foreground_interrupted'] = True
     mem['y_jump_last'] = last
@@ -326,6 +327,28 @@ def boss_probe_cell(mem, name, step=None):
     return chart.boss_probe_cell(chapter, name, index)
 
 
+Y_JUMP_BLOCK_TICKS = 200   # observations (~5 min at 1.5 s) before a closed jump may be retried
+
+
+def _jump_block_expired(mem, last) -> bool:
+    """A closed jump blocks Y for this order only for a while.
+
+    g1133 2026-11-05: one ``cursor_stationary`` close (05:14) stayed in
+    ``y_jump_last`` for hours. The order was never restarted, so the block never
+    cleared; it walked instead, and the walk was frozen at its own start cell, so
+    the boss order launched nothing for over five hours. The block now lapses
+    after ``Y_JUMP_BLOCK_TICKS``; the per-order and per-run jump budgets still
+    bound the retries. A record without a tick (older state) is stamped on first
+    sight and lapses from there.
+    """
+    now = int(mem.get('tick') or 0)
+    stamped = last.get('tick')
+    if type(stamped) is not int:
+        last['tick'] = now
+        return False
+    return now - stamped >= Y_JUMP_BLOCK_TICKS
+
+
 def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
@@ -343,7 +366,8 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     if (last.get('step') == order['step'] and last.get('mode') == mode
             and ((not int(last.get('moves') or 0)
                   and not (last.get('why') == 'view_closed' and last.get('foreground_interrupted')))
-                 or last.get('why') == 'cursor_stationary')):
+                 or last.get('why') == 'cursor_stationary')
+            and not _jump_block_expired(mem, last)):
         # The last jump for this order closed without moving the cursor. The
         # view is not opening or readable here, so walk instead of toggling Y.
         # A fresh foreground event explains a view_closed receipt, permitting
