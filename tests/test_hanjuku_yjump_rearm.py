@@ -43,3 +43,14 @@ def test_rescue_also_unblocks_exhausted_short_budget_once():
     N._start_y_jump(mem, order(), 'アルマムーン', 'map')
     mem.pop('y_jump', None)
     assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
+
+
+def test_near_target_does_not_consume_one_shot_rescue(monkeypatch):
+    mem = memory(still=N.CURSOR_STILL_LIMIT)
+    monkeypatch.setattr(N, 'boss_probe_cell', lambda *_: [300, 300])
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
+    assert not mem.get('yjump_rescued')
+    assert mem['y_jumps_total']['X:map'] == N.Y_JUMP_TOTAL_LIMIT
+    monkeypatch.setattr(N, 'boss_probe_cell', lambda *_: [600, 600])
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is True
+    assert mem['yjump_rescued']['X:map'] is True
