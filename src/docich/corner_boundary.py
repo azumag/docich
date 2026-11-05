@@ -92,7 +92,8 @@ def _prediction_in_flight(state_dir: Path) -> bool:
     if 'status' in state:
         return state.get('status') in PREDICTION_ACTIVE_STATUSES
     outcomes = state.get('outcome_ids')
-    return bool(state.get('prediction_id')) and isinstance(outcomes, list) and len(outcomes) >= 2
+    prediction_id = state.get('prediction_id')
+    return isinstance(prediction_id, str) and bool(prediction_id) and isinstance(outcomes, list) and len(outcomes) >= 2
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
