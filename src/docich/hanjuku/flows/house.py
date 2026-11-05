@@ -1167,61 +1167,27 @@ def _step_once(screen, mem, frame):
                 # another owner and dropped the month's refill. The count
                 # check and an unsettled refill finish first (both bounded).
                 return None
-            level_due = _level_due(mem)
-            # Issue #3011 (owner): the hanjuku level lives on the country
-            # status page. Once the month's shopping is done and the level is
-            # still unread, the monthly visit runs for that page alone.
-            level_trigger = (level_due and shop.get('key') == mem.get('month')
-                             and bool(shop.get('level_scan_wait')))
-            # The recruit gate guards the roster walk, not the free
-            # country-status page. A finished (or receipt-unverified) recruit
-            # used to block the level-only visit for the rest of the month, so
-            # 現在収入 / 総賃金 kept the previous month's values while the game
-            # recruited (g1133 49-9 still showed 49-6, owner 2026-11-05).
-            status_only = level_trigger and shop.get('recruit') in ('done', 'unverified')
-            if (shop.get('key') == mem.get('month')
-                    and shop.get('recruit') in ('opened', 'done', 'unverified')
-                    and not status_only):
+            # 国のステータスで当月の人数を読めるため、月一の将軍一覧は巡回しない。
+            from ..os_layer.roster import run_identity
+            seen = mem.get('country_general_count') or {}
+            count_current = (isinstance(seen, dict)
+                and seen.get('scope') == scope
+                and seen.get('identity') == run_identity(mem.get('_run_identity'))
+                and type(seen.get('count')) is int and 0 <= seen['count'] <= 32)
+            if count_current and not _level_due(mem):
                 return None
-            from ..strategy.economy import _batch_active
-            if ((mem.get('shop') or {}).get('key') == mem.get('month')
-                    and _batch_active(mem.get('shop') or {})
-                    and (mem.get('shop') or {}).get('recruit') in ('pending', 'check')):
-                # Owner 2026-11-02 (募集1人ごとのステータス確認は冗長): between the
-                # rounds of a batch recruit the roster is re-counted once, after
-                # the last general, not after the first (g1097 19:01, ~40 s each).
-                return None
-            if (_egg_recovery_targets(mem)
-                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed',
-                                                                    'unverified')):
-                # Existing recovery/reserve ordering precedes the free survey.
-                # g684 1-12/2-1: a paid recovery whose debit could not be
-                # verified stayed 'unverified', this gate never opened, the
-                # roster was never re-read in the month and no general was
-                # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
-                # The attempt is over either way; only the receipt is unknown.
-                return None
-            # One monthly roster scan per chapter/month. The scan runs the
-            # moment the monthly menu is ready (before purchases/recruitment);
-            # a completed scan is retained for the month and never repeated,
-            # even after a join invalidates the live receipt. The country
-            # status page (level_trigger) is not a roster scan and stays.
-            if ((mem.get('month_roster_scan') or {}).get('scope') == scope
-                    and not level_trigger):
-                return None
-            if (_recruit_sufficient(mem) or receipts.surveyed(mem)
-                    or (receipts.fresh(mem)
-                        and receipts.fresh(mem).get('complete'))) and not level_trigger:
-                return None
+            shop = mem.get('shop') or {}
+            if shop.get('key') == mem.get('month') and shop.get('recruit') == 'opened':
+                return None  # recruiting dialogue owns foreground
             attempts = mem.get('recruit_month_scan_attempts') or {}
-            scope = [mem.get('chapter'), mem.get('month')]
             if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
-                return None
+                return None  # bounded even when the status page cannot be read
             move = menu_to(screen, 'メインメニュー')
             if not move:
                 return None
-            mem['recruit_month_scan_attempts'] = {'scope': scope, 'count':
-                (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
+            mem['recruit_month_scan_attempts'] = {
+                'scope': scope,
+                'count': (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
         field = mem.get('house_field_scan') or {}
         field_done = field.get('scope') == scope
         # Legacy house_scan_* may be the last monthly check. Its source is
@@ -1278,14 +1244,12 @@ def _step_once(screen, mem, frame):
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
         if monthly:
-            # Level-only visits read the status page; ordinary roster scans
-            # keep their measured order and never detour.
-            state['level_only'] = bool(level_trigger)
-        if not monthly:
+            state['level_only'] = True  # status only; no roster receipt or walk
+        else:
             mem['recruit_field_scan_attempts']['count'] = field_count + 1
-        if not (monthly and level_trigger):
             receipts.begin(mem, state)
-        _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
+        _record(mem, 'scan_started', reason=('月一の国ステータスで将軍数・兵士数・半熟レベルを確認'
+                                          if monthly else '実一覧で将軍の卵状態を確認'))
         return ([pad('a')] if move == 'here' else [move]) if monthly else [pad('x')]
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
@@ -1351,7 +1315,7 @@ def _step_once(screen, mem, frame):
             _record(mem, 'month_menu_reobserved',
                     reason='情報画面への遷移を確認できないため現在の選択行から移動を再開')
         if phase in ('leave_roster', 'close'):
-            if phase == 'leave_roster':
+            if phase == 'leave_roster' and not state.get('level_only'):
                 complete = receipts.complete(mem, state)
                 _tally(mem, 'roster_complete' if complete else 'roster_incomplete')
                 _record(mem, 'month_scan_complete', observed_metric={'roster_complete': complete,
@@ -1464,6 +1428,37 @@ def _step_once(screen, mem, frame):
             return actions
         return []
     if phase == 'level_status':
+        # Each count must come from a visible row; missing text is unknown.
+        if 'わがくにのじょうたい' in screen.text.replace(' ', ''):
+            from ..os_layer.roster import run_identity
+            scope = [mem.get('chapter'), mem.get('month')]
+            generals = _status_row_value(screen, 'しょうぐんにんすう')
+            if type(generals) is int and 0 <= generals <= 32:
+                mem['country_general_count'] = {
+                    'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
+                    'tick': int(mem.get('tick') or 0), 'count': generals, 'joined': []}
+                _record(mem, 'country_general_count_observed',
+                        observed_metric={'generals': generals},
+                        reason='国ステータスで観測した実人数を募集判断に使用')
+            soldiers = None
+            for label in ('へいしにんすう', 'へいしすう', 'へいしのかず',
+                          'へいしのにんずう', 'そうへいしすう'):
+                soldiers = _status_row_value(screen, label)
+                if soldiers is not None:
+                    break
+            if type(soldiers) is int and 0 <= soldiers <= 99999:
+                mem['country_soldier_count'] = {
+                    'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
+                    'tick': int(mem.get('tick') or 0), 'count': soldiers}
+                from ..strategy.economy import _soldier_count_scope
+                soldier_scope = _soldier_count_scope(mem, screen.header)
+                if soldier_scope is not None:
+                    mem['soldiers_seen'] = soldiers
+                    mem['soldiers_seen_scope'] = soldier_scope
+                    mem['soldiers_seen_key'] = soldier_scope[-1]
+                _record(mem, 'country_soldier_count_observed',
+                        observed_metric={'soldiers': soldiers},
+                        reason='国ステータスで兵士数を確認し当月の補充判断に使用')
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
         # page 2 carries the hanjuku level/value. Keep the total income and
         # total wages as last observations for the status card; only a
