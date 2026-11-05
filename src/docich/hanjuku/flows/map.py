@@ -1113,6 +1113,26 @@ def _probe_launch_markers(mem, markers):
             if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
                 continue
             probes.pop(step, None)
+            if chart.is_boss_castle(probe.get('target')):
+                # g1133 2026-11-05: chapter 6 draws marching units as
+                # portraits, so the triangle survey can never confirm a boss
+                # launch. Twelve boss sorties were rolled back and sent again
+                # while the armies were still marching (ライム entered the
+                # boss castle at 15:39 after his launch had been rolled back
+                # at 15:21). Keep the march: a roster that still lists the
+                # general rolls it back (settle_launch_probes_from_roster),
+                # and _relaunch_overdue_boss still bounds a march that never
+                # entered.
+                _record(mem, 'sortie_launch_unconfirmed_kept', chart_step=step,
+                        general=probe.get('general'),
+                        observed_metric={'general': probe.get('general'),
+                                         'source': probe.get('source'),
+                                         'target': probe.get('target'),
+                                         'markers': [list(b) for b in markers],
+                                         'reads': probe.get('reads')},
+                        resulting_event='boss_march_kept',
+                        reason='ボス行軍は部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず到着・期限の実測に委ねる')
+                continue
             _rollback_unverified_launch(mem, step, probe, markers)
             continue
         baseline = probe.get('baseline') or []
