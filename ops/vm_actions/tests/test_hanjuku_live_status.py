@@ -165,6 +165,7 @@ class ProjectionTests(unittest.TestCase):
             "captured_count": 7,
             "castle_loss_count": 1,
             "month": "57-2",
+            "phase": "field",
             "uncertain": True,
             "march": {"state": "overdue", "overdue": ["I:abc123:1"],
                       "exhausted": [], "oldest_age_ticks": 123},
@@ -182,6 +183,7 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(out["field"]["captured"], 7)
         self.assertEqual(out["field"]["lost"], 1)
         self.assertEqual(out["field"]["month"], "57-2")
+        self.assertEqual(out["field"]["phase"], "field")
         self.assertEqual(out["field"]["march"], "overdue")
         self.assertEqual(out["field"]["overdue"], 1)
         self.assertEqual(out["field"]["boss_wins"], 0)
@@ -207,6 +209,7 @@ class ProjectionTests(unittest.TestCase):
         tactical["status"] = "PRIVATE_STATUS"
         tactical["policy"]["active"] = "PRIVATE_ACTIVE"
         tactical["policy"]["month"] = "PRIVATE_MONTH"
+        tactical["policy"]["phase"] = "PRIVATE_PHASE"
         tactical["policy"]["orders"]["4-B1"] = "PRIVATE_STATE"
         rotation = payload["diagnostics"]["corners"]["corner_rotation"]
         rotation["status"] = "PRIVATE_ROTATION"
@@ -228,6 +231,7 @@ class ProjectionTests(unittest.TestCase):
             "active_hanjuku": None,
         })
         self.assertIsNone(out["field"]["month"])
+        self.assertIsNone(out["field"]["phase"])
         self.assertNotIn("PRIVATE", json.dumps(out))
 
     def test_missing_rotation_projection_stays_unknown_without_failing_status(self):

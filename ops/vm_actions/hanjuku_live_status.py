@@ -35,10 +35,15 @@ BOSS_SORTIE_STATES = frozenset({
 })
 CHAPTER_BOSS_STEP = re.compile(r"([1-9]|1[0-2])-B[1-9][0-9]*\Z")
 MONTH_VALUE = re.compile(r"\d{1,3}-\d{1,2}\Z")
+PHASE_STATES = frozenset({
+    "title", "transition", "battle", "name", "shop", "concert",
+    "month_menu", "dialogue", "field_menu", "battle_intro", "field",
+    "title_or_intro", "event",
+})
 FIELD_TOKENS = (
     "captured", "lost", "march", "overdue", "exhausted", "oldest_age_ticks",
     "boss_wins", "boss_sorties", "boss_sorties_overdue", "active_boss",
-    "uncertain", "month",
+    "uncertain", "month", "phase",
 )
 BASE = "https://github.com/azumag/docich"
 
@@ -66,8 +71,8 @@ def _field_token(value):
         return "yes" if value else "no"
     if type(value) is int:
         return str(value)
-    if isinstance(value, str) and (value in MARCH_STATES or value == "unknown"
-                                  or MONTH_VALUE.fullmatch(value)):
+    if isinstance(value, str) and (value in MARCH_STATES or value in PHASE_STATES
+                                  or value == "unknown" or MONTH_VALUE.fullmatch(value)):
         return value
     return "unknown"
 
@@ -101,10 +106,14 @@ def _compact_field(policy, chapter, active_step):
     month = policy.get("month")
     if not (isinstance(month, str) and MONTH_VALUE.fullmatch(month)):
         month = None
+    phase = policy.get("phase")
+    if phase not in PHASE_STATES:
+        phase = None
     return {
         "captured": bounded(policy.get("captured_count")),
         "lost": bounded(policy.get("castle_loss_count")),
         "month": month,
+        "phase": phase,
         "march": march_state,
         "overdue": bounded(len(overdue)),
         "exhausted": bounded(len(exhausted)),
