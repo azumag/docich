@@ -157,16 +157,10 @@ MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is
 INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
-# every known spare goes at the boss in one plan, from as many castles as
-# possible (each keeps one defender). One observation burst stays finite; the
-# in-flight bound lets the next rebuild add more while these still march.
-BOSS_WAVE_LIMIT = 5
-# Owner 2026-11-04: the boss takes its waves while the previous one still
-# marches. The 2026-11-02 wave design below adds the boss target, but the
-# generic one-expedition-per-target guard removed it again for up to
-# SORTIE_BUSY_TICKS, so at chapter end (boss the only target) the planner
-# reported no candidates and the field map idled.
-BOSS_WAVE_IN_FLIGHT = 1 + BOSS_WAVE_LIMIT
+# every spare goes at the boss, from as many castles as possible (each keeps
+# one defender), with no per-plan wave bound. Owner 2026-11-05 (later the same
+# day): BOSS_WAVE_LIMIT is unnecessary — keep sending. The loop still ends
+# when no castle can send and every unread list has been opened once.
 # Owner 2026-11-04: a boss step that failed its launch-marker retries must not
 # end the chapter's sorties. The mechanical plan is rebuilt every observation
 # under the same request id and offers the same step, and next_order skips a
@@ -254,9 +248,12 @@ def _boss_wave_in_flight(mem, boss):
 
 
 def _boss_wave_open(mem, target):
-    """The boss may keep its wave going while one sortie is still marching."""
-    return (chart.is_boss_castle(target)
-            and _boss_wave_in_flight(mem, target) < BOSS_WAVE_IN_FLIGHT)
+    """The boss keeps taking waves while sorties to it are still marching.
+
+    Owner 2026-11-05: no in-flight budget. Every spare goes at the boss, and
+    the plan bounds itself by the generators and castles it can still send.
+    """
+    return chart.is_boss_castle(target)
 
 
 def _wave_pick(mem, target, owned, busy, allow_sole):
@@ -529,7 +526,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to later targets in the same plan; otherwise every retake names the first spare.
     planned_busy = set()
     planned_probe_sources = set()
-    def _boss_wave_pick(mem, owned, busy, allow_sole, prefer_not=()):
+    def _boss_wave_pick(mem, owned, busy, allow_sole, prefer_not=(),
+                        allow_probe=True):
         """(source, general) of the next sendable spare for the boss.
 
         Owner 2026-11-05: strength does not decide the boss fight (half-ripe
@@ -562,11 +560,25 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
                     choices.append((c in prefer_not, c == home, c, g))
-        if not choices:
-            return None
-        choices.sort()
-        _, _, source, general = choices[0]
-        return source, general
+        if choices:
+            choices.sort()
+            _, _, source, general = choices[0]
+            return source, general
+        # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
+        # castle's list instead of idling. The sortie menu opens the roster
+        # (general_list_scanned) and the deploy step then picks a measured
+        # general, so this both refreshes the bookkeeping and sends the wave.
+        # The oldest unread list goes first and the same castle is not probed
+        # twice in one plan.
+        # Probe at most one castle per plan, and only when the bookkeeping
+        # knows nobody at all: a castle that is merely unread while other
+        # generals are known is not worth a blind sortie.
+        if allow_probe and not any(garrison.get(c) for c in owned):
+            for c in sorted((c for c in owned
+                             if garrison.get(c) is None and c not in prefer_not),
+                            key=lambda c: (c == home, c)):
+                return c, MOVE_ANY_GENERAL
+        return None
     wave_target = None
     for target in targets:
         picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
@@ -772,18 +784,24 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         used_sources = {o['source'] for o in sorties['attack']
                         if chart.is_boss_castle(o.get('target'))}
         extra = 0
-        while extra < BOSS_WAVE_LIMIT:
-            more = _boss_wave_pick(mem, owned, wave_busy, allow_sole,
-                                   prefer_not=used_sources)
+        while True:
+            more = _boss_wave_pick(
+                mem, owned, wave_busy, allow_sole, prefer_not=used_sources,
+                allow_probe=(extra == 0
+                             and not any(o.get('source_probe') for o in sorties['attack'])))
             if more is None:
                 break
             source2, general2 = more
+            probe = general2 == MOVE_ANY_GENERAL
             boss_wave_orders.append({
                 'general': general2, 'target': boss, 'cards': [], 'source': source2,
                 'after': None, 'purpose': 'attack',
-                'note': f'暫定: {general2}でボスへ波状攻撃'})
+                'note': (f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
+                         else f'暫定: {general2}でボスへ波状攻撃'),
+                **({'source_probe': True} if probe else {})})
             used_sources.add(source2)
-            wave_busy = wave_busy | {general2}
+            if not probe:
+                wave_busy = wave_busy | {general2}
             extra += 1
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
@@ -1152,7 +1170,10 @@ def _adjust_situation(mem):
                        if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)
-    return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+    # An unread castle may be stored as None; the situation digest still has
+    # to serialise (owner 2026-11-05: probing unread lists must not crash it).
+    return {'garrison': {castle: sorted(names or ())
+                         for castle, names in sorted((mem.get('garrison') or {}).items())},
             'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],
