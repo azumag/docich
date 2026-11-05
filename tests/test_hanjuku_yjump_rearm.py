@@ -28,5 +28,18 @@ def test_a_spent_budget_still_blocks_a_moving_position():
 def test_a_stuck_position_re_arms_the_budget():
     mem = memory(still=N.CURSOR_STILL_LIMIT)
     assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is True
-    assert mem['y_jumps_total']['X:map'] == 0
-    assert mem['tally']['yjump:X:map'] == 0
+    assert mem['y_jumps_total']['X:map'] == N.Y_JUMP_TOTAL_LIMIT - 1
+    assert mem['tally']['yjump:X:map'] == N.Y_JUMP_TOTAL_LIMIT - 1
+    N._start_y_jump(mem, order(), 'アルマムーン', 'map')
+    mem.pop('y_jump', None)
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
+
+
+def test_rescue_also_unblocks_exhausted_short_budget_once():
+    mem = memory(still=N.CURSOR_STILL_LIMIT)
+    mem['y_jumps'] = {'X:map': N.Y_JUMP_LIMIT}
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is True
+    assert mem['y_jumps']['X:map'] == N.Y_JUMP_LIMIT - 1
+    N._start_y_jump(mem, order(), 'アルマムーン', 'map')
+    mem.pop('y_jump', None)
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
