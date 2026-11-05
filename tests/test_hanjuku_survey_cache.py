@@ -640,7 +640,7 @@ def test_a_general_with_an_event_since_the_last_read_is_reopened(carry_on):
 
 
 @pytest.mark.parametrize('change', ['hp', 'field', 'broken', 'unobserved'])
-def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on, change):
+def test_only_unknown_location_or_unobserved_castle_requires_a_fresh_status(carry_on, change):
     mem = completed()
     row = mem['roster_survey']['statuses']['ゼウス']
     if change == 'hp':
@@ -652,18 +652,19 @@ def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on,
     else:
         row['location_observed'] = False
     mem = _next_month(mem)
-    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    if change in ('field', 'unobserved'):
+        assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    else:
+        assert r.carry_forward(mem) == {'carried': NAMES, 'reopen': []}
 
 
-def test_a_row_is_carried_at_most_two_months_in_a_row(carry_on):
+def test_a_row_is_carried_after_any_number_of_unchanged_months(carry_on):
     mem = completed()
-    for month, expect in (('1-7', NAMES), ('1-8', NAMES), ('1-9', [])):
+    for month in ('1-7', '1-8', '1-9', '1-10', '1-11'):
         mem = _next_month(mem, month=month, tick=mem['tick'] + 400)
         out = r.carry_forward(mem)
-        assert out['carried'] == expect, month
-        assert sorted(out['reopen']) == sorted(set(NAMES) - set(expect))
-        # a real read of everyone ends the reopened ones' streak
-        mem['roster_survey']['dirty'] = {}
+        assert out == {'carried': NAMES, 'reopen': []}, month
+    assert mem['house_eggs']['ゼウス']['carry_depth'] == 5
 
 
 def test_a_gap_in_months_or_another_run_or_chapter_is_not_carried(carry_on):
@@ -920,3 +921,14 @@ def test_sortie_pair_rearms_on_consecutive_cancel_and_splits_by_outcome():
     # A different (target, purpose) key never inherits this pending cancel.
     house._tally_sortie_attempt(mem, '砦D', 'attack', 'departed', sig)
     assert 'pairs' not in mem['obs_cost']['sortie_retry']['by_key']['砦D|attack']
+
+
+def test_month_carry_has_no_fixed_maximum_after_observed_unchanged_months():
+    from docich.hanjuku.os_layer import roster as records
+    row = {'general': 'ゼウス', 'location': 'castle',
+           'location_observed': True, 'broken': False,
+           'hp': 50, 'max_hp': 50, 'carry_depth': 99}
+    assert records._carry_eligible(row, []) is True
+    assert records._carry_eligible(row, ['location']) is False
+    row['broken'] = True
+    assert records._carry_eligible(row, []) is True
