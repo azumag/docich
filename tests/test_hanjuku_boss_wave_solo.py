@@ -51,6 +51,23 @@ def test_the_boss_wave_prefers_the_castle_nearest_the_boss():
     assert attacks[0]['source'] == nearest
 
 
+def test_a_live_egg_general_goes_before_a_broken_one_in_the_same_castle():
+    # The boss fight's damage comes from eggs (owner 2026-11-05); a broken
+    # general in the same castle should not take the wave slot.
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    # アマンディーヌ sorts before ゼウス, so the name order alone would send the
+    # broken general; only the egg rank moves the live egg ahead.
+    garrison['オケアナ'] = ['アマンディーヌ', 'ゼウス']
+    mem = memory(garrison=garrison)
+    mem['general_statuses'] = {'statuses': {
+        'アマンディーヌ': {'broken': True, 'egg': None},
+        'ゼウス': {'broken': False, 'egg': 'ベビーエッグ', 'uses': 4}}}
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['source'] == 'オケアナ'
+    assert attacks[0]['general'] == 'ゼウス'
+
+
 def test_the_home_castle_alone_does_not_send_a_boss_wave():
     attacks = boss_attacks(memory(garrison={HOME: ['ゼウス']}))
     assert attacks == []

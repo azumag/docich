@@ -295,6 +295,33 @@ def _spares(free, unavailable=(), sole=False):
     return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
 
 
+def _boss_egg_rank(mem, general):
+    """How usable the general's egg is as boss-fight damage: 0 best, 2 worst.
+
+    Owner 2026-11-05: the boss fight's damage comes from eggs, not general
+    strength. A general already measured with a broken/spent egg adds almost
+    nothing and may be lost, so when one castle has several spares the live
+    egg goes first. Only same-castle ordering changes; the castle choice and
+    every other rule stay as they are.
+    """
+    row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
+    if isinstance(row, dict):
+        if row.get('broken') is True:
+            return 2
+        uses = row.get('uses')
+        if type(uses) is int and uses <= 0:
+            return 2
+        egg = row.get('egg')
+        if isinstance(egg, str) and egg:
+            return 2 if egg == 'くさってる' else 0
+    uses = (mem.get('egg_uses') or {}).get(general)
+    if type(uses) is int and uses <= 0:
+        return 2
+    if isinstance((mem.get('egg_types') or {}).get(general), str):
+        return 0 if type(uses) is int and uses > 0 else 1
+    return 1
+
+
 def _defense_rebalance(mem, owned, busy, heading):
     """Boss-wait moves that staff a weak priority castle (#2985).
 
@@ -571,10 +598,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     distance = (round(((xy[0] - boss_xy[0]) ** 2
                                        + (xy[1] - boss_xy[1]) ** 2) ** 0.5)
                                 if boss_xy and xy else 0)
-                    choices.append((c in prefer_not, c == home, distance, c, g))
+                    choices.append((c in prefer_not, c == home, distance,
+                                    _boss_egg_rank(mem, g), c, g))
         if choices:
             choices.sort()
-            _, _, _, source, general = choices[0]
+            _, _, _, _, source, general = choices[0]
             return source, general
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
