@@ -35,6 +35,22 @@ def test_a_single_general_castle_can_still_send_a_boss_wave():
     assert attacks[0]['general'] == 'ゼウス'
 
 
+def test_the_boss_wave_prefers_the_castle_nearest_the_boss():
+    # g1133 2026-11-06: the name-order tie-break sent アルマムーン (428 cells)
+    # before オケアナ (203); only オケアナ's marches ever entered the boss.
+    attacks = boss_attacks(memory())
+    assert attacks
+    cells = CELLS
+    boss = next(xy for name, xy in cells.items() if chart.is_boss_castle(name))
+
+    def distance(castle):
+        xy = cells[castle]
+        return ((xy[0] - boss[0]) ** 2 + (xy[1] - boss[1]) ** 2) ** 0.5
+
+    nearest = min((c for c in NORMAL if c != HOME), key=distance)
+    assert attacks[0]['source'] == nearest
+
+
 def test_the_home_castle_alone_does_not_send_a_boss_wave():
     attacks = boss_attacks(memory(garrison={HOME: ['ゼウス']}))
     assert attacks == []
