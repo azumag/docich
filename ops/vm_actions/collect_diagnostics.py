@@ -6903,6 +6903,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v451-boss-wave-volume",
             "hanjuku-chart-v452-lampkin-boss-forms",
             "hanjuku-chart-v453-boss-probe-source",
+            "hanjuku-chart-v454-spent-sortie-expiry",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

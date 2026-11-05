@@ -1055,9 +1055,59 @@ def _relaunch_overdue_march(mem):
                 reason='敵城への出撃が上限の観測内に入城も経由も観測されないため、オーダーを未発射に戻す')
 
 
+SPENT_SORTIE_TICKS = SITE_LATE_ENTRY_TICKS   # keep an attempt bindable as long as a late site entry
+SPENT_SORTIE_EXPIRE_LIMIT = 8                 # records forgotten per observation
+
+
+def _expire_spent_sorties(mem):
+    """Forget marches that can no longer arrive and put their generals back.
+
+    Owner 2026-11-05: 46 overdue records kept every general "out" forever, so
+    the plan saw no spare at all and no boss wave could be built. A record
+    past the bindable window is dropped and its general goes back onto the
+    source roster: the castle menu read on the next sortie replaces that guess
+    with the measured list, so a false return is corrected at the source.
+    """
+    now = int(mem.get('tick') or 0)
+    sorties = mem.get('sorties') or {}
+    garrison = mem.get('garrison') or {}
+    placed = {g for names in garrison.values() for g in (names or ())}
+    # A step the current plan still offers keeps its record: the retry and
+    # roster-reprobe paths bind through it (chapter 4 sites).
+    planned = {o.get('step') for o in _orders(mem)}
+    planned |= set((_world(mem).get('launched_orders') or {}))
+    expired = 0
+    for step, sortie in list(sorties.items()):
+        if expired >= SPENT_SORTIE_EXPIRE_LIMIT:
+            break
+        if (not isinstance(sortie, dict) or sortie.get('status') != 'overdue'
+                or step in planned):
+            continue
+        tick = sortie.get('tick')
+        if type(tick) is not int or now - tick < SPENT_SORTIE_TICKS:
+            continue
+        sorties.pop(step, None)
+        general, source = sortie.get('general'), sortie.get('source')
+        if (general and general != NAME and general not in placed
+                and source in chart.castles(mem.get('chapter') or 0)):
+            # An unread source (None) gets the one general back; the next
+            # castle menu read replaces the whole list with the measured one.
+            if not isinstance(garrison.get(source), list):
+                garrison[source] = []
+            if general not in garrison[source]:
+                garrison[source].append(general)
+            placed.add(general)
+        expired += 1
+    if expired:
+        _record(mem, 'sortie_record_expired',
+                observed_metric={'expired': expired, 'remaining': len(sorties)},
+                reason='期限を超えた行軍記録を破棄し、将軍を出撃元の名簿へ戻す')
+
+
 def next_order(mem):
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
+    _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
