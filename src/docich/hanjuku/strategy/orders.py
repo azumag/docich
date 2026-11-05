@@ -1059,6 +1059,27 @@ SPENT_SORTIE_TICKS = SITE_LATE_ENTRY_TICKS   # keep an attempt bindable as long 
 SPENT_SORTIE_EXPIRE_LIMIT = 8                 # records forgotten per observation
 
 
+def _observed_march_end(mem, sortie, tick):
+    """Did the general's own status panel, read after departure, end the march?
+
+    A sortie record is normally aged out by tick alone, but g1133 2026-11-06
+    showed デュオニソス retreat from a field encounter and camp while his boss
+    sortie (tick 106559) stayed 'en_route' until the 3200-tick window: the
+    monthly status read キャンプしています at tick 107151 and nothing used it.
+    A measured camp or castle residence after the departure tick proves the
+    march is over, so the general can rejoin the wave immediately. A reading
+    from before the departure, or a 'march' reading, proves nothing.
+    """
+    if type(tick) is not int:
+        return False
+    rows = (mem.get('general_statuses') or {}).get('statuses')
+    row = rows.get(sortie.get('general')) if isinstance(rows, dict) else None
+    if (not isinstance(row, dict) or row.get('location_observed') is not True
+            or type(row.get('tick')) is not int or row['tick'] < tick):
+        return False
+    return row.get('location') in ('camp', 'castle')
+
+
 def _expire_spent_sorties(mem):
     """Forget marches that can no longer arrive and put their generals back.
 
@@ -1067,6 +1088,10 @@ def _expire_spent_sorties(mem):
     past the bindable window is dropped and its general goes back onto the
     source roster: the castle menu read on the next sortie replaces that guess
     with the measured list, so a false return is corrected at the source.
+
+    A status panel read after departure that shows the general camping or in a
+    castle ends the march immediately (see _observed_march_end), so a retreat
+    does not keep a boss-wave general out for the whole tick window.
     """
     now = int(mem.get('tick') or 0)
     sorties = mem.get('sorties') or {}
@@ -1077,8 +1102,9 @@ def _expire_spent_sorties(mem):
     planned = {o.get('step') for o in _orders(mem)}
     planned |= set((_world(mem).get('launched_orders') or {}))
     expired = 0
+    ended = 0
     for step, sortie in list(sorties.items()):
-        if expired >= SPENT_SORTIE_EXPIRE_LIMIT:
+        if expired + ended >= SPENT_SORTIE_EXPIRE_LIMIT:
             break
         # A march cannot still be running past the bindable window: an
         # en_route/launched_unconfirmed record that old is a zombie left by a
@@ -1089,15 +1115,19 @@ def _expire_spent_sorties(mem):
                 or sortie.get('status') not in ('overdue', 'en_route', 'launched_unconfirmed')):
             continue
         tick = sortie.get('tick')
-        if type(tick) is not int or now - tick < SPENT_SORTIE_TICKS:
-            continue
-        # A planned step keeps its record only while a late entry could still
-        # bind (the chapter-4 site retry reads it). Past twice the bindable
-        # window nothing can bind: g1133 2026-11-05 kept グレナデン
-        # launched_unconfirmed for 9689 observations because every plan still
-        # listed the step, and the release path only touches 'launched' orders.
-        if step in planned and now - tick < 2 * SPENT_SORTIE_TICKS:
-            continue
+        # A measured camp/castle reading after departure ends the march now,
+        # without waiting for the tick window (see _observed_march_end).
+        measured = _observed_march_end(mem, sortie, tick)
+        if not measured:
+            if type(tick) is not int or now - tick < SPENT_SORTIE_TICKS:
+                continue
+            # A planned step keeps its record only while a late entry could still
+            # bind (the chapter-4 site retry reads it). Past twice the bindable
+            # window nothing can bind: g1133 2026-11-05 kept グレナデン
+            # launched_unconfirmed for 9689 observations because every plan still
+            # listed the step, and the release path only touches 'launched' orders.
+            if step in planned and now - tick < 2 * SPENT_SORTIE_TICKS:
+                continue
         sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
         if (general and general != NAME and general not in placed
@@ -1109,11 +1139,18 @@ def _expire_spent_sorties(mem):
             if general not in garrison[source]:
                 garrison[source].append(general)
             placed.add(general)
-        expired += 1
+        if measured:
+            ended += 1
+        else:
+            expired += 1
     if expired:
         _record(mem, 'sortie_record_expired',
                 observed_metric={'expired': expired, 'remaining': len(sorties)},
                 reason='期限を超えた行軍記録を破棄し、将軍を出撃元の名簿へ戻す')
+    if ended:
+        _record(mem, 'sortie_record_observed_ended',
+                observed_metric={'ended': ended, 'remaining': len(sorties)},
+                reason='野営・在城を実測したため行軍の終了とみなし、将軍を出撃元の名簿へ戻す')
 
 
 def next_order(mem):
