@@ -661,6 +661,15 @@ def _update_persistent_observation(mem, info):
             and info.get('castle_observed') is True and info.get('castle')):
         row.update(location='castle', castle=info['castle'])
         stale.discard('location')
+    elif info.get('location') == 'field' and info.get('location_observed') is True:
+        # The person is visibly outside a castle, but the generic reader
+        # cannot differentiate camp from march. Keep the location unresolved.
+        row.update(location='unknown')
+        row.pop('castle', None)
+        stale.add('location')
+        for residents in (mem.get('garrison') or {}).values():
+            if isinstance(residents, list) and name in residents:
+                residents.remove(name)
     if stale:
         cache['dirty'][name] = sorted(stale)
     else:
