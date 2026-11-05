@@ -1185,6 +1185,16 @@ def _step_once(screen, mem, frame):
             from ..strategy.economy import _batch_active
             if (_batch_active(shop) and shop.get('recruit') in ('pending', 'check')):
                 return None  # never interrupt a multi-recruit batch
+            known_roster = receipts.fresh(mem)
+            if (shop.get('key') == mem.get('month')
+                    and shop.get('recruit') in ('pending', 'check')
+                    and known_roster is not None and known_roster.get('complete') is True
+                    and not shop.get('level_scan_wait')):
+                # The headcount is already measured by a complete current
+                # roster; do not steal the pending paid recruit's input.
+                # The existing bounded post-shopping level/status gate runs
+                # after the recruitment transaction ends.
+                return None
             if (_egg_recovery_targets(mem)
                     and shop.get('egg') not in ('done', 'skipped', 'not_needed', 'unverified')):
                 return None  # preserve recovery priority over free status
