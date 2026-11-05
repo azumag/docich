@@ -514,13 +514,14 @@ def _previous_month(month):
 
 
 def _carry_eligible(row, dirty_fields):
-    """Only a healthy, unbroken castle resident with no event since the read."""
+    """Any verified, unchanged castle resident is reusable, even wounded or broken."""
     if not isinstance(row, dict) or dirty_fields:
         return False
     hp, maximum = row.get('hp'), row.get('max_hp')
     return (row.get('location') == 'castle' and row.get('location_observed') is True
-            and row.get('broken') is False
-            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum)
+            and type(row.get('broken')) is bool
+            and type(hp) is int and type(maximum) is int
+            and maximum > 0 and 0 < hp <= maximum)
 
 
 def carry_forward(mem):
@@ -528,8 +529,8 @@ def carry_forward(mem):
 
     The roster names come from this month's complete names-only count, so
     membership is always re-read. A previous-month row is reused only if the
-    general was a healthy, unbroken castle resident whose last read was
-    observed, and no battle/sortie/recall/egg event marked it dirty since.
+    general was a verified castle resident (even wounded or with a broken egg),
+    and no battle/sortie/recall/egg event marked it dirty since.
     Every other general gets a placeholder row that is dirty in all fields, so
     the ordinary partial walk opens exactly those. Returns ``None`` when
     nothing was done, else ``{'carried': [...], 'reopen': [...]}``.
@@ -564,8 +565,7 @@ def carry_forward(mem):
             new = deepcopy(row)
             new.update(month=month, observed_chapter=chapter, observed_tick=rtick)
             if not same_month:  # a same-month row was read (or carried) this month already
-                new.update(carried_from=previous)
-                new.pop('carry_depth', None)
+                new.update(carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
             statuses[name] = carried_rows[name] = new
             carried.append(name)
         else:
