@@ -49,3 +49,12 @@ def test_an_unread_castle_is_not_probed_while_other_generals_are_known():
         if c != 'カバルッサ':
             mem['garrison'][c] = None
     assert not [o for o in boss_waves(mem) if o.get('source_probe')]
+
+
+def test_unread_garrison_does_not_crash_situation_digest():
+    """A None roster is unread, not an iterable of general names."""
+    mem = memory({'カバルッサ': ['ココット']})
+    situation = replan._adjust_situation(mem)
+    assert situation['garrison']['カバルッサ'] == ['ココット']
+    assert all(isinstance(names, list) for names in situation['garrison'].values())
+    assert any(names == [] for names in situation['garrison'].values())
