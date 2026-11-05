@@ -613,6 +613,39 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
             **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+    # Owner 2026-11-05: keep throwing the known spares at the boss inside one
+    # plan, from as many castles as possible. Strength does not matter (a
+    # half-ripe egg removes about the same HP whoever carries it), so this
+    # only stops when no castle can send; each castle keeps its hero guard.
+    # Owner 2026-11-05: this runs before the staging/rotation moves, so a
+    # castle with ten generals sends seven (hero + two guards stay), not
+    # whoever the moves happen to leave.
+    boss_wave_orders = []
+    if boss in targets:
+        wave_busy = busy | planned_busy
+        used_sources = {o['source'] for o in sorties['attack']
+                        if chart.is_boss_castle(o.get('target'))}
+        extra = 0
+        while True:
+            more = _boss_wave_pick(
+                mem, owned, wave_busy, allow_sole, prefer_not=used_sources,
+                allow_probe=(extra == 0
+                             and not any(o.get('source_probe') for o in sorties['attack'])))
+            if more is None:
+                break
+            source2, general2 = more
+            probe = general2 == MOVE_ANY_GENERAL
+            boss_wave_orders.append({
+                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'after': None, 'purpose': 'attack',
+                'note': (f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
+                         else f'暫定: {general2}でボスへ波状攻撃'),
+                **({'source_probe': True} if probe else {})})
+            used_sources.add(source2)
+            if not probe:
+                wave_busy = wave_busy | {general2}
+                planned_busy.add(general2)
+            extra += 1
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
@@ -772,37 +805,6 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         mem, owned, busy | planned_busy | wave_committed
         | (committed - {MOVE_ANY_GENERAL}), heading,
         taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
-    # Owner 2026-11-05: keep throwing the known spares at the boss inside one
-    # plan, from as many castles as possible. Strength does not matter (a
-    # half-ripe egg removes about the same HP whoever carries it), so this
-    # only stops when no castle can send; each keeps one defender. It runs
-    # after the staging/rotation moves so those keep their generals.
-    boss_wave_orders = []
-    if boss in targets:
-        wave_busy = busy | planned_busy | wave_committed | {
-            o.get('general') for o in (*moves, *sorties['retake'], *sorties['attack'], *rotation)}
-        used_sources = {o['source'] for o in sorties['attack']
-                        if chart.is_boss_castle(o.get('target'))}
-        extra = 0
-        while True:
-            more = _boss_wave_pick(
-                mem, owned, wave_busy, allow_sole, prefer_not=used_sources,
-                allow_probe=(extra == 0
-                             and not any(o.get('source_probe') for o in sorties['attack'])))
-            if more is None:
-                break
-            source2, general2 = more
-            probe = general2 == MOVE_ANY_GENERAL
-            boss_wave_orders.append({
-                'general': general2, 'target': boss, 'cards': [], 'source': source2,
-                'after': None, 'purpose': 'attack',
-                'note': (f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
-                         else f'暫定: {general2}でボスへ波状攻撃'),
-                **({'source_probe': True} if probe else {})})
-            used_sources.add(source2)
-            if not probe:
-                wave_busy = wave_busy | {general2}
-            extra += 1
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
