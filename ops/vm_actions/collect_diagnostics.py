@@ -6876,6 +6876,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v423-giveup-gate",
             "hanjuku-chart-v424-stale-yjump",
             "hanjuku-chart-v425-yjump-active-only",
+            "hanjuku-chart-v426-yjump-budget",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

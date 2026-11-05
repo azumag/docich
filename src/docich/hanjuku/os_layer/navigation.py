@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from .commands import pad
 from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
@@ -216,6 +216,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None, step=None):
 Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
+Y_JUMP_TOTAL_LIMIT = 18        # jumps per order and mode for the whole run (never reset).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
@@ -349,6 +350,11 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # another attempt within the existing budget; it proves no arrival.
         return False
     key = f"{order['step']}:{mode}"
+    # A tally survives even when the per-order jump counters do not (g1133
+    # 2026-11-05: the same order re-opened the Y view 22 times a minute because
+    # y_jumps was reset on every plan rebuild, issue #3417).
+    if (mem.get('tally') or {}).get(f'yjump:{key}', 0) >= Y_JUMP_TOTAL_LIMIT:
+        return False
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
     if (mode == 'target' and chart.is_boss_castle(name)
@@ -364,6 +370,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
 def _start_y_jump(mem, order, name, mode):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
+    _tally(mem, f'yjump:{key}')
     jumps[key] = jumps.get(key, 0) + 1
     mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0,
                      'tick': int(mem.get('tick') or 0)}
