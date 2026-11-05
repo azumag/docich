@@ -125,7 +125,14 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
             else:
                 moved.append(s[axis] - last['screen'][axis])
         world = [world[0] + moved[0], world[1] + moved[1]]
-    mem['nav_last'] = None
+    # Seed the continuity record from this frame when there is none: `nav_step`
+    # only writes it after it computes a direction, so one early return left it
+    # None for good and no later frame could integrate (g1133 2026-11-05 froze
+    # at [392,144] for hours: every order was stuck at its source).
+    if not isinstance(mem.get('nav_last'), dict):
+        mem['nav_last'] = {'screen': list(s), 'expected': [0, 0],
+                           'tick': int(tick) if type(tick) is int else None,
+                           'kind': screen.kind, 'search': bool(mem.get('nav_search'))}
     box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
