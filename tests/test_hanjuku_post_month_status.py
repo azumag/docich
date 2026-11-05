@@ -333,3 +333,18 @@ def test_old_run_identity_never_reuses_cached_status():
     post.arm(mem)
     assert mem['post_month_status']['statuses'] == {}
     assert mem['post_month_status']['stage'] == 'await_map'
+
+
+def test_scrolled_roster_cannot_discard_unseen_cached_general():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    receipts.defeated(mem, 'どうし')
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    # The selector starts on the list's tail, so failure to see どうし
+    # has not established departure. Rewind before comparing membership.
+    tail = parse(roster(names=('ゼウス',), selected=0))
+    assert post.step(tail, mem, None) == [pad('up')]
+    assert 'どうし' in mem['general_statuses']['statuses']
+    assert 'どうし' in mem['garrison']['アルマムーン']
+    assert not state.get('top_confirmed')
