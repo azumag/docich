@@ -116,6 +116,46 @@ class CcTranslationAdapterTest(unittest.TestCase):
         self.assertIn("consecutive_failures=1", describe_health(health))
         self.assertIn("last_failure=provider_failed", describe_health(health))
 
+    def test_concurrent_failures_and_health_reads_are_consistent(self):
+        # Requests are handled by separate ThreadingHTTPServer worker threads.
+        # A barrier makes the failure completions overlap rather than run serially.
+        from concurrent.futures import ThreadPoolExecutor
+
+        count = 12
+        barrier = threading.Barrier(count)
+
+        def failing_translate(prompt, timeout):
+            barrier.wait(timeout=5)
+            return "", "rate_limit"
+
+        server = make_server(failing_translate, port=0, upstream="vercel-api:m")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with ThreadPoolExecutor(max_workers=count + 1) as pool:
+                futures = [
+                    pool.submit(_post, url + "/v1/chat/completions", self._payload())
+                    for _ in range(count)
+                ]
+                health_reads = [
+                    pool.submit(urllib.request.urlopen, url + "/healthz", timeout=5)
+                    for _ in range(3)
+                ]
+                for future in futures:
+                    self.assertEqual(future.result(timeout=10)[0], 502)
+                for future in health_reads:
+                    with future.result(timeout=10) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(body["last_failure_kind"], "" if body["consecutive_failures"] == 0 else "rate_limit")
+            with urllib.request.urlopen(url + "/healthz", timeout=5) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(health["consecutive_failures"], count)
+            self.assertEqual(health["last_failure_kind"], "rate_limit")
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_bind_is_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
