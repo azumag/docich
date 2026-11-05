@@ -542,9 +542,46 @@ def overtaken_frames(runtime, state, *, now=None):
 
 def _where(exc):
     """Exception class, message and the innermost frames (no observation data)."""
-    frames=traceback.extract_tb(exc.__traceback__)[-3:]
+    frames=[f for f in traceback.extract_tb(exc.__traceback__) if '/lib/python' not in f.filename][-3:]
     trail=' < '.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in reversed(frames))
     return f'{type(exc).__name__}({str(exc)[:80]!r}) at {trail}'
+
+
+def _unsortable_path(obj, path=''):
+    """Path of the first dict whose keys mix types (json sort_keys cannot order them)."""
+    if isinstance(obj, dict):
+        if len({type(k).__name__ for k in obj}) > 1:
+            return f'{path or "/"}{sorted({type(k).__name__ for k in obj})}'
+        for k, v in obj.items():
+            found = _unsortable_path(v, f'{path}/{k}')
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            found = _unsortable_path(v, f'{path}[{i}]')
+            if found:
+                return found
+    return None
+
+
+def _str_keys(obj):
+    if isinstance(obj, dict):
+        return {str(k): _str_keys(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_str_keys(v) for v in obj]
+    return obj
+
+
+def _sortable(name, obj):
+    """g1133 11-05: a dict holding both int and str keys made every state write raise
+    TypeError, so the already-decided input was dropped for hours. JSON turns every
+    key into a string anyway, so normalise here instead of losing the observation."""
+    try:
+        json.dumps(obj, sort_keys=True)
+        return obj
+    except TypeError:
+        print(f'hanjuku-bot: mixed_keys {name} {_unsortable_path(obj)}', file=sys.stderr)
+        return _str_keys(obj)
 
 
 def main():
@@ -592,6 +629,10 @@ def main():
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
+            state=_sortable('state',state)
+            records=_sortable('records',records)
+            if isinstance(updated_experience,dict):
+                updated_experience=_sortable('experience',updated_experience)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
             publish_adjust_request(runtime,records,meta)
             ask_interim(runtime,state,meta)

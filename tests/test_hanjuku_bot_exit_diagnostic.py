@@ -56,6 +56,40 @@ class BotExitDiagnosticTest(unittest.TestCase):
         self.assertIn("policy_error RuntimeError('boom')", err)
         self.assertEqual(out["actions"], [])
 
+    def test_mixed_key_state_keeps_the_decided_actions(self):
+        # a state whose dict holds both int and str keys cannot be sort_keys-dumped
+        state = {"policy": {"seen": {1: "a", "x": "b"}}, "_records": [{"k": {2: 1, "y": 2}}]}
+        actions = [{"type": "pad", "buttons": ["a"], "hold_ms": 100}]
+        written = {}
+        obs = {"game": "hanjuku-hero", "screenshot": "s.png",
+               "meta": {"runtime_dir": str(bot.ROOT / "run" / "runtimes" / "x")}}
+        frame = mock.Mock()
+        frame.resized.return_value = frame
+        frame.digest.return_value = "d"
+        with mock.patch.object(bot, "read_png", return_value=frame), \
+                mock.patch.object(bot, "read_record", return_value={}), \
+                mock.patch.object(bot.hanjuku_resume, "inherit_running_chapter"), \
+                mock.patch.object(bot.hanjuku_experience, "load", return_value={}), \
+                mock.patch.object(bot.hanjuku_chart_adjust, "load", return_value=None), \
+                mock.patch.object(bot, "recall_input_receipts", return_value=None), \
+                mock.patch.object(bot, "card_scroll_receipt", return_value=None), \
+                mock.patch.object(bot, "departure_input_receipt", return_value=None), \
+                mock.patch.object(bot, "overtaken_frames", return_value=[]), \
+                mock.patch.object(bot, "decide", return_value=(actions, state)), \
+                mock.patch.object(bot, "overtaken_confirm", return_value=None), \
+                mock.patch.object(bot, "observation_interval_ms", return_value=1500), \
+                mock.patch.object(bot, "persist", side_effect=lambda rt, st, rec, *a, **k: written.update(st=st, rec=rec)), \
+                mock.patch.object(bot, "publish_adjust_request"), \
+                mock.patch.object(bot, "ask_interim"), \
+                mock.patch.object(bot, "atomic_write_json"):
+            code, err, out = _run(obs)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out["actions"], actions)
+        self.assertIn("mixed_keys state /policy/seen", err)
+        self.assertIn("mixed_keys records", err)
+        json.dumps(written["st"], sort_keys=True)
+        json.dumps(written["rec"], sort_keys=True)
+
 
 if __name__ == "__main__":
     unittest.main()
