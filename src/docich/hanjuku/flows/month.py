@@ -425,8 +425,7 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
-    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
-        return []
+    # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
     if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
     if shop and not shop.get('closed'):
@@ -630,32 +629,7 @@ CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and re
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 
 
-MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
-LEVEL_SCAN_WAIT = 4     # menu observations held for the country-status visit to start
-
-
-def _await_month_roster_scan(mem, shop):
-    """Hold the month open briefly so a deferred roster recruit can be read.
-
-    g684 2-10 15:24:44: recruit was deferred_roster, the egg sub ended and
-    month_done fired in the same observation, before the monthly roster
-    scan (house.step) could start; the scan ran on the field instead and the
-    month passed without recruitment at 103G. Bounded: the month still
-    closes if the scan never starts.
-    """
-    if shop.get('recruit') != 'deferred_roster' or mem.get('month_sub'):
-        return False
-    attempts = mem.get('recruit_month_scan_attempts') or {}
-    if attempts.get('scope') == [mem.get('chapter'), mem.get('month')] and attempts.get('count', 0) >= 1:
-        return False
-    waits = int(shop.get('roster_scan_wait') or 0)
-    if waits >= MONTH_ROSTER_WAIT:
-        return False
-    shop['roster_scan_wait'] = waits + 1
-    if waits == 0:
-        _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
-                reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
-    return True
+LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
 
 
 def _await_level_scan(mem, shop):
@@ -1486,6 +1460,17 @@ def month_sub_step(screen: Screen, mem):
                 sub['joined_names'].append(joined[1])
                 from ..os_layer.roster import invalidate, record_join
                 record_join(mem, joined[1])  # keep a confirmed join in the count
+                # Payment alone is not a general. A unique join notice is.
+                from ..os_layer.roster import run_identity, MAX_GENERALS
+                country = mem.get('country_general_count')
+                if (isinstance(country, dict)
+                        and country.get('scope') == [mem.get('chapter'), mem.get('month')]
+                        and country.get('identity') == run_identity(mem.get('_run_identity'))
+                        and type(country.get('count')) is int
+                        and country['count'] < MAX_GENERALS
+                        and joined[1] not in country.setdefault('joined', [])):
+                    country['count'] += 1
+                    country['joined'].append(joined[1])
                 invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},

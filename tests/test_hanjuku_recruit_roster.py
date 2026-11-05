@@ -411,24 +411,29 @@ def test_field_scan_then_month_boundary_rescans_with_count_only(names):
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
     assert actions==[p.pad('a')]
     assert state['policy']['house']['month_scan']
-    assert state['policy']['recruit_roster']['tick']>old_tick
+    assert state['policy']['recruit_roster']['tick']==old_tick
     mem = state['policy']
     mem['month']='1-7'
-    # Issue #2367: the monthly check reads only the list and scroll.
+    # This month only the country status is visited; no names are enumerated.
     from docich.hanjuku_screen import parse
-    from test_hanjuku_house import roster
-    main_frame=_survey_main(7)
-    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('a')]
-    frame=_survey_header(roster(names,0),7)
-    assert house.step(parse(frame),mem,frame)==[p.pad('b')]
-    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('b')]
+    from test_hanjuku_level_scan import _main_on, _country_page1, _country_page2
+    main_frame=_main_on('しょうぐん')
+    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('down')]
+    status_frame=_main_on('ステータス')
+    assert house.step(parse(status_frame),mem,status_frame)==[p.pad('a')]
+    page1=_country_page1()
+    assert house.step(parse(page1),mem,page1)==[p.pad('a')]
+    page2=_country_page2()
+    assert house.step(parse(page2),mem,page2)==[p.pad('b')]
+    assert house.step(parse(status_frame),mem,status_frame)==[]
+    assert house.step(parse(status_frame),mem,status_frame)==[p.pad('b')]
     month_frame=month_canvas(250,on='メインメニュー',month=7)
     assert house.step(parse(month_frame),mem,month_frame)==[]
     assert not mem.get('house')
-    assert r.fresh(mem)['complete']
-    # Recruitment is tested after the game's recovery-not-needed receipt.
-    # Recruitment after this scan is covered by the monthly payment tests.
+    assert mem['country_general_count']['count']==10
+    assert r.fresh(mem) is None  # previous month's roster was not misdated
     assert state['policy']['castle_income']['アルマムーン']['tick']==10
+
 
 def test_single_readable_name_with_nonblank_unknown_slot_is_never_complete():
     from test_hanjuku_house import Canvas,roster,feed,status
@@ -512,40 +517,36 @@ def _survey_field():
 
 
 def _month_roster(state, visited=None):
-    """Drive the monthly roster count directly (names and scroll only).
-
-    Issue #2367: the monthly check must not open individual status screens.
-    This helper bypasses the month spending policy so these tests isolate the
-    roster flow. Passing ``visited`` simulates an unproven end: a full
-    eight-row page whose cursor never moves leaves the scan incomplete.
-    """
+    """Drive the monthly status-only count, without opening しょうぐん."""
     from docich.hanjuku_screen import parse
     from test_hanjuku_chart_bot import month_canvas
-    from test_hanjuku_house import roster
+    from test_hanjuku_level_scan import _main_on, _country_page1, _country_page2
     mem = state['policy']
     month_frame = month_canvas(250, on='メインメニュー', month=7)
-    actions = house.step(parse(month_frame), mem, month_frame)
-    assert actions == [p.pad('a')]
-    main_frame = _survey_main(7)
-    actions = house.step(parse(main_frame), mem, main_frame)
-    assert actions == [p.pad('a')]
+    assert house.step(parse(month_frame), mem, month_frame) == [p.pad('a')]
+    main_frame = _main_on('しょうぐん')
+    assert house.step(parse(main_frame), mem, main_frame) == [p.pad('down')]
+    status_frame = _main_on('ステータス')
+    assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
     if visited is None:
-        frame = _survey_header(roster(['どうし', 'ゼウス'], 0), 7)
-        assert house.step(parse(frame), mem, frame) == [p.pad('b')]
+        page1 = _country_page1()
     else:
         from test_hanjuku_house import Canvas
-        full = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'クミン', 'ミント', 'シナモン', 'バジル']
-        base = _survey_header(roster(full, 0), 7)
-        c = Canvas(); c.rgb = bytearray(base.rgb)
-        c.tile(168, 55, 0x0123456789ABCDEF)  # one unread name invalidates the page
-        frame = c.frame()
-        for _ in range(house.STEP_LIMIT + 2):
-            sets = house.step(parse(frame), mem, frame)
-    assert house.step(parse(main_frame), mem, main_frame) == [p.pad('b')]
+        c = Canvas()
+        c.text(56, 7, '1わ1ねん7のつき250G')
+        c.text(24, 39, 'わがくにの じょうたい')
+        c.text(24, 71, 'しゅうにゅう 300G')
+        page1 = c.frame()  # no readable headcount; not zero
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    page2 = _country_page2()
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(status_frame), mem, status_frame) == []
+    assert house.step(parse(status_frame), mem, status_frame) == [p.pad('b')]
     assert house.step(parse(month_frame), mem, month_frame) == []
     assert not mem.get('house')
-    assert mem['recruit_roster']['complete'] is (visited is None)
+    assert ('country_general_count' in mem) is (visited is None)
     return state
+
 
 def _failed_month_roster(state):
     state = _month_roster(state, visited=1)
@@ -592,9 +593,9 @@ def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
     mem=memory(complete=False);mem.pop('recruit_roster')
     state=_month_roster({'policy':mem})
     mem=state['policy']
-    assert mem['recruit_roster']['complete'] is True
+    assert mem['country_general_count']['count'] == 10
     assert mem['recruit_month_scan_attempts']['count']==1
-    assert r.surveyed(mem)
+    assert not r.surveyed(mem)  # national count is not a named survey
     # The short-lived receipt goes stale; the completed month does not.
     mem['tick']+=r.FRESH_TICKS
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
@@ -608,8 +609,8 @@ def test_completed_month_count_does_not_claim_statuses_so_field_walk_opens():
     for row in mem['castle_income'].values():row['tick']=250
     state=_month_roster({'policy':mem})
     mem=state['policy']
-    assert mem['recruit_roster']['complete'] is True
-    # Issue #2367: the monthly count read no HP/egg/location, so it is not a
+    assert mem['country_general_count']['count'] == 10
+    # The monthly status count read no HP/egg/location, so it is not a
     # status survey. The bounded field walk still observes those when needed.
     assert r.completed_survey(mem) is None
     actions,state=decide(_survey_field(),state)
@@ -862,21 +863,24 @@ def test_forget_defeated_removes_the_general_from_the_kept_count():
     assert mem['general_location_unknown'] == [NAMES[0]]
 
 
-def test_month_roster_walk_keeps_a_complete_copy_for_the_status_card():
+def test_month_status_headcount_does_not_invent_a_complete_named_roster():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
     _month_roster({'policy': mem})
-    kept = mem.get(r.LAST_COMPLETE_KEY)
-    assert kept and kept['names'] == mem['recruit_roster']['names']
-    assert (kept['chapter'], kept['month']) == (mem['chapter'], mem['month'])
-    assert kept['identity'] == IDENTITY and kept['tick'] == mem['recruit_roster']['tick']
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_general_count']['identity'] == IDENTITY
+    assert mem['recruit_roster'] == before
+    assert r.LAST_COMPLETE_KEY not in mem
 
 
-def test_failed_month_roster_walk_leaves_no_complete_copy():
+def test_unread_month_status_count_leaves_named_roster_unchanged():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
     _failed_month_roster({'policy': mem})
-    assert mem['recruit_roster']['complete'] is False
+    assert 'country_general_count' not in mem
+    assert mem['recruit_roster'] == before
     assert r.LAST_COMPLETE_KEY not in mem
 
 
@@ -935,25 +939,25 @@ def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
     assert r.LAST_COMPLETE_KEY in mem  # the card subtracts instead of showing 不明
 
 
-def test_monthly_roster_scan_runs_once_and_is_retained_for_the_month():
+def test_month_country_status_count_is_retained_for_this_month_only():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
     _month_roster({'policy': mem})
-    marker = mem.get('month_roster_scan')
-    assert marker and marker['scope'] == [mem['chapter'], mem['month']]
-    # The retained receipt is the month's data, not a one-frame observation.
-    assert mem['recruit_roster']['complete'] is True
-    # A second monthly-menu visit does not start another scan. The level page
-    # (level_trigger) is a different visit and is intentionally not covered.
-    mem['hanjuku_level_seen'] = {'scope': [mem['chapter'], mem['month']]}
+    marker = mem['country_general_count']
+    assert marker['scope'] == [mem['chapter'], mem['month']]
+    assert marker['count'] == 10
+    assert not mem.get('month_roster_scan')
+    # A second monthly-menu visit must not trigger a names scan.
     mem['shop'] = {'key': mem['month'], 'items': [], 'merchant_done': True,
                    'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
                    'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
                    'recruit_reserve': 0, 'closed': True}
     from test_hanjuku_chart_bot import month_canvas
     from docich.hanjuku_screen import parse
-    before = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    before = len([row for row in mem.get('_records') or []
+                  if row.get('decision') == 'house_scan_started'])
     frame = month_canvas(250, on='メインメニュー', month=7)
     assert house.step(parse(frame), mem, frame) is None
-    after = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    after = len([row for row in mem.get('_records') or []
+                 if row.get('decision') == 'house_scan_started'])
     assert after == before
