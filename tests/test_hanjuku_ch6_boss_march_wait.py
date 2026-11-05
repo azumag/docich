@@ -9,6 +9,7 @@ a real boss march. The boss is the last march of the chapter: it may wait the
 whole window in which its battle can still bind to the order.
 """
 from docich.hanjuku.strategy import orders as O
+from docich.hanjuku.strategy import replan
 
 
 def boss_sortie(tick=39917, target='ボス'):
@@ -57,3 +58,29 @@ def test_the_same_march_is_sent_again_after_the_full_window():
 
 def test_a_chapter_without_a_measured_rate_keeps_the_fixed_limit():
     assert O._arrival_limit({'chapter': 3}, boss_sortie()) == O.BOSS_ARRIVAL_LIMIT
+
+
+def test_a_plan_rebuild_does_not_release_a_boss_march_at_900_observations():
+    # g1133 2026-11-05: every plan rebuild released a boss march at the 800
+    # floor while _relaunch_overdue_boss waited 1600, so a second general was
+    # sent after an army still walking (plan_step_released age 872, ポセイドン).
+    mem = memory(39917 + 900)
+    replan._release_stale_steps(mem, ['6-B1'])
+    assert mem['orders']['6-B1'] == 'launched'
+    assert not decisions(mem, 'plan_step_released')
+
+
+def test_a_normal_march_is_still_released_after_its_distance_limit():
+    limit = O._arrival_limit({'chapter': 6}, boss_sortie(target='トウトウ'))
+    mem = memory(39917 + limit + 1, target='トウトウ')
+    replan._release_stale_steps(mem, ['6-B1'])
+    assert mem['orders']['6-B1'] == 'pending'
+    assert decisions(mem, 'plan_step_released')
+
+
+def test_a_boss_march_is_released_after_the_whole_bindable_window():
+    mem = memory(39917 + O.MARCH_ARRIVAL_CAP + 1)
+    replan._release_stale_steps(mem, ['6-B1'])
+    assert mem['orders']['6-B1'] == 'pending'
+    (record,) = decisions(mem, 'plan_step_released')
+    assert record['observed_metric']['target'] == 'ボス'

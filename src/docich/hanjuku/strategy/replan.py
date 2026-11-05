@@ -1023,8 +1023,15 @@ def _release_stale_steps(mem, steps):
     marked launched whose sortie is not marching any more (arrived, overdue,
     never recorded) describes an earlier attempt. Keeping it made the order
     unstartable for as long as the situation id stayed the same.
+
+    The wait is the same one the overdue path uses (_arrival_limit). It was
+    BOSS_ARRIVAL_LIMIT (800) here while a chapter-6 boss march is allowed
+    MARCH_ARRIVAL_CAP (1600), so every plan rebuild released a boss march at
+    20 minutes and sent a second general after an army still walking (g1133
+    2026-11-05: plan_step_released for ポセイドン's boss march at age 872,
+    then ブレッツェル was sent on the same step).
     """
-    from .orders import BOSS_ARRIVAL_LIMIT, _drop_spent_sortie_attempt
+    from .orders import _arrival_limit, _drop_spent_sortie_attempt
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
     for step in steps:
@@ -1032,7 +1039,8 @@ def _release_stale_steps(mem, steps):
             continue
         sortie = (mem.get('sorties') or {}).get(step) or {}
         if (sortie.get('status') in ('en_route', 'launched_unconfirmed')
-                and type(sortie.get('tick')) is int and 0 <= now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                and type(sortie.get('tick')) is int
+                and 0 <= now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
