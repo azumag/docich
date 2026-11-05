@@ -13,9 +13,11 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 from .llm.contracts import AgentSpec, DispatchRequest
 from .llm.policy import DIRECT_CHAT_PROVIDERS
@@ -29,6 +31,10 @@ DEFAULT_TIMEOUT_SEC = 25.0
 MAX_TIMEOUT_SEC = 45.0
 CHAT_PATH = "/v1/chat/completions"
 HEALTH_PATH = "/healthz"
+
+# Adapter upstreams are the direct-chat providers plus the LAN ``local``
+# Ollama runtime, which call_agent routes without the direct-chat gate.
+ADAPTER_UPSTREAM_PROVIDERS = DIRECT_CHAT_PROVIDERS | {"local"}
 
 # (prompt, timeout) -> (output, failure_kind); failure_kind is "" on success.
 Translator = Callable[[str, float], tuple[str, str]]
@@ -52,44 +58,88 @@ def probe_health(port: int = DEFAULT_PORT, timeout: float = 1.0) -> dict:
         body.get("upstream"), str
     ):
         return {"state": "invalid"}
-    return {"state": "ok", "upstream": body["upstream"]}
+    health = {"state": "ok", "upstream": body["upstream"]}
+    failures = body.get("consecutive_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+        health["consecutive_failures"] = failures
+    kind = body.get("last_failure_kind")
+    if isinstance(kind, str) and kind:
+        health["last_failure_kind"] = kind
+    return health
 
 
 def describe_health(health: dict) -> str:
     if health.get("state") == "ok":
-        return f"ok (upstream={health['upstream']})"
+        text = f"ok (upstream={health['upstream']})"
+        failures = health.get("consecutive_failures")
+        if isinstance(failures, int) and failures > 0:
+            text += f"; consecutive_failures={failures}"
+        kind = health.get("last_failure_kind")
+        if isinstance(kind, str) and kind:
+            text += f"; last_failure={kind}"
+        return text
     return {"unreachable": "unreachable", "invalid": "invalid response"}[health["state"]]
 
 
 def parse_upstream(raw: str) -> AgentSpec:
-    """Accept only ``<direct-chat provider>:<model>`` as the adapter upstream."""
+    """Accept only ``<adapter provider>:<model>`` as one adapter upstream."""
 
     provider, sep, model = raw.partition(":")
-    if provider not in DIRECT_CHAT_PROVIDERS or not sep or not model.strip():
-        raise ValueError("adapter upstream must be <direct-chat provider>:<model>")
+    if provider not in ADAPTER_UPSTREAM_PROVIDERS or not sep or not model.strip():
+        raise ValueError("adapter upstream must be <provider>:<model>")
     return AgentSpec(raw=raw, provider=provider, model=model.strip())
 
 
-def dispatch_translator(spec: AgentSpec, env: Mapping[str, str]) -> Translator:
+def parse_upstreams(raw: str) -> tuple[AgentSpec, ...]:
+    """Parse a comma-separated upstream fallback chain (first entry is primary)."""
+
+    specs = tuple(parse_upstream(part.strip()) for part in raw.split(","))
+    if not specs:
+        raise ValueError("adapter upstream must be <provider>:<model>")
+    return specs
+
+
+def dispatch_translator(
+    specs: Sequence[AgentSpec], env: Mapping[str, str]
+) -> Translator:
     from .llm.providers import call_agent
 
+    specs = tuple(specs)
+    if not specs:
+        raise ValueError("at least one adapter upstream is required")
     snapshot = dict(env)
 
     def translate(prompt: str, timeout: float) -> tuple[str, str]:
         # Dedicated label: _direct_chat admits CC_TRANSLATION explicitly. It is
         # not a COMMENT/RADIO lane and never reaches validate_label or dispatch().
-        request = DispatchRequest(label="CC_TRANSLATION", prompt=prompt, agents=(spec,))
-        result = call_agent(spec, request, timeout=timeout, env=snapshot)
-        if result.returncode == 0:
-            return result.output, ""
-        return "", result.failure_kind or "provider_failed"
+        # Upstreams share one deadline so fallback cannot overrun the client
+        # timeout; the first success wins and the last failure kind is reported.
+        deadline = time.monotonic() + max(float(timeout), 0.1)
+        last_kind = "provider_failed"
+        for spec in specs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.1:
+                break
+            request = DispatchRequest(label="CC_TRANSLATION", prompt=prompt, agents=(spec,))
+            result = call_agent(spec, request, timeout=remaining, env=snapshot)
+            if result.returncode == 0:
+                return result.output, ""
+            last_kind = result.failure_kind or "provider_failed"
+        return "", last_kind
 
     return translate
 
 
 def _make_handler(
-    translate: Translator, timeout: float, upstream: str
+    translate: Translator,
+    timeout: float,
+    upstream: str,
+    state: dict | None = None,
 ) -> type[BaseHTTPRequestHandler]:
+    if state is None:
+        state = {"consecutive_failures": 0, "last_failure_kind": ""}
+    state_lock = threading.Lock()
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "docich-cc-adapter"
         sys_version = ""
@@ -98,8 +148,14 @@ def _make_handler(
             if self.path != HEALTH_PATH:
                 self._send_error(404, "not_found")
                 return
-            # Only the configured upstream name is exposed; never the key or prompt.
-            self._send_json(200, {"status": "ok", "upstream": upstream})
+            # Only the configured upstream name and failure counters are
+            # exposed; never the key or prompt.
+            with state_lock:
+                counters = {
+                    "consecutive_failures": state["consecutive_failures"],
+                    "last_failure_kind": state["last_failure_kind"],
+                }
+            self._send_json(200, {"status": "ok", "upstream": upstream, **counters})
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             if self.path != CHAT_PATH:
@@ -110,9 +166,15 @@ def _make_handler(
                 return
             output, kind = translate(prompt, timeout)
             if kind:
+                with state_lock:
+                    state["consecutive_failures"] += 1
+                    state["last_failure_kind"] = kind
                 LOGGER.warning("[CC_TRANSLATION_ADAPTER] failed kind=%s status=502", kind)
                 self._send_error(502, kind)
                 return
+            with state_lock:
+                state["consecutive_failures"] = 0
+                state["last_failure_kind"] = ""
             self._send_json(
                 200, {"choices": [{"message": {"role": "assistant", "content": output}}]}
             )
@@ -162,10 +224,11 @@ def make_server(
     port: int = DEFAULT_PORT,
     timeout: float = DEFAULT_TIMEOUT_SEC,
     upstream: str = "",
+    state: dict | None = None,
 ) -> ThreadingHTTPServer:
     if not 0.1 <= timeout <= MAX_TIMEOUT_SEC:
         raise ValueError("adapter timeout must be between 0.1 and 45 seconds")
-    handler = _make_handler(translate, timeout, upstream)
+    handler = _make_handler(translate, timeout, upstream, state)
     return ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
 
 
@@ -179,8 +242,8 @@ def check_sarashina_startup(env: Mapping[str, str]) -> None:
 
 def main(env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
-    upstream = parse_upstream(env.get("DOCICH_CC_ADAPTER_UPSTREAM", ""))
-    if upstream.provider == "sarashina-api":
+    specs = parse_upstreams(env.get("DOCICH_CC_ADAPTER_UPSTREAM", ""))
+    if any(spec.provider == "sarashina-api" for spec in specs):
         check_sarashina_startup(env)
     try:
         port = int(env.get("DOCICH_CC_ADAPTER_PORT", str(DEFAULT_PORT)))
@@ -191,10 +254,10 @@ def main(env: Mapping[str, str] | None = None) -> int:
         raise ValueError("adapter port must be between 1 and 65535")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     server = make_server(
-        dispatch_translator(upstream, env),
+        dispatch_translator(specs, env),
         port=port,
         timeout=timeout,
-        upstream=upstream.raw,
+        upstream=",".join(spec.raw for spec in specs),
     )
     LOGGER.info("[CC_TRANSLATION_ADAPTER] listening on %s:%s", LOOPBACK_HOST, port)
     try:

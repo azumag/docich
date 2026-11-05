@@ -7,9 +7,9 @@
 
 | 変数 | 必須 | 既定 | 内容 |
 |---|---|---|---|
-| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<direct-chat provider>:<model>`。`vercel-api` / `openrouter-api` / `cloudflare-api` / `sarashina-api` のいずれか |
+| `DOCICH_CC_ADAPTER_UPSTREAM` | はい | なし | `<provider>:<model>` のカンマ区切り fallback chain（先頭が primary）。provider は `vercel-api` / `openrouter-api` / `cloudflare-api` / `sarashina-api` / `local`（LAN の Ollama。`LOCAL_LLM_BASE_URL` / `LOCAL_LLM_MODEL` は既定値でよい）。各 upstream に残り時間を渡して順次試行し、最初の成功を使う。provider が timeout を超過した場合の wall-clock 上限は保証しない |
 | `DOCICH_CC_ADAPTER_PORT` | いいえ | `4100` | 127.0.0.1 の待受ポート（`.env` の `DOCICH_CC_TRANSLATION_URL` と一致させる） |
-| `DOCICH_CC_ADAPTER_TIMEOUT_SEC` | いいえ | `25` | upstream 1 回の上限（0.1〜45）。クライアント側 timeout より短く保つ |
+| `DOCICH_CC_ADAPTER_TIMEOUT_SEC` | いいえ | `25` | fallback chain 全体の目標時間予算（0.1〜45秒）。各 provider の timeout 遵守が前提で、厳密な経過時間上限ではない。クライアント側 timeout より短く設定する |
 | `DOCICH_CHAT_VERCEL_UPSTREAM` 等 | upstream による | — | 既存 direct-chat の前提 env。`vercel-api` は単一の明示 upstream が要る |
 | `AI_GATEWAY_API_KEY` 等 | upstream による | — | 既存の secret。値は env ファイルか `*_FILE` でのみ渡し、ファイル・log・Actions 出力に書かない |
 | `DOCICH_CHAT_SARASHINA_UPSTREAM` | `sarashina-api` のとき必須 | — | 単一の endpoint。https のみ（loopback http だけ例外）。userinfo・query・fragment 不可。起動時に pin し、redirect は追従しない |
@@ -25,7 +25,7 @@
 ## 起動・確認
 
 - unit: `ops/caption_adapter/docich-cc-translation-adapter.service`（`User=ubuntu`、`Restart=always`、`WantedBy=multi-user.target`）。
-- 健康確認（値は出ない）: `curl -s http://127.0.0.1:4100/healthz` → `{"status": "ok", "upstream": "<provider>:<model>"}`。
+- 健康確認（値は出ない）: `curl -s http://127.0.0.1:4100/healthz` → `{"status": "ok", "upstream": "<provider>:<model>[,…]", "consecutive_failures": N, "last_failure_kind": "<kind>"}`。`consecutive_failures` は直近の連続翻訳失敗数（成功で 0 に戻る）、`last_failure_kind` は最後の失敗種別のみ（`rate_limit` / `provider_failed` など）。
 - 失敗は HTTP 502 と kind のみ（`rate_limit` / `provider_failed` など）。log は `[CC_TRANSLATION_ADAPTER] failed kind=...`。
 
 ## 配置時の固定値（#2900、VM 上で read-only 確認済み）
@@ -44,7 +44,7 @@ unit・PR 本文・本 README は以下の同じ値で揃えている。
 ## 状態確認（docich status / diagnostics）
 
 - `docich status` の `captions.adapter` 行: 127.0.0.1 の `/healthz` を read-only で 1 回だけ probe し、`ok (upstream=…)` / `unreachable` / `invalid response` を表示する。配信未設定（`stream.mode=null`）では表示しない扱い。
-- `collect_diagnostics` の `cc_translation_adapter` 節: probe の state・port・upstream 名のみ。prompt・key・応答本文は含めない。
+- `collect_diagnostics` の `cc_translation_adapter` 節: probe の state・port・upstream 名・`consecutive_failures` / `last_failure_kind` のみ。prompt・key・応答本文は含めない。
 - AGENTS §11 の確認: 本機能は registry（既存 unit 一覧）・queue（処理キューを持たない）に影響しない。health は上記 probe、telemetry はこの節のみ。
 
 ## 配置

@@ -9571,21 +9571,35 @@ def _probe_cc_adapter(port, timeout=1.0):
         body.get("upstream"), str
     ):
         return {"state": "invalid"}
-    return {"state": "ok", "upstream": body["upstream"]}
+    health = {"state": "ok", "upstream": body["upstream"]}
+    failures = body.get("consecutive_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+        health["consecutive_failures"] = failures
+    kind = body.get("last_failure_kind")
+    if isinstance(kind, str) and kind:
+        health["last_failure_kind"] = kind
+    return health
 
 
 def _collect_cc_translation_adapter():
     """Read-only healthz of the CC translation adapter (docich#2894).
 
-    Reports the probe state and the upstream name the adapter advertises only;
-    no prompt, key, or response body is read into the envelope.
+    Reports the probe state, the upstream name the adapter advertises, and its
+    failure counters only; no prompt, key, or response body is read into the
+    envelope.
     """
     port = CC_ADAPTER_DEFAULT_PORT
     raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
     if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
         port = int(raw_port)
     health = _probe_cc_adapter(port)
-    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
+    return {
+        "port": port,
+        "state": health["state"],
+        "upstream": health.get("upstream"),
+        "consecutive_failures": health.get("consecutive_failures"),
+        "last_failure_kind": health.get("last_failure_kind"),
+    }
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
