@@ -319,6 +319,10 @@ def month_step(screen: Screen, mem):
         if move == 'here':
             if choice == 'うむッ!':
                 mem['month_exit'] = False
+                # An observed exit, not the earlier purchase-complete flag, arms
+                # the roster-first field sequence for the current month.
+                from .post_month_status import arm as arm_post_month_status
+                arm_post_month_status(mem)
             _record(mem, 'month_confirm', choice=choice, reason='月初メニュー終了の確認')
             return [pad('a')]
         return [move] if move else [pad('b')]

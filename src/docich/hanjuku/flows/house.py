@@ -53,7 +53,7 @@ GOAL_FIELD_EXTRA = 2
 CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのなかにいます'})
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
-MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです'})
+MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -860,16 +860,10 @@ def _month_count_advance(screen, mem, state, frame):
 
 
 def _camp_recall_first(mem, frame):
-    """A camp ready on this map frame goes before a new survey or repair session.
-
-    This flow runs ahead of ``map_step``. g1097 2026-11-01: 23 surveys of about
-    three minutes each took the idle map frames, so a tent in plain view at
-    19:16, 19:19 and 19:23 never reached the recall that the owner rule of
-    2026-09-28 asks for. The recall keeps its own bounded cooldowns, so a camp
-    it cannot serve stops being "ready" and this survey runs on the next frame.
-    """
-    from .camp_recheck import recall_ready
-    return recall_ready(mem, frame)
+    """The roster-first monthly sequence, not a map interrupt, owns returns."""
+    # Keep this historical helper for compatibility. The roster scan
+    # schedules named recall tasks, so a visible tent cannot steal a survey.
+    return False
 
 
 def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick):
@@ -1089,6 +1083,10 @@ def _step_once(screen, mem, frame):
         scope = [mem.get('chapter'), mem.get('month')]
         field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
+        # An explicit month-end inspection now owns returns and repairs.
+        # Once it finishes, field surveys must not steal the next map plan.
+        if (not monthly and (mem.get('post_month_status_last') or {}).get('scope') == scope):
+            return None
         if monthly:
             if mem.get('battle') or _flow(mem).get('recall'):
                 return None

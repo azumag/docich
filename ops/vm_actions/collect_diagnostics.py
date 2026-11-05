@@ -6908,6 +6908,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v456-sortie-outcome",
             "hanjuku-chart-v457-boss-first-waves",
             "hanjuku-chart-v458-zombie-sortie-expiry",
+            "hanjuku-chart-v459-post-month-status",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

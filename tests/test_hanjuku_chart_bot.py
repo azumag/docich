@@ -2837,16 +2837,16 @@ def test_camp_recall_without_a_marker_still_cancels():
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 
 
-def test_map_step_recalls_a_visible_camp_before_any_order():
-    # g421: the recall never started because it waited for a chartless idle
-    # map. A visible camp must win over any order state.
+def test_map_step_does_not_preempt_orders_for_a_visible_camp():
+    # The monthly roster-first owner now schedules named camp recalls.
+    # A stray visible tent cannot interrupt a running attack order.
     frame = _camp_frame()
     mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
            'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
-    assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
-    assert _flow(mem)['recall']['stage'] == 'to_camp'
-    assert [r['decision'] for r in mem['_records']][-1] == 'camp_found'
+    assert policy.map_step(screen, mem, frame) == [policy.pad('y')]
+    assert 'recall' not in _flow(mem)
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
 
 
 def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
