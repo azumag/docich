@@ -6887,6 +6887,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v434-y-jump-block-lapses",
             "hanjuku-chart-v435-nav-last-seed",
             "hanjuku-chart-v436-stationary-budget-retry",
+            "hanjuku-chart-v438-brain-exit-location",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
