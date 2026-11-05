@@ -80,3 +80,47 @@ def test_a_planned_record_inside_twice_the_window_is_kept():
                                      'source': 'アルマムーン', 'target': 'ボス'}]}
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']
+
+
+def observed(age, location, delta, *, observed=True):
+    mem = memory(age=age, status='en_route')
+    mem['general_statuses'] = {'statuses': {'ヘルメス': {
+        'location': location, 'location_observed': observed,
+        'tick': mem['sorties']['A:x:M1']['tick'] + delta}}}
+    return mem
+
+
+def test_a_camp_read_after_departure_ends_the_march_early():
+    # g1133 2026-11-06: デュオニソス camped after a retreat while his boss
+    # sortie stayed en_route until the 3200-tick window.
+    mem = observed(age=200, location='camp', delta=50)
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert any(r['decision'] == 'sortie_record_observed_ended' for r in mem['_records'])
+
+
+def test_a_castle_read_after_departure_ends_the_march_early():
+    mem = observed(age=200, location='castle', delta=50)
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+
+
+def test_a_status_read_before_departure_does_not_end_the_march():
+    mem = observed(age=200, location='camp', delta=-50)
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' in mem['sorties']
+    assert mem['garrison']['アルマムーン'] == []
+
+
+def test_a_march_reading_does_not_end_the_march():
+    mem = observed(age=200, location='march', delta=50)
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' in mem['sorties']
+
+
+def test_an_unobserved_location_does_not_end_the_march():
+    mem = observed(age=200, location='camp', delta=50, observed=False)
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' in mem['sorties']
