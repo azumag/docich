@@ -1177,8 +1177,17 @@ def _step_once(screen, mem, frame):
             if count_current and not _level_due(mem):
                 return None
             shop = mem.get('shop') or {}
-            if shop.get('key') == mem.get('month') and shop.get('recruit') == 'opened':
-                return None  # recruiting dialogue owns foreground
+            if shop.get('key') == mem.get('month') and shop.get('recruit') in ('opened', 'done', 'unverified'):
+                # Only an unread level can warrant a status-only return after
+                # recruitment; a transaction in progress owns its foreground.
+                if shop.get('recruit') == 'opened' or not _level_due(mem):
+                    return None
+            from ..strategy.economy import _batch_active
+            if (_batch_active(shop) and shop.get('recruit') in ('pending', 'check')):
+                return None  # never interrupt a multi-recruit batch
+            if (_egg_recovery_targets(mem)
+                    and shop.get('egg') not in ('done', 'skipped', 'not_needed', 'unverified')):
+                return None  # preserve recovery priority over free status
             attempts = mem.get('recruit_month_scan_attempts') or {}
             if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
                 return None  # bounded even when the status page cannot be read
