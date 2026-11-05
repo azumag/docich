@@ -63,14 +63,27 @@ def _location(screen):
 
 
 def _marker(mem, frame):
-    """Record a roster-highlight triangle; attach a castle only with a fresh field pose.
+    """Record the roster selection triangle and bind its castle from the map.
 
-    The Y-map triangle detector is reused as a conservative colour/shape
-    candidate.  A roster sprite that differs from the Y triangle simply yields
-    no evidence. No marker means no location inference.
+    The roster draws a white/gray inverted triangle over the selected general.
+    The red army marker of the Y view is a different sprite and sits on the
+    hero, so it cannot answer "which castle is this general in". The measured
+    roster marker is therefore read first; the older red-triangle/camera
+    heuristic stays only as a fallback for frames where that sprite is absent.
     """
     if frame is None:
         return None
+    from ..os_layer.readers import marker_castle, selection_marker
+    marker = selection_marker(frame) if hasattr(frame, 'pixel') else None
+    if marker is not None:
+        result = {'box': list(marker['box']), 'source': 'selection_marker'}
+        mapped = marker_castle(frame, mem.get('chapter') or 0)
+        # A triangle without any castle flag on the same map is not enough to
+        # name a castle; leave it to the SELECT/status confirmation task.
+        if isinstance(mapped, dict) and int(mapped.get('icons') or 0) >= 1:
+            result['castle_candidate'] = mapped['castle']
+            result['mapping'] = mapped
+        return result
     boxes = [b for b in world_markers(frame)
              if b[2] < 164 and b[3] < 150]
     if len(boxes) != 1:
