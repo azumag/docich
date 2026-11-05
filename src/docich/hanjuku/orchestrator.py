@@ -582,6 +582,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         bijin_guard_hold = (actions == [] and (
             mem.get('bijin_gift_hold') is True or
             (mem.get('bijin_guard') or {}).get('held') is True))
+    goninja_guard_hold = False
+    if actions is None:
+        actions = prompts_flow.goninja_guard_step(screen, mem, phase=phase)
+        # Same bound as the beauty guard: a held goninja offer must not fall
+        # through to the generic no-input fallback; its own ~60 s bound ends it.
+        goninja_guard_hold = (actions == [] and
+                              (mem.get('goninja_guard') or {}).get('held') is True)
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -809,6 +816,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         army_owned = False
         recruit_guard = None
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
+            and not goninja_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
