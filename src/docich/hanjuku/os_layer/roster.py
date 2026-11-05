@@ -295,6 +295,9 @@ def forget_defeated(mem, name):
         survey.get(key, {}).pop(name, None)
     survey['defeated'].remove(name)
     record_departure(mem, name)  # subtract; a confirmed departure is not 不明
+    unknown = mem.get('general_location_unknown')
+    if isinstance(unknown, list) and name in unknown:
+        unknown.remove(name)
     _remember_complete(mem, survey['receipt'])  # the fresh list no longer holds them
     mem['house_status_recheck'] = bool(survey.get('dirty'))
     return True

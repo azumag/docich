@@ -855,9 +855,11 @@ def test_forget_defeated_removes_the_general_from_the_kept_count():
                             'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
         'dirty': {}, 'defeated': [NAMES[1]]}
     r._remember_complete(mem, receipt)
+    mem['general_location_unknown'] = [NAMES[0], NAMES[1]]
     assert r.forget_defeated(mem, NAMES[1]) is True
     assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
     assert mem[r.LAST_COMPLETE_KEY]['tick'] == receipt['tick']
+    assert mem['general_location_unknown'] == [NAMES[0]]
 
 
 def test_month_roster_walk_keeps_a_complete_copy_for_the_status_card():
