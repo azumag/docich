@@ -6890,6 +6890,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v438-brain-exit-location",
             "hanjuku-chart-v439-drive-after-recenter",
             "hanjuku-chart-v440-mixed-key-state",
+            "hanjuku-chart-v441-recall-skip-per-camp",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

@@ -20,6 +20,7 @@ RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations before retrying the same failed camp
 RECALL_SKIP_RADIUS = 48        # screen pixels: cover the measured camera shift for the same camp
+RECALL_SKIP_HISTORY = 6        # other failed camps whose hold is still running
 LOST_CAMP_RETRY_TICKS = 60     # first wait after a tent only went out of sight, doubling up to the skip
 FORT_RETRY_TICKS = 20          # first wait before the next general leaves the same 砦, doubling likewise
 FORT_STATUS_PRESS_EVERY = 4    # observations of the status panel between two A presses
@@ -51,6 +52,37 @@ def _remember_recall_target(mem, state):
     _flow(mem)['recall_skip_target'] = scoped
 
 
+def _stash_previous_skip(mem):
+    """Keep the hold of the camp that failed before this one.
+
+    The single ``recall_skip`` slot held only the latest failure, so two stuck
+    camps released each other: A failed, B was picked, B failed, A (no longer
+    held) was picked again. g1133 2026-11-05 14:16 retried ``[52,148]`` and
+    ``[11,46]`` alternately every few seconds and spent the short map windows
+    that the boss order needed.
+    """
+    flow = _flow(mem)
+    skip, scoped = flow.get('recall_skip'), flow.get('recall_skip_target')
+    chapter, now = mem.get('chapter'), int(mem.get('tick') or 0)
+    history = [h for h in flow.get('recall_skip_history') or [] if _history_alive(h, chapter, now)]
+    if (isinstance(skip, dict) and isinstance(scoped, dict) and _camp_target(scoped.get('target'))
+            and scoped.get('chapter') == chapter and type(skip.get('tick')) is int):
+        ticks = int(flow.get('recall_skip_ticks') or RECALL_SKIP_TICKS)
+        entry = {'chapter': chapter, 'target': list(scoped['target']), 'tick': skip['tick'],
+                 'ticks': ticks, **({'kind': scoped['kind']} if isinstance(scoped.get('kind'), str) else {})}
+        history = [h for h in history if not _same_skipped_camp(entry, h)] + [entry]
+    if history:
+        flow['recall_skip_history'] = history[-RECALL_SKIP_HISTORY:]
+    else:
+        flow.pop('recall_skip_history', None)
+
+
+def _history_alive(entry, chapter, now):
+    return (isinstance(entry, dict) and entry.get('chapter') == chapter
+            and _camp_target(entry.get('target')) and type(entry.get('tick')) is int
+            and type(entry.get('ticks')) is int and 0 <= now - entry['tick'] < entry['ticks'])
+
+
 def _arm_recall_skip(mem, state, base=None):
     """Hold the failed camp back; ``base`` starts a doubling wait for a mere retry.
 
@@ -60,6 +92,7 @@ def _arm_recall_skip(mem, state, base=None):
     the wait up to the full hold, which keeps the bound #3040 set after the
     same tent was lost eight times in eight minutes.
     """
+    _stash_previous_skip(mem)
     _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
     _remember_recall_target(mem, state)
     _flow(mem).pop('recall_skip_ticks', None)
@@ -90,7 +123,7 @@ def _same_skipped_camp(camp, scoped):
             and abs(target[1] - old[1]) <= RECALL_SKIP_RADIUS)
 
 
-def _filter_recall_skip(mem, camps):
+def _filter_single_recall_skip(mem, camps):
     """Apply a retry cooldown to only the camp that actually failed.
 
     This is deliberately reused both when choosing a camp and while tracking it:
@@ -120,6 +153,21 @@ def _filter_recall_skip(mem, camps):
         return camps
     return [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
 
+
+def _filter_recall_skip(mem, camps):
+    """Camps not held back by the latest failure nor by any earlier still-running hold."""
+    camps = _filter_single_recall_skip(mem, camps)
+    flow = _flow(mem)
+    history = flow.get('recall_skip_history') or []
+    if not history:
+        return camps
+    chapter, now = mem.get('chapter'), int(mem.get('tick') or 0)
+    alive = [h for h in history if _history_alive(h, chapter, now)]
+    if alive:
+        flow['recall_skip_history'] = alive
+    else:
+        flow.pop('recall_skip_history', None)
+    return [camp for camp in camps if not any(_same_skipped_camp(camp, h) for h in alive)]
 
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
