@@ -221,13 +221,34 @@ def _near_rgb(pixel, colour, tolerance=GENERAL_MARKER_TOLERANCE):
     return all(abs(a - b) <= tolerance for a, b in zip(pixel, colour))
 
 
+def _marker_shade_matches(pixel, colour):
+    """Match a grayscale sprite under a modest palette/brightness shift.
+
+    A single exact RGB template missed the entire triangle when the game
+    tinted the SNES grayscale palette by more than three levels. Preserve the
+    exact match first, then accept only near-neutral light/mid/dark shades.
+    The complete 7x7 triangle pattern is still required; coloured army
+    markers and castle flags cannot pass the neutral-colour guard.
+    """
+    if _near_rgb(pixel, colour):
+        return True
+    if max(pixel) - min(pixel) > 12:
+        return False
+    value = sum(pixel) / 3
+    if colour == GENERAL_MARKER_WHITE:
+        return value >= 210
+    if colour == GENERAL_MARKER_GRAY:
+        return 65 <= value <= 130
+    return value <= 60
+
+
 def selection_marker(frame):
     """The inverted white/gray triangle over the selected general, or None."""
     if frame is None:
         return None
     for y in range(16, min(frame.height - 7, 178)):
         for x in range(16, min(frame.width - 7, 154)):
-            if all(_near_rgb(frame.pixel(x + dx, y + dy), colour)
+            if all(_marker_shade_matches(frame.pixel(x + dx, y + dy), colour)
                    for dx, dy, colour in _GENERAL_MARKER_PATTERN):
                 return {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
                         'tip': (x + 3, y + 6)}
