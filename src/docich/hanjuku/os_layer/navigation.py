@@ -387,10 +387,19 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # view re-places the cursor absolutely and is then the only way out
         # (g1133 2026-11-05: the boss order could neither walk nor jump).
         stuck = int((mem.get('cursor_still') or {}).get('n') or 0) >= CURSOR_STILL_LIMIT
-        if not stuck:
+        # Permit only one rescue jump per order/mode. Resetting the entire
+        # budget while cursor_still remains high would grant 18 more jumps
+        # each time the budget runs out, defeating the hard safety bound.
+        rescued = mem.setdefault('yjump_rescued', {})
+        if not stuck or rescued.get(key):
             return False
-        mem.setdefault('tally', {})[f'yjump:{key}'] = 0
-        mem.setdefault('y_jumps_total', {})[key] = 0
+        rescued[key] = True
+        mem.setdefault('tally', {})[f'yjump:{key}'] = Y_JUMP_TOTAL_LIMIT - 1
+        mem.setdefault('y_jumps_total', {})[key] = Y_JUMP_TOTAL_LIMIT - 1
+        # The short per-order budget can also be exhausted.
+        jumps = mem.setdefault('y_jumps', {})
+        if jumps.get(key, 0) >= Y_JUMP_LIMIT:
+            jumps[key] = Y_JUMP_LIMIT - 1
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
     if (mode == 'target' and chart.is_boss_castle(name)
