@@ -262,8 +262,13 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not isinstance(audio_sink, str) or "\x00" in audio_sink:
             raise AdapterError("[soren91].audio_sink は文字列である必要があります")
         self.audio_sink = audio_sink.strip()
-        # Twitch category-only sync on switch (update_stream_game.sh in the
-        # Soren root). Best-effort: a failure must not fail the corner.
+        # Twitch category/title sync (update_stream_game.sh in the Soren
+        # root). Best-effort: a failure must not fail the corner. The
+        # title/category owner is the coordinator's post-commit hook
+        # (stream_category.commit_hook); this adapter only restores the
+        # base title on standalone stop/idle cleanup. Pre-commit sync was
+        # removed (2026-11-05) because renderer ready/stop flaps caused
+        # soren91 <-> sorengame title flaps before commit.
         self.twitch_game = str(raw.get("twitch_game", "soren91") or "").strip()
         self.restore_twitch_game = str(raw.get("restore_twitch_game", "sorengame") or "").strip()
         self.soren_root = str(raw.get("soren_root", "/home/ubuntu/soren") or "").strip()
@@ -880,9 +885,13 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             if running and self._capture_profile_requested() and not self._capture_profile_is_active():
                 raise AdapterError("renderer capture profile verification failed")
             if running and bound:
-                if not self._twitch_synced:
-                    self._sync_twitch(self.twitch_game)
-                    self._twitch_synced = True
+                # Twitch title/category follows ONLY the coordinator's
+                # post-commit hook (stream_category.commit_hook). A pre-commit
+                # sync here would flap soren91 <-> sorengame titles whenever
+                # the renderer flaps ready/stop across retries, overwriting
+                # the active game's title before commit (2026-11-05:
+                # 12:25/12:33 JST bursts while hanjuku-hero was active).
+                # See _sync_twitch (cleanup restore) and commit_hook.
                 return
             if cancel is not None and cancel.is_set():
                 raise DeadlineExceededError("adapter call はcancelされました")
