@@ -124,3 +124,42 @@ def test_an_unobserved_location_does_not_end_the_march():
     mem = observed(age=200, location='camp', delta=50, observed=False)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']
+
+
+def test_a_march_read_after_departure_restarts_the_window():
+    # g1133 2026-11-06: boss marchers read しんぐんちゅうです at 111501-111545
+    # near the 2400-tick relaunch window, still walking.
+    mem = observed(age=O.SPENT_SORTIE_TICKS + 1, location='march', delta=200)
+    sortie = mem['sorties']['A:x:M1']
+    refreshed_tick = sortie['tick'] + 200
+    O._refresh_live_marches(mem)
+    assert mem['sorties']['A:x:M1']['tick'] == refreshed_tick
+    assert any(r['decision'] == 'sortie_march_refreshed' for r in mem['_records'])
+    # The expiry window now counts from the measured reading, not the launch.
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' in mem['sorties']
+
+
+def test_a_march_read_before_departure_does_not_restart_the_window():
+    mem = observed(age=200, location='march', delta=-50)
+    original = mem['sorties']['A:x:M1']['tick']
+    O._refresh_live_marches(mem)
+    assert mem['sorties']['A:x:M1']['tick'] == original
+    assert not any(r['decision'] == 'sortie_march_refreshed' for r in mem['_records'])
+
+
+def test_a_camp_read_does_not_restart_the_window():
+    mem = observed(age=200, location='camp', delta=50)
+    original = mem['sorties']['A:x:M1']['tick']
+    O._refresh_live_marches(mem)
+    assert mem['sorties']['A:x:M1']['tick'] == original
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+
+
+def test_the_march_refresh_is_recorded_once():
+    mem = observed(age=O.SPENT_SORTIE_TICKS + 1, location='march', delta=200)
+    O._refresh_live_marches(mem)
+    O._refresh_live_marches(mem)
+    records = [r for r in mem['_records'] if r['decision'] == 'sortie_march_refreshed']
+    assert len(records) == 1

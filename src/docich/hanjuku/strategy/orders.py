@@ -1080,6 +1080,44 @@ def _observed_march_end(mem, sortie, tick):
     return row.get('location') in ('camp', 'castle')
 
 
+def _refresh_live_marches(mem):
+    """A status panel that still says しんぐんちゅうです keeps the march alive.
+
+    The fixed windows (LONG_MARCH_TICKS for the bind, SPENT_SORTIE_TICKS for
+    expiry) assume a march ends within them, but g1133 2026-11-06 read
+    しんぐんちゅうです at ticks 111501-111545 for boss sorties launched at
+    109756-110373: ナストリーニ (306 cells), ヘーゼル (428), デーメーテール
+    (1015) were all still walking near the 2400-tick relaunch window, which
+    would have re-sent them while they were on the road and orphaned their
+    late entry. A measured march reading after departure is positive evidence
+    that the march is alive, so restart its age anchor at the reading. Only an
+    observed camp/castle ends it (_observed_march_end); an old reading cannot
+    extend anything.
+    """
+    rows = (mem.get('general_statuses') or {}).get('statuses')
+    if not isinstance(rows, dict):
+        return
+    refreshed = 0
+    for sortie in (mem.get('sorties') or {}).values():
+        if (not isinstance(sortie, dict)
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed')):
+            continue
+        tick = sortie.get('tick')
+        row = rows.get(sortie.get('general'))
+        if (type(tick) is not int or not isinstance(row, dict)
+                or row.get('location_observed') is not True
+                or row.get('location') != 'march'
+                or type(row.get('tick')) is not int or row['tick'] <= tick):
+            continue
+        sortie['tick'] = row['tick']
+        refreshed += 1
+    if refreshed:
+        _record(mem, 'sortie_march_refreshed',
+                observed_metric={'refreshed': refreshed,
+                                 'remaining': len(mem.get('sorties') or {})},
+                reason='出撃後に行軍中を実測したため行軍記録の期限を更新する')
+
+
 def _expire_spent_sorties(mem):
     """Forget marches that can no longer arrive and put their generals back.
 
@@ -1154,6 +1192,9 @@ def _expire_spent_sorties(mem):
 
 
 def next_order(mem):
+    # A measured しんぐんちゅうです reading restarts the age of a live march
+    # before the fixed windows can relaunch it while it is still walking.
+    _refresh_live_marches(mem)
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
