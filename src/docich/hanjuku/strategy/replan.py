@@ -1103,6 +1103,26 @@ def _release_stale_steps(mem, steps):
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
         _drop_spent_sortie_attempt(mem, step)
+        # Owner 2026-11-05: a released attempt must not leave its march behind.
+        # グレナデン stayed launched_unconfirmed for 5971 observations while
+        # every plan kept the step, so the expiry's "planned" guard never let
+        # it go and his name stayed out of every wave.
+        if isinstance(sortie, dict) and sortie.get('status') in (
+                'en_route', 'launched_unconfirmed', 'overdue'):
+            (mem.get('sorties') or {}).pop(step, None)
+            general, source = sortie.get('general'), sortie.get('source')
+            garrison = mem.get('garrison') or {}
+            if (general and general != NAME
+                    and source in chart.castles(mem.get('chapter') or 0)):
+                if not isinstance(garrison.get(source), list):
+                    garrison[source] = []
+                if general not in garrison[source]:
+                    garrison[source].append(general)
+            _record(mem, 'sortie_record_expired', chart_step=step, general=general,
+                    observed_metric={'general': general, 'source': source,
+                                     'age': now - sortie['tick']
+                                     if type(sortie.get('tick')) is int else None},
+                    reason='解放した指示の行軍記録を破棄し、将軍を出撃元へ戻す')
         status[step] = 'pending'
         _record(mem, 'plan_step_released', chart_step=step,
                 observed_metric={'sortie_status': sortie.get('status'), 'general': sortie.get('general'),
