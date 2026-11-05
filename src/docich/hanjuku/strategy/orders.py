@@ -1080,7 +1080,13 @@ def _expire_spent_sorties(mem):
     for step, sortie in list(sorties.items()):
         if expired >= SPENT_SORTIE_EXPIRE_LIMIT:
             break
-        if (not isinstance(sortie, dict) or sortie.get('status') != 'overdue'
+        # A march cannot still be running past the bindable window: an
+        # en_route/launched_unconfirmed record that old is a zombie left by a
+        # lost battle or a re-send (g1133 2026-11-05: グレナデン sat
+        # launched_unconfirmed for 5115 observations and held his name out of
+        # every wave). Expire it with the overdue ones.
+        if (not isinstance(sortie, dict)
+                or sortie.get('status') not in ('overdue', 'en_route', 'launched_unconfirmed')
                 or step in planned):
             continue
         tick = sortie.get('tick')
