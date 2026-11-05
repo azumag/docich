@@ -578,3 +578,23 @@ def test_independent_repair_status_updates_only_persistent_egg_and_hp_fields():
     assert cache['statuses']['ゼウス']['location'] == 'unknown'
     assert 'castle' not in cache['statuses']['ゼウス']
     assert 'ゼウス' not in mem['garrison']['アルマムーン']
+
+
+def test_boss_adjacent_camp_is_not_a_monthly_recall_task():
+    # #3505 / g1133: ボス城直前で野営した将軍が月次帰還で戻され、ボス戦が
+    # 成立しなかった。marker_castle が MAP_CASTLE_TOLERANCE 内でボス城に
+    # 対応づけた castle_candidate を持つ野営は帰還タスクから除外する。
+    statuses = {
+        'バーミセリ': {'location': 'camp',
+                     'marker': {'castle_candidate': 'ボス'}},
+        'ヘーゼル': {'location': 'camp',
+                   'marker': {'castle_candidate': 'けっかい'}},   # 1面ボス城名
+        'ナストリーニ': {'location': 'camp',
+                      'marker': {'castle_candidate': 'ダーラント'}},
+        'デーメーテール': {'location': 'camp'},                  # marker 無し
+        'カバルッサ': {'location': 'camp', 'marker': {}},         # candidate 無し
+    }
+    assert post._tasks(statuses, list(statuses)) == [
+        {'kind': 'recall', 'name': 'ナストリーニ'},
+        {'kind': 'recall', 'name': 'デーメーテール'},
+        {'kind': 'recall', 'name': 'カバルッサ'}]

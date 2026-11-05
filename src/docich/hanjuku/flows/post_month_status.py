@@ -32,10 +32,22 @@ def _log(mem, event, **details):
 
 
 def _tasks(statuses, names):
+    from ... import hanjuku_chart as chart
     queue = []
     for name in names:
         info = statuses[name]
         if info.get('location') == 'camp':
+            # #3505: a camp whose roster triangle maps onto the boss castle is a
+            # siege in progress, not a straggler. ``marker_castle`` already binds
+            # castle_candidate only within MAP_CASTLE_TOLERANCE, so "boss-adjacent"
+            # reuses that measured tolerance instead of a new arbitrary threshold
+            # (g1133: a general camped at field [824,176] against the boss at
+            # (818,184) and the monthly recall dragged him back, cancelling the
+            # boss fight).
+            marker = info.get('marker')
+            candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+            if isinstance(candidate, str) and chart.is_boss_castle(candidate):
+                continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
             if not info.get('castle'):
