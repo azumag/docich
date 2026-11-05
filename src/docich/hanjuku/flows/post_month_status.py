@@ -198,7 +198,7 @@ def _assign(mem, name, castle, *, evidence):
     from ..os_layer.world import _owned
     if castle not in _owned(mem):
         return False
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     for other, names in garrison.items():
         if other != castle and isinstance(names, list) and name in names:
             names.remove(name)
@@ -208,7 +208,7 @@ def _assign(mem, name, castle, *, evidence):
     row = (mem.get('post_month_status') or {}).get('statuses', {}).get(name)
     if isinstance(row, dict):
         row.update(castle=castle, castle_evidence=evidence)
-    unknown = mem.get('general_location_unknown')
+    unknown = _world(mem).get('general_location_unknown')
     if isinstance(unknown, list) and name in unknown:
         unknown.remove(name)
     _log(mem, 'post_month_location_confirmed', general=name, castle=castle,
@@ -299,8 +299,8 @@ def _task_complete(mem, state, *, result):
     job = state.get('job') or {}
     if job.get('kind') == 'locate' and result != 'castle_verified':
         name = job.get('name')
-        if name and name not in mem.setdefault('general_location_unknown', []):
-            mem['general_location_unknown'].append(name)
+        if name and name not in _world(mem).setdefault('general_location_unknown', []):
+            _world(mem)['general_location_unknown'].append(name)
         _forget_field_residents(mem, name)
     _log(mem, 'post_month_task_result',
          general=job.get('name'), resulting_event=result,

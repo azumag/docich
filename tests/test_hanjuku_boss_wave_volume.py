@@ -1,6 +1,7 @@
 """Owner 2026-11-05: the boss takes volume, from many castles at once."""
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory():
@@ -12,9 +13,9 @@ def memory():
         'sorties': {}, 'launched_orders': {}, '_records': [],
         'house_eggs': {}, 'general_location_unknown': [],
     }
-    mem['garrison']['アブダレ'] = ['ドリアン', 'マスカット']
-    mem['garrison']['セレーネ'] = ['ソーピニヨン', 'リーキ']
-    mem['garrison']['カバルッサ'] = ['ガルバンゾー', 'ココット']
+    _world(mem)['garrison']['アブダレ'] = ['ドリアン', 'マスカット']
+    _world(mem)['garrison']['セレーネ'] = ['ソーピニヨン', 'リーキ']
+    _world(mem)['garrison']['カバルッサ'] = ['ガルバンゾー', 'ココット']
     return mem
 
 
@@ -41,6 +42,6 @@ def test_a_weak_general_is_not_held_back_for_a_stronger_one():
     # Owner 2026-11-05: strength does not decide the boss fight, so the plan
     # must not reserve the strong spare while a weak one is available.
     mem = memory()
-    mem['garrison']['アブダレ'] = ['ドリアン', 'ヘルメス']
+    _world(mem)['garrison']['アブダレ'] = ['ドリアン', 'ヘルメス']
     waves = boss_waves(mem)
     assert any(o['general'] == 'ドリアン' for o in waves)

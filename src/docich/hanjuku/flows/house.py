@@ -600,7 +600,7 @@ def _record_castle_location(mem, name, castle, evidence=None):
     """Bind one observed general to a castle without inventing a roster."""
     if not isinstance(name, str) or not name or not isinstance(castle, str) or not castle:
         return
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     for other, names in list(garrison.items()):
         if other != castle and isinstance(names, list) and name in names:
             names.remove(name)
@@ -615,7 +615,7 @@ def _record_castle_location(mem, name, castle, evidence=None):
         info['location_observed'] = True
         info['castle'] = castle
         receipts.status_observed(mem, info)
-    unknown = mem.get('general_location_unknown')
+    unknown = _world(mem).get('general_location_unknown')
     if isinstance(unknown, list) and name in unknown:
         unknown.remove(name)
     _record(mem, 'general_castle_observed', general=name, castle=castle,
@@ -1862,7 +1862,7 @@ def _castle_check_step(screen, mem, frame):
                     observed_metric={'count': count[1] if count else None, 'names': names},
                     reason='城ステータスの在城人数・氏名を完全に読めないため一覧を更新せず閉じる')
         else:
-            mem.setdefault('garrison', {})[castle] = names
+            _world(mem).setdefault('garrison', {})[castle] = names
             if name in names:
                 _record_castle_location(mem, name, castle,
                                         {'source': 'castle_status', 'members': names[:8]})

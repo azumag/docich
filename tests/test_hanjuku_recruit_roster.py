@@ -856,11 +856,11 @@ def test_forget_defeated_removes_the_general_from_the_kept_count():
                             'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
         'dirty': {}, 'defeated': [NAMES[1]]}
     r._remember_complete(mem, receipt)
-    mem['general_location_unknown'] = [NAMES[0], NAMES[1]]
+    _world(mem)['general_location_unknown'] = [NAMES[0], NAMES[1]]
     assert r.forget_defeated(mem, NAMES[1]) is True
     assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
     assert mem[r.LAST_COMPLETE_KEY]['tick'] == receipt['tick']
-    assert mem['general_location_unknown'] == [NAMES[0]]
+    assert _world(mem)['general_location_unknown'] == [NAMES[0]]
 
 
 def test_month_status_headcount_does_not_invent_a_complete_named_roster():
