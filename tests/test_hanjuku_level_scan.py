@@ -24,13 +24,15 @@ def _main_on(label, month=7):
     return c.frame()
 
 
-def _country_page1(month=7):
+def _country_page1(month=7, soldiers=None):
     c = Canvas()
     c.text(56, 7, f'1わ1ねん{month}のつき250G')
     c.text(24, 39, 'わがくにの じょうたい')
     c.text(24, 71, 'しゅうにゅう 300G')
     c.text(24, 87, 'そうちんぎん 150G')
     c.text(24, 103, 'しょうぐんにんすう 10にん')
+    if soldiers is not None:
+        c.text(24, 119, f'へいしすう {soldiers}にん')
     return c.frame()
 
 
@@ -211,6 +213,20 @@ def _level_state():
     return {'phase': 'level_status', 'chapter': 1, 'roster_month': '1-7',
             'month_scan': True, 'age': 0, 'total': 0, 'seen': [], 'pending': [],
             'level_only': True, 'level_checked': True}
+
+
+def test_country_status_soldier_count_is_observed_not_assumed():
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page1 = _country_page1(soldiers=70)
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_soldier_count']['count'] == 70
+    # A later unread count does not overwrite the last actual observation
+    # and is never treated as zero.
+    page1_unread = _country_page1()
+    assert house.step(parse(page1_unread), mem, page1_unread) == [p.pad('a')]
+    assert mem['country_soldier_count']['count'] == 70
 
 
 def test_the_status_row_is_pressed_again_once_its_help_line_shows():
