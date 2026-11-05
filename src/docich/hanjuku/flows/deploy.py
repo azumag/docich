@@ -1145,8 +1145,12 @@ def _cancelled_sortie_step(screen, mem, owner):
         # bounded backout request; it does not establish arrival or completion.
         owner.pop('decline_ready_tick', None)
         return [pad('b')] if owner.get('decline_sent') is True else []
+    # g1133 decision-003: the decline cursor's left edge jitters x0 138/139
+    # like the card_select hand; both are the same measured sprite.
     refusal_hands = ((138, 105, 156, 118), (138, 105, 158, 118),
-                     (138, 121, 156, 134), (138, 121, 158, 134))
+                     (138, 121, 156, 134), (138, 121, 158, 134),
+                     (139, 105, 156, 118), (139, 105, 158, 118),
+                     (139, 121, 156, 134), (139, 121, 158, 134))
     if not _sortie_decline_panel(screen) or screen.hand not in refusal_hands:
         owner.pop('decline_ready_tick', None)
         _record(mem, 'situation_held', screen=screen.kind,
