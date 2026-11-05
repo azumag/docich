@@ -244,6 +244,13 @@ BOSS_HP = {
     'ハードロボ': 1688,
 }
 
+# ボス城のモンスター型ボスは chart.BOSSES の初形態だけではない。第6話は
+# ハードマン→ハードロボ、第12話は クーモン→スーモン→ボイルド と形態が続く
+# (hanjuku_chart 6-B1 / 12-B1 の note)。後形態は chart.BOSSES に載らないため
+# ここでボスとして明示する (owner 2026-11-05: ボスモンスターに「かぼちゃ」は
+# きかない)。
+BOSS_MONSTERS: frozenset[str] = frozenset({'ハードロボ', 'スーモン', 'ボイルド'})
+
 # gcgx shogun.html 将軍一覧 (fetched 2026-10-03; SFC ID 0..127 の128名)。
 # owner 2026-10-03: 「ここを参考に、この評をハードコードしてしまって、値を照らし
 # 合わせよ。まずは戦闘の値とHPでわかる。補助的に卵補正、たまごのしゅるい、卵仕様
@@ -728,6 +735,20 @@ ENDURE_HEADROOM = 16
 # Sources: https://blog.livedoor.jp/hanjukueiyu/archives/1035528547.html
 #          https://gcgx.games/hanjuku/03.html and /09.html (soldiers: HP100)
 BOSS_GENERALS = frozenset({'クイーン', 'にせヒーロー', 'プリンス', 'せいめいたい'})
+
+
+def is_boss_target(name: str | None) -> bool:
+    """A named boss general or boss monster in the reference tables.
+
+    ``chart.BOSSES`` (the chapter's current boss name) lives in the chart
+    module and is checked by the caller.  This covers boss generals, the boss
+    rows recorded in ``BOSS_HP`` and the later boss-monster forms in
+    ``BOSS_MONSTERS`` that the chart does not list as the chapter boss.
+    """
+    return bool(name) and (name in BOSS_GENERALS or name in BOSS_HP
+                           or name in BOSS_MONSTERS)
+
+
 GENERAL_SOLDIER_HP = 10
 GENERAL_BOSS_SOLDIER_HP = {'クイーン': 10, 'にせヒーロー': 10,
                            'プリンス': 100, 'せいめいたい': 100}
