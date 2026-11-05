@@ -907,6 +907,21 @@ def _relaunch_overdue_boss(mem):
                     'cell': list(chart.castles(mem.get('chapter') or 0).get(target) or ()),
                     'source_still_has_general': sortie.get('general') in
                     ((mem.get('garrison') or {}).get(sortie.get('source')) or ())}
+        # g1133 2026-11-05: an unentered boss march used to re-send the same
+        # step at the same tile until the relaunch budget ran out (ブレッツェル
+        # 2508, アテナ 2443, ベーグル 2451 observations at cell (818, 184))
+        # while the wave that entered at 16:42 (ブリオッシュ) used candidate 2.
+        # The parallel rotation only assigns new steps, so advance this step's
+        # candidate whenever its march ends without an entry.
+        probes = chart.BOSS_CELL_PROBES.get(mem.get('chapter') or 0) or ()
+        assigned = mem.setdefault('boss_step_probe', {})
+        index = int(assigned.get(step) or 0)
+        if not entered and probes and index + 1 < len(probes):
+            assigned[step] = index + 1
+            relaunches[step] = 0
+            _record(mem, 'boss_cell_probe_shift', chart_step=step, general=sortie.get('general'),
+                    observed_metric={**observed, 'from': index, 'to': index + 1},
+                    reason='入城しないボス行軍の出し直し先を、次の候補セルへ1タイル進める')
         if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
             if not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
