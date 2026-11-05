@@ -363,3 +363,18 @@ def test_existing_defeat_verification_also_purges_persistent_status_and_garrison
     assert 'ゼウス' not in mem['general_statuses']['statuses']
     assert 'ゼウス' not in mem['garrison']['アルマムーン']
     assert 'ゼウス' not in mem['house_eggs']
+
+
+def test_independent_repair_status_updates_only_persistent_egg_and_hp_fields():
+    mem = _persistent_memory('ゼウス')
+    mem['general_statuses']['statuses']['ゼウス']['broken'] = True
+    receipts.dirty_status(mem, ['ゼウス'], fields=('egg', 'hp', 'location'))
+    info = {'general': 'ゼウス', 'broken': False, 'egg': 'エラベルエッグ',
+            'uses': 4, 'hp': 38, 'max_hp': 50, 'location': 'field',
+            'location_observed': True}
+    receipts.status_observed(mem, info)
+    cache = mem['general_statuses']
+    assert cache['statuses']['ゼウス']['broken'] is False
+    assert cache['statuses']['ゼウス']['hp'] == 38
+    assert cache['dirty'] == {'ゼウス': ['location']}
+    assert cache['statuses']['ゼウス']['castle'] == 'アルマムーン'
