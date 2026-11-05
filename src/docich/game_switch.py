@@ -4924,6 +4924,17 @@ class GameSwitchCoordinator:
                 },
                 crash_hook=self.crash_hook,
             )
+            # Rollback restore commits a runtime: announce it like a switch
+            # commit so the stream title follows the restored game. Without
+            # this the adapter's pre-commit sync was the only writer (removed
+            # 2026-11-05 for flap suppression), leaving e.g. sorengame on air
+            # while soren91 was active.
+            try:
+                restored_game = restored.get("game") if isinstance(restored, dict) else None
+                if isinstance(restored_game, str) and restored_game:
+                    self._emit_post_commit(restored_game)
+            except Exception:
+                pass
             receipt_done = (
                 tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
             )
@@ -5057,6 +5068,14 @@ class GameSwitchCoordinator:
             },
             crash_hook=self.crash_hook,
         )
+        # Same as alive restore above: the rollback commits a runtime, so
+        # announce it through the post-commit hook (flap fix 2026-11-05).
+        try:
+            rollback_game = rollback_rd.get("game") if isinstance(rollback_rd, dict) else None
+            if isinstance(rollback_game, str) and rollback_game:
+                self._emit_post_commit(rollback_game)
+        except Exception:
+            pass
         receipt_done = (
             tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
         )

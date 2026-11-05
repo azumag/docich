@@ -124,7 +124,10 @@ class Soren91AdapterTestBase(unittest.TestCase):
             '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
             '[agent]\nenabled=false\n'
             '[lifecycle]\nrequire_round_boundary=false\n'
-            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n',
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n'
+            # Production soren91 shares the Soren Game IGDB category; the
+            # commit_hook path requires [twitch] to announce (flap fix).
+            '[twitch]\ncategory_id="1530787860"\ncategory_name="Soren Game"\n',
             encoding="utf-8",
         )
         self.g = config.load_global(self.root)
@@ -524,6 +527,23 @@ class TestLifecycle(Soren91AdapterTestBase):
                 (200, {"ok": True, "running": True}),
             ]
             adapter.readiness(time.monotonic() + 30, None)
+
+    def test_readiness_does_not_sync_twitch_pre_commit(self):
+        # 2026-11-05: renderer ready/stop flaps caused soren91 <-> sorengame
+        # title flaps before commit, overwriting the active game's title.
+        # Twitch ownership is the coordinator's post-commit hook only.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.http_plan = [
+                (200, {"ok": True, "running": True}),
+                (200, {"ok": True, "running": True}),
+            ]
+            with mock.patch.object(adapter, "_sync_twitch") as sync:
+                adapter.readiness(time.monotonic() + 30, None)
+            sync.assert_not_called()
+            self.assertFalse(adapter._twitch_synced)
 
     def test_readiness_fails_fast_when_renderer_host_unreachable(self):
         # #2260: an unreachable renderer host must fail before the presenter's
