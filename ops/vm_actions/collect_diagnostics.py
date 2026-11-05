@@ -6882,6 +6882,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v429-select-centered",
             "hanjuku-chart-v430-cursor-still",
             "hanjuku-chart-v431-cursor-still-6",
+            "hanjuku-chart-v432-nav-continuity",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
