@@ -93,6 +93,7 @@ body は次の3キーだけを持つ1個の JSON object です。余分なキー
 2026-09-15、production checkout が手動 `git reset --hard origin/main` で out-of-band に進み、recorded baseline と乖離して canonical deploy が `tracked_vm_drift` / baseline 不一致で失敗する事象がありました（Issue #412）。復旧は owner-only `rebaseline`（tracked-clean かつ HEAD が requested commit の ancestor のときだけ現在 HEAD を baseline に採用）→ canonical `deploy` のみを使います。
 
 - production checkout へ remote を追加して `git pull` / `git reset --hard origin/main` をしない。更新は docich main への merge → `VM operations` deploy のみ。
+- `/home/ubuntu/docich` 上で `gh pr merge`、branch switch、開発・merge 作業をしない。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
 - out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
 - 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
 

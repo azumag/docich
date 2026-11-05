@@ -94,6 +94,8 @@ REASON_CODES={
  'requested object is not commit':'bundle_object_invalid',
  'managed projection drift':'managed_projection_drift',
  'managed projection missing':'managed_projection_missing',
+ 'projection not converged':'projection_not_converged',
+ 'requested commit must descend from projection baseline':'baseline_regression_refused',
  'ops brief projection drift':'ops_brief_projection_drift',
  'ops brief artifact removal refused':'ops_brief_artifact_removal_refused',
  'ops brief repair conflict':'ops_brief_repair_conflict',
@@ -667,7 +669,37 @@ def _verify_managed_projections(cfg,repo,state):
             if (projection,rel) in pending: continue
             if _live_meta(_safe_projection_path(Path(mappings[projection]),rel))!=meta:
                 raise ValueError('managed projection drift')
-    _verify_ops_brief(cfg,repo,state['sha'])
+    # Managed metadata and the generated ops brief belong to the baseline from
+    # which live projections were last converged. After a rebaseline, state['sha']
+    # may already be the newer checkout while projection_base preserves the live
+    # baseline needed for verification and retry planning.
+    _verify_ops_brief(cfg,repo,state.get('projection_base') or state['sha'])
+
+
+def _verify_projection_convergence(cfg,repo,root:Path,old_parent:str,new_parent:str):
+    """Require every gitlink-advanced projection path to match its postimage.
+
+    The apply plan alone is not the deploy postcondition: if a checkout was
+    already advanced before planning, an empty plan could otherwise be mistaken
+    for a converged live projection. For every changed path, the live file must
+    match the requested blob exactly, or be absent for a source-side deletion.
+    _tree_entry/_live_meta keep symlinks and non-regular files fail-closed.
+    """
+    for sub_path,destination in cfg['repos'][repo].get('projections',{}).items():
+        old_sub=submodule_gitlink_at(root,old_parent,sub_path)
+        new_sub=submodule_gitlink_at(root,new_parent,sub_path)
+        if old_sub==new_sub: continue
+        if old_sub is None or new_sub is None: raise ValueError('projected submodule must exist in both parent commits')
+        subrepo=root/sub_path
+        if git(subrepo,'rev-parse','HEAD')!=new_sub: raise ValueError('projected submodule is not at new gitlink')
+        for rel in _changed_paths(subrepo,old_sub,new_sub):
+            if sub_path==ops_brief.PROJECTION and rel==ops_brief.DESTINATION:
+                # The ops brief is rendered from the parent-owned artifact, not
+                # projected byte-for-byte from the submodule blob.
+                continue
+            expected=_expected_meta(subrepo,_tree_entry(subrepo,new_sub,rel))
+            if _live_meta(_safe_projection_path(Path(destination),rel))!=expected:
+                raise ValueError('projection not converged')
 
 
 def _ops_brief_at(root, commit):
@@ -858,12 +890,15 @@ def deploy_git(cfg,repo,sha):
     if state.get('deployment_intent'): raise ValueError('deployment recovery required')
     _verify_managed_projections(cfg,repo,state)
     old=state.get('sha')
+    projection_base=state.get('projection_base') or old
     # #2681: a checkout that is not tracked-clean is unknown drift and stays
     # fail-closed. A clean checkout whose HEAD moved away from the recorded
     # baseline is resolved inside the transaction below: the deploy
     # auto-rebaselines when that HEAD is an ancestor of the requested reviewed
     # commit (rebaseline_git's reviewed conditions) and refuses otherwise.
-    if not SHA_RE.fullmatch(old or '') or not git_clean(root):
+    if (not SHA_RE.fullmatch(old or '') or
+            not SHA_RE.fullmatch(projection_base or '') or
+            not git_clean(root)):
         raise ValueError('tracked VM drift detected')
     head=git(root,'rev-parse','HEAD')
     if not SHA_RE.fullmatch(head): raise ValueError('tracked VM drift detected')
@@ -888,6 +923,13 @@ def deploy_git(cfg,repo,sha):
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
+        if projection_base!=sha:
+            # Policy: production deploys move the recorded projection baseline
+            # forward only. A request older than, or unrelated to, that baseline
+            # is rejected rather than silently rolling live projections back.
+            descendant=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',projection_base,sha],
+                                      stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if descendant.returncode!=0: raise ValueError('requested commit must descend from projection baseline')
         if head!=old:
             # Safe auto-rebaseline (#2681): the baseline advanced out-of-band
             # (#377 class) but the checkout is tracked-clean and its HEAD is an
@@ -901,20 +943,31 @@ def deploy_git(cfg,repo,sha):
             if ancestor.returncode!=0: raise ValueError('tracked VM drift detected')
             history=(state.get('rebaseline_history') or [])[-9:]
             history.append({'from':old,'to':head,'target':sha,'auto':True})
-            state={**state,'sha':head,'previous_head':old,'rebaseline_history':history}
+            # Keep the existing #2681 contract: state['sha'] adopts the clean
+            # ancestor checkout even if this deploy later fails. projection_base
+            # is separate and remains the last baseline whose live projections
+            # are expected to be converged, so retries cannot plan head->sha.
+            state={**state,'sha':head,'previous_head':old,'projection_base':projection_base,
+                   'rebaseline_history':history}
             write_json(state_path,state)
             rebaselined_from=old
             old=head
-        write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
+        write_json(state_path,{**state,'deployment_intent':{
+            'from':projection_base,'to':sha,'predeploy_head':head}})
         intent_written=True
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         sync_owned_submodules(root)
-        projection_plans,remaining=_plan_projections(cfg,repo,root,old,sha,state.get("pending_repairs", []))
+        projection_plans,remaining=_plan_projections(
+            cfg,repo,root,projection_base,sha,state.get("pending_repairs", []))
         for changes in projection_plans:
             applied.append(changes)
             _apply_projection(changes)
         if git(root,'rev-parse','HEAD')!=sha or not git_clean(root): raise ValueError('git deployment verification failed')
+        # Preserve the existing pending-repair reason before the broader
+        # convergence check sees the same intentionally preserved drift.
+        _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
+        _verify_projection_convergence(cfg,repo,root,projection_base,sha)
         _verify_pending_health(cfg,state.get('pending_repairs',[]))
         for changes in applied: _assert_projection_current(changes,'new')
         _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
@@ -935,7 +988,9 @@ def deploy_git(cfg,repo,sha):
                 if repair['projection']==projection:
                     entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
                                     if (projection,rel) not in remaining_paths})
-        final_state={**state,'mode':'git','sha':sha,'previous_head':old,'pending_repairs':remaining,'managed_projection_files':managed}
+        final_state={k:v for k,v in state.items() if k!='projection_base'}
+        final_state.update({'mode':'git','sha':sha,'previous_head':old,
+                            'pending_repairs':remaining,'managed_projection_files':managed})
         brief=_ops_brief_at(root,sha)
         if brief is not None:
             entries=managed.setdefault(ops_brief.PROJECTION,{})
@@ -961,7 +1016,9 @@ def deploy_git(cfg,repo,sha):
         except Exception as error: rollback_errors.append(error)
         if rollback_errors:
             # A finalized state may already exist if post-commit verification failed.
-            write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha,'recovery_required':True}})
+            write_json(state_path,{**state,'deployment_intent':{
+                'from':projection_base,'to':sha,'predeploy_head':head,
+                'recovery_required':True}})
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
         raise
@@ -1000,9 +1057,16 @@ def rebaseline_git(cfg,repo,sha):
                             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     if ancestor.returncode!=0: raise ValueError('rebaseline requires an ancestor of the requested commit')
     old=state.get('sha')
+    projection_base=state.get('projection_base') or old
     history=(state.get('rebaseline_history') or [])[-9:]
     history.append({'from':old,'to':head,'target':sha})
-    write_json(state_path,{**state,'sha':head,'previous_head':old,'rebaseline_history':history})
+    # Manual rebaseline adopts the checkout as the next deploy baseline while
+    # retaining the older live-projection baseline for the following deploy.
+    # Without this split, rebaseline + deploy could skip a gitlink-advanced
+    # projection exactly like the #3377 auto-rebaseline path.
+    write_json(state_path,{**state,'sha':head,'previous_head':old,
+                           'projection_base':projection_base,
+                           'rebaseline_history':history})
     return {'status':'rebased','sha':head,'from':old}
 
 def rebaseline(cfg,repo,sha):
