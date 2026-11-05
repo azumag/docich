@@ -377,4 +377,6 @@ def test_independent_repair_status_updates_only_persistent_egg_and_hp_fields():
     assert cache['statuses']['ゼウス']['broken'] is False
     assert cache['statuses']['ゼウス']['hp'] == 38
     assert cache['dirty'] == {'ゼウス': ['location']}
-    assert cache['statuses']['ゼウス']['castle'] == 'アルマムーン'
+    assert cache['statuses']['ゼウス']['location'] == 'unknown'
+    assert 'castle' not in cache['statuses']['ゼウス']
+    assert 'ゼウス' not in mem['garrison']['アルマムーン']
