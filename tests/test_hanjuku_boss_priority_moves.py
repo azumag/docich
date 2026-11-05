@@ -37,9 +37,9 @@ def test_no_empty_castle_moves_while_the_boss_is_the_only_target():
     assert not empty_moves(orders)
 
 
-def test_empty_castle_moves_still_happen_for_a_chapter_without_a_boss_cell():
-    # Chapter 7 has no registered boss cell, so the boss never opens and the
-    # garrison fill keeps working as before.
+def test_chapter_seven_boss_seed_prioritizes_boss_over_empty_castle_moves():
+    # Chapter 7 now has a seeded approximate boss cell. Once all normal
+    # castles are captured, spare generals must be available for boss waves.
     orders = candidates(memory(chapter=7))
-    assert not any(order['target'] == 'ボス' for order in orders)
-    assert empty_moves(orders)
+    assert any(order['target'] == 'ボス' for order in orders)
+    assert not empty_moves(orders)
