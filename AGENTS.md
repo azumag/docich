@@ -161,6 +161,7 @@ worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の `VAR="
 
 - production VM 上の tracked file の直接編集。
 - ad-hoc な `git pull` / `reset` / `checkout` や手動コピーを正式 deployment として使う。
+- `/home/ubuntu/docich` の production checkout 上での `gh pr merge`、branch switch、開発・merge 作業。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
 - PR / protected main を迂回する通常変更。
 - unknown drift の無条件上書き。drift は fail-closed とし、原因診断から修復する。
 - secret・token・Authorization header・prompt 本文・生成本文・環境変数の Actions 出力。
