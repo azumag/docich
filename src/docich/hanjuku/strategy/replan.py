@@ -496,8 +496,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # Owner 2026-11-04: a castle whose retake keeps failing to launch must
     # not hold the boss waves forever (g1133 17:48-18:50, クロチェット).
     retakes_stalled = (not chain_held) and _retakes_stalled(mem, blocking)
-    if (boss in castles and boss_path and (chain_held or retakes_stalled)
-            and not (mem.get('boss_victories') or {})):
+    boss_open = bool(boss in castles and boss_path and (chain_held or retakes_stalled)
+                     and not (mem.get('boss_victories') or {}))
+    if boss_open:
         targets = [*targets, boss]
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
@@ -632,9 +633,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                           **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     # A castle that was sent a move after its list was last read is not known
     # to be empty: past the busy window it was picked again and again (#3037).
-    empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
-             if garrison.get(c) == [] and c not in heading
-             and not routes.unread_dispatches(mem, c)]
+    # Owner 2026-11-05: while the boss is open the spare generals are the
+    # next boss waves, not a garrison for an empty rear castle (armies were
+    # seen marching to ユージア/トウトウ/バビラリー while the boss was the only
+    # target). Normal chapters keep the fill.
+    empty = [] if boss_open else [
+        c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
+        if garrison.get(c) == [] and c not in heading
+        and not routes.unread_dispatches(mem, c)]
     for target in empty:
         # A castle whose list was never read may hold several generals: the
         # bot reads lists only when it sorties, so g407 knew one castle while

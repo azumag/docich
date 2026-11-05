@@ -6897,6 +6897,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v445-boss-march-plan-window",
             "hanjuku-chart-v446-boss-launch-kept",
             "hanjuku-chart-v447-surplus-card-buy",
+            "hanjuku-chart-v448-boss-priority-moves",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
