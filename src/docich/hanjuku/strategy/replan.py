@@ -155,14 +155,18 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
 INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
+# Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
+# so weak that a strong general and a weak one remove about the same HP, so
+# every known spare goes at the boss in one plan, from as many castles as
+# possible (each keeps one defender). One observation burst stays finite; the
+# in-flight bound lets the next rebuild add more while these still march.
+BOSS_WAVE_LIMIT = 5
 # Owner 2026-11-04: the boss takes its waves while the previous one still
 # marches. The 2026-11-02 wave design below adds the boss target, but the
 # generic one-expedition-per-target guard removed it again for up to
 # SORTIE_BUSY_TICKS, so at chapter end (boss the only target) the planner
-# reported no candidates and the field map idled. The bound is the same wave
-# budget every other target gets (the first sortie plus INTERIM_WAVE_LIMIT
-# extra ones); spares and the one-defender rule still decide who goes.
-BOSS_WAVE_IN_FLIGHT = 1 + INTERIM_WAVE_LIMIT
+# reported no candidates and the field map idled.
+BOSS_WAVE_IN_FLIGHT = 1 + BOSS_WAVE_LIMIT
 # Owner 2026-11-04: a boss step that failed its launch-marker retries must not
 # end the chapter's sorties. The mechanical plan is rebuilt every observation
 # under the same request id and offers the same step, and next_order skips a
@@ -525,12 +529,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to later targets in the same plan; otherwise every retake names the first spare.
     planned_busy = set()
     planned_probe_sources = set()
-    def _boss_wave_pick(mem, owned, busy, allow_sole):
-        """(source, general) of the strongest sendable spare for the boss.
+    def _boss_wave_pick(mem, owned, busy, allow_sole, prefer_not=()):
+        """(source, general) of the next sendable spare for the boss.
 
-        Waves should throw the army's best spare at the boss, not whoever the
-        nearest staffed list happens to lead with — the boss fight is where a
-        weak substitute loses outright (owner 2026-11-02: 余剰兵力を連続投入).
+        Owner 2026-11-05: strength does not decide the boss fight (half-ripe
+        eggs make a weak general and a strong one remove about the same HP),
+        so the pick spreads waves over castles that have not sent one yet
+        instead of spending the strongest stack first. prefer_not holds the
+        sources this plan already used.
         """
         chapter = mem.get('chapter') or 0
         home = chart.home_castle(chapter)
@@ -555,11 +561,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
-                    choices.append((reference.general_strength(g) or (0, 0), c, g))
+                    choices.append((c in prefer_not, c == home, c, g))
         if not choices:
             return None
-        choices.sort(key=lambda x: (x[0], x[1] != home), reverse=True)
-        _, source, general = choices[0]
+        choices.sort()
+        _, _, source, general = choices[0]
         return source, general
     wave_target = None
     for target in targets:
@@ -754,6 +760,31 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         mem, owned, busy | planned_busy | wave_committed
         | (committed - {MOVE_ANY_GENERAL}), heading,
         taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
+    # Owner 2026-11-05: keep throwing the known spares at the boss inside one
+    # plan, from as many castles as possible. Strength does not matter (a
+    # half-ripe egg removes about the same HP whoever carries it), so this
+    # only stops when no castle can send; each keeps one defender. It runs
+    # after the staging/rotation moves so those keep their generals.
+    boss_wave_orders = []
+    if boss in targets:
+        wave_busy = busy | planned_busy | wave_committed | {
+            o.get('general') for o in (*moves, *sorties['retake'], *sorties['attack'], *rotation)}
+        used_sources = {o['source'] for o in sorties['attack']
+                        if chart.is_boss_castle(o.get('target'))}
+        extra = 0
+        while extra < BOSS_WAVE_LIMIT:
+            more = _boss_wave_pick(mem, owned, wave_busy, allow_sole,
+                                   prefer_not=used_sources)
+            if more is None:
+                break
+            source2, general2 = more
+            boss_wave_orders.append({
+                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'after': None, 'purpose': 'attack',
+                'note': f'暫定: {general2}でボスへ波状攻撃'})
+            used_sources.add(source2)
+            wave_busy = wave_busy | {general2}
+            extra += 1
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -769,7 +800,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # A stalled retake no longer gates the boss, so the boss wave leads: the
     # failing retake would otherwise take the front slot every cycle.
     front = [] if retakes_stalled else lead[:1]
-    for order in (*front, *waves, *(lead if retakes_stalled else lead[1:]),
+    for order in (*front, *waves, *boss_wave_orders,
+                  *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
         if chart_adjust.startable(order, situation) is not None:
             continue

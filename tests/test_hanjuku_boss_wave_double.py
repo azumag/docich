@@ -66,17 +66,18 @@ def test_a_second_boss_wave_is_planned_while_the_first_marches():
 
 
 def test_the_wave_budget_caps_concurrent_boss_sorties():
-    # Four in flight still leaves room in the five-sortie budget: the owner's
-    # double dispatch is inside it and the wave keeps going.
-    four = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
-                             'status': 'en_route', 'tick': 990}
-            for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ'])}
-    assert boss_attacks(replan.interim_candidates(memory(sorties=four)))
-    # At the budget no sixth sortie is planned even though spares remain.
+    # Owner 2026-11-05: the budget is the first sortie plus BOSS_WAVE_LIMIT
+    # waves. Five in flight still leaves room and the wave keeps going.
     five = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
                              'status': 'en_route', 'tick': 990}
             for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ', 'トレビス'])}
-    assert boss_attacks(replan.interim_candidates(memory(sorties=five))) == []
+    assert boss_attacks(replan.interim_candidates(memory(sorties=five)))
+    # At the budget no further sortie is planned even though spares remain.
+    full = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
+                             'status': 'en_route', 'tick': 990}
+            for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ',
+                                      'トレビス', 'アマンディーヌ'])}
+    assert boss_attacks(replan.interim_candidates(memory(sorties=full))) == []
 
 
 def test_an_ordinary_target_still_waits_for_its_marching_sortie():
