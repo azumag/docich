@@ -124,3 +124,74 @@ def test_unknown_status_never_allows_planning():
     assert state['stage'] == 'blocked'
     assert post.step(Screen([], None, '', kind='map'), mem, None) == []
     assert 'general_statuses' not in mem
+
+
+def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
+    """SELECT's named position is evidence; roof recognition can be occluded."""
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}})
+    with patch.object(post, '_roof_under_cursor', return_value=False):
+        assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
+    assert state['stage'] == 'locate_open'
+    assert not mem.get('general_location_unknown')
+    assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == []
+    assert state['stage'] == 'locate_info'
+    menu = Screen([], (40, 184), 'ステータス', kind='castle_menu')
+    with patch.object(post, 'menu_to', return_value='here'):
+        assert post.step(menu, mem, None) == [pad('a')]
+    with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
+        assert post.step(Screen([], None, '', kind='castle_info'), mem, None) == [pad('b')]
+    assert state['stage'] == 'process'
+    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
+
+
+def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}})
+    with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
+        assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == []
+    assert state['stage'] == 'locate_info'
+    assert 'アルマムーン' not in mem.get('garrison', {})
+
+
+def test_missing_castle_status_retries_same_general_before_advancing():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}},
+                 phase_reads=post.STATUS_RETRIES - 1, locate_retries=0)
+    assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [pad('b')]
+    assert state['stage'] == 'locate_reset'
+    assert state['job']['name'] == 'ゼウス'
+    assert state['locate_retries'] == 1
+    assert not mem.get('general_location_unknown')
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+    assert state['stage'] == 'task_menu'
+    assert state['job']['name'] == 'ゼウス'
+    # Only after the bounded retry budget is exhausted can an unknown
+    # general be excluded from planning; it is never attributed to a castle.
+    state.update(stage='locate_info', phase_reads=post.STATUS_RETRIES - 1,
+                 locate_retries=post.LOCATE_RETRIES)
+    assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [pad('b')]
+    assert state['stage'] == 'process'
+    assert mem['general_location_unknown'] == ['ゼウス']
+    assert 'castle' not in state['statuses']['ゼウス']
+
+
+def test_select_lost_in_roster_resends_select_before_location_failure():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}}, phase_reads=3)
+    still_roster = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(still_roster, mem, None) == [pad('select')]
+    assert state['stage'] == 'task_jump'
