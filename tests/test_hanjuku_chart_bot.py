@@ -2844,7 +2844,9 @@ def test_map_step_does_not_preempt_orders_for_a_visible_camp():
     mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
            'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
-    assert policy.map_step(screen, mem, frame) == [policy.pad('y')]
+    # The source jump now opens X (しろ一覧) instead of the Y world map.
+    assert policy.map_step(screen, mem, frame) == [policy.pad('x')]
+    assert mem['castle_jump']['phase'] == 'menu'
     assert 'recall' not in _flow(mem)
     assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
 

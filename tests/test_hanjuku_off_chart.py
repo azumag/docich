@@ -376,6 +376,8 @@ def test_map_step_abandons_a_step_that_keeps_needing_select(monkeypatch):
     """#2935 g1075: 05:52-07:28 spent 1,967 s in nav_stuck bursts without a sortie.
     Past the bound the step is failed so the picker can choose another one."""
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    # This test is about the nav-stuck bound, not the source-jump method.
+    monkeypatch.setattr(policy, '_want_castle_jump', lambda *_a, **_k: False)
     step = 'I:9bacc4:10'
     order = {'step': step, 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
              'cards': [], 'after': None, 'note': 'test', 'purpose': 'move'}
@@ -705,27 +707,15 @@ def _y_view(cursor_centre, *, gold=False, shift=0):
     return Frame(256, 224, bytes(px))
 
 
-def test_a_far_source_is_reached_through_the_y_map_cursor():
-    from docich.hanjuku_screen import parse
+def test_a_far_source_is_reached_through_the_x_castle_list():
     order = {'step': 'X', 'general': 'ゼウス', 'source': 'ジョンリギ', 'target': 'スペンソニア',
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'captured': ['ジョンリギ'], 'orders': {}, 'picked': [], '_records': [],
            'active': 'X', 'launched_orders': {'X': order}, 'cursor': list(CASTLES['アルマムーン'])}
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
-    assert mem['y_jump']['goal'] == 'ジョンリギ'
-    gx, gy = CASTLES['ジョンリギ']
-    ox, oy = policy.Y_JUMP_OFFSET[1]
-    start = (CASTLES['アルマムーン'][0] / 8 + ox, CASTLES['アルマムーン'][1] / 8 + oy)
-    frame = _y_view(start)
-    assert parse(frame).kind == 'world_map'
-    actions = policy.world_map_step(parse(frame), mem, frame)
-    assert {a['buttons'][0] for a in actions} == {'left', 'up'}
-    frame = _y_view((gx / 8 + ox, gy / 8 + oy))
-    assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
-    assert mem['cursor'] == [gx, gy] and 'y_jump' not in mem
-    assert decisions(mem, 'y_jump_confirm')
-    # Close enough now: no second jump.
-    assert not policy._want_y_jump(mem, order, 'ジョンリギ', 'map')
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert mem['castle_jump']['source'] == 'ジョンリギ'
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert 'y_jump' not in mem
 
 
 def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
@@ -832,8 +822,8 @@ def test_a_jump_whose_view_closed_early_does_not_block_later_jumps():
            'launched_orders': {'X': order}, 'cursor': [300, 300],
            'y_jump': {'goal': 'アルマムーン', 'mode': 'map', 'step': 'X', 'moves': 8, 'wait': 0,
                       'seen': True}}
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
-    assert decisions(mem, 'y_jump_failed') and mem['y_jump']['moves'] == 0
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert decisions(mem, 'y_jump_failed') and mem['castle_jump']['source'] == 'アルマムーン'
 
 
 def test_a_jump_confirms_within_one_view_pixel():
@@ -1027,7 +1017,8 @@ def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(
     mem.update(near_goal={'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}, expect_menu=False)
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'own', 'target': (20, 20), 'clipped': False}])
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert mem['castle_jump']['source'] == 'スペンソニア'
     assert decisions(mem, 'align_failed') and not mem.get('nav_search')
 
 
