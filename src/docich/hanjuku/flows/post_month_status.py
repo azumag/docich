@@ -52,6 +52,7 @@ def arm(mem):
     old = mem.get('post_month_status') or {}
     if old.get('scope') == scope:
         return
+    mem.pop('post_month_status', None)  # discard an obsolete previous-month owner
     identity = receipts.run_identity(mem.get('_run_identity'))
     cache = receipts._persistent_status(mem)
     statuses = deepcopy(cache['statuses']) if cache is not None else {}
