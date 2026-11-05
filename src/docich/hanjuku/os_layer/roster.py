@@ -638,7 +638,37 @@ def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     mem['house_status_recheck'] = bool(survey.get('dirty'))
 
 
+def _update_persistent_observation(mem, info):
+    """Merge direct HP/egg evidence without claiming an unobserved castle."""
+    cache = _persistent_status(mem)
+    name = info.get('general')
+    if cache is None or name not in cache['statuses']:
+        return
+    row = cache['statuses'][name]
+    stale = set(cache.setdefault('dirty', {}).get(name) or ())
+    if type(info.get('broken')) is bool:
+        row.update(broken=info['broken'], egg=info.get('egg'), uses=info.get('uses'))
+        stale.discard('egg')
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    if (type(hp) is int and type(maximum) is int
+            and maximum > 0 and 0 <= hp <= maximum):
+        row.update(hp=hp, max_hp=maximum)
+        stale.discard('hp')
+    # The generic status reader labels camp/march as 'field', so it cannot
+    # resolve either kind of movement. Only a separately named castle proof
+    # can clear a stale location; do not reuse an old castle after departure.
+    if (info.get('location') == 'castle' and info.get('location_observed') is True
+            and info.get('castle_observed') is True and info.get('castle')):
+        row.update(location='castle', castle=info['castle'])
+        stale.discard('location')
+    if stale:
+        cache['dirty'][name] = sorted(stale)
+    else:
+        cache['dirty'].pop(name, None)
+
+
 def status_observed(mem, info):
+    _update_persistent_observation(mem, info)
     survey = reusable_survey(mem)
     name = info.get('general')
     if survey is None or name not in survey['statuses']:
