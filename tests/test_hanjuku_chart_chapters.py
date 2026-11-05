@@ -346,7 +346,7 @@ def test_chapter_5_boss_cell_uses_its_wram_record_and_the_ordinary_anchor():
 
 
 def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
-    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    from docich.hanjuku_map_sources import SOURCE_CASTLES, SOURCE_BOSS_FLAGS
     for chapter, tiles in WRAM_TILES.items():
         assert {n: (x + 2, y + 1) for n, (x, y) in tiles.items()} == SOURCE_CASTLES[chapter]
         for name, cell in chart.CASTLES[chapter].items():
@@ -367,11 +367,20 @@ def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them(
         extra = set(chart.CASTLES[chapter]) - set(ordinary)
         expected = (set(chart.boss_sites(4)) if chapter == 4 else
                     set(chart.DEMON_CASTLE_CELLS.get(chapter) or ())
-                    | set(chart.SECRET_BASE_CELLS.get(chapter) or ()))
+                    | set(chart.SECRET_BASE_CELLS.get(chapter) or ())
+                    | ({chart.boss_castle(chapter)} if chapter in chart.APPROX_BOSS_CELLS else set()))
         assert extra == expected
+        if chapter in chart.APPROX_BOSS_CELLS:
+            left, top = SOURCE_BOSS_FLAGS[chapter][0]
+            assert chart.APPROX_BOSS_CELLS[chapter] == (8 * (left + 1), 8 * (top + 3))
+            assert chart.CASTLES[chapter][chart.boss_castle(chapter)] == chart.APPROX_BOSS_CELLS[chapter]
         assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
         assert chart.orders(chapter)
-        # Only a chapter whose boss cell was measured lists its boss order.
-        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter))
-                == (chapter in chart.DEMON_CASTLE_CELLS
-                    or chapter in chart.SECRET_BASE_CELLS))
+        # A generic boss order needs a boss cell: measured for 5/6, seeded from
+        # the public flag for the single-site chapters 7/8/10/11/12. Chapter 4
+        # uses its four site names and chapter 9's boss moves, so neither has
+        # a reusable 'ボス' target.
+        has_generic_boss = (chapter in chart.DEMON_CASTLE_CELLS
+                            or chapter in chart.SECRET_BASE_CELLS
+                            or chapter in chart.APPROX_BOSS_CELLS)
+        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter)) == has_generic_boss)
