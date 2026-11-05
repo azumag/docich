@@ -618,7 +618,10 @@ def _apply_select_centered(mem):
     return True
 
 
-CURSOR_STILL_LIMIT = 40      # identical estimates before the inland search starts
+# Identical estimates before the inland search starts. Map observations are
+# rare while the chapter throws battles (g1133 2026-11-05: two map frames in
+# 8.4 minutes), so 40 would never be reached in a useful time.
+CURSOR_STILL_LIMIT = 6
 
 
 def _watch_cursor_still(mem):
