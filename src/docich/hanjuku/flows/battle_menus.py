@@ -1455,6 +1455,29 @@ def _partial_enemy_general_command(screen):
     return enemy
 
 
+def note_boss_monster_hp(mem, battle, enemy_rows):
+    """Remember the boss monster's displayed HP for progress / kill detection.
+
+    g1133 2026-11-06: the boss fight happens but the ally panel is unreadable,
+    so no battle record survives (see #3501). The enemy monster's HP is still
+    readable and fell across entries (ハードロボ 1041→1005→860→754). Keeping
+    the last value lets the status and diagnostics show boss progress, and a
+    later policy can react to a low boss without inventing a battle result.
+    """
+    attack = mem.get('attack') or {}
+    if not chart.is_boss_castle(attack.get('castle')):
+        return
+    if not enemy_rows or len(enemy_rows) != 1:
+        return
+    row = enemy_rows[0]
+    name, hp = getattr(row, 'name', None), getattr(row, 'hp', None)
+    if not isinstance(name, str) or type(hp) is not int or not 0 < hp <= 9999:
+        return
+    mem['boss_hp_seen'] = {'castle': attack.get('castle'), 'monster': name, 'hp': hp,
+                           'general': attack.get('general') or battle.get('ally'),
+                           'tick': int(mem.get('tick') or 0)}
+
+
 def _egg_retreat_return(screen, mem, battle):
     """Reuse the finite return-to-human-command route; B is not a receipt."""
     attack = mem.get('attack') or {}
@@ -1862,6 +1885,7 @@ def egg_battle_step(screen: Screen, mem):
             return [] if fierce or battle.get('egg_attack_label') == 'もうこうげき' else [pad('a')]
         if battle.get('egg_attack_label') != label:
             battle['egg_attack_label'] = label
+            note_boss_monster_hp(mem, battle, enemy_rows)
             _record(mem, 'battle_egg_general_attack', **_battle_labels(battle),
                     observed_metric={'command': label, 'general_hp': battle.get('ally_hp'),
                                      'max_hp': general_reading[1] if general_reading else None,
