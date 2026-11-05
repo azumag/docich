@@ -97,3 +97,12 @@ def test_the_last_candidate_is_not_shifted_past_the_list():
     assert mem['boss_step_probe']['A:x:M1'] == 4
     assert mem['orders']['A:x:M1'] == 'pending'      # normal relaunch still runs
     assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
+
+
+def test_an_arrived_boss_relaunch_keeps_the_same_candidate():
+    # A completed entry must not be treated as evidence that the tile is wrong.
+    mem = overdue_boss(index=1)
+    mem['sorties']['A:x:M1']['status'] = 'arrived'
+    O._relaunch_overdue_boss(mem)
+    assert mem['boss_step_probe']['A:x:M1'] == 1
+    assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
