@@ -590,10 +590,12 @@ def step(screen, mem, frame):
         return []
     if stage == 'locate_info':
         name = state['job']['name']
-        # A castle-menu header alone is not a castle-status reading. Never
-        # claim a location until the actual status panel identifies the name.
-        castle = (map_registration._label(screen, mem.get('chapter'))
-                  if screen.kind == 'castle_info' else None)
+        # The native status panel keeps the castle menu visible behind it, so
+        # the frame stays classified 'castle_menu' (the しゅつげき/ステータス box
+        # is still drawn) even after ステータス is opened. Never claim a location
+        # from the menu header alone: _label answers only when the panel text
+        # carries the CASTLE_STATUS rows (name + しゅうにゅう/レベル/しょうぐん).
+        castle = map_registration._label(screen, mem.get('chapter'))
         if castle is not None and _assign(mem, name, castle, evidence='native_castle_name'):
             _task_complete(mem, state, result='castle_verified')
             return [pad('b')]
