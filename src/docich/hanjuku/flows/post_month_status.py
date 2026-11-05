@@ -59,9 +59,12 @@ def arm(mem):
     stale = set((cache or {}).get('dirty') or {})
     # A moving general can reach a castle, camp or battle without an explicit
     # status callback. Stationary castle residents need no periodic re-open.
+    from ..os_layer.world import _owned
+    owned = _owned(mem)
     for name, row in statuses.items():
         if (row.get('location') in ('march', 'unknown')
-                or row.get('location') == 'castle' and not row.get('castle')):
+                or row.get('location') == 'castle'
+                   and (not row.get('castle') or row['castle'] not in owned)):
             stale.add(name)
     pending = list((cache or {}).get('pending_joins') or [])
     pending.extend(name for name in mem.get(receipts.PENDING_JOINS_KEY) or []
@@ -195,10 +198,19 @@ def _forget_field_residents(mem, name):
 
 def _complete_scan(mem, state):
     if (not state['names'] or len(set(state['names'])) != len(state['names'])
+            or not state.get('top_confirmed')
             or any(name not in state['statuses'] for name in state['names'])
             or any(name in state.get('dirty', ()) for name in state['names'])
             or any(state['statuses'][name].get('location') == 'unknown'
                    for name in state['names'])):
+        return False
+    country = mem.get('country_general_count') or {}
+    if (isinstance(country, dict) and country.get('scope') == state['scope']
+            and country.get('identity') == state['identity']
+            and type(country.get('count')) is int
+            and country['count'] != len(state['names'])):
+        # A mismatched national headcount means the roster was not complete
+        # (or changed mid-visit). Do not delete a general by extrapolation.
         return False
     state['complete'] = True
     state['steps'] = 0
