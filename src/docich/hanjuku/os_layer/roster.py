@@ -278,6 +278,26 @@ def record_departure(mem, name):
     return False
 
 
+def _purge_verified_departure(mem, name):
+    """A confirmed absent roster member must not remain actionable anywhere."""
+    cache = _persistent_status(mem)
+    if cache is not None:
+        cache['statuses'].pop(name, None)
+        cache.setdefault('dirty', {}).pop(name, None)
+        for key in ('pending_joins', 'suspected_departures'):
+            if isinstance(cache.get(key), list):
+                cache[key] = [g for g in cache[key] if g != name]
+    for residents in (mem.get('garrison') or {}).values():
+        if isinstance(residents, list) and name in residents:
+            residents.remove(name)
+    for key in ('house_eggs', 'egg_types', 'egg_uses'):
+        if isinstance(mem.get(key), dict):
+            mem[key].pop(name, None)
+    for key in ('general_location_unknown', 'egg_recheck', PENDING_JOINS_KEY):
+        if isinstance(mem.get(key), list):
+            mem[key] = [g for g in mem[key] if g != name]
+
+
 def invalidate(mem):
     mem.pop('roster_carry_source', None)  # only observed_member() re-stashes it
     mem.pop('recruit_roster', None)
@@ -330,6 +350,7 @@ def forget_defeated(mem, name):
         survey.get(key, {}).pop(name, None)
     survey['defeated'].remove(name)
     record_departure(mem, name)  # subtract; a confirmed departure is not 不明
+    _purge_verified_departure(mem, name)
     unknown = mem.get('general_location_unknown')
     if isinstance(unknown, list) and name in unknown:
         unknown.remove(name)
