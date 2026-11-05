@@ -191,6 +191,10 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 or not 0 < price <= KNOWN_PRICES[name]):
             continue
         need = max(0, target - seen)
+        if not need and budget > 0:
+            # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
+            # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
+            need = copy_cap
         qty = min(need, copy_cap - copies, budget // price)
         if qty:
             added.append([name, qty])
