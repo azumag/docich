@@ -210,25 +210,29 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
     assert len(decisions(mem, 'chart_interim_hold')) == 1
 
 
-def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
+def test_the_surplus_joins_the_boss_waves_instead_of_a_staging_move():
     targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
            'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン', 'ポセイドン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
-    # The boss chain is held and unbeaten, so a wave sortie at けっかい joins
-    # the staging move (#3203, owner 2026-11-02 余剰兵力の連続投入).
-    assert list(candidates) == ['move_1', 'attack_2']
-    wave = candidates['attack_2']
-    assert wave['target'] == 'けっかい' and wave['purpose'] == 'attack'
-    assert wave['cards'] == []            # wave sorties never wait on a kit
-    move = candidates['move_1']
-    # #2985: captured=all normals puts this mem in the post-conquest boss wait,
-    # so a priority source parts with its weakest spare, not the list head.
-    assert (move['general'], move['source'], move['target'], move['purpose']) == (
-        'クミン', 'アルマムーン', 'キカンドン', 'move')
+    # Owner 2026-11-05: the empty-castle staging move (#3203) reads on stream
+    # as a pointless sortie while the boss is the only target, so it is gone.
+    assert not [c for c in candidates.values() if '空の' in (c.get('note') or '')]
+    assert any(c['target'] == 'けっかい' for c in candidates.values())
     # v305: the hero keeps two others; with only two there nobody leaves him.
     mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
+    moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+    assert all(c['source'] != 'アルマムーン' for c in moves)
+
+
+def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
+    # A normal castle still missing keeps the boss closed, so the garrison
+    # fill still runs and keeps its donor rule (v305).
+    targets = set(CASTLES) - {'アルマムーン', 'けっかい', 'スペンソニア'}
+    mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
+           'garrison': {'アルマムーン': ['どうし', 'ゼウス'], 'キカンドン': [],
+                        'ゴーメン': ['ココット']}}
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
     assert all(c['source'] != 'アルマムーン' for c in moves)
     # A lone general is never pulled out of its castle; only an unread list
