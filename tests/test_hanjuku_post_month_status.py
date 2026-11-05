@@ -294,6 +294,27 @@ def test_measured_selection_triangle_overrides_the_red_army_marker():
     assert result["castle_candidate"] == "キカンドン"
 
 
+
+def test_selection_triangle_accepts_neutral_palette_brightness_drift_only():
+    from docich.hanjuku.os_layer import readers
+    palette = {
+        readers.GENERAL_MARKER_WHITE: (236, 235, 236),
+        readers.GENERAL_MARKER_GRAY: (106, 105, 107),
+        readers.GENERAL_MARKER_BLACK: (48, 47, 49),
+    }
+    c = Canvas()
+    for dx, dy, colour in readers._GENERAL_MARKER_PATTERN:
+        c.put(55 + dx, 62 + dy, palette[colour])
+    assert readers.selection_marker(c.frame())['box'] == (55, 62, 61, 68)
+
+    # A tinted/coloured shape is not the white-grey selected-general marker.
+    coloured = Canvas()
+    for dx, dy, colour in readers._GENERAL_MARKER_PATTERN:
+        r, g, b = palette[colour]
+        coloured.put(55 + dx, 62 + dy, (min(r + 50, 255), g, b))
+    assert readers.selection_marker(coloured.frame()) is None
+
+
 def test_selection_triangle_without_castle_flags_has_no_candidate():
     frame, box = _roster_map(flags=False)
     result = post._marker(memory(chapter=1), frame)
