@@ -43,7 +43,8 @@ PHASE_STATES = frozenset({
 FIELD_TOKENS = (
     "captured", "lost", "march", "overdue", "exhausted", "oldest_age_ticks",
     "boss_wins", "boss_sorties", "boss_sorties_overdue", "active_boss",
-    "uncertain", "month", "phase",
+    "uncertain", "month", "phase", "unknown_generals", "generals_home",
+    "castles_unread",
 )
 BASE = "https://github.com/azumag/docich"
 
@@ -109,11 +110,20 @@ def _compact_field(policy, chapter, active_step):
     phase = policy.get("phase")
     if phase not in PHASE_STATES:
         phase = None
+    garrison = (policy.get("garrison")
+                if isinstance(policy.get("garrison"), dict) else {})
+    garrison_counts = [value for value in garrison.values() if type(value) is int]
+    generals_home = (_bounded_int(sum(garrison_counts), 0, 10_000_000)
+                     if garrison_counts else None)
+    castles_unread = bounded(sum(1 for value in garrison.values() if value is None))
     return {
         "captured": bounded(policy.get("captured_count")),
         "lost": bounded(policy.get("castle_loss_count")),
         "month": month,
         "phase": phase,
+        "unknown_generals": bounded(policy.get("unknown_generals")),
+        "generals_home": generals_home,
+        "castles_unread": castles_unread,
         "march": march_state,
         "overdue": bounded(len(overdue)),
         "exhausted": bounded(len(exhausted)),
