@@ -1254,7 +1254,20 @@ def _stage_bundle_objects(cfg, root: Path, bundle: Path):
     in ``finally`` -- periodic recreation is its bounding mechanism, so no
     retention state can accumulate.
     """
-    staging = Path(tempfile.mkdtemp(prefix='staging-', dir=state_root(cfg)))
+    # Recover scratch repos left by hard kills (finally cannot run on SIGKILL).
+    # Never touch recent directories: another operation may still be using one.
+    staging_root = state_root(cfg)
+    stale_before = time.time() - 24 * 60 * 60
+    for candidate in staging_root.glob('staging-*'):
+        try:
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            if candidate.stat().st_mtime < stale_before:
+                shutil.rmtree(candidate, ignore_errors=True)
+        except OSError:
+            # Scratch cleanup is best-effort and must not block deployment.
+            continue
+    staging = Path(tempfile.mkdtemp(prefix='staging-', dir=staging_root))
     try:
         subprocess.run(['git','init','--bare','--quiet',str(staging)],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
