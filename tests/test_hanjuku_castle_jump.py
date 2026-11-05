@@ -102,6 +102,20 @@ def test_map_after_select_opens_the_source_castle():
     assert mem['expect_menu'] is True
 
 
+def test_map_after_select_opens_castle_when_roof_is_occluded(monkeypatch):
+    # A live frame can hide the roof underneath the cursor; the previous
+    # implementation waited three times and cancelled instead of entering.
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 0, 'total': 0, 'tick': 0}
+    screen = _screen('map', [], cursor=(80, 90))
+    monkeypatch.setattr(M, '_roof_under_cursor', lambda _screen, _frame: False)
+    assert M.castle_jump_step(screen, mem, object()) == [M.pad('a')]
+    assert 'castle_jump' not in mem
+    assert mem['expect_menu'] is True
+    assert 'castle_jump_skip' not in mem
+
+
 def test_status_opened_by_select_backs_out_once():
     mem = _memory()
     mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
