@@ -817,19 +817,21 @@ def castle_jump_step(screen, mem, frame):
 
     if phase == 'confirm':
         if screen.kind == 'map':
-            if _roof_under_cursor(screen, frame):
-                mem['expect_menu'] = True
-                mem.pop('castle_jump', None)
-                mem.pop('castle_jump_skip', None)
-                _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
-                        observed_metric={'cursor': mem.get('cursor'),
-                                         'screen_cursor': list(_cursor(screen) or ())},
-                        reason='しろ一覧のSELECTで出撃元の城へ飛び、屋根の上で城メニューを開く')
-                return [pad('a')]
-            jump['waits'] = int(jump.get('waits') or 0) + 1
-            if jump['waits'] < 3:
-                return []
-            return _end_castle_jump(screen, mem, 'no_roof_after_select')
+            # The named own-castle row was selected before SELECT. Its field
+            # return is the navigation evidence; the cursor sprite can cover
+            # every roof pixel, so an absent detected roof is not a refusal.
+            # The deploy layer still reads the *actual* castle's status and
+            # checks its name before allowing しゅつげき.
+            roof_visible = _roof_under_cursor(screen, frame)
+            mem['expect_menu'] = True
+            mem.pop('castle_jump', None)
+            mem.pop('castle_jump_skip', None)
+            _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
+                    observed_metric={'cursor': mem.get('cursor'),
+                                     'screen_cursor': list(_cursor(screen) or ()),
+                                     'roof_under_cursor': roof_visible},
+                    reason='しろ一覧で城名を確認したSELECT後のフィールドなので、屋根が隠れてもAで城メニューを開き実ステータスで出撃元を照合する')
+            return [pad('a')]
         if _castle_list_rows(screen):
             if int(jump.get('selects') or 0) < 2:
                 jump['selects'] = int(jump.get('selects') or 0) + 1
