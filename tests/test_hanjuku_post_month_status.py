@@ -245,3 +245,90 @@ def test_selection_triangle_without_castle_flags_has_no_candidate():
     assert result["source"] == "selection_marker"
     assert tuple(result["box"]) == box
     assert "castle_candidate" not in result
+
+
+
+def _known_status(name):
+    return {'general': name, 'location': 'castle', 'castle': 'アルマムーン',
+            'broken': False, 'hp': 50, 'max_hp': 50, 'egg': 'エラベルエッグ',
+            'uses': 4}
+
+
+def _persistent_memory(*names, month='1-7', **changes):
+    cache = {'scope': [1, '1-6'], 'identity': None, 'complete': True,
+             'statuses': {name: _known_status(name) for name in names},
+             'dirty': {}, 'pending_joins': []}
+    return memory(month=month, general_statuses=cache,
+                  garrison={'アルマムーン': list(names)}, **changes)
+
+
+def test_unchanged_general_status_survives_many_months_without_opening_menu():
+    mem = _persistent_memory('どうし', 'ゼウス', month='7-9')
+    mem['general_statuses']['tick'] = 1
+    mem['country_general_count'] = {'scope': [1, '7-9'], 'identity': None,
+                                    'count': 2}
+    post.arm(mem)
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['result'] == 'unchanged_cached'
+    assert mem['post_month_status_last']['scope'] == [1, '7-9']
+    assert mem['general_statuses']['statuses']['ゼウス']['castle'] == 'アルマムーン'
+
+
+def test_only_event_dirty_general_opens_status_on_roster():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    receipts.dirty_status(mem, ['ゼウス'], fields=('location',))
+    assert mem['general_statuses']['dirty'] == {'ゼウス': ['location']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    second = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert state['names'] == ['どうし']
+    assert post.step(second, mem, None) == []
+    assert post.step(second, mem, None) == [pad('a')]
+    assert post.step(parse(status('ゼウス')), mem, None) == [pad('b')]
+    assert state['dirty'] == []
+    assert post.step(second, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == [pad('b')]
+    assert list(mem['general_statuses']['statuses']) == ['どうし', 'ゼウス']
+    assert mem['general_statuses']['dirty'] == {}
+    assert mem['general_statuses']['statuses']['どうし']['hp'] == 50
+
+
+def test_joined_general_gets_only_new_individual_status_read():
+    mem = _persistent_memory('どうし')
+    assert receipts.record_join(mem, 'ゼウス') is False  # no historical roster receipt
+    assert mem['general_statuses']['pending_joins'] == ['ゼウス']
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    second = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == []
+    assert post.step(second, mem, None) == [pad('a')]
+
+
+def test_defeated_missing_general_pruned_only_after_full_roster_walk():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    receipts.defeated(mem, 'ゼウス')
+    assert 'ゼウス' in mem['general_statuses']['statuses']
+    assert mem['general_statuses']['suspected_departures'] == ['ゼウス']
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'roster'
+    only = parse(roster(names=('どうし',), selected=0))
+    assert post.step(only, mem, None) == [pad('down')]
+    assert 'ゼウス' in mem['garrison']['アルマムーン']
+    assert post.step(only, mem, None) == [pad('b')]
+    assert 'ゼウス' not in mem['general_statuses']['statuses']
+    assert 'ゼウス' not in mem['garrison']['アルマムーン']
+
+
+def test_old_run_identity_never_reuses_cached_status():
+    mem = _persistent_memory('どうし')
+    mem['_run_identity'] = {'run_id': 'new'}
+    post.arm(mem)
+    assert mem['post_month_status']['statuses'] == {}
+    assert mem['post_month_status']['stage'] == 'await_map'
