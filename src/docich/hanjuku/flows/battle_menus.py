@@ -1457,6 +1457,21 @@ def _partial_enemy_general_command(screen):
 
 def _egg_retreat_return(screen, mem, battle):
     """Reuse the finite return-to-human-command route; B is not a receipt."""
+    attack = mem.get('attack') or {}
+    if chart.is_boss_castle(attack.get('castle')):
+        # g1133 2026-11-06: three measured boss entries (ヘラ 04:39,
+        # アマンディーヌ 04:43, パプリカ 04:48) reached the boss battle menu,
+        # pressed the B return below three times, and ended at the main menu
+        # with battle_entry_expired: the boss fight never started. B here
+        # cancels the boss attack, so a boss entry never takes this route.
+        if not battle.get('boss_return_held_recorded'):
+            battle['boss_return_held_recorded'] = True
+            _record(mem, 'boss_battle_return_held', **_battle_labels(battle),
+                    observed_metric={'castle': attack.get('castle'),
+                                     'general': attack.get('general'),
+                                     'enemy': battle.get('enemy')},
+                    reason='ボス城突入中のB復帰は攻撃を取り消すため、復帰を使わず戦闘を続ける')
+        return None
     attempts = int(battle.get('egg_retreat_attempts') or 0)
     battle['egg_retreat_needed'] = True
     battle['egg_retreat_tried'] = True
