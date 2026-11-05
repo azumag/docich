@@ -323,6 +323,16 @@ def step(screen, mem, frame):
                                'attack_started', 'defense_started',
                                'boss_attack_started', 'field_encounter_started'}):
         return None
+    # A scripted dialogue/event is not this owner's screen. The menu stages
+    # below would answer [] and starve the ordinary A handler: g1133 stalled on
+    # the new-partner ceremony at 2026-11-06 02:56 right after the status scan,
+    # with every later observation still reading 'task_menu'. Only 'status'
+    # reads a text panel (the individual general status) and the wait_* stages
+    # hand the frame to recall/house; everything else releases it.
+    if (screen.kind == 'text'
+            and state['stage'] not in {'status', 'wait_repair', 'wait_recall'}
+            and house.roster(screen) is None):
+        return None
     state['steps'] += 1
     stage = state['stage']
     if state['steps'] > MAX_STEPS and stage not in {'wait_repair', 'wait_recall'}:

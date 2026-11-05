@@ -6914,6 +6914,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v462-castle-jump",
             "hanjuku-chart-v463-post-month-marker",
             "hanjuku-chart-v464-locate-status-panel",
+            "hanjuku-chart-v465-dialogue-yield",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
