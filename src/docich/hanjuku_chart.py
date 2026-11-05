@@ -148,9 +148,9 @@ CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
 # 2026-10-28) match all 24 ordinary castles of chapters 1–3 exactly. The
 # CASTLES_APPROX cell 8*(flag + (1, 3)) is within 8 px of every probe-measured
 # ordinary cell except chapter 3's large home castle (16 px); a Y jump lands
-# on the cell and the last pixels are walked onto the roof. Bosses are not in
-# the source table: boss cells stay unmeasured (chapter 4 has four sites and
-# chapter 9's boss moves).
+# on the cell and the last pixels are walked onto the roof. Single-site boss
+# flags use the same anchor as approximate cells below; measured boss cells
+# still win, chapter 4 has four sites and chapter 9's boss moves.
 SOURCE_CHAPTERS = frozenset(range(4, 13))
 for _chapter in sorted(SOURCE_CHAPTERS):
     CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
@@ -300,6 +300,24 @@ BOSS_CASTLES: dict[int, str] = {
     2: 'ボス', 3: 'ボス', 4: 'ボス', 5: 'ボス', 6: 'ボス',
     7: 'ボス', 8: 'ボス', 9: 'ボス', 10: 'ボス', 11: 'ボス', 12: 'ボス',
 }
+
+# Chapters 7-12 each have one public boss flag. The same flag->cell anchor as
+# ordinary castles gives an approximate boss cell so the planner has a target
+# at all_captured instead of stopping with next_order() == None. Chapters 5/6
+# already carry measured cells above and win here; chapter 4's four sites and
+# chapter 9's moving boss stay special.
+APPROX_BOSS_CELLS: dict[int, tuple[int, int]] = {}
+for _chapter in sorted(SOURCE_CHAPTERS):
+    if _chapter in (4, 9):
+        continue
+    _flags = map_sources.SOURCE_BOSS_FLAGS.get(_chapter, ())
+    _name = BOSS_CASTLES.get(_chapter)
+    if len(_flags) != 1 or _name in CASTLES.get(_chapter, {}):
+        continue
+    _left, _top = _flags[0]
+    APPROX_BOSS_CELLS[_chapter] = (8 * (_left + 1), 8 * (_top + 3))
+    CASTLES[_chapter][_name] = APPROX_BOSS_CELLS[_chapter]
+del _chapter, _flags, _name, _left, _top
 
 # Castle labels this chart used before they matched the game's own text.
 # Chapter 1's home castle was labelled ほんじょう here while the game always
