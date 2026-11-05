@@ -247,6 +247,26 @@ def test_a_blind_probe_still_rolls_back_when_the_roster_wait_expires(monkeypatch
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
+def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(monkeypatch):
+    # g1133 2026-11-05: chapter 6 draws marching units as portraits, so the
+    # triangle survey can never confirm a boss launch. Twelve boss sorties
+    # were rolled back and sent again while the armies were still walking
+    # (ライム entered the boss castle at 15:39 after his launch had been
+    # rolled back at 15:21). The march is kept; the roster still rolls it
+    # back when it lists the general.
+    mem = memory(); confirm(mem); commit(mem)
+    _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
+    survey(monkeypatch, mem, [])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert not _flow(mem).get('launch_miss')
+    assert any(r['decision'] == 'sortie_launch_unconfirmed_kept' for r in mem['_records'])
+
+
 def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
     mem['sorties']['1-A3']['status'] = 'arrived'
