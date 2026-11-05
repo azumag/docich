@@ -348,5 +348,7 @@ def test_an_unmeasured_chapter_keeps_the_fixed_limit():
 
 def test_the_scaled_wait_never_outlives_the_long_march_window():
     assert O.MARCH_ARRIVAL_CAP == O.LONG_MARCH_TICKS
-    mem = chapter6_memory(LAUNCH, target='アブダレ')
+    # アルブラーカ→アブダレ is 1064 chart cells: 1064*2.4 = 2554 exceeds the
+    # 2400-tick window, so the distance-scaled wait must clamp to the cap.
+    mem = chapter6_memory(LAUNCH, source='アルブラーカ', target='アブダレ')
     assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.LONG_MARCH_TICKS
