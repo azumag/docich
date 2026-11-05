@@ -1,10 +1,10 @@
-"""The Y-jump budget survives a plan rebuild (v426).
+"""The Y-jump budget survives a plan rebuild and a state reload (v427).
 
-g1133 2026-11-05: the same order re-opened the Y view 22 times a minute (128 in
-11 minutes under v424) because the per-order jump counter was reset whenever the
-plan was rebuilt, and the plan is rebuilt on every observation in this run
-(issue #3417). A tally is kept beside the state and does survive, so the total
-number of jumps per order and screen mode is now bounded for the whole run.
+g1133 2026-11-05: the same order re-opened the Y view 22 times a minute because
+the per-order jump counter was reset whenever the plan was rebuilt (issue
+#3417). The budget is kept in two stores - the tally (which survived in this
+run) and a plain dict (which survives a reload) - and either one reaching the
+cap stops the jumps.
 """
 from docich.hanjuku.os_layer import navigation as N
 
@@ -17,21 +17,20 @@ def order():
     return {'step': 'X'}
 
 
-def test_the_total_budget_stops_a_reset_counter():
+def test_the_plain_dict_alone_stops_the_jumps():
     mem = memory()
-    for _ in range(N.Y_JUMP_TOTAL_LIMIT):
-        mem['y_jumps'] = {}          # a plan rebuild forgets the per-order count
-        assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is True
-        N._start_y_jump(mem, order(), 'アルマムーン', 'map')
-        mem.pop('y_jump', None)
-    mem['y_jumps'] = {}
+    mem['y_jumps_total'] = {'X:map': N.Y_JUMP_TOTAL_LIMIT}
     assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
 
 
-def test_another_mode_has_its_own_budget():
+def test_the_tally_alone_stops_the_jumps():
     mem = memory()
-    for _ in range(N.Y_JUMP_TOTAL_LIMIT):
-        mem['y_jumps'] = {}
-        N._start_y_jump(mem, order(), 'アルマムーン', 'map')
-        mem.pop('y_jump', None)
-    assert N._want_y_jump(mem, order(), 'アルマムーン', 'target') is True
+    mem['tally'] = {f'yjump:X:map': N.Y_JUMP_TOTAL_LIMIT}
+    assert N._want_y_jump(mem, order(), 'アルマムーン', 'map') is False
+
+
+def test_both_stores_are_counted_on_a_start():
+    mem = memory()
+    N._start_y_jump(mem, order(), 'アルマムーン', 'map')
+    assert mem['y_jumps_total']['X:map'] == 1
+    assert mem['tally']['yjump:X:map'] == 1
