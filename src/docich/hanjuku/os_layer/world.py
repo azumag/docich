@@ -80,6 +80,9 @@ def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
     return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
+NAV_CONTINUITY_TICKS = 30      # ticks between map frames that still integrate
+
+
 def update_world(screen: Screen, mem, frame, goal_name=None):
     """Track the cursor's map cell from measured screen motion and roof anchors.
 
@@ -107,8 +110,13 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
         # rule (trust only anchored frames or the inland search).
         trusted = not mem.get('uncertain') or last.get('search')
     else:
-        trusted = (type(last_tick) is int and type(tick) is int
-                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+        # Map frames are sparse while the chapter throws battles (g1133
+        # 2026-11-05: two map frames in 8.4 minutes), so requiring the very
+        # next tick froze the estimate for hours. A short gap still integrates;
+        # a long one does not.
+        gap = tick - last_tick if type(last_tick) is int and type(tick) is int else None
+        trusted = (gap is not None and 0 <= gap <= NAV_CONTINUITY_TICKS
+                   and last.get('kind') == screen.kind)
     if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
