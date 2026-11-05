@@ -49,7 +49,16 @@ def test_an_unread_source_gets_the_general_back():
     assert mem['garrison']['アルマムーン'] == ['ヘルメス']
 
 
-def test_a_marching_sortie_is_never_expired():
+def test_a_zombie_march_is_expired_with_the_overdue_ones():
+    # g1133 2026-11-05: グレナデン stayed launched_unconfirmed for 5115
+    # observations; a march cannot still be running past the window.
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, status='en_route')
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+
+
+def test_a_recent_march_is_kept():
+    mem = memory(age=O.SPENT_SORTIE_TICKS - 1, status='en_route')
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']

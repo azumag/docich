@@ -1083,6 +1083,10 @@ def _step_once(screen, mem, frame):
         scope = [mem.get('chapter'), mem.get('month')]
         field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
+        # An explicit month-end inspection now owns returns and repairs.
+        # Once it finishes, field surveys must not steal the next map plan.
+        if (not monthly and (mem.get('post_month_status_last') or {}).get('scope') == scope):
+            return None
         if monthly:
             if mem.get('battle') or _flow(mem).get('recall'):
                 return None
