@@ -863,21 +863,24 @@ def test_forget_defeated_removes_the_general_from_the_kept_count():
     assert mem['general_location_unknown'] == [NAMES[0]]
 
 
-def test_month_roster_walk_keeps_a_complete_copy_for_the_status_card():
+def test_month_status_headcount_does_not_invent_a_complete_named_roster():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
     _month_roster({'policy': mem})
-    kept = mem.get(r.LAST_COMPLETE_KEY)
-    assert kept and kept['names'] == mem['recruit_roster']['names']
-    assert (kept['chapter'], kept['month']) == (mem['chapter'], mem['month'])
-    assert kept['identity'] == IDENTITY and kept['tick'] == mem['recruit_roster']['tick']
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_general_count']['identity'] == IDENTITY
+    assert mem['recruit_roster'] == before
+    assert r.LAST_COMPLETE_KEY not in mem
 
 
-def test_failed_month_roster_walk_leaves_no_complete_copy():
+def test_unread_month_status_count_leaves_named_roster_unchanged():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
     _failed_month_roster({'policy': mem})
-    assert mem['recruit_roster']['complete'] is False
+    assert 'country_general_count' not in mem
+    assert mem['recruit_roster'] == before
     assert r.LAST_COMPLETE_KEY not in mem
 
 
@@ -936,25 +939,25 @@ def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
     assert r.LAST_COMPLETE_KEY in mem  # the card subtracts instead of showing 不明
 
 
-def test_monthly_roster_scan_runs_once_and_is_retained_for_the_month():
+def test_month_country_status_count_is_retained_for_this_month_only():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)
     _month_roster({'policy': mem})
-    marker = mem.get('month_roster_scan')
-    assert marker and marker['scope'] == [mem['chapter'], mem['month']]
-    # The retained receipt is the month's data, not a one-frame observation.
-    assert mem['recruit_roster']['complete'] is True
-    # A second monthly-menu visit does not start another scan. The level page
-    # (level_trigger) is a different visit and is intentionally not covered.
-    mem['hanjuku_level_seen'] = {'scope': [mem['chapter'], mem['month']]}
+    marker = mem['country_general_count']
+    assert marker['scope'] == [mem['chapter'], mem['month']]
+    assert marker['count'] == 10
+    assert not mem.get('month_roster_scan')
+    # A second monthly-menu visit must not trigger a names scan.
     mem['shop'] = {'key': mem['month'], 'items': [], 'merchant_done': True,
                    'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
                    'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
                    'recruit_reserve': 0, 'closed': True}
     from test_hanjuku_chart_bot import month_canvas
     from docich.hanjuku_screen import parse
-    before = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    before = len([row for row in mem.get('_records') or []
+                  if row.get('decision') == 'house_scan_started'])
     frame = month_canvas(250, on='メインメニュー', month=7)
     assert house.step(parse(frame), mem, frame) is None
-    after = len([r for r in mem.get('_records') or [] if r.get('kind') == 'scan_started'])
+    after = len([row for row in mem.get('_records') or []
+                 if row.get('decision') == 'house_scan_started'])
     assert after == before
