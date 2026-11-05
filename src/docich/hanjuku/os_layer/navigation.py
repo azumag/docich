@@ -383,6 +383,19 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # Two stores: the tally survives in this run, the plain dict survives
         # a reload; either one reaching the cap stops the jumps.
         return False
+    if ((mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT
+            and last.get('step') == order['step'] and last.get('mode') == mode
+            and last.get('why') == 'cursor_stationary'
+            and _jump_block_expired(mem, last)):
+        # v434 expiry alone could not help: the stationary close sets the
+        # per-order counter to Y_JUMP_LIMIT, so the budget check below kept
+        # blocking the retry the cooldown was meant to allow. g1133 boss map
+        # jump sat at 6 of 6 for hours with the walk frozen, so allow exactly
+        # one retry here; a fresh stationary close sets the counter back.
+        mem['y_jumps'][key] = Y_JUMP_LIMIT - 1
+        _record(mem, 'y_jump_block_retry', chart_step=order['step'], target=name,
+                observed_metric={'mode': mode, 'budget': Y_JUMP_LIMIT - 1},
+                reason='stale stationary budget retry')
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
     if (mode == 'target' and chart.is_boss_castle(name)
