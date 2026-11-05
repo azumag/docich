@@ -154,6 +154,44 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(out))
         self.assertNotIn("DO-NOT-EMIT", json.dumps(out))
 
+    def test_compact_field_projects_boss_progress_without_names(self):
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["status"] = "output_omitted"
+        tactical["chapter"] = 6
+        tactical["policy"] = {
+            "active": "I:abc123:1",
+            "orders": {},
+            "captured_count": 7,
+            "castle_loss_count": 1,
+            "uncertain": True,
+            "march": {"state": "overdue", "overdue": ["I:abc123:1"],
+                      "exhausted": [], "oldest_age_ticks": 123},
+            "boss_victories": {"count": 0, "sites": ["PRIVATE_SITE"]},
+            "sorties": {
+                "I:abc123:1": {"status": "overdue", "target": "ボス",
+                               "age_ticks": 123, "relaunch": 2},
+                "I:def456:2": {"status": "launched", "target": "PRIVATE_CASTLE",
+                               "age_ticks": 1, "relaunch": 0},
+            },
+            "recent_decisions": [],
+        }
+        out = self.status.project(payload)
+        self.assertIsNone(out["active"])
+        self.assertEqual(out["field"]["captured"], 7)
+        self.assertEqual(out["field"]["lost"], 1)
+        self.assertEqual(out["field"]["march"], "overdue")
+        self.assertEqual(out["field"]["overdue"], 1)
+        self.assertEqual(out["field"]["boss_wins"], 0)
+        self.assertEqual(out["field"]["boss_sorties"], 1)
+        self.assertEqual(out["field"]["boss_sorties_overdue"], 1)
+        self.assertTrue(out["field"]["active_boss"])
+        self.assertTrue(out["field"]["uncertain"])
+        rendered = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn("PRIVATE", rendered)
+        self.assertNotIn("I:abc123", rendered)
+        self.assertNotIn("ボス", rendered)
+
     def test_active_hanjuku_is_derived_without_exposing_game_name(self):
         payload = self.payload()
         payload["diagnostics"]["corners"]["game_switch"]["active_game"] = "hanjuku-hero"
