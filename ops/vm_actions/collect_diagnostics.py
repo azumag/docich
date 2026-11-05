@@ -11922,6 +11922,8 @@ def _compact_hanjuku_policy(mem, state=None):
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
     lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
+    unknown = mem.get('general_location_unknown')
+    unknown = unknown if isinstance(unknown, list) else None
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11986,6 +11988,7 @@ def _compact_hanjuku_policy(mem, state=None):
                     for step, value in list(retries.items())[:20] if isinstance(step, str)},
         'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
                      for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'unknown_generals': (len(unknown) if unknown is not None and len(unknown) <= 64 else None),
         'sorties': dict(rows[:12]),
         # Direct march-stall evidence: whether a launched sortie is overdue,
         # how long it has gone unmeasured and whether its bounded relaunch
